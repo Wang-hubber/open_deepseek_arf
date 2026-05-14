@@ -45,14 +45,15 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   if (to.name === 'welcome') return true
 
-  if (to.name === 'home') {
-    const app = useAppStore()
-    if (!app.configStatus || !app.configStatus.configured) {
+  const app = useAppStore()
+  if (!app.configStatus || !app.configStatus.configured) {
+    if (!app.configStatus) {
       await app.checkConfigStatus()
-      if (!app.configStatus?.configured) {
-        const seenWelcome = localStorage.getItem('arf_seen_welcome')
-        return seenWelcome ? { name: 'config' } : { name: 'welcome' }
-      }
+    }
+    if (!app.configStatus?.configured) {
+      if (to.name === 'config') return true
+      const seenWelcome = localStorage.getItem('arf_seen_welcome')
+      return seenWelcome ? { name: 'config' } : { name: 'welcome' }
     }
   }
 
