@@ -49,14 +49,7 @@ arf init my_workspace
 arf start --workspace my_workspace
 ```
 
-Browser opens at **http://localhost:5173** — configure your LLM connection and start chatting.
-
-For API key security, use the encrypted vault:
-
-```bash
-arf vault init          # create vault, set password
-arf vault unlock        # enter password to decrypt credentials
-```
+Browser opens at **http://localhost:5173** — enter your DeepSeek API key and start chatting. The key is saved to `models/<name>/config.yaml` in your workspace.
 
 ### Docker (one command)
 
@@ -281,7 +274,7 @@ Note: `rag_operator` has `config_default.yaml` only (partial).
 | `arf list [tools\|skills\|models]` | List registered resources. `[sys]` = framework built-in. |
 | `arf validate` | Check workspace resource integrity. |
 | `arf clone <type> <name>` | Copy a system resource to your workspace for customization. |
-| `arf vault init` | Create an encrypted vault for API keys and credentials. |
+| `arf vault init` | Create an encrypted vault (standalone key-value store). |
 | `arf vault unlock` · `lock` · `status` | Manage vault lifecycle. |
 
 <br/>
@@ -421,7 +414,7 @@ name: deep_thinking
 model_type: deep_thinking
 config:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-..."             # or omit and use vault
+  api_key: "sk-..."
   model_name: "deepseek-chat"
   temperature: 0.7
   max_tokens: 10240
@@ -429,7 +422,7 @@ config:
   reasoning_effort: "max"
 ```
 
-For production, store `api_key` in the encrypted vault (`arf vault init`) rather than plaintext YAML.
+The vault (`arf vault init`) provides AES-256-GCM encrypted storage for arbitrary secrets. It is currently a standalone key-value store — vault-to-model-config integration is not yet automatic.
 
 <br/>
 
