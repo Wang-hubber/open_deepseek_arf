@@ -78,12 +78,80 @@ def cmd_web(args):
 # ---- start ----------------------------------------------------------
 
 
+# ---- run state -------------------------------------------------------
+
+def _run_dir(ws: Path) -> Path:
+    d = ws / ".arf"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_pid(run_dir: Path, name: str, pid: int):
+    (run_dir / f"{name}.pid").write_text(str(pid))
+
+
+def _read_pid(run_dir: Path, name: str) -> int | None:
+    f = run_dir / f"{name}.pid"
+    if f.exists():
+        try:
+            return int(f.read_text().strip())
+        except (ValueError, OSError):
+            pass
+    return None
+
+
+def _clear_run_state(run_dir: Path):
+    for f in run_dir.glob("*.pid"):
+        f.unlink(missing_ok=True)
+    cfg = run_dir / "run.json"
+    cfg.unlink(missing_ok=True)
+
+
+def _kill_process(pid: int, name: str, grace: int = 3):
+    """Kill a process by PID, with fallback to process group."""
+    import subprocess
+    try:
+        os.kill(pid, 0)  # check if exists
+    except OSError:
+        return False
+    print(f"Stopping {name} (pid={pid})...")
+    try:
+        os.kill(pid, 15)  # SIGTERM
+        import time
+        for _ in range(grace):
+            time.sleep(1)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+        os.kill(pid, 9)  # SIGKILL
+        return True
+    except OSError:
+        return True
+
+
+# ---- start ----------------------------------------------------------
+
+
 def cmd_start(args):
     """Start both backend server and frontend dev server."""
     import subprocess
     import time
+    import json
 
     ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
+    ws = Path(ws_dir)
+    run_dir = _run_dir(ws)
+
+    # Check if already running
+    be_pid = _read_pid(run_dir, "backend")
+    if be_pid is not None:
+        try:
+            os.kill(be_pid, 0)
+            print(f"Error: ARF is already running (pid={be_pid}). Use 'arf stop' first.")
+            sys.exit(1)
+        except OSError:
+            _clear_run_state(run_dir)
 
     # Locate frontend directory relative to the package
     package_dir = Path(__file__).parent  # src/arf/
@@ -93,6 +161,14 @@ def cmd_start(args):
         print(f"Warning: frontend not found at {frontend_dir}")
         print("Starting backend only...")
         frontend_dir = None
+
+    # Save run config for reload
+    run_cfg = {
+        "workspace": str(ws),
+        "host": args.host,
+        "port": args.port,
+    }
+    (run_dir / "run.json").write_text(json.dumps(run_cfg))
 
     fe_proc = None
     try:
@@ -104,10 +180,12 @@ def cmd_start(args):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
             )
-            time.sleep(1.5)  # Wait for Vite to be ready
+            _write_pid(run_dir, "frontend", fe_proc.pid)
+            time.sleep(1.5)
 
         from .server import ARFServer
 
+        _write_pid(run_dir, "backend", os.getpid())
         print(f"Starting ARF server at http://{args.host}:{args.port}")
         print(f"  Workspace:  {ws_dir}")
         if frontend_dir:
@@ -126,6 +204,83 @@ def cmd_start(args):
             except subprocess.TimeoutExpired:
                 fe_proc.kill()
             print("Frontend stopped.")
+        _clear_run_state(run_dir)
+
+
+# ---- stop -----------------------------------------------------------
+
+
+def cmd_stop(args):
+    """Stop a running ARF session."""
+    import json
+
+    ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
+    ws = Path(ws_dir)
+    run_dir = _run_dir(ws)
+
+    stopped = False
+
+    be_pid = _read_pid(run_dir, "backend")
+    if be_pid is not None:
+        stopped |= _kill_process(be_pid, "Backend")
+        # Also kill child processes (uvicorn workers)
+        import subprocess
+        subprocess.run(["pkill", "-P", str(be_pid)], capture_output=True, timeout=3)
+
+    fe_pid = _read_pid(run_dir, "frontend")
+    if fe_pid is not None:
+        stopped |= _kill_process(fe_pid, "Frontend")
+
+    _clear_run_state(run_dir)
+
+    if not stopped:
+        # Fallback: search by workspace path
+        import subprocess
+        result = subprocess.run(
+            ["pgrep", "-f", f"arf.*{ws.name}"],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            for pid_str in result.stdout.strip().split("\n"):
+                if pid_str:
+                    _kill_process(int(pid_str), f"ARF (pid={pid_str})")
+            stopped = True
+
+    if not stopped:
+        print("No running ARF instance found.")
+    else:
+        print("ARF stopped.")
+
+
+# ---- reload ---------------------------------------------------------
+
+
+def cmd_reload(args):
+    """Restart a running ARF session."""
+    import json
+
+    ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
+    ws = Path(ws_dir)
+    run_dir = _run_dir(ws)
+    run_cfg_file = run_dir / "run.json"
+
+    # Load previous run config if available
+    if run_cfg_file.exists():
+        try:
+            cfg = json.loads(run_cfg_file.read_text())
+            args.workspace = cfg.get("workspace", ws_dir)
+            if not args.host:
+                args.host = cfg.get("host", "0.0.0.0")
+            if not args.port:
+                args.port = cfg.get("port", 8000)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    print("Reloading ARF...")
+    cmd_stop(args)
+    import time
+    time.sleep(1)
+    cmd_start(args)
 
 
 # ---- chat -----------------------------------------------------------
@@ -381,6 +536,14 @@ def main():
     start_parser.add_argument("--host", default="0.0.0.0", help="Backend listen address")
     start_parser.add_argument("--port", type=int, default=8000, help="Backend listen port")
 
+    # stop
+    stop_parser = subparsers.add_parser("stop", help="Stop a running ARF session")
+    stop_parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
+
+    # reload
+    reload_parser = subparsers.add_parser("reload", help="Restart a running ARF session")
+    reload_parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
+
     # chat
     subparsers.add_parser("chat", help="Start a terminal chat session")
 
@@ -420,6 +583,8 @@ def main():
         "init": cmd_init,
         "web": cmd_web,
         "start": cmd_start,
+        "stop": cmd_stop,
+        "reload": cmd_reload,
         "chat": cmd_chat,
         "run": cmd_run,
         "list": cmd_list,
