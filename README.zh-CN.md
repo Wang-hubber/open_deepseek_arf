@@ -237,7 +237,6 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 | 会话管理（CRUD、归档、空闲锁定） | ✅ |
 | 热重载文件监听（资源变更） | ✅ |
 | 子进程 Hook 引擎（4 个内置 Hook） | ✅ |
-| AES-256-GCM 加密保险库 | ✅ |
 | 多阶段 Docker 构建 + docker-compose | ✅ |
 | CI/CD（GitHub Actions + Gitee CI） | ✅ |
 
