@@ -431,84 +431,6 @@ def cmd_clone(args):
     print("You can now edit it freely.")
 
 
-# ---- vault ---------------------------------------------------------
-
-
-def cmd_vault_init(args):
-    from getpass import getpass
-    from .security import init_vault, status
-
-    ws = _require_workspace()
-    if status(str(ws))["initialized"]:
-        print("Vault already exists in this workspace.")
-        sys.exit(1)
-
-    password = getpass("Enter master password: ")
-    if len(password) < 4:
-        print("Error: password must be at least 4 characters")
-        sys.exit(1)
-    confirm = getpass("Confirm master password: ")
-    if password != confirm:
-        print("Error: passwords do not match")
-        sys.exit(1)
-
-    key, data = init_vault(str(ws), password)
-    print(f"Vault created in {ws}")
-
-    cred_path = ws / "credentials.yaml"
-    if cred_path.exists():
-        import yaml as _yaml
-        from .security import save_encrypted
-        try:
-            cred = _yaml.safe_load(cred_path.read_text()) or {}
-            if cred.get("email") or cred.get("auth_code"):
-                data["credentials"] = {
-                    "email": cred.get("email", ""),
-                    "auth_code": cred.get("auth_code", ""),
-                }
-                save_encrypted(ws, key, data)
-                print("  Migrated credentials.yaml into vault")
-        except Exception as e:
-            print(f"  Warning: failed to migrate credentials: {e}")
-
-    print("  Vault key will be cleared when this process exits")
-
-
-def cmd_vault_unlock(args):
-    from getpass import getpass
-    from .security import unlock_vault, status
-
-    ws = _require_workspace()
-    st = status(str(ws))
-    if not st["initialized"]:
-        print("No vault found in this workspace. Run 'arf vault init' first.")
-        sys.exit(1)
-
-    password = getpass("Enter master password: ")
-    try:
-        key, data = unlock_vault(str(ws), password)
-        print("Vault unlocked.")
-        if data.get("credentials", {}).get("email"):
-            print(f"  Email: {data['credentials']['email']}")
-    except ValueError:
-        print("Error: incorrect password")
-        sys.exit(1)
-
-
-def cmd_vault_lock(args):
-    print("Vault lock is managed per-session. The key is held in process memory.")
-    print("Use the web UI or restart the CLI to clear it.")
-
-
-def cmd_vault_status(args):
-    from .security import status
-
-    ws = _require_workspace()
-    st = status(str(ws))
-    print(f"Vault initialized: {st['initialized']}")
-    print(f"Vault state is managed per-session in the web server.")
-
-
 # ---- main -----------------------------------------------------------
 
 
@@ -566,14 +488,6 @@ def main():
                               help="Resource type to clone")
     clone_parser.add_argument("resource_name", help="Name of the system resource to clone")
 
-    # vault
-    vault_parser = subparsers.add_parser("vault", help="Manage the encrypted vault")
-    vault_sub = vault_parser.add_subparsers(dest="vault_command")
-    vault_sub.add_parser("init", help="Initialize a new vault")
-    vault_sub.add_parser("unlock", help="Unlock the vault")
-    vault_sub.add_parser("lock", help="Lock the vault")
-    vault_sub.add_parser("status", help="Show vault status")
-
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -592,20 +506,7 @@ def main():
         "clone": cmd_clone,
     }
 
-    if args.command == "vault":
-        vault_cmds = {
-            "init": cmd_vault_init,
-            "unlock": cmd_vault_unlock,
-            "lock": cmd_vault_lock,
-            "status": cmd_vault_status,
-        }
-        handler = vault_cmds.get(args.vault_command)
-        if handler is None:
-            vault_parser.print_help()
-            sys.exit(1)
-        handler(args)
-    else:
-        commands[args.command](args)
+    commands[args.command](args)
 
 
 if __name__ == "__main__":

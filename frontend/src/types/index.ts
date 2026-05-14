@@ -15,11 +15,6 @@ export interface ConfigStatus {
   pending_required?: SlotInfo[]
 }
 
-export interface VaultStatus {
-  initialized: boolean
-  unlocked: boolean
-}
-
 export interface ResourceItem {
   name: string
   description?: string

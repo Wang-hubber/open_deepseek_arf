@@ -20,11 +20,6 @@ const router = createRouter({
       component: () => import('@/views/ConfigPage.vue'),
     },
     {
-      path: '/vault',
-      name: 'vault',
-      component: () => import('@/views/VaultPage.vue'),
-    },
-    {
       path: '/usage',
       name: 'usage',
       component: () => import('@/views/UsagePage.vue'),
