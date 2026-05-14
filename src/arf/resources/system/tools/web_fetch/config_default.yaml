@@ -1,0 +1,4 @@
+name: web_fetch
+description: "网页内容抓取，获取指定 URL 的网页内容"
+required: false
+depends_on: []

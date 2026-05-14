@@ -1,0 +1,4 @@
+name: error_handler
+description: "错误自愈处理，对失败的工具调用进行分类、修复建议和重试逻辑"
+required: false
+depends_on: []

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Vite
+frontend/.vite/
+
+# Sensitive config (contains API keys)
+models/
+
+# Multi-user data directory (contains DB, user workspaces, SMTP config)
+data/
+
+# Tests
+tests/
+
+# Claude Code
+.claude/
+
+# Legacy (has its own .git)
+arf_agent/
+
+# Workspace directories
+default/
+
+# OS
+.DS_Store
+Thumbs.db
+.hooks.json

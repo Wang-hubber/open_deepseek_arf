@@ -1,0 +1,50 @@
+name: validate_tool
+description: "Validate a newly created tool by checking structure and dry-running"
+prompt_template: |
+  Validate the tool at path `{tool_path}`. Perform these checks:
+
+  ## 1. Structure Check
+  - `tool.yaml` exists and is valid YAML
+  - Required fields present: `name`, `description`, and a schema field
+  - Schema field: `parameters` (OpenAI/DeepSeek convention) or `json_schema` (legacy) —
+    at least one must exist with `type: object` and at least one property
+  - `function.py` exists and is valid Python
+  - `function.py` has a callable `execute` function
+
+  ## 2. Dry-run Test
+  - Construct minimal valid test inputs from the schema's `properties`
+  - Import and call `execute()` with those test inputs
+  - Check that the return value is a dict
+  - Check that it doesn't raise an exception
+
+  ## 3. Report
+
+  Report findings in this format:
+
+  ```
+  Validation Report for {tool_path}
+
+  [PASS/FAIL] tool.yaml exists and is valid YAML
+  [PASS/FAIL] name field present
+  [PASS/FAIL] description field present
+  [PASS/FAIL] schema field valid (json_schema or parameters)
+  [PASS/FAIL] function.py exists
+  [PASS/FAIL] execute() is callable
+  [PASS/FAIL] Dry-run with inputs: {test_inputs}
+  [PASS/FAIL] Returns dict
+
+  Summary: X/Y checks passed
+  Verdict: [READY / NEEDS FIXES]
+
+  Issues to fix:
+  - (list each failing check with specific fix needed)
+  ```
+
+  If the tool passes all checks, respond with "Verdict: READY".
+  If any check fails, list what needs to be fixed.
+tools:
+  - file_reader
+parameters:
+  tool_path:
+    type: string
+    description: "Path to the tool directory to validate, e.g. tools/my_tool"

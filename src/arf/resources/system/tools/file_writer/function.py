@@ -1,0 +1,22 @@
+from pathlib import Path
+
+
+def execute(path: str, content: str) -> dict:
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+        preview = content[:600]
+        if len(content) > 600:
+            preview += f"\n... ({len(content) - 600} more chars)"
+
+        return {
+            "ok": True,
+            "path": str(p),
+            "filename": p.name,
+            "bytes": len(content),
+            "preview": preview,
+        }
+    except Exception as e:
+        return {"error": str(e)}

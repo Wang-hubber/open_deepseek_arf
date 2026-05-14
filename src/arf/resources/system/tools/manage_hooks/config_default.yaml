@@ -1,0 +1,4 @@
+name: manage_hooks
+description: "管理会话生命周期 Hook 规则，支持增删改查"
+required: false
+depends_on: []

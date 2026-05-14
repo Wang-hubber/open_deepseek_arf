@@ -1,0 +1,8 @@
+name: rag_operator
+description: "RAG 检索增强生成，支持文件入库和语义检索"
+required: false
+depends_on:
+  - type: model
+    name: embedding
+  - type: model
+    name: rerank

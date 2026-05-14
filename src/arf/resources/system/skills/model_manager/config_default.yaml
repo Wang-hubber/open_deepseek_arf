@@ -1,0 +1,4 @@
+name: model_manager
+description: "模型管理器，支持软删除（标记为已删除但保留文件）和恢复操作"
+required: false
+depends_on: []

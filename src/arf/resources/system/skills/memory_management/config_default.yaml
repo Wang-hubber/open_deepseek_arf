@@ -1,0 +1,6 @@
+name: memory_management
+description: "综合记忆管理，支持记忆提取、压缩和长期记忆维护"
+required: false
+depends_on:
+  - type: model
+    name: quick_thinking

@@ -1,0 +1,14 @@
+name: git_pusher
+description: "Stage and push workspace tools/ and skills/ changes to the remote git repository"
+parameters:
+  type: object
+  properties:
+    workspace_dir:
+      type: string
+      description: "Absolute path to the workspace root directory"
+    message:
+      type: string
+      description: "Commit message describing the changes"
+  required:
+    - workspace_dir
+    - message

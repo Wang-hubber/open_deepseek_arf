@@ -1,0 +1,154 @@
+name: memory_management
+description: "Comprehensive guide for ARF's long-term memory system. Read this to understand the dual memory architecture, learn when and how to extract memories after conversations, and how to compress memories when storage fills up."
+prompt_template: |
+  # Long-Term Memory Management
+
+  ## Architecture
+
+  ARF has two memory systems loaded into the prompt:
+
+  | Priority | Section | Storage | Purpose |
+  |----------|---------|---------|---------|
+  | 15 | ## Long-Term Memory | `memory/long_term.md` (≤1MB) | User profile, preferences, facts — persists across sessions |
+  | 20 | ## Memory | `memory/session.md` | Short-term conversation context — current session |
+
+  Long-term memory is managed via the `memory_store` tool (read/write/stats/compress) and the
+  `model_manager` tool (for finding flash models for compression).
+
+  ## When to Use This Skill
+
+  Read this skill when:
+  - You need to extract and persist memories after a conversation turn
+  - `memory_store` action `stats` returns `compression_needed: true`
+  - The user asks about the memory system
+  - You're unsure whether something is worth storing
+
+  ---
+
+  ## Part 1: Memory Extraction (After Each Response)
+
+  After finishing your response to the user, review the conversation and decide whether
+  to extract new long-term memories.
+
+  ### What to Store
+
+  1. **User Profile**: Age, gender, location, occupation, coding ability, language habits.
+  2. **Preferences**: Coding style, tool choices, communication preferences, workflow habits.
+  3. **Important Facts**: Project context, environment details, constraints, decisions made.
+  4. **Explicit Requests**: Anything the user specifically asked you to remember.
+
+  ### What NOT to Store
+
+  - Transient conversation state (what you're currently working on right now)
+  - Information already present in long-term memory (read first to check)
+  - Trivial or obvious information that won't help future conversations
+
+  ### Extraction Procedure
+
+  1. Call `memory_store` action `read` to get the current long-term memory.
+  2. Compare with the conversation — identify NEW information worth storing.
+  3. **If nothing new**: stop. Do not write unchanged content.
+  4. Merge new information into the existing memory structure:
+
+  ```markdown
+  # Long-Term Memory
+
+  ## User Profile
+  - Age: ...
+  - Gender: ...
+  - Location: ...
+  - Coding Ability: ...
+  - Language: ...
+  - ...
+
+  ## Preferences
+  - ...
+
+  ## Important Facts
+  - ...
+
+  ## Decisions
+  - ...
+
+  ---
+  Last updated: <ISO datetime>
+  Total entries: <count>
+  ```
+
+  5. Call `memory_store` action `write` with the merged content.
+
+  ### Quick Triggers
+
+  - User says **"remember this"** or explicitly states a preference → call `memory_store`
+    action `write` directly (no need to read the full extraction guide).
+  - **Before answering** a question → glance at the ## Long-Term Memory section above.
+    If you need more detail on a topic, call `memory_store` action `read`.
+
+  ---
+
+  ## Part 2: Memory Compression
+
+  Compression consolidates the `long_term.md` file to free space. Trigger it when
+  `memory_store` action `stats` returns `compression_needed: true` (≥70% of 1 MB),
+  or during the first conversation of a new day.
+
+  ### Compression Procedure
+
+  **Step 1 — Check for Flash Model**
+
+  Call `model_manager` action `list`. Look for a model with `model_type: quick_thinking`
+  that is not the active model. Flash models are cheaper and faster for compression.
+
+  **Step 2 — Choose Strategy**
+
+  **If a quick_thinking model exists:**
+  Call `memory_store` action `compress` with `model` = that model's name. The tool will
+  call the flash model internally to produce compressed content, then write it with
+  backup rotation.
+
+  **If NO quick_thinking model:**
+  Tell the user: "No flash (quick_thinking) model is configured. Using a flash model
+  for compression saves cost. Options: (a) create a flash model via `model_manager`,
+  or (b) proceed with the current model."
+  Wait for user confirmation.
+  If confirmed: call `memory_store` action `read`, compress the content yourself
+  (remove redundancies, merge related facts, preserve all unique info), then call
+  `memory_store` action `write`.
+
+  **Step 3 — Verify**
+
+  Call `memory_store` action `stats` to confirm space was freed. Report: old size,
+  new size, space saved.
+
+  ### Compression Rules
+
+  - **PRESERVE**: All unique facts, preferences, and decisions
+  - **REMOVE**: Duplicates, redundant phrasing, outdated values (keep the latest)
+  - **MERGE**: Related facts into coherent paragraphs
+  - **STRUCTURE**: Keep the same markdown sections
+
+  ---
+
+  ## Part 3: Key Rules
+
+  - **Be selective**: Only store information useful for future conversations.
+  - **Merge, don't duplicate**: Always read existing memories before writing.
+  - **Compress before adding**: If `compression_needed` is true, compress first.
+  - **Hard cap**: Content exceeding 1 MB will be rejected by `memory_store write`.
+  - **Backup**: Every write renames the old file to `long_term_{timestamp}_bak.md`
+    before writing — recovery is always possible.
+  - **Flash first**: Always prefer a quick_thinking model for compression. Guide the
+    user to create one via `model_manager` if they don't have it yet.
+
+  ---
+
+  ## Tools Reference
+
+  | Tool | Key Actions |
+  |------|-------------|
+  | `memory_store` | `read` (get memories), `write` (persist), `stats` (check usage), `compress` (consolidate) |
+  | `model_manager` | `list` (find flash models), `create` (add a flash model) |
+tools:
+  - memory_store
+  - model_manager
+parameters: {}

@@ -1,0 +1,248 @@
+"""Model adapter -- unified interface for OpenAI-compatible endpoints."""
+
+import os
+import time
+import logging
+
+from openai import OpenAI, APIStatusError
+
+logger = logging.getLogger("arf.model_adapter")
+
+# HTTP status codes that warrant a retry
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRIES = int(os.environ.get("ARF_API_MAX_RETRIES", "3"))
+RETRY_BACKOFF_BASE = float(os.environ.get("ARF_API_RETRY_BACKOFF", "1.5"))
+
+
+class ModelAdapterError(Exception):
+    """Non-retryable error from the model API (e.g. 400 Bad Request)."""
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"API error {status_code}: {message}")
+
+
+class ModelAdapter:
+    """Wraps OpenAI-compatible chat/completions API."""
+
+    # Keys used for client init -- NOT forwarded to the API
+    _META_KEYS = frozenset({"base_url", "api_key", "model_name"})
+
+    # Keys that belong to the API call but are handled explicitly in
+    # _create_completion / _call_with_retry -- must NOT appear in **params
+    _CTRL_KEYS = frozenset({"stream"})
+
+    # Standard OpenAI API params -- forwarded as-is
+    _KNOWN_PARAMS = frozenset({
+        "temperature", "max_tokens", "top_p", "frequency_penalty",
+        "presence_penalty", "response_format", "stop",
+    })
+
+    # Provider-specific params that need translation
+    _PROVIDER_KEYS = frozenset({"thinking_enabled", "reasoning_effort"})
+
+    def __init__(self, config: dict):
+        self.client = OpenAI(
+            base_url=config.get("base_url"),
+            api_key=config.get("api_key", "placeholder"),
+        )
+        self.model_name = config.get("model_name", "")
+        self.default_params = {}
+        for k, v in config.items():
+            if k not in self._META_KEYS:
+                if k not in self._KNOWN_PARAMS and k not in self._PROVIDER_KEYS and k not in self._CTRL_KEYS:
+                    logger.warning("Unknown config key '%s' -- will be forwarded to API as-is", k)
+                self.default_params[k] = v
+
+    # ---- retry helpers --------------------------------------------------
+
+    def _should_retry(self, status_code: int) -> bool:
+        return status_code in RETRYABLE_STATUS
+
+    def _call_with_retry(self, messages, tools, stream=False):
+        """Call the API with exponential backoff retry on transient errors.
+
+        Raises ModelAdapterError for non-retryable errors (400, 401, etc.).
+        """
+        last_exc = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                return self._create_completion(messages, tools, stream)
+            except APIStatusError as e:
+                last_exc = e
+                if self._should_retry(e.status_code) and attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_BASE ** (attempt + 1)
+                    logger.warning(
+                        "API call attempt %d/%d failed with %d, retrying in %.1fs",
+                        attempt + 1, MAX_RETRIES + 1, e.status_code, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise ModelAdapterError(
+                    status_code=e.status_code,
+                    message=str(e),
+                ) from e
+            except Exception as e:
+                last_exc = e
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_BASE ** (attempt + 1)
+                    logger.warning(
+                        "API call attempt %d/%d failed with %s, retrying in %.1fs",
+                        attempt + 1, MAX_RETRIES + 1, type(e).__name__, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise ModelAdapterError(
+                    status_code=0,
+                    message=f"{type(e).__name__}: {e}",
+                ) from e
+        # Should be unreachable, but safe
+        raise ModelAdapterError(status_code=0, message=str(last_exc))
+
+    def _build_api_params(self) -> tuple[dict, dict]:
+        """Build API params from config. Returns (standard_params, extra_body).
+        Standard params are known OpenAI keys. Provider-specific keys go in
+        extra_body (passed via the OpenAI SDK's extra_body mechanism)."""
+        standard: dict = {}
+        extra_body: dict = {}
+        src = dict(self.default_params)
+        # Strip control keys
+        for ck in self._CTRL_KEYS:
+            src.pop(ck, None)
+        # Translate thinking_enabled + reasoning_effort -> DeepSeek thinking
+        thinking_enabled = src.pop("thinking_enabled", None)
+        if thinking_enabled is not None:
+            if thinking_enabled:
+                effort = src.pop("reasoning_effort", "high")
+                extra_body["thinking"] = {"type": "enabled", "effort": effort}
+            else:
+                src.pop("reasoning_effort", None)
+                extra_body["thinking"] = {"type": "disabled"}
+        # Sort: known params -> standard, unknown -> extra_body
+        for k, v in src.items():
+            if k in self._KNOWN_PARAMS:
+                standard[k] = v
+            else:
+                extra_body[k] = v
+        return standard, extra_body
+
+    def _create_completion(self, messages, tools, stream=False):
+        """Raw API call -- separated so retry logic is clean."""
+        params, extra = self._build_api_params()
+        kwargs = {}
+        if tools:
+            kwargs["tools"] = tools
+        if extra:
+            kwargs["extra_body"] = extra
+        return self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            stream=stream,
+            **params,
+            **kwargs,
+        )
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        """Send a chat completion request and return the response text."""
+        params, extra = self._build_api_params()
+        params.update(kwargs)
+        kwargs2 = {}
+        if extra:
+            kwargs2["extra_body"] = extra
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            **params,
+            **kwargs2,
+        )
+        return response.choices[0].message.content
+
+    def chat_complete(self, messages: list[dict], tools: list[dict] | None = None):
+        """Send a chat completion and return the full message (content + tool_calls).
+
+        Retries on transient errors (429, 5xx, network). Raises ModelAdapterError
+        for non-retryable errors so the engine can handle them gracefully.
+        """
+        response = self._call_with_retry(messages, tools, stream=False)
+        msg = response.choices[0].message
+        if response.usage:
+            msg.usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        else:
+            msg.usage = None
+        return msg
+
+    def chat_stream_full(self, messages: list[dict], tools: list[dict] | None = None):
+        """Stream with full delta support -- yields text chunks and accumulated tool calls.
+
+        Yields:
+            {"type": "chunk", "content": "..."}
+            {"type": "chunk", "content": "...", "reasoning": "..."}
+            {"type": "tool_call", "name": "...", "arguments": "{...}", "id": "call_N"}
+        At end of stream (finish_reason stop), yields:
+            {"type": "chunk", "content": "...", "reasoning_content": "..."}  (if reasoning present)
+
+        On API error, yields:
+            {"type": "error", "code": 400, "detail": "..."}
+        """
+        try:
+            stream = self._call_with_retry(messages, tools, stream=True)
+        except ModelAdapterError as e:
+            yield {
+                "type": "error",
+                "code": e.status_code,
+                "detail": e.message,
+            }
+            return
+        tool_calls_acc: dict[int, dict] = {}
+
+        for chunk in stream:
+            # Capture usage from the final chunk before any skip guards.
+            # Many providers (e.g. DeepSeek) send usage on a chunk with choices=[].
+            if hasattr(chunk, "usage") and chunk.usage:
+                yield {
+                    "type": "usage",
+                    "prompt_tokens": chunk.usage.prompt_tokens,
+                    "completion_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if not delta:
+                continue
+
+            # DeepSeek deep-thinking models emit reasoning_content before content.
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            text = delta.content or ""
+
+            if reasoning or text:
+                event = {"type": "chunk", "content": text}
+                if reasoning:
+                    event["reasoning"] = reasoning
+                yield event
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"name": "", "arguments": ""}
+                    if tc.function and tc.function.name:
+                        tool_calls_acc[idx]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        tool_calls_acc[idx]["arguments"] += tc.function.arguments
+
+            if chunk.choices[0].finish_reason == "tool_calls":
+                for idx in sorted(tool_calls_acc.keys()):
+                    tc = tool_calls_acc[idx]
+                    yield {
+                        "type": "tool_call",
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                        "id": f"call_{idx}",
+                    }
+                tool_calls_acc = {}

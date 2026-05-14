@@ -1,0 +1,4 @@
+name: git_pusher
+description: "Git 推送，将 workspace 中的资源变更推送到远程仓库"
+required: false
+depends_on: []

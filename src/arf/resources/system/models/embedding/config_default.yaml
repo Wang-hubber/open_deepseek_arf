@@ -1,0 +1,22 @@
+name: embedding
+description: "嵌入模型，用于文本向量化，是 RAG 的依赖项"
+model_type: embedding
+required: false
+config_template:
+  base_url:
+    label: "API 地址"
+    type: string
+    required: true
+    placeholder: "https://api.openai.com"
+  api_key:
+    label: "API 密钥"
+    type: password
+    required: true
+    placeholder: "sk-..."
+  model_name:
+    label: "模型名称"
+    type: string
+    required: true
+    placeholder: "text-embedding-3-small"
+depends_on: []
+config_page: "OpenAIConfigForm"
