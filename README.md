@@ -43,7 +43,7 @@ The control layer (WHAT) is pure declaration: YAML files describe what resources
 
 ARF is not just configurable — it can evolve itself at runtime.
 
-- `arf init` creates directories. `git push` shares configuration. `ls` inspects state. No database migrations ever.
+- `arf init` creates directories. No database migrations ever.
 - The agent uses `resource_scaffold` + `file_writer` to create new tools and skills during a conversation. A chat session can produce a permanent capability.
 - Memory is files: `session.md` (short-term), `long_term.md` (persistent profile), `sessions/*.json` (archives). Grep-able, backup-able, transparent.
 - Dual-source resources: system resources ship with the framework (read-only), user resources live in the workspace (read-write, override system by name). Upgrades never clobber customizations.
@@ -160,7 +160,7 @@ my_workspace/
 | `ARF_IDLE_TIMEOUT` | `600` | Session idle timeout in seconds |
 | `ARF_API_MAX_RETRIES` | `3` | Max API call retries |
 | `ARF_API_RETRY_BACKOFF` | `1.5` | Retry backoff base in seconds |
-| `ARF_WORKSPACE` | — | Workspace directory path (Docker) |
+
 | `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Base URL for one-click DeepSeek config |
 
 **Model config (`models/<name>/config.yaml`):**
@@ -475,14 +475,14 @@ Hooks are defined in `.hooks.json` and can be managed at runtime via the `manage
 | **P2** | Multimodal tool implementations: `image_understanding`, `ocr`, `speech_output`, `speech_understanding`, `video_understanding` | 🟡 Config only |
 | **P2** | Multimodal model integrations: `vision`, `vlm`, `tts`, `stt`, `embedding`, `rerank` | 🟡 Config only |
 | **P2** | `rag_operator` skill — full RAG pipeline implementation | 🟡 Config only |
-| **P2** | Multi-user mode — authentication, per-user sessions, and workspace isolation | 🟡 Commented out in CLI |
+
 
 ### Long-term
 
 | Priority | Item | Status |
 |----------|------|--------|
 | **P3** | Tool approval flow — user-in-the-loop confirmation for sensitive tool calls | 🔴 Planned |
-| **P3** | Streaming tool output — real-time tool execution progress via SSE | 🔴 Planned |
+| **P3** | Runtime permission control module | 🔴 Planned |
 | **P3** | Plugin/extension system — third-party resource packages installable via pip | 🔴 Planned |
 | **P3** | MCP (Model Context Protocol) support — connect external MCP servers as tools | 🔴 Planned |
 
@@ -500,9 +500,9 @@ ARF is opinionated. These choices are by design.
 
 **No multi-provider abstraction.** ARF uses OpenAI-compatible APIs. Configure `base_url` and go — no provider-specific wrappers, no adapter pattern, no plugin registry.
 
-**No cloud SaaS.** Self-hosted by design. No managed service, no telemetry, no accounts (unless you enable multi-user mode).
+**No cloud SaaS.** Self-hosted by design. No managed service, no telemetry, no accounts.
 
-**Filesystem as database.** State lives in files. Configuration lives in YAML. This means git is your version control, `grep` is your query engine, and `rsync` is your backup strategy. No ORM, no migration scripts, no `docker-compose up -d postgres`.
+
 
 **Subprocess hooks, not in-process callbacks.** Hooks run as independent processes with their own timeout, environment, and failure domain. A crashed hook cannot bring down the agent. The exit-code contract (0/1/2) is language-agnostic — write hooks in Python, bash, or any executable.
 

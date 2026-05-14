@@ -43,7 +43,7 @@ ARF 不是又一个在抽象之上堆叠抽象的 AI 智能体框架。它建立
 
 ARF 不仅可配置——它能在运行时自我演进。
 
-- `arf init` 创建目录。`git push` 共享配置。`ls` 检查状态。永不需要数据库迁移。
+- `arf init` 创建目录。永不需要数据库迁移。
 - 智能体在对话中使用 `resource_scaffold` + `file_writer` 创建新的工具和技能。一次聊天即可产生永久能力。
 - 记忆即文件：`session.md`（短期上下文）、`long_term.md`（持久画像）、`sessions/*.json`（归档）。可 grep、可备份、完全透明。
 - 双源资源体系：系统资源随框架发布（只读，通过 `pip install --upgrade` 更新），用户资源在工作区中（可读写，按名称覆盖系统版本）。升级永不会覆盖你的定制。
@@ -160,7 +160,7 @@ my_workspace/
 | `ARF_IDLE_TIMEOUT` | `600` | 会话空闲超时（秒） |
 | `ARF_API_MAX_RETRIES` | `3` | API 调用最大重试次数 |
 | `ARF_API_RETRY_BACKOFF` | `1.5` | 重试退避基数（秒） |
-| `ARF_WORKSPACE` | — | 工作区目录路径（Docker 模式） |
+
 | `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 一键配置的 Base URL |
 
 **模型配置 (`models/<name>/config.yaml`)：**
@@ -475,14 +475,14 @@ Hook 定义在 `.hooks.json` 中，可通过 `manage_hooks` 内核工具或 REST
 | **P2** | 多模态工具实现：`image_understanding`、`ocr`、`speech_output`、`speech_understanding`、`video_understanding` | 🟡 仅配置 |
 | **P2** | 多模态模型集成：`vision`、`vlm`、`tts`、`stt`、`embedding`、`rerank` | 🟡 仅配置 |
 | **P2** | `rag_operator` 技能——完整 RAG 流水线实现 | 🟡 仅配置 |
-| **P2** | 多用户模式——认证、独立会话与工作区隔离 | 🟡 CLI 中已注释 |
+
 
 ### 长期
 
 | 优先级 | 项目 | 状态 |
 |--------|------|------|
 | **P3** | 工具审批流程——敏感工具调用需用户介入确认 | 🔴 规划中 |
-| **P3** | 流式工具输出——通过 SSE 实时推送工具执行进度 | 🔴 规划中 |
+| **P3** | Runtime 权限控制模块 | 🔴 规划中 |
 | **P3** | 插件/扩展系统——可通过 pip 安装的第三方资源包 | 🔴 规划中 |
 | **P3** | MCP（Model Context Protocol）支持——将外部 MCP 服务器作为工具接入 | 🔴 规划中 |
 
@@ -500,9 +500,9 @@ ARF 是有明确取舍的。以下选择皆是刻意为之。
 
 **不做多供应商抽象层。** ARF 使用 OpenAI 兼容 API。配置好 `base_url` 直接用——无需供应商专用封装、无需适配器模式、无需插件注册表。
 
-**不做云 SaaS 服务。** 自托管是默认设计。无托管服务、无遥测、无账户系统（除非启用多用户模式）。
+**不做云 SaaS 服务。** 自托管是默认设计。无托管服务、无遥测、无账户系统。
 
-**文件系统即数据库。** 状态存在于文件中。配置存在于 YAML 中。这意味着 Git 是你的版本控制，`grep` 是你的查询引擎，`rsync` 是你的备份策略。没有 ORM，没有迁移脚本，没有 `docker-compose up -d postgres`。
+
 
 **子进程 Hook，而非进程内回调。** Hook 作为独立进程运行，有各自独立的超时、环境和故障域。崩溃的 Hook 不会拖垮 Agent。退出码契约（0/1/2）是语言无关的——你可以用 Python、bash 或任何可执行文件编写 Hook。
 
