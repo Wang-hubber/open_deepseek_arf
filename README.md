@@ -5,6 +5,8 @@
 <p align="center">
   <strong>English</strong>
   &nbsp;·&nbsp;
+  <a href="./README.zh-CN.md">简体中文</a>
+  &nbsp;·&nbsp;
   <a href="https://gitee.com/dalaydata/open_deepseek_arf">Gitee</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/Wang-hubber/open_deepseek_arf">GitHub</a>
@@ -276,18 +278,6 @@ config:
 - **No-code / low-code platform.** ARF expects you to write YAML and Python. The web UI is for interaction, not for building resources.
 - **Cloud SaaS.** Self-hosted by design. No managed service, no telemetry, no accounts unless you enable multi-user mode.
 - **Drop-in LangChain replacement.** ARF *uses* LangGraph internally but wraps it in a workspace-oriented framework with its own resource model.
-
-<br/>
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=Wang-hubber%2Fopen_deepseek_arf&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Wang-hubber/open_deepseek_arf&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Wang-hubber/open_deepseek_arf&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Wang-hubber/open_deepseek_arf&type=date&legend=top-left" />
- </picture>
-</a>
 
 <br/>
 
