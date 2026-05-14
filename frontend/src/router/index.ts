@@ -51,9 +51,8 @@ router.beforeEach(async (to) => {
       await app.checkConfigStatus()
     }
     if (!app.configStatus?.configured) {
-      if (to.name === 'config') return true
-      const seenWelcome = localStorage.getItem('arf_seen_welcome')
-      return seenWelcome ? { name: 'config' } : { name: 'welcome' }
+      if (to.name === 'welcome' || to.name === 'config') return true
+      return { name: 'welcome' }
     }
   }
 
