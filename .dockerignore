@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Frontend build output (built in Docker)
+frontend/dist/
+frontend/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Workspace data (runtime)
+data/
+default/
+models/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
