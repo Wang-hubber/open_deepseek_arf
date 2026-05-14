@@ -250,14 +250,12 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 
 ### 前端
 
-两个实现分别服务于不同场景：
-
-| | 生产 SPA | 开发项目 |
-|---|---|---|
-| **文件** | `server/static/index.html` | `frontend/src/` |
-| **规模** | 2062 行 | 6400+ 行（8 视图、13 组件、8 组合式函数、3 Store） |
-| **技术** | 原生 HTML/JS + Vue 3 CDN | Vue 3 + TypeScript + Vite |
-| **用途** | 后端直接托管 | `npm run dev` 带 HMR |
+| | 详情 |
+|---|---|
+| **技术** | Vue 3 + TypeScript + Vite |
+| **规模** | 6400+ 行（8 视图、13 组件、8 组合式函数、3 Store、Pinia + Vue Router） |
+| **开发** | `npm run dev` 带 HMR，端口 5173，API 代理至后端 |
+| **生产** | `npm run build` 输出至 `server/static/`，由 FastAPI 托管 |
 
 ### 框架层 TODO
 
