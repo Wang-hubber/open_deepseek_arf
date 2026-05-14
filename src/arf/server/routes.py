@@ -439,7 +439,6 @@ def current_project(mgr: SessionManager = Depends(get_mgr)):
 
 @router.post("/chat")
 def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
-    mgr.check_idle_lock()
     agent = mgr.get_agent()
     agent.language = "zh"
     workspace_dir = str(mgr.workspace_dir)
