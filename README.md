@@ -250,14 +250,12 @@ Note: `rag_operator` has `config_default.yaml` only (partial).
 
 ### Frontend
 
-Two implementations serving different purposes:
-
-| | Production SPA | Dev project |
-|---|---|---|
-| **File** | `server/static/index.html` | `frontend/src/` |
-| **Size** | 2062 lines | 6400+ lines (8 views, 13 components, 8 composables, 3 stores) |
-| **Tech** | Vanilla HTML/JS with Vue 3 CDN | Vue 3 + TypeScript + Vite |
-| **Use** | Served directly by backend | `npm run dev` with HMR |
+| | Details |
+|---|---|
+| **Tech** | Vue 3 + TypeScript + Vite |
+| **Size** | 6400+ lines (8 views, 13 components, 8 composables, 3 stores, Pinia + Vue Router) |
+| **Dev** | `npm run dev` with HMR on port 5173, API proxied to backend |
+| **Production** | `npm run build` outputs to `server/static/`, served by FastAPI |
 
 ### Framework TODO
 
