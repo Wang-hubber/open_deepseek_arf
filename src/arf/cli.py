@@ -12,6 +12,10 @@ def _find_workspace_root() -> Path | None:
     for parent in [cwd, *cwd.parents]:
         if (parent / "arf_agent.yaml").exists():
             return parent
+    # search subdirectories of cwd for a workspace (e.g. default_workspace/)
+    for child in sorted(cwd.iterdir()):
+        if child.is_dir() and (child / "arf_agent.yaml").exists():
+            return child
     return None
 
 
@@ -19,7 +23,7 @@ def _require_workspace() -> Path:
     root = _find_workspace_root()
     if root is None:
         print("Error: not in an ARF workspace (no arf_agent.yaml found).")
-        print("Run 'arf init <name>' to create one.")
+        print("Run 'arf init' to create one.")
         sys.exit(1)
     return root
 
@@ -36,7 +40,7 @@ def _get_system_resources_dir() -> Path:
 def cmd_init(args):
     from .agent.project import create_workspace, copy_model_config
 
-    name = args.name
+    name = args.name or "default_workspace"
     parent = Path(args.dir or ".")
     try:
         ws = create_workspace(name, parent)
@@ -45,7 +49,7 @@ def cmd_init(args):
         sys.exit(1)
 
     cwd_root = _find_workspace_root()
-    if cwd_root:
+    if cwd_root and cwd_root != ws:
         src_cfg = cwd_root / "models" / "deep_thinking" / "config.yaml"
         copy_model_config(src_cfg, ws)
 
@@ -227,12 +231,15 @@ def cmd_start(args):
     (run_dir / "run.json").write_text(json.dumps(run_cfg))
 
     fe_proc = None
+    fe_env = None
     try:
         if frontend_dir:
             print(f"Starting frontend dev server (Vite)...")
+            fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
             fe_proc = subprocess.Popen(
                 ["npm", "run", "dev"],
                 cwd=str(frontend_dir),
+                env=fe_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
             )
@@ -499,7 +506,8 @@ def main():
 
     # init
     init_parser = subparsers.add_parser("init", help="Initialize a new ARF workspace")
-    init_parser.add_argument("name", help="Workspace name (snake_case)")
+    init_parser.add_argument("name", nargs="?", default="default_workspace",
+                             help="Workspace name (default: default_workspace)")
     init_parser.add_argument("--dir", "-d", default=".", help="Parent directory")
 
     # web
