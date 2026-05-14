@@ -49,14 +49,7 @@ arf init my_workspace
 arf start --workspace my_workspace
 ```
 
-浏览器打开 **http://localhost:5173** ——配置 LLM 连接即可开始对话。
-
-建议使用加密保险库保护 API 密钥：
-
-```bash
-arf vault init          # 创建保险库，设置密码
-arf vault unlock        # 输入密码解密凭据
-```
+浏览器打开 **http://localhost:5173** ——输入 DeepSeek API 密钥即可开始对话。密钥保存在工作区的 `models/<name>/config.yaml` 中。
 
 ### Docker（一键启动）
 
@@ -281,7 +274,7 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 | `arf list [tools\|skills\|models]` | 列出已注册资源。`[sys]` = 框架内置。 |
 | `arf validate` | 检查工作区资源完整性。 |
 | `arf clone <type> <name>` | 将系统资源克隆到用户空间以便自定义。 |
-| `arf vault init` | 创建加密保险库，保护 API 密钥和凭据。 |
+| `arf vault init` | 创建加密保险库（独立键值存储）。 |
 | `arf vault unlock` · `lock` · `status` | 管理保险库生命周期。 |
 
 <br/>
@@ -421,7 +414,7 @@ name: deep_thinking
 model_type: deep_thinking
 config:
   base_url: "https://api.deepseek.com"
-  api_key: "sk-..."             # 或省略，使用保险库存储
+  api_key: "sk-..."
   model_name: "deepseek-chat"
   temperature: 0.7
   max_tokens: 10240
@@ -429,7 +422,7 @@ config:
   reasoning_effort: "max"
 ```
 
-生产环境建议将 `api_key` 存入加密保险库（`arf vault init`），而非明文 YAML。
+保险库（`arf vault init`）提供 AES-256-GCM 加密存储，可用于保存任意密钥。当前为独立键值存储——保险库与模型配置的自动集成尚未实现。
 
 <br/>
 
