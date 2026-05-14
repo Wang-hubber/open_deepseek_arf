@@ -56,7 +56,7 @@ def cmd_init(args):
     print(f"  skills/         -- user skills")
     print(f"  memory/         -- session memory")
     print(f"")
-    print(f"Next: cd {name} && arf web")
+    print(f"Next: cd {name} && arf start")
 
 
 # ---- web ------------------------------------------------------------
@@ -73,6 +73,59 @@ def cmd_web(args):
 
 
 # ---- serve (multi-user) ---------------------------------------------
+
+
+# ---- start ----------------------------------------------------------
+
+
+def cmd_start(args):
+    """Start both backend server and frontend dev server."""
+    import subprocess
+    import time
+
+    ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
+
+    # Locate frontend directory relative to the package
+    package_dir = Path(__file__).parent  # src/arf/
+    frontend_dir = package_dir.parent.parent / "frontend"
+
+    if not (frontend_dir / "package.json").exists():
+        print(f"Warning: frontend not found at {frontend_dir}")
+        print("Starting backend only...")
+        frontend_dir = None
+
+    fe_proc = None
+    try:
+        if frontend_dir:
+            print(f"Starting frontend dev server (Vite)...")
+            fe_proc = subprocess.Popen(
+                ["npm", "run", "dev"],
+                cwd=str(frontend_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+            )
+            time.sleep(1.5)  # Wait for Vite to be ready
+
+        from .server import ARFServer
+
+        print(f"Starting ARF server at http://{args.host}:{args.port}")
+        print(f"  Workspace:  {ws_dir}")
+        if frontend_dir:
+            print(f"  Frontend:   http://localhost:5173")
+        print(f"  Press Ctrl+C to stop all services.")
+        server = ARFServer(workspace_dir=ws_dir)
+        server.start(host=args.host, port=args.port)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("Shutting down...")
+        if fe_proc and fe_proc.poll() is None:
+            fe_proc.terminate()
+            try:
+                fe_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                fe_proc.kill()
+            print("Frontend stopped.")
 
 
 # ---- chat -----------------------------------------------------------
@@ -322,6 +375,12 @@ def main():
     web_parser.add_argument("--host", default="0.0.0.0", help="Listen address")
     web_parser.add_argument("--port", type=int, default=8000, help="Listen port")
 
+    # start
+    start_parser = subparsers.add_parser("start", help="Start backend + frontend in one command")
+    start_parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
+    start_parser.add_argument("--host", default="0.0.0.0", help="Backend listen address")
+    start_parser.add_argument("--port", type=int, default=8000, help="Backend listen port")
+
     # chat
     subparsers.add_parser("chat", help="Start a terminal chat session")
 
@@ -360,6 +419,7 @@ def main():
     commands = {
         "init": cmd_init,
         "web": cmd_web,
+        "start": cmd_start,
         "chat": cmd_chat,
         "run": cmd_run,
         "list": cmd_list,
