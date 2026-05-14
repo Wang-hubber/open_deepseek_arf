@@ -190,7 +190,7 @@ The control layer (YAML in directories) defines WHAT resources exist. The execut
 | Command | Status |
 |---------|--------|
 | `arf init` · `arf web` · `arf start` · `arf stop` · `arf reload` | ✅ Implemented |
-| `arf list` · `arf validate` · `arf clone` · `arf vault *` | ✅ Implemented |
+| `arf list` · `arf validate` · `arf clone` | ✅ Implemented |
 | `arf chat` · `arf run` | 🚧 Stub (prints "not yet implemented") |
 
 ### Engine
@@ -237,7 +237,6 @@ Note: `rag_operator` has `config_default.yaml` only (partial).
 | Session management (CRUD, archive, idle lock) | ✅ |
 | Hot-reload file watcher (resources) | ✅ |
 | Subprocess hook engine (4 built-in hooks) | ✅ |
-| AES-256-GCM encrypted vault | ✅ |
 | Multi-stage Docker + docker-compose | ✅ |
 | CI/CD (GitHub Actions + Gitee CI) | ✅ |
 
@@ -274,8 +273,6 @@ Note: `rag_operator` has `config_default.yaml` only (partial).
 | `arf list [tools\|skills\|models]` | List registered resources. `[sys]` = framework built-in. |
 | `arf validate` | Check workspace resource integrity. |
 | `arf clone <type> <name>` | Copy a system resource to your workspace for customization. |
-| `arf vault init` | Create an encrypted vault (standalone key-value store). |
-| `arf vault unlock` · `lock` · `status` | Manage vault lifecycle. |
 
 <br/>
 
@@ -422,7 +419,6 @@ config:
   reasoning_effort: "max"
 ```
 
-The vault (`arf vault init`) provides AES-256-GCM encrypted storage for arbitrary secrets. It is currently a standalone key-value store — vault-to-model-config integration is not yet automatic.
 
 <br/>
 

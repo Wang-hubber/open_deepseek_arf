@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
-import { useVault } from '@/composables/useVault'
 import { useI18n } from '@/composables/useI18n'
 
 const props = defineProps<{
@@ -17,31 +16,12 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const router = useRouter()
 const appStore = useAppStore()
-const { lock: doLock } = useVault()
-
-async function lockVault() {
-  await doLock()
-}
 
 function onLanguageChange() {
   const lang = appStore.language
   appStore.setLanguage(lang)
 }
 
-// Idle timer for auto-lock
-const IDLE_TIMEOUT = 10 * 60 * 1000
-let idleTimer: ReturnType<typeof setTimeout> | null = null
-
-function resetIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => lockVault(), IDLE_TIMEOUT)
-}
-
-const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click']
-for (const evt of events) {
-  document.addEventListener(evt, resetIdleTimer)
-}
-resetIdleTimer()
 </script>
 
 <template>

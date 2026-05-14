@@ -4,7 +4,6 @@ Injectable instance owned by ARFServer for the single-user workspace.
 """
 
 import os
-import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,12 +16,9 @@ from .sessions import DEFAULT_TITLE
 from .fast_model import load_fast_model, is_fast_model_configured
 from .hook_runner import HookRunner, generate_default_config
 
-IDLE_TIMEOUT_SECONDS = int(os.environ.get("ARF_IDLE_TIMEOUT", "600"))  # 10 minutes
-
-
 class SessionManager:
     """Encapsulates workspace config, resource registry, agent cache,
-    session conversation history, vault state, and idle-lock tracking."""
+    and session conversation history."""
 
     def __init__(self, workspace_dir: Path):
         self.workspace_dir = workspace_dir.resolve()
@@ -41,16 +37,8 @@ class SessionManager:
         self.last_traces: list[dict] = []
         self.last_usage: dict | None = None
 
-        # Idle lock state
-        self.last_activity: float = _time.time()
-        self.idle_lock_enabled: bool = False
-
         # Hook runner (lazy-init)
         self._hook_runner: HookRunner | None = None
-
-        # Vault state (per-instance, never written to disk)
-        self._vault_key: bytes | None = None
-        self._vault_data: dict | None = None
 
     @property
     def current_session_id(self) -> str:
@@ -184,71 +172,6 @@ class SessionManager:
             if reasoning:
                 entry["reasoning_content"] = reasoning
             self.session_history.append(entry)
-
-    # ---- vault --------------------------------------------------------
-
-    @property
-    def vault_key(self) -> bytes | None:
-        return self._vault_key
-
-    @property
-    def vault_data(self) -> dict | None:
-        return self._vault_data
-
-    def vault_status(self) -> dict:
-        from arf.security.vault import META_FILE, VAULT_FILE
-        ws = self.workspace_dir
-        initialized = (ws / META_FILE).exists() and (ws / VAULT_FILE).exists()
-        return {
-            "initialized": initialized,
-            "unlocked": self._vault_key is not None,
-        }
-
-    def init_vault(self, password: str) -> dict:
-        from arf.security.vault import init_vault as _init
-        self._vault_key, self._vault_data = _init(str(self.workspace_dir), password)
-        self.idle_lock_enabled = True
-        self.reset_idle_timer()
-        return self._vault_data
-
-    def unlock_vault(self, password: str) -> dict:
-        from arf.security.vault import unlock_vault as _unlock
-        self._vault_key, self._vault_data = _unlock(str(self.workspace_dir), password)
-        self.idle_lock_enabled = True
-        self.reset_idle_timer()
-        return self._vault_data
-
-    def lock_vault(self) -> None:
-        self._vault_key = None
-        self._vault_data = None
-
-    def get_vault_data(self) -> dict:
-        from arf.security.vault import load_decrypted
-        if self._vault_key is None:
-            raise RuntimeError("Vault is locked")
-        if self._vault_data is None:
-            self._vault_data = load_decrypted(self.workspace_dir, self._vault_key)
-        return self._vault_data
-
-    def set_vault_data(self, data: dict) -> None:
-        from arf.security.vault import save_encrypted
-        if self._vault_key is None:
-            raise RuntimeError("Vault is locked")
-        self._vault_data = data
-        save_encrypted(self.workspace_dir, self._vault_key, data)
-
-    # ---- idle lock ----------------------------------------------------
-
-    def reset_idle_timer(self):
-        self.last_activity = _time.time()
-
-    def check_idle_lock(self):
-        if not self.idle_lock_enabled:
-            return
-        if self._vault_key is not None:
-            if _time.time() - self.last_activity > IDLE_TIMEOUT_SECONDS:
-                self.lock_vault()
-                self.last_activity = _time.time()
 
     # ---- fast model ---------------------------------------------------
 

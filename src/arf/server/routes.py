@@ -1,4 +1,4 @@
-"""API routes for config, resources, chat, sessions, traces, and vault."""
+"""API routes for config, resources, chat, sessions, and traces."""
 
 import json
 import os
@@ -57,10 +57,6 @@ class ChatRequest(BaseModel):
 
 class UpdateTitleRequest(BaseModel):
     title: str
-
-
-class VaultPassword(BaseModel):
-    password: str
 
 
 class PricingUpdate(BaseModel):
@@ -725,54 +721,6 @@ def delete_hook(name: str, event: str = "SessionStart", mgr: SessionManager = De
     ok = mgr.get_hook_runner().remove_hook(event, name)
     if not ok:
         raise HTTPException(status_code=404, detail="Hook not found")
-    return {"ok": True}
-
-
-# ---- vault routes ------------------------------------------------------
-
-
-@router.get("/vault/status")
-def vault_status(mgr: SessionManager = Depends(get_mgr)):
-    return mgr.vault_status()
-
-
-@router.post("/vault/init")
-def vault_init(payload: VaultPassword, mgr: SessionManager = Depends(get_mgr)):
-    ws = mgr.workspace_dir
-    try:
-        data = mgr.init_vault(payload.password)
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail="Vault already exists")
-    cred_path = ws / "credentials.yaml"
-    if cred_path.exists():
-        try:
-            cred = yaml.safe_load(cred_path.read_text()) or {}
-            if cred.get("email") or cred.get("auth_code"):
-                data["credentials"] = {
-                    "email": cred.get("email", ""),
-                    "auth_code": cred.get("auth_code", ""),
-                }
-                mgr.set_vault_data(data)
-        except Exception:
-            pass
-    return {"ok": True, "migrated": cred_path.exists()}
-
-
-@router.post("/vault/unlock")
-def vault_unlock(payload: VaultPassword, mgr: SessionManager = Depends(get_mgr)):
-    try:
-        mgr.unlock_vault(payload.password)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Vault not initialized")
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Incorrect password")
-    return {"ok": True}
-
-
-@router.post("/vault/lock")
-def vault_lock_route(mgr: SessionManager = Depends(get_mgr)):
-    mgr.lock_vault()
-    mgr.reset_idle_timer()
     return {"ok": True}
 
 

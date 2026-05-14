@@ -190,7 +190,7 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 | 命令 | 状态 |
 |------|------|
 | `arf init` · `arf web` · `arf start` · `arf stop` · `arf reload` | ✅ 已实现 |
-| `arf list` · `arf validate` · `arf clone` · `arf vault *` | ✅ 已实现 |
+| `arf list` · `arf validate` · `arf clone` | ✅ 已实现 |
 | `arf chat` · `arf run` | 🚧 骨架（打印 "not yet implemented"） |
 
 ### 引擎
@@ -274,8 +274,6 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 | `arf list [tools\|skills\|models]` | 列出已注册资源。`[sys]` = 框架内置。 |
 | `arf validate` | 检查工作区资源完整性。 |
 | `arf clone <type> <name>` | 将系统资源克隆到用户空间以便自定义。 |
-| `arf vault init` | 创建加密保险库（独立键值存储）。 |
-| `arf vault unlock` · `lock` · `status` | 管理保险库生命周期。 |
 
 <br/>
 
@@ -422,7 +420,6 @@ config:
   reasoning_effort: "max"
 ```
 
-保险库（`arf vault init`）提供 AES-256-GCM 加密存储，可用于保存任意密钥。当前为独立键值存储——保险库与模型配置的自动集成尚未实现。
 
 <br/>
 
