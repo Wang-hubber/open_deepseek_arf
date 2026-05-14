@@ -26,7 +26,7 @@
 <br/>
 
 > [!TIP]
-> ARF treats your local filesystem as the source of truth. Tools, skills, and models are just directories with YAML configs — no database migration, no web console, no vendor lock-in. `git push` and your entire agent configuration is shared. The agent can even create and modify its own resources at runtime — self-evolution is a first-class concept.
+> ARF treats your local filesystem as the source of truth. Tools, skills, and models are just directories with YAML configs — no database migration, no web console, no vendor lock-in. Everything is plain files: `ls` to inspect, `git` to version, `rsync` to share. The agent can even create and modify its own resources at runtime — self-evolution is a first-class concept.
 
 > [!NOTE]
 > **LangGraph engine (default):** structured multi-node agent graph with SQLite trace observability, classifier-driven model routing, and streaming SSE events — all served through a single FastAPI process. Only 9 kernel tools are always active (~800 tokens); everything else loads on demand.
@@ -368,7 +368,7 @@ my_workspace/
 │   ├── session.md          # short-term session context
 │   ├── long_term.md        # persistent user profile & facts
 │   └── sessions/           # archived session JSON with traces
-└── .git/
+└── .git/                   # initialize yourself: git init && git add -A
 ```
 
 Enable the classifier for automatic model routing:
