@@ -244,20 +244,6 @@ onUnmounted(() => {
 }
 .topbar-brand { font-weight: 700; color: var(--text-primary); letter-spacing: 1px; font-size: 15px; }
 .topbar-right { display: flex; align-items: center; gap: 14px; }
-.topbar-user { color: var(--text-secondary); font-size: 14px; }
-.topbar-logout {
-  background: none; border: none; color: var(--text-muted); cursor: pointer;
-  font-size: 14px; padding: 5px 14px; border-radius: var(--radius-sm);
-  transition: all var(--transition);
-}
-.topbar-logout:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
-.topbar-login-btn {
-  background: var(--accent-gradient); color: var(--text-on-accent);
-  border: none; padding: 7px 24px; border-radius: var(--radius-full);
-  font-size: 14px; font-weight: 700; cursor: pointer;
-  transition: all var(--transition); box-shadow: 0 2px 12px rgba(99,102,241,0.25);
-}
-.topbar-login-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 18px rgba(99,102,241,0.4); }
 .lang-select {
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
   border-radius: var(--radius-sm); color: var(--text-primary);
@@ -576,7 +562,6 @@ onUnmounted(() => {
   .content-section { padding: 0 16px 56px; }
   .welcome-topbar { padding: 0 10px; }
   .lang-select { font-size: 12px; padding: 4px 8px; }
-  .topbar-login-btn { font-size: 12px; padding: 5px 16px; }
   .topbar-brand { font-size: 14px; }
 }
 

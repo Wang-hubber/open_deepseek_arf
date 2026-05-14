@@ -75,9 +75,6 @@ def cmd_web(args):
 # ---- serve (multi-user) ---------------------------------------------
 
 
-# ---- start ----------------------------------------------------------
-
-
 # ---- run state -------------------------------------------------------
 
 def _run_dir(ws: Path) -> Path:
@@ -130,6 +127,62 @@ def _kill_process(pid: int, name: str, grace: int = 3):
         return True
 
 
+# ---- port utilities --------------------------------------------------
+
+def _check_port(host: str, port: int) -> bool:
+    """Return True if *port* on *host* is already in use."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+
+def _get_port_pid(port: int) -> int | None:
+    """Return PID of the process listening on *port*, or None."""
+    import subprocess as _sp
+    import re
+    result = _sp.run(
+        ["ss", "-tlnp", f"sport = :{port}"],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.splitlines():
+        m = re.search(r'pid=(\d+)', line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _resolve_port(args, host: str) -> int:
+    """Resolve port: honour -f, or print warning and pick the next free port."""
+    import time as _time
+    port = args.port
+    if not _check_port(host, port):
+        return port
+
+    if getattr(args, "force", False):
+        pid = _get_port_pid(port)
+        if pid is not None:
+            print(f"Port {port} is in use (pid={pid}), force-killing...")
+            _kill_process(pid, f"port-{port}-holder")
+            _time.sleep(0.5)
+            if not _check_port(host, port):
+                return port
+        print(f"Error: could not free port {port}")
+        sys.exit(1)
+
+    # No -f: try next available port
+    for offset in range(1, 101):
+        candidate = port + offset
+        if not _check_port(host, candidate):
+            print(f"Port {port} is in use, falling back to {candidate}")
+            return candidate
+    print(f"Error: port {port} is occupied and no free port found in range {port}-{port + 100}")
+    sys.exit(1)
+
+
 # ---- start ----------------------------------------------------------
 
 
@@ -142,6 +195,9 @@ def cmd_start(args):
     ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
     ws = Path(ws_dir)
     run_dir = _run_dir(ws)
+
+    # Resolve port before anything else
+    port = _resolve_port(args, args.host)
 
     # Check if already running
     be_pid = _read_pid(run_dir, "backend")
@@ -166,7 +222,7 @@ def cmd_start(args):
     run_cfg = {
         "workspace": str(ws),
         "host": args.host,
-        "port": args.port,
+        "port": port,
     }
     (run_dir / "run.json").write_text(json.dumps(run_cfg))
 
@@ -186,13 +242,13 @@ def cmd_start(args):
         from .server import ARFServer
 
         _write_pid(run_dir, "backend", os.getpid())
-        print(f"Starting ARF server at http://{args.host}:{args.port}")
+        print(f"Starting ARF server at http://{args.host}:{port}")
         print(f"  Workspace:  {ws_dir}")
         if frontend_dir:
             print(f"  Frontend:   http://localhost:5173")
         print(f"  Press Ctrl+C to stop all services.")
         server = ARFServer(workspace_dir=ws_dir)
-        server.start(host=args.host, port=args.port)
+        server.start(host=args.host, port=port)
     except KeyboardInterrupt:
         pass
     finally:
@@ -270,7 +326,7 @@ def cmd_reload(args):
             cfg = json.loads(run_cfg_file.read_text())
             args.workspace = cfg.get("workspace", ws_dir)
             if not args.host:
-                args.host = cfg.get("host", "0.0.0.0")
+                args.host = cfg.get("host", "localhost")
             if not args.port:
                 args.port = cfg.get("port", 8000)
         except (json.JSONDecodeError, OSError):
@@ -457,6 +513,8 @@ def main():
     start_parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
     start_parser.add_argument("--host", default="0.0.0.0", help="Backend listen address")
     start_parser.add_argument("--port", type=int, default=8000, help="Backend listen port")
+    start_parser.add_argument("-f", "--force", action="store_true",
+                              help="Force-kill any process occupying the target port")
 
     # stop
     stop_parser = subparsers.add_parser("stop", help="Stop a running ARF session")
@@ -465,6 +523,10 @@ def main():
     # reload
     reload_parser = subparsers.add_parser("reload", help="Restart a running ARF session")
     reload_parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
+    reload_parser.add_argument("--host", default="localhost", help="Backend listen address")
+    reload_parser.add_argument("--port", type=int, default=8000, help="Backend listen port")
+    reload_parser.add_argument("-f", "--force", action="store_true",
+                               help="Force-kill any process occupying the target port")
 
     # chat
     subparsers.add_parser("chat", help="Start a terminal chat session")
