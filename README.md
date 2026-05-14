@@ -23,16 +23,6 @@
 <h3 align="center">Filesystem-native, self-evolving AI agent framework.</h3>
 <p align="center">Execution and control, decoupled by design. Convention over configuration. Progressive disclosure of capabilities. Out-of-the-box and ready to evolve.</p>
 
-<br/>
-
-> [!TIP]
-> ARF treats your local filesystem as the source of truth. Tools, skills, and models are just directories with YAML configs — no database migration, no web console, no vendor lock-in. Everything is plain files: `ls` to inspect, `git` to version, `rsync` to share. The agent can even create and modify its own resources at runtime — self-evolution is a first-class concept.
-
-> [!NOTE]
-> **LangGraph engine (default):** structured multi-node agent graph with SQLite trace observability, classifier-driven model routing, and streaming SSE events — all served through a single FastAPI process. Only 9 kernel tools are always active (~800 tokens); everything else loads on demand.
-
-<br/>
-
 ## Quick Start
 
 Requires Python ≥ 3.10 and Node.js ≥ 18.
@@ -50,22 +40,6 @@ arf start --workspace my_workspace
 ```
 
 Browser opens at **http://localhost:5173** — enter your DeepSeek API key and start chatting. The key is saved to `models/<name>/config.yaml` in your workspace.
-
-### Docker (one command)
-
-```bash
-docker compose up -d
-# → http://localhost:8000
-```
-
-Pre-built images via GitHub Actions (ghcr.io) and Gitee CI (Aliyun ACR). See [`.github/workflows/docker-publish.yml`](./.github/workflows/docker-publish.yml) and [`.gitee-ci.yml`](./.gitee-ci.yml).
-
-| Registry | Pull command |
-|----------|-------------|
-| **GitHub (ghcr.io)** | `docker pull ghcr.io/Wang-hubber/open_deepseek_arf:latest` |
-| **Aliyun ACR** (国内) | `docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/arf:latest` |
-
-<br/>
 
 ## Design Philosophy
 
@@ -197,12 +171,12 @@ The control layer (YAML in directories) defines WHAT resources exist. The execut
 
 All nodes fully implemented: `classify` → `call_model` → `execute_tools` / `respond`, with `recovery` for max_tokens continuation and API error handling. Classifier-driven three-tier model routing (`quick_no_thinking` → `quick_thinking` → `deep_thinking`) with automatic degradation.
 
-### Tools (17 total)
+### Tools (16 total)
 
 | Status | Count | Tools |
 |--------|-------|-------|
 | **Kernel** (always active) | 9 | `file_reader` · `file_writer` · `file_deleter` · `resource_loader` · `memory_store` · `model_manager` · `model_switch` · `resource_registrar` · `manage_hooks` |
-| **Discoverable** — implemented | 2 | `web_fetch` · `git_pusher` |
+| **Discoverable** — implemented | 1 | `web_fetch` |
 | **Discoverable** — stub | 6 | `web_search` · `image_understanding` · `ocr` · `speech_output` · `speech_understanding` · `video_understanding` |
 
 Kernel tools are always in the system prompt (~800 tokens). Discoverable tools are activated on demand via `resource_loader`. Stub tools have `config_default.yaml` but no `function.py` — endpoint reserved, implementation pending.
@@ -295,7 +269,6 @@ Note: `rag_operator` has `config_default.yaml` only (partial).
 | Tool | Status | Purpose |
 |------|--------|---------|
 | `web_fetch` | ✅ | Fetch and process web content |
-| `git_pusher` | ✅ | Stage, commit, and push files |
 | `web_search` | 🚧 | Web search (config only) |
 | `image_understanding` | 🚧 | Image analysis (config only) |
 | `ocr` | 🚧 | Optical character recognition (config only) |
@@ -448,8 +421,6 @@ config:
 **No multi-provider abstraction.** ARF uses OpenAI-compatible APIs. Configure `base_url` and go — no provider-specific wrappers.
 
 **No cloud SaaS.** Self-hosted by design. No managed service, no telemetry, no accounts (unless you enable multi-user mode).
-
-**No code-free builder.** ARF expects you to write YAML and Python. The web UI is for interaction, not for building resources.
 
 <br/>
 

@@ -23,15 +23,6 @@
 <h3 align="center">基于文件系统的、可自演进的 AI 智能体框架。</h3>
 <p align="center">执行层与控制层深度解耦。约定大于配置。渐进式能力披露。开箱即用，随时演进。</p>
 
-<br/>
-
-> [!TIP]
-> ARF 将本地文件系统作为唯一真相来源。工具、技能、模型就是包含 YAML 配置的目录——无需数据库迁移、无需 Web 控制台、无供应商锁定。一切皆是文件：`ls` 查看，`git` 版本管理，`rsync` 共享。智能体甚至可以在运行时创建和修改自己的资源——自演进是第一等设计概念。
-
-> [!NOTE]
-> **LangGraph 引擎（默认）：** 结构化多节点智能体图，SQLite Trace 追踪，分类器驱动的模型路由，SSE 流式事件——全部通过单个 FastAPI 进程提供服务。系统提示词仅约 800 tokens，始终激活的内核工具仅 9 个——其余全部按需加载。
-
-<br/>
 
 ## 快速开始
 
@@ -50,22 +41,6 @@ arf start --workspace my_workspace
 ```
 
 浏览器打开 **http://localhost:5173** ——输入 DeepSeek API 密钥即可开始对话。密钥保存在工作区的 `models/<name>/config.yaml` 中。
-
-### Docker（一键启动）
-
-```bash
-docker compose up -d
-# → http://localhost:8000
-```
-
-通过 GitHub Actions (ghcr.io) 和 Gitee CI (阿里云 ACR) 自动构建预置镜像。详见 [`.github/workflows/docker-publish.yml`](./.github/workflows/docker-publish.yml) 和 [`.gitee-ci.yml`](./.gitee-ci.yml)。
-
-| 镜像仓库 | 拉取命令 |
-|----------|---------|
-| **GitHub (ghcr.io)** | `docker pull ghcr.io/Wang-hubber/open_deepseek_arf:latest` |
-| **阿里云 ACR**（国内） | `docker pull registry.cn-hangzhou.aliyuncs.com/<ns>/arf:latest` |
-
-<br/>
 
 ## 设计哲学
 
@@ -197,12 +172,12 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 
 全部节点已实现：`classify` → `call_model` → `execute_tools` / `respond`，含 `recovery` 处理 max_tokens 续写和 API 错误恢复。分类器驱动的三级模型路由（`quick_no_thinking` → `quick_thinking` → `deep_thinking`），支持自动降级。
 
-### 工具（共 17 个）
+### 工具（共 16 个）
 
 | 状态 | 数量 | 工具 |
 |------|------|------|
 | **内核工具**（始终激活） | 9 | `file_reader` · `file_writer` · `file_deleter` · `resource_loader` · `memory_store` · `model_manager` · `model_switch` · `resource_registrar` · `manage_hooks` |
-| **可发现工具** — 已实现 | 2 | `web_fetch` · `git_pusher` |
+| **可发现工具** — 已实现 | 1 | `web_fetch` |
 | **可发现工具** — 骨架 | 6 | `web_search` · `image_understanding` · `ocr` · `speech_output` · `speech_understanding` · `video_understanding` |
 
 内核工具始终存在于系统提示词中（约 800 tokens）。可发现工具通过 `resource_loader` 按需激活。骨架工具仅有 `config_default.yaml`，无 `function.py`——端点已预留，实现待补充。
@@ -295,7 +270,6 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 | 工具 | 状态 | 用途 |
 |------|------|------|
 | `web_fetch` | ✅ | 获取并处理网页内容 |
-| `git_pusher` | ✅ | 暂存、提交、推送文件 |
 | `web_search` | 🚧 | 网络搜索（仅配置） |
 | `image_understanding` | 🚧 | 图像分析（仅配置） |
 | `ocr` | 🚧 | 光学字符识别（仅配置） |
@@ -448,8 +422,6 @@ config:
 **不做多供应商抽象层。** ARF 使用 OpenAI 兼容 API。配置好 `base_url` 直接用——无需供应商专用封装。
 
 **不做云 SaaS 服务。** 自托管是默认设计。无托管服务、无遥测、无账户系统（除非启用多用户模式）。
-
-**不做零代码构建器。** ARF 期望你写 YAML 和 Python。Web UI 用于交互，不是用于构建资源。
 
 <br/>
 
