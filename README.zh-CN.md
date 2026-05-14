@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">ARF — Agent Resource Framework</h1>
+  <h1 align="center">ARF — Agent Resources & RunTime FrameWork</h1>
 </p>
 
 <p align="center">
@@ -23,6 +23,78 @@
 <h3 align="center">基于文件系统的、可自演进的 AI 智能体框架。</h3>
 <p align="center">执行层与控制层深度解耦。约定大于配置。渐进式能力披露。开箱即用，随时演进。</p>
 
+<br/>
+
+## 设计哲学
+
+ARF 不是又一个在抽象之上堆叠抽象的 AI 智能体框架。它建立在一个核心理念之上：**文件系统是智能体资源管理的理想媒介。** 目录即命名空间，YAML 即声明，Python 即实现——不需要数据库，不需要注册中心，不需要 UI 配置向导。
+
+### 核心原则
+
+**1. 执行层与控制层——通过文件系统深度解耦**
+
+控制层（WHAT）是纯粹的声明：YAML 文件描述存在哪些资源、它们的 Schema、以及何时使用。执行层（HOW）是纯粹的逻辑：LangGraph 引擎在运行时动态加载和调用函数。文件系统作为桥梁连接两者——编辑 YAML，保存，即刻生效。无需重启，无需重新编译，无需部署。
+
+- **控制层** — 人类可读、Git 可追踪的 YAML 配置（`tool.yaml`、`skill.yaml`、`config.yaml`）
+- **执行层** — LangGraph StateGraph 引擎，通过依赖注入接收组件，对具体资源完全无感
+- **ARFAgent 编排器** — 从文件系统注册表读取信息，向引擎派发任务，通过热重载即时适配变更
+
+**2. 基于文件系统的自演进智能体**
+
+ARF 不仅可配置——它能在运行时自我演进。
+
+- `arf init` 创建目录。`git push` 共享配置。`ls` 检查状态。永不需要数据库迁移。
+- 智能体在对话中使用 `resource_scaffold` + `file_writer` 创建新的工具和技能。一次聊天即可产生永久能力。
+- 记忆即文件：`session.md`（短期上下文）、`long_term.md`（持久画像）、`sessions/*.json`（归档）。可 grep、可备份、完全透明。
+- 双源资源体系：系统资源随框架发布（只读，通过 `pip install --upgrade` 更新），用户资源在工作区中（可读写，按名称覆盖系统版本）。升级永不会覆盖你的定制。
+
+**3. 约定大于配置——四种实体，一种约定**
+
+每种资源遵循相同的最小约定。框架自动发现，无需手动注册。
+
+| 实体 | 定义 | 用途 |
+|------|------|------|
+| **Model** | `models/<name>/config.yaml` | API 端点、凭证、推理参数 |
+| **Tool** | `tools/<name>/tool.yaml` + `function.py` | 可调用的能力，附 JSON Schema |
+| **Skill** | `skills/<name>/skill.yaml` | 可复用的提示词 + 工具编排模板 |
+| **Hook** | `.hooks.json` → 子进程脚本 | 生命周期事件拦截器 |
+
+没有装饰器。没有基类。没有 `__init__.py`。没有注册钩子。一个工具就是一个包含两个文件的目录。一个模型就是一个包含一个文件的目录。这就是全部的分类体系。
+
+**4. 渐进式能力披露——约 800 Token 系统提示词**
+
+智能体只为其实际使用的上下文付费。
+
+- **内核层**（9 个工具，始终激活）：文件操作、资源加载、记忆管理、模型管理、Hook 管理
+- **可发现层**（其余所有）：通过 `resource_loader` 按需激活，用完即停
+- **技能层**：编排工具的提示词模板——在智能体或用户调用时加载
+
+不会把 50+ 工具定义塞进每次 API 调用。初始系统提示词约 800 tokens。
+
+**5. 每种功能一种默认实现**
+
+一个 `web_fetch`，不做三个 HTTP 客户端。一个 `memory_store`，不做五个存储后端。一个 model adapter（OpenAI 兼容 API），不做多供应商抽象层。这减少了选择疲劳、维护负担和 Bug 面。需要不同的实现？`arf clone` 默认实现到工作区，自行定制。
+
+**6. 自托管、Git 原生、无供应商锁定**
+
+无云 SaaS。无托管服务。无遥测。你的工作区就是一个目录。你的配置就是 YAML。你的版本控制就是 Git。部署到任何能跑 Python 的地方——单进程、Docker、或你自己的基础设施。
+
+### 功能总览
+
+| 能力 | 实现 |
+|------|------|
+| **智能体引擎** | LangGraph StateGraph，classify → call_model → execute_tools/respond → recovery |
+| **模型路由** | 三级分类器（simple/medium/complex），支持自动降级 |
+| **API 服务器** | FastAPI + WebSocket + SSE 流式传输 |
+| **前端** | Vue 3 + TypeScript + Vite（6400+ 行，8 视图、13 组件） |
+| **可观测性** | SQLite Trace 数据库（6 张表），瀑布图可视化 |
+| **记忆系统** | 三层：会话 → 长期 → 归档，自动提取与压缩 |
+| **Hook 引擎** | 基于子进程的生命周期 Hook（6 事件、4 内置），退出码契约 |
+| **自演进** | 智能体可在运行时创建、编写、注册新工具和技能 |
+| **热重载** | 文件监听器检测资源变更，注册表无重启更新 |
+| **Docker 支持** | 多阶段 Dockerfile + docker-compose |
+
+<br/>
 
 ## 快速开始
 
@@ -40,67 +112,122 @@ arf init my_workspace
 arf start --workspace my_workspace
 ```
 
-浏览器打开 **http://localhost:5173** ——输入 DeepSeek API 密钥即可开始对话。密钥保存在工作区的 `models/<name>/config.yaml` 中。
+浏览器打开 **http://localhost:5173**——输入 DeepSeek API 密钥即可开始对话。密钥保存在工作区的 `models/<name>/config.yaml` 中。
 
-## 设计哲学
+### CLI 命令参考
 
-ARF 建立在五个原则之上，每一个设计决策都源于此。
+| 命令 | 用途 |
+|------|------|
+| `arf init <name>` | 创建新工作区。**从这里开始。** |
+| `arf start` | 同时启动后端 + 前端（推荐）。 |
+| `arf web` | 仅启动 Web 服务器（FastAPI + WebSocket + SSE）。 |
+| `arf stop` | 停止运行中的后端和前端进程。 |
+| `arf reload` | 停止 + 重启，保留运行配置。 |
+| `arf list [tools\|skills\|models]` | 列出已注册资源。`[sys]` = 框架内置。 |
+| `arf validate` | 检查工作区资源完整性。 |
+| `arf clone <type> <name>` | 将系统资源克隆到用户空间以便自定义。 |
+| `arf chat` | 交互式对话 CLI（骨架）。 |
+| `arf run` | 无头脚本执行（骨架）。 |
 
-### 1. 执行层与控制层——高度解耦
-
-文件系统是"做什么"与"怎么做"之间的桥梁。
-
-- **控制层** — YAML 配置（`tool.yaml`、`skill.yaml`、`config.yaml`）定义了存在哪些资源、它们的 Schema、以及何时使用它们。这一层是人类可读的、Git 可追踪的、无需看代码即可理解的。
-- **执行层** — LangGraph 引擎在运行时动态加载和调用工具函数。它通过构造函数注入接收所有依赖，对具体资源一无所知。
-- **智能体作为编排者** — `ARFAgent` 从文件系统注册表读取信息，向执行引擎派发任务。对控制文件的更改（编辑工具的 YAML、添加新技能）通过热重载即时生效——执行层无需重启即可适配。
-
-这种解耦意味着你可以通过阅读 YAML 文件来理解智能体行为，通过添加目录来扩展能力。
-
-### 2. 基于文件系统的自演进智能体
-
-ARF 不仅可配置——它还能自我演进。
-
-- **无需数据库迁移。** `arf init` 创建目录。`git push` 共享配置。`ls` 查看状态。
-- **运行时自演进。** 智能体可以在运行时使用 `resource_scaffold` + `file_writer` 创建、修改、注册新的工具和技能。一次对话就能产生一个永久能力。
-- **记忆即文件。** 会话上下文（`session.md`）、长期记忆（`long_term.md`）、归档会话（`sessions/*.json`）都是磁盘上的文件——可 grep、可备份、完全透明。
-- **双源资源。** 系统资源随框架发布（只读，通过 `pip install --upgrade` 更新）。用户资源存放在工作区中（可读写，按名称覆盖系统版本）。你的自定义永远不会被框架更新覆盖。
-
-### 3. 高内聚低耦合——约定大于配置
-
-每种资源都遵循相同的最小约定。框架自动发现，你无需注册。
-
-- **工具** 就是一个包含 `tool.yaml` + `function.py` 的目录。仅此而已——没有装饰器、没有基类、没有 `__init__.py`、没有注册钩子。
-- **技能** 就是一个包含 `skill.yaml` 的目录。工具通过名称引用，不通过导入路径。
-- **模型** 就是一个包含 `config.yaml` 的目录。适配器在调用时解析配置。
-- 位于约定路径的资源目录会被自动扫描和索引。添加一个工具就是创建正确的目录结构——仅此而已。
+### 工作区结构
 
 ```
-models/deep_thinking/config.yaml    →  注册为 "deep_thinking"
-tools/web_fetch/tool.yaml           →  注册为 "web_fetch"
-skills/error_handler/skill.yaml     →  注册为 "error_handler"
+my_workspace/
+├── arf_agent.yaml          # 工作区配置（Agent 名称、模型、最大轮次、预加载）
+├── .arf/                   # 运行时状态（PID 文件、运行配置）
+├── .hooks.json             # 生命周期 Hook 定义
+├── models/                 # 用户模型配置
+│   └── deep_thinking/
+│       └── config.yaml     # base_url、api_key、model_name、temperature...
+├── tools/                  # 用户自定义工具
+├── skills/                 # 用户自定义技能
+├── memory/                 # 记忆系统
+│   ├── session.md          # 短期会话上下文
+│   ├── long_term.md        # 长期用户画像和重要事实
+│   └── sessions/           # 已归档会话 JSON（含 trace）
+└── .git/                   # 自行初始化：git init && git add -A
 ```
 
-### 4. 每种功能提供且只提供一种默认实现
+### 配置
 
-面向非开发者用户，ARF 为每种能力提供恰好一种实现。
+**环境变量：**
 
-- 一个 `web_fetch`——不做三个 HTTP 客户端。
-- 一个 `memory_store`——不做五个存储后端。
-- 一个 `model_adapter`——OpenAI 兼容 API，不做多供应商抽象层。
+| 变量 | 默认值 | 用途 |
+|------|--------|------|
+| `ARF_SERVE_STATIC` | `1` | 后端托管前端静态文件。设为 `0` 用于开发代理。 |
+| `ARF_DB_NAME` | `arf.db` | SQLite 数据库文件名 |
+| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS 允许来源，逗号分隔 |
+| `ARF_IDLE_TIMEOUT` | `600` | 会话空闲超时（秒） |
+| `ARF_API_MAX_RETRIES` | `3` | API 调用最大重试次数 |
+| `ARF_API_RETRY_BACKOFF` | `1.5` | 重试退避基数（秒） |
+| `ARF_WORKSPACE` | — | 工作区目录路径（Docker 模式） |
+| `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 一键配置的 Base URL |
 
-这是刻意的：减少选择疲劳、降低维护负担、缩小 Bug 面。如果你需要不同的实现，用 `arf clone` 将默认实现复制到工作区自行定制。
+**模型配置 (`models/<name>/config.yaml`)：**
 
-### 5. 渐进式披露
+```yaml
+name: deep_thinking
+model_type: deep_thinking
+config:
+  base_url: "https://api.deepseek.com"
+  api_key: "sk-..."
+  model_name: "deepseek-chat"
+  temperature: 0.7
+  max_tokens: 10240
+  thinking_enabled: true
+  reasoning_effort: "max"
+```
 
-系统提示词约 800 tokens。始终激活的内核工具仅 9 个。
+**分类器配置 (`arf_agent.yaml`)：**
 
-- **内核工具**（始终激活）：`file_reader`、`file_writer`、`file_deleter`、`resource_loader`、`memory_store`、`model_manager`、`model_switch`、`resource_registrar`、`manage_hooks`
-- **其余全部按需加载：** 智能体读取引用某工具的技能时，通过 `resource_loader` 激活该工具，使用完毕后停用。
-- 智能体只为其真正使用的上下文付费——不会把 50+ 个工具定义塞进每次提示。
+```yaml
+agent:
+  name: "我的工作区"
+  model: "quick_no_thinking"
+  max_turns: 10
+  classifier_enabled: true       # 按任务复杂度自动路由
 
-### 6. 如无必要，不增实体
+resources:
+  preload: []                    # 会话启动时即激活的工具列表
+```
 
-完整的扩展分类就是：**model · skill · tool · hook**。四个实体。没有插件、没有中间件链、没有 Provider 接口、没有组件注册表、没有抽象工厂。如果某个特性无法用这四个实体之一表达，那它可能不属于框架层。
+<br/>
+
+## 横向对比
+
+ARF 在 AI 智能体领域占据独特的生态位：它既不是类库，也不是低代码平台，而是一个**工作区即代码的框架**，以文件系统为唯一事实来源。
+
+| | ARF | LangChain | Dify | 裸 FastAPI + SDK |
+|---|---|---|---|---|
+| **方法论** | 工作区即代码 | 类库 | 低代码平台 | 自己动手 |
+| **Agent 引擎** | LangGraph StateGraph | LangGraph | 自研 | 自己构建 |
+| **资源模型** | 文件系统目录 | Python 类 | Web UI 表单 | 无 |
+| **自演进** | 支持——Agent 可在运行时创建资源 | 手动 | 部分（插件商店） | 手动 |
+| **热重载** | 支持（内置文件监听） | 手动 | 部分支持 | 手动 |
+| **渐进式披露** | 支持——9 内核工具，约 800 tokens | 否（全量工具列表） | 部分 | 手动 |
+| **上下文效率** | 按需激活/停用工具 | 所有工具始终在提示词中 | 有限支持 | 视实现而定 |
+| **前端** | Vue 3 + TypeScript（内置） | 无（LangServe） | React | 自己构建 |
+| **Trace 追踪** | SQLite + 瀑布图 | LangSmith（付费） | 内置 | 自己构建 |
+| **记忆系统** | 三层文件记忆（会话/长期/归档） | 有限 | 有限 | 自己构建 |
+| **Hook 系统** | 子进程 Hook，6 个生命周期事件 | Callbacks | 有限 | 自己构建 |
+| **供应商锁定** | 无——Git 原生 | LangChain 生态 | Dify 平台 | 无 |
+| **自托管** | 是，单进程 | 是 | 是（Docker） | 是 |
+| **开源协议** | MIT | MIT | Apache 2 | 不适用 |
+
+### 何时选择 ARF
+
+- 你需要一个能够**自我演进**的智能体——从对话中创建工具和技能
+- 你重视 **Git 原生的工作流**——配置即代码，而非点击式操作
+- 你需要**透明的、基于文件的状态**——没有黑盒数据库
+- 你需要**渐进式能力披露**——上下文高效的智能体，不污染每次提示
+- 你偏好**约定大于配置**——可预测的路径，最少的样板代码
+
+### 何时选择其他方案
+
+- 你需要**可视化工作流构建器** → Dify 或 n8n
+- 你需要带认证、限流、计费的**生产级多租户** → Dify 或基于 LangChain 自建
+- 你在构建**一次性原型**，需要最大的库生态 → LangChain
+- 你需要**细粒度控制**且有专门团队 → 裸 FastAPI + SDK
 
 <br/>
 
@@ -134,7 +261,7 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 │  │  提示词管线：工作区 → 记忆 → 身份 →                     │   │
 │  │  资源清单（活跃工具 + 技能） → 语言                     │   │
 │  └──────────────────────┬──────────────────────────────┘   │
-│                         ▼                                   │
+│                         ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │        LangGraph 引擎（StateGraph）                   │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │  │
@@ -154,264 +281,216 @@ skills/error_handler/skill.yaml     →  注册为 "error_handler"
 └─────────────────────────────────────────────────────────────┘
 ```
 
-控制层（目录中的 YAML）定义 WHAT（存在哪些资源）。执行层（LangGraph 引擎）决定 HOW（如何运行它们）。文件系统作为桥梁连接两者——`编辑、保存、即时生效`。
+### 数据流
+
+1. **用户消息** 通过 WebSocket 或 REST API 到达
+2. **SessionManager** 拼装系统提示词（工作区 → 记忆 → 身份 → 资源清单 → 语言）
+3. **分类器**（可选）分析复杂度 → 路由到 `quick_no_thinking` / `quick_thinking` / `deep_thinking`
+4. **LangGraph 引擎** 执行智能体循环：调用模型 → 解析响应 → 执行工具或直接回复
+5. **Hook Runner** 在生命周期事件（PreModelCall、PostToolUse、SessionEnd 等）触发子进程
+6. **追踪系统** 将每一步记录到 SQLite，用于可观测性分析
+7. **SSE 流** 将 token、工具调用和用量数据实时推送到前端
+
+### 记忆架构
+
+| 层级 | 存储 | 触发时机 | 用途 |
+|------|------|----------|------|
+| **会话记忆** | `memory/session.md` | 每次请求 | 当前会话上下文，注入系统提示词 |
+| **长期记忆** | `memory/long_term.md` | SessionEnd 自动提取 | 用户画像、偏好、事实——跨会话持久化 |
+| **会话归档** | `memory/sessions/*.json` | SessionEnd 自动归档 | 结构化会话数据，含 trace 和用量统计 |
+
+记忆提取和压缩全自动：`memory_extractor` Hook 在每次会话结束后运行；`memory_compress` 技能在长期记忆超过 700 KB（可配置）时自动触发。每次长期记忆写入前自动创建备份。
+
+### Hook 系统
+
+Hook 是在 6 个生命周期事件上触发的子进程脚本，通过退出码契约通信：
+
+| 退出码 | 含义 |
+|--------|------|
+| `0` | 继续（stdout 可包含 JSON 数据） |
+| `1` | 阻止当前动作（stderr = 原因） |
+| `2` | 注入消息（stderr = 消息文本） |
+
+| 事件 | 触发时机 | 内置 Hook |
+|------|----------|-----------|
+| `SessionStart` | 新会话开始 | `system_log` |
+| `PreModelCall` | 每次 API 调用前 | `system_log` |
+| `PostModelCall` | 每次 API 响应后 | `system_log` |
+| `PreToolUse` | 工具执行前 | `system_log` |
+| `PostToolUse` | 工具执行后 | `system_log` |
+| `SessionEnd` | 会话终止 | `session_archiver`、`memory_extractor`、`system_log` |
+
+Hook 通过线程池并行执行，每个 Hook 有独立的超时时间。配置定义在 `.hooks.json` 中，可通过 `manage_hooks` 工具在运行时管理。上下文通过环境变量（小负载）和 stdin JSON（大负载，如对话历史）传递给 Hook 进程。
 
 <br/>
 
-## 实现状态
+## 系统资源——实现状态
 
-### CLI 命令
+系统资源随框架发布在 `src/arf/resources/system/` 下，作为默认实现和用户自定义模板（通过 `arf clone` 使用）。每种资源遵循统一约定：以资源名称命名的目录，包含 YAML 定义，工具另附 `function.py`。
 
-| 命令 | 状态 |
-|------|------|
-| `arf init` · `arf web` · `arf start` · `arf stop` · `arf reload` | ✅ 已实现 |
-| `arf list` · `arf validate` · `arf clone` | ✅ 已实现 |
-| `arf chat` · `arf run` | 🚧 骨架（打印 "not yet implemented"） |
+### Models（共 9 种）
 
-### 引擎
+模型定义 API 端点、凭证和推理参数。每个模型是 `models/<name>/` 下的一个目录，包含 `config_default.yaml`（用户凭证可选含 `config.yaml`）。
 
-全部节点已实现：`classify` → `call_model` → `execute_tools` / `respond`，含 `recovery` 处理 max_tokens 续写和 API 错误恢复。分类器驱动的三级模型路由（`quick_no_thinking` → `quick_thinking` → `deep_thinking`），支持自动降级。
+| 模型 | 类型 | 状态 | 说明 |
+|------|------|------|------|
+| `deep_thinking` | 推理 | ✅ 已实现 | 最大深度推理，适合复杂任务（架构设计、重构、创意工作） |
+| `quick_thinking` | 推理 | ✅ 已实现 | 均衡推理，适合中等任务（代码生成、调试、多步骤） |
+| `quick_no_thinking` | 推理 | ✅ 已实现 | 快速响应，适合简单任务（问候、查找、简单编辑） |
+| `embedding` | 多模态 | 🚧 仅配置 | 文本嵌入向量生成 |
+| `rerank` | 多模态 | 🚧 仅配置 | 搜索结果重排序 |
+| `vision` | 多模态 | 🚧 仅配置 | 图像理解与分析 |
+| `vlm` | 多模态 | 🚧 仅配置 | 视觉语言模型，多模态推理 |
+| `tts` | 多模态 | 🚧 仅配置 | 文本转语音合成 |
+| `stt` | 多模态 | 🚧 仅配置 | 语音转文本转录 |
 
-### 工具（共 16 个）
+三种推理模型支撑分类器驱动的路由系统：任务被分类为 simple/medium/complex，路由到对应的模型层级。目标模型类型不可用时，系统自动降级到次优可用层级。
 
-| 状态 | 数量 | 工具 |
+### Tools（共 16 个）
+
+工具是可调用的能力。每个工具是 `tools/<name>/` 下的一个目录，包含 `tool.yaml`（JSON Schema 参数定义）、`config_default.yaml`（元数据），可选含 `function.py`（实现）。
+
+**内核工具（始终激活，约 800 tokens）：**
+
+| 工具 | 状态 | 说明 |
 |------|------|------|
-| **内核工具**（始终激活） | 9 | `file_reader` · `file_writer` · `file_deleter` · `resource_loader` · `memory_store` · `model_manager` · `model_switch` · `resource_registrar` · `manage_hooks` |
-| **可发现工具** — 已实现 | 1 | `web_fetch` |
-| **可发现工具** — 骨架 | 6 | `web_search` · `image_understanding` · `ocr` · `speech_output` · `speech_understanding` · `video_understanding` |
+| `file_reader` | ✅ 已实现 | 读取文件内容，支持行范围 |
+| `file_writer` | ✅ 已实现 | 写入或覆盖文件内容 |
+| `file_deleter` | ✅ 已实现 | 删除文件，需确认 |
+| `resource_loader` | ✅ 已实现 | 按需激活和停用工具 |
+| `memory_store` | ✅ 已实现 | 长期记忆读写，自动备份轮转 |
+| `model_manager` | ✅ 已实现 | 模型增删改查、连接测试、激活切换 |
+| `model_switch` | ✅ 已实现 | 运行时三级模型热切换，自动降级 |
+| `resource_registrar` | ✅ 已实现 | 查询资源配置状态和依赖关系 |
+| `manage_hooks` | ✅ 已实现 | 运行时查看、启用、禁用、添加、移除 Hook 定义 |
 
-内核工具始终存在于系统提示词中（约 800 tokens）。可发现工具通过 `resource_loader` 按需激活。骨架工具仅有 `config_default.yaml`，无 `function.py`——端点已预留，实现待补充。
+**可发现工具（通过 `resource_loader` 按需加载）：**
 
-### 模型（共 9 种类型）
-
-| 状态 | 数量 | 类型 |
+| 工具 | 状态 | 说明 |
 |------|------|------|
-| **推理模型** — 可配置 | 3 | `deep_thinking` · `quick_thinking` · `quick_no_thinking` |
-| **多模态模型** — 骨架 | 6 | `embedding` · `rerank` · `vision` · `vlm` · `tts` · `stt` |
+| `web_fetch` | ✅ 已实现 | 获取并处理网页内容 |
+| `web_search` | 🚧 仅配置 | 网络搜索集成（端点已预留） |
+| `image_understanding` | 🚧 仅配置 | 图像分析与描述（端点已预留） |
+| `ocr` | 🚧 仅配置 | 光学字符识别（端点已预留） |
+| `speech_output` | 🚧 仅配置 | 文本转语音输出（端点已预留） |
+| `speech_understanding` | 🚧 仅配置 | 语音转文本输入（端点已预留） |
+| `video_understanding` | 🚧 仅配置 | 视频内容分析（端点已预留） |
 
-推理模型完全可配置，兼容 DeepSeek API。多模态模型配置仅作为占位符存在（尚无集成实现）。
+### Skills（共 14 个）
 
-### 技能（共 14 个，均有 `skill.yaml`）
+技能是可复用的提示词模板，为特定工作流编排工具。每个技能是 `skills/<name>/` 下的一个目录，包含 `skill.yaml`（提示词模板 + 工具引用），可选含 `config_default.yaml`（元数据）。
 
-| 分类 | 技能 |
-|------|------|
-| **记忆** | `memory_extract` · `memory_compress` · `memory_management` |
-| **模型** | `model_switch` · `model_manager` · `model_configurator` |
-| **工具** | `tool_generator` · `tool_manager` · `validate_tool` |
-| **技能** | `skill_generator` · `skill_manager` |
-| **基础设施** | `resource_scaffold` · `error_handler` · `db_operator` |
+**记忆类技能：**
 
-注：`rag_operator` 仅有 `config_default.yaml`（部分实现）。
+| 技能 | 状态 | 说明 |
+|------|------|------|
+| `memory_extract` | ✅ 已实现 | 从对话历史中提取长期记忆 |
+| `memory_compress` | ✅ 已实现 | 压缩长期记忆（超过 700 KB 阈值时触发） |
+| `memory_management` | ✅ 已实现 | 检查、搜索和管理记忆文件 |
+
+**模型类技能：**
+
+| 技能 | 状态 | 说明 |
+|------|------|------|
+| `model_switch` | ✅ 已实现 | 根据任务需求运行时切换模型层级 |
+| `model_manager` | ✅ 已实现 | 模型全生命周期管理（增删改查、测试、配置） |
+| `model_configurator` | ✅ 已实现 | 交互式逐步模型配置向导 |
+
+**工具类技能：**
+
+| 技能 | 状态 | 说明 |
+|------|------|------|
+| `tool_generator` | ✅ 已实现 | 从对话上下文生成新工具 |
+| `tool_manager` | ✅ 已实现 | 管理工具生命周期（激活、停用、检查） |
+| `validate_tool` | ✅ 已实现 | 验证工具 YAML Schema 和 function.py 正确性 |
+
+**技能类技能：**
+
+| 技能 | 状态 | 说明 |
+|------|------|------|
+| `skill_generator` | ✅ 已实现 | 从对话上下文生成新技能 |
+| `skill_manager` | ✅ 已实现 | 管理技能生命周期和依赖关系 |
+
+**基础设施类技能：**
+
+| 技能 | 状态 | 说明 |
+|------|------|------|
+| `resource_scaffold` | ✅ 已实现 | 为新资源搭建规范的目录结构 |
+| `error_handler` | ✅ 已实现 | 结构化错误恢复，含重试和降级流程 |
+| `db_operator` | ✅ 已实现 | SQLite 数据库查询、检查和 Schema 探索 |
+| `rag_operator` | 🚧 仅配置 | RAG（检索增强生成）操作（端点已预留） |
+
+### Hooks（4 个内置）
+
+Hook 是会话生命周期事件中触发的子进程脚本。每个 Hook 是 `src/arf/hooks/` 下的独立 Python 模块。
+
+| Hook | 事件 | 说明 |
+|------|------|------|
+| `system_log` | 全部 6 个事件 | 所有生命周期事件的结构化 JSON 日志，写入 `memory/hook_events.log` |
+| `session_archiver` | SessionEnd | 将已完成的会话含完整 trace 和用量数据归档到 `memory/sessions/*.json` |
+| `memory_extractor` | SessionEnd | 从对话中提取关键事实、偏好和决策，写入 `long_term.md` |
+| `title_generator` | SessionStart | 基于首条用户消息生成描述性会话标题（通过 API 调用） |
+
+Hook 定义在 `.hooks.json` 中，可通过 `manage_hooks` 内核工具或 REST API 在运行时管理。用户可通过编写脚本并注册到配置中来添加自定义 Hook。
 
 ### 服务器与基础设施（全部已实现）
 
-| 组件 | 状态 |
+| 组件 | 说明 |
 |------|------|
-| FastAPI + WebSocket + SSE 流式传输 | ✅ |
-| SQLite Trace 追踪（6 张表） | ✅ |
-| 会话管理（CRUD、归档、空闲锁定） | ✅ |
-| 热重载文件监听（资源变更） | ✅ |
-| 子进程 Hook 引擎（4 个内置 Hook） | ✅ |
-| 多阶段 Docker 构建 + docker-compose | ✅ |
-| CI/CD（GitHub Actions + Gitee CI） | ✅ |
+| **FastAPI 服务器** | REST API（`/api/*`）+ WebSocket（`/ws`）+ SSE 流式传输 |
+| **SQLite 追踪** | 6 表可观测性数据库，瀑布图可视化 |
+| **会话管理器** | CRUD、归档、空闲锁定（可配置超时）、标题生成 |
+| **热重载** | 基于 `watchfiles` 的文件监听，覆盖资源、Hook 和 Agent 配置 |
+| **Hook 引擎** | 子进程执行器，支持并行运行、超时和退出码契约 |
+| **Docker** | 多阶段 Dockerfile + docker-compose，面向生产部署 |
+| **CI/CD** | GitHub Actions + Gitee CI 流水线 |
 
 ### 前端
 
 | | 详情 |
 |---|---|
-| **技术** | Vue 3 + TypeScript + Vite |
-| **规模** | 6400+ 行（8 视图、13 组件、8 组合式函数、3 Store、Pinia + Vue Router） |
+| **技术栈** | Vue 3 + TypeScript + Vite |
+| **规模** | 6400+ 行：8 视图、13 组件、8 组合式函数、3 Pinia Store、Vue Router |
+| **视图** | WelcomePage、ChatLayout、ConfigPage、ResourceDetailView、ResourceStatsView、TraceView、UsagePage |
 | **开发** | `npm run dev` 带 HMR，端口 5173，API 代理至后端 |
-| **生产** | `npm run build` 输出至 `server/static/`，由 FastAPI 托管 |
-
-### 框架层 TODO
-
-| 项目 | 状态 |
-|------|------|
-| **SandBox 运行时安全隔离** | 🔴 规划中——工具当前在进程内执行 |
-| `arf chat` 交互式 CLI | 🟡 骨架 |
-| `arf run` 无头执行 | 🟡 骨架 |
-| 多用户模式 | 🟡 `cli.py` 中已注释 |
-| 多模态工具实现 | 🟡 6 个骨架 |
+| **生产** | `npm run build` → `server/static/`，由 FastAPI 直接托管 |
 
 <br/>
 
-## CLI 命令参考
+## TODO
 
-| 命令 | 用途 |
-|------|------|
-| `arf init <name>` | 创建新工作区。**从这里开始。** |
-| `arf start` | 同时启动后端 + 前端（推荐）。 |
-| `arf web` | 仅启动 Web 服务器（FastAPI + WebSocket + SSE）。 |
-| `arf stop` | 停止运行中的后端和前端进程。 |
-| `arf reload` | 停止 + 重启，保留运行配置。 |
-| `arf list [tools\|skills\|models]` | 列出已注册资源。`[sys]` = 框架内置。 |
-| `arf validate` | 检查工作区资源完整性。 |
-| `arf clone <type> <name>` | 将系统资源克隆到用户空间以便自定义。 |
+### 短期
 
-<br/>
+| 优先级 | 项目 | 状态 |
+|--------|------|------|
+| **P0** | SandBox 运行时——工具执行的安全隔离（当前为进程内执行） | 🔴 规划中 |
+| **P1** | `arf chat`——交互式 CLI 对话，含完整 Agent 循环 | 🟡 骨架 |
+| **P1** | `arf run`——无头脚本/批量执行模式 | 🟡 骨架 |
+| **P1** | `web_search` 工具——网络搜索集成，可配置后端 | 🟡 仅配置 |
 
-## 内置资源
+### 中期
 
-### 内核工具（始终激活，约 800 tokens）
+| 优先级 | 项目 | 状态 |
+|--------|------|------|
+| **P2** | 多模态工具实现：`image_understanding`、`ocr`、`speech_output`、`speech_understanding`、`video_understanding` | 🟡 仅配置 |
+| **P2** | 多模态模型集成：`vision`、`vlm`、`tts`、`stt`、`embedding`、`rerank` | 🟡 仅配置 |
+| **P2** | `rag_operator` 技能——完整 RAG 流水线实现 | 🟡 仅配置 |
+| **P2** | 多用户模式——认证、独立会话与工作区隔离 | 🟡 CLI 中已注释 |
 
-| 工具 | 用途 |
-|------|------|
-| `file_reader` · `file_writer` · `file_deleter` | 文件系统读写删操作 |
-| `resource_loader` | 按需激活/停用工具 |
-| `memory_store` | 长期记忆读写，自动备份轮转 |
-| `model_manager` | 模型增删改查、连接测试、激活切换 |
-| `model_switch` | 运行时三级模型热切换，自动降级 |
-| `resource_registrar` | 查询资源配置状态 |
-| `manage_hooks` | 查看和切换运行时 Hook 定义 |
+### 长期
 
-### 可发现工具（按需加载）
-
-| 工具 | 状态 | 用途 |
-|------|------|------|
-| `web_fetch` | ✅ | 获取并处理网页内容 |
-| `web_search` | 🚧 | 网络搜索（仅配置） |
-| `image_understanding` | 🚧 | 图像分析（仅配置） |
-| `ocr` | 🚧 | 光学字符识别（仅配置） |
-| `speech_output` | 🚧 | 文本转语音（仅配置） |
-| `speech_understanding` | 🚧 | 语音转文本（仅配置） |
-| `video_understanding` | 🚧 | 视频分析（仅配置） |
-
-### 技能（14 个内置，按类别分组）
-
-| 分类 | 技能 | 用途 |
-|------|------|------|
-| **记忆** | `memory_extract` | 从对话中提取长期记忆 |
-| | `memory_compress` | 压缩长期记忆（超过 700 KB 触发） |
-| | `memory_management` | 检查和管理记忆文件 |
-| **模型** | `model_switch` | 运行时切换模型层级 |
-| | `model_manager` | 模型全生命周期管理 |
-| | `model_configurator` | 交互式模型配置 |
-| **工具** | `tool_generator` | 从对话生成新工具 |
-| | `tool_manager` | 工具生命周期管理 |
-| | `validate_tool` | 验证工具 YAML 和 function.py |
-| **技能** | `skill_generator` | 从对话生成新技能 |
-| | `skill_manager` | 技能生命周期管理 |
-| **基础设施** | `resource_scaffold` | 脚手架创建资源目录结构 |
-| | `error_handler` | 结构化错误恢复流程 |
-| | `db_operator` | SQLite 数据库查询和检查 |
-
-<br/>
-
-## 横向对比
-
-| | ARF | LangChain | Dify | 裸 FastAPI + SDK |
-|---|---|---|---|---|
-| **方法论** | 工作区即代码 | 类库 | 低代码平台 | 自己动手 |
-| **Agent 引擎** | LangGraph StateGraph | LangGraph | 自研 | 自己构建 |
-| **资源模型** | **文件系统目录** | Python 类 | Web UI 表单 | 无 |
-| **自演进** | **支持——Agent 可创建资源** | 手动 | 部分（插件商店） | 手动 |
-| **热重载** | **支持（内置）** | 手动 | 部分支持 | 手动 |
-| **渐进式披露** | **支持——9 内核工具，约 800 tokens** | 否（全量工具列表） | 部分 | 手动 |
-| **前端** | Vue 3 + TypeScript | 无（LangServe） | React | 自己构建 |
-| **Trace 追踪** | SQLite + 瀑布图 | LangSmith（付费） | 内置 | 自己构建 |
-| **沙箱隔离** | 规划中 | 可选 | 部分支持 | 手动 |
-| **自托管** | 是，单进程 | 是 | 是（Docker） | 是 |
-| **供应商锁定** | 无——Git 原生 | LangChain 生态 | Dify 平台 | 无 |
-| **开源协议** | MIT | MIT | Apache 2 | 不适用 |
-
-<br/>
-
-## 工作区结构
-
-```
-my_workspace/
-├── arf_agent.yaml          # 工作区配置（Agent 名称、模型、最大轮次、预加载）
-├── .arf/                   # 运行时状态（PID 文件、运行配置）
-├── models/                 # 用户模型配置
-│   └── deep_thinking/
-│       └── config.yaml     # base_url、api_key、model_name、temperature...
-├── tools/                  # 用户自定义工具
-├── skills/                 # 用户自定义技能
-├── memory/                 # 记忆系统
-│   ├── session.md          # 短期会话上下文
-│   ├── long_term.md        # 长期用户画像和重要事实
-│   └── sessions/           # 已归档会话 JSON（含 trace）
-└── .git/                   # 自行初始化：git init && git add -A
-```
-
-启用分类器，实现自动模型路由：
-
-```yaml
-# arf_agent.yaml
-agent:
-  name: "我的工作区"
-  model: "quick_no_thinking"
-  max_turns: 10
-  classifier_enabled: true       # 按任务复杂度自动路由
-
-resources:
-  preload: []                    # 会话启动时即激活的工具列表
-```
-
-<br/>
-
-## 记忆系统
-
-| 层级 | 存储 | 用途 |
-|------|------|------|
-| **短期记忆** | `memory/session.md` | 当前会话上下文，每次请求注入提示词 |
-| **长期记忆** | `memory/long_term.md` | 用户画像、偏好、重要事实——跨会话持久化 |
-| **会话归档** | `memory/sessions/*.json` | 已完成会话，含结构化 trace 和用量数据 |
-
-提取和压缩全自动：`memory_extractor` Hook 在每次会话结束后运行；当长期记忆超过 700 KB（可配置）时自动触发 `memory_compress`。`memory_store` 在每次写入长期记忆前自动创建备份。
-
-<br/>
-
-## 配置
-
-### 环境变量
-
-| 变量 | 默认值 | 用途 |
-|------|--------|------|
-| `ARF_SERVE_STATIC` | `1` | 后端托管前端静态文件。设为 `0` 用于开发代理。 |
-| `ARF_DB_NAME` | `arf.db` | SQLite 数据库文件名 |
-| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS 允许来源，逗号分隔 |
-| `ARF_IDLE_TIMEOUT` | `600` | 会话空闲超时（秒） |
-| `ARF_API_MAX_RETRIES` | `3` | API 调用最大重试次数 |
-| `ARF_API_RETRY_BACKOFF` | `1.5` | 重试退避基数（秒） |
-| `ARF_WORKSPACE` | — | 工作区目录路径（Docker 模式） |
-| `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 一键配置的 Base URL |
-
-### 模型配置 (`models/<name>/config.yaml`)
-
-```yaml
-name: deep_thinking
-model_type: deep_thinking
-config:
-  base_url: "https://api.deepseek.com"
-  api_key: "sk-..."
-  model_name: "deepseek-chat"
-  temperature: 0.7
-  max_tokens: 10240
-  thinking_enabled: true
-  reasoning_effort: "max"
-```
-
-
-<br/>
-
-## 路线图
-
-| 时间 | 项目 |
-|------|------|
-| **近期** | SandBox 运行时——工具执行的安全隔离（当前为进程内执行） |
-| **近期** | `arf chat`——交互式对话 CLI |
-| **近期** | `arf run`——无头脚本执行 |
-| **后续** | 多模态工具实现（web_search、image_understanding、ocr 等） |
-| **后续** | 多用户模式——认证和独立会话 |
+| 优先级 | 项目 | 状态 |
+|--------|------|------|
+| **P3** | 工具审批流程——敏感工具调用需用户介入确认 | 🔴 规划中 |
+| **P3** | 流式工具输出——通过 SSE 实时推送工具执行进度 | 🔴 规划中 |
+| **P3** | 插件/扩展系统——可通过 pip 安装的第三方资源包 | 🔴 规划中 |
+| **P3** | MCP（Model Context Protocol）支持——将外部 MCP 服务器作为工具接入 | 🔴 规划中 |
 
 <br/>
 
 ## 设计决策
 
-> [!IMPORTANT]
-> ARF 是有明确取舍的。以下选择皆是刻意为之。
+ARF 是有明确取舍的。以下选择皆是刻意为之。
 
 **约定大于配置。** 路径是可预测的，不可配置的。`models/<name>/config.yaml` 永远有效。没有路径别名，没有 `$MODEL_DIR` 环境变量。
 
@@ -419,9 +498,13 @@ config:
 
 **四种实体类型。** model / skill / tool / hook。如果某个特性需要第五种，它可能不属于框架层。
 
-**不做多供应商抽象层。** ARF 使用 OpenAI 兼容 API。配置好 `base_url` 直接用——无需供应商专用封装。
+**不做多供应商抽象层。** ARF 使用 OpenAI 兼容 API。配置好 `base_url` 直接用——无需供应商专用封装、无需适配器模式、无需插件注册表。
 
 **不做云 SaaS 服务。** 自托管是默认设计。无托管服务、无遥测、无账户系统（除非启用多用户模式）。
+
+**文件系统即数据库。** 状态存在于文件中。配置存在于 YAML 中。这意味着 Git 是你的版本控制，`grep` 是你的查询引擎，`rsync` 是你的备份策略。没有 ORM，没有迁移脚本，没有 `docker-compose up -d postgres`。
+
+**子进程 Hook，而非进程内回调。** Hook 作为独立进程运行，有各自独立的超时、环境和故障域。崩溃的 Hook 不会拖垮 Agent。退出码契约（0/1/2）是语言无关的——你可以用 Python、bash 或任何可执行文件编写 Hook。
 
 <br/>
 
@@ -443,7 +526,7 @@ cd frontend && npm install && npm run dev
 
 **核心技术栈：** Python 3.10+ · FastAPI · LangGraph · Vue 3 · TypeScript · Vite · SQLite
 
-**依赖：** uvicorn · websockets · openai · PyYAML · watchfiles · jinja2 · cryptography
+**依赖：** uvicorn · websockets · openai · PyYAML · watchfiles · jinja2 · cryptography · python-multipart · langchain-core
 
 <br/>
 

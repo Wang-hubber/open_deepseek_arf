@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">ARF — Agent Resource Framework</h1>
+  <h1 align="center">ARF — Agent Resources & RunTime FrameWork</h1>
 </p>
 
 <p align="center">
@@ -23,6 +23,79 @@
 <h3 align="center">Filesystem-native, self-evolving AI agent framework.</h3>
 <p align="center">Execution and control, decoupled by design. Convention over configuration. Progressive disclosure of capabilities. Out-of-the-box and ready to evolve.</p>
 
+<br/>
+
+## Design Philosophy
+
+ARF is not yet another AI agent framework that layers abstraction upon abstraction. It is built on a single insight: **the file system is the ideal medium for agent resource management.** Directories are namespaces, YAML files are declarations, Python files are implementations — no database, no registry server, no UI-driven configuration wizard.
+
+### Core Principles
+
+**1. Execution Layer and Control Layer — Decoupled by the File System**
+
+The control layer (WHAT) is pure declaration: YAML files describe what resources exist, their schemas, and when they should be used. The execution layer (HOW) is pure logic: a LangGraph engine that dynamically loads and invokes functions at runtime. The file system bridges them — edit a YAML, save, and it's live. No restart, no recompile, no deploy step.
+
+- **Control layer** — human-readable, git-trackable YAML configs (`tool.yaml`, `skill.yaml`, `config.yaml`)
+- **Execution layer** — LangGraph StateGraph with dependency injection, completely agnostic to specific resources
+- **ARFAgent orchestrator** — reads from the filesystem registry, dispatches to the engine, adapts instantly via hot-reload
+
+**2. Filesystem-Native, Self-Evolving**
+
+ARF is not just configurable — it can evolve itself at runtime.
+
+- `arf init` creates directories. `git push` shares configuration. `ls` inspects state. No database migrations ever.
+- The agent uses `resource_scaffold` + `file_writer` to create new tools and skills during a conversation. A chat session can produce a permanent capability.
+- Memory is files: `session.md` (short-term), `long_term.md` (persistent profile), `sessions/*.json` (archives). Grep-able, backup-able, transparent.
+- Dual-source resources: system resources ship with the framework (read-only), user resources live in the workspace (read-write, override system by name). Upgrades never clobber customizations.
+
+**3. Convention Over Configuration — Four Entity Types**
+
+Every resource follows the same minimal convention. The framework discovers; you don't register.
+
+| Entity | Definition | Purpose |
+|--------|-----------|---------|
+| **Model** | `models/<name>/config.yaml` | API endpoint, credentials, parameters |
+| **Tool** | `tools/<name>/tool.yaml` + `function.py` | Callable capability with JSON Schema |
+| **Skill** | `skills/<name>/skill.yaml` | Reusable prompt + tool orchestration template |
+| **Hook** | `.hooks.json` → subprocess script | Lifecycle event interceptor |
+
+No decorators. No base classes. No `__init__.py`. No import hooks. A tool is a directory with two files. A model is a directory with one file. That's the entire taxonomy.
+
+**4. Progressive Disclosure — ~800 Token System Prompt**
+
+The agent only pays for context it actually uses.
+
+- **Kernel layer** (9 tools, always active): file operations, resource loading, memory, model management, hook management
+- **Discoverable layer** (everything else): loaded on demand via `resource_loader`, deactivated when done
+- **Skill layer**: prompt templates that orchestrate tools — loaded when the agent or user invokes them
+
+No dumping 50+ tool definitions into every API call. The initial system prompt is ~800 tokens.
+
+**5. One Default Per Feature**
+
+One `web_fetch`, not three HTTP clients. One `memory_store`, not five backends. One model adapter (OpenAI-compatible API), not a multi-provider abstraction. This reduces choice fatigue, maintenance burden, and bug surface. Need something different? `arf clone` the default and customize it.
+
+**6. Self-Hosted, Git-Native, No Vendor Lock-In**
+
+No cloud SaaS. No managed service. No telemetry. Your workspace is a directory. Your config is YAML. Your version control is git. Deploy anywhere that runs Python — single process, Docker, or your own infrastructure.
+
+### Feature Overview
+
+| Capability | Implementation |
+|------------|---------------|
+| **Agent Engine** | LangGraph StateGraph with classify → call_model → execute_tools/respond → recovery |
+| **Model Routing** | Three-tier classifier (simple/medium/complex) with automatic degradation |
+| **API Server** | FastAPI + WebSocket + SSE streaming |
+| **Frontend** | Vue 3 + TypeScript + Vite (6400+ lines, 8 views, 13 components) |
+| **Observability** | SQLite trace database (6 tables) with waterfall visualization |
+| **Memory System** | Three-layer: session → long-term → archive, with auto-extraction and compression |
+| **Hook Engine** | Subprocess-based lifecycle hooks (6 events, 4 built-in) with exit-code contract |
+| **Self-Evolution** | Agent can scaffold, write, and register new tools/skills at runtime |
+| **Hot Reload** | File watcher detects resource changes, registry updates without restart |
+| **Docker Support** | Multi-stage Dockerfile + docker-compose |
+
+<br/>
+
 ## Quick Start
 
 Requires Python ≥ 3.10 and Node.js ≥ 18.
@@ -41,65 +114,120 @@ arf start --workspace my_workspace
 
 Browser opens at **http://localhost:5173** — enter your DeepSeek API key and start chatting. The key is saved to `models/<name>/config.yaml` in your workspace.
 
-## Design Philosophy
+### CLI Reference
 
-ARF is built on five principles that shape every design decision.
+| Command | Purpose |
+|---------|---------|
+| `arf init <name>` | Create a new workspace. **Start here.** |
+| `arf start` | Launch backend + frontend together (recommended). |
+| `arf web` | Launch the web server only (FastAPI + WebSocket + SSE). |
+| `arf stop` | Stop running backend and frontend processes. |
+| `arf reload` | Stop + restart, preserving configuration. |
+| `arf list [tools\|skills\|models]` | List registered resources. `[sys]` = framework built-in. |
+| `arf validate` | Check workspace resource integrity. |
+| `arf clone <type> <name>` | Copy a system resource to your workspace for customization. |
+| `arf chat` | Interactive chat CLI (stub). |
+| `arf run` | Headless script execution (stub). |
 
-### 1. Execution Layer and Control Layer — Highly Decoupled
-
-The file system is the bridge between WHAT to do and HOW to do it.
-
-- **Control layer** — YAML configs (`tool.yaml`, `skill.yaml`, `config.yaml`) define what resources exist, their schemas, and when they should be used. This layer is human-readable, git-trackable, and requires no code to understand.
-- **Execution layer** — The LangGraph engine dynamically loads and invokes tool functions at runtime. It receives all dependencies through constructor injection and has no knowledge of specific resources.
-- **The Agent as orchestrator** — `ARFAgent` reads from the filesystem registry and dispatches to the execution engine. Changes to control files (edit a tool's YAML, add a new skill) are picked up instantly via hot-reload — the execution layer adapts without restart.
-
-This decoupling means you can reason about agent behavior by reading YAML files, and you can swap or extend capabilities by adding directories.
-
-### 2. Filesystem-Native, Self-Evolving Agent
-
-ARF is not just configurable — it can evolve itself.
-
-- **No database migrations.** `arf init` creates directories. `git push` shares configuration. `ls` inspects state.
-- **Runtime self-evolution.** The agent can create, modify, and register new tools and skills at runtime using `resource_scaffold` + `file_writer`. A conversation can produce a permanent capability.
-- **Memory is files.** Session context (`session.md`), long-term memory (`long_term.md`), and archived sessions (`sessions/*.json`) are all files on disk — grep-able, backup-able, and transparent.
-- **Dual-source resources.** System resources ship with the framework (read-only, updated via `pip install --upgrade`). User resources live in the workspace (read-write, override system by name). Your customizations survive framework updates.
-
-### 3. High Cohesion, Low Coupling — Convention Over Configuration
-
-Every resource follows the same minimal convention. The framework discovers, you don't register.
-
-- A **tool** is a directory with `tool.yaml` + `function.py`. That's it — no decorators, no base class, no `__init__.py`, no import hook.
-- A **skill** is a directory with `skill.yaml`. Tools referenced by name, not import path.
-- A **model** is a directory with `config.yaml`. The adapter resolves configuration at call time.
-- Resource directories at known paths are automatically scanned and indexed. Adding a tool means creating the right directory structure — period.
+### Workspace Structure
 
 ```
-models/deep_thinking/config.yaml    →  available as "deep_thinking"
-tools/web_fetch/tool.yaml           →  available as "web_fetch"
-skills/error_handler/skill.yaml     →  available as "error_handler"
+my_workspace/
+├── arf_agent.yaml          # workspace config (agent name, model, max_turns, preload)
+├── .arf/                   # runtime state (PID files, run config)
+├── .hooks.json             # lifecycle hook definitions
+├── models/                 # user model configs
+│   └── deep_thinking/
+│       └── config.yaml     # base_url, api_key, model_name, temperature...
+├── tools/                  # user custom tools
+├── skills/                 # user custom skills
+├── memory/                 # memory system
+│   ├── session.md          # short-term session context
+│   ├── long_term.md        # persistent user profile & facts
+│   └── sessions/           # archived session JSON with traces
+└── .git/                   # initialize yourself: git init && git add -A
 ```
 
-### 4. One Default Implementation Per Feature
+### Configuration
 
-For non-developer users, ARF ships with exactly one implementation for each capability.
+**Environment variables:**
 
-- One `web_fetch` — not three HTTP clients.
-- One `memory_store` — not five storage backends.
-- One `model_adapter` — OpenAI-compatible API, not a multi-provider abstraction.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ARF_SERVE_STATIC` | `1` | Serve built frontend from backend. Set `0` for dev proxy. |
+| `ARF_DB_NAME` | `arf.db` | SQLite database filename |
+| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS allowed origins, comma-separated |
+| `ARF_IDLE_TIMEOUT` | `600` | Session idle timeout in seconds |
+| `ARF_API_MAX_RETRIES` | `3` | Max API call retries |
+| `ARF_API_RETRY_BACKOFF` | `1.5` | Retry backoff base in seconds |
+| `ARF_WORKSPACE` | — | Workspace directory path (Docker) |
+| `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Base URL for one-click DeepSeek config |
 
-This is deliberate: reduce choice fatigue, reduce maintenance burden, reduce bug surface. If you need something different, `arf clone` the default to your workspace and customize it.
+**Model config (`models/<name>/config.yaml`):**
 
-### 5. Progressive Disclosure
+```yaml
+name: deep_thinking
+model_type: deep_thinking
+config:
+  base_url: "https://api.deepseek.com"
+  api_key: "sk-..."
+  model_name: "deepseek-chat"
+  temperature: 0.7
+  max_tokens: 10240
+  thinking_enabled: true
+  reasoning_effort: "max"
+```
 
-The initial system prompt is ~800 tokens. Only 9 kernel tools are always active.
+**Classifier config (`arf_agent.yaml`):**
 
-- **Kernel tools** (always active): `file_reader`, `file_writer`, `file_deleter`, `resource_loader`, `memory_store`, `model_manager`, `model_switch`, `resource_registrar`, `manage_hooks`
-- **Everything else** loads on demand: the agent reads a skill that references a tool, activates it via `resource_loader`, and uses it. Deactivates when done.
-- The agent only pays for context it actually uses — no dumping 50+ tool definitions into every prompt.
+```yaml
+agent:
+  name: "My Workspace"
+  model: "quick_no_thinking"
+  max_turns: 10
+  classifier_enabled: true       # auto-route tasks by complexity
 
-### 6. No Unnecessary Entities
+resources:
+  preload: []                    # tools to activate at session start
+```
 
-The complete extension taxonomy is: **model · skill · tool · hook**. Four entities. No plugins, no middleware chains, no provider interfaces, no component registries, no abstract factories. If a feature can't be expressed as one of these four, reconsider whether it belongs.
+<br/>
+
+## How ARF Compares
+
+ARF occupies a distinct position in the AI agent landscape: it is neither a library nor a low-code platform, but a **workspace-as-code framework** where the file system is the source of truth.
+
+| | ARF | LangChain | Dify | Raw FastAPI + SDK |
+|---|---|---|---|---|
+| **Approach** | Workspace-as-code | Library | Low-code platform | Do-it-yourself |
+| **Agent engine** | LangGraph StateGraph | LangGraph | Custom | You build it |
+| **Resource model** | File system directories | Python classes | Web UI forms | N/A |
+| **Self-evolution** | Yes — agent creates resources at runtime | Manual | Partial (plugin store) | Manual |
+| **Hot-reload** | Yes (built-in file watcher) | Manual | Partial | Manual |
+| **Progressive disclosure** | Yes — 9 kernel tools, ~800 tokens | No (full tool list) | Partial | Manual |
+| **Context efficiency** | On-demand tool activation/deactivation | All tools always in prompt | Limited | Up to you |
+| **Frontend** | Vue 3 + TypeScript (built-in) | None (LangServe) | React | You build it |
+| **Trace observability** | SQLite + waterfall visualization | LangSmith (paid) | Built-in | You build it |
+| **Memory system** | Three-layer file-based (session/long-term/archive) | Limited | Limited | You build it |
+| **Hook system** | Subprocess-based, 6 lifecycle events | Callbacks | Limited | You build it |
+| **Vendor lock-in** | None — git-native | LangChain ecosystem | Dify platform | None |
+| **Self-hosted** | Yes, single process | Yes | Yes (Docker) | Yes |
+| **Open source** | MIT | MIT | Apache 2 | N/A |
+
+### When to Choose ARF
+
+- You want an agent that can **evolve itself** — creating tools and skills from conversation
+- You value **git-native workflows** — config as code, not click-ops
+- You need **transparent, file-based state** — no black-box databases
+- You want **progressive disclosure** — context-efficient agent that doesn't bloat every prompt
+- You prefer **convention over configuration** — predictable paths, minimal boilerplate
+
+### When to Choose Alternatives
+
+- You need a **visual workflow builder** → Dify or n8n
+- You need **production multi-tenancy** with auth, rate limiting, and billing → Dify or build on LangChain
+- You're building a **one-off prototype** and want maximum library ecosystem → LangChain
+- You need **fine-grained control** over every aspect and have a dedicated team → Raw FastAPI + SDK
 
 <br/>
 
@@ -153,264 +281,216 @@ The complete extension taxonomy is: **model · skill · tool · hook**. Four ent
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The control layer (YAML in directories) defines WHAT resources exist. The execution layer (LangGraph engine) determines HOW they run. The file system bridges them — `edit, save, and it's live`.
+### Data Flow
+
+1. **User message** arrives via WebSocket or REST API
+2. **SessionManager** prepends system prompt (workspace → memory → identity → inventory → language)
+3. **Classifier** (optional) analyzes complexity → routes to `quick_no_thinking` / `quick_thinking` / `deep_thinking`
+4. **LangGraph engine** executes the agent loop: call model → parse response → execute tools or respond
+5. **Hook runner** fires lifecycle events (PreModelCall, PostToolUse, SessionEnd, etc.) via subprocess
+6. **Tracing** records every step to SQLite for observability
+7. **SSE stream** pushes tokens, tool calls, and usage data to the frontend in real time
+
+### Memory Architecture
+
+| Layer | Storage | Trigger | Purpose |
+|-------|---------|---------|---------|
+| **Session** | `memory/session.md` | Every prompt | Current conversation context, injected into system prompt |
+| **Long-term** | `memory/long_term.md` | Auto-extract on SessionEnd | User profile, preferences, facts — persists across sessions |
+| **Archive** | `memory/sessions/*.json` | Auto-archive on SessionEnd | Structured session data with traces and usage stats |
+
+Memory extraction and compression are fully automatic: `memory_extractor` hook runs after each session, and `memory_compress` skill triggers when long-term memory exceeds 700 KB (configurable). Every long-term memory write creates an automatic backup.
+
+### Hook System
+
+Hooks are subprocess scripts triggered on 6 lifecycle events. They communicate via exit code contract:
+
+| Exit Code | Meaning |
+|-----------|---------|
+| `0` | Continue (stdout may contain JSON data) |
+| `1` | Block the current action (stderr = reason) |
+| `2` | Inject a message (stderr = message text) |
+
+| Event | When | Built-in Hooks |
+|-------|------|---------------|
+| `SessionStart` | New session begins | `system_log` |
+| `PreModelCall` | Before each API call | `system_log` |
+| `PostModelCall` | After each API response | `system_log` |
+| `PreToolUse` | Before tool execution | `system_log` |
+| `PostToolUse` | After tool execution | `system_log` |
+| `SessionEnd` | Session terminates | `session_archiver`, `memory_extractor`, `system_log` |
+
+Hooks run in parallel via thread pool, each with independent timeout. Config is defined in `.hooks.json`, managed at runtime via the `manage_hooks` tool. Context passes through environment variables (small payloads) and stdin JSON (large payloads like conversation history).
 
 <br/>
 
-## Implementation Status
+## System Resources — Implementation Status
 
-### CLI
-
-| Command | Status |
-|---------|--------|
-| `arf init` · `arf web` · `arf start` · `arf stop` · `arf reload` | ✅ Implemented |
-| `arf list` · `arf validate` · `arf clone` | ✅ Implemented |
-| `arf chat` · `arf run` | 🚧 Stub (prints "not yet implemented") |
-
-### Engine
-
-All nodes fully implemented: `classify` → `call_model` → `execute_tools` / `respond`, with `recovery` for max_tokens continuation and API error handling. Classifier-driven three-tier model routing (`quick_no_thinking` → `quick_thinking` → `deep_thinking`) with automatic degradation.
-
-### Tools (16 total)
-
-| Status | Count | Tools |
-|--------|-------|-------|
-| **Kernel** (always active) | 9 | `file_reader` · `file_writer` · `file_deleter` · `resource_loader` · `memory_store` · `model_manager` · `model_switch` · `resource_registrar` · `manage_hooks` |
-| **Discoverable** — implemented | 1 | `web_fetch` |
-| **Discoverable** — stub | 6 | `web_search` · `image_understanding` · `ocr` · `speech_output` · `speech_understanding` · `video_understanding` |
-
-Kernel tools are always in the system prompt (~800 tokens). Discoverable tools are activated on demand via `resource_loader`. Stub tools have `config_default.yaml` but no `function.py` — endpoint reserved, implementation pending.
+System resources ship with the framework under `src/arf/resources/system/`. They serve as defaults and as templates for user customization via `arf clone`. Each resource follows the convention: a directory named after the resource, containing a YAML definition and (for tools) a `function.py`.
 
 ### Models (9 total)
 
-| Status | Count | Types |
-|--------|-------|-------|
-| **Reasoning** — configurable | 3 | `deep_thinking` · `quick_thinking` · `quick_no_thinking` |
-| **Multimodal** — stub | 6 | `embedding` · `rerank` · `vision` · `vlm` · `tts` · `stt` |
+Models define API endpoints, credentials, and inference parameters. Each is a directory under `models/<name>/` with `config_default.yaml` (and optionally `config.yaml` for user credentials).
 
-Reasoning models are fully configurable with DeepSeek-compatible API. Multimodal model configs exist as placeholders (no integration yet).
+| Model | Type | Status | Description |
+|-------|------|--------|-------------|
+| `deep_thinking` | reasoning | ✅ Implemented | Maximum reasoning for complex tasks (architecture, refactoring, creative work) |
+| `quick_thinking` | reasoning | ✅ Implemented | Balanced reasoning for medium tasks (code generation, debugging, multi-step) |
+| `quick_no_thinking` | reasoning | ✅ Implemented | Fast responses for simple tasks (greetings, lookups, single edits) |
+| `embedding` | multimodal | 🚧 Config only | Text embedding vector generation |
+| `rerank` | multimodal | 🚧 Config only | Search result reranking |
+| `vision` | multimodal | 🚧 Config only | Image understanding and analysis |
+| `vlm` | multimodal | 🚧 Config only | Vision-language model for multimodal reasoning |
+| `tts` | multimodal | 🚧 Config only | Text-to-speech synthesis |
+| `stt` | multimodal | 🚧 Config only | Speech-to-text transcription |
 
-### Skills (14 total, all with `skill.yaml`)
+The three reasoning models support the classifier-driven routing system: tasks are classified as simple/medium/complex and routed to the appropriate model tier. When a target model type is unavailable, the system degrades automatically to the next best available tier.
 
-| Category | Skills |
-|----------|--------|
-| **Memory** | `memory_extract` · `memory_compress` · `memory_management` |
-| **Model** | `model_switch` · `model_manager` · `model_configurator` |
-| **Tool** | `tool_generator` · `tool_manager` · `validate_tool` |
-| **Skill** | `skill_generator` · `skill_manager` |
-| **Infra** | `resource_scaffold` · `error_handler` · `db_operator` |
+### Tools (16 total)
 
-Note: `rag_operator` has `config_default.yaml` only (partial).
+Tools are callable capabilities. Each is a directory under `tools/<name>/` with `tool.yaml` (JSON Schema parameters), `config_default.yaml` (metadata), and optionally `function.py` (implementation).
+
+**Kernel Tools (always active, ~800 tokens):**
+
+| Tool | Status | Description |
+|------|--------|-------------|
+| `file_reader` | ✅ Implemented | Read file contents with line range support |
+| `file_writer` | ✅ Implemented | Write or overwrite file contents |
+| `file_deleter` | ✅ Implemented | Delete files with confirmation |
+| `resource_loader` | ✅ Implemented | On-demand tool activation and deactivation |
+| `memory_store` | ✅ Implemented | Long-term memory read/write with automatic backup rotation |
+| `model_manager` | ✅ Implemented | Model CRUD, connection test, activation switch |
+| `model_switch` | ✅ Implemented | Runtime three-tier model hot-switch with degradation |
+| `resource_registrar` | ✅ Implemented | Query resource configuration status and dependencies |
+| `manage_hooks` | ✅ Implemented | View, enable, disable, add, and remove hook definitions at runtime |
+
+**Discoverable Tools (loaded on demand via `resource_loader`):**
+
+| Tool | Status | Description |
+|------|--------|-------------|
+| `web_fetch` | ✅ Implemented | Fetch and process web page content |
+| `web_search` | 🚧 Config only | Web search integration (endpoint reserved) |
+| `image_understanding` | 🚧 Config only | Image analysis and description (endpoint reserved) |
+| `ocr` | 🚧 Config only | Optical character recognition (endpoint reserved) |
+| `speech_output` | 🚧 Config only | Text-to-speech output (endpoint reserved) |
+| `speech_understanding` | 🚧 Config only | Speech-to-text input (endpoint reserved) |
+| `video_understanding` | 🚧 Config only | Video content analysis (endpoint reserved) |
+
+### Skills (14 total)
+
+Skills are reusable prompt templates that orchestrate tools for specific workflows. Each is a directory under `skills/<name>/` with `skill.yaml` (prompt template + tool references) and optionally `config_default.yaml` (metadata).
+
+**Memory Skills:**
+
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `memory_extract` | ✅ Implemented | Extract long-term memories from conversation history |
+| `memory_compress` | ✅ Implemented | Compress long-term memory (triggers at 700 KB threshold) |
+| `memory_management` | ✅ Implemented | Inspect, search, and manage memory files |
+
+**Model Skills:**
+
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `model_switch` | ✅ Implemented | Switch model tier at runtime based on task needs |
+| `model_manager` | ✅ Implemented | Full model lifecycle management (CRUD, test, configure) |
+| `model_configurator` | ✅ Implemented | Interactive step-by-step model configuration wizard |
+
+**Tool Skills:**
+
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `tool_generator` | ✅ Implemented | Generate new tools from conversation context |
+| `tool_manager` | ✅ Implemented | Manage tool lifecycle (activate, deactivate, inspect) |
+| `validate_tool` | ✅ Implemented | Validate tool YAML schema and function.py correctness |
+
+**Skill Skills:**
+
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `skill_generator` | ✅ Implemented | Generate new skills from conversation context |
+| `skill_manager` | ✅ Implemented | Manage skill lifecycle and dependencies |
+
+**Infrastructure Skills:**
+
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `resource_scaffold` | ✅ Implemented | Scaffold proper directory structures for new resources |
+| `error_handler` | ✅ Implemented | Structured error recovery with retry and degradation flows |
+| `db_operator` | ✅ Implemented | SQLite database query, inspection, and schema exploration |
+| `rag_operator` | 🚧 Config only | RAG (Retrieval-Augmented Generation) operations (endpoint reserved) |
+
+### Hooks (4 built-in)
+
+Hooks are subprocess scripts triggered on session lifecycle events. Each is an independent Python module under `src/arf/hooks/`.
+
+| Hook | Events | Description |
+|------|--------|-------------|
+| `system_log` | All 6 events | Structured JSON logging of all lifecycle events to `memory/hook_events.log` |
+| `session_archiver` | SessionEnd | Archives completed session with full trace and usage data to `memory/sessions/*.json` |
+| `memory_extractor` | SessionEnd | Extracts key facts, preferences, and decisions from conversation into `long_term.md` |
+| `title_generator` | SessionStart | Generates a descriptive session title based on first user message (via API call) |
+
+Hooks are defined in `.hooks.json` and can be managed at runtime via the `manage_hooks` kernel tool or the REST API. Users can add custom hooks by writing scripts and registering them in the config.
 
 ### Server & Infrastructure (all implemented)
 
-| Component | Status |
-|-----------|--------|
-| FastAPI + WebSocket + SSE streaming | ✅ |
-| SQLite trace observability (6 tables) | ✅ |
-| Session management (CRUD, archive, idle lock) | ✅ |
-| Hot-reload file watcher (resources) | ✅ |
-| Subprocess hook engine (4 built-in hooks) | ✅ |
-| Multi-stage Docker + docker-compose | ✅ |
-| CI/CD (GitHub Actions + Gitee CI) | ✅ |
+| Component | Description |
+|-----------|-------------|
+| **FastAPI Server** | REST API (`/api/*`) + WebSocket (`/ws`) + SSE streaming |
+| **SQLite Tracing** | 6-table observability database with waterfall visualization |
+| **Session Manager** | CRUD, archive, idle lock (configurable timeout), title generation |
+| **Hot Reload** | `watchfiles`-based file watcher for resources, hooks, and agent config |
+| **Hook Engine** | Subprocess runner with parallel execution, timeout, and exit-code contract |
+| **Docker** | Multi-stage Dockerfile + docker-compose for production deployment |
+| **CI/CD** | GitHub Actions + Gitee CI pipelines |
 
 ### Frontend
 
 | | Details |
 |---|---|
-| **Tech** | Vue 3 + TypeScript + Vite |
-| **Size** | 6400+ lines (8 views, 13 components, 8 composables, 3 stores, Pinia + Vue Router) |
+| **Stack** | Vue 3 + TypeScript + Vite |
+| **Size** | 6400+ lines: 8 views, 13 components, 8 composables, 3 Pinia stores, Vue Router |
+| **Views** | WelcomePage, ChatLayout, ConfigPage, ResourceDetailView, ResourceStatsView, TraceView, UsagePage |
 | **Dev** | `npm run dev` with HMR on port 5173, API proxied to backend |
-| **Production** | `npm run build` outputs to `server/static/`, served by FastAPI |
-
-### Framework TODO
-
-| Item | Status |
-|------|--------|
-| **SandBox runtime security isolation** | 🔴 Planned — tools currently execute in-process |
-| `arf chat` interactive CLI | 🟡 Stub |
-| `arf run` headless execution | 🟡 Stub |
-| Multi-user mode | 🟡 Commented out in `cli.py` |
-| Multimodal tool implementations | 🟡 6 stubs |
+| **Production** | `npm run build` → `server/static/`, served directly by FastAPI |
 
 <br/>
 
-## CLI Reference
+## TODO
 
-| Command | Purpose |
-|---------|---------|
-| `arf init <name>` | Create a new workspace. **Start here.** |
-| `arf start` | Launch backend + frontend together (recommended). |
-| `arf web` | Launch the web server only (FastAPI + WebSocket + SSE). |
-| `arf stop` | Stop running backend and frontend processes. |
-| `arf reload` | Stop + restart, preserving configuration. |
-| `arf list [tools\|skills\|models]` | List registered resources. `[sys]` = framework built-in. |
-| `arf validate` | Check workspace resource integrity. |
-| `arf clone <type> <name>` | Copy a system resource to your workspace for customization. |
+### Short-term
 
-<br/>
+| Priority | Item | Status |
+|----------|------|--------|
+| **P0** | Sandbox runtime — security isolation for tool execution (currently in-process) | 🔴 Planned |
+| **P1** | `arf chat` — interactive CLI chat with full agent loop | 🟡 Stub |
+| **P1** | `arf run` — headless script/batch execution mode | 🟡 Stub |
+| **P1** | `web_search` tool — web search integration with configurable backend | 🟡 Config only |
 
-## Built-in Resources
+### Medium-term
 
-### Kernel Tools (always active, ~800 tokens)
+| Priority | Item | Status |
+|----------|------|--------|
+| **P2** | Multimodal tool implementations: `image_understanding`, `ocr`, `speech_output`, `speech_understanding`, `video_understanding` | 🟡 Config only |
+| **P2** | Multimodal model integrations: `vision`, `vlm`, `tts`, `stt`, `embedding`, `rerank` | 🟡 Config only |
+| **P2** | `rag_operator` skill — full RAG pipeline implementation | 🟡 Config only |
+| **P2** | Multi-user mode — authentication, per-user sessions, and workspace isolation | 🟡 Commented out in CLI |
 
-| Tool | Purpose |
-|------|---------|
-| `file_reader` · `file_writer` · `file_deleter` | File system operations |
-| `resource_loader` | On-demand tool activation / deactivation |
-| `memory_store` | Long-term memory read/write with backup rotation |
-| `model_manager` | Model CRUD, connection test, activation switch |
-| `model_switch` | Runtime three-tier model hot-switch with degradation |
-| `resource_registrar` | Query resource configuration status |
-| `manage_hooks` | View and toggle hook definitions at runtime |
+### Long-term
 
-### Discoverable Tools (load on demand)
-
-| Tool | Status | Purpose |
-|------|--------|---------|
-| `web_fetch` | ✅ | Fetch and process web content |
-| `web_search` | 🚧 | Web search (config only) |
-| `image_understanding` | 🚧 | Image analysis (config only) |
-| `ocr` | 🚧 | Optical character recognition (config only) |
-| `speech_output` | 🚧 | Text-to-speech (config only) |
-| `speech_understanding` | 🚧 | Speech-to-text (config only) |
-| `video_understanding` | 🚧 | Video analysis (config only) |
-
-### Skills (14 built-in, grouped by category)
-
-| Category | Skill | Purpose |
-|----------|-------|---------|
-| **Memory** | `memory_extract` | Extract long-term memories from conversation |
-| | `memory_compress` | Compress long-term memory (triggers at 700 KB) |
-| | `memory_management` | Inspect and manage memory files |
-| **Model** | `model_switch` | Switch model tier at runtime |
-| | `model_manager` | Full model lifecycle management |
-| | `model_configurator` | Interactive model configuration |
-| **Tool** | `tool_generator` | Generate new tools from conversation |
-| | `tool_manager` | Manage tool lifecycle |
-| | `validate_tool` | Validate tool YAML and function.py |
-| **Skill** | `skill_generator` | Generate new skills from conversation |
-| | `skill_manager` | Manage skill lifecycle |
-| **Infra** | `resource_scaffold` | Scaffold resource directory structures |
-| | `error_handler` | Structured error recovery flow |
-| | `db_operator` | SQLite database query and inspection |
-
-<br/>
-
-## How ARF Compares
-
-| | ARF | LangChain | Dify | Raw FastAPI + SDK |
-|---|---|---|---|---|
-| **Approach** | Workspace-as-code | Library | Low-code platform | Do-it-yourself |
-| **Agent engine** | LangGraph StateGraph | LangGraph | Custom | You build it |
-| **Resource model** | **File system directories** | Python classes | Web UI forms | N/A |
-| **Self-evolution** | **Yes — agent creates resources** | Manual | Partial (plugin store) | Manual |
-| **Hot-reload** | **Yes (built-in)** | Manual | Partial | Manual |
-| **Progressive disclosure** | **Yes — 9 kernel tools, ~800 tokens** | No (full tool list) | Partial | Manual |
-| **Frontend** | Vue 3 + TypeScript | None (LangServe) | React | You build it |
-| **Trace observability** | SQLite + waterfall | LangSmith (paid) | Built-in | You build it |
-| **Sandbox isolation** | Planned | Optional | Partial | Manual |
-| **Self-hosted** | Yes, single process | Yes | Yes (Docker) | Yes |
-| **Vendor lock-in** | None — git-native | LangChain ecosystem | Dify platform | None |
-| **Open source** | MIT | MIT | Apache 2 | N/A |
-
-<br/>
-
-## Workspace Structure
-
-```
-my_workspace/
-├── arf_agent.yaml          # workspace config (agent name, model, max_turns, preload)
-├── .arf/                   # runtime state (PID files, run config)
-├── models/                 # user model configs
-│   └── deep_thinking/
-│       └── config.yaml     # base_url, api_key, model_name, temperature...
-├── tools/                  # user custom tools
-├── skills/                 # user custom skills
-├── memory/                 # memory system
-│   ├── session.md          # short-term session context
-│   ├── long_term.md        # persistent user profile & facts
-│   └── sessions/           # archived session JSON with traces
-└── .git/                   # initialize yourself: git init && git add -A
-```
-
-Enable the classifier for automatic model routing:
-
-```yaml
-# arf_agent.yaml
-agent:
-  name: "My Workspace"
-  model: "quick_no_thinking"
-  max_turns: 10
-  classifier_enabled: true       # auto-route tasks by complexity
-
-resources:
-  preload: []                    # tools to activate at session start
-```
-
-<br/>
-
-## Memory System
-
-| Layer | Storage | Purpose |
-|-------|---------|---------|
-| **Session** | `memory/session.md` | Current conversation context, injected into every prompt |
-| **Long-term** | `memory/long_term.md` | User profile, preferences, facts — persists across sessions |
-| **Archive** | `memory/sessions/*.json` | Completed sessions with structured trace & usage data |
-
-Extraction and compression are fully automatic: the `memory_extractor` hook runs after each session ends, and `memory_compress` triggers when long-term memory exceeds 700 KB (configurable). `memory_store` creates automatic backups before every long-term memory write.
-
-<br/>
-
-## Configuration
-
-### Environment variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ARF_SERVE_STATIC` | `1` | Serve built frontend from backend. Set `0` for dev proxy. |
-| `ARF_DB_NAME` | `arf.db` | SQLite database filename |
-| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS allowed origins, comma-separated |
-| `ARF_IDLE_TIMEOUT` | `600` | Session idle timeout in seconds |
-| `ARF_API_MAX_RETRIES` | `3` | Max API call retries |
-| `ARF_API_RETRY_BACKOFF` | `1.5` | Retry backoff base in seconds |
-| `ARF_WORKSPACE` | — | Workspace directory path (Docker) |
-| `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Base URL for one-click DeepSeek config |
-
-### Model config (`models/<name>/config.yaml`)
-
-```yaml
-name: deep_thinking
-model_type: deep_thinking
-config:
-  base_url: "https://api.deepseek.com"
-  api_key: "sk-..."
-  model_name: "deepseek-chat"
-  temperature: 0.7
-  max_tokens: 10240
-  thinking_enabled: true
-  reasoning_effort: "max"
-```
-
-
-<br/>
-
-## Roadmap
-
-| Timeline | Item |
-|----------|------|
-| **Next** | Sandbox runtime — security isolation for tool execution (currently in-process) |
-| **Next** | `arf chat` — interactive chat CLI |
-| **Next** | `arf run` — headless script execution |
-| **Later** | Multimodal tool implementations (web_search, image_understanding, ocr, etc.) |
-| **Later** | Multi-user mode — authentication and per-user sessions |
+| Priority | Item | Status |
+|----------|------|--------|
+| **P3** | Tool approval flow — user-in-the-loop confirmation for sensitive tool calls | 🔴 Planned |
+| **P3** | Streaming tool output — real-time tool execution progress via SSE | 🔴 Planned |
+| **P3** | Plugin/extension system — third-party resource packages installable via pip | 🔴 Planned |
+| **P3** | MCP (Model Context Protocol) support — connect external MCP servers as tools | 🔴 Planned |
 
 <br/>
 
 ## Design Decisions
 
-> [!IMPORTANT]
-> ARF is opinionated. These choices are by design.
+ARF is opinionated. These choices are by design.
 
 **Convention over configuration.** Paths are predictable, not configurable. `models/<name>/config.yaml` always works. No path aliases, no `$MODEL_DIR` env vars.
 
@@ -418,9 +498,13 @@ config:
 
 **Four entity types.** model / skill / tool / hook. If a feature needs a fifth, it might not belong in the framework layer.
 
-**No multi-provider abstraction.** ARF uses OpenAI-compatible APIs. Configure `base_url` and go — no provider-specific wrappers.
+**No multi-provider abstraction.** ARF uses OpenAI-compatible APIs. Configure `base_url` and go — no provider-specific wrappers, no adapter pattern, no plugin registry.
 
 **No cloud SaaS.** Self-hosted by design. No managed service, no telemetry, no accounts (unless you enable multi-user mode).
+
+**Filesystem as database.** State lives in files. Configuration lives in YAML. This means git is your version control, `grep` is your query engine, and `rsync` is your backup strategy. No ORM, no migration scripts, no `docker-compose up -d postgres`.
+
+**Subprocess hooks, not in-process callbacks.** Hooks run as independent processes with their own timeout, environment, and failure domain. A crashed hook cannot bring down the agent. The exit-code contract (0/1/2) is language-agnostic — write hooks in Python, bash, or any executable.
 
 <br/>
 
@@ -442,7 +526,7 @@ cd frontend && npm install && npm run dev
 
 **Core stack:** Python 3.10+ · FastAPI · LangGraph · Vue 3 · TypeScript · Vite · SQLite
 
-**Dependencies:** uvicorn · websockets · openai · PyYAML · watchfiles · jinja2 · cryptography
+**Dependencies:** uvicorn · websockets · openai · PyYAML · watchfiles · jinja2 · cryptography · python-multipart · langchain-core
 
 <br/>
 
