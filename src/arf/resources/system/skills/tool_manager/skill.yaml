@@ -1,0 +1,24 @@
+name: tool_manager
+description: "Manage tools — soft delete and restore"
+prompt_template: |
+  # Tool Manager
+  
+  Manage tools in the workspace. Operations:
+  
+  - **delete**: Soft-delete a tool by renaming its directory (prefix with `.deleted_`)
+  - **restore**: Restore a soft-deleted tool
+  - **list**: List all tools including soft-deleted ones
+  
+  Soft-deleted tools are hidden from the agent but can be restored.
+tools:
+  - file_reader
+  - file_writer
+  - file_deleter
+parameters:
+  action:
+    type: string
+    description: "delete, restore, or list"
+    enum: [delete, restore, list]
+  tool_name:
+    type: string
+    description: "Name of the tool to manage"

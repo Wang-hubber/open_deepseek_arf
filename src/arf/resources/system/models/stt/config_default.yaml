@@ -1,0 +1,22 @@
+name: stt
+description: "语音识别模型（Speech-to-Text），用于语音理解的依赖项"
+model_type: stt
+required: false
+config_template:
+  base_url:
+    label: "API 地址"
+    type: string
+    required: true
+    placeholder: "https://api.openai.com"
+  api_key:
+    label: "API 密钥"
+    type: password
+    required: true
+    placeholder: "sk-..."
+  model_name:
+    label: "模型名称"
+    type: string
+    required: true
+    placeholder: "whisper-1"
+depends_on: []
+config_page: "OpenAIConfigForm"

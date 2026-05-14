@@ -1,0 +1,116 @@
+name: resource_scaffold
+description: "Generate a new Tool or Skill resource from requirements"
+prompt_template: |
+  You are generating a new ARF resource. Produce the complete file contents below.
+
+  ## Resource Type: {resource_type}
+  ## Requirements: {requirements}
+
+  ### If generating a TOOL:
+
+  **tool.yaml** — use this exact structure (schema field uses `parameters` to match OpenAI/DeepSeek convention; `json_schema` is also accepted):
+  ```yaml
+  name: {name}
+  description: "{one-line description of what it does}"
+  parameters:
+    type: object
+    properties:
+      {param_name}:
+        type: {string|integer|boolean|object|array}
+        description: "{what this param is}"
+    required:
+      - {param_name}
+  ```
+
+  **function.py** — EVERY generated function.py MUST include error logging.
+
+  Required pattern (follow exactly):
+  ```python
+  import traceback
+  from datetime import datetime
+
+  def _log(level: str, message: str, **extra) -> None:
+      """Internal logger — writes structured log entries to stderr."""
+      import json, sys
+      entry = {{"ts": datetime.now().isoformat(), "level": level, "msg": message, **extra}}
+      print(json.dumps(entry, ensure_ascii=False), file=sys.stderr)
+
+  def execute({params}) -> dict:
+      """{docstring}"""
+      _log("INFO", "execute called", {params_summary})
+      try:
+          # ---- input validation ----
+          {validation_block}
+
+          # ---- core logic ----
+          {implementation}
+
+          result = {{"ok": True, ...}}
+          _log("INFO", "execute succeeded", result_summary="...")
+          return result
+      except Exception as exc:
+          _log("ERROR", str(exc),
+               traceback=traceback.format_exc().split("\\n")[-3:],
+               inputs={{ {params_dict} }})
+          return {{"error": str(exc), "detail": str(type(exc).__name__)}}
+  ```
+
+  **Logging rules:**
+  - Log every call with inputs at INFO level.
+  - Log success with key output fields at INFO level.
+  - Log every exception with traceback and full inputs at ERROR level.
+  - Return `{{"error": message, "detail": exception_type}}` on failure — never let exceptions propagate.
+  - Use only stdlib (traceback, datetime, json, sys).
+
+  ### If generating a SKILL:
+
+  **skill.yaml** — use this exact structure:
+  ```yaml
+  name: {name}
+  description: "{one-line description}"
+  prompt_template: |
+    {detailed instructions for the LLM when this skill is invoked}
+  tools: [{referenced_tool_names}]
+  parameters:
+    {param_name}:
+      type: {string|integer|boolean}
+      description: "{what this param is}"
+  ```
+
+  ## After Validation — Push to Repository
+
+  After the resource passes validation (validate_tool skill returns "Verdict: READY"),
+  use the `git_pusher` tool to save it to the remote repository:
+
+  1. Call `git_pusher` with:
+     - `workspace_dir`: the absolute path of the current workspace root
+     - `message`: a descriptive commit like "feat: add {resource_type} {name}"
+  2. If the push succeeds, inform the user the resource is now backed up remotely.
+  3. If the push fails, report the error and suggest the user push manually later.
+
+  ## Output format:
+  Output each file separately with a `### FILE: <path>` header, then the file content in a code block. Example:
+
+  ### FILE: tools/my_tool/tool.yaml
+  ```yaml
+  name: my_tool
+  ...
+  ```
+
+  ### FILE: tools/my_tool/function.py
+  ```python
+  import traceback
+  from datetime import datetime
+
+  def _log(level, message, **extra):
+      ...
+  ```
+tools:
+  - git_pusher
+parameters:
+  resource_type:
+    type: string
+    description: "Type of resource to generate: tool or skill"
+  requirements:
+    type: string
+    description: "User's natural language requirements description"

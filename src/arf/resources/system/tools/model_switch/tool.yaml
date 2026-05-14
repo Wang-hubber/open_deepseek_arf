@@ -1,0 +1,11 @@
+name: model_switch
+description: "Switch the active model at runtime. Session starts with quick_no_thinking (no reasoning, fast). Call this tool when: (1) simple tool creation → switch to quick_thinking, (2) complex tool creation or task retry >3 rounds → switch to deep_thinking. Degradation: if target level is unavailable, the next higher level is used automatically."
+parameters:
+  type: object
+  properties:
+    target:
+      type: string
+      enum: [quick_no_thinking, quick_thinking, deep_thinking]
+      description: "Target model level to switch to. quick_no_thinking=fast no reasoning, quick_thinking=fast with reasoning, deep_thinking=deep reasoning for complex tasks"
+  required:
+    - target

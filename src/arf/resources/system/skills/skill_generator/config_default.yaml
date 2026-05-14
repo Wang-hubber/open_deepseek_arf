@@ -1,0 +1,4 @@
+name: skill_generator
+description: "Skill 生成器，根据用户需求自动生成新的 Skill 定义文件"
+required: false
+depends_on: []

@@ -1,0 +1,24 @@
+name: skill_manager
+description: "Manage skills — soft delete and restore"
+prompt_template: |
+  # Skill Manager
+  
+  Manage skills in the workspace. Operations:
+  
+  - **delete**: Soft-delete a skill by renaming its directory (prefix with `.deleted_`)
+  - **restore**: Restore a soft-deleted skill
+  - **list**: List all skills including soft-deleted ones
+  
+  Soft-deleted skills are hidden from the agent but can be restored.
+tools:
+  - file_reader
+  - file_writer
+  - file_deleter
+parameters:
+  action:
+    type: string
+    description: "delete, restore, or list"
+    enum: [delete, restore, list]
+  skill_name:
+    type: string
+    description: "Name of the skill to manage"

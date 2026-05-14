@@ -1,0 +1,4 @@
+name: resource_registrar
+description: "资源注册工具，查询和请求系统资源配置"
+required: false
+depends_on: []

@@ -1,0 +1,23 @@
+name: model_manager
+description: "Manage models — soft delete and restore"
+prompt_template: |
+  # Model Manager
+  
+  Manage models in the workspace. Operations:
+  
+  - **delete**: Soft-delete a model by renaming its config (prefix with `.deleted_`)
+  - **restore**: Restore a soft-deleted model
+  - **list**: List all models including soft-deleted ones
+  
+  Soft-deleted models are hidden but can be restored.
+tools:
+  - file_reader
+  - file_writer
+parameters:
+  action:
+    type: string
+    description: "delete, restore, or list"
+    enum: [delete, restore, list]
+  model_name:
+    type: string
+    description: "Name of the model to manage"

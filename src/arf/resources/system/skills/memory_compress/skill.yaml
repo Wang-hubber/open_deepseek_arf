@@ -1,0 +1,38 @@
+name: memory_compress
+description: "Compress and consolidate long-term memory to free up storage space. Run this when memory_store returns compression_needed=true (>=70% of 1MB) or during daily maintenance. Prefer using a quick_thinking (flash) model for compression."
+prompt_template: |
+  Long-term memory storage needs compression. Follow these steps:
+
+  ## Step 1: Check for Flash Model
+  Call `model_manager` action `list` to see available models.
+  Look for one with `model_type` = "quick_thinking" and `active` = false (not the main model).
+
+  ## Step 2: Choose Compression Strategy
+
+  **If a quick_thinking model is available:**
+  Call `memory_store` action `compress` with `model` = the flash model's name.
+  The tool will use that model to produce compressed content automatically.
+
+  **If NO quick_thinking model:**
+  Tell the user: "No flash (quick_thinking) model is configured. Using a flash model for compression saves cost. Would you like to: (a) create a flash model first via `model_manager`, or (b) proceed with the current deep_thinking model?"
+  Wait for user confirmation before proceeding.
+  If the user confirms using deep_thinking:
+  1. Call `memory_store` action `read` to get current memories.
+  2. Compress the content yourself: remove redundancies, merge related facts,
+     preserve all unique information, keep the same markdown structure.
+  3. Call `memory_store` action `write` with the compressed content.
+
+  ## Step 3: Verify
+  Call `memory_store` action `stats` to confirm space was freed.
+
+  ## Compression Rules
+  - PRESERVE: All unique facts, preferences, and decisions
+  - REMOVE: Duplicates, redundant phrasing, outdated values
+  - MERGE: Related facts into coherent paragraphs
+  - STRUCTURE: Keep the same markdown sections (User Profile, Preferences, Important Facts, Decisions)
+
+  Report the results: old size, new size, and space saved.
+tools:
+  - memory_store
+  - model_manager
+parameters: {}

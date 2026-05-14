@@ -1,0 +1,4 @@
+name: tool_generator
+description: "Tool 生成器，根据用户需求自动生成新的 Tool 定义和实现"
+required: false
+depends_on: []

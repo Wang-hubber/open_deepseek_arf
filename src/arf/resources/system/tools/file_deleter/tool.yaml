@@ -1,0 +1,10 @@
+name: file_deleter
+description: "Soft-delete a file by renaming it with a _deleted suffix"
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: "File path relative to workspace root"
+  required:
+    - path

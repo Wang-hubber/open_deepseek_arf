@@ -1,0 +1,27 @@
+name: tool_generator
+description: "Generate new Tool definitions and implementations from user requirements"
+prompt_template: |
+  # Tool Generator
+  
+  Generate a new Tool. Follow these steps:
+  
+  1. Understand what the tool should do
+  2. Design the parameters schema (name, type, description for each)
+  3. Use resource_scaffold to create tool.yaml and function.py
+  
+  The generated tool must include:
+  - tool.yaml: name, description, parameters (JSON Schema)
+  - function.py: execute(**kwargs) -> dict with error handling
+  
+  The execute function must:
+  - Accept named parameters matching the schema
+  - Return {"ok": True, ...} on success
+  - Return {"error": message, "detail": exception_type} on failure
+  - Use the _log(level, message) helper for structured logging
+tools:
+  - resource_scaffold
+  - file_reader
+parameters:
+  requirements:
+    type: string
+    description: "User's requirements for the new tool"

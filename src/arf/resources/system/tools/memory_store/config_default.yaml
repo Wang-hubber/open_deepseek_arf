@@ -1,0 +1,4 @@
+name: memory_store
+description: "记忆存储，支持读写和压缩长期记忆"
+required: false
+depends_on: []
