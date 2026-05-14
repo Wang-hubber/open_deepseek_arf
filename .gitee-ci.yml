@@ -1,0 +1,36 @@
+# Gitee CI — Docker image build & push
+#
+# Environment variables (set in Gitee repo Settings → CI/CD → Variables):
+#   ACR_REGISTRY     e.g. registry.cn-hangzhou.aliyuncs.com/your-namespace
+#   ACR_USERNAME     Alibaba Cloud account UID
+#   ACR_PASSWORD     Alibaba Cloud Container Registry password
+
+version: '1.0'
+
+stages:
+  - build
+  - push
+
+variables:
+  IMAGE_NAME: arf
+
+build:
+  stage: build
+  image: docker:24
+  script:
+    - docker build -t ${ACR_REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHA:0:8} .
+    - docker tag ${ACR_REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHA:0:8} ${ACR_REGISTRY}/${IMAGE_NAME}:latest
+  only:
+    - main
+    - tags
+
+push:
+  stage: push
+  image: docker:24
+  script:
+    - docker login -u ${ACR_USERNAME} -p ${ACR_PASSWORD} ${ACR_REGISTRY%%/*}
+    - docker push ${ACR_REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHA:0:8}
+    - docker push ${ACR_REGISTRY}/${IMAGE_NAME}:latest
+  only:
+    - main
+    - tags
