@@ -132,6 +132,10 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
     msgs.extend(list(state["messages"]))
 
     tools = state.get("tools")
+    if state.get("_needs_tools_refresh"):
+        refresh_tools = config.get("configurable", {}).get("refresh_tools")
+        if refresh_tools:
+            tools = refresh_tools()
 
     hook_runner = config.get("configurable", {}).get("hook_runner")
     node_traces: list[dict] = []
@@ -221,14 +225,14 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
     duration_ms = (time.monotonic() - t0) * 1000
 
     finish = getattr(response, "finish_reason", None)
-    content = response.content or ""
+    content = str(response.content or "")
     reasoning = getattr(response, "reasoning_content", None)
 
     # Accumulate usage
     usage = getattr(response, "usage", {}) or {}
 
     input_snippet = _last_user_message_snippet(state["messages"])
-    output_snippet = (content or "")[:1000]
+    output_snippet = content[:1000]
 
     trace = {
         "node": "call_model",
@@ -241,7 +245,7 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
         "total_tokens": usage.get("total_tokens", 0),
         "metadata": json.dumps(
             {
-                "finish_reason": finish,
+                "finish_reason": str(finish) if finish else None,
                 "has_tool_calls": bool(response.tool_calls),
                 "model_input_snippet": input_snippet,
                 "model_output_snippet": output_snippet,
@@ -349,6 +353,10 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
     msgs = [{"role": "system", "content": state["system_prompt"]}]
     msgs.extend(list(state["messages"]))
     tools = state.get("tools")
+    if state.get("_needs_tools_refresh"):
+        refresh_tools = config.get("configurable", {}).get("refresh_tools")
+        if refresh_tools:
+            tools = refresh_tools()
 
     stream_call = config.get("configurable", {}).get("stream_model")
     if stream_call is None:
@@ -526,6 +534,124 @@ def _tool_result_has_error(result_str: str) -> bool:
         return False
 
 
+def _resolve_model_type_from_name(active_name: str, config: RunnableConfig) -> str | None:
+    """Map a model name (e.g. 'deep_thinking') to its model_type by checking configurable."""
+    if config is None:
+        return None
+    available = config.get("configurable", {}).get("available_model_types", set())
+    if active_name in available:
+        return active_name
+    resolvers = config.get("configurable", {}).get("model_resolvers", {})
+    if active_name in resolvers:
+        return active_name
+    return None
+
+
+def _resolve_model_switch(tool_calls: list[dict], tool_results: list[dict], config: RunnableConfig = None) -> dict:
+    """If model_switch was called successfully, update current_model.
+
+    model_switch updates config but doesn't change AgentState.current_model,
+    so the next call_model turn would still resolve the old adapter.
+    This extracts the switched model_type from the tool result and returns
+    a state update so the engine uses the new model immediately.
+    """
+    for tc in tool_calls:
+        tool_name = tc.get("function", {}).get("name", "")
+        args_str = tc.get("function", {}).get("arguments", "{}")
+        call_id = tc.get("id", "")
+
+        if tool_name == "model_switch":
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                target = args.get("target", "")
+                for tr in tool_results:
+                    if tr.get("tool_call_id") == call_id:
+                        result_str = tr.get("content", "")
+                        result = json.loads(result_str) if isinstance(result_str, str) else result_str
+                        if isinstance(result, dict) and result.get("ok"):
+                            mt = result.get("model_type", "")
+                            if mt:
+                                logger.info("model_switch: updating current_model → %s", mt)
+                                return {"current_model": mt}
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        elif tool_name == "model_manager":
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                if args.get("action") == "switch":
+                    for tr in tool_results:
+                        if tr.get("tool_call_id") == call_id:
+                            result_str = tr.get("content", "")
+                            result = json.loads(result_str) if isinstance(result_str, str) else result_str
+                            if isinstance(result, dict) and result.get("ok"):
+                                active_name = result.get("active_model", "")
+                                if active_name:
+                                    resolved = _resolve_model_type_from_name(active_name, config)
+                                    if resolved:
+                                        logger.info("model_manager switch: current_model -> %s (%s)",
+                                                    active_name, resolved)
+                                        return {"current_model": resolved}
+                            break
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    return {}
+
+
+def _detect_contradictions(
+    prior_messages: list[dict],
+    new_results: list[dict],
+    tool_calls: list[dict],
+) -> list[str]:
+    """Detect when tool results contradict prior assistant claims."""
+    notes = []
+
+    last_assistant = None
+    for m in reversed(prior_messages):
+        if m.get("role") == "assistant" and m.get("content"):
+            last_assistant = m["content"][:1000]
+            break
+
+    if not last_assistant:
+        return notes
+
+    last_assistant_lower = last_assistant.lower()
+
+    for tc, tr in zip(tool_calls, new_results):
+        tool_name = tc.get("function", {}).get("name", "")
+        if tool_name in ("model_manager", "model_switch"):
+            result_str = tr.get("content", "")
+            try:
+                result = json.loads(result_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if isinstance(result, dict):
+                models = result.get("models", [])
+                for model_entry in models:
+                    if model_entry.get("active") and model_entry.get("name"):
+                        actual_active = model_entry["name"]
+                        for claimed_name in ("quick_no_thinking", "quick_thinking", "deep_thinking"):
+                            if claimed_name in last_assistant_lower and claimed_name != actual_active:
+                                notes.append(
+                                    f"Assistant claimed {claimed_name!r} but actual active model "
+                                    f"is {actual_active!r}. Correct your response."
+                                )
+
+    return notes
+
+
+def _is_resource_creation(path: str) -> bool:
+    """Check if a file_writer path is creating a new tool/skill resource."""
+    return (
+        ("tools/" in path or "skills/" in path) and
+        (path.endswith("tool.yaml") or path.endswith("skill.yaml") or
+         path.endswith("function.py"))
+    )
+
+
 def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     """Execute tool calls from the last assistant message.
 
@@ -547,6 +673,7 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     new_events: list[dict] = []
     tool_fails: dict[str, int] = dict(state.get("tool_fail_counts", {}))
     node_traces: list[dict] = []
+    seen_calls: set[tuple[str, str]] = set()
 
     for tc in tool_calls:
         tool_name = tc.get("function", {}).get("name", "unknown")
@@ -555,6 +682,29 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
         tool_category = "sys" if tool_name.startswith("@sys/") else "user"
 
         t0 = time.monotonic()
+
+        # Deduplicate: same tool + same args in this batch → skip
+        call_key = (tool_name, arguments)
+        if call_key in seen_calls:
+            logger.info("Skipping duplicate call: %s(%s)", tool_name, arguments[:100])
+            new_messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps({
+                    "ok": True,
+                    "deduplicated": True,
+                    "note": "Duplicate call skipped — same tool+args already executed this turn.",
+                }),
+            })
+            node_traces.append({
+                "node": "execute_tools",
+                "tool_name": tool_name,
+                "turn": state["turn_count"],
+                "status": "skipped",
+                "metadata": json.dumps({"deduplicated": True}, ensure_ascii=False),
+            })
+            continue
+        seen_calls.add(call_key)
 
         # Parse arguments for hook payload
         tool_input = _parse_args(arguments)
@@ -726,12 +876,36 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             })
             tool_fails.pop(tool_name, None)
 
+    # After executing all tools, check if model_switch changed the session model.
+    model_update = _resolve_model_switch(tool_calls, new_messages, config)
+
+    # Contradiction detection: if the last assistant message made a claim
+    # that a subsequent tool result contradicts, inject a flag.
+    if not model_update:
+        contradiction_notes = _detect_contradictions(messages, new_messages, tool_calls)
+        if contradiction_notes:
+            new_messages.append({
+                "role": "user",
+                "content": "[CONTRADICTION] " + " ".join(contradiction_notes),
+            })
+
+    # Post-tool state refresh: if any tool mutated the registry, signal
+    # that tools should be rebuilt before the next call_model turn.
+    state_update = model_update.copy() if model_update else {}
+    registry_mutators = {"resource_loader", "model_switch", "model_manager"}
+    if any(
+        tc.get("function", {}).get("name", "") in registry_mutators
+        for tc in tool_calls
+    ):
+        state_update["_needs_tools_refresh"] = True
+
     return {
         "messages": new_messages,
         "tool_events": new_events,
         "tool_fail_counts": tool_fails,
         "transition": "tool_result_continuation",
         "node_traces": node_traces,
+        **state_update,
     }
 
 
