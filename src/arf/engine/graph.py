@@ -168,6 +168,7 @@ class GraphEngine:
         classifier_call: Callable = None,
         classifier_enabled: bool = False,
         available_model_types: Optional[set[str]] = None,
+        user_model_preference: Optional[str] = None,
     ):
         self._call_model = call_model
         self._execute_tool = execute_tool
@@ -177,6 +178,8 @@ class GraphEngine:
         self._classifier_call = classifier_call
         self._classifier_enabled = classifier_enabled
         self._available_model_types = available_model_types or set()
+        self._user_model_preference = user_model_preference
+        self._refresh_tools_fn = None
 
         # Compile both graphs once
         self._graph = build_agent_graph()
@@ -336,6 +339,10 @@ class GraphEngine:
 
         thread.join(timeout=5)
 
+    def set_tools_refresher(self, refresh_fn: Callable[[], list[dict] | None]):
+        """Set a callback that returns the current active tools list."""
+        self._refresh_tools_fn = refresh_fn
+
     # ---- internals ----------------------------------------------------
 
     def _params_to_state(self, params) -> dict:
@@ -353,7 +360,7 @@ class GraphEngine:
             system_prompt=params.system_prompt,
             tools=params.tools,
             max_turns=params.max_turns,
-            current_model="quick_no_thinking",
+            current_model=self._user_model_preference or "quick_no_thinking",
         )
 
     def _build_config(self) -> dict:
@@ -366,23 +373,27 @@ class GraphEngine:
                 "classifier_call": self._classifier_call,
                 "classifier_enabled": self._classifier_enabled,
                 "available_model_types": self._available_model_types,
+                "user_model_preference": self._user_model_preference,
+                "refresh_tools": self._refresh_tools_fn or (lambda: None),
             },
         }
 
     def _build_model_resolvers(self) -> dict[str, Callable]:
         """Build a dict of model_type -> factory callable that returns a ModelAdapter.
 
-        The factory is called with no args by _resolve_model_adapter in nodes.py,
-        and should return a ModelAdapter instance.
+        Each factory is called with no args by _resolve_model_adapter in nodes.py,
+        and should return a ModelAdapter instance. Resolvers are lazy — each call
+        re-invokes the factory so model switches mid-session are reflected immediately.
         """
         resolvers: dict[str, Callable] = {}
 
         factory = self._model_adapter_factory
         if factory is not None:
             for mt in self._available_model_types:
-                adapter = factory(mt)
-                if adapter is not None:
-                    resolvers[mt] = lambda adp=adapter: adp
+                # Closure captures mt by value, calls factory fresh each time
+                def _make_resolver(model_type: str):
+                    return lambda mt=model_type: factory(mt)
+                resolvers[mt] = _make_resolver(mt)
 
         # Fallback: use the single injected call_model for all types
         if not resolvers and self._call_model is not None:

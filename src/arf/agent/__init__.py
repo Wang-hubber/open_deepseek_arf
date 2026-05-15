@@ -1,5 +1,6 @@
 """ARF Agent -- conversational orchestration layer."""
 
+import copy
 import json
 import logging
 import os
@@ -12,6 +13,41 @@ logger = logging.getLogger("arf.agent")
 from ..resources.model_adapter import ModelAdapter
 
 
+MAX_SCHEMA_TOKENS_PER_TOOL = 400
+
+
+def _trim_schema(schema: dict, max_tokens: int = MAX_SCHEMA_TOKENS_PER_TOOL) -> dict:
+    """Recursively strip descriptions from nested properties if schema exceeds token budget."""
+    text = json.dumps(schema, ensure_ascii=False)
+    estimated = len(text) // 3  # rough token estimate
+
+    if estimated <= max_tokens:
+        return schema
+
+    trimmed = copy.deepcopy(schema)
+
+    def _strip_descriptions(obj):
+        if isinstance(obj, dict):
+            obj.pop("description", None)
+            for v in obj.values():
+                _strip_descriptions(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _strip_descriptions(item)
+
+    # Strip descriptions from nested properties, keep top-level
+    props = trimmed.get("properties", {})
+    for prop_schema in props.values():
+        if isinstance(prop_schema, dict):
+            for sub_key, sub_val in prop_schema.items():
+                if sub_key == "properties" and isinstance(sub_val, dict):
+                    _strip_descriptions(sub_val)
+                elif sub_key == "items":
+                    _strip_descriptions(sub_val)
+
+    return trimmed
+
+
 class ARFAgent:
     """Core agent that understands user intent, orchestrates resources,
     and generates missing components."""
@@ -22,6 +58,7 @@ class ARFAgent:
         (10, "workspace",        "_workspace_section"),
         (15, "long_term_memory", "_long_term_memory_section"),
         (20, "memory",           "_memory_section"),
+        (25, "critical_rules",   "_critical_rules_section"),
         (30, "identity",         "_identity_section"),
         (50, "inventory",        "_inventory_section"),
         (60, "language",         "_language_instruction"),
@@ -66,6 +103,20 @@ class ARFAgent:
         except Exception:
             return []
 
+    def _read_default_model(self) -> str | None:
+        """Read agent.default_model from arf_agent.yaml."""
+        if not self.workspace_dir:
+            return None
+        try:
+            import yaml
+            cfg_path = Path(self.workspace_dir) / "arf_agent.yaml"
+            if not cfg_path.exists():
+                return None
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            return cfg.get("agent", {}).get("default_model")
+        except Exception:
+            return None
+
     def _read_max_turns(self) -> int:
         """Read agent.max_turns from arf_agent.yaml. User controls their own budget."""
         if not self.workspace_dir:
@@ -100,6 +151,31 @@ class ARFAgent:
                 logger.warning("Prompt section '%s' failed", _name, exc_info=True)
                 continue
         return "\n\n".join(sections)
+
+    # -- critical rules -------------------------------------------------
+
+    def _critical_rules_section(self) -> str:
+        """Hard behavioral rules — placed after memory so the model has context first."""
+        return (
+            "## CRITICAL — Hard Rules\n\n"
+            "### R0: Self-check before EVERY response\n"
+            "Before writing ANY response text, ask yourself: \"Did I call a tool to "
+            "verify what I'm about to say?\" If the answer is no AND your response "
+            "states any fact about current state (model, tools, files, config), "
+            "STOP. Call the tool first. Then respond with the verified information.\n\n"
+            "### R1: Verify, then answer\n"
+            "Never state the current model, active tools, file contents, or any "
+            "runtime state from memory. Call the relevant tool FIRST, then answer "
+            "from the tool result. Guessing is always wrong.\n\n"
+            "### R2: Tool calls ≠ words\n"
+            "To switch models, you MUST call `model_switch` or `model_manager`. "
+            "Saying \"switched to X\" or \"now using X\" without calling the tool "
+            "is a violation. The same applies to any state-changing action.\n\n"
+            "### R3: Verify after action\n"
+            "After calling a tool that changes state, verify the result. If the "
+            "tool says it succeeded, report success. If it failed or shows "
+            "unexpected state, tell the user the actual result."
+        )
 
     # -- workspace config ----------------------------------------------
 
@@ -377,7 +453,7 @@ class ARFAgent:
         for name, info in self.registry._items["tools"].items():
             if name not in self._active_tools:
                 continue
-            schema = info.get("json_schema", {})
+            schema = _trim_schema(info.get("json_schema", {}))
             if not schema:
                 continue
             tools.append({
@@ -513,7 +589,7 @@ class ARFAgent:
         classifier_call = self._build_classifier_call()
         classifier_enabled = os.environ.get("ARF_CLASSIFIER_ENABLED", "").lower() in ("1", "true", "yes")
 
-        return GraphEngine(
+        engine = GraphEngine(
             call_model=lambda msgs, tls: self.model.chat_complete(
                 msgs, tools=self._build_openai_tools()),
             execute_tool=lambda name, args: self._execute_tool(name, args, project_dir),
@@ -524,7 +600,13 @@ class ARFAgent:
             classifier_call=classifier_call,
             classifier_enabled=classifier_enabled,
             available_model_types=available_types,
+            user_model_preference=self._read_default_model(),
         )
+
+        # Wire the tools refresher so post-tool state refresh works
+        engine.set_tools_refresher(lambda: self._build_openai_tools())
+
+        return engine
 
     def chat_with_tools(self, message: str, history: list[dict], project_dir: str | None = None):
         """Send a message, execute tool calls via the GraphEngine."""
