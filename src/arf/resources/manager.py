@@ -432,6 +432,7 @@ class ResourceRegistry:
                 "model_type": cfg.get("model_type") or default.get("model_type", "deep_thinking"),
                 "config": cfg.get("config", {}),
                 "config_template": default.get("config_template", {}),
+                "config_page": default.get("config_page", ""),
                 "path": str(sub), "source": "user", "readonly": False,
                 "depends_on": default.get("depends_on", []),
                 "required": default.get("required", False),

@@ -35,7 +35,11 @@ const configPageMissing = ref(false)
 async function load() {
   try {
     const { get } = useApi()
-    data.value = await get('/api/resources')
+    const [resources] = await Promise.all([
+      get<ResourceMap>('/api/resources'),
+      appStore.checkConfigStatus(),
+    ])
+    data.value = resources
     error.value = false
   } catch {
     error.value = true

@@ -8,9 +8,14 @@ const router = useRouter()
 const appStore = useAppStore()
 const { t } = useI18n()
 
-function handleStart() {
+async function handleStart() {
   localStorage.setItem('arf_seen_welcome', '1')
-  router.replace('/config')
+  await appStore.checkConfigStatus()
+  if (appStore.configStatus?.configured) {
+    router.replace('/')
+  } else {
+    router.replace('/config')
+  }
 }
 
 function scrollToSection(id: string) {

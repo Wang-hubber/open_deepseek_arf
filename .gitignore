@@ -18,8 +18,9 @@ build/
 # Vite
 frontend/.vite/
 
-# Sensitive config (contains API keys)
-models/
+# Sensitive config (contains API keys) — only workspace models, not system definitions
+**/default_workspace/models/
+data/**/models/
 
 # Multi-user data directory (contains DB, user workspaces, SMTP config)
 data/
