@@ -34,7 +34,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 arf = [
-    "resources/system/models/default/config.yaml",
     "resources/system/tools/*/tool.yaml",
     "resources/system/tools/*/function.py",
     "resources/system/skills/*/skill.yaml",
