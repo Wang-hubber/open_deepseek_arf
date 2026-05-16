@@ -265,16 +265,21 @@ def cmd_start(args):
         if frontend_dir:
             print(f"Starting frontend dev server (Vite)...")
             fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
+            fe_log = open(run_dir / "frontend.log", "w")
             fe_proc = subprocess.Popen(
                 ["npm", "run", "dev"] if sys.platform != "win32" else "npm run dev",
                 cwd=str(frontend_dir),
                 env=fe_env,
-                stdout=subprocess.DEVNULL,
+                stdout=fe_log,
                 stderr=subprocess.STDOUT,
                 shell=(sys.platform == "win32"),
             )
+            fe_log.close()
             _write_pid(run_dir, "frontend", fe_proc.pid)
             time.sleep(1.5)
+            if fe_proc.poll() is not None:
+                print(f"  [ERROR] Vite exited with code {fe_proc.returncode}. "
+                      f"Log: {run_dir / 'frontend.log'}")
 
         from .server import ARFServer
 
