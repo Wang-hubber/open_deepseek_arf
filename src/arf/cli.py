@@ -266,11 +266,12 @@ def cmd_start(args):
             print(f"Starting frontend dev server (Vite)...")
             fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
             fe_proc = subprocess.Popen(
-                ["npm", "run", "dev"],
+                ["npm", "run", "dev"] if sys.platform != "win32" else "npm run dev",
                 cwd=str(frontend_dir),
                 env=fe_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
+                shell=(sys.platform == "win32"),
             )
             _write_pid(run_dir, "frontend", fe_proc.pid)
             time.sleep(1.5)

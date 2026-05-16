@@ -10,8 +10,8 @@ export const useAppStore = defineStore('app', () => {
 
   const currentPage = computed(() => {
     if (loading.value) return 'loading'
-    if (!configStatus.value?.configured) return 'welcome'
-    return 'chat'
+    if (configStatus.value?.configured && localStorage.getItem('arf_seen_welcome')) return 'chat'
+    return 'welcome'
   })
 
   async function checkConfigStatus() {
