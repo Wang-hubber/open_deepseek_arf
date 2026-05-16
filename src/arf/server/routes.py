@@ -129,12 +129,12 @@ def config_save(payload: ModelConfig, mgr: SessionManager = Depends(get_mgr)):
     path = mgr.workspace_dir / "models" / config_name / "config.yaml"
     config = {}
     if path.exists():
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
     config["name"] = config_name
     config["config"] = payload.model_dump()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
     mgr.reset_resource_state()
     return {"ok": True}
@@ -201,7 +201,7 @@ def config_register_deepseek(payload: DeepSeekRegisterRequest, mgr: SessionManag
             config["config"]["reasoning_effort"] = spec["reasoning_effort"]
 
         config_path = model_dir / "config.yaml"
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
         created.append({"name": name, "model_name": spec["model_name"]})
 
@@ -408,7 +408,7 @@ def configure_resource(resource_type: str, name: str, payload: dict, mgr: Sessio
             "description": item.get("description", ""),
             "config": payload.get("config", payload),
         }
-        with open(config_file, "w") as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
     else:
         raise HTTPException(status_code=400, detail=f"Configure is not supported for {resource_type} yet")

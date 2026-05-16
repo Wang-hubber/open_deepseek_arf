@@ -279,7 +279,7 @@ def cmd_start(args):
             if frontend_dir:
                 print(f"Starting frontend dev server (Vite)...")
                 fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
-                fe_log = open(run_dir / "frontend.log", "w")
+                fe_log = open(run_dir / "frontend.log", "w", encoding="utf-8")
                 fe_proc = subprocess.Popen(
                     ["npm", "run", "dev"] if sys.platform != "win32" else "npm run dev",
                     cwd=str(frontend_dir),
@@ -495,7 +495,7 @@ def _validate_resource(ws: Path, rtype: str, sub: Path, errors: list):
         return
 
     try:
-        with open(yaml_file) as f:
+        with open(yaml_file, encoding="utf-8") as f:
             cfg = _yaml.safe_load(f)
     except Exception as e:
         errors.append(f"[{rtype}/{name}] Invalid YAML: {e}")

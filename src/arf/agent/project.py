@@ -72,11 +72,11 @@ def copy_model_config(source_config_path: Path, dest_workspace: Path):
     """Copy model config from an existing project to a new workspace."""
     if not source_config_path.exists():
         return
-    with open(source_config_path) as f:
+    with open(source_config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
     cfg = config.get("config", {})
     if cfg.get("base_url") and cfg.get("api_key") and cfg.get("model_name"):
         dest = dest_workspace / "models" / "deep_thinking" / "config.yaml"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "w") as f:
+        with open(dest, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
