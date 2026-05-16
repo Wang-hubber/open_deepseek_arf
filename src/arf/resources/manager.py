@@ -156,13 +156,13 @@ class ResourceRegistry:
         # But preserve system config_default.yaml metadata (depends_on, required, config_template)
         if existing and existing.get("source") == "system" and item.get("source") == "user":
             for key in ("depends_on", "required", "config_template", "config_page"):
-                if key in existing and key not in item:
+                if existing.get(key) and not item.get(key):
                     item[key] = existing[key]
             item["configured"] = True
         # For re-configuring user resources, preserve metadata from previous registration
         if existing and existing.get("source") == "user" and item.get("source") == "user":
             for key in ("depends_on", "required", "config_template", "config_page"):
-                if key in existing and key not in item:
+                if existing.get(key) and not item.get(key):
                     item[key] = existing[key]
         self._items[rtype][name] = item
 
