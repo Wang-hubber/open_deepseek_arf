@@ -405,7 +405,7 @@ class ResourceRegistry:
                 changes.append(f"~{rtype}/{name}")
             else:
                 continue  # skip system resources
-            self._items[rtype][name] = item
+            self._register(rtype, name, item)
 
         # Remove user resources that no longer exist on disk
         to_remove = [
@@ -427,7 +427,9 @@ class ResourceRegistry:
         return "config.yaml"
 
     def _build_item(self, rtype: str, name: str, cfg: dict, sub: Path) -> dict:
-        """Build a registry item from parsed config (user resources only)."""
+        """Build a registry item from parsed config (user resources only).
+        Reads metadata from cfg (config.yaml) first, falling back to
+        config_default.yaml in the same directory."""
         cfg_default = sub / "config_default.yaml"
         default = self._read_yaml(cfg_default) if cfg_default.exists() else {}
         if rtype == "models":
@@ -436,11 +438,11 @@ class ResourceRegistry:
                 "description": cfg.get("description") or default.get("description", ""),
                 "model_type": cfg.get("model_type") or default.get("model_type", "deep_thinking"),
                 "config": cfg.get("config", {}),
-                "config_template": default.get("config_template", {}),
-                "config_page": default.get("config_page", ""),
+                "config_template": cfg.get("config_template") or default.get("config_template", {}),
+                "config_page": cfg.get("config_page") or default.get("config_page", ""),
                 "path": str(sub), "source": "user", "readonly": False,
-                "depends_on": default.get("depends_on", []),
-                "required": default.get("required", False),
+                "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
+                "required": cfg.get("required") if "required" in cfg else default.get("required", False),
                 "configured": True,
             }
         if rtype == "tools":
@@ -451,8 +453,8 @@ class ResourceRegistry:
                 "json_schema": schema,
                 "path": str(sub), "source": "user", "readonly": False,
                 "function": self._load_tool_function(sub),
-                "depends_on": default.get("depends_on", []),
-                "required": default.get("required", False),
+                "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
+                "required": cfg.get("required") if "required" in cfg else default.get("required", False),
                 "configured": True,
             }
         # skills
@@ -464,8 +466,8 @@ class ResourceRegistry:
             "sub_skills": cfg.get("sub_skills", []),
             "parameters": cfg.get("parameters", {}),
             "path": str(sub), "source": "user", "readonly": False,
-            "depends_on": default.get("depends_on", []),
-            "required": default.get("required", False),
+            "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
+            "required": cfg.get("required") if "required" in cfg else default.get("required", False),
             "configured": True,
         }
 
