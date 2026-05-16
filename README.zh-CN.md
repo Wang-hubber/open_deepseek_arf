@@ -83,8 +83,10 @@ ARF 不仅可配置——它能在运行时自我演进。
 
 | 能力 | 实现 |
 |------|------|
-| **智能体引擎** | LangGraph StateGraph，classify → call_model → execute_tools/respond → recovery |
-| **模型路由** | 三级分类器（simple/medium/complex），支持自动降级 |
+| **智能体引擎** | LangGraph StateGraph，compact → classify → call_model → execute_tools/respond → recovery |
+| **模型路由** | 二级分类器（medium/complex）：quick_thinking ↔ deep_thinking 自动切换 |
+| **上下文压缩** | 上下文超 75% 窗口时自动滑动窗口 + 摘要压缩 |
+| **渐进式披露** | 长工具结果存盘，上下文中显示摘要 + 文件路径 |
 | **API 服务器** | FastAPI + WebSocket + SSE 流式传输 |
 | **前端** | Vue 3 + TypeScript + Vite（6400+ 行，8 视图、13 组件） |
 | **可观测性** | SQLite Trace 数据库（6 张表），瀑布图可视化 |
@@ -93,6 +95,7 @@ ARF 不仅可配置——它能在运行时自我演进。
 | **自演进** | 智能体可在运行时创建、编写、注册新工具和技能 |
 | **热重载** | 文件监听器检测资源变更，注册表无重启更新 |
 | **Docker 支持** | 多阶段 Dockerfile + docker-compose |
+| **跨平台** | Windows + Linux 支持，UTF-8 文件 I/O，Vite 自动安装 |
 
 <br/>
 
@@ -161,6 +164,7 @@ my_workspace/
 | `ARF_API_MAX_RETRIES` | `3` | API 调用最大重试次数 |
 | `ARF_API_RETRY_BACKOFF` | `1.5` | 重试退避基数（秒） |
 
+| `ARF_CLASSIFIER_ENABLED` | `0` | 启用自动模型路由（设为 `1` 激活） |
 | `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 一键配置的 Base URL |
 
 **模型配置 (`models/<name>/config.yaml`)：**
@@ -168,12 +172,13 @@ my_workspace/
 ```yaml
 name: deep_thinking
 model_type: deep_thinking
+context_window: 1048576   # 1M tokens
 config:
   base_url: "https://api.deepseek.com"
   api_key: "sk-..."
-  model_name: "deepseek-chat"
+  model_name: "deepseek-v4-pro"
   temperature: 0.7
-  max_tokens: 10240
+  max_tokens: 100000
   thinking_enabled: true
   reasoning_effort: "max"
 ```
@@ -183,8 +188,9 @@ config:
 ```yaml
 agent:
   name: "我的工作区"
-  model: "quick_no_thinking"
+  model: "quick_thinking"
   max_turns: 10
+  max_tool_result_chars: 2000  # 工具输出截断阈值
   classifier_enabled: true       # 按任务复杂度自动路由
 
 resources:
@@ -285,11 +291,12 @@ ARF 在 AI 智能体领域占据独特的生态位：它既不是类库，也不
 
 1. **用户消息** 通过 WebSocket 或 REST API 到达
 2. **SessionManager** 拼装系统提示词（工作区 → 记忆 → 身份 → 资源清单 → 语言）
-3. **分类器**（可选）分析复杂度 → 路由到 `quick_no_thinking` / `quick_thinking` / `deep_thinking`
-4. **LangGraph 引擎** 执行智能体循环：调用模型 → 解析响应 → 执行工具或直接回复
-5. **Hook Runner** 在生命周期事件（PreModelCall、PostToolUse、SessionEnd 等）触发子进程
-6. **追踪系统** 将每一步记录到 SQLite，用于可观测性分析
-7. **SSE 流** 将 token、工具调用和用量数据实时推送到前端
+3. **压缩节点** 检查上下文用量 —— 若超过 75% 窗口则压缩旧轮次为结构化摘要
+4. **分类器**（可选）分析复杂度 → 路由到 `quick_thinking` / `deep_thinking`
+5. **LangGraph 引擎** 执行智能体循环：compact → 调用模型 → 解析响应 → 执行工具或直接回复
+6. **Hook 运行器** 在生命周期事件触发子进程（PreModelCall、PostToolUse、SessionEnd 等）
+7. **Trace 追踪** 将每一步记录到 SQLite，用于可观测性分析
+8. **SSE 流** 将 token、工具调用和用量数据实时推送到前端
 
 ### 记忆架构
 
@@ -336,7 +343,7 @@ Hook 通过线程池并行执行，每个 Hook 有独立的超时时间。配置
 |------|------|------|------|
 | `deep_thinking` | 推理 | ✅ 已实现 | 最大深度推理，适合复杂任务（架构设计、重构、创意工作） |
 | `quick_thinking` | 推理 | ✅ 已实现 | 均衡推理，适合中等任务（代码生成、调试、多步骤） |
-| `quick_no_thinking` | 推理 | ✅ 已实现 | 快速响应，适合简单任务（问候、查找、简单编辑） |
+| `quick_no_thinking` | 推理 | ✅ 已实现 | 保留给后台任务（压缩、摘要、标题生成） |
 | `embedding` | 多模态 | 🚧 仅配置 | 文本嵌入向量生成 |
 | `rerank` | 多模态 | 🚧 仅配置 | 搜索结果重排序 |
 | `vision` | 多模态 | 🚧 仅配置 | 图像理解与分析 |
@@ -460,6 +467,8 @@ Hook 定义在 `.hooks.json` 中，可通过 `manage_hooks` 内核工具或 REST
 ## TODO
 
 ### 短期
+| **P0** | 上下文压缩 —— 超 75% 上下文窗口时自动压缩旧轮次 | ✅ 已完成 |
+| **P0** | 渐进式工具结果披露 —— 长输出存盘、上下文仅显示摘要 | ✅ 已完成 |
 
 | 优先级 | 项目 | 状态 |
 |--------|------|------|

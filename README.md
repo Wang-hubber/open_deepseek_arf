@@ -83,8 +83,10 @@ No cloud SaaS. No managed service. No telemetry. Your workspace is a directory. 
 
 | Capability | Implementation |
 |------------|---------------|
-| **Agent Engine** | LangGraph StateGraph with classify → call_model → execute_tools/respond → recovery |
-| **Model Routing** | Three-tier classifier (simple/medium/complex) with automatic degradation |
+| **Agent Engine** | LangGraph StateGraph with compact → classify → call_model → execute_tools/respond → recovery |
+| **Model Routing** | Two-tier classifier (medium/complex): quick_thinking ↔ deep_thinking auto-switch |
+| **Context Compaction** | Automatic sliding-window + summary when context exceeds 75% of 1M window |
+| **Progressive Disclosure** | Long tool results saved to disk, context shows summary + file pointer |
 | **API Server** | FastAPI + WebSocket + SSE streaming |
 | **Frontend** | Vue 3 + TypeScript + Vite (6400+ lines, 8 views, 13 components) |
 | **Observability** | SQLite trace database (6 tables) with waterfall visualization |
@@ -93,6 +95,7 @@ No cloud SaaS. No managed service. No telemetry. Your workspace is a directory. 
 | **Self-Evolution** | Agent can scaffold, write, and register new tools/skills at runtime |
 | **Hot Reload** | File watcher detects resource changes, registry updates without restart |
 | **Docker Support** | Multi-stage Dockerfile + docker-compose |
+| **Cross-Platform** | Windows + Linux support, UTF-8 file I/O, Vite auto-install |
 
 <br/>
 
@@ -161,6 +164,7 @@ my_workspace/
 | `ARF_API_MAX_RETRIES` | `3` | Max API call retries |
 | `ARF_API_RETRY_BACKOFF` | `1.5` | Retry backoff base in seconds |
 
+| `ARF_CLASSIFIER_ENABLED` | `0` | Enable auto model routing (set `1` to activate) |
 | `ARF_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Base URL for one-click DeepSeek config |
 
 **Model config (`models/<name>/config.yaml`):**
@@ -168,12 +172,13 @@ my_workspace/
 ```yaml
 name: deep_thinking
 model_type: deep_thinking
+context_window: 1048576   # 1M tokens
 config:
   base_url: "https://api.deepseek.com"
   api_key: "sk-..."
-  model_name: "deepseek-chat"
+  model_name: "deepseek-v4-pro"
   temperature: 0.7
-  max_tokens: 10240
+  max_tokens: 100000
   thinking_enabled: true
   reasoning_effort: "max"
 ```
@@ -183,12 +188,14 @@ config:
 ```yaml
 agent:
   name: "My Workspace"
-  model: "quick_no_thinking"
+  model: "quick_thinking"
   max_turns: 10
-  classifier_enabled: true       # auto-route tasks by complexity
+  max_tool_result_chars: 2000  # truncate long tool results
+  context_window: 1048576      # 1M token context window
+  classifier_enabled: true     # auto-route tasks by complexity
 
 resources:
-  preload: []                    # tools to activate at session start
+  preload: []                  # tools to activate at session start
 ```
 
 <br/>
@@ -285,11 +292,12 @@ ARF occupies a distinct position in the AI agent landscape: it is neither a libr
 
 1. **User message** arrives via WebSocket or REST API
 2. **SessionManager** prepends system prompt (workspace → memory → identity → inventory → language)
-3. **Classifier** (optional) analyzes complexity → routes to `quick_no_thinking` / `quick_thinking` / `deep_thinking`
-4. **LangGraph engine** executes the agent loop: call model → parse response → execute tools or respond
-5. **Hook runner** fires lifecycle events (PreModelCall, PostToolUse, SessionEnd, etc.) via subprocess
-6. **Tracing** records every step to SQLite for observability
-7. **SSE stream** pushes tokens, tool calls, and usage data to the frontend in real time
+3. **Compact node** checks context usage — if ≥ 75% of 1M window, compresses old turns into a structured summary
+4. **Classifier** (optional) analyzes complexity → routes to `quick_thinking` / `deep_thinking`
+5. **LangGraph engine** executes the agent loop: compact → call model → parse response → execute tools or respond
+6. **Hook runner** fires lifecycle events (PreModelCall, PostToolUse, SessionEnd, etc.) via subprocess
+7. **Tracing** records every step to SQLite for observability
+8. **SSE stream** pushes tokens, tool calls, and usage data to the frontend in real time
 
 ### Memory Architecture
 
@@ -335,8 +343,8 @@ Models define API endpoints, credentials, and inference parameters. Each is a di
 | Model | Type | Status | Description |
 |-------|------|--------|-------------|
 | `deep_thinking` | reasoning | ✅ Implemented | Maximum reasoning for complex tasks (architecture, refactoring, creative work) |
-| `quick_thinking` | reasoning | ✅ Implemented | Balanced reasoning for medium tasks (code generation, debugging, multi-step) |
-| `quick_no_thinking` | reasoning | ✅ Implemented | Fast responses for simple tasks (greetings, lookups, single edits) |
+| `quick_thinking` | reasoning | ✅ Implemented | Default session model, balanced reasoning (code generation, debugging) |
+| `quick_no_thinking` | reasoning | ✅ Implemented | Reserved for background tasks (compression, summaries, title generation) |
 | `embedding` | multimodal | 🚧 Config only | Text embedding vector generation |
 | `rerank` | multimodal | 🚧 Config only | Search result reranking |
 | `vision` | multimodal | 🚧 Config only | Image understanding and analysis |
@@ -344,7 +352,7 @@ Models define API endpoints, credentials, and inference parameters. Each is a di
 | `tts` | multimodal | 🚧 Config only | Text-to-speech synthesis |
 | `stt` | multimodal | 🚧 Config only | Speech-to-text transcription |
 
-The three reasoning models support the classifier-driven routing system: tasks are classified as simple/medium/complex and routed to the appropriate model tier. When a target model type is unavailable, the system degrades automatically to the next best available tier.
+Session routing uses a two-tier classifier (medium → `quick_thinking`, complex → `deep_thinking`). `quick_no_thinking` is reserved for background tasks (context compaction, memory extraction, title generation). When a target model is unavailable, the system degrades automatically.
 
 ### Tools (16 total)
 
@@ -360,7 +368,7 @@ Tools are callable capabilities. Each is a directory under `tools/<name>/` with 
 | `resource_loader` | ✅ Implemented | On-demand tool activation and deactivation |
 | `memory_store` | ✅ Implemented | Long-term memory read/write with automatic backup rotation |
 | `model_manager` | ✅ Implemented | Model CRUD, connection test, activation switch |
-| `model_switch` | ✅ Implemented | Runtime three-tier model hot-switch with degradation |
+| `model_switch` | ✅ Implemented | Runtime two-tier model hot-switch (quick_thinking ↔ deep_thinking) with degradation |
 | `resource_registrar` | ✅ Implemented | Query resource configuration status and dependencies |
 | `manage_hooks` | ✅ Implemented | View, enable, disable, add, and remove hook definitions at runtime |
 
@@ -464,6 +472,8 @@ Hooks are defined in `.hooks.json` and can be managed at runtime via the `manage
 | Priority | Item | Status |
 |----------|------|--------|
 | **P0** | Sandbox runtime — security isolation for tool execution (currently in-process) | 🔴 Planned |
+| **P0** | Context compaction — automatic compression when context exceeds 75% window | ✅ Done |
+| **P0** | Progressive tool result disclosure — long outputs saved to disk, summary in context | ✅ Done |
 | **P1** | `arf chat` — interactive CLI chat with full agent loop | 🟡 Stub |
 | **P1** | `arf run` — headless script/batch execution mode | 🟡 Stub |
 | **P1** | `web_search` tool — web search integration with configurable backend | 🟡 Config only |
