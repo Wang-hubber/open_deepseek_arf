@@ -25,6 +25,6 @@ config_template:
   max_tokens:
     label: "最大 Token"
     type: number
-    default: 40960
+    default: 100000
 depends_on: []
 config_page: "DeepSeekConfigForm"

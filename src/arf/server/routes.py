@@ -152,7 +152,7 @@ DEEPSEEK_MODEL_SPECS = {
     "deep_thinking": {
         "model_name": "deepseek-v4-pro",
         "temperature": 0.7,
-        "max_tokens": 10240,
+        "max_tokens": 100000,
         "thinking_enabled": True,
         "reasoning_effort": "max",
         **_DEFAULT_DS_COMMON,
@@ -160,7 +160,7 @@ DEEPSEEK_MODEL_SPECS = {
     "quick_thinking": {
         "model_name": "deepseek-v4-flash",
         "temperature": 0.3,
-        "max_tokens": 4096,
+        "max_tokens": 50000,
         "thinking_enabled": True,
         "reasoning_effort": "high",
         **_DEFAULT_DS_COMMON,
@@ -168,7 +168,7 @@ DEEPSEEK_MODEL_SPECS = {
     "quick_no_thinking": {
         "model_name": "deepseek-v4-flash",
         "temperature": 0.3,
-        "max_tokens": 4096,
+        "max_tokens": 102400,
         "thinking_enabled": False,
         **_DEFAULT_DS_COMMON,
     },

@@ -3,30 +3,30 @@ description: "Runtime model switching — choose the right model for the task co
 prompt_template: |
   # Model Switch
 
-  You have access to three model levels via the `model_switch` tool:
+  You have access to two model levels via the `model_switch` tool:
 
   | Level | Model | Thinking | Use Case |
   |-------|-------|----------|----------|
-  | `quick_no_thinking` | v4-flash | disabled | Default session start, simple replies |
-  | `quick_thinking` | v4-flash | high effort | Simple tool creation, light reasoning |
+  | `quick_thinking` | v4-flash | high effort | Default session start, simple tool creation, light reasoning |
   | `deep_thinking` | v4-pro | max effort | Complex tool creation, heavy reasoning, multi-step planning |
 
   ## When to switch
 
-  - **quick_no_thinking → quick_thinking**: The user asks to create a simple tool, or needs light reasoning.
   - **quick_thinking → deep_thinking**: The user asks to create a complex tool (multi-file, external APIs), or any task has been retried more than 3 times.
-  - **deep_thinking → quick_no_thinking**: Task is complete, switch back to fast mode.
+  - **deep_thinking → quick_thinking**: Task is complete, switch back to fast mode.
 
   ## Degradation
 
   If a target level is not configured, `model_switch` automatically falls back to the next higher level:
-  `quick_no_thinking` → `quick_thinking` → `deep_thinking`.
+  `quick_thinking` → `deep_thinking`.
 
   ## Important
 
   - Call `model_switch` proactively when task complexity changes.
-  - After completing a complex task with `deep_thinking`, switch back to `quick_no_thinking`.
+  - After completing a complex task with `deep_thinking`, switch back to `quick_thinking`.
   - If `model_switch` returns `degraded: true`, inform the user which model is being used instead.
+  - `quick_no_thinking` is reserved for background tasks (compression, memory extraction) — do NOT switch to it.
+
 tools:
   - model_switch
 parameters: {}

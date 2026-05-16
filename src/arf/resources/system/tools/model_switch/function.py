@@ -7,7 +7,6 @@ AGENT_CONFIG_FILE = "arf_agent.yaml"
 
 # Degradation map: if target is unavailable, try the next level up
 DEGRADATION = {
-    "quick_no_thinking": ["quick_no_thinking", "quick_thinking", "deep_thinking"],
     "quick_thinking": ["quick_thinking", "deep_thinking"],
     "deep_thinking": ["deep_thinking"],
 }

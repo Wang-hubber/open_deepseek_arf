@@ -118,7 +118,7 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
     builds the full message list (system prompt + conversation),
     and returns the model's response.
     """
-    model_type = state.get("current_model", "quick_no_thinking")
+    model_type = state.get("current_model", "quick_thinking")
     adapter = _resolve_model_adapter(config, model_type)
     if adapter is None:
         return {
@@ -340,7 +340,7 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
     events and forwards them as custom stream events. Tool calls, usage,
     and the final response are emitted during the stream.
     """
-    model_type = state.get("current_model", "quick_no_thinking")
+    model_type = state.get("current_model", "quick_thinking")
     adapter = _resolve_model_adapter(config, model_type)
     if adapter is None:
         return {

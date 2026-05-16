@@ -360,7 +360,7 @@ class GraphEngine:
             system_prompt=params.system_prompt,
             tools=params.tools,
             max_turns=params.max_turns,
-            current_model=self._user_model_preference or "quick_no_thinking",
+            current_model=self._user_model_preference or "quick_thinking",
         )
 
     def _build_config(self) -> dict:
@@ -404,7 +404,7 @@ class GraphEngine:
                     return fallback_call(msgs, tools)
 
             legacy = _LegacyAdapter()
-            for mt in self._available_model_types or {"quick_no_thinking"}:
+            for mt in self._available_model_types or {"quick_thinking"}:
                 resolvers[mt] = lambda adp=legacy: adp
 
         return resolvers

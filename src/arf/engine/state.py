@@ -52,8 +52,8 @@ class AgentState(TypedDict):
     tool_fail_counts: dict[str, int]
 
     # Model routing
-    current_model: str  # "quick_no_thinking" | "quick_thinking" | "deep_thinking"
-    classification: Optional[str]  # "simple" | "medium" | "complex"
+    current_model: str  # "quick_thinking" | "deep_thinking"
+    classification: Optional[str]  # "medium" | "complex"
 
     # Accumulators (custom reducers for cross-turn accumulation)
     usage: Annotated[dict, reduce_usage]
@@ -73,7 +73,7 @@ def default_state(
     system_prompt: str = "",
     tools: Optional[list[dict]] = None,
     max_turns: int = 10,
-    current_model: str = "quick_no_thinking",
+    current_model: str = "quick_thinking",
 ) -> dict:
     """Build a minimal initial state dict for graph invocation."""
     return {

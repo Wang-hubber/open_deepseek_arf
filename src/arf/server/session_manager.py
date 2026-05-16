@@ -121,7 +121,7 @@ class SessionManager:
             return {}
 
     # Priority order for model type resolution (session default -> fallback)
-    _MODEL_TYPE_PRIORITY = ("quick_no_thinking", "quick_thinking", "deep_thinking")
+    _MODEL_TYPE_PRIORITY = ("quick_thinking", "deep_thinking", "quick_no_thinking")
 
     def resolve_model_config(self, preferred_name: str | None = None
                              ) -> tuple[str, dict] | None:

@@ -12,7 +12,7 @@ WORKSPACE_TEMPLATES = {
         "agent:\n"
         '  name: "{name}"\n'
         '  description: "Workspace managed by ARF Agent"\n'
-'  model: "quick_no_thinking"\n'
+'  model: "quick_thinking"\n'
         '  memory: "memory/session.md"\n'
         '  max_turns: 10\n'
         "\n"

@@ -1,9 +1,10 @@
 """Task complexity classifier for automatic model routing.
 
 Analyzes the user's request and routes to the appropriate model tier:
-  simple  -> quick_no_thinking (fast, no reasoning)
   medium  -> quick_thinking (reasoning enabled)
   complex -> deep_thinking (maximum reasoning)
+
+quick_no_thinking is reserved for background tasks (compression, summaries).
 """
 
 import logging
@@ -11,16 +12,15 @@ from typing import Optional
 
 logger = logging.getLogger("arf.classifier")
 
-CLASSIFY_SYSTEM_PROMPT = """You are a task complexity classifier. Analyze the user's message and respond with exactly one word: simple, medium, or complex.
+CLASSIFY_SYSTEM_PROMPT = """You are a task complexity classifier. Analyze the user's message and respond with exactly one word: medium or complex.
 
 Rules:
-- simple: Greetings, simple Q&A, factual lookup requests, file reads with clear paths, single well-defined edits, status checks
-- medium: Code generation or debugging, multi-step reasoning, tool orchestration, resource creation requiring >2 steps, data processing
+- medium: Greetings, simple Q&A, factual lookups, file reads, single edits, code generation, debugging, tool orchestration, resource creation, data processing
 - complex: System design, multi-file refactoring, architectural decisions, creative writing, tasks requiring sustained deep thinking, security analysis
 
 Examples:
-"hello" -> simple
-"what files are in my workspace" -> simple
+"hello" -> medium
+"what files are in my workspace" -> medium
 "write a python script that downloads a webpage" -> medium
 "find the bug in this function and fix it" -> medium
 "design a microservice architecture for an e-commerce platform" -> complex
@@ -31,16 +31,15 @@ User message: {message}
 Classification:"""
 
 CLASSIFICATION_TO_MODEL = {
-    "simple": "quick_no_thinking",
+    "simple": "quick_thinking",
     "medium": "quick_thinking",
     "complex": "deep_thinking",
 }
 
 # Degradation chain when target model type is unavailable
 DEGRADATION = {
-    "deep_thinking": ["quick_thinking", "quick_no_thinking"],
+    "deep_thinking": ["quick_thinking"],
     "quick_thinking": ["deep_thinking"],
-    "quick_no_thinking": ["quick_thinking", "deep_thinking"],
 }
 
 
@@ -68,7 +67,7 @@ def classify_request(classifier_call, messages: list[dict]) -> str:
             break
 
     if not last_user:
-        return "simple"
+        return "medium"
 
     prompt = [
         {"role": "user", "content": CLASSIFY_SYSTEM_PROMPT.format(message=last_user)},
@@ -77,7 +76,7 @@ def classify_request(classifier_call, messages: list[dict]) -> str:
     try:
         result = classifier_call(prompt)
         result = result.strip().lower().rstrip(".")
-        if result in ("simple", "medium", "complex"):
+        if result in ("medium", "complex"):
             return result
         logger.debug("Classifier returned unrecognized value: %r, defaulting to medium", result)
         return "medium"
