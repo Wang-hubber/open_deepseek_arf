@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -111,24 +112,38 @@ def _clear_run_state(run_dir: Path):
 def _kill_process(pid: int, name: str, grace: int = 3):
     """Kill a process by PID, with fallback to process group."""
     import subprocess
-    try:
-        os.kill(pid, 0)  # check if exists
-    except OSError:
-        return False
-    print(f"Stopping {name} (pid={pid})...")
-    try:
-        os.kill(pid, 15)  # SIGTERM
-        import time
-        for _ in range(grace):
-            time.sleep(1)
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                return True
-        os.kill(pid, 9)  # SIGKILL
-        return True
-    except OSError:
-        return True
+
+    if sys.platform == "win32":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        print(f"Stopping {name} (pid={pid})...")
+        # taskkill /F for force kill; /T kills child processes too
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F", "/T"],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0
+    else:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        print(f"Stopping {name} (pid={pid})...")
+        try:
+            os.kill(pid, 15)  # SIGTERM
+            import time
+            for _ in range(grace):
+                time.sleep(1)
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return True
+            os.kill(pid, 9)  # SIGKILL
+            return True
+        except OSError:
+            return True
 
 
 # ---- port utilities --------------------------------------------------
@@ -147,16 +162,30 @@ def _check_port(host: str, port: int) -> bool:
 def _get_port_pid(port: int) -> int | None:
     """Return PID of the process listening on *port*, or None."""
     import subprocess as _sp
-    import re
-    result = _sp.run(
-        ["ss", "-tlnp", f"sport = :{port}"],
-        capture_output=True, text=True,
-    )
-    for line in result.stdout.splitlines():
-        m = re.search(r'pid=(\d+)', line)
-        if m:
-            return int(m.group(1))
-    return None
+
+    if sys.platform == "win32":
+        result = _sp.run(
+            ["netstat", "-ano"], capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    try:
+                        return int(parts[-1])
+                    except ValueError:
+                        pass
+        return None
+    else:
+        result = _sp.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            m = re.search(r'pid=(\d+)', line)
+            if m:
+                return int(m.group(1))
+        return None
 
 
 def _resolve_port(args, host: str) -> int:
@@ -276,6 +305,7 @@ def cmd_start(args):
 def cmd_stop(args):
     """Stop a running ARF session."""
     import json
+    import subprocess
 
     ws_dir = args.workspace or str(_require_workspace() if args.workspace is None else Path(args.workspace))
     ws = Path(ws_dir)
@@ -287,8 +317,10 @@ def cmd_stop(args):
     if be_pid is not None:
         stopped |= _kill_process(be_pid, "Backend")
         # Also kill child processes (uvicorn workers)
-        import subprocess
-        subprocess.run(["pkill", "-P", str(be_pid)], capture_output=True, timeout=3)
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(be_pid), "/T", "/F"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "-P", str(be_pid)], capture_output=True, timeout=3)
 
     fe_pid = _read_pid(run_dir, "frontend")
     if fe_pid is not None:
@@ -298,16 +330,26 @@ def cmd_stop(args):
 
     if not stopped:
         # Fallback: search by workspace path
-        import subprocess
-        result = subprocess.run(
-            ["pgrep", "-f", f"arf.*{ws.name}"],
-            capture_output=True, text=True,
-        )
-        if result.stdout.strip():
-            for pid_str in result.stdout.strip().split("\n"):
-                if pid_str:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["wmic", "process", "where", f"commandline like '%arf%{ws.name}%'", "get", "processid"],
+                capture_output=True, text=True,
+            )
+            pids = re.findall(r'(\d+)', result.stdout)
+            for pid_str in pids:
+                if pid_str and pid_str != str(os.getpid()):
                     _kill_process(int(pid_str), f"ARF (pid={pid_str})")
-            stopped = True
+                    stopped = True
+        else:
+            result = subprocess.run(
+                ["pgrep", "-f", f"arf.*{ws.name}"],
+                capture_output=True, text=True,
+            )
+            if result.stdout.strip():
+                for pid_str in result.stdout.strip().split("\n"):
+                    if pid_str:
+                        _kill_process(int(pid_str), f"ARF (pid={pid_str})")
+                stopped = True
 
     if not stopped:
         print("No running ARF instance found.")
