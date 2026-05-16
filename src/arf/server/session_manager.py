@@ -88,7 +88,10 @@ class SessionManager:
         if self._agent is not None and current_mtime != self._agent_mtime:
             self.reset_resource_state()
         if self._agent is None:
-            model = ModelAdapter(model_config)
+            items = self.get_registry()._items.get("models", {})
+            item = items.get(model_name, {})
+            ctx = item.get("context_window", 1048576)
+            model = ModelAdapter(model_config, context_window=ctx)
             language = self._load_language()
             self._agent = ARFAgent(model, self.get_registry(), str(self.workspace_dir), language,
                                    hook_runner=self.get_hook_runner())

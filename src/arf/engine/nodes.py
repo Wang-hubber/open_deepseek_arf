@@ -36,6 +36,27 @@ def _tool_result_snippet(result_str: str, max_len: int = 1000) -> str:
     return result_str[:max_len] + ("..." if len(result_str) > max_len else "")
 
 
+_COMPACT_THRESHOLD_RATIO = 0.75  # 75% of context window triggers compaction
+_TOOL_OUTPUT_THRESHOLD = 2000    # max chars before progressive disclosure
+
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    """Rough token count estimate for conversation messages.
+
+    Uses character-count-based heuristic (~0.4 tokens per char for mixed
+    Chinese/English text). Accurate enough for threshold decisions without
+    loading a tokenizer.
+    """
+    total = 0
+    for m in messages:
+        content = m.get("content", "") or ""
+        reasoning = m.get("reasoning_content", "") or ""
+        total += len(content) + len(reasoning)
+        for tc in m.get("tool_calls", []) or []:
+            total += len(json.dumps(tc.get("function", {}), ensure_ascii=False))
+    return int(total * 0.4)
+
+
 # ---- classification -------------------------------------------------
 
 def classify_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -94,6 +115,133 @@ def classify_node(state: AgentState, config: RunnableConfig) -> dict:
             }, ensure_ascii=False),
         }],
     }
+
+
+# ---- compaction ------------------------------------------------------
+
+def compact_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Check context usage and compact old messages if over threshold.
+
+    Keeps system_prompt + last 3 turns intact, summarizes earlier messages
+    into a structured context_summary. Only compacts once per session
+    (has_attempted_compact flag).
+    """
+    if state.get("has_attempted_compact"):
+        return {}
+
+    messages = state.get("messages", [])
+    if len(messages) < 10:
+        # Not enough conversation to warrant compaction
+        return {}
+
+    # Resolve context window from the compact model adapter
+    compactor_model = config.get("configurable", {}).get("compact_model")
+    if compactor_model is None:
+        logger.warning("compact_node called but no compact_model in config")
+        return {}
+
+    context_window = compactor_model.context_window
+    threshold = int(context_window * _COMPACT_THRESHOLD_RATIO)
+    current_tokens = _estimate_tokens(messages)
+
+    # Include system prompt in estimate
+    sys_prompt = state.get("system_prompt", "")
+    current_tokens += int(len(sys_prompt) * 0.4)
+
+    if current_tokens < threshold:
+        return {}
+
+    # Build compression prompt: summarize old messages, keep recent 3 turns
+    turns = _split_turns(messages)
+    if len(turns) <= 3:
+        return {}
+
+    recent = turns[-3:]
+    old = turns[:-3]
+
+    old_text = _format_turns_for_summary(old)
+    summary = _call_compactor(compactor_model, old_text, sys_prompt)
+
+    return {
+        "messages": list(_flatten_turns(recent)),
+        "context_summary": summary,
+        "has_attempted_compact": True,
+        "node_traces": [{
+            "node": "compact",
+            "turn": state.get("turn_count", 0),
+            "status": "ok",
+            "duration_ms": 0,
+            "metadata": json.dumps({
+                "turns_compacted": len(old),
+                "tokens_before": current_tokens,
+                "threshold": threshold,
+            }, ensure_ascii=False),
+        }],
+    }
+
+
+def _split_turns(messages: list[dict]) -> list[list[dict]]:
+    """Split a flat message list into turns (user message + everything after it)."""
+    turns: list[list[dict]] = []
+    current: list[dict] = []
+    for m in messages:
+        if m.get("role") == "user" and current:
+            turns.append(current)
+            current = []
+        current.append(m)
+    if current:
+        turns.append(current)
+    return turns
+
+
+def _flatten_turns(turns: list[list[dict]]) -> list[dict]:
+    """Flatten turns back into a flat message list."""
+    result: list[dict] = []
+    for t in turns:
+        result.extend(t)
+    return result
+
+
+def _format_turns_for_summary(turns: list[list[dict]]) -> str:
+    """Format turns into a compact text representation for the compactor."""
+    lines = []
+    for i, turn in enumerate(turns, 1):
+        lines.append(f"\n## Turn {i}")
+        for m in turn:
+            role = m.get("role", "?")
+            content = m.get("content", "") or ""
+            # Truncate tool results for summary
+            if role in ("tool", "tool_result"):
+                content = (content or "")[:300]
+                lines.append(f"[{role}]: {content}")
+            else:
+                lines.append(f"[{role}]: {content[:500]}")
+    return "\n".join(lines)
+
+
+def _call_compactor(compactor_model, old_text: str, sys_prompt: str) -> str:
+    """Call the compaction model to summarize old conversation turns."""
+    prompt = (
+        "你是一个对话摘要助手。请将以下对话历史压缩为一个结构化摘要。\n\n"
+        "要求：\n"
+        "1. 保留关键决策、重要事实和未完成的任务\n"
+        "2. 合并重复信息，删除闲聊和无意义回复\n"
+        "3. 保留所有文件路径、代码片段和工具调用结果的关键信息\n"
+        "4. 输出为 Markdown 格式，不超过 2000 字\n\n"
+        "系统背景：\n"
+        f"{sys_prompt[:500]}\n\n"
+        "对话历史：\n"
+        f"{old_text}\n\n"
+        "结构化摘要："
+    )
+    msgs = [{"role": "user", "content": prompt}]
+    try:
+        result = compactor_model.chat_complete(msgs)
+        content = getattr(result, "content", "") or ""
+        return content[:3000]  # cap summary at 3000 chars
+    except Exception as e:
+        logger.warning("Compaction call failed: %s", e)
+        return f"[自动摘要失败: {e}]"
 
 
 # ---- model calling --------------------------------------------------
@@ -780,6 +928,29 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
             result = json.dumps({"error": "No tool executor configured"})
         else:
             result = tool_executor(tool_name, arguments)
+
+        # Progressive disclosure: if result is too long, save full to disk
+        # and put only a summary + pointer in the context
+        stored_path = ""
+        if len(result) > _TOOL_OUTPUT_THRESHOLD:
+            workspace_dir = config.get("configurable", {}).get("workspace_dir", "")
+            if workspace_dir:
+                import time as _time
+                from pathlib import Path as _Path
+                results_dir = _Path(workspace_dir) / "tool_results"
+                results_dir.mkdir(parents=True, exist_ok=True)
+                ts = _time.strftime("%Y%m%d_%H%M%S")
+                safe_name = tool_name.replace("/", "_").replace("\\", "_")
+                fname = f"{ts}_{safe_name}_{call_id}.txt"
+                fpath = results_dir / fname
+                fpath.write_text(result, encoding="utf-8")
+                stored_path = str(fpath)
+                result = (
+                    result[:500] + "\n\n"
+                    f"... [输出截断: 完整结果 {len(result)} 字符, "
+                    f"已存储: {fpath.name}]\n"
+                    f"请用 file_reader 工具读取该文件以获取完整内容: {stored_path}"
+                )
 
         new_messages.append({
             "role": "tool",

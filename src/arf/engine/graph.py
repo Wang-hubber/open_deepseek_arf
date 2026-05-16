@@ -39,6 +39,7 @@ class GraphResult:
 from .state import AgentState, default_state
 from .nodes import (
     classify_node,
+	    compact_node,
     call_model_node,
     call_model_node_stream,
     execute_tools_node,
@@ -67,6 +68,7 @@ def build_agent_graph() -> StateGraph:
 
     # Sync nodes
     workflow.add_node("classify", classify_node)
+    workflow.add_node("compact", compact_node)
     workflow.add_node("call_model", call_model_node)
     workflow.add_node("execute_tools", execute_tools_node)
     workflow.add_node("respond", respond_node)
@@ -74,9 +76,10 @@ def build_agent_graph() -> StateGraph:
 
     workflow.add_conditional_edges(START, decide_entry, {
         "classify": "classify",
-        "call_model": "call_model",
+        "call_model": "compact",
     })
-    workflow.add_edge("classify", "call_model")
+    workflow.add_edge("classify", "compact")
+    workflow.add_edge("compact", "call_model")
 
     workflow.add_conditional_edges("call_model", route_after_model, {
         "execute_tools": "execute_tools",
@@ -85,12 +88,12 @@ def build_agent_graph() -> StateGraph:
     })
 
     workflow.add_conditional_edges("execute_tools", route_after_tools, {
-        "call_model": "call_model",
+        "call_model": "compact",
         "respond": "respond",
     })
 
     workflow.add_conditional_edges("recovery", should_continue, {
-        "continue": "call_model",
+        "continue": "compact",
         "stop": "respond",
     })
 
@@ -110,6 +113,7 @@ def build_streaming_agent_graph() -> StateGraph:
     # Nodes -- classify, execute_tools, respond, recovery are sync
     # call_model uses the async streaming variant
     workflow.add_node("classify", classify_node)
+    workflow.add_node("compact", compact_node)
     workflow.add_node("call_model", call_model_node_stream)
     workflow.add_node("execute_tools", execute_tools_node)
     workflow.add_node("respond", respond_node)
@@ -117,9 +121,10 @@ def build_streaming_agent_graph() -> StateGraph:
 
     workflow.add_conditional_edges(START, decide_entry, {
         "classify": "classify",
-        "call_model": "call_model",
+        "call_model": "compact",
     })
-    workflow.add_edge("classify", "call_model")
+    workflow.add_edge("classify", "compact")
+    workflow.add_edge("compact", "call_model")
 
     workflow.add_conditional_edges("call_model", route_after_model, {
         "execute_tools": "execute_tools",
@@ -128,12 +133,12 @@ def build_streaming_agent_graph() -> StateGraph:
     })
 
     workflow.add_conditional_edges("execute_tools", route_after_tools, {
-        "call_model": "call_model",
+        "call_model": "compact",
         "respond": "respond",
     })
 
     workflow.add_conditional_edges("recovery", should_continue, {
-        "continue": "call_model",
+        "continue": "compact",
         "stop": "respond",
     })
 
@@ -375,6 +380,8 @@ class GraphEngine:
                 "available_model_types": self._available_model_types,
                 "user_model_preference": self._user_model_preference,
                 "refresh_tools": self._refresh_tools_fn or (lambda: None),
+                "workspace_dir": str(self._project_dir) if self._project_dir else "",
+                "compact_model": self._build_compact_model(),
             },
         }
 
@@ -408,6 +415,16 @@ class GraphEngine:
                 resolvers[mt] = lambda adp=legacy: adp
 
         return resolvers
+
+    def _build_compact_model(self):
+        """Build a ModelAdapter (quick_no_thinking) for context compaction."""
+        factory = self._model_adapter_factory
+        if factory is not None:
+            try:
+                return factory("quick_no_thinking")
+            except Exception:
+                pass
+        return None
 
     @staticmethod
     def _display_history(messages: list[dict]) -> list[dict]:

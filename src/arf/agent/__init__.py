@@ -565,7 +565,8 @@ class ARFAgent:
             if m.get("model_type") == model_type:
                 cfg = m.get("config", {})
                 if cfg:
-                    return ModelAdapter(cfg)
+                    ctx = m.get("context_window", 1048576)
+                    return ModelAdapter(cfg, context_window=ctx)
         return None
 
     def _build_classifier_call(self):

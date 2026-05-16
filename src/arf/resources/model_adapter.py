@@ -25,8 +25,8 @@ class ModelAdapterError(Exception):
 class ModelAdapter:
     """Wraps OpenAI-compatible chat/completions API."""
 
-    # Keys used for client init -- NOT forwarded to the API
-    _META_KEYS = frozenset({"base_url", "api_key", "model_name"})
+    # Keys used for client init or internal metadata -- NOT forwarded to the API
+    _META_KEYS = frozenset({"base_url", "api_key", "model_name", "context_window"})
 
     # Keys that belong to the API call but are handled explicitly in
     # _create_completion / _call_with_retry -- must NOT appear in **params
@@ -41,12 +41,13 @@ class ModelAdapter:
     # Provider-specific params that need translation
     _PROVIDER_KEYS = frozenset({"thinking_enabled", "reasoning_effort"})
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, context_window: int = 1048576):
         self.client = OpenAI(
             base_url=config.get("base_url"),
             api_key=config.get("api_key", "placeholder"),
         )
         self.model_name = config.get("model_name", "")
+        self.context_window = int(config.get("context_window", context_window))
         self.default_params = {}
         for k, v in config.items():
             if k not in self._META_KEYS:

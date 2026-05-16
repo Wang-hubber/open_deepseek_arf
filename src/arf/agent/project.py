@@ -15,6 +15,7 @@ WORKSPACE_TEMPLATES = {
 '  model: "quick_thinking"\n'
         '  memory: "memory/session.md"\n'
         '  max_turns: 10\n'
+        '  max_tool_result_chars: 2000\n'
         "\n"
         "resources:\n"
         "  preload: []\n"

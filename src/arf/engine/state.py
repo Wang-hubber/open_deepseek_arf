@@ -48,6 +48,7 @@ class AgentState(TypedDict):
     transition: Optional[str]
     continuation_count: int
     has_attempted_compact: bool
+    context_summary: Optional[str]
     stop_hook_active: bool
     tool_fail_counts: dict[str, int]
 
@@ -85,6 +86,7 @@ def default_state(
         "transition": None,
         "continuation_count": 0,
         "has_attempted_compact": False,
+        "context_summary": None,
         "stop_hook_active": False,
         "tool_fail_counts": {},
         "current_model": current_model,

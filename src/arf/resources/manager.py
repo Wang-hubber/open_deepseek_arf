@@ -136,6 +136,7 @@ class ResourceRegistry:
             "depends_on": default.get("depends_on", []),
             "required": default.get("required", False),
             "configured": configured,
+            "context_window": default.get("context_window", 1048576),
         }
 
     # ---- registration with conflict check ----------------------------
@@ -444,6 +445,7 @@ class ResourceRegistry:
                 "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
                 "required": cfg.get("required") if "required" in cfg else default.get("required", False),
                 "configured": True,
+                "context_window": cfg.get("context_window") or default.get("context_window", 1048576),
             }
         if rtype == "tools":
             schema = self._normalize_schema(cfg, name)
