@@ -195,8 +195,6 @@ function buildMessage(): string {
 
 async function handleSend() {
   if (isStreaming.value) return
-  if (sessionStore.isViewingArchive()) return
-
   const fullText = buildMessage()
   if (!fullText) return
 
@@ -311,23 +309,10 @@ function formatMarkdown(text: string): string {
 function escapeHtml(s: string): string {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
-
-function returnToActive() {
-  sessionStore.returnToActive()
-  chatStore.renderFromHistory(chatStore.chatHistory)
-  currentText.value = ''
-  currentReasoning.value = ''
-  currentToolCalls.value = []
-}
 </script>
 
 <template>
   <main id="chat-panel">
-    <div v-if="sessionStore.viewingArchiveId" id="viewing-banner">
-      <span>{{ t('chat.viewingBanner', { id: sessionStore.viewingArchiveId }) }}</span>
-      <button class="vb-close" @click="returnToActive" :title="t('chat.returnToActive')">x</button>
-    </div>
-
     <div id="drag-overlay" :class="{ show: dragOver }">
       <div class="drag-text">{{ t('chat.dragText') }}</div>
     </div>
@@ -390,7 +375,7 @@ function returnToActive() {
         </div>
       </div>
 
-      <div v-if="chatStore.displayMessages.length === 0 && !isStreaming && !sessionStore.viewingArchiveId" class="chat-empty">
+      <div v-if="chatStore.displayMessages.length === 0 && !isStreaming" class="chat-empty">
         <div class="welcome-card">
           <div class="wc-icon">◈</div>
           <h2 class="wc-greeting">{{ t('chat.emptyGreeting') }}</h2>
@@ -436,13 +421,12 @@ function returnToActive() {
         id="chat-textarea"
         ref="textarea"
         v-model="inputText"
-        :placeholder="sessionStore.viewingArchiveId ? t('chat.viewingArchive') : t('chat.placeholder')"
-        :disabled="!!sessionStore.viewingArchiveId"
+        :placeholder="t('chat.placeholder')"
         rows="1"
         @keydown="handleKeydown"
       ></textarea>
       <button v-if="isStreaming" id="btn-stop" @click="abort">{{ t('chat.stop') }}</button>
-      <button v-else id="btn-send" :disabled="!!sessionStore.viewingArchiveId" @click="handleSend">{{ t('chat.send') }}</button>
+      <button v-else id="btn-send" @click="handleSend">{{ t('chat.send') }}</button>
     </div>
   </main>
 </template>

@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useAppStore } from '@/stores/app'
 import { useApi } from '@/composables/useApi'
 import { useWebSocket } from '@/composables/useWebSocket'
-import type { ChatMessage, ArchivedSession } from '@/types'
+import type { ChatMessage } from '@/types'
 
 const sessionStore = useSessionStore()
 const chatStore = useChatStore()
@@ -65,17 +65,6 @@ onMounted(async () => {
     try {
       const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
       if (messages?.length) chatStore.renderFromHistory(messages)
-    } catch {
-      // non-critical
-    }
-  } else if (sessionStore.sessions.length > 0) {
-    const latest = sessionStore.sessions[0]
-    try {
-      const data = await api.get<ArchivedSession>(`/api/sessions/${encodeURIComponent(latest.id)}`)
-      if (data?.messages?.length) {
-        sessionStore.viewingArchiveId = latest.id
-        chatStore.renderFromHistory(data.messages)
-      }
     } catch {
       // non-critical
     }

@@ -91,6 +91,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool_call' | 'tool_result'
   content: string
   reasoning_content?: string
+  tool_calls?: {
+    id: string
+    type: string
+    function: { name: string; arguments: string }
+  }[]
+  tool_call_id?: string
+  name?: string
+  arguments?: string
 }
 
 export interface UploadResult {

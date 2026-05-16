@@ -30,12 +30,79 @@ export const useChatStore = defineStore('chat', () => {
     chatHistory.value = history
   }
 
-  // Build display messages from history (for returning from archive view)
+  // Build display messages from history (for viewing past sessions)
   function renderFromHistory(messages: ChatMessage[]) {
     clearMessages()
+    let pendingToolCalls: ToolCallRecord[] = []
     for (const m of messages) {
-      if (m.role === 'user') addUserMsg(m.content)
-      else if (m.role === 'assistant') addAssistantMsg(m.content, m.reasoning_content)
+      if (m.role === 'user') {
+        // flush any pending tool calls before the next user message
+        if (pendingToolCalls.length && displayMessages.value.length > 0) {
+          const last = displayMessages.value[displayMessages.value.length - 1]
+          if (last.role === 'assistant') {
+            last.toolCalls = [...pendingToolCalls]
+          }
+        }
+        pendingToolCalls = []
+        addUserMsg(m.content)
+      } else if (m.role === 'assistant') {
+        // flush previous tool calls onto the last assistant message
+        if (pendingToolCalls.length && displayMessages.value.length > 0) {
+          const prev = displayMessages.value[displayMessages.value.length - 1]
+          if (prev.role === 'assistant') {
+            prev.toolCalls = [...pendingToolCalls]
+          }
+        }
+        pendingToolCalls = []
+        // This assistant may carry its own tool_calls from graph state
+        if (m.tool_calls?.length) {
+          pendingToolCalls = m.tool_calls.map((tc: any) => ({
+            id: tc.id || '',
+            name: tc.function?.name || tc.name || '',
+            arguments: tc.function?.arguments || tc.arguments || '{}',
+            status: 'completed' as const,
+          }))
+        }
+        addAssistantMsg(m.content, m.reasoning_content)
+      } else if (m.role === 'tool_call') {
+        // Legacy format: separate tool_call message from session_history
+        pendingToolCalls.push({
+          id: (m as any).tool_call_id || '',
+          name: (m as any).name || '',
+          arguments: (m as any).arguments || '{}',
+          status: 'executing' as const,
+        })
+      } else if (m.role === 'tool_result') {
+        const callId = (m as any).tool_call_id || ''
+        // Update matching pending tool call to completed/failed
+        const tc = pendingToolCalls.find(t => t.id === callId)
+        if (tc) {
+          tc.status = 'completed'
+          tc.result = m.content
+        }
+        // Also check the last assistant message's toolCalls
+        if (displayMessages.value.length > 0) {
+          const last = displayMessages.value[displayMessages.value.length - 1]
+          if (last.role === 'assistant' && last.toolCalls) {
+            const mtc = last.toolCalls.find(t => t.id === callId)
+            if (mtc) {
+              mtc.status = 'completed'
+              mtc.result = m.content
+            }
+          }
+        }
+      }
+    }
+    // flush remaining pending tool calls
+    if (pendingToolCalls.length && displayMessages.value.length > 0) {
+      const last = displayMessages.value[displayMessages.value.length - 1]
+      if (last.role === 'assistant') {
+        last.toolCalls = pendingToolCalls.filter(t => t.status !== 'executing' || t.id)
+        // Mark unmatched executing ones as completed (results may have been filtered)
+        for (const tc of last.toolCalls) {
+          if (tc.status === 'executing') tc.status = 'completed'
+        }
+      }
     }
     chatHistory.value = messages.filter(m => m.role === 'user' || m.role === 'assistant')
   }

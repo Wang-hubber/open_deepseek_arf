@@ -42,9 +42,13 @@ export const useSessionStore = defineStore('sessions', () => {
     return data
   }
 
+  async function fetchArchive(sessionId: string): Promise<ArchivedSession> {
+    return await api.get<ArchivedSession>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+  }
+
   async function viewArchive(sessionId: string): Promise<ArchivedSession> {
     viewingArchiveId.value = sessionId
-    return await api.get<ArchivedSession>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+    return await fetchArchive(sessionId)
   }
 
   function returnToActive() {
@@ -120,6 +124,7 @@ export const useSessionStore = defineStore('sessions', () => {
     loadSessions,
     createSession,
     viewArchive,
+    fetchArchive,
     returnToActive,
     deleteSession,
     hasActiveWithMessages,

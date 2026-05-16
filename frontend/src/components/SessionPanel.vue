@@ -75,11 +75,8 @@ function combinedItems() {
 }
 
 async function handleClick(id: string, isActive: boolean) {
-  // Pending placeholder — no backend session yet
   if (id === '__pending__') return
   if (isActive) {
-    sessionStore.returnToActive()
-    // Fetch active messages from server (chatHistory may be stale from archive view)
     try {
       const api = (await import('@/composables/useApi')).useApi()
       const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
@@ -88,11 +85,12 @@ async function handleClick(id: string, isActive: boolean) {
       chatStore.renderFromHistory([])
     }
   } else {
-    sessionStore.viewArchive(id).then(data => {
+    try {
+      const data = await sessionStore.fetchArchive(id)
       chatStore.renderFromHistory(data.messages || [])
-    }).catch(e => {
+    } catch (e: any) {
       alert(t('session.loadFailed', { msg: e.message }))
-    })
+    }
   }
 }
 
@@ -108,9 +106,6 @@ function confirmDelete(id: string, title: string, isActive: boolean) {
           chatStore.clearMessages()
         })
       }
-    } else if (sessionStore.viewingArchiveId === id) {
-      sessionStore.returnToActive()
-      chatStore.renderFromHistory(chatStore.chatHistory)
     }
   }).catch(e => {
     alert(t('common.error', { msg: e.message }))
@@ -174,8 +169,7 @@ function createNewSession() {
         :key="item.id"
         class="session-item"
         :class="{
-          active: item.isActive && !sessionStore.viewingArchiveId,
-          viewing: sessionStore.viewingArchiveId === item.id,
+          active: item.isActive,
         }"
         @click="handleClick(item.id, item.isActive)"
       >

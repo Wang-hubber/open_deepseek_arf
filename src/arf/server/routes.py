@@ -761,6 +761,7 @@ def _display_history(full_messages: list[dict]) -> list[dict]:
 
 def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
     reasoning_text = ""
+    mgr.session_history.append({"role": "user", "content": payload.message})
     try:
         for event in agent.chat_stream_with_tools(
             payload.message, payload.history, project_dir
@@ -788,14 +789,23 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                 mgr.session_history.append({
                     "role": "tool_call",
                     "content": f"[{event.get('name', event.get('tool', ''))}] {event.get('arguments', '')}",
+                    "tool_call_id": event.get("id", ""),
+                    "name": event.get("name", event.get("tool", "")),
+                    "arguments": event.get("arguments", ""),
                 })
             elif etype == "tool_result":
                 mgr.session_history.append({
                     "role": "tool_result",
                     "content": str(event.get("result", ""))[:500],
+                    "tool_call_id": event.get("id", ""),
+                    "name": event.get("tool", ""),
                 })
             elif etype == "done":
-                mgr.track_session(payload.message, event.get("response", ""), reasoning_text)
+                if reasoning_text or event.get("response"):
+                    entry: dict = {"role": "assistant", "content": event.get("response", "")}
+                    if reasoning_text:
+                        entry["reasoning_content"] = reasoning_text
+                    mgr.session_history.append(entry)
                 reasoning_text = ""
 
                 traces = event.get("traces", [])
