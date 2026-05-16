@@ -408,6 +408,13 @@ def configure_resource(resource_type: str, name: str, payload: dict, mgr: Sessio
             "description": item.get("description", ""),
             "config": payload.get("config", payload),
         }
+        # Preserve metadata from system config_default so reload doesn't lose it
+        for key in ("config_page", "config_template"):
+            if item.get(key):
+                config[key] = item[key]
+        for key in ("depends_on", "required"):
+            if key in item:
+                config[key] = item[key]
         with open(config_file, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
     else:
