@@ -397,7 +397,7 @@ def configure_resource(resource_type: str, name: str, payload: dict, mgr: Sessio
         raise HTTPException(status_code=404, detail=f"{resource_type}/{name} not found")
     ws_dir = mgr.workspace_dir
     target_dir = (ws_dir / rtype / name).resolve()
-    if not str(target_dir).startswith(str(ws_dir.resolve()) + "/") and str(target_dir) != str(ws_dir.resolve()):
+    if not str(target_dir).startswith(str(ws_dir.resolve()) + os.sep) and str(target_dir) != str(ws_dir.resolve()):
         raise HTTPException(status_code=400, detail="Resource path escapes workspace")
     target_dir.mkdir(parents=True, exist_ok=True)
     if resource_type == "model":

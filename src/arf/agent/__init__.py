@@ -514,7 +514,7 @@ class ARFAgent:
                 if raw_path.startswith("/"):
                     raw_path = raw_path.lstrip("/")
                 resolved = (Path(project_dir).resolve() / raw_path).resolve()
-                if not str(resolved).startswith(str(Path(project_dir).resolve()) + "/") \
+                if not str(resolved).startswith(str(Path(project_dir).resolve()) + os.sep) \
                    and str(resolved) != str(Path(project_dir).resolve()):
                     return json.dumps({"error": "Path traversal blocked: cannot access files outside workspace"})
             args["path"] = str(resolved)
