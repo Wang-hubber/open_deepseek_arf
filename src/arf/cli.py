@@ -263,23 +263,37 @@ def cmd_start(args):
     fe_env = None
     try:
         if frontend_dir:
-            print(f"Starting frontend dev server (Vite)...")
-            fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
-            fe_log = open(run_dir / "frontend.log", "w")
-            fe_proc = subprocess.Popen(
-                ["npm", "run", "dev"] if sys.platform != "win32" else "npm run dev",
-                cwd=str(frontend_dir),
-                env=fe_env,
-                stdout=fe_log,
-                stderr=subprocess.STDOUT,
-                shell=(sys.platform == "win32"),
-            )
-            fe_log.close()
-            _write_pid(run_dir, "frontend", fe_proc.pid)
-            time.sleep(1.5)
-            if fe_proc.poll() is not None:
-                print(f"  [ERROR] Vite exited with code {fe_proc.returncode}. "
-                      f"Log: {run_dir / 'frontend.log'}")
+            if not (frontend_dir / "node_modules").is_dir():
+                print("Installing frontend dependencies (npm install)...")
+                result = subprocess.run(
+                    ["npm", "install"] if sys.platform != "win32" else "npm install",
+                    cwd=str(frontend_dir),
+                    capture_output=True,
+                    text=True,
+                    shell=(sys.platform == "win32"),
+                )
+                if result.returncode != 0:
+                    print(f"  [ERROR] npm install failed (code {result.returncode}):")
+                    print(result.stderr or result.stdout)
+                    frontend_dir = None
+            if frontend_dir:
+                print(f"Starting frontend dev server (Vite)...")
+                fe_env = {**os.environ, "VITE_BACKEND_PORT": str(port)}
+                fe_log = open(run_dir / "frontend.log", "w")
+                fe_proc = subprocess.Popen(
+                    ["npm", "run", "dev"] if sys.platform != "win32" else "npm run dev",
+                    cwd=str(frontend_dir),
+                    env=fe_env,
+                    stdout=fe_log,
+                    stderr=subprocess.STDOUT,
+                    shell=(sys.platform == "win32"),
+                )
+                fe_log.close()
+                _write_pid(run_dir, "frontend", fe_proc.pid)
+                time.sleep(1.5)
+                if fe_proc.poll() is not None:
+                    print(f"  [ERROR] Vite exited with code {fe_proc.returncode}. "
+                          f"Log: {run_dir / 'frontend.log'}")
 
         from .server import ARFServer
 
