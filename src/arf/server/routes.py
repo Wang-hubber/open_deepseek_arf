@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -284,6 +285,22 @@ def trace_export(session_id: str, mgr: SessionManager = Depends(get_mgr)):
     if not events:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Enrich events with full prompt text from prompts table
+    from .database import get_prompt
+    for event in events:
+        meta = event.get("metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        prompt_hash = meta.get("prompt_hash") if isinstance(meta, dict) else None
+        if prompt_hash:
+            full = get_prompt(prompt_hash)
+            if full:
+                meta["prompt_full"] = full
+        event["metadata"] = meta
+
     # Load conversation messages from archive
     messages = []
     try:
@@ -502,6 +519,20 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
         })
 
     if payload.new_session:
+        collector = mgr.get_trace_collector()
+        if mgr.session_history and len(mgr.session_history) >= 2:
+            duration = (datetime.now(timezone.utc) - mgr.session_start_time).total_seconds()
+            collector.emit({
+                "event_type": "lifecycle.session_end",
+                "status": "ok",
+                "metadata": {
+                    "session_id": mgr.current_session_id,
+                    "message_count": len(mgr.session_history),
+                    "duration_seconds": round(duration, 1),
+                    "trigger": "new_session",
+                },
+            })
+
         old_history = list(mgr.session_history)
         old_start = mgr.session_start_time
         old_title = mgr.session_title
