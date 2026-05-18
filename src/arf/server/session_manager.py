@@ -66,12 +66,11 @@ class SessionManager:
 
     # ---- agent --------------------------------------------------------
 
-    def get_agent(self) -> ARFAgent:
-        """Return a cached ARFAgent, auto-invalidating if the underlying
-        model config file changed (e.g. via model_manager tool)."""
+    def get_agent(self):
+        """Return a Dispatcher wrapping UserAgent + SysAgent, auto-invalidating
+        if the underlying model config file changed."""
         agent_yaml = self.read_agent_yaml()
         preferred_name = (agent_yaml.get("agent") or {}).get("model")
-        # Resolve: try preferred name first, then default type order
         resolved = self.resolve_model_config(preferred_name)
 
         if not resolved:
@@ -88,13 +87,37 @@ class SessionManager:
         if self._agent is not None and current_mtime != self._agent_mtime:
             self.reset_resource_state()
         if self._agent is None:
+            from ..agent import UserAgent, SysAgent
+            from ..engine import Dispatcher
+            from ..resources.model_adapter import ModelAdapter
+
             items = self.get_registry()._items.get("models", {})
             item = items.get(model_name, {})
             ctx = item.get("context_window", 1048576)
-            model = ModelAdapter(model_config, context_window=ctx)
+
+            # User Agent model
+            user_model = ModelAdapter(model_config, context_window=ctx)
             language = self._load_language()
-            self._agent = ARFAgent(model, self.get_registry(), str(self.workspace_dir), language,
+            user_agent = UserAgent(user_model, self.get_registry(),
+                                   str(self.workspace_dir), language,
                                    hook_runner=self.get_hook_runner())
+
+            # Sys Agent model — resolve deep_thinking specifically
+            sys_resolved = self.resolve_model_config("deep_thinking")
+            if sys_resolved:
+                sys_name, sys_config = sys_resolved
+                sys_item = items.get(sys_name, {})
+                sys_ctx = sys_item.get("context_window", 1048576)
+                sys_model = ModelAdapter(sys_config, context_window=sys_ctx)
+            else:
+                # Fallback to same model as User Agent
+                sys_model = user_model
+
+            sys_agent = SysAgent(sys_model, self.get_registry(),
+                                 str(self.workspace_dir), language,
+                                 hook_runner=self.get_hook_runner())
+
+            self._agent = Dispatcher(user_agent, sys_agent)
             self._agent_mtime = current_mtime
         return self._agent
 
