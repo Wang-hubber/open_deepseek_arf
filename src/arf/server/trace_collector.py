@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 
 class TraceCollector:
-    """Thread-safe in-memory buffer for trace events.
+    """In-memory buffer for trace events. Not thread-safe — use from a single thread.
 
     Events accumulate during a session. On session_end, flush() returns
     all events for batch INSERT into SQLite.
