@@ -125,6 +125,10 @@ class ModelAdapter:
                 standard[k] = v
             else:
                 extra_body[k] = v
+        # Normalize response_format: DeepSeek API requires object form
+        rf = standard.get("response_format")
+        if isinstance(rf, str):
+            standard["response_format"] = {"type": rf}
         return standard, extra_body
 
     def _create_completion(self, messages, tools, stream=False):
