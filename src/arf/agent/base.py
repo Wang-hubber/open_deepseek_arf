@@ -234,6 +234,7 @@ class BaseAgent(ABC):
     def _prompt_pipeline(self) -> list[tuple[int, str, str]]:
         return [
             (10, "workspace",        "_workspace_section"),
+            (12, "user_resources",   "_user_resources_section"),
             (15, "long_term_memory", "_long_term_memory_section"),
             (20, "memory",           "_memory_section"),
             (25, "critical_rules",   "_critical_rules_section"),
@@ -246,6 +247,59 @@ class BaseAgent(ABC):
         lines = [f"## Workspace: {self.agent_name}"]
         if self.agent_description:
             lines.append(self.agent_description)
+        return "\n".join(lines)
+
+    def _user_resources_section(self) -> str:
+        """List user-created resources prominently so the agent is always
+        aware of what already exists and can activate them on demand.
+        """
+        items = self.registry._items
+        user_tools = [
+            (n, t) for n, t in items.get("tools", {}).items()
+            if t.get("source") == "user"
+        ]
+        user_skills = [
+            (n, s) for n, s in items.get("skills", {}).items()
+            if s.get("source") == "user"
+        ]
+        user_models = [
+            (n, m) for n, m in items.get("models", {}).items()
+            if m.get("source") == "user" and m.get("configured")
+        ]
+
+        if not user_tools and not user_skills and not user_models:
+            return ""
+
+        lines = ["## Your Resources"]
+        lines.append("The following resources already exist in your workspace. "
+                     "Before creating a new one, check if one of these fits. "
+                     "Use `resource_loader` action `activate` to load a tool. "
+                     "Use `file_reader` on `skills/<name>/skill.yaml` to load a skill.")
+
+        if user_models:
+            lines.append("")
+            lines.append("### Your Models")
+            for name, m in sorted(user_models):
+                cfg = m.get("config", {})
+                lines.append(f"- **{name}** ({m.get('model_type', '')}): "
+                           f"{cfg.get('model_name', '')} @ {cfg.get('base_url', '')}")
+
+        if user_tools:
+            lines.append("")
+            lines.append("### Your Tools")
+            for name, t in sorted(user_tools):
+                desc = t.get("description", "")
+                active = " [active]" if name in self._active_tools else ""
+                lines.append(f"- **{name}**{active}: {desc}" if desc else f"- **{name}**{active}")
+
+        if user_skills:
+            lines.append("")
+            lines.append("### Your Skills")
+            for name, s in sorted(user_skills):
+                desc = s.get("description", "")
+                lines.append(f"- **{name}**: {desc}" if desc else f"- **{name}**")
+
+        lines.append("")
         return "\n".join(lines)
 
     def _memory_section(self) -> str:
@@ -474,7 +528,13 @@ class BaseAgent(ABC):
         if tool_name not in ("file_writer", "file_deleter"):
             return
         if any(check_path.startswith(p) for p in ("tools/", "skills/", "models/")):
-            self.registry.reload_user(project_dir)
+            changes = self.registry.reload_user(project_dir)
+            # Auto-activate newly created user tools so they're usable immediately
+            for change in changes:
+                if change.startswith("+tools/"):
+                    new_name = change[len("+tools/"):]
+                    self._active_tools.add(new_name)
+                    logger.info("Auto-activated new user tool: %s", new_name)
 
     # ---- hooks ----------------------------------------------------------
 
