@@ -38,6 +38,7 @@ arf_agent/
 
 # Workspace directories
 default/
+default_workspace/
 
 # Personal notes
 zhihu_article*.md

@@ -1,8 +1,0 @@
-agent:
-  description: Workspace managed by ARF Agent
-  max_turns: 10
-  memory: memory/session.md
-  model: quick_no_thinking
-  name: default_workspace
-resources:
-  preload: []
