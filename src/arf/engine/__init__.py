@@ -8,6 +8,7 @@ from .graph import GraphEngine, GraphParams, GraphResult
 from .state import AgentState
 from .classifier import classify_request
 from .tracing import DevTracer, build_trace_metadata
+from .dispatcher import Dispatcher
 
 __all__ = [
     "GraphEngine",
@@ -17,4 +18,5 @@ __all__ = [
     "classify_request",
     "DevTracer",
     "build_trace_metadata",
+    "Dispatcher",
 ]
