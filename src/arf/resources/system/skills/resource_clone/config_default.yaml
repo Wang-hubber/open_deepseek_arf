@@ -1,0 +1,4 @@
+name: resource_clone
+description: "资源克隆器，将系统资源复制到用户工作区生成可自定义副本"
+required: false
+depends_on: []

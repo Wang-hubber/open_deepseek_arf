@@ -1,0 +1,95 @@
+name: resource_clone
+description: "克隆系统资源到用户工作区，生成可自定义的副本"
+prompt_template: |
+  # Resource Cloner
+
+  将系统资源（Tool / Skill / Model）克隆到用户工作区，生成一个可自定义的副本。
+  克隆后的用户资源优先于系统资源生效（同名校验覆盖）。
+
+  ## 流程
+
+  ### 1. 确认源资源存在
+
+  调用 resource_registrar action="check" 验证源资源：
+  - Tool: resource_type="tool", name="<source_name>"
+  - Skill: resource_type="skill", name="<source_name>"
+  - Model: resource_type="model", name="<source_name>"
+
+  如果返回 found=false，告知用户资源不存在，列出可用的同类资源。
+
+  ### 2. 确定目标和命名
+
+  - 如果用户指定了新名称，使用用户指定的
+  - 如果用户没指定，使用 `<source_name>_custom` 作为默认名称
+  - 检查目标是否已存在：如果 workspace 中已有同名资源，询问用户是否覆盖
+
+  ### 3. 读取源文件
+
+  系统资源路径格式：`@sys/<type>s/<name>/`（注意 type 后加 s）
+
+  **Tool 克隆** — 读取两个文件：
+  - `@sys/tools/<source_name>/tool.yaml` — 工具定义
+  - `@sys/tools/<source_name>/function.py` — 实现代码（如存在）
+  - `@sys/tools/<source_name>/config_default.yaml` — 元数据（如存在，重命名为 config.yaml）
+
+  **Skill 克隆** — 读取两个文件：
+  - `@sys/skills/<source_name>/skill.yaml` — skill 定义
+  - `@sys/skills/<source_name>/config_default.yaml` — 元数据（如存在，重命名为 config.yaml）
+
+  **Model 克隆** — 读取一个文件：
+  - `@sys/models/<source_name>/config_default.yaml` — 配置模板
+
+  ### 4. 写入工作区
+
+  使用 file_writer 将读取到的文件内容写入 workspace 对应目录。
+  写入前确认路径在 workspace 内（file_writer 会自动校验）。
+
+  **Tool**:
+  - `tools/<target_name>/tool.yaml`
+  - `tools/<target_name>/function.py`
+
+  **Skill**:
+  - `skills/<target_name>/skill.yaml`
+
+  **Model**:
+  - `models/<target_name>/config.yaml`
+
+  ### 5. 修改（如用户要求）
+
+  如果用户克隆是为了修改某些参数，在写入后直接编辑：
+  - Tool: 修改 tool.yaml 中的 description、parameters 等
+  - Skill: 修改 skill.yaml 中的 prompt_template、tools 列表等
+  - Model: 修改 config.yaml 中的 base_url、api_key、model_name 等
+
+  提示用户"已克隆到 `tools/<target_name>/`，你可以在这里自由修改，它不会影响系统原版。"
+
+  ### 6. 验证
+
+  写入完成后，调用 resource_registrar action="check" 验证新资源已注册。
+  - 对 Tool: 可建议调用 validate_tool 检查完整性
+  - 对 Skill: 可建议调用 validate_skill 检查完整性
+  - 对 Model: 提醒用户填写 api_key 等必填字段
+
+  ## 示例
+
+  **用户**："帮我把 web_fetch 复制一份，我想改它的 timeout"
+  → check web_fetch 存在 ✅
+  → 读取 @sys/tools/web_fetch/tool.yaml + function.py
+  → 写入 tools/web_fetch_custom/tool.yaml + function.py
+  → 用户说想改 timeout → 修改 tool.yaml 中 parameters.properties.timeout.default
+  → validate_tool → Ready
+tools:
+  - resource_registrar
+  - file_reader
+  - file_writer
+parameters:
+  source_name:
+    type: string
+    description: "要克隆的系统资源名称，如 web_fetch、file_reader"
+  resource_type:
+    type: string
+    description: "资源类型：tool、skill 或 model"
+    enum: [tool, skill, model]
+  target_name:
+    type: string
+    description: "克隆后的新名称，默认 <source>_custom。如果 workspace 中已存在同名资源，需要确认是否覆盖"
