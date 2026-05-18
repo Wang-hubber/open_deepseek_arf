@@ -645,3 +645,9 @@ class ARFAgent:
         response, full_messages, _, _, _ = self.chat_with_tools(message, history, project_dir)
         display_history = [m for m in full_messages if m["role"] in ("user", "assistant") and "tool_calls" not in m]
         return response, display_history
+
+
+# New dual-agent architecture (2026-05)
+from .base import BaseAgent  # noqa: E402, F401
+from .user_agent import UserAgent  # noqa: E402
+from .sys_agent import SysAgent  # noqa: E402
