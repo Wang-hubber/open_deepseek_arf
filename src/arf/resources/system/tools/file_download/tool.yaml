@@ -1,0 +1,13 @@
+name: file_download
+description: "将工作区文件生成可下载链接，用户点击即可下载查看"
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: "文件路径（相对于工作区）"
+    label:
+      type: string
+      description: "可选，链接显示名称，默认为文件名"
+  required:
+    - path
