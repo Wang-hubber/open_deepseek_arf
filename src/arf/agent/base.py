@@ -282,27 +282,32 @@ class BaseAgent(ABC):
         except Exception:
             return ""
 
+    _FALLBACK_CRITICAL_RULES = (
+        "### R0: Self-check before EVERY response\n"
+        "Before writing ANY response text, ask yourself: \"Did I call a tool to "
+        "verify what I'm about to say?\" If the answer is no AND your response "
+        "states any fact about current state (model, tools, files, config), "
+        "STOP. Call the tool first. Then respond with the verified information.\n\n"
+        "### R1: Verify, then answer\n"
+        "Never state the current model, active tools, file contents, or any "
+        "runtime state from memory. Call the relevant tool FIRST, then answer "
+        "from the tool result. Guessing is always wrong.\n\n"
+        "### R2: Tool calls ≠ words\n"
+        "To switch models, you MUST call `model_switch` or `model_manager`. "
+        "Saying \"switched to X\" or \"now using X\" without calling the tool "
+        "is a violation. The same applies to any state-changing action.\n\n"
+        "### R3: Verify after action\n"
+        "After calling a tool that changes state, verify the result. If the "
+        "tool says it succeeded, report success. If it failed or shows "
+        "unexpected state, tell the user the actual result."
+    )
+
     def _critical_rules_section(self) -> str:
-        return (
-            "## CRITICAL — Hard Rules\n\n"
-            "### R0: Self-check before EVERY response\n"
-            "Before writing ANY response text, ask yourself: \"Did I call a tool to "
-            "verify what I'm about to say?\" If the answer is no AND your response "
-            "states any fact about current state (model, tools, files, config), "
-            "STOP. Call the tool first. Then respond with the verified information.\n\n"
-            "### R1: Verify, then answer\n"
-            "Never state the current model, active tools, file contents, or any "
-            "runtime state from memory. Call the relevant tool FIRST, then answer "
-            "from the tool result. Guessing is always wrong.\n\n"
-            "### R2: Tool calls ≠ words\n"
-            "To switch models, you MUST call `model_switch` or `model_manager`. "
-            "Saying \"switched to X\" or \"now using X\" without calling the tool "
-            "is a violation. The same applies to any state-changing action.\n\n"
-            "### R3: Verify after action\n"
-            "After calling a tool that changes state, verify the result. If the "
-            "tool says it succeeded, report success. If it failed or shows "
-            "unexpected state, tell the user the actual result."
-        )
+        raw = resolve_config(self._config_filename, self.workspace_dir)
+        rules = raw.get("critical_rules", "")
+        if rules:
+            return "## CRITICAL — Hard Rules\n\n" + rules.strip()
+        return "## CRITICAL — Hard Rules\n\n" + self._FALLBACK_CRITICAL_RULES
 
     def _identity_section(self) -> str:
         return self.identity_prompt
