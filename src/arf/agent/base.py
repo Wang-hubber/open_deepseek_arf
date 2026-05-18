@@ -1,10 +1,28 @@
-"""BaseAgent -- shared ARF agent logic for prompt pipeline and GraphEngine wiring."""
+"""BaseAgent -- ABC for ARF agents driven entirely by YAML config.
+
+Subclasses only declare a config filename::
+
+    class UserAgent(BaseAgent):
+        _config_filename = "arf_user_agent.yaml"
+
+    class SysAgent(BaseAgent):
+        _config_filename = "arf_sys_agent.yaml"
+
+Config resolution (from_config):
+    1. Framework default  → src/arf/agent/<_config_filename>
+    2. Workspace override → <workspace_dir>/<_config_filename>   (optional)
+    Workspace keys deeply-merge over framework keys.
+"""
+
+from __future__ import annotations
 
 import copy
 import json
 import logging
 import os
+from abc import ABC
 from pathlib import Path
+from typing import Any
 
 from ..engine import GraphParams, GraphEngine
 from ..resources.model_adapter import ModelAdapter
@@ -13,6 +31,50 @@ logger = logging.getLogger("arf.agent")
 
 MAX_SCHEMA_TOKENS_PER_TOOL = 400
 
+# ---------------------------------------------------------------------------
+# YAML helpers
+# ---------------------------------------------------------------------------
+
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    import yaml
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base*.  Lists are replaced, not merged."""
+    merged = copy.deepcopy(base)
+    for k, v in override.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = copy.deepcopy(v)
+    return merged
+
+
+# framework config directory (where this file lives)
+_FRAMEWORK_DIR = Path(__file__).resolve().parent
+
+
+def resolve_config(config_filename: str, workspace_dir: str | None) -> dict:
+    """Build merged config: framework default ← workspace override.
+
+    Returns empty dict if neither file exists.
+    """
+    framework = _load_yaml(_FRAMEWORK_DIR / config_filename)
+
+    if workspace_dir:
+        workspace = _load_yaml(Path(workspace_dir) / config_filename)
+    else:
+        workspace = {}
+
+    return _deep_merge(framework, workspace)
+
+
+# ---------------------------------------------------------------------------
+# schema trimming helper
+# ---------------------------------------------------------------------------
 
 def _trim_schema(schema: dict, max_tokens: int = MAX_SCHEMA_TOKENS_PER_TOOL) -> dict:
     text = json.dumps(schema, ensure_ascii=False)
@@ -21,67 +83,143 @@ def _trim_schema(schema: dict, max_tokens: int = MAX_SCHEMA_TOKENS_PER_TOOL) -> 
         return schema
     trimmed = copy.deepcopy(schema)
 
-    def _strip_descriptions(obj):
+    def _strip(obj):
         if isinstance(obj, dict):
             obj.pop("description", None)
             for v in obj.values():
-                _strip_descriptions(v)
+                _strip(v)
         elif isinstance(obj, list):
             for item in obj:
-                _strip_descriptions(item)
+                _strip(item)
 
     props = trimmed.get("properties", {})
-    for prop_schema in props.values():
-        if isinstance(prop_schema, dict):
-            for sub_key, sub_val in prop_schema.items():
-                if sub_key == "properties" and isinstance(sub_val, dict):
-                    _strip_descriptions(sub_val)
-                elif sub_key == "items":
-                    _strip_descriptions(sub_val)
+    for ps in props.values():
+        if isinstance(ps, dict):
+            for sk, sv in ps.items():
+                if sk == "properties" and isinstance(sv, dict):
+                    _strip(sv)
+                elif sk == "items":
+                    _strip(sv)
     return trimmed
 
 
-class BaseAgent:
-    """Shared agent foundation -- prompt pipeline, tool building, GraphEngine wiring.
+# ---------------------------------------------------------------------------
+# BaseAgent
+# ---------------------------------------------------------------------------
 
-    Subclasses define their own PROMPT_PIPELINE, TOOLS (active tool set),
-    KERNEL_TOOLS, and identity sections.
+class BaseAgent(ABC):
+    """ABC for ARF agents.
+
+    Subclasses MUST set ``_config_filename``.  Instantiate via ``from_config()``.
+
+    Config is resolved by merging workspace YAML over the framework default
+    shipped in ``src/arf/agent/``.
     """
 
-    PROMPT_PIPELINE: list[tuple[int, str, str]] = [
-        (10, "workspace",        "_workspace_section"),
-        (15, "long_term_memory", "_long_term_memory_section"),
-        (20, "memory",           "_memory_section"),
-        (25, "critical_rules",   "_critical_rules_section"),
-        (30, "identity",         "_identity_section"),
-        (50, "inventory",        "_inventory_section"),
-        (60, "language",         "_language_instruction"),
-    ]
+    _config_filename: str
 
-    KERNEL_TOOLS: frozenset[str] = frozenset()
-    AGENT_MODE: str = "sys"  # "user" | "sys"
+    # ---- factory --------------------------------------------------------
 
-    def __init__(self, model: ModelAdapter, registry, workspace_dir: str | None = None,
-                 language: str = "zh", hook_runner=None):
+    @classmethod
+    def from_config(cls, registry, workspace_dir: str, hook_runner=None):
+        """Build an agent from its config file (framework default + workspace override)."""
+        raw = resolve_config(cls._config_filename, workspace_dir)
+        agent_cfg = raw.get("agent", {})
+        tools_cfg = raw.get("tools", {})
+        identity = raw.get("identity", "")
+
+        model_type = agent_cfg.get("model", "quick_thinking")
+        adapter = cls._resolve_model_adapter(registry, model_type)
+        if adapter is None:
+            available = cls._list_model_types(registry)
+            raise ValueError(
+                f"Model type {model_type!r} requested by {cls._config_filename} "
+                f"is not configured. Available types: {available}"
+            )
+
+        return cls(
+            model=adapter,
+            registry=registry,
+            workspace_dir=workspace_dir,
+            agent_name=agent_cfg.get("name", "ARF Agent"),
+            agent_description=agent_cfg.get("description", ""),
+            agent_mode=agent_cfg.get("mode", "sys"),
+            default_model=model_type,
+            max_turns=agent_cfg.get("max_turns", 8),
+            language=agent_cfg.get("language", "zh"),
+            classifier_enabled=agent_cfg.get("classifier_enabled", False),
+            kernel_tools=frozenset(tools_cfg.get("kernel", [])),
+            preload_tools=tools_cfg.get("preload", []),
+            identity_prompt=identity,
+            hook_runner=hook_runner,
+        )
+
+    # ---- constructor ----------------------------------------------------
+
+    def __init__(
+        self,
+        *,
+        model: ModelAdapter,
+        registry,
+        workspace_dir: str,
+        agent_name: str,
+        agent_description: str,
+        agent_mode: str,
+        default_model: str,
+        max_turns: int,
+        language: str,
+        classifier_enabled: bool,
+        kernel_tools: frozenset[str],
+        preload_tools: list[str],
+        identity_prompt: str,
+        hook_runner=None,
+    ):
         self.model = model
         self.registry = registry
         self.workspace_dir = workspace_dir
+        self.agent_name = agent_name
+        self.agent_description = agent_description
+        self.agent_mode = agent_mode
+        self.default_model = default_model
+        self.max_turns = max_turns
         self.language = language
+        self.classifier_enabled = classifier_enabled
+        self.kernel_tools = kernel_tools
+        self.identity_prompt = identity_prompt
         self.hook_runner = hook_runner
-        self._active_tools: set[str] = set(self.KERNEL_TOOLS)
-        for tool_name in self._read_preload():
-            if tool_name in self.registry._items.get("tools", {}):
-                self._active_tools.add(tool_name)
 
-    @property
-    def agent_mode(self) -> str:
-        return self.AGENT_MODE
+        # Active tools = kernel U preload (validated against registry)
+        self._active_tools: set[str] = set(self.kernel_tools)
+        all_tools = registry._items.get("tools", {})
+        for tn in preload_tools:
+            if tn in all_tools:
+                self._active_tools.add(tn)
 
-    # ---- prompt pipeline --------------------------------------------
+    # ---- helpers --------------------------------------------------------
+
+    @staticmethod
+    def _resolve_model_adapter(registry, model_type: str) -> ModelAdapter | None:
+        for m in registry._items.get("models", {}).values():
+            if m.get("model_type") == model_type:
+                cfg = m.get("config", {})
+                if cfg:
+                    ctx = m.get("context_window", 1048576)
+                    return ModelAdapter(cfg, context_window=ctx)
+        return None
+
+    @staticmethod
+    def _list_model_types(registry) -> set[str]:
+        return {m.get("model_type", "") for m in registry._items.get("models", {}).values()}
+
+    @staticmethod
+    def available_models(registry) -> list[str]:
+        return sorted(BaseAgent._list_model_types(registry))
+
+    # ---- prompt pipeline ------------------------------------------------
 
     def build_system_prompt(self) -> str:
-        sections = []
-        for _prio, _name, method_name in sorted(self.PROMPT_PIPELINE):
+        sections: list[str] = []
+        for _prio, _name, method_name in sorted(self._prompt_pipeline()):
             method = getattr(self, method_name, None)
             if method is None:
                 continue
@@ -91,49 +229,24 @@ class BaseAgent:
                     sections.append(result)
             except Exception:
                 logger.warning("Prompt section '%s' failed", _name, exc_info=True)
-                continue
         return "\n\n".join(sections)
 
-    def _critical_rules_section(self) -> str:
-        return (
-            "## CRITICAL — Hard Rules\n\n"
-            "### R0: Self-check before EVERY response\n"
-            "Before writing ANY response text, ask yourself: \"Did I call a tool to "
-            "verify what I'm about to say?\" If the answer is no AND your response "
-            "states any fact about current state (model, tools, files, config), "
-            "STOP. Call the tool first. Then respond with the verified information.\n\n"
-            "### R1: Verify, then answer\n"
-            "Never state the current model, active tools, file contents, or any "
-            "runtime state from memory. Call the relevant tool FIRST, then answer "
-            "from the tool result. Guessing is always wrong.\n\n"
-            "### R2: Tool calls ≠ words\n"
-            "To switch models, you MUST call `model_switch` or `model_manager`. "
-            "Saying \"switched to X\" or \"now using X\" without calling the tool "
-            "is a violation. The same applies to any state-changing action.\n\n"
-            "### R3: Verify after action\n"
-            "After calling a tool that changes state, verify the result. If the "
-            "tool says it succeeded, report success. If it failed or shows "
-            "unexpected state, tell the user the actual result."
-        )
+    def _prompt_pipeline(self) -> list[tuple[int, str, str]]:
+        return [
+            (10, "workspace",        "_workspace_section"),
+            (15, "long_term_memory", "_long_term_memory_section"),
+            (20, "memory",           "_memory_section"),
+            (25, "critical_rules",   "_critical_rules_section"),
+            (30, "identity",         "_identity_section"),
+            (50, "inventory",        "_inventory_section"),
+            (60, "language",         "_language_instruction"),
+        ]
 
     def _workspace_section(self) -> str:
-        if not self.workspace_dir:
-            return ""
-        try:
-            import yaml
-            cfg_path = Path(self.workspace_dir) / "arf_agent.yaml"
-            if not cfg_path.exists():
-                return ""
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            agent = cfg.get("agent", {})
-            name = agent.get("name", "Workspace")
-            desc = agent.get("description", "")
-            lines = [f"## Workspace: {name}"]
-            if desc:
-                lines.append(desc)
-            return "\n".join(lines)
-        except Exception:
-            return ""
+        lines = [f"## Workspace: {self.agent_name}"]
+        if self.agent_description:
+            lines.append(self.agent_description)
+        return "\n".join(lines)
 
     def _memory_section(self) -> str:
         if not self.workspace_dir:
@@ -169,15 +282,47 @@ class BaseAgent:
         except Exception:
             return ""
 
+    def _critical_rules_section(self) -> str:
+        return (
+            "## CRITICAL — Hard Rules\n\n"
+            "### R0: Self-check before EVERY response\n"
+            "Before writing ANY response text, ask yourself: \"Did I call a tool to "
+            "verify what I'm about to say?\" If the answer is no AND your response "
+            "states any fact about current state (model, tools, files, config), "
+            "STOP. Call the tool first. Then respond with the verified information.\n\n"
+            "### R1: Verify, then answer\n"
+            "Never state the current model, active tools, file contents, or any "
+            "runtime state from memory. Call the relevant tool FIRST, then answer "
+            "from the tool result. Guessing is always wrong.\n\n"
+            "### R2: Tool calls ≠ words\n"
+            "To switch models, you MUST call `model_switch` or `model_manager`. "
+            "Saying \"switched to X\" or \"now using X\" without calling the tool "
+            "is a violation. The same applies to any state-changing action.\n\n"
+            "### R3: Verify after action\n"
+            "After calling a tool that changes state, verify the result. If the "
+            "tool says it succeeded, report success. If it failed or shows "
+            "unexpected state, tell the user the actual result."
+        )
+
+    def _identity_section(self) -> str:
+        return self.identity_prompt
+
     def _language_instruction(self) -> str:
         if self.language == "en":
             return "## Language Requirement\n\nAlways respond in **English**."
         return "## 语言要求\n\n请始终使用**简体中文**与用户交流。"
 
-    # ---- inventory formatting ---------------------------------------
+    # ---- inventory ------------------------------------------------------
+
+    def _inventory_section(self) -> str:
+        return "\n".join([
+            *self._format_models(),
+            *self._format_tools(),
+            *self._format_skills(),
+        ])
 
     def _format_models(self) -> list[str]:
-        items = self.registry._items["models"]
+        items = self.registry._items.get("models", {})
         lines = ["### Models"]
         if not items:
             lines.append("_(No models registered yet.)_")
@@ -193,7 +338,7 @@ class BaseAgent:
         return lines
 
     def _format_tools(self) -> list[str]:
-        items = self.registry._items["tools"]
+        items = self.registry._items.get("tools", {})
         lines = ["### Tools (Active)"]
         active_shown = False
         for name, t in items.items():
@@ -222,7 +367,7 @@ class BaseAgent:
         return lines
 
     def _format_skills(self) -> list[str]:
-        items = self.registry._items["skills"]
+        items = self.registry._items.get("skills", {})
         lines = ["### Skills"]
         if not items:
             lines.append("_(No skills available yet. You can help the user create one.)_")
@@ -234,51 +379,7 @@ class BaseAgent:
         lines.append("")
         return lines
 
-    # ---- yaml helpers ------------------------------------------------
-
-    def _read_preload(self) -> list[str]:
-        if not self.workspace_dir:
-            return []
-        try:
-            import yaml
-            cfg_path = Path(self.workspace_dir) / "arf_agent.yaml"
-            if not cfg_path.exists():
-                return []
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            resources = cfg.get("resources", {})
-            preload = resources.get("preload", [])
-            return preload if isinstance(preload, list) else []
-        except Exception:
-            return []
-
-    def _read_default_model(self) -> str | None:
-        if not self.workspace_dir:
-            return None
-        try:
-            import yaml
-            cfg_path = Path(self.workspace_dir) / "arf_agent.yaml"
-            if not cfg_path.exists():
-                return None
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            return cfg.get("agent", {}).get("default_model")
-        except Exception:
-            return None
-
-    def _read_max_turns(self) -> int:
-        if not self.workspace_dir:
-            return 10
-        try:
-            import yaml
-            cfg_path = Path(self.workspace_dir) / "arf_agent.yaml"
-            if not cfg_path.exists():
-                return 10
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            mt = cfg.get("agent", {}).get("max_turns", 10)
-            return max(1, int(mt)) if isinstance(mt, (int, float)) else 10
-        except Exception:
-            return 10
-
-    # ---- tool building ------------------------------------------------
+    # ---- tool building --------------------------------------------------
 
     def _build_openai_tools(self) -> list[dict]:
         tools = []
@@ -298,7 +399,7 @@ class BaseAgent:
             })
         return tools
 
-    # ---- tool execution -----------------------------------------------
+    # ---- tool execution -------------------------------------------------
 
     def _execute_tool(self, tool_name: str, arguments: str, project_dir: str | None = None) -> str:
         tool_info = self.registry.get_tool(tool_name)
@@ -314,27 +415,21 @@ class BaseAgent:
         except json.JSONDecodeError:
             return json.dumps({"error": f"Invalid arguments JSON: {arguments}"})
 
-        # Inject workspace dir
         if tool_name in ("memory_store", "model_manager", "model_switch", "file_download") and project_dir:
             args.setdefault("_workspace_dir", project_dir)
 
-        # Inject agent mode for path-restricted tools
         if tool_name in ("file_writer", "file_deleter"):
-            args.setdefault("_agent_mode", self.AGENT_MODE)
+            args.setdefault("_agent_mode", self.agent_mode)
 
-        # Inject state for resource_loader
         if tool_name == "resource_loader":
             args.setdefault("_active_tools", self._active_tools)
-            args.setdefault("_kernel_tools", self.KERNEL_TOOLS)
-            args.setdefault("_all_tool_names",
-                           set(self.registry._items["tools"].keys()))
+            args.setdefault("_kernel_tools", self.kernel_tools)
+            args.setdefault("_all_tool_names", set(self.registry._items["tools"].keys()))
             args.setdefault("_registry", self.registry)
 
-        # Inject registry for resource_registrar
         if tool_name == "resource_registrar":
             args.setdefault("_registry", self.registry)
 
-        # Path resolution for file tools
         orig_path = args.get("path", "")
         if tool_name in ("file_reader", "file_writer", "file_deleter", "file_download") and project_dir:
             raw_path = args.get("path", "")
@@ -371,14 +466,12 @@ class BaseAgent:
         check_path = args.get("_orig_path") or args.get("path", "")
         if not check_path or check_path.startswith("@sys/"):
             return
-        is_modify = tool_name in ("file_writer", "file_deleter")
-        if not is_modify:
+        if tool_name not in ("file_writer", "file_deleter"):
             return
-        resource_prefixes = ("tools/", "skills/", "models/")
-        if any(check_path.startswith(p) for p in resource_prefixes):
+        if any(check_path.startswith(p) for p in ("tools/", "skills/", "models/")):
             self.registry.reload_user(project_dir)
 
-    # ---- engine wiring ------------------------------------------------
+    # ---- hooks ----------------------------------------------------------
 
     def _make_run_hook(self):
         runner = self.hook_runner
@@ -400,16 +493,13 @@ class BaseAgent:
 
         return _run
 
+    # ---- engine wiring --------------------------------------------------
+
     def _available_model_types(self) -> set[str]:
-        types = set()
-        for name, m in self.registry._items.get("models", {}).items():
-            mt = m.get("model_type", "")
-            if mt:
-                types.add(mt)
-        return types
+        return {m.get("model_type", "") for m in self.registry._items.get("models", {}).values()}
 
     def _build_model_adapter(self, model_type: str):
-        for name, m in self.registry._items.get("models", {}).items():
+        for m in self.registry._items.get("models", {}).values():
             if m.get("model_type") == model_type:
                 cfg = m.get("config", {})
                 if cfg:
@@ -418,17 +508,14 @@ class BaseAgent:
         return None
 
     def _build_classifier_call(self):
-        adapter = self._build_model_adapter("quick_thinking")
-        if adapter is None:
-            adapter = self._build_model_adapter("deep_thinking")
-        if adapter is None:
-            adapter = self._build_model_adapter("quick_no_thinking")
+        adapter = (self._build_model_adapter("quick_thinking")
+                   or self._build_model_adapter("deep_thinking")
+                   or self._build_model_adapter("quick_no_thinking"))
         if adapter is None:
             return None
         return lambda msgs: adapter.chat_complete(msgs, tools=None).content or ""
 
-    def _build_graph_engine(self, project_dir: str | None = None,
-                            classifier_enabled: bool = False):
+    def _build_graph_engine(self, project_dir: str | None = None):
         from ..engine import GraphEngine
 
         available_types = self._available_model_types()
@@ -443,9 +530,9 @@ class BaseAgent:
             run_hook=self._make_run_hook(),
             model_adapter_factory=lambda mt: self._build_model_adapter(mt),
             classifier_call=classifier_call,
-            classifier_enabled=classifier_enabled,
+            classifier_enabled=self.classifier_enabled,
             available_model_types=available_types,
-            user_model_preference=self._read_default_model(),
+            user_model_preference=self.default_model,
         )
         engine.set_tools_refresher(lambda: self._build_openai_tools())
         return engine
@@ -463,17 +550,16 @@ class BaseAgent:
             messages=messages,
             system_prompt=system_prompt,
             tools=tools if tools else None,
-            max_turns=max_turns if max_turns is not None else self._read_max_turns(),
+            max_turns=max_turns if max_turns is not None else self.max_turns,
         )
 
-    # ---- public API --------------------------------------------------
+    # ---- public API -----------------------------------------------------
 
     def chat_with_tools(self, message: str, history: list[dict],
                         project_dir: str | None = None,
                         max_turns: int | None = None):
         params = self._build_query_params(message, history, max_turns)
-        engine = self._build_graph_engine(
-            project_dir, classifier_enabled=self._classifier_enabled())
+        engine = self._build_graph_engine(project_dir)
         result = engine.run(params)
         response = result.response if not result.truncated else (
             "已达到本轮对话最大轮次限制，请开始新对话以继续。"
@@ -486,9 +572,34 @@ class BaseAgent:
                                project_dir: str | None = None,
                                max_turns: int | None = None):
         params = self._build_query_params(message, history, max_turns)
-        engine = self._build_graph_engine(
-            project_dir, classifier_enabled=self._classifier_enabled())
+        engine = self._build_graph_engine(project_dir)
         yield from engine.run_stream(params)
 
-    def _classifier_enabled(self) -> bool:
-        return False
+
+# ---------------------------------------------------------------------------
+# default configs → workspace
+# ---------------------------------------------------------------------------
+
+def generate_default_configs(workspace_dir: str) -> tuple[Path, Path]:
+    """Copy framework default agent configs into *workspace_dir* if missing.
+
+    Called by SessionManager so users can customise their agent configs.
+    Returns (user_path, sys_path).
+    """
+    ws = Path(workspace_dir)
+    user_path = ws / "arf_user_agent.yaml"
+    sys_path = ws / "arf_sys_agent.yaml"
+
+    if not user_path.exists():
+        src = _FRAMEWORK_DIR / "arf_user_agent.yaml"
+        if src.exists():
+            user_path.write_text(src.read_text(encoding="utf-8"))
+            logger.info("Copied default user agent config → %s", user_path)
+
+    if not sys_path.exists():
+        src = _FRAMEWORK_DIR / "arf_sys_agent.yaml"
+        if src.exists():
+            sys_path.write_text(src.read_text(encoding="utf-8"))
+            logger.info("Copied default sys agent config → %s", sys_path)
+
+    return user_path, sys_path

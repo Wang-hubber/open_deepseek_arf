@@ -39,4 +39,5 @@ arf = [
     "resources/system/tools/*/function.py",
     "resources/system/skills/*/skill.yaml",
     "server/static/index.html",
+    "agent/*.yaml",
 ]

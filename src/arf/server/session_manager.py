@@ -69,10 +69,8 @@ class SessionManager:
     def get_agent(self):
         """Return a Dispatcher wrapping UserAgent + SysAgent, auto-invalidating
         if the underlying model config file changed."""
-        agent_yaml = self.read_agent_yaml()
-        preferred_name = (agent_yaml.get("agent") or {}).get("model")
-        resolved = self.resolve_model_config(preferred_name)
-
+        # Use first configured model's mtime as cache key
+        resolved = self.resolve_model_config(None)
         if not resolved:
             from fastapi import HTTPException
             raise HTTPException(
@@ -80,42 +78,28 @@ class SessionManager:
                 detail="No model configured. Please configure at least one model.",
             )
 
-        model_name, model_config = resolved
+        model_name, _model_config = resolved
         config_path = self.workspace_dir / "models" / model_name / "config.yaml"
         current_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
 
         if self._agent is not None and current_mtime != self._agent_mtime:
             self.reset_resource_state()
         if self._agent is None:
-            from ..agent import UserAgent, SysAgent
+            from ..agent import UserAgent, SysAgent, generate_default_configs
             from ..engine import Dispatcher
-            from ..resources.model_adapter import ModelAdapter
 
-            items = self.get_registry()._items.get("models", {})
-            item = items.get(model_name, {})
-            ctx = item.get("context_window", 1048576)
+            # Ensure agent configs exist in workspace (copy defaults if missing)
+            generate_default_configs(str(self.workspace_dir))
 
-            # User Agent model
-            user_model = ModelAdapter(model_config, context_window=ctx)
-            language = self._load_language()
-            user_agent = UserAgent(user_model, self.get_registry(),
-                                   str(self.workspace_dir), language,
-                                   hook_runner=self.get_hook_runner())
-
-            # Sys Agent model — resolve deep_thinking specifically
-            sys_resolved = self.resolve_model_config("deep_thinking")
-            if sys_resolved:
-                sys_name, sys_config = sys_resolved
-                sys_item = items.get(sys_name, {})
-                sys_ctx = sys_item.get("context_window", 1048576)
-                sys_model = ModelAdapter(sys_config, context_window=sys_ctx)
-            else:
-                # Fallback to same model as User Agent
-                sys_model = user_model
-
-            sys_agent = SysAgent(sys_model, self.get_registry(),
-                                 str(self.workspace_dir), language,
-                                 hook_runner=self.get_hook_runner())
+            registry = self.get_registry()
+            user_agent = UserAgent.from_config(
+                registry, str(self.workspace_dir),
+                hook_runner=self.get_hook_runner(),
+            )
+            sys_agent = SysAgent.from_config(
+                registry, str(self.workspace_dir),
+                hook_runner=self.get_hook_runner(),
+            )
 
             self._agent = Dispatcher(user_agent, sys_agent)
             self._agent_mtime = current_mtime

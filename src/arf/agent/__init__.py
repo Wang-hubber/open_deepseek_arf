@@ -648,6 +648,6 @@ class ARFAgent:
 
 
 # New dual-agent architecture (2026-05)
-from .base import BaseAgent  # noqa: E402, F401
+from .base import BaseAgent, generate_default_configs  # noqa: E402, F401
 from .user_agent import UserAgent  # noqa: E402
 from .sys_agent import SysAgent  # noqa: E402
