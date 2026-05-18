@@ -42,6 +42,7 @@ docs/
 
 # Claude Code
 .claude/
+.superpowers/
 
 # Legacy (has its own .git)
 arf_agent/

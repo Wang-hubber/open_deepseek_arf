@@ -189,7 +189,7 @@ class HookRunner:
                 env=env,
                 input=stdin_str,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=hook_def.timeout,
             )
 
