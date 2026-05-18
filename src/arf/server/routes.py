@@ -142,37 +142,17 @@ def config_save(payload: ModelConfig, mgr: SessionManager = Depends(get_mgr)):
 
 DEEPSEEK_BASE_URL = os.environ.get("ARF_DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
-_DEFAULT_DS_COMMON = {
-    "top_p": 1.0,
-    "response_format": "text",
-    "stream": True,
-}
+_DEEPSEEK_MODEL_TYPES = ("deep_thinking", "quick_thinking", "quick_no_thinking")
 
-DEEPSEEK_MODEL_SPECS = {
-    "deep_thinking": {
-        "model_name": "deepseek-v4-pro",
-        "temperature": 0.7,
-        "max_tokens": 100000,
-        "thinking_enabled": True,
-        "reasoning_effort": "max",
-        **_DEFAULT_DS_COMMON,
-    },
-    "quick_thinking": {
-        "model_name": "deepseek-v4-flash",
-        "temperature": 0.3,
-        "max_tokens": 50000,
-        "thinking_enabled": True,
-        "reasoning_effort": "high",
-        **_DEFAULT_DS_COMMON,
-    },
-    "quick_no_thinking": {
-        "model_name": "deepseek-v4-flash",
-        "temperature": 0.3,
-        "max_tokens": 102400,
-        "thinking_enabled": False,
-        **_DEFAULT_DS_COMMON,
-    },
-}
+
+def _load_model_default(registry, name: str) -> dict:
+    """Read a model's config_default.yaml from the registry item path."""
+    item = registry.get("models", name)
+    if item:
+        default_path = Path(item["path"]) / "config_default.yaml"
+        if default_path.exists():
+            return yaml.safe_load(default_path.read_text(encoding="utf-8")) or {}
+    return {}
 
 
 @router.post("/config/register-deepseek")
@@ -182,41 +162,44 @@ def config_register_deepseek(payload: DeepSeekRegisterRequest, mgr: SessionManag
         raise HTTPException(status_code=400, detail="API key is required")
 
     created = []
-    for name, spec in DEEPSEEK_MODEL_SPECS.items():
+    for name in _DEEPSEEK_MODEL_TYPES:
+        default = _load_model_default(mgr.get_registry(), name)
+        if not default:
+            continue
         model_dir = mgr.workspace_dir / "models" / name
         model_dir.mkdir(parents=True, exist_ok=True)
+
+        template = default.get("config_template", {})
+        model_name = template.get("model_name", {}).get("placeholder", name)
+        temperature = template.get("temperature", {}).get("default", 0.7)
+        max_tokens = template.get("max_tokens", {}).get("default", 4096)
+
         config = {
             "name": name,
-            "model_type": name,
+            "model_type": default.get("model_type", name),
             "config": {
                 "base_url": DEEPSEEK_BASE_URL,
                 "api_key": api_key,
-                "model_name": spec["model_name"],
-                "temperature": spec["temperature"],
-                "max_tokens": spec["max_tokens"],
-                "thinking_enabled": spec.get("thinking_enabled", False),
+                "model_name": model_name,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
             },
         }
-        if "reasoning_effort" in spec:
-            config["config"]["reasoning_effort"] = spec["reasoning_effort"]
+        # Apply thinking settings from config_default.yaml model_type
+        if default.get("model_type") == "deep_thinking":
+            config["config"]["thinking_enabled"] = True
+            config["config"]["reasoning_effort"] = "max"
+        elif default.get("model_type") == "quick_thinking":
+            config["config"]["thinking_enabled"] = True
+            config["config"]["reasoning_effort"] = "high"
 
         config_path = model_dir / "config.yaml"
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
-        created.append({"name": name, "model_name": spec["model_name"]})
-
-    agent_yaml_path = mgr.workspace_dir / "arf_agent.yaml"
-    agent_cfg = {}
-    if agent_yaml_path.exists():
-        agent_cfg = yaml.safe_load(agent_yaml_path.read_text(encoding="utf-8")) or {}
-    agent_cfg.setdefault("agent", {})["model"] = "quick_no_thinking"
-    agent_yaml_path.write_text(
-        yaml.safe_dump(agent_cfg, allow_unicode=True, default_flow_style=False),
-        encoding="utf-8",
-    )
+        created.append({"name": name, "model_name": model_name})
 
     mgr.reset_resource_state()
-    return {"ok": True, "models": created, "active_model": "quick_no_thinking"}
+    return {"ok": True, "models": created}
 
 
 # ---- trace routes -------------------------------------------------------
