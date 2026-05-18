@@ -230,6 +230,47 @@ class TestStage1Init:
         assert registry.is_readonly("tools", "file_reader") is True
         assert registry.is_readonly("tools", "file_writer") is True
 
+    def test_lifecycle_init_trace_on_registry_load(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+
+        ws = _make_workspace(tmp_path)
+        mgr = SessionManager(ws)
+        collector = mgr.get_trace_collector()
+
+        registry = mgr.get_registry()
+        assert len(collector) >= 1
+
+        init_events = [e for e in collector._buffer
+                      if e["event_type"] == "lifecycle.init"]
+        assert len(init_events) >= 1
+        assert init_events[0]["status"] == "ok"
+        assert "counts" in init_events[0]["metadata"]
+        assert init_events[0]["metadata"]["counts"]["tools"] > 0
+
+    def test_lifecycle_config_trace_on_register(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+
+        ws = _make_workspace(tmp_path)
+        _configure_quick_thinking(ws)
+        mgr = SessionManager(ws)
+        collector = mgr.get_trace_collector()
+
+        # Simulate what config/register-deepseek does
+        collector.emit({
+            "event_type": "lifecycle.config",
+            "status": "ok",
+            "metadata": {
+                "action": "register_deepseek",
+                "models_created": ["deep_thinking", "quick_thinking", "quick_no_thinking"],
+                "base_url": "https://api.deepseek.com",
+            },
+        })
+
+        config_events = [e for e in collector._buffer
+                        if e["event_type"] == "lifecycle.config"]
+        assert len(config_events) == 1
+        assert config_events[0]["metadata"]["action"] == "register_deepseek"
+
 
 # ===========================================================================
 # Stage 2: API Key — configuration detection, registration

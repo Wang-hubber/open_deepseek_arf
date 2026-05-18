@@ -63,10 +63,34 @@ class SessionManager:
     def get_registry(self) -> ResourceRegistry:
         if self._registry is None:
             self._registry = ResourceRegistry()
-            self._registry.load(
-                str(self.system_dir),
-                str(self.workspace_dir),
-            )
+            try:
+                self._registry.load(
+                    str(self.system_dir),
+                    str(self.workspace_dir),
+                )
+                collector = self.get_trace_collector()
+                collector.emit({
+                    "event_type": "lifecycle.init",
+                    "status": "ok",
+                    "metadata": {
+                        "stage": "registry_loaded",
+                        "counts": {
+                            "models": self._registry.count("models"),
+                            "tools": self._registry.count("tools"),
+                            "skills": self._registry.count("skills"),
+                        },
+                        "source": "system+user",
+                    },
+                })
+            except Exception as e:
+                collector = self.get_trace_collector()
+                collector.emit({
+                    "event_type": "lifecycle.init",
+                    "status": "error",
+                    "error_msg": str(e),
+                    "metadata": {"stage": "registry_loaded"},
+                })
+                raise
         return self._registry
 
     # ---- agent --------------------------------------------------------
@@ -88,6 +112,15 @@ class SessionManager:
         current_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
 
         if self._agent is not None and current_mtime != self._agent_mtime:
+            collector = self.get_trace_collector()
+            collector.emit({
+                "event_type": "lifecycle.config",
+                "status": "ok",
+                "metadata": {
+                    "action": "agent_rebuilt",
+                    "reason": "model_config_changed",
+                },
+            })
             self.reset_resource_state()
         if self._agent is None:
             from ..agent import UserAgent, SysAgent, generate_default_configs
@@ -108,6 +141,20 @@ class SessionManager:
 
             self._agent = Dispatcher(user_agent, sys_agent)
             self._agent_mtime = current_mtime
+
+            collector = self.get_trace_collector()
+            collector.emit({
+                "event_type": "lifecycle.init",
+                "status": "ok",
+                "metadata": {
+                    "stage": "agent_built",
+                    "agent_mode": "dispatcher",
+                    "user_model": user_agent.default_model,
+                    "sys_model": sys_agent.default_model,
+                    "user_max_turns": user_agent.max_turns,
+                    "sys_max_turns": sys_agent.max_turns,
+                },
+            })
         return self._agent
 
     def reset_resource_state(self):

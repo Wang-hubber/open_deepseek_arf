@@ -137,6 +137,17 @@ def config_save(payload: ModelConfig, mgr: SessionManager = Depends(get_mgr)):
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, default_flow_style=False)
     mgr.reset_resource_state()
+
+    collector = mgr.get_trace_collector()
+    collector.emit({
+        "event_type": "lifecycle.config",
+        "status": "ok",
+        "metadata": {
+            "action": "save",
+            "config_name": config_name,
+            "model_name": payload.model_name,
+        },
+    })
     return {"ok": True}
 
 
@@ -199,6 +210,17 @@ def config_register_deepseek(payload: DeepSeekRegisterRequest, mgr: SessionManag
         created.append({"name": name, "model_name": model_name})
 
     mgr.reset_resource_state()
+
+    collector = mgr.get_trace_collector()
+    collector.emit({
+        "event_type": "lifecycle.config",
+        "status": "ok",
+        "metadata": {
+            "action": "register_deepseek",
+            "models_created": [m["name"] for m in created],
+            "base_url": DEEPSEEK_BASE_URL,
+        },
+    })
     return {"ok": True, "models": created}
 
 
