@@ -153,24 +153,6 @@ class TestTask5ToolCategory:
         assert "file_reader" in engine._system_tool_names
 
 
-class TestTask7TraceDualWrite:
-    """Trace events are written to workspace file alongside SQLite."""
-
-    def test_write_trace_file_creates_jsonl(self, tmp_path):
-        from arf.server.database import _write_trace_file
-        sid = "20260518_test"
-        events = [
-            {"session_id": sid, "turn": 1, "node": "call_model", "status": "ok"},
-            {"session_id": sid, "turn": 1, "node": "execute_tools", "status": "ok"},
-        ]
-        _write_trace_file(str(tmp_path), sid, events)
-        trace_file = tmp_path / "memory" / "traces" / f"{sid}.jsonl"
-        assert trace_file.exists()
-        lines = trace_file.read_text().strip().split("\n")
-        assert len(lines) == 2
-        assert 'call_model' in lines[0]
-
-
 class TestTask8SessionStart:
     """SessionStart hook is in HOOK_EVENTS."""
 
@@ -199,6 +181,5 @@ class TestAllImports:
         assert len(_DEEPSEEK_MODEL_TYPES) == 3
 
     def test_database_imports(self):
-        from arf.server.database import _write_trace_file, insert_trace_events
-        assert callable(_write_trace_file)
+        from arf.server.database import insert_trace_events
         assert callable(insert_trace_events)
