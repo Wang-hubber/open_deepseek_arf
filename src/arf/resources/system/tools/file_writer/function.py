@@ -1,12 +1,12 @@
 from pathlib import Path
 
-USER_RESTRICTED_PREFIXES = ("tools/", "skills/", "models/")
+USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
 
 
 def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
-            if path.lstrip("/").startswith(prefix):
+            if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
                 return {
                     "error": (
                         f"User Agent 无法写入 {path}。"
