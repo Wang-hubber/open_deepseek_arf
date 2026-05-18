@@ -147,7 +147,7 @@ def delete_archive(session_id: str, workspace_dir: str | Path) -> bool:
 def _evict_oldest(sessions_dir: Path):
     """Remove the oldest archive if we're at capacity."""
     files = sorted(sessions_dir.glob("*.json"))
-    while len(files) >= MAX_ARCHIVES:
+    while len(files) > MAX_ARCHIVES:
         oldest = files.pop(0)
         oldest.unlink()
         logger.debug("Evicted old session archive: %s", oldest.name)

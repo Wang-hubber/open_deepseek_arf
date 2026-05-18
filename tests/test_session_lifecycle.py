@@ -974,8 +974,8 @@ class TestStage5SessionEnd:
             )
 
         files = list((ws / "memory" / "sessions").glob("*.json"))
-        # Current behavior: >= instead of > means cap is MAX_ARCHIVES - 1
-        assert len(files) == MAX_ARCHIVES - 1
+        # Eviction capping at MAX_ARCHIVES
+        assert len(files) == MAX_ARCHIVES
 
     def test_update_title_in_archive(self, tmp_path):
         from arf.server.sessions import archive_session, update_title
