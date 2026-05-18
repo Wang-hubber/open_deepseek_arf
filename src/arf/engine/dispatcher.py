@@ -27,6 +27,7 @@ class Dispatcher:
     def __init__(self, user_agent, sys_agent):
         self.user_agent = user_agent
         self.sys_agent = sys_agent
+        self._trace_collector = None  # injected by SessionManager
 
     def run(self, message: str, history: list[dict],
             project_dir: str | None = None) -> GraphResult:
@@ -45,6 +46,19 @@ class Dispatcher:
 
         # Phase 2: Sys Agent
         handoff = self._extract_handoff(user_result.tool_events)
+
+        if self._trace_collector:
+            self._trace_collector.emit({
+                "event_type": "lifecycle.handoff",
+                "status": "ok",
+                "metadata": {
+                    "phase": "user_agent_complete",
+                    "intent": handoff.get("intent", ""),
+                    "required_actions": handoff.get("required_actions", []),
+                    "user_turns_used": user_result.turns,
+                },
+            })
+
         sys_history = self._build_sys_history(history, message)
         sys_message = self._build_handoff_message(message, handoff)
         remaining_turns = max(1, total_max - user_result.turns)
@@ -53,6 +67,18 @@ class Dispatcher:
             self.sys_agent, sys_message, sys_history, project_dir,
             max_turns=remaining_turns,
         )
+
+        if self._trace_collector:
+            self._trace_collector.emit({
+                "event_type": "lifecycle.handoff",
+                "status": "ok",
+                "metadata": {
+                    "phase": "sys_agent_complete",
+                    "sys_model": self.sys_agent.default_model,
+                    "remaining_turns": remaining_turns,
+                    "sys_turns_used": sys_result.turns,
+                },
+            })
 
         # Merge: use Sys response but include full history
         return GraphResult(
@@ -90,6 +116,18 @@ class Dispatcher:
                 if not handoff_info:
                     yield event
                     return
+                # Emit lifecycle.handoff trace for user_agent_complete
+                if self._trace_collector:
+                    self._trace_collector.emit({
+                        "event_type": "lifecycle.handoff",
+                        "status": "ok",
+                        "metadata": {
+                            "phase": "user_agent_complete",
+                            "intent": handoff_info.get("intent", ""),
+                            "required_actions": handoff_info.get("required_actions", []),
+                            "user_turns_used": user_turns,
+                        },
+                    })
                 # Don't yield done yet — continue with Phase 2
                 continue
 
@@ -116,10 +154,26 @@ class Dispatcher:
         sys_message = self._build_handoff_message(message, handoff_info)
         remaining_turns = max(1, total_max - user_turns)
 
+        sys_turns_used = 0
         for event in self.sys_agent.chat_stream_with_tools(
             sys_message, sys_history, project_dir, max_turns=remaining_turns,
         ):
+            etype = event.get("type", "")
+            if etype == "done":
+                sys_turns_used = event.get("turns", remaining_turns)
             yield event
+
+        if self._trace_collector:
+            self._trace_collector.emit({
+                "event_type": "lifecycle.handoff",
+                "status": "ok",
+                "metadata": {
+                    "phase": "sys_agent_complete",
+                    "sys_model": self.sys_agent.default_model,
+                    "remaining_turns": remaining_turns,
+                    "sys_turns_used": sys_turns_used,
+                },
+            })
 
     # ---- ARFAgent-compatible interface for routes.py -------------------
 

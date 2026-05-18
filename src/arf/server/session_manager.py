@@ -141,6 +141,7 @@ class SessionManager:
             )
 
             self._agent = Dispatcher(user_agent, sys_agent)
+            self._agent._trace_collector = self.get_trace_collector()
             self._agent_mtime = current_mtime
 
             collector = self.get_trace_collector()

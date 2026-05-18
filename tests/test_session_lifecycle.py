@@ -1310,3 +1310,35 @@ class TestFullLifecycle:
             {"type": "tool_result", "tool": "file_reader", "result": '{"ok": true}'},
         ]
         assert Dispatcher._detect_handoff(no_handoff) is False
+
+    def test_handoff_emits_trace(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+
+        ws = _make_workspace(tmp_path)
+        mgr = SessionManager(ws)
+        collector = mgr.get_trace_collector()
+
+        collector.emit({
+            "event_type": "lifecycle.handoff",
+            "status": "ok",
+            "metadata": {
+                "phase": "user_agent_complete",
+                "intent": "complex task",
+                "required_actions": ["analyze", "refactor"],
+                "user_turns_used": 4,
+            },
+        })
+        collector.emit({
+            "event_type": "lifecycle.handoff",
+            "status": "ok",
+            "metadata": {
+                "phase": "sys_agent_complete",
+                "sys_model": "deep_thinking",
+                "remaining_turns": 6,
+                "sys_turns_used": 3,
+            },
+        })
+
+        handoff_events = [e for e in collector._buffer
+                         if e["event_type"] == "lifecycle.handoff"]
+        assert len(handoff_events) == 2
