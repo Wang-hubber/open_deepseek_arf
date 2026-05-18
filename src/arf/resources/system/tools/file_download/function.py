@@ -14,12 +14,16 @@ def execute(path: str, label: str = "", _workspace_dir: str = "") -> dict:
     if p.is_dir():
         return {"error": f"Cannot download directory: {path}"}
 
-    display = label or p.name
-    return {
-        "ok": True,
-        "path": str(p.relative_to(ws)),
-        "filename": p.name,
-        "label": display,
-        "size": p.stat().st_size,
-        "download_url": f"/api/download?file={p.relative_to(ws)}",
-    }
+    try:
+        rel = str(p.relative_to(ws))
+        display = label or p.name
+        return {
+            "ok": True,
+            "path": rel,
+            "filename": p.name,
+            "label": display,
+            "size": p.stat().st_size,
+            "download_url": f"/api/download?file={rel}",
+        }
+    except Exception as e:
+        return {"error": str(e)}
