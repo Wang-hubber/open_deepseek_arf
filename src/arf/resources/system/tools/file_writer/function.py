@@ -1,7 +1,20 @@
 from pathlib import Path
 
+USER_RESTRICTED_PREFIXES = ("tools/", "skills/", "models/")
 
-def execute(path: str, content: str) -> dict:
+
+def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
+    if _agent_mode == "user":
+        for prefix in USER_RESTRICTED_PREFIXES:
+            if path.lstrip("/").startswith(prefix):
+                return {
+                    "error": (
+                        f"User Agent 无法写入 {path}。"
+                        f"tools/, skills/, models/ 路径下的文件操作需要 Sys Agent。"
+                        f"请调用 handoff_to_sys 转交任务。"
+                    )
+                }
+
     p = Path(path)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
