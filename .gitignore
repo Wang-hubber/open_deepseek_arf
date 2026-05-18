@@ -37,6 +37,9 @@ arf_agent/
 # Workspace directories
 default/
 
+# Personal notes
+zhihu_article*.md
+
 # OS
 .DS_Store
 Thumbs.db
