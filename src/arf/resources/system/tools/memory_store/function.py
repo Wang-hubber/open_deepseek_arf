@@ -1,26 +1,28 @@
-"""Memory store tool -- long-term memory with single-file storage and backup rotation.
+"""Memory store tool -- dual-storage: session memory + long-term memory.
 
 Storage layout:
-    memory/long_term.md              -- currently active (<= 1 MB)
-    memory/long_term_{ts}_bak.md     -- backup before last mutation (keeps only latest)
+    memory/session.md              -- current session only (TODOs, tasks, facts)
+    memory/long_term.md            -- cross-session persistent (<= 1 MB)
+    memory/long_term_{ts}_bak.md   -- backup before last mutation (keeps only latest)
 """
 
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-MAX_TOTAL_SIZE = 1 * 1024 * 1024       # 1 MB hard limit
-COMPRESSION_THRESHOLD = 716_800        # 70% -- triggers advisory flag
-MEMORY_FILE = "memory/long_term.md"
+MAX_TOTAL_SIZE = 1 * 1024 * 1024       # 1 MB hard limit (long_term only)
+COMPRESSION_THRESHOLD = 716_800        # 70% -- triggers advisory flag (long_term only)
 
 
 def execute(
     action: str,
     content: str = "",
     model: str = "",
+    storage: str = "long_term",
     _workspace_dir: str = "",
 ) -> dict:
     base_dir = _resolve_workspace(_workspace_dir)
+    mem_path = _mem_path(base_dir, storage)
 
     handlers = {
         "read":     _handle_read,
@@ -31,7 +33,7 @@ def execute(
     handler = handlers.get(action)
     if not handler:
         return {"error": f"Unknown action: {action}"}
-    return handler(base_dir, content, model)
+    return handler(base_dir, content, model, storage, mem_path)
 
 
 def _resolve_workspace(workspace_dir: str) -> Path:
@@ -40,8 +42,10 @@ def _resolve_workspace(workspace_dir: str) -> Path:
     return Path.cwd()
 
 
-def _mem_path(base: Path) -> Path:
-    return base / MEMORY_FILE
+def _mem_path(base: Path, storage: str = "long_term") -> Path:
+    if storage == "session":
+        return base / "memory" / "session.md"
+    return base / "memory" / "long_term.md"
 
 
 def _timestamp() -> str:
@@ -53,7 +57,6 @@ def _rotate_backup(mem_file: Path):
     the latest backup (older backups are removed)."""
     if not mem_file.exists():
         return
-    # Remove any existing backup(s)
     parent = mem_file.parent
     for old in sorted(parent.glob("long_term_*_bak.md")):
         old.unlink()
@@ -61,17 +64,38 @@ def _rotate_backup(mem_file: Path):
     mem_file.rename(parent / bak_name)
 
 
-def _handle_read(base: Path, _content: str = "", _model: str = "") -> dict:
-    mem_file = _mem_path(base)
-    if not mem_file.exists():
-        return {"ok": True, "content": "", "exists": False}
-    text = mem_file.read_text(encoding="utf-8")
-    return {"ok": True, "content": text, "size": len(text.encode("utf-8")), "exists": True}
+def _handle_read(base: Path, _content: str = "", _model: str = "",
+                 storage: str = "long_term", mem_path: Path = None) -> dict:
+    if mem_path is None:
+        mem_path = _mem_path(base, storage)
+    if not mem_path.exists():
+        return {"ok": True, "content": "", "exists": False, "storage": storage}
+    text = mem_path.read_text(encoding="utf-8")
+    return {"ok": True, "content": text, "size": len(text.encode("utf-8")),
+            "exists": True, "storage": storage}
 
 
-def _handle_write(base: Path, content: str = "", _model: str = "") -> dict:
+def _handle_write(base: Path, content: str = "", _model: str = "",
+                  storage: str = "long_term", mem_path: Path = None) -> dict:
     if not content:
         return {"error": "content is required for write action"}
+
+    if mem_path is None:
+        mem_path = _mem_path(base, storage)
+
+    mem_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if storage == "session":
+        # Session memory: overwrite, no backup rotation, no size limit
+        mem_path.write_text(content, encoding="utf-8")
+        content_bytes = len(content.encode("utf-8"))
+        return {
+            "ok": True,
+            "storage": "session",
+            "size": content_bytes,
+        }
+
+    # Long-term memory: size checks + backup rotation
     content_bytes = len(content.encode("utf-8"))
     if content_bytes > MAX_TOTAL_SIZE:
         return {
@@ -80,60 +104,64 @@ def _handle_write(base: Path, content: str = "", _model: str = "") -> dict:
             "compression_needed": True,
         }
 
-    mem_file = _mem_path(base)
-    mem_file.parent.mkdir(parents=True, exist_ok=True)
-    _rotate_backup(mem_file)
-    mem_file.write_text(content, encoding="utf-8")
+    _rotate_backup(mem_path)
+    mem_path.write_text(content, encoding="utf-8")
 
     return {
         "ok": True,
+        "storage": "long_term",
         "size": content_bytes,
         "usage_percent": round(content_bytes / MAX_TOTAL_SIZE * 100, 1),
         "compression_needed": content_bytes > COMPRESSION_THRESHOLD,
     }
 
 
-def _handle_stats(base: Path, _content: str = "", _model: str = "") -> dict:
-    mem_file = _mem_path(base)
-    if not mem_file.exists():
+def _handle_stats(base: Path, _content: str = "", _model: str = "",
+                  storage: str = "long_term", mem_path: Path = None) -> dict:
+    if mem_path is None:
+        mem_path = _mem_path(base, storage)
+
+    if not mem_path.exists():
         return {
             "ok": True,
+            "storage": storage,
             "total_size_bytes": 0,
             "total_size_human": "0 B",
-            "max_size_bytes": MAX_TOTAL_SIZE,
-            "usage_percent": 0.0,
-            "compression_needed": False,
+            "exists": False,
         }
 
-    size = mem_file.stat().st_size
-    return {
+    size = mem_path.stat().st_size
+    result = {
         "ok": True,
+        "storage": storage,
         "total_size_bytes": size,
         "total_size_human": _format_size(size),
-        "max_size_bytes": MAX_TOTAL_SIZE,
-        "usage_percent": round(size / MAX_TOTAL_SIZE * 100, 1),
-        "compression_needed": size > COMPRESSION_THRESHOLD,
-        "compression_threshold_bytes": COMPRESSION_THRESHOLD,
+        "exists": True,
     }
 
+    if storage == "long_term":
+        result["max_size_bytes"] = MAX_TOTAL_SIZE
+        result["usage_percent"] = round(size / MAX_TOTAL_SIZE * 100, 1)
+        result["compression_needed"] = size > COMPRESSION_THRESHOLD
+        result["compression_threshold_bytes"] = COMPRESSION_THRESHOLD
 
-def _handle_compress(base: Path, content: str = "", model: str = "") -> dict:
-    """Compress long-term memory, optionally using a specified model.
+    return result
 
-    If `model` is provided, the tool loads that model's config, creates a
-    ModelAdapter, and sends a compression prompt. The compressed result is
-    then written with backup rotation.
 
-    If `model` is empty, falls back to writing content directly (caller is
-    responsible for producing the compressed text).
-    """
+def _handle_compress(base: Path, content: str = "", model: str = "",
+                     storage: str = "long_term", mem_path: Path = None) -> dict:
+    """Compress long-term memory. Session memory compression is not supported."""
+    if storage == "session":
+        return {"error": "Session memory is not compressed. It is short-lived per session."}
+
+    if mem_path is None:
+        mem_path = _mem_path(base, storage)
+
     if not content and not model:
         return {"error": "content is required for compress action"}
 
     if model and not content:
-        # Use the specified model to generate compressed content
-        mem_file = _mem_path(base)
-        original = mem_file.read_text(encoding="utf-8") if mem_file.exists() else ""
+        original = mem_path.read_text(encoding="utf-8") if mem_path.exists() else ""
         if not original:
             return {"error": "No existing memory to compress"}
 
@@ -145,7 +173,18 @@ def _handle_compress(base: Path, content: str = "", model: str = "") -> dict:
     if not content:
         return {"error": "content is required for compress action"}
 
-    return _handle_write(base, content)
+    # Write compressed content with backup rotation
+    _rotate_backup(mem_path)
+    mem_path.write_text(content, encoding="utf-8")
+    content_bytes = len(content.encode("utf-8"))
+
+    return {
+        "ok": True,
+        "storage": "long_term",
+        "size": content_bytes,
+        "usage_percent": round(content_bytes / MAX_TOTAL_SIZE * 100, 1),
+        "compression_needed": content_bytes > COMPRESSION_THRESHOLD,
+    }
 
 
 def _call_model_for_compress(base: Path, model_name: str, original: str) -> dict:

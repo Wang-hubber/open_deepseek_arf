@@ -1,17 +1,21 @@
 name: memory_store
-description: "Long-term memory that persists across conversations. Read current memories, write new ones (with automatic backup), check storage stats, and compress memories. Use 'read' to see stored memories, 'write' to persist new memories (merges with existing), 'stats' to check storage usage, 'compress' to consolidate memories using a specified model."
+description: "Dual-storage memory: session memory (TODOs, tasks, in-session facts) and long-term memory (cross-session preferences, profile). Use 'read' to see stored memories, 'write' to persist, 'stats' to check usage, 'compress' to consolidate long-term memory."
 parameters:
   type: object
   properties:
     action:
       type: string
       enum: [read, write, stats, compress]
-      description: "Operation: 'read' returns current memories, 'write' persists new content (with backup rotation), 'stats' shows usage, 'compress' consolidates memories"
+      description: "Operation: 'read' returns current memories, 'write' persists new content, 'stats' shows usage, 'compress' consolidates long-term memories (session memory is not compressed)"
+    storage:
+      type: string
+      enum: [session, long_term]
+      description: "Memory target: 'session' = current session only (TODO lists, tasks, facts discovered this conversation), 'long_term' = persistent across sessions (preferences, profile, important decisions). Default: 'long_term'."
     content:
       type: string
-      description: "Full markdown content of the long-term memory. Required for 'write' and 'compress' actions. Should be structured with sections for User Profile, Preferences, Facts, Decisions."
+      description: "Full markdown content. Required for 'write' and 'compress' actions. For session storage, structure as ## TODOs, ## Tasks, ## Facts. For long-term, structure as ## User Profile, ## Preferences, ## Facts, ## Decisions."
     model:
       type: string
-      description: "Model name to use for compression (optional for 'compress' action). Uses a quick_thinking model if available."
+      description: "Model name to use for compression (optional for 'compress' action, long_term only)."
   required:
     - action
