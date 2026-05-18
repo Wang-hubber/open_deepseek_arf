@@ -540,6 +540,10 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
             payload.message, payload.history, workspace_dir
         )
         mgr.track_session(payload.message, response)
+        try:
+            mgr.fire_session_end()
+        except Exception:
+            pass
         if traces:
             mgr.last_traces = traces
             sid = mgr.current_session_id
