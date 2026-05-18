@@ -1,0 +1,4 @@
+name: validate_skill
+description: "Skill 校验器，检查 skill.yaml 结构、依赖完整性和 prompt 语义"
+required: false
+depends_on: []

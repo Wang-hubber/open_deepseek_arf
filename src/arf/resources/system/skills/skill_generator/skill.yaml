@@ -18,10 +18,12 @@ prompt_template: |
   - tools: list of tool names the skill requires
   - parameters: optional parameter definitions
   
-  After generating, invoke validate_tool to verify the structure.
+  After generating, invoke validate_skill to verify the structure, dependencies,
+  and prompt semantics. Fix any issues before reporting success.
 tools:
   - resource_scaffold
   - file_reader
+  - validate_skill
 parameters:
   requirements:
     type: string
