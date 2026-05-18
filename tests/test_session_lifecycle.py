@@ -1151,6 +1151,51 @@ class TestStage5SessionEnd:
         mgr.track_session("user msg", "reply", reasoning="思考内容")
         assert mgr.session_history[1]["reasoning_content"] == "思考内容"
 
+    def test_session_start_trace_on_first_chat(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+
+        ws = _make_workspace(tmp_path)
+        mgr = SessionManager(ws)
+        collector = mgr.get_trace_collector()
+
+        # Simulate session start
+        collector.emit({
+            "event_type": "lifecycle.session_start",
+            "status": "ok",
+            "metadata": {
+                "session_id": mgr.current_session_id,
+                "workspace": str(ws),
+                "new_session": True,
+                "transport": "http",
+            },
+        })
+
+        start_events = [e for e in collector._buffer
+                       if e["event_type"] == "lifecycle.session_start"]
+        assert len(start_events) == 1
+        assert start_events[0]["metadata"]["transport"] == "http"
+
+    def test_fire_session_end_guard_prevents_double_fire(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+
+        ws = _make_workspace(tmp_path)
+        mgr = SessionManager(ws)
+
+        mgr.session_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
+        # First call should go through
+        mgr.fire_session_end()
+        assert mgr._session_end_fired is True
+
+        # Second call should be a no-op
+        collector = mgr.get_trace_collector()
+        buffer_before = len(collector)
+        mgr.fire_session_end()
+        assert len(collector) == buffer_before  # No new events
+
 
 # ===========================================================================
 # Integration: full lifecycle

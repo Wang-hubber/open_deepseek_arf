@@ -487,6 +487,20 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
     agent.language = "zh"
     workspace_dir = str(mgr.workspace_dir)
 
+    # Emit session_start trace on first message of a session
+    if not mgr.session_history:
+        collector = mgr.get_trace_collector()
+        collector.emit({
+            "event_type": "lifecycle.session_start",
+            "status": "ok",
+            "metadata": {
+                "session_id": mgr.current_session_id,
+                "workspace": workspace_dir,
+                "new_session": payload.new_session,
+                "transport": "http",
+            },
+        })
+
     if payload.new_session:
         old_history = list(mgr.session_history)
         old_start = mgr.session_start_time

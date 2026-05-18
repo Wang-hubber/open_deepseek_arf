@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from .session_manager import SessionManager
 
@@ -82,6 +83,22 @@ class WSHandler:
             return
 
         session_id = start_time.strftime("%Y%m%d_%H%M%S")
+
+        # Emit session_end trace with ws_disconnect trigger
+        collector = self._mgr.get_trace_collector()
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        collector.emit({
+            "event_type": "lifecycle.session_end",
+            "status": "ok",
+            "metadata": {
+                "session_id": session_id,
+                "message_count": len(history),
+                "duration_seconds": round(duration, 1),
+                "trigger": "ws_disconnect",
+                "grace_period": GRACE_PERIOD_SECONDS,
+            },
+        })
+
         try:
             loop = asyncio.get_running_loop()
             runner = self._mgr.get_hook_runner()

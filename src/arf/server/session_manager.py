@@ -43,6 +43,7 @@ class SessionManager:
 
         # Hook runner (lazy-init)
         self._hook_runner: HookRunner | None = None
+        self._session_end_fired = False
         self._trace_collector = TraceCollector()
 
     @property
@@ -223,15 +224,30 @@ class SessionManager:
     # ---- session history ----------------------------------------------
 
     def fire_session_end(self):
-        """Fire SessionEnd hooks on normal conversation completion.
-
-        Safe to call multiple times — hooks are idempotent.
-        SessionEnd via WS disconnect provides the fallback.
-        """
+        """Fire SessionEnd hooks. Idempotent — only fires once per session."""
+        if self._session_end_fired:
+            return
         if not self.session_history or len(self.session_history) < 2:
             return
+        self._session_end_fired = True
+
         sid = self.current_session_id
         runner = self.get_hook_runner()
+
+        # Emit session_end trace
+        duration = (datetime.now(timezone.utc) - self.session_start_time).total_seconds()
+        collector = self.get_trace_collector()
+        collector.emit({
+            "event_type": "lifecycle.session_end",
+            "status": "ok",
+            "metadata": {
+                "session_id": sid,
+                "message_count": len(self.session_history),
+                "duration_seconds": round(duration, 1),
+                "trigger": "stream_done",
+            },
+        })
+
         try:
             runner.run("SessionEnd", {
                 "session_id": sid,
@@ -257,6 +273,7 @@ class SessionManager:
             except Exception:
                 logger.exception("Failed to flush trace events")
 
+        self._session_end_fired = False
         self.session_history = []
         self.session_start_time = datetime.now(timezone.utc)
         self.session_title = title
