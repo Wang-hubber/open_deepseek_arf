@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS trace_events (
     username      TEXT NOT NULL DEFAULT 'admin',
     turn          INTEGER NOT NULL,
     node          TEXT NOT NULL,
+    event_type    TEXT NOT NULL DEFAULT '',
     model         TEXT,
     tool_name     TEXT,
     duration_ms   REAL,
@@ -83,6 +84,13 @@ CREATE TABLE IF NOT EXISTS session_cost (
     model_breakdown  TEXT,
     updated_at       TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS prompts (
+    prompt_hash   TEXT PRIMARY KEY,
+    prompt_full   TEXT NOT NULL,
+    prompt_length INTEGER NOT NULL,
+    created_at    TEXT DEFAULT (datetime('now'))
+);
 """
 
 _conn: sqlite3.Connection | None = None
@@ -99,7 +107,29 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
         _conn.commit()
+        _migrate_schema()
     return _conn
+
+
+def _migrate_schema():
+    """Add event_type column and backfill from node field."""
+    conn = _get_conn()
+    cur = conn.execute("PRAGMA table_info(trace_events)")
+    cols = [r["name"] for r in cur.fetchall()]
+    if "event_type" not in cols:
+        conn.execute("ALTER TABLE trace_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''")
+        backfill = {
+            "call_model": "graph.call_model",
+            "execute_tools": "graph.execute_tools",
+            "hook": "graph.hook",
+            "classify": "graph.classify",
+            "respond": "graph.respond",
+            "recovery": "graph.recovery",
+            "compact": "lifecycle.compaction",
+        }
+        for node, etype in backfill.items():
+            conn.execute("UPDATE trace_events SET event_type = ? WHERE node = ?", (etype, node))
+        conn.commit()
 
 
 def init_db(db_path: str) -> None:
@@ -160,6 +190,7 @@ def insert_trace_events(events: list[dict], workspace_dir: str = "") -> None:
                 ne.get("username", "admin"),
                 ne.get("turn", 0),
                 ne.get("node", ""),
+                ne.get("event_type", ""),
                 ne.get("model"),
                 ne.get("tool_name"),
                 ne.get("duration_ms"),
@@ -172,10 +203,10 @@ def insert_trace_events(events: list[dict], workspace_dir: str = "") -> None:
             ))
         conn.executemany(
             """INSERT INTO trace_events
-               (session_id, username, turn, node, model, tool_name,
+               (session_id, username, turn, node, event_type, model, tool_name,
                 duration_ms, prompt_tokens, completion_tokens, total_tokens,
                 status, error_msg, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
@@ -245,7 +276,7 @@ def get_resource_stats(username: str = "admin", period: str = "all") -> list[dic
                        SUM(CASE WHEN te.status = 'ok' THEN te.duration_ms ELSE 0 END) as success_duration_sum
                 FROM trace_events te
                 WHERE te.username = ?
-                  AND te.node = 'execute_tools'
+                  AND te.event_type = 'graph.execute_tools'
                   AND te.tool_name IS NOT NULL
                   {date_filter}
                 GROUP BY te.tool_name
@@ -290,7 +321,7 @@ def get_resource_detail(
                 FROM trace_events te
                 WHERE te.username = ?
                   AND te.tool_name = ?
-                  AND te.node = 'execute_tools'
+                  AND te.event_type = 'graph.execute_tools'
                   {where_extra}
                 GROUP BY day
                 ORDER BY day ASC
@@ -519,6 +550,26 @@ def delete_session_db(session_id: str) -> bool:
         )
         _get_conn().commit()
         return cur.rowcount > 0
+
+
+# ---- prompts -------------------------------------------------------------
+
+
+def insert_prompt(prompt_hash: str, prompt_full: str) -> None:
+    with _lock:
+        _get_conn().execute(
+            "INSERT OR IGNORE INTO prompts (prompt_hash, prompt_full, prompt_length) VALUES (?, ?, ?)",
+            (prompt_hash, prompt_full, len(prompt_full)),
+        )
+        _get_conn().commit()
+
+
+def get_prompt(prompt_hash: str) -> str | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT prompt_full FROM prompts WHERE prompt_hash = ?", (prompt_hash,)
+        ).fetchone()
+        return row["prompt_full"] if row else None
 
 
 def _now() -> str:
