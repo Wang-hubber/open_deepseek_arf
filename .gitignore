@@ -25,10 +25,20 @@ data/**/models/
 # Multi-user data directory (contains DB, user workspaces, SMTP config)
 data/
 
-# Tests — test scripts are not committed, but markdown reports are
-tests/*
-!tests/**/
-!tests/**/*.md
+# Tests
+tests/
+
+# Docs (local only)
+docs/
+
+# GitHub Actions
+.github/
+
+# Vite cache
+.vite/
+
+# Contribution guide (local only)
+贡献者须知.md
 
 # Claude Code
 .claude/
