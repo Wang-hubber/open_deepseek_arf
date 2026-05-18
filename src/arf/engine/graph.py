@@ -385,6 +385,7 @@ class GraphEngine:
                 "workspace_dir": str(self._project_dir) if self._project_dir else "",
                 "system_tool_names": self._system_tool_names,
                 "compact_model": self._build_compact_model(),
+                "trace_collector": getattr(self, '_trace_collector', None),
             },
         }
 

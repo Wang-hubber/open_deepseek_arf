@@ -162,7 +162,7 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
     old_text = _format_turns_for_summary(old)
     summary = _call_compactor(compactor_model, old_text, sys_prompt)
 
-    return {
+    result = {
         "messages": list(_flatten_turns(recent)),
         "context_summary": summary,
         "has_attempted_compact": True,
@@ -178,6 +178,21 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
             }, ensure_ascii=False),
         }],
     }
+
+    tc = config.get("configurable", {}).get("trace_collector")
+    if tc:
+        tc.emit({
+            "event_type": "lifecycle.compaction",
+            "turn": state.get("turn_count", 0),
+            "status": "ok",
+            "metadata": {
+                "turns_compacted": len(old),
+                "tokens_before": current_tokens,
+                "threshold": threshold,
+            },
+        })
+
+    return result
 
 
 def _split_turns(messages: list[dict]) -> list[list[dict]]:
@@ -278,6 +293,30 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
     # Build messages: system prompt first, then conversation
     msgs = [{"role": "system", "content": state["system_prompt"]}]
     msgs.extend(list(state["messages"]))
+
+    # Emit prompt_snapshot trace
+    tc = config.get("configurable", {}).get("trace_collector")
+    if tc:
+        from arf.server.trace_collector import compute_prompt_hash
+        prompt_text = state["system_prompt"]
+        prompt_hash = compute_prompt_hash(prompt_text)
+        tools = state.get("tools")
+        tc.emit({
+            "event_type": "lifecycle.prompt_snapshot",
+            "turn": state["turn_count"],
+            "model": model_type,
+            "metadata": {
+                "prompt_hash": prompt_hash,
+                "prompt_length": len(prompt_text),
+                "active_tools_count": len(tools) if tools else 0,
+                "tools_list": [t["function"]["name"] for t in tools] if tools else [],
+            },
+        })
+        try:
+            from arf.server.database import insert_prompt
+            insert_prompt(prompt_hash, prompt_text)
+        except Exception:
+            pass
 
     tools = state.get("tools")
     if state.get("_needs_tools_refresh"):
@@ -500,6 +539,31 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
     # Build messages
     msgs = [{"role": "system", "content": state["system_prompt"]}]
     msgs.extend(list(state["messages"]))
+
+    # Emit prompt_snapshot trace
+    tc = config.get("configurable", {}).get("trace_collector")
+    if tc:
+        from arf.server.trace_collector import compute_prompt_hash
+        prompt_text = state["system_prompt"]
+        prompt_hash = compute_prompt_hash(prompt_text)
+        tools = state.get("tools")
+        tc.emit({
+            "event_type": "lifecycle.prompt_snapshot",
+            "turn": state["turn_count"],
+            "model": model_type,
+            "metadata": {
+                "prompt_hash": prompt_hash,
+                "prompt_length": len(prompt_text),
+                "active_tools_count": len(tools) if tools else 0,
+                "tools_list": [t["function"]["name"] for t in tools] if tools else [],
+            },
+        })
+        try:
+            from arf.server.database import insert_prompt
+            insert_prompt(prompt_hash, prompt_text)
+        except Exception:
+            pass
+
     tools = state.get("tools")
     if state.get("_needs_tools_refresh"):
         refresh_tools = config.get("configurable", {}).get("refresh_tools")
@@ -720,6 +784,17 @@ def _resolve_model_switch(tool_calls: list[dict], tool_results: list[dict], conf
                             mt = result.get("model_type", "")
                             if mt:
                                 logger.info("model_switch: updating current_model → %s", mt)
+                                tc = config.get("configurable", {}).get("trace_collector") if config else None
+                                if tc:
+                                    tc.emit({
+                                        "event_type": "lifecycle.model_switch",
+                                        "turn": 0,
+                                        "status": "ok",
+                                        "metadata": {
+                                            "to_model": mt,
+                                            "tool": "model_switch",
+                                        },
+                                    })
                                 return {"current_model": mt}
                         break
             except (json.JSONDecodeError, TypeError):
@@ -740,6 +815,17 @@ def _resolve_model_switch(tool_calls: list[dict], tool_results: list[dict], conf
                                     if resolved:
                                         logger.info("model_manager switch: current_model -> %s (%s)",
                                                     active_name, resolved)
+                                        tc = config.get("configurable", {}).get("trace_collector") if config else None
+                                        if tc:
+                                            tc.emit({
+                                                "event_type": "lifecycle.model_switch",
+                                                "turn": 0,
+                                                "status": "ok",
+                                                "metadata": {
+                                                    "to_model": active_name,
+                                                    "tool": "model_manager",
+                                                },
+                                            })
                                         return {"current_model": resolved}
                             break
             except (json.JSONDecodeError, TypeError):

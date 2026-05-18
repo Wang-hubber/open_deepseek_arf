@@ -1342,3 +1342,46 @@ class TestFullLifecycle:
         handoff_events = [e for e in collector._buffer
                          if e["event_type"] == "lifecycle.handoff"]
         assert len(handoff_events) == 2
+
+    def test_prompt_hash_consistent_for_same_prompt(self):
+        from arf.server.trace_collector import compute_prompt_hash
+
+        prompt1 = "You are an AI assistant.\n\n## Workspace: Test"
+        prompt2 = "You are an AI assistant.\n\n## Workspace: Test"
+        prompt3 = "You are an AI assistant.\n\n## Workspace: Different"
+
+        h1 = compute_prompt_hash(prompt1)
+        h2 = compute_prompt_hash(prompt2)
+        h3 = compute_prompt_hash(prompt3)
+
+        assert h1 == h2
+        assert h1 != h3
+        assert len(h1) == 16
+
+    def test_prompt_snapshot_emits_trace(self, tmp_path):
+        from arf.server.session_manager import SessionManager
+        from arf.server.trace_collector import compute_prompt_hash
+
+        ws = _make_workspace(tmp_path)
+        mgr = SessionManager(ws)
+        collector = mgr.get_trace_collector()
+
+        prompt = "You are helpful."
+        prompt_hash = compute_prompt_hash(prompt)
+
+        collector.emit({
+            "event_type": "lifecycle.prompt_snapshot",
+            "turn": 1,
+            "model": "quick_thinking",
+            "metadata": {
+                "prompt_hash": prompt_hash,
+                "prompt_length": len(prompt),
+                "active_tools_count": 9,
+                "tools_list": ["file_reader", "file_writer"],
+            },
+        })
+
+        snap = collector._buffer[0]
+        assert snap["event_type"] == "lifecycle.prompt_snapshot"
+        assert snap["metadata"]["prompt_hash"] == prompt_hash
+        assert snap["metadata"]["active_tools_count"] == 9

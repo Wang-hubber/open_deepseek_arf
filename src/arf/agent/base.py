@@ -600,6 +600,7 @@ class BaseAgent(ABC):
             user_model_preference=self.default_model,
         )
         engine.set_tools_refresher(lambda: self._build_openai_tools())
+        engine._trace_collector = getattr(self, '_trace_collector', None)
         engine._system_tool_names = frozenset(
             name for name, info in self.registry._items["tools"].items()
             if info.get("source") == "system"
