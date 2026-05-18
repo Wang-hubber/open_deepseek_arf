@@ -59,7 +59,7 @@ onMounted(async () => {
     // non-critical; use localStorage default
   }
 
-  await sessionStore.loadSessions()
+  await sessionStore.loadSessions(true)
 
   if (sessionStore.activeSession && sessionStore.activeSession.message_count > 0) {
     try {

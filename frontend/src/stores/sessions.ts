@@ -16,8 +16,8 @@ export const useSessionStore = defineStore('sessions', () => {
 
   const isViewingArchive = () => viewingArchiveId.value !== null
 
-  async function loadSessions() {
-    if (loading.value) return
+  async function loadSessions(force = false) {
+    if (loading.value && !force) return
     loading.value = true
     error.value = false
 

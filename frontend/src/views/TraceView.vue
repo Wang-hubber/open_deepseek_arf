@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, shallowRef } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
 import { TooltipComponent, GridComponent, LegendComponent } from 'echarts/components'
@@ -9,6 +10,8 @@ import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import type { TraceEvent, TraceEventGroup, FeedbackItem, ParsedTraceMetadata } from '@/types'
 
 echarts.use([BarChart, LineChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer])
+
+const router = useRouter()
 
 const { sessions, events, summary, loading, fetchSessions, fetchSessionDetail, fetchSummary, fetchFeedback, exportTrace } = useTrace()
 
@@ -207,6 +210,7 @@ function tokensDisplay(evt: TraceEvent): string {
     <!-- Left sidebar -->
     <aside class="tv-sidebar">
       <div class="tv-sidebar-header">
+        <button class="tv-back" @click="router.replace('/')">← 返回</button>
         <h2 class="tv-title">Trace 追踪</h2>
       </div>
       <div v-if="summary" class="tv-summary">
@@ -419,7 +423,15 @@ function tokensDisplay(evt: TraceEvent): string {
 }
 .tv-sidebar-header {
   padding: 16px; border-bottom: 1px solid var(--border-glass, rgba(255,255,255,0.06));
+  display: flex; flex-direction: column; gap: 10px;
 }
+.tv-back {
+  background: none; border: 1px solid rgba(255,255,255,0.1);
+  color: var(--text-secondary); cursor: pointer; font-size: 12px;
+  padding: 4px 12px; border-radius: var(--radius-sm); align-self: flex-start;
+  transition: all var(--transition);
+}
+.tv-back:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
 .tv-title { margin: 0; font-size: 15px; }
 .tv-summary {
   display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px;

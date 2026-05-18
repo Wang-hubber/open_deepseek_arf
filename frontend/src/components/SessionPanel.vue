@@ -80,9 +80,9 @@ async function handleClick(id: string, isActive: boolean) {
     try {
       const api = (await import('@/composables/useApi')).useApi()
       const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
-      chatStore.renderFromHistory(messages || [])
-    } catch {
-      chatStore.renderFromHistory([])
+      if (messages?.length) chatStore.renderFromHistory(messages)
+    } catch (e: any) {
+      console.error('Failed to load active session messages:', e)
     }
   } else {
     try {
