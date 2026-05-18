@@ -18,6 +18,7 @@ from ..agent import ARFAgent
 from .sessions import DEFAULT_TITLE
 from .fast_model import load_fast_model, is_fast_model_configured
 from .hook_runner import HookRunner, generate_default_config
+from .trace_collector import TraceCollector
 
 class SessionManager:
     """Encapsulates workspace config, resource registry, agent cache,
@@ -42,6 +43,7 @@ class SessionManager:
 
         # Hook runner (lazy-init)
         self._hook_runner: HookRunner | None = None
+        self._trace_collector = TraceCollector()
 
     @property
     def current_session_id(self) -> str:
@@ -122,6 +124,9 @@ class SessionManager:
             self._hook_runner = HookRunner(self.workspace_dir)
         return self._hook_runner
 
+    def get_trace_collector(self) -> "TraceCollector":
+        return self._trace_collector
+
     # ---- model resolution ---------------------------------------------
 
     def read_agent_yaml(self) -> dict:
@@ -193,6 +198,18 @@ class SessionManager:
             logger.exception("SessionEnd hooks failed on normal completion")
 
     def reset_session_history(self, title: str = DEFAULT_TITLE) -> None:
+        # Flush traces before clearing
+        events = self._trace_collector.flush()
+        if events and self.session_history and len(self.session_history) >= 2:
+            sid = self.current_session_id
+            for e in events:
+                e["session_id"] = sid
+            try:
+                from .database import insert_trace_events
+                insert_trace_events(events, str(self.workspace_dir))
+            except Exception:
+                logger.exception("Failed to flush trace events")
+
         self.session_history = []
         self.session_start_time = datetime.now(timezone.utc)
         self.session_title = title
