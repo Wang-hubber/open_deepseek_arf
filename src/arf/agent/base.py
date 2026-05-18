@@ -663,13 +663,13 @@ def generate_default_configs(workspace_dir: str) -> tuple[Path, Path]:
     if not user_path.exists():
         src = _FRAMEWORK_DIR / "arf_user_agent.yaml"
         if src.exists():
-            user_path.write_text(src.read_text(encoding="utf-8"))
+            user_path.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
             logger.info("Copied default user agent config → %s", user_path)
 
     if not sys_path.exists():
         src = _FRAMEWORK_DIR / "arf_sys_agent.yaml"
         if src.exists():
-            sys_path.write_text(src.read_text(encoding="utf-8"))
+            sys_path.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
             logger.info("Copied default sys agent config → %s", sys_path)
 
     return user_path, sys_path
