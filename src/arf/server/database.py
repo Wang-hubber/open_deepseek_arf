@@ -93,6 +93,16 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 """
 
+_EVENT_TYPE_BY_NODE = {
+    "call_model": "graph.call_model",
+    "execute_tools": "graph.execute_tools",
+    "hook": "graph.hook",
+    "classify": "graph.classify",
+    "respond": "graph.respond",
+    "recovery": "graph.recovery",
+    "compact": "lifecycle.compaction",
+}
+
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
 _db_path: str = ""
@@ -118,16 +128,7 @@ def _migrate_schema():
     cols = [r["name"] for r in cur.fetchall()]
     if "event_type" not in cols:
         conn.execute("ALTER TABLE trace_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''")
-        backfill = {
-            "call_model": "graph.call_model",
-            "execute_tools": "graph.execute_tools",
-            "hook": "graph.hook",
-            "classify": "graph.classify",
-            "respond": "graph.respond",
-            "recovery": "graph.recovery",
-            "compact": "lifecycle.compaction",
-        }
-        for node, etype in backfill.items():
+        for node, etype in _EVENT_TYPE_BY_NODE.items():
             conn.execute("UPDATE trace_events SET event_type = ? WHERE node = ?", (etype, node))
         conn.commit()
 
@@ -143,6 +144,8 @@ def init_db(db_path: str) -> None:
 
 def _normalize_trace_event(e: dict) -> dict:
     e = dict(e)
+    if not e.get("event_type") and e.get("node") in _EVENT_TYPE_BY_NODE:
+        e["event_type"] = _EVENT_TYPE_BY_NODE[e["node"]]
     if "tool" in e and not e.get("tool_name"):
         e["tool_name"] = e["tool"]
     if e.get("ok") is True and not e.get("status"):
