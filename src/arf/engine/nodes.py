@@ -827,7 +827,8 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
         tool_name = tc.get("function", {}).get("name", "unknown")
         arguments = tc.get("function", {}).get("arguments", "{}")
         call_id = tc.get("id", "")
-        tool_category = "sys" if tool_name.startswith("@sys/") else "user"
+        system_tool_names = config.get("configurable", {}).get("system_tool_names", frozenset())
+        tool_category = "sys" if tool_name in system_tool_names else "user"
 
         t0 = time.monotonic()
 

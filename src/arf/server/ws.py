@@ -20,12 +20,28 @@ class WSHandler:
         self._pending_session: dict | None = None
 
     async def on_connect(self, websocket):
-        if self._disconnect_task and not self._disconnect_task.done():
+        was_reconnect = self._disconnect_task and not self._disconnect_task.done()
+        if was_reconnect:
             self._disconnect_task.cancel()
             self._pending_session = None
             logger.info("WS reconnect -- cancelled pending disconnect (network blip)")
         self._connections.add(websocket)
         logger.info("WS connect (sessions: %d)", len(self._connections))
+
+        # Trigger SessionStart hook on first connection only
+        if not was_reconnect:
+            try:
+                loop = asyncio.get_running_loop()
+                runner = self._mgr.get_hook_runner()
+                await loop.run_in_executor(
+                    None,
+                    lambda: runner.run("SessionStart", {
+                        "session_id": self._mgr.current_session_id,
+                        "session_title": self._mgr.session_title,
+                    }),
+                )
+            except Exception:
+                logger.exception("SessionStart hooks failed")
 
     async def on_disconnect(self, websocket):
         self._connections.discard(websocket)

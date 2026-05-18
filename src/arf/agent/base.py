@@ -540,6 +540,10 @@ class BaseAgent(ABC):
             user_model_preference=self.default_model,
         )
         engine.set_tools_refresher(lambda: self._build_openai_tools())
+        engine._system_tool_names = frozenset(
+            name for name, info in self.registry._items["tools"].items()
+            if info.get("source") == "system"
+        )
         return engine
 
     def _build_query_params(self, message: str, history: list[dict],

@@ -186,6 +186,7 @@ class GraphEngine:
         self._user_model_preference = user_model_preference
         self._refresh_tools_fn = None
         self._project_dir = None
+        self._system_tool_names: frozenset[str] = frozenset()
 
         # Compile both graphs once
         self._graph = build_agent_graph()
@@ -382,6 +383,7 @@ class GraphEngine:
                 "user_model_preference": self._user_model_preference,
                 "refresh_tools": self._refresh_tools_fn or (lambda: None),
                 "workspace_dir": str(self._project_dir) if self._project_dir else "",
+                "system_tool_names": self._system_tool_names,
                 "compact_model": self._build_compact_model(),
             },
         }

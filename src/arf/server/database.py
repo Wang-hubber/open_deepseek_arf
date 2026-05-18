@@ -1,5 +1,6 @@
 """SQLite store for trace observability, sessions, and usage tracking."""
 
+import json
 import secrets
 import sqlite3
 import threading
@@ -129,16 +130,33 @@ def _normalize_trace_event(e: dict) -> dict:
     return e
 
 
-def insert_trace_events(events: list[dict]) -> None:
+def _write_trace_file(workspace_dir: str, session_id: str, events: list[dict]) -> None:
+    """Append trace events as JSON lines to workspace trace file."""
+    if not workspace_dir or not events:
+        return
+    try:
+        trace_dir = Path(workspace_dir) / "memory" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_file = trace_dir / f"{session_id}.jsonl"
+        with open(trace_file, "a", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def insert_trace_events(events: list[dict], workspace_dir: str = "") -> None:
     if not events:
         return
     with _lock:
         conn = _get_conn()
         rows = []
+        session_id = ""
         for e in events:
             ne = _normalize_trace_event(e)
+            session_id = ne.get("session_id", "")
             rows.append((
-                ne.get("session_id", ""),
+                session_id,
                 ne.get("username", "admin"),
                 ne.get("turn", 0),
                 ne.get("node", ""),
@@ -161,6 +179,9 @@ def insert_trace_events(events: list[dict]) -> None:
             rows,
         )
         conn.commit()
+    # Dual-write to workspace trace file
+    if session_id and workspace_dir:
+        _write_trace_file(workspace_dir, session_id, events)
 
 
 def get_trace_session_list(username: str = "admin", limit: int = 20) -> list[dict]:

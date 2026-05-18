@@ -3,9 +3,12 @@
 Injectable instance owned by ARFServer for the single-user workspace.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -166,6 +169,28 @@ class SessionManager:
         return None
 
     # ---- session history ----------------------------------------------
+
+    def fire_session_end(self):
+        """Fire SessionEnd hooks on normal conversation completion.
+
+        Safe to call multiple times — hooks are idempotent.
+        SessionEnd via WS disconnect provides the fallback.
+        """
+        if not self.session_history or len(self.session_history) < 2:
+            return
+        sid = self.current_session_id
+        runner = self.get_hook_runner()
+        try:
+            runner.run("SessionEnd", {
+                "session_id": sid,
+                "session_title": self.session_title,
+            }, stdin_data={
+                "conversation": list(self.session_history),
+                "session_start": self.session_start_time.isoformat(),
+                "message_count": len(self.session_history),
+            })
+        except Exception:
+            logger.exception("SessionEnd hooks failed on normal completion")
 
     def reset_session_history(self, title: str = DEFAULT_TITLE) -> None:
         self.session_history = []

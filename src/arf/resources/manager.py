@@ -79,7 +79,8 @@ class ResourceRegistry:
                 "path": str(sub),
                 "source": source,
                 "readonly": readonly,
-                "function": self._load_tool_function(sub) if cfg_file.exists() else None,
+                "function": None,
+                "_function_path": str(sub / "function.py") if (sub / "function.py").exists() else None,
                 "depends_on": default.get("depends_on", []),
                 "required": default.get("required", False),
                 "configured": configured,
@@ -256,7 +257,13 @@ class ResourceRegistry:
     # ---- accessors ---------------------------------------------------
 
     def get_tool(self, name: str) -> dict | None:
-        return self._items["tools"].get(name)
+        item = self._items["tools"].get(name)
+        if item is None:
+            return None
+        # Lazy-load function on first access
+        if item.get("function") is None and item.get("_function_path"):
+            item["function"] = self._load_tool_function(Path(item["_function_path"]).parent)
+        return item
 
     def get(self, resource_type: str, name: str) -> dict | None:
         return self._items.get(resource_type, {}).get(name)
@@ -454,7 +461,8 @@ class ResourceRegistry:
                 "description": cfg.get("description") or default.get("description", ""),
                 "json_schema": schema,
                 "path": str(sub), "source": "user", "readonly": False,
-                "function": self._load_tool_function(sub),
+                "function": None,
+                "_function_path": str(sub / "function.py") if (sub / "function.py").exists() else None,
                 "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
                 "required": cfg.get("required") if "required" in cfg else default.get("required", False),
                 "configured": True,

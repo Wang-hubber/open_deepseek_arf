@@ -252,13 +252,45 @@ def trace_summary():
 
 
 @router.get("/traces/export")
-def trace_export(session_id: str):
+def trace_export(session_id: str, mgr: SessionManager = Depends(get_mgr)):
     from .database import get_trace_session_detail
+    from .sessions import get_archive
+    from fastapi.responses import FileResponse
+    import tempfile
+
     events = get_trace_session_detail(session_id, "admin")
     if not events:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Load conversation messages from archive
+    messages = []
+    try:
+        archive = get_archive(session_id, str(mgr.workspace_dir))
+        if archive:
+            messages = archive.get("messages", [])
+    except Exception:
+        pass
+
     from datetime import datetime, timezone
-    return {"session_id": session_id, "events": events, "exported_at": datetime.now(timezone.utc).isoformat()}
+    export_data = {
+        "session_id": session_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "trace_events": events,
+        "conversation": messages,
+    }
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8",
+    )
+    json.dump(export_data, tmp, ensure_ascii=False, indent=2, default=str)
+    tmp.close()
+
+    return FileResponse(
+        path=tmp.name,
+        filename=f"trace_{session_id}.json",
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="trace_{session_id}.json"'},
+    )
 
 
 # ---- feedback routes ----------------------------------------------------
@@ -477,7 +509,7 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
             sid = mgr.current_session_id
             enrich = lambda t: {**t, "session_id": sid, "username": "admin"}
             try:
-                insert_trace_events([enrich(t) for t in traces])
+                insert_trace_events([enrich(t) for t in traces], str(mgr.workspace_dir))
             except Exception:
                 pass
         if usage:
@@ -823,7 +855,7 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                     sid = mgr.current_session_id
                     enrich = lambda t: {**t, "session_id": sid, "username": "admin"}
                     try:
-                        insert_trace_events([enrich(t) for t in traces])
+                        insert_trace_events([enrich(t) for t in traces], str(mgr.workspace_dir))
                     except Exception:
                         pass
                 usage = event.get("usage", {})
@@ -846,6 +878,12 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                         pass
                 event["title"] = mgr.session_title
                 event["session_id"] = mgr.session_start_time.strftime("%Y%m%d_%H%M%S")
+
+                # Fire SessionEnd hooks on normal completion
+                try:
+                    mgr.fire_session_end()
+                except Exception:
+                    pass
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     except Exception as exc:
         yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)}, ensure_ascii=False)}\n\n"
