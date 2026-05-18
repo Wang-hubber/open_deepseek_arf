@@ -152,7 +152,7 @@ class Dispatcher:
         response, full_history, tool_events, usage, traces = agent.chat_with_tools(
             message, history, project_dir, max_turns=max_turns,
         )
-        turns = len(traces) if traces else 1
+        turns = self._count_turns(traces)
         return GraphResult(
             response=response,
             history=full_history,
@@ -162,6 +162,22 @@ class Dispatcher:
             truncated=False,
             usage=usage,
         )
+
+    @staticmethod
+    def _count_turns(traces: list[dict] | None) -> int:
+        """Count actual conversation turns from trace events.
+
+        Each trace event has a "turn" key set to the current turn_count.
+        The highest turn value seen is the actual number of turns used.
+        """
+        if not traces:
+            return 1
+        max_turn = 1
+        for t in traces:
+            turn = t.get("turn")
+            if isinstance(turn, (int, float)):
+                max_turn = max(max_turn, int(turn))
+        return max_turn
 
     @staticmethod
     def _detect_handoff(tool_events: list[dict]) -> bool:
