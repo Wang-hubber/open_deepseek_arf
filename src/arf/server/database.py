@@ -1,7 +1,5 @@
 """SQLite store for trace observability, sessions, and usage tracking."""
 
-import json
-import secrets
 import sqlite3
 import threading
 from pathlib import Path
