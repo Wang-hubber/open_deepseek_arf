@@ -185,6 +185,7 @@ class GraphEngine:
         self._available_model_types = available_model_types or set()
         self._user_model_preference = user_model_preference
         self._refresh_tools_fn = None
+        self._project_dir = None
 
         # Compile both graphs once
         self._graph = build_agent_graph()
