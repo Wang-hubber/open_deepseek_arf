@@ -1,5 +1,5 @@
 name: manage_hooks
-description: "Manage session lifecycle hooks. Hooks are external commands that run at specific session events (SessionStart, PreToolUse, PostToolUse, SessionEnd). Use 'list' to see current hooks, 'add' to register a new hook, 'remove' to delete a hook, 'update' to modify an existing hook. When a user wants automated actions (e.g., send email after tool execution, log to external service), register a PostToolUse hook with the appropriate command."
+description: "Manage session lifecycle hooks. Hooks are external commands that run at specific session events (SessionStart, PreModelCall, PostModelCall, PreToolUse, PostToolUse, SessionEnd). Use 'list' to see current hooks, 'add' to register a new hook, 'remove' to delete a hook, 'update' to modify an existing hook. When a user wants automated actions (e.g., send email after tool execution, log to external service), register a hook with the appropriate command."
 parameters:
   type: object
   properties:
@@ -9,8 +9,8 @@ parameters:
       description: "Operation: 'list' shows all configured hooks, 'add' registers a new hook, 'remove' deletes an existing hook by name, 'update' modifies an existing hook's command/timeout/enabled/matcher"
     event:
       type: string
-      enum: [SessionStart, PreToolUse, PostToolUse, SessionEnd]
-      description: "The hook event to target. Required for 'add', 'remove', 'update'. SessionStart fires once after the first assistant response (used for title generation). PreToolUse fires before every tool execution. PostToolUse fires after every tool execution. SessionEnd fires when the conversation session ends."
+      enum: [SessionStart, PreModelCall, PostModelCall, PreToolUse, PostToolUse, SessionEnd]
+      description: "The hook event to target. Required for 'add', 'remove', 'update'. SessionStart fires at session initialization. PreModelCall fires before each LLM API call. PostModelCall fires after each LLM API response. PreToolUse fires before every tool execution. PostToolUse fires after every tool execution. SessionEnd fires when the conversation session ends."
     name:
       type: string
       description: "Unique name for the hook. Required for 'add', 'remove', 'update'. Use descriptive names like 'email_notifier', 'slack_logger', 'custom_validator'."
