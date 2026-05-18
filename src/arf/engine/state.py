@@ -54,6 +54,7 @@ class AgentState(TypedDict):
 
     # Model routing
     current_model: str  # "quick_thinking" | "deep_thinking"
+    agent_mode: Optional[str]  # "user" | "sys"
     classification: Optional[str]  # "medium" | "complex"
 
     # Accumulators (custom reducers for cross-turn accumulation)
@@ -90,6 +91,7 @@ def default_state(
         "stop_hook_active": False,
         "tool_fail_counts": {},
         "current_model": current_model,
+        "agent_mode": "user",
         "classification": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         "tool_events": [],
