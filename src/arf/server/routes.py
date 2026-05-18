@@ -565,6 +565,25 @@ async def upload_file(file: UploadFile = File(...), mgr: SessionManager = Depend
     }
 
 
+# ---- download route ----------------------------------------------------
+
+
+@router.get("/download")
+def download_file(file: str, mgr: SessionManager = Depends(get_mgr)):
+    ws = mgr.workspace_dir
+    target = (ws / file).resolve()
+    if not str(target).startswith(str(ws.resolve())):
+        raise HTTPException(status_code=400, detail="Path escapes workspace")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        path=str(target),
+        filename=target.name,
+        media_type="application/octet-stream",
+    )
+
+
 # ---- session archive routes -------------------------------------------
 
 
