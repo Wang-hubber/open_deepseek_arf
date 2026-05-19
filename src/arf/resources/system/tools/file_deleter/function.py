@@ -20,7 +20,7 @@ def execute(path: str, _agent_mode: str = "sys") -> dict:
         if not p.exists():
             return {"error": f"File not found: {path}"}
         if p.is_dir():
-            return {"error": "Cannot delete directories: {path}"}
+            return {"error": f"Cannot delete directories: {path}"}
         deleted_path = p.with_name(p.name + "_deleted")
         p.rename(deleted_path)
         return {"ok": True, "path": str(p), "deleted_as": str(deleted_path)}
