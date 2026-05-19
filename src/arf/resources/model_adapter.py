@@ -60,7 +60,7 @@ class ModelAdapter:
     def _should_retry(self, status_code: int) -> bool:
         return status_code in RETRYABLE_STATUS
 
-    def _call_with_retry(self, messages, tools, stream=False):
+    def _call_with_retry(self, messages, tools, stream=False, max_tokens=None):
         """Call the API with exponential backoff retry on transient errors.
 
         Raises ModelAdapterError for non-retryable errors (400, 401, etc.).
@@ -68,7 +68,7 @@ class ModelAdapter:
         last_exc = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                return self._create_completion(messages, tools, stream)
+                return self._create_completion(messages, tools, stream, max_tokens)
             except APIStatusError as e:
                 last_exc = e
                 if self._should_retry(e.status_code) and attempt < MAX_RETRIES:
@@ -131,9 +131,11 @@ class ModelAdapter:
             standard["response_format"] = {"type": rf}
         return standard, extra_body
 
-    def _create_completion(self, messages, tools, stream=False):
+    def _create_completion(self, messages, tools, stream=False, max_tokens=None):
         """Raw API call -- separated so retry logic is clean."""
         params, extra = self._build_api_params()
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
         kwargs = {}
         if tools:
             kwargs["tools"] = tools
@@ -162,13 +164,21 @@ class ModelAdapter:
         )
         return response.choices[0].message.content
 
-    def chat_complete(self, messages: list[dict], tools: list[dict] | None = None):
+    def chat_complete(self, messages: list[dict], tools: list[dict] | None = None,
+                      max_tokens: int | None = None):
         """Send a chat completion and return the full message (content + tool_calls).
 
         Retries on transient errors (429, 5xx, network). Raises ModelAdapterError
         for non-retryable errors so the engine can handle them gracefully.
+
+        Args:
+            messages: Conversation messages.
+            tools: Optional tool definitions.
+            max_tokens: Optional per-call override. When None, uses the config
+                        default; when set, limits the response token budget.
         """
-        response = self._call_with_retry(messages, tools, stream=False)
+        response = self._call_with_retry(messages, tools, stream=False,
+                                         max_tokens=max_tokens)
         msg = response.choices[0].message
         if response.usage:
             msg.usage = {
@@ -180,7 +190,8 @@ class ModelAdapter:
             msg.usage = None
         return msg
 
-    def chat_stream_full(self, messages: list[dict], tools: list[dict] | None = None):
+    def chat_stream_full(self, messages: list[dict], tools: list[dict] | None = None,
+                         max_tokens: int | None = None):
         """Stream with full delta support -- yields text chunks and accumulated tool calls.
 
         Yields:
@@ -194,7 +205,8 @@ class ModelAdapter:
             {"type": "error", "code": 400, "detail": "..."}
         """
         try:
-            stream = self._call_with_retry(messages, tools, stream=True)
+            stream = self._call_with_retry(messages, tools, stream=True,
+                                           max_tokens=max_tokens)
         except ModelAdapterError as e:
             yield {
                 "type": "error",

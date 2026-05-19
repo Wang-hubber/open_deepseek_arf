@@ -152,6 +152,8 @@ class BaseAgent(ABC):
             classifier_enabled=agent_cfg.get("classifier_enabled", False),
             compaction_threshold=compaction_cfg.get("threshold", 255000),
             compaction_keep_tokens=compaction_cfg.get("keep_tokens", 55000),
+            token_safety_margin=compaction_cfg.get("token_safety_margin", 5000),
+            compactor_max_tokens=compaction_cfg.get("compactor_max_tokens", 0),
             kernel_tools=frozenset(tools_cfg.get("kernel", [])),
             preload_tools=tools_cfg.get("preload", []),
             identity_prompt=identity,
@@ -175,6 +177,8 @@ class BaseAgent(ABC):
         classifier_enabled: bool,
         compaction_threshold: int,
         compaction_keep_tokens: int,
+        token_safety_margin: int,
+        compactor_max_tokens: int,
         kernel_tools: frozenset[str],
         preload_tools: list[str],
         identity_prompt: str,
@@ -192,6 +196,8 @@ class BaseAgent(ABC):
         self.classifier_enabled = classifier_enabled
         self.compaction_threshold = compaction_threshold
         self.compaction_keep_tokens = compaction_keep_tokens
+        self.token_safety_margin = token_safety_margin
+        self.compactor_max_tokens = compactor_max_tokens
         self.kernel_tools = kernel_tools
         self.identity_prompt = identity_prompt
         self.hook_runner = hook_runner
@@ -608,6 +614,8 @@ class BaseAgent(ABC):
             user_model_preference=self.default_model,
             compaction_threshold=self.compaction_threshold,
             compaction_keep_tokens=self.compaction_keep_tokens,
+            token_safety_margin=self.token_safety_margin,
+            compactor_max_tokens=self.compactor_max_tokens,
         )
         engine.set_tools_refresher(lambda: self._build_openai_tools())
         engine._trace_collector = getattr(self, '_trace_collector', None)

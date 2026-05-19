@@ -47,7 +47,7 @@ class AgentState(TypedDict):
     max_turns: int
     transition: Optional[str]
     continuation_count: int
-    has_attempted_compact: bool
+    compaction_count: int
     context_summary: Optional[str]
     stop_hook_active: bool
     tool_fail_counts: dict[str, int]
@@ -86,7 +86,7 @@ def default_state(
         "max_turns": max_turns,
         "transition": None,
         "continuation_count": 0,
-        "has_attempted_compact": False,
+        "compaction_count": 0,
         "context_summary": None,
         "stop_hook_active": False,
         "tool_fail_counts": {},

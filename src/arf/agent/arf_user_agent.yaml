@@ -9,6 +9,13 @@ agent:
   compaction:
     threshold: 255000
     keep_tokens: 55000
+    # Headroom (in tokens) reserved for the model response when computing
+    # the per-call max_tokens budget.  Must be >= 5000 to leave room for
+    # tool calls, reasoning, and response text.
+    token_safety_margin: 5000
+    # Max output tokens for the compactor model.  When 0 or unset, the
+    # model's own default max_tokens is used.
+    compactor_max_tokens: 0
 
 tools:
   kernel:

@@ -176,6 +176,8 @@ class GraphEngine:
         user_model_preference: Optional[str] = None,
         compaction_threshold: int = 255000,
         compaction_keep_tokens: int = 55000,
+        token_safety_margin: int = 5000,
+        compactor_max_tokens: int = 0,
     ):
         self._call_model = call_model
         self._execute_tool = execute_tool
@@ -191,6 +193,8 @@ class GraphEngine:
         self._system_tool_names: frozenset[str] = frozenset()
         self._compaction_threshold = compaction_threshold
         self._compaction_keep_tokens = compaction_keep_tokens
+        self._token_safety_margin = token_safety_margin
+        self._compactor_max_tokens = compactor_max_tokens
 
         # Compile both graphs once
         self._graph = build_agent_graph()
@@ -391,6 +395,8 @@ class GraphEngine:
                 "compact_model": self._build_compact_model(),
                 "compaction_threshold": getattr(self, '_compaction_threshold', 255000),
                 "compaction_keep_tokens": getattr(self, '_compaction_keep_tokens', 55000),
+                "token_safety_margin": getattr(self, '_token_safety_margin', 5000),
+                "compactor_max_tokens": getattr(self, '_compactor_max_tokens', 0),
                 "trace_collector": getattr(self, '_trace_collector', None),
             },
         }

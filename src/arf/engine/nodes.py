@@ -44,21 +44,71 @@ COMPACTION_KEEP_TOKENS = 55000  # keep this many tokens of recent turns
 _TOOL_OUTPUT_THRESHOLD = 2000   # max chars before progressive disclosure
 
 
-def _estimate_tokens(messages: list[dict]) -> int:
-    """Rough token count estimate for conversation messages.
+# Per-character-type token multipliers.  CJK characters are encoded as 1-2
+# tokens each by most tokenizers (DeepSeek averages ~1.5, OpenAI cl100k ~2.0).
+# 1.8 is a conservative midpoint.  Latin text averages ~3.3-4 chars/token, so
+# 0.3 tokens/char slightly overestimates.  Other scripts use 0.5.
+_CJK_TOKEN_RATE = 1.8      # tokens per CJK character
+_LATIN_TOKEN_RATE = 0.3     # tokens per ASCII/Latin character
+_OTHER_TOKEN_RATE = 0.5     # tokens per character for other scripts
+_MSG_OVERHEAD = 4           # structural tokens per message (role, keys, etc.)
 
-    Uses character-count-based heuristic (~0.4 tokens per char for mixed
-    Chinese/English text). Accurate enough for threshold decisions without
-    loading a tokenizer.
+# Unicode ranges considered "CJK" (wide characters typically encoded as
+# multiple tokens).
+_CJK_RANGES = (
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0x3400, 0x4DBF),    # CJK Extension A
+    (0x2E80, 0x2EFF),    # CJK Radicals Supplement
+    (0x3000, 0x303F),    # CJK Symbols and Punctuation
+    (0xFF00, 0xFFEF),    # Halfwidth and Fullwidth Forms
+    (0x20000, 0x2A6DF),  # CJK Extension B
+    (0x2A700, 0x2B73F),  # CJK Extension C
+    (0x2B820, 0x2CEAF),  # CJK Extension E
+    (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
+    (0x3040, 0x309F),    # Hiragana
+    (0x30A0, 0x30FF),    # Katakana
+    (0xAC00, 0xD7AF),    # Hangul Syllables
+    (0x1100, 0x11FF),    # Hangul Jamo
+)
+
+
+def _is_cjk(cp: int) -> bool:
+    """Check whether a Unicode code point falls in a CJK range."""
+    for lo, hi in _CJK_RANGES:
+        if lo <= cp <= hi:
+            return True
+    return False
+
+
+def _char_tokens(cp: int) -> float:
+    """Return estimated tokens for a single Unicode character."""
+    if cp < 128:
+        return _LATIN_TOKEN_RATE
+    if _is_cjk(cp):
+        return _CJK_TOKEN_RATE
+    return _OTHER_TOKEN_RATE
+
+
+def _text_tokens(text: str) -> float:
+    """Estimate tokens for a text string, character by character."""
+    return sum(_char_tokens(ord(c)) for c in text)
+
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    """Estimate token count for a list of conversation messages.
+
+    Uses per-character-type multipliers: CJK (1.8), Latin (0.3), other (0.5).
+    Accounts for per-message structural overhead (~4 tokens).
     """
-    total = 0
+    total = 0.0
     for m in messages:
+        total += _MSG_OVERHEAD
         content = m.get("content", "") or ""
         reasoning = m.get("reasoning_content", "") or ""
-        total += len(content) + len(reasoning)
+        total += _text_tokens(content) + _text_tokens(reasoning)
         for tc in m.get("tool_calls", []) or []:
-            total += len(json.dumps(tc.get("function", {}), ensure_ascii=False))
-    return int(total * 0.4)
+            total += _text_tokens(json.dumps(tc.get("function", {}), ensure_ascii=False))
+    return int(total)
 
 
 # ---- classification -------------------------------------------------
@@ -126,30 +176,29 @@ def classify_node(state: AgentState, config: RunnableConfig) -> dict:
 def compact_node(state: AgentState, config: RunnableConfig) -> dict:
     """Check context usage and compact old messages if over threshold.
 
-    When total estimated tokens exceed COMPACTION_THRESHOLD (255K),
-    summarizes older turns, keeping the most recent turns that fit
-    within COMPACTION_KEEP_TOKENS (55K). Only compacts once per
-    graph execution (has_attempted_compact flag).
+    When total estimated tokens exceed the threshold, summarizes older turns,
+    keeping the most recent turns that fit within compaction_keep_tokens.
+    Supports re-compaction: folds the previous summary into new compaction
+    input. Falls back to truncation when the compactor model is unavailable.
+    Derives the effective threshold from the model's context_window.
     """
-    if state.get("has_attempted_compact"):
-        return {}
-
     messages = state.get("messages", [])
-    if len(messages) < 10:
-        return {}
-
-    compactor_model = config.get("configurable", {}).get("compact_model")
-    if compactor_model is None:
-        logger.warning("compact_node called but no compact_model in config")
-        return {}
-
     sys_prompt = state.get("system_prompt", "")
-    current_tokens = _estimate_tokens(messages) + int(len(sys_prompt) * 0.4)
+    current_tokens = _estimate_tokens(messages) + _text_tokens(sys_prompt)
 
     compaction_threshold = config.get("configurable", {}).get(
         "compaction_threshold", COMPACTION_THRESHOLD)
     compaction_keep_tokens = config.get("configurable", {}).get(
         "compaction_keep_tokens", COMPACTION_KEEP_TOKENS)
+
+    # Derive threshold from the current model's context_window if available
+    model_type = state.get("current_model", "quick_thinking")
+    adapter = _resolve_model_adapter(config, model_type)
+    if adapter is not None:
+        cw = getattr(adapter, 'context_window', 0)
+        if cw:
+            derived = int(cw * 0.75)
+            compaction_threshold = min(compaction_threshold, derived)
 
     if current_tokens < compaction_threshold:
         return {}
@@ -170,13 +219,27 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
     if not old:
         return {}
 
-    old_text = _format_turns_for_summary(old)
-    summary = _call_compactor(compactor_model, old_text, sys_prompt)
+    compactor_model = config.get("configurable", {}).get("compact_model")
+    if compactor_model is not None:
+        old_text = _format_turns_for_summary(old)
+        # Fold in previous summary on re-compaction
+        existing_summary = state.get("context_summary")
+        if existing_summary:
+            old_text = (
+                f"[Previous summary]\n{existing_summary}\n\n"
+                f"[New turns to summarize]\n{old_text}"
+            )
+        cmt = config.get("configurable", {}).get("compactor_max_tokens", 0)
+        summary = _call_compactor(compactor_model, old_text, sys_prompt,
+                                  max_tokens=cmt if cmt > 0 else None)
+    else:
+        logger.warning("compact_node: no compact_model, falling back to truncation")
+        summary = f"[{len(old)} 轮对话因上下文过长被截断，最早消息已丢弃]"
 
     result = {
         "messages": list(_flatten_turns(keep)),
         "context_summary": summary,
-        "has_attempted_compact": True,
+        "compaction_count": state.get("compaction_count", 0) + 1,
         "node_traces": [{
             "node": "compact",
             "turn": state.get("turn_count", 0),
@@ -249,7 +312,8 @@ def _format_turns_for_summary(turns: list[list[dict]]) -> str:
     return "\n".join(lines)
 
 
-def _call_compactor(compactor_model, old_text: str, sys_prompt: str) -> str:
+def _call_compactor(compactor_model, old_text: str, sys_prompt: str,
+                    max_tokens: int | None = None) -> str:
     """Call the compaction model to summarize old conversation turns."""
     prompt = (
         "你是一个对话摘要助手。请将以下对话历史压缩为一个结构化摘要。\n\n"
@@ -266,7 +330,7 @@ def _call_compactor(compactor_model, old_text: str, sys_prompt: str) -> str:
     )
     msgs = [{"role": "user", "content": prompt}]
     try:
-        result = compactor_model.chat_complete(msgs)
+        result = compactor_model.chat_complete(msgs, max_tokens=max_tokens)
         content = getattr(result, "content", "") or ""
         return content[:3000]  # cap summary at 3000 chars
     except Exception as e:
@@ -368,9 +432,23 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
             }, ensure_ascii=False),
         })
 
+    # Pre-flight token budget: limit response tokens so prompt+response fit
+    # within the model's context_window.  If there's almost no room, the call
+    # still proceeds (with a minimal budget) — the API will return an error if
+    # it truly cannot fit, and the next compaction cycle will reduce context.
+    token_safety_margin = config.get("configurable", {}).get(
+        "token_safety_margin", 5000)
+
+    cw = getattr(adapter, 'context_window', 0)
+    if cw:
+        estimated = _estimate_tokens(msgs)
+        safe_max_tokens = max(1, cw - estimated - token_safety_margin)
+    else:
+        safe_max_tokens = None
+
     t0 = time.monotonic()
     try:
-        response = adapter.chat_complete(msgs, tools=tools)
+        response = adapter.chat_complete(msgs, tools=tools, max_tokens=safe_max_tokens)
     except Exception as e:
         error_msg = getattr(e, "message", str(e))
         status = getattr(e, "status_code", 0)
@@ -591,6 +669,18 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
         if refresh_tools:
             tools = refresh_tools()
 
+    # Pre-flight token budget: if context is nearly full, fail early
+    cw = getattr(adapter, 'context_window', 0)
+    # Pre-flight token budget (same logic as call_model_node)
+    token_safety_margin = config.get("configurable", {}).get(
+        "token_safety_margin", 5000)
+    cw = getattr(adapter, 'context_window', 0)
+    if cw:
+        estimated = _estimate_tokens(msgs)
+        safe_max_tokens = max(1, cw - estimated - token_safety_margin)
+    else:
+        safe_max_tokens = None
+
     stream_call = config.get("configurable", {}).get("stream_model")
     if stream_call is None:
         # Fallback: use non-streaming chat_complete
@@ -633,7 +723,7 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
     stream_error = None
 
     try:
-        for event in stream_call(msgs, tools):
+        for event in stream_call(msgs, tools, max_tokens=safe_max_tokens):
             etype = event.get("type", "")
             if etype == "chunk":
                 text_content += event.get("content", "")
