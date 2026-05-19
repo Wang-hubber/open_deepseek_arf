@@ -89,6 +89,7 @@ def build_agent_graph() -> StateGraph:
 
     workflow.add_conditional_edges("execute_tools", route_after_tools, {
         "call_model": "compact",
+        "classify": "classify",
         "respond": "respond",
     })
 
@@ -134,6 +135,7 @@ def build_streaming_agent_graph() -> StateGraph:
 
     workflow.add_conditional_edges("execute_tools", route_after_tools, {
         "call_model": "compact",
+        "classify": "classify",
         "respond": "respond",
     })
 
@@ -172,6 +174,7 @@ class GraphEngine:
         model_adapter_factory: Callable[[str], Any] = None,
         classifier_call: Callable = None,
         classifier_enabled: bool = False,
+        reclassify_interval: int = 0,
         available_model_types: Optional[set[str]] = None,
         user_model_preference: Optional[str] = None,
         compaction_threshold: int = 255000,
@@ -186,6 +189,7 @@ class GraphEngine:
         self._model_adapter_factory = model_adapter_factory
         self._classifier_call = classifier_call
         self._classifier_enabled = classifier_enabled
+        self._reclassify_interval = reclassify_interval
         self._available_model_types = available_model_types or set()
         self._user_model_preference = user_model_preference
         self._refresh_tools_fn = None
@@ -376,6 +380,7 @@ class GraphEngine:
             tools=params.tools,
             max_turns=params.max_turns,
             current_model=self._user_model_preference or "quick_thinking",
+            reclassify_interval=self._reclassify_interval,
         )
 
     def _build_config(self) -> dict:
@@ -387,6 +392,7 @@ class GraphEngine:
                 "hook_runner": self._run_hook,
                 "classifier_call": self._classifier_call,
                 "classifier_enabled": self._classifier_enabled,
+                "reclassify_interval": self._reclassify_interval,
                 "available_model_types": self._available_model_types,
                 "user_model_preference": self._user_model_preference,
                 "refresh_tools": self._refresh_tools_fn or (lambda: None),

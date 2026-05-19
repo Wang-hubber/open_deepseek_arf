@@ -126,6 +126,7 @@ class BaseAgent(ABC):
         raw = resolve_config(cls._config_filename, workspace_dir)
         agent_cfg = raw.get("agent", {})
         tools_cfg = raw.get("tools", {})
+        classifier_cfg = agent_cfg.get("classifier", {})
         identity = raw.get("identity", "")
 
         model_type = agent_cfg.get("model", "quick_thinking")
@@ -149,7 +150,8 @@ class BaseAgent(ABC):
             default_model=model_type,
             max_turns=agent_cfg.get("max_turns", 8),
             language=agent_cfg.get("language", "zh"),
-            classifier_enabled=agent_cfg.get("classifier_enabled", False),
+            classifier_enabled=classifier_cfg.get("enabled", False),
+            reclassify_interval=classifier_cfg.get("reclassify_interval", 0),
             compaction_threshold=compaction_cfg.get("threshold", 255000),
             compaction_keep_tokens=compaction_cfg.get("keep_tokens", 55000),
             token_safety_margin=compaction_cfg.get("token_safety_margin", 5000),
@@ -175,6 +177,7 @@ class BaseAgent(ABC):
         max_turns: int,
         language: str,
         classifier_enabled: bool,
+        reclassify_interval: int,
         compaction_threshold: int,
         compaction_keep_tokens: int,
         token_safety_margin: int,
@@ -194,6 +197,7 @@ class BaseAgent(ABC):
         self.max_turns = max_turns
         self.language = language
         self.classifier_enabled = classifier_enabled
+        self.reclassify_interval = reclassify_interval
         self.compaction_threshold = compaction_threshold
         self.compaction_keep_tokens = compaction_keep_tokens
         self.token_safety_margin = token_safety_margin
@@ -610,6 +614,7 @@ class BaseAgent(ABC):
             model_adapter_factory=lambda mt: self._build_model_adapter(mt),
             classifier_call=classifier_call,
             classifier_enabled=self.classifier_enabled,
+            reclassify_interval=self.reclassify_interval,
             available_model_types=available_types,
             user_model_preference=self.default_model,
             compaction_threshold=self.compaction_threshold,

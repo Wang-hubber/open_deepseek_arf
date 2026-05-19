@@ -5,7 +5,10 @@ agent:
   model: quick_thinking
   max_turns: 10
   language: zh
-  classifier_enabled: true
+  classifier:
+    enabled: true
+    # Re-run the classifier every N turns.  0 = only on turn 1.
+    reclassify_interval: 5
   compaction:
     threshold: 255000
     keep_tokens: 55000

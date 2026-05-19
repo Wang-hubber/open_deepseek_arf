@@ -5,7 +5,9 @@ agent:
   model: deep_thinking
   max_turns: 15
   language: zh
-  classifier_enabled: false
+  classifier:
+    enabled: false
+    reclassify_interval: 0
   compaction:
     threshold: 255000
     keep_tokens: 55000

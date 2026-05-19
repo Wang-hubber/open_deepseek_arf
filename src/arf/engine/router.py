@@ -84,9 +84,16 @@ def route_after_model(state: AgentState) -> str:
 
 
 def route_after_tools(state: AgentState) -> str:
-    """After tool execution: check limits, then return to model."""
+    """After tool execution: check limits, re-classify periodically, or continue."""
     if _over_max_turns(state) or state.get("truncated"):
         return "respond"
+    # Periodic re-classification so the model tier can adapt when the task
+    # shifts from simple to complex mid-conversation.
+    interval = state.get("reclassify_interval", 0) or 0
+    if interval > 0 and state.get("classification") is not None:
+        turn = state.get("turn_count", 0)
+        if turn > 1 and turn % interval == 0:
+            return "classify"
     return "call_model"
 
 

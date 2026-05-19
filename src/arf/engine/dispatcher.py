@@ -107,7 +107,7 @@ class Dispatcher:
         user_turns = 0
 
         for event in self.user_agent.chat_stream_with_tools(
-            message, history, project_dir, max_turns=user_max,
+            message, history, project_dir, max_turns=min(user_max, total_max),
         ):
             etype = event.get("type", "")
             user_events.append(event)

@@ -56,6 +56,7 @@ class AgentState(TypedDict):
     current_model: str  # "quick_thinking" | "deep_thinking"
     agent_mode: Optional[str]  # "user" | "sys"
     classification: Optional[str]  # "medium" | "complex"
+    reclassify_interval: int  # 0 = disabled, N = re-run classifier every N turns
 
     # Accumulators (custom reducers for cross-turn accumulation)
     usage: Annotated[dict, reduce_usage]
@@ -76,6 +77,7 @@ def default_state(
     tools: Optional[list[dict]] = None,
     max_turns: int = 10,
     current_model: str = "quick_thinking",
+    reclassify_interval: int = 0,
 ) -> dict:
     """Build a minimal initial state dict for graph invocation."""
     return {
@@ -93,6 +95,7 @@ def default_state(
         "current_model": current_model,
         "agent_mode": "user",
         "classification": None,
+        "reclassify_interval": reclassify_interval,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         "tool_events": [],
         "node_traces": [],
