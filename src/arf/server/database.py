@@ -161,6 +161,9 @@ def _normalize_trace_event(e: dict) -> dict:
     e = dict(e)
     if not e.get("event_type") and e.get("node") in _EVENT_TYPE_BY_NODE:
         e["event_type"] = _EVENT_TYPE_BY_NODE[e["node"]]
+    # Coerce nullable fields to safe defaults (node has NOT NULL constraint)
+    if e.get("node") is None:
+        e["node"] = ""
     if "tool" in e and not e.get("tool_name"):
         e["tool_name"] = e["tool"]
     if e.get("ok") is True and not e.get("status"):
