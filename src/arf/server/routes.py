@@ -771,7 +771,12 @@ def resume_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
     Archives the current session (if any), loads the archived session's
     messages, and returns the new session info with messages.
     """
-    # 1. Archive current session if it has messages
+    # 1. Verify target exists BEFORE archiving current session
+    archive = get_archive(session_id, str(mgr.workspace_dir))
+    if archive is None:
+        raise HTTPException(status_code=404, detail="Archived session not found")
+
+    # 2. Archive current session if it has messages
     if mgr.session_history and len(mgr.session_history) >= 2:
         try:
             mgr.fire_session_end()
@@ -800,11 +805,6 @@ def resume_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
                 )
         except Exception:
             pass
-
-    # 2. Load the target archived session
-    archive = get_archive(session_id, str(mgr.workspace_dir))
-    if archive is None:
-        raise HTTPException(status_code=404, detail="Archived session not found")
 
     archive_messages = archive.get("messages", [])
     archive_title = archive.get("title", DEFAULT_TITLE)

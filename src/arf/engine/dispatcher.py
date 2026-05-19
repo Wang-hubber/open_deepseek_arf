@@ -290,14 +290,17 @@ class Dispatcher:
         """
         history = list(original_history)
         history.append({"role": "user", "content": original_msg})
+        # Tool calls are already embedded in the assistant messages of
+        # original_history — only append results so SysAgent sees what
+        # UserAgent actually learned.
         if user_tool_events:
             for te in user_tool_events:
-                if te.get("type") in ("tool_call", "tool_result"):
+                if te.get("type") == "tool_result":
                     history.append({
                         "role": "tool",
                         "tool_call_id": te.get("id", ""),
-                        "name": te.get("tool", te.get("name", "")),
-                        "content": te.get("result", te.get("arguments", "")),
+                        "name": te.get("tool", ""),
+                        "content": te.get("result", ""),
                     })
         return history
 
