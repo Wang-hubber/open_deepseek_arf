@@ -140,11 +140,13 @@ class SessionManager:
                 hook_runner=self.get_hook_runner(),
             )
 
+            collector = self.get_trace_collector()
+            user_agent._trace_collector = collector
+            sys_agent._trace_collector = collector
             self._agent = Dispatcher(user_agent, sys_agent)
-            self._agent._trace_collector = self.get_trace_collector()
+            self._agent._trace_collector = collector
             self._agent_mtime = current_mtime
 
-            collector = self.get_trace_collector()
             collector.emit({
                 "event_type": "lifecycle.init",
                 "status": "ok",
@@ -264,7 +266,7 @@ class SessionManager:
     def reset_session_history(self, title: str = DEFAULT_TITLE) -> None:
         # Flush traces before clearing
         events = self._trace_collector.flush()
-        if events and self.session_history and len(self.session_history) >= 2:
+        if events:
             sid = self.current_session_id
             for e in events:
                 e["session_id"] = sid

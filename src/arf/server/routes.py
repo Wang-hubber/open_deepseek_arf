@@ -504,20 +504,6 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
     agent.language = "zh"
     workspace_dir = str(mgr.workspace_dir)
 
-    # Emit session_start trace on first message of a session
-    if not mgr.session_history:
-        collector = mgr.get_trace_collector()
-        collector.emit({
-            "event_type": "lifecycle.session_start",
-            "status": "ok",
-            "metadata": {
-                "session_id": mgr.current_session_id,
-                "workspace": workspace_dir,
-                "new_session": payload.new_session,
-                "transport": "http",
-            },
-        })
-
     if payload.new_session:
         collector = mgr.get_trace_collector()
         if mgr.session_history and len(mgr.session_history) >= 2:
@@ -559,6 +545,22 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
             insert_session(sid, "admin", mgr.session_title, filepath=None)
         except Exception:
             pass
+
+    # Emit session_start trace on first message of a session
+    # Placed AFTER new_session block so it belongs to the current (possibly
+    # just-created) session, not the old one being flushed.
+    if not mgr.session_history:
+        collector = mgr.get_trace_collector()
+        collector.emit({
+            "event_type": "lifecycle.session_start",
+            "status": "ok",
+            "metadata": {
+                "session_id": mgr.current_session_id,
+                "workspace": workspace_dir,
+                "new_session": payload.new_session,
+                "transport": "http",
+            },
+        })
 
     if payload.stream:
         return StreamingResponse(
