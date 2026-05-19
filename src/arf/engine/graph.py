@@ -174,6 +174,8 @@ class GraphEngine:
         classifier_enabled: bool = False,
         available_model_types: Optional[set[str]] = None,
         user_model_preference: Optional[str] = None,
+        compaction_threshold: int = 255000,
+        compaction_keep_tokens: int = 55000,
     ):
         self._call_model = call_model
         self._execute_tool = execute_tool
@@ -187,6 +189,8 @@ class GraphEngine:
         self._refresh_tools_fn = None
         self._project_dir = None
         self._system_tool_names: frozenset[str] = frozenset()
+        self._compaction_threshold = compaction_threshold
+        self._compaction_keep_tokens = compaction_keep_tokens
 
         # Compile both graphs once
         self._graph = build_agent_graph()
@@ -385,6 +389,8 @@ class GraphEngine:
                 "workspace_dir": str(self._project_dir) if self._project_dir else "",
                 "system_tool_names": self._system_tool_names,
                 "compact_model": self._build_compact_model(),
+                "compaction_threshold": getattr(self, '_compaction_threshold', 255000),
+                "compaction_keep_tokens": getattr(self, '_compaction_keep_tokens', 55000),
                 "trace_collector": getattr(self, '_trace_collector', None),
             },
         }

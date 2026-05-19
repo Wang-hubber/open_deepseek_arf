@@ -3,9 +3,12 @@ agent:
   description: Personal assistant for daily tasks
   mode: user
   model: quick_thinking
-  max_turns: 6
+  max_turns: 10
   language: zh
   classifier_enabled: true
+  compaction:
+    threshold: 255000
+    keep_tokens: 55000
 
 tools:
   kernel:

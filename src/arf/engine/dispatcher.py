@@ -33,12 +33,14 @@ class Dispatcher:
             project_dir: str | None = None) -> GraphResult:
         """Non-streaming dispatch. Runs Phase 1, optionally Phase 2."""
 
-        total_max = DEFAULT_SYS_MAX_TURNS
+        user_max = getattr(self.user_agent, 'max_turns', DEFAULT_USER_MAX_TURNS)
+        sys_max = getattr(self.sys_agent, 'max_turns', DEFAULT_SYS_MAX_TURNS)
+        total_max = sys_max
 
         # Phase 1: User Agent
         user_result = self._run_phase(
             self.user_agent, message, history, project_dir,
-            max_turns=min(DEFAULT_USER_MAX_TURNS, total_max),
+            max_turns=min(user_max, total_max),
         )
 
         if not self._detect_handoff(user_result.tool_events):
@@ -95,8 +97,9 @@ class Dispatcher:
                    project_dir: str | None = None) -> Any:
         """Streaming dispatch. Emits events from Phase 1, then Phase 2 on handoff."""
 
-        total_max = DEFAULT_SYS_MAX_TURNS
-        user_max = min(DEFAULT_USER_MAX_TURNS, total_max)
+        user_max = getattr(self.user_agent, 'max_turns', DEFAULT_USER_MAX_TURNS)
+        sys_max = getattr(self.sys_agent, 'max_turns', DEFAULT_SYS_MAX_TURNS)
+        total_max = sys_max
 
         # Phase 1: Stream User Agent
         handoff_info = None

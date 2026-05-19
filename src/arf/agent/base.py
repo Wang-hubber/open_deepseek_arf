@@ -137,6 +137,8 @@ class BaseAgent(ABC):
                 f"is not configured. Available types: {available}"
             )
 
+        compaction_cfg = agent_cfg.get("compaction", {})
+
         return cls(
             model=adapter,
             registry=registry,
@@ -148,6 +150,8 @@ class BaseAgent(ABC):
             max_turns=agent_cfg.get("max_turns", 8),
             language=agent_cfg.get("language", "zh"),
             classifier_enabled=agent_cfg.get("classifier_enabled", False),
+            compaction_threshold=compaction_cfg.get("threshold", 255000),
+            compaction_keep_tokens=compaction_cfg.get("keep_tokens", 55000),
             kernel_tools=frozenset(tools_cfg.get("kernel", [])),
             preload_tools=tools_cfg.get("preload", []),
             identity_prompt=identity,
@@ -169,6 +173,8 @@ class BaseAgent(ABC):
         max_turns: int,
         language: str,
         classifier_enabled: bool,
+        compaction_threshold: int,
+        compaction_keep_tokens: int,
         kernel_tools: frozenset[str],
         preload_tools: list[str],
         identity_prompt: str,
@@ -184,6 +190,8 @@ class BaseAgent(ABC):
         self.max_turns = max_turns
         self.language = language
         self.classifier_enabled = classifier_enabled
+        self.compaction_threshold = compaction_threshold
+        self.compaction_keep_tokens = compaction_keep_tokens
         self.kernel_tools = kernel_tools
         self.identity_prompt = identity_prompt
         self.hook_runner = hook_runner
@@ -598,6 +606,8 @@ class BaseAgent(ABC):
             classifier_enabled=self.classifier_enabled,
             available_model_types=available_types,
             user_model_preference=self.default_model,
+            compaction_threshold=self.compaction_threshold,
+            compaction_keep_tokens=self.compaction_keep_tokens,
         )
         engine.set_tools_refresher(lambda: self._build_openai_tools())
         engine._trace_collector = getattr(self, '_trace_collector', None)

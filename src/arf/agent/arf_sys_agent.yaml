@@ -3,9 +3,12 @@ agent:
   description: Resource creation and orchestration
   mode: sys
   model: deep_thinking
-  max_turns: 10
+  max_turns: 15
   language: zh
   classifier_enabled: false
+  compaction:
+    threshold: 255000
+    keep_tokens: 55000
 
 tools:
   kernel:

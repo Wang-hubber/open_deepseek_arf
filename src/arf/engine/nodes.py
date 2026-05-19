@@ -36,8 +36,12 @@ def _tool_result_snippet(result_str: str, max_len: int = 1000) -> str:
     return result_str[:max_len] + ("..." if len(result_str) > max_len else "")
 
 
-_COMPACT_THRESHOLD_RATIO = 0.75  # 75% of context window triggers compaction
-_TOOL_OUTPUT_THRESHOLD = 2000    # max chars before progressive disclosure
+# Token thresholds for context compaction.  When total estimated tokens exceed
+# COMPACTION_THRESHOLD the compactor summarizes older turns, keeping the most
+# recent turns that fit within COMPACTION_KEEP_TOKENS.
+COMPACTION_THRESHOLD = 255000   # trigger compaction
+COMPACTION_KEEP_TOKENS = 55000  # keep this many tokens of recent turns
+_TOOL_OUTPUT_THRESHOLD = 2000   # max chars before progressive disclosure
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -122,48 +126,55 @@ def classify_node(state: AgentState, config: RunnableConfig) -> dict:
 def compact_node(state: AgentState, config: RunnableConfig) -> dict:
     """Check context usage and compact old messages if over threshold.
 
-    Keeps system_prompt + last 3 turns intact, summarizes earlier messages
-    into a structured context_summary. Only compacts once per session
-    (has_attempted_compact flag).
+    When total estimated tokens exceed COMPACTION_THRESHOLD (255K),
+    summarizes older turns, keeping the most recent turns that fit
+    within COMPACTION_KEEP_TOKENS (55K). Only compacts once per
+    graph execution (has_attempted_compact flag).
     """
     if state.get("has_attempted_compact"):
         return {}
 
     messages = state.get("messages", [])
     if len(messages) < 10:
-        # Not enough conversation to warrant compaction
         return {}
 
-    # Resolve context window from the compact model adapter
     compactor_model = config.get("configurable", {}).get("compact_model")
     if compactor_model is None:
         logger.warning("compact_node called but no compact_model in config")
         return {}
 
-    context_window = compactor_model.context_window
-    threshold = int(context_window * _COMPACT_THRESHOLD_RATIO)
-    current_tokens = _estimate_tokens(messages)
-
-    # Include system prompt in estimate
     sys_prompt = state.get("system_prompt", "")
-    current_tokens += int(len(sys_prompt) * 0.4)
+    current_tokens = _estimate_tokens(messages) + int(len(sys_prompt) * 0.4)
 
-    if current_tokens < threshold:
+    compaction_threshold = config.get("configurable", {}).get(
+        "compaction_threshold", COMPACTION_THRESHOLD)
+    compaction_keep_tokens = config.get("configurable", {}).get(
+        "compaction_keep_tokens", COMPACTION_KEEP_TOKENS)
+
+    if current_tokens < compaction_threshold:
         return {}
 
-    # Build compression prompt: summarize old messages, keep recent 3 turns
+    # Split into turns, then walk backward accumulating token cost
+    # until we've kept enough to fill compaction_keep_tokens
     turns = _split_turns(messages)
-    if len(turns) <= 3:
-        return {}
+    keep = []
+    kept_tokens = 0
+    for turn in reversed(turns):
+        turn_tokens = _estimate_tokens(turn)
+        if kept_tokens + turn_tokens > compaction_keep_tokens and keep:
+            break
+        keep.insert(0, turn)
+        kept_tokens += turn_tokens
 
-    recent = turns[-3:]
-    old = turns[:-3]
+    old = turns[:-len(keep)] if len(keep) < len(turns) else []
+    if not old:
+        return {}
 
     old_text = _format_turns_for_summary(old)
     summary = _call_compactor(compactor_model, old_text, sys_prompt)
 
     result = {
-        "messages": list(_flatten_turns(recent)),
+        "messages": list(_flatten_turns(keep)),
         "context_summary": summary,
         "has_attempted_compact": True,
         "node_traces": [{
@@ -173,8 +184,10 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
             "duration_ms": 0,
             "metadata": json.dumps({
                 "turns_compacted": len(old),
+                "turns_kept": len(keep),
                 "tokens_before": current_tokens,
-                "threshold": threshold,
+                "tokens_kept": kept_tokens,
+                "threshold": compaction_threshold,
             }, ensure_ascii=False),
         }],
     }
@@ -187,8 +200,10 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
             "status": "ok",
             "metadata": {
                 "turns_compacted": len(old),
+                "turns_kept": len(keep),
                 "tokens_before": current_tokens,
-                "threshold": threshold,
+                "tokens_kept": kept_tokens,
+                "threshold": compaction_threshold,
             },
         })
 
