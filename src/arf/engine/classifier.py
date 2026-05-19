@@ -8,7 +8,6 @@ quick_no_thinking is reserved for background tasks (compression, summaries).
 """
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger("arf.classifier")
 
@@ -31,15 +30,15 @@ User message: {message}
 Classification:"""
 
 CLASSIFICATION_TO_MODEL = {
-    "simple": "quick_thinking",
     "medium": "quick_thinking",
     "complex": "deep_thinking",
 }
 
-# Degradation chain when target model type is unavailable
+# Degradation chain when target model type is unavailable.
+# Falls back to the next-less-capable configured model type.
 DEGRADATION = {
-    "deep_thinking": ["quick_thinking"],
-    "quick_thinking": ["deep_thinking"],
+    "deep_thinking": ["quick_thinking", "quick_no_thinking"],
+    "quick_thinking": ["quick_no_thinking"],
 }
 
 
@@ -52,7 +51,7 @@ def classify_request(classifier_call, messages: list[dict]) -> str:
         messages: The full conversation messages list.
 
     Returns:
-        One of "simple", "medium", "complex". Defaults to "medium" on error.
+        "medium" or "complex". Defaults to "medium" on error.
     """
     last_user = ""
     for m in reversed(messages):

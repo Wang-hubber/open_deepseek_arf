@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from ..resources.model_adapter import ModelAdapter
 from .database import (
-    init_db, record_usage, insert_trace_events, save_session_cost,
+    record_usage, insert_trace_events,
 )
 from .session_manager import SessionManager
 from .sessions import list_archives, get_archive, update_title, delete_archive, DEFAULT_TITLE
@@ -958,17 +958,6 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 continue
             if etype == "usage":
-                record_usage(
-                    username="admin",
-                    model_name=agent.model.model_name,
-                    model_type="deep_thinking",
-                    prompt_tokens=event.get("prompt_tokens", 0),
-                    completion_tokens=event.get("completion_tokens", 0),
-                )
-                if mgr.last_usage is None:
-                    mgr.last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    mgr.last_usage[k] = mgr.last_usage.get(k, 0) + event.get(k, 0)
                 continue
             if etype == "tool_call":
                 mgr.session_history.append({

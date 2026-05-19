@@ -1,6 +1,6 @@
 """LangGraph AgentState schema for the ARF agent graph."""
 
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 
 
 def reduce_messages(a: list, b: list) -> list:
@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     compaction_count: int
     context_summary: Optional[str]
     stop_hook_active: bool
+    _needs_tools_refresh: bool
     tool_fail_counts: dict[str, int]
 
     # Model routing
@@ -91,6 +92,7 @@ def default_state(
         "compaction_count": 0,
         "context_summary": None,
         "stop_hook_active": False,
+        "_needs_tools_refresh": False,
         "tool_fail_counts": {},
         "current_model": current_model,
         "agent_mode": "user",

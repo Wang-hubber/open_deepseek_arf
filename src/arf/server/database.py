@@ -120,30 +120,15 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
 
 
 def _migrate_schema():
-    """Add event_type column, create prompts table, backfill existing data."""
+    """Add event_type column if missing (schema migration from pre-0.1.0)."""
     conn = _get_conn()
 
-    # 1. event_type column (added after initial schema)
     cur = conn.execute("PRAGMA table_info(trace_events)")
     cols = [r["name"] for r in cur.fetchall()]
     if "event_type" not in cols:
         conn.execute("ALTER TABLE trace_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''")
         for node, etype in _EVENT_TYPE_BY_NODE.items():
             conn.execute("UPDATE trace_events SET event_type = ? WHERE node = ?", (etype, node))
-        conn.commit()
-
-    # 2. prompts table (added after initial schema)
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='prompts'"
-    )
-    if not cur.fetchone():
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS prompts ("
-            "prompt_hash TEXT PRIMARY KEY, "
-            "prompt_full TEXT NOT NULL, "
-            "prompt_length INTEGER NOT NULL, "
-            "created_at TEXT DEFAULT (datetime('now')))"
-        )
         conn.commit()
 
 

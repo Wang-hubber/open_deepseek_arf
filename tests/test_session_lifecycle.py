@@ -650,7 +650,7 @@ class TestStage4ConversationLoop:
         assert env["ARF_HOOK_EVENT"] == "PostToolUse"
         assert env["ARF_HOOK_TOOL_NAME"] == "file_reader"
         assert env["ARF_HOOK_TOOL_CATEGORY"] == "sys"
-        assert "tool_output" in env["ARF_HOOK_TOOL_OUTPUT"].lower() or "ok" in env["ARF_HOOK_TOOL_OUTPUT"]
+        assert "ok" in env["ARF_HOOK_TOOL_OUTPUT"]
 
     def test_hook_runner_block_exit_code(self, tmp_path):
         """A hook with exit code 1 should return blocked result."""
@@ -664,7 +664,7 @@ class TestStage4ConversationLoop:
 
         result = runner.run("PreToolUse", {"tool_name": "dangerous_tool"})
         assert result.exit_code == 1
-        assert "Blocked" in result.message or result.message == ""
+        assert "Blocked" in result.message
 
     def test_agent_query_params_includes_system_prompt(self, tmp_path):
         from arf.agent.user_agent import UserAgent
@@ -1083,13 +1083,6 @@ class TestStage5SessionEnd:
 
         mgr.fire_session_end()  # should return early
         # No exception = pass
-
-    def test_session_end_hook_fires_on_done_event(self):
-        """In streaming path, SessionEnd fires after 'done' event."""
-        # This is validated by code: routes.py:882-886
-        # fire_session_end() is called after title generation
-        # In non-streaming path, SessionEnd is NOT fired (only new_session triggers it)
-        pass  # behavioral test — validated by code review
 
     def test_reset_session_history_clears_state(self, tmp_path):
         from arf.server.session_manager import SessionManager

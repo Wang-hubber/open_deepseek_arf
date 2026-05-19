@@ -73,7 +73,7 @@ def execute(
             updates["command"] = command
         if timeout != DEFAULT_TIMEOUT:
             updates["timeout"] = timeout
-        if "enabled" in kwargs or enabled is not True:
+        if not enabled:
             updates["enabled"] = enabled
         if matcher:
             updates["matcher"] = matcher
