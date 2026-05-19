@@ -61,7 +61,8 @@ class Dispatcher:
                 },
             })
 
-        sys_history = self._build_sys_history(history, message)
+        sys_history = self._build_sys_history(history, message,
+                                              user_result.tool_events)
         sys_message = self._build_handoff_message(message, handoff)
         remaining_turns = max(1, total_max - user_result.turns)
 
@@ -153,7 +154,7 @@ class Dispatcher:
             "intent": handoff_info.get("intent", ""),
         }
 
-        sys_history = self._build_sys_history(history, message)
+        sys_history = self._build_sys_history(history, message, user_events)
         sys_message = self._build_handoff_message(message, handoff_info)
         remaining_turns = max(1, total_max - user_turns)
 
@@ -281,16 +282,23 @@ class Dispatcher:
         return {}
 
     @staticmethod
-    def _build_sys_history(original_history: list[dict], original_msg: str) -> list[dict]:
-        """Build history for Sys Agent: original history + user message.
-
-        The handoff message (sent as the new user message) carries
-        intent, required_actions, reason, and original user message --
-        sufficient context for Sys Agent to start without User Agent's
-        intermediate tool calls.
+    def _build_sys_history(original_history: list[dict], original_msg: str,
+                           user_tool_events: list[dict] | None = None) -> list[dict]:
+        """Build history for Sys Agent: original history + user message
+        + UserAgent's tool call results (so SysAgent knows what was already
+        tried and learned in Phase 1).
         """
         history = list(original_history)
         history.append({"role": "user", "content": original_msg})
+        if user_tool_events:
+            for te in user_tool_events:
+                if te.get("type") in ("tool_call", "tool_result"):
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": te.get("id", ""),
+                        "name": te.get("tool", te.get("name", "")),
+                        "content": te.get("result", te.get("arguments", "")),
+                    })
         return history
 
     @staticmethod
