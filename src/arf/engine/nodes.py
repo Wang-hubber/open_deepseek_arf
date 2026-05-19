@@ -684,12 +684,6 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
     else:
         safe_max_tokens = None
 
-    stream_call = config.get("configurable", {}).get("stream_model")
-    if stream_call is None:
-        # Fallback: use non-streaming chat_complete
-        logger.warning("No stream_model in config, falling back to non-streaming")
-        return call_model_node(state, config)
-
     hook_runner = config.get("configurable", {}).get("hook_runner")
     node_traces: list[dict] = []
     pre_model_input = _last_user_message_snippet(state["messages"])
@@ -725,7 +719,7 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
     stream_error = None
 
     try:
-        for event in stream_call(msgs, tools, max_tokens=safe_max_tokens):
+        for event in adapter.chat_stream_full(msgs, tools=tools, max_tokens=safe_max_tokens):
             etype = event.get("type", "")
             if etype == "chunk":
                 text_content += event.get("content", "")

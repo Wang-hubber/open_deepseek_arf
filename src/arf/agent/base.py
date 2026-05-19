@@ -605,11 +605,11 @@ class BaseAgent(ABC):
         classifier_call = self._build_classifier_call()
 
         engine = GraphEngine(
-            call_model=lambda msgs, tls: self.model.chat_complete(
-                msgs, tools=self._build_openai_tools()),
+            call_model=lambda msgs, tls, max_tokens=None: self.model.chat_complete(
+                msgs, tools=self._build_openai_tools(), max_tokens=max_tokens),
             execute_tool=lambda name, args: self._execute_tool(name, args, project_dir),
-            stream_model=lambda msgs, tls: self.model.chat_stream_full(
-                msgs, tools=self._build_openai_tools()),
+            stream_model=lambda msgs, tls, max_tokens=None: self.model.chat_stream_full(
+                msgs, tools=self._build_openai_tools(), max_tokens=max_tokens),
             run_hook=self._make_run_hook(),
             model_adapter_factory=lambda mt: self._build_model_adapter(mt),
             classifier_call=classifier_call,

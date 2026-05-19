@@ -263,8 +263,6 @@ class GraphEngine:
 
         initial_state = self._params_to_state(params)
         config = self._build_config()
-        # Inject stream_model for the streaming node
-        config["configurable"]["stream_model"] = self._stream_model
 
         _dev_tracer.node_start("graph_stream", 0, initial_state.get("current_model", "?"))
 
@@ -432,7 +430,7 @@ class GraphEngine:
             fallback_call = self._call_model
 
             class _LegacyAdapter:
-                def chat_complete(self, msgs, tools=None):
+                def chat_complete(self, msgs, tools=None, **kwargs):
                     return fallback_call(msgs, tools)
 
             legacy = _LegacyAdapter()
