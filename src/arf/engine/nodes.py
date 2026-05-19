@@ -184,7 +184,9 @@ def compact_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     messages = state.get("messages", [])
     sys_prompt = state.get("system_prompt", "")
-    current_tokens = _estimate_tokens(messages) + _text_tokens(sys_prompt)
+    used = state.get("used_tokens", 0)
+    current_tokens = used if used > 0 else (
+        _estimate_tokens(messages) + _text_tokens(sys_prompt))
 
     compaction_threshold = config.get("configurable", {}).get(
         "compaction_threshold", COMPACTION_THRESHOLD)
@@ -570,6 +572,7 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
         "usage": usage,
         "turn_count": state["turn_count"] + 1,
         "node_traces": node_traces,
+        "used_tokens": usage.get("prompt_tokens", state.get("used_tokens", 0)),
     }
 
     # Build assistant message
@@ -799,6 +802,7 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
         "usage": usage_acc,
         "turn_count": state["turn_count"] + 1,
         "node_traces": node_traces,
+        "used_tokens": usage_acc.get("prompt_tokens", state.get("used_tokens", 0)),
     }
 
     if stream_error:

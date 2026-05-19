@@ -1,6 +1,7 @@
 """Resource manager -- dual-source loading, registration, indexing, and permission checks."""
 
 import importlib.util
+import os
 from pathlib import Path
 
 import yaml
@@ -121,6 +122,17 @@ class ResourceRegistry:
     # ---- item builders -------------------------------------------------
 
     @staticmethod
+    def _resolve_context_window(cfg: dict, default: dict) -> int:
+        """Resolve context_window with priority: env > cfg yaml > default yaml > 1048576."""
+        env_val = os.environ.get("ARF_CONTEXT_WINDOW")
+        if env_val:
+            try:
+                return int(env_val)
+            except ValueError:
+                pass
+        return cfg.get("context_window") or default.get("context_window") or 1048576
+
+    @staticmethod
     def _build_model_item(name: str, cfg: dict, default: dict, sub: Path,
                           source: str, readonly: bool, configured: bool) -> dict:
         return {
@@ -137,7 +149,7 @@ class ResourceRegistry:
             "depends_on": default.get("depends_on", []),
             "required": default.get("required", False),
             "configured": configured,
-            "context_window": default.get("context_window", 1048576),
+            "context_window": ResourceRegistry._resolve_context_window(cfg, default),
         }
 
     # ---- registration with conflict check ----------------------------
@@ -152,6 +164,9 @@ class ResourceRegistry:
             merged["source"] = "user"
             merged["readonly"] = False
             merged["configured"] = True
+            # Allow user item to override context_window (env > cfg > default)
+            if item.get("context_window") and item["context_window"] != 1048576:
+                merged["context_window"] = item["context_window"]
             self._items[rtype][name] = merged
             return
         # For tools/skills: user version overrides system (clone workflow)
@@ -452,7 +467,7 @@ class ResourceRegistry:
                 "depends_on": cfg.get("depends_on") or default.get("depends_on", []),
                 "required": cfg.get("required") if "required" in cfg else default.get("required", False),
                 "configured": True,
-                "context_window": cfg.get("context_window") or default.get("context_window", 1048576),
+                "context_window": self._resolve_context_window(cfg, default),
             }
         if rtype == "tools":
             schema = self._normalize_schema(cfg, name)

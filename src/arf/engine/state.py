@@ -71,6 +71,10 @@ class AgentState(TypedDict):
     last_error: Optional[str]
     truncated: bool
 
+    # Token tracking — actual prompt_tokens from last API call, used by
+    # compact_node as the baseline instead of character-based estimation.
+    used_tokens: int
+
 
 def default_state(
     messages: Optional[list[dict]] = None,
@@ -104,4 +108,5 @@ def default_state(
         "final_response": None,
         "last_error": None,
         "truncated": False,
+        "used_tokens": 0,
     }

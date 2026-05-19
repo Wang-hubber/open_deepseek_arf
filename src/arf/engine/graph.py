@@ -30,9 +30,10 @@ class GraphResult:
     """Output of a completed (or truncated) graph execution."""
     response: str
     history: list[dict]
-    tool_events: list[dict]
-    transition_log: list[dict]
-    turns: int
+    raw_messages: list[dict] | None = None
+    tool_events: list[dict] | None = None
+    transition_log: list[dict] | None = None
+    turns: int = 0
     truncated: bool = False
     usage: dict | None = None
 
@@ -240,6 +241,7 @@ class GraphEngine:
         return GraphResult(
             response=final.get("final_response") or "No response generated.",
             history=self._display_history(final.get("messages", [])),
+            raw_messages=final.get("messages", []),
             tool_events=final.get("tool_events", []),
             transition_log=final.get("node_traces", []),
             turns=final.get("turn_count", 1),
@@ -297,6 +299,7 @@ class GraphEngine:
                     "type": "done",
                     "response": final_state.get("final_response", ""),
                     "history": self._display_history(final_state.get("messages", [])),
+                    "raw_messages": final_state.get("messages", []),
                     "truncated": final_state.get("truncated", False),
                     "traces": final_state.get("node_traces", []),
                     "usage": final_state.get("usage", {}),

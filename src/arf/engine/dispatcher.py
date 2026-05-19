@@ -61,8 +61,7 @@ class Dispatcher:
                 },
             })
 
-        sys_history = self._build_sys_history(history, message,
-                                              user_result.tool_events)
+        sys_history = self._build_sys_history(user_result.raw_messages or [])
         sys_message = self._build_handoff_message(message, handoff)
         remaining_turns = max(1, total_max - user_result.turns)
 
@@ -106,6 +105,7 @@ class Dispatcher:
         handoff_info = None
         user_events = []
         user_turns = 0
+        user_raw_messages: list[dict] = []
 
         for event in self.user_agent.chat_stream_with_tools(
             message, history, project_dir, max_turns=min(user_max, total_max),
@@ -115,6 +115,7 @@ class Dispatcher:
 
             if etype == "done":
                 user_turns = event.get("turns", user_max)
+                user_raw_messages = event.get("raw_messages", [])
                 if self._detect_handoff_from_events(user_events):
                     handoff_info = self._extract_handoff_from_events(user_events)
                 if not handoff_info:
@@ -154,7 +155,7 @@ class Dispatcher:
             "intent": handoff_info.get("intent", ""),
         }
 
-        sys_history = self._build_sys_history(history, message, user_events)
+        sys_history = self._build_sys_history(user_raw_messages)
         sys_message = self._build_handoff_message(message, handoff_info)
         remaining_turns = max(1, total_max - user_turns)
 
@@ -206,19 +207,24 @@ class Dispatcher:
     # ---- helpers -------------------------------------------------------
 
     def _run_phase(self, agent, message, history, project_dir, max_turns):
-        """Run one agent phase, return GraphResult-compatible object."""
-        response, full_history, tool_events, usage, traces = agent.chat_with_tools(
-            message, history, project_dir, max_turns=max_turns,
+        """Run one agent phase, return GraphResult with raw messages for A2A."""
+        engine = agent._build_graph_engine(project_dir)
+        params = agent._build_query_params(message, history, max_turns)
+        result = engine.run(params)
+        response = result.response if not result.truncated else (
+            "已达到本轮对话最大轮次限制，请开始新对话以继续。"
+            if agent.language == "zh" else
+            "Maximum turns reached. Start a new session to continue."
         )
-        turns = self._count_turns(traces)
         return GraphResult(
             response=response,
-            history=full_history,
-            tool_events=tool_events,
-            transition_log=traces,
-            turns=turns,
-            truncated=False,
-            usage=usage,
+            history=result.history,
+            raw_messages=result.raw_messages,
+            tool_events=result.tool_events,
+            transition_log=result.transition_log,
+            turns=result.turns,
+            truncated=result.truncated,
+            usage=result.usage,
         )
 
     @staticmethod
@@ -282,27 +288,14 @@ class Dispatcher:
         return {}
 
     @staticmethod
-    def _build_sys_history(original_history: list[dict], original_msg: str,
-                           user_tool_events: list[dict] | None = None) -> list[dict]:
-        """Build history for Sys Agent: original history + user message
-        + UserAgent's tool call results (so SysAgent knows what was already
-        tried and learned in Phase 1).
+    def _build_sys_history(raw_messages: list[dict]) -> list[dict]:
+        """Pass UserAgent's full structured context to SysAgent.
+
+        raw_messages already contains properly paired assistant(tool_calls)
+        + tool messages from the UserAgent phase. SysAgent receives them
+        verbatim so the API message format is valid.
         """
-        history = list(original_history)
-        history.append({"role": "user", "content": original_msg})
-        # Tool calls are already embedded in the assistant messages of
-        # original_history — only append results so SysAgent sees what
-        # UserAgent actually learned.
-        if user_tool_events:
-            for te in user_tool_events:
-                if te.get("type") == "tool_result":
-                    history.append({
-                        "role": "tool",
-                        "tool_call_id": te.get("id", ""),
-                        "name": te.get("tool", ""),
-                        "content": te.get("result", ""),
-                    })
-        return history
+        return list(raw_messages)
 
     @staticmethod
     def _build_handoff_message(original_msg: str, handoff: dict) -> str:
