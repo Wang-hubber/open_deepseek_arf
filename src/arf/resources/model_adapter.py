@@ -135,6 +135,9 @@ class ModelAdapter:
         """Raw API call -- separated so retry logic is clean."""
         params, extra = self._build_api_params()
         if max_tokens is not None:
+            default_max = self.default_params.get("max_tokens")
+            if default_max is not None:
+                max_tokens = min(max_tokens, default_max)
             params["max_tokens"] = max_tokens
         kwargs = {}
         if tools:

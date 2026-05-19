@@ -445,6 +445,10 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
     if cw:
         estimated = _estimate_tokens(msgs)
         safe_max_tokens = max(1, cw - estimated - token_safety_margin)
+        # Clamp to the model's API max output limit (configured max_tokens)
+        configured_max = getattr(adapter, 'default_params', {}).get('max_tokens')
+        if configured_max is not None:
+            safe_max_tokens = min(safe_max_tokens, configured_max)
     else:
         safe_max_tokens = None
 
@@ -672,8 +676,6 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
         if refresh_tools:
             tools = refresh_tools()
 
-    # Pre-flight token budget: if context is nearly full, fail early
-    cw = getattr(adapter, 'context_window', 0)
     # Pre-flight token budget (same logic as call_model_node)
     token_safety_margin = config.get("configurable", {}).get(
         "token_safety_margin", 5000)
@@ -681,6 +683,9 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
     if cw:
         estimated = _estimate_tokens(msgs)
         safe_max_tokens = max(1, cw - estimated - token_safety_margin)
+        configured_max = getattr(adapter, 'default_params', {}).get('max_tokens')
+        if configured_max is not None:
+            safe_max_tokens = min(safe_max_tokens, configured_max)
     else:
         safe_max_tokens = None
 
