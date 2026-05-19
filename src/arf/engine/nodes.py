@@ -307,6 +307,9 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
 
     # Build messages: system prompt first, then conversation
     msgs = [{"role": "system", "content": state["system_prompt"]}]
+    context_summary = state.get("context_summary")
+    if context_summary:
+        msgs.append({"role": "system", "content": f"[Earlier conversation summary]\n{context_summary}"})
     msgs.extend(list(state["messages"]))
 
     # Emit prompt_snapshot trace
@@ -553,6 +556,9 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
 
     # Build messages
     msgs = [{"role": "system", "content": state["system_prompt"]}]
+    context_summary = state.get("context_summary")
+    if context_summary:
+        msgs.append({"role": "system", "content": f"[Earlier conversation summary]\n{context_summary}"})
     msgs.extend(list(state["messages"]))
 
     # Emit prompt_snapshot trace
