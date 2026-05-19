@@ -1,8 +1,8 @@
 """Fast model helpers -- shared by routes and WebSocket handler.
 
 Searches the registry for a quick_thinking model (prefers one named "fast"),
-returns ModelAdapter or a full ARFAgent for utility tasks like title
-generation and memory extraction.
+returns ModelAdapter for utility tasks like title generation and
+memory extraction.
 """
 
 from __future__ import annotations
@@ -24,14 +24,6 @@ def load_fast_model(registry: ResourceRegistry) -> ModelAdapter | None:
     return None
 
 
-def make_fast_agent(registry: ResourceRegistry, workspace_dir: str) -> object | None:
-    """Create an ARFAgent backed by a quick_thinking model.
-    Returns None if no quick_thinking model is configured."""
-    model = load_fast_model(registry)
-    if model is None:
-        return None
-    from arf.agent import ARFAgent
-    return ARFAgent(model, registry, workspace_dir)
 
 
 def is_fast_model_configured(registry: ResourceRegistry) -> bool:

@@ -987,14 +987,6 @@ def _detect_contradictions(
     return notes
 
 
-def _is_resource_creation(path: str) -> bool:
-    """Check if a file_writer path is creating a new tool/skill resource."""
-    return (
-        ("tools/" in path or "skills/" in path) and
-        (path.endswith("tool.yaml") or path.endswith("skill.yaml") or
-         path.endswith("function.py"))
-    )
-
 
 def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
     """Execute tool calls from the last assistant message.

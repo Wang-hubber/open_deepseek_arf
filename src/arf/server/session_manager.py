@@ -305,9 +305,3 @@ class SessionManager:
 
     def is_fast_model_configured(self) -> bool:
         return is_fast_model_configured(self.get_registry())
-
-    # ---- language preference -------------------------------------------
-
-    def _load_language(self) -> str:
-        """Load user language preference."""
-        return "zh"
