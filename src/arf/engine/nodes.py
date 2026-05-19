@@ -12,7 +12,7 @@ import time
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.config import get_stream_writer
+from langgraph.types import StreamWriter
 
 from .state import AgentState
 from .classifier import classify_request, CLASSIFICATION_TO_MODEL, resolve_model_for_classification
@@ -616,8 +616,8 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
 
 # ---- model calling (streaming) ---------------------------------------
 
-async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> dict:
-    """Streaming model call node -- emits token chunks via get_stream_writer().
+async def call_model_node_stream(state: AgentState, config: RunnableConfig, writer: StreamWriter) -> dict:
+    """Streaming model call node -- emits token chunks via injected StreamWriter.
 
     Uses the stream_model callable from config to get real-time token
     events and forwards them as custom stream events. Tool calls, usage,
@@ -714,7 +714,6 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig) -> d
         })
 
     t0 = time.monotonic()
-    writer = get_stream_writer()
 
     text_content = ""
     reasoning_content = ""
