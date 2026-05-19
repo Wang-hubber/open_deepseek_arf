@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '@/composables/useApi'
-import type { SessionInfo, ActiveSession, ArchivedSession } from '@/types'
+import type { SessionInfo, ActiveSession, ArchivedSession, ChatMessage } from '@/types'
 
 export const useSessionStore = defineStore('sessions', () => {
   const api = useApi()
@@ -44,6 +44,20 @@ export const useSessionStore = defineStore('sessions', () => {
 
   async function fetchArchive(sessionId: string): Promise<ArchivedSession> {
     return await api.get<ArchivedSession>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+  }
+
+  async function resumeSession(sessionId: string): Promise<ActiveSession & { messages: ChatMessage[] }> {
+    const data = await api.post<ActiveSession & { messages: ChatMessage[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/resume`
+    )
+    activeSession.value = {
+      id: data.id,
+      title: data.title,
+      created_at: data.created_at,
+      message_count: data.message_count,
+    }
+    viewingArchiveId.value = null
+    return data
   }
 
   async function viewArchive(sessionId: string): Promise<ArchivedSession> {
@@ -125,6 +139,7 @@ export const useSessionStore = defineStore('sessions', () => {
     createSession,
     viewArchive,
     fetchArchive,
+    resumeSession,
     returnToActive,
     deleteSession,
     hasActiveWithMessages,

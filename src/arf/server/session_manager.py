@@ -226,7 +226,7 @@ class SessionManager:
 
     # ---- session history ----------------------------------------------
 
-    def fire_session_end(self):
+    def fire_session_end(self, trigger: str = "stream_done"):
         """Fire SessionEnd hooks. Idempotent — only fires once per session."""
         if self._session_end_fired:
             return
@@ -247,19 +247,25 @@ class SessionManager:
                 "session_id": sid,
                 "message_count": len(self.session_history),
                 "duration_seconds": round(duration, 1),
-                "trigger": "stream_done",
+                "trigger": trigger,
             },
         })
+
+        stdin: dict = {
+            "conversation": list(self.session_history),
+            "session_start": self.session_start_time.isoformat(),
+            "message_count": len(self.session_history),
+        }
+        if self.last_traces:
+            stdin["graph_traces"] = self.last_traces
+        if self.last_usage:
+            stdin["usage"] = self.last_usage
 
         try:
             runner.run("SessionEnd", {
                 "session_id": sid,
                 "session_title": self.session_title,
-            }, stdin_data={
-                "conversation": list(self.session_history),
-                "session_start": self.session_start_time.isoformat(),
-                "message_count": len(self.session_history),
-            })
+            }, stdin_data=stdin)
         except Exception:
             logger.exception("SessionEnd hooks failed on normal completion")
 

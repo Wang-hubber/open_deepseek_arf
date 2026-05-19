@@ -115,6 +115,15 @@ function confirmDelete(id: string, title: string, isActive: boolean) {
 let lastCreateTime = 0
 const DEBOUNCE_MS = 5000
 
+async function handleResume(sessionId: string) {
+  try {
+    const data = await sessionStore.resumeSession(sessionId)
+    chatStore.renderFromHistory(data.messages || [])
+  } catch (e: any) {
+    alert(t('common.error', { msg: e.message }))
+  }
+}
+
 function createNewSession() {
   const now = Date.now()
   if (now - lastCreateTime < DEBOUNCE_MS) return
@@ -178,6 +187,9 @@ function createNewSession() {
           <div class="si-title">{{ item.title }}</div>
           <div class="si-time">{{ item.timeLabel }}<template v-if="item.turnCount"> · {{ t('session.turns', { n: item.turnCount }) }}</template><template v-if="item.jsonSizeMb"> · {{ item.jsonSizeMb }} MB</template></div>
         </div>
+        <button v-if="!item.isActive && !item.isPending" class="si-resume" title="Continue this session" @click.stop="handleResume(item.id)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </button>
         <button v-if="!item.isPending" class="si-delete" :title="t('session.deleteTitle')" @click.stop="confirmDelete(item.id, item.title, item.isActive)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 11v6M14 11v6"/></svg>
         </button>
@@ -267,6 +279,15 @@ function createNewSession() {
 }
 .session-item:hover .si-delete { opacity: 1; }
 .session-item .si-delete:hover { color: var(--error-text); background: var(--error-bg); }
+
+.session-item .si-resume {
+  flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center;
+  justify-content: center; border-radius: var(--radius-sm); border: none;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: all var(--transition); opacity: 0;
+}
+.session-item:hover .si-resume { opacity: 1; }
+.session-item .si-resume:hover { color: var(--accent); background: var(--accent-light); }
 
 /* ── Mobile overlay mode ──────────────────────── */
 #session-panel.overlay {

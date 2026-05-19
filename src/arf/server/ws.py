@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 from .session_manager import SessionManager
 
@@ -84,40 +83,19 @@ class WSHandler:
 
         session_id = start_time.strftime("%Y%m%d_%H%M%S")
 
-        # Emit session_end trace with ws_disconnect trigger
-        collector = self._mgr.get_trace_collector()
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-        collector.emit({
-            "event_type": "lifecycle.session_end",
-            "status": "ok",
-            "metadata": {
-                "session_id": session_id,
-                "message_count": len(history),
-                "duration_seconds": round(duration, 1),
-                "trigger": "ws_disconnect",
-                "grace_period": GRACE_PERIOD_SECONDS,
-            },
-        })
-
+        # Trigger SessionEnd via the unified fire_session_end path
+        # (trace emission, hook execution, and grace_period metadata are handled there)
         try:
             loop = asyncio.get_running_loop()
-            runner = self._mgr.get_hook_runner()
             await loop.run_in_executor(
                 None,
-                lambda: runner.run("SessionEnd", {
-                    "session_id": session_id,
-                    "session_title": title,
-                }, stdin_data={
-                    "conversation": history,
-                    "session_start": start_time.isoformat(),
-                    "message_count": len(history),
-                }),
+                lambda: self._mgr.fire_session_end(trigger="ws_disconnect"),
             )
         except Exception:
             logger.exception("SessionEnd hooks failed")
 
         try:
-            from .database import insert_session, update_session
+            from .database import insert_session, update_session, save_session_cost
             from pathlib import Path
             insert_session(session_id, "admin", title, f"memory/sessions/{session_id}.json")
             fpath = Path(str(self._mgr.workspace_dir)) / "memory" / "sessions" / f"{session_id}.json"
@@ -125,6 +103,19 @@ class WSHandler:
                 sz = fpath.stat().st_size / (1024 * 1024)
                 turns = len(history) // 2
                 update_session(session_id, turn_count=turns, json_size_mb=round(sz, 3), message_count=len(history))
+            if self._mgr.last_usage:
+                model_breakdown = {}
+                for t in (self._mgr.last_traces or []):
+                    m = t.get("model")
+                    if m:
+                        model_breakdown[m] = model_breakdown.get(m, 0) + t.get("total_tokens", 0)
+                save_session_cost(
+                    session_id,
+                    total_tokens=self._mgr.last_usage.get("total_tokens", 0),
+                    prompt_tokens=self._mgr.last_usage.get("prompt_tokens", 0),
+                    completion_tokens=self._mgr.last_usage.get("completion_tokens", 0),
+                    model_breakdown=model_breakdown,
+                )
         except Exception:
             logger.exception("Failed to write session DB record")
 

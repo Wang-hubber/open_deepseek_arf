@@ -72,6 +72,8 @@ export const useChatStore = defineStore('chat', () => {
           arguments: (m as any).arguments || '{}',
           status: 'executing' as const,
         })
+      } else if (m.role === 'system') {
+        addSystemMsg(m.content)
       } else if (m.role === 'tool_result') {
         const callId = (m as any).tool_call_id || ''
         // Update matching pending tool call to completed/failed

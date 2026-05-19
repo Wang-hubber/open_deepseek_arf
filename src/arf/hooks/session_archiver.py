@@ -27,7 +27,8 @@ MAX_ARCHIVES = 10
 
 def _evict_oldest(sessions_dir: Path) -> None:
     files = sorted(sessions_dir.glob("*.json"))
-    while len(files) >= MAX_ARCHIVES:
+    # Must match src/arf/server/sessions.py MAX_ARCHIVES
+    while len(files) > MAX_ARCHIVES:
         oldest = files.pop(0)
         oldest.unlink()
 
@@ -47,6 +48,8 @@ def main():
     data = input_data.get("data", {})
     conversation = data.get("conversation", [])
     session_start_str = data.get("session_start", "")
+    graph_traces = data.get("graph_traces")
+    usage = data.get("usage")
 
     if not conversation or len(conversation) < 2:
         print(json.dumps({"archived": False, "reason": "too few messages"}))
@@ -81,6 +84,10 @@ def main():
         "message_count": len(conversation),
         "messages": conversation,
     }
+    if graph_traces:
+        archive["graph_traces"] = graph_traces
+    if usage:
+        archive["usage"] = usage
 
     path = sessions_dir / f"{session_id}.json"
     path.write_text(

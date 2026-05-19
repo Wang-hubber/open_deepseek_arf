@@ -12,10 +12,10 @@ from pydantic import BaseModel
 
 from ..resources.model_adapter import ModelAdapter
 from .database import (
-    init_db, record_usage, insert_trace_events,
+    init_db, record_usage, insert_trace_events, save_session_cost,
 )
 from .session_manager import SessionManager
-from .sessions import list_archives, get_archive, archive_session, update_title, delete_archive, DEFAULT_TITLE
+from .sessions import list_archives, get_archive, update_title, delete_archive, DEFAULT_TITLE
 
 router = APIRouter(prefix="/api")
 
@@ -505,35 +505,31 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
     workspace_dir = str(mgr.workspace_dir)
 
     if payload.new_session:
-        collector = mgr.get_trace_collector()
         if mgr.session_history and len(mgr.session_history) >= 2:
-            duration = (datetime.now(timezone.utc) - mgr.session_start_time).total_seconds()
-            collector.emit({
-                "event_type": "lifecycle.session_end",
-                "status": "ok",
-                "metadata": {
-                    "session_id": mgr.current_session_id,
-                    "message_count": len(mgr.session_history),
-                    "duration_seconds": round(duration, 1),
-                    "trigger": "new_session",
-                },
-            })
-
-        old_history = list(mgr.session_history)
-        old_start = mgr.session_start_time
-        old_title = mgr.session_title
-        if old_history and len(old_history) >= 2:
             try:
-                sid = archive_session(old_history, old_start, workspace_dir, old_title, graph_traces=mgr.last_traces if hasattr(mgr, 'last_traces') else None, usage=mgr.last_usage if hasattr(mgr, 'last_usage') else None)
-                if sid:
-                    from .database import insert_session, update_session
-                    fpath = f"memory/sessions/{sid}.json"
-                    insert_session(sid, "admin", old_title, fpath)
-                    fp = Path(workspace_dir) / fpath
-                    if fp.exists():
-                        sz = fp.stat().st_size / (1024 * 1024)
-                        turns = len(old_history) // 2
-                        update_session(sid, turn_count=turns, json_size_mb=round(sz, 3), message_count=len(old_history))
+                mgr.fire_session_end()
+                sid = mgr.current_session_id
+                from .database import insert_session, update_session, save_session_cost
+                fpath = f"memory/sessions/{sid}.json"
+                insert_session(sid, "admin", mgr.session_title, fpath)
+                fp = Path(workspace_dir) / fpath
+                if fp.exists():
+                    sz = fp.stat().st_size / (1024 * 1024)
+                    turns = len(mgr.session_history) // 2
+                    update_session(sid, turn_count=turns, json_size_mb=round(sz, 3), message_count=len(mgr.session_history))
+                if mgr.last_usage:
+                    model_breakdown = {}
+                    for t in (mgr.last_traces or []):
+                        m = t.get("model")
+                        if m:
+                            model_breakdown[m] = model_breakdown.get(m, 0) + t.get("total_tokens", 0)
+                    save_session_cost(
+                        sid,
+                        total_tokens=mgr.last_usage.get("total_tokens", 0),
+                        prompt_tokens=mgr.last_usage.get("prompt_tokens", 0),
+                        completion_tokens=mgr.last_usage.get("completion_tokens", 0),
+                        model_breakdown=model_breakdown,
+                    )
             except Exception:
                 pass
         mgr.reset_session_history()
@@ -573,10 +569,6 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
             payload.message, payload.history, workspace_dir
         )
         mgr.track_session(payload.message, response)
-        try:
-            mgr.fire_session_end()
-        except Exception:
-            pass
         if traces:
             mgr.last_traces = traces
             sid = mgr.current_session_id
@@ -595,6 +587,10 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
                     prompt_tokens=usage.get("prompt_tokens", 0),
                     completion_tokens=usage.get("completion_tokens", 0),
                 )
+        try:
+            mgr.fire_session_end()
+        except Exception:
+            pass
         display_history = _display_history(full_messages)
         return {"response": response, "history": display_history}
     except Exception as exc:
@@ -721,27 +717,35 @@ def get_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
 
 @router.post("/sessions")
 def create_session(mgr: SessionManager = Depends(get_mgr)):
-    old_history = list(mgr.session_history)
-    old_start = mgr.session_start_time
-    old_title = mgr.session_title
-
-    mgr.reset_session_history()
-    now = mgr.session_start_time
-
-    if old_history and len(old_history) >= 2:
+    if mgr.session_history and len(mgr.session_history) >= 2:
         try:
-            sid = archive_session(old_history, old_start, str(mgr.workspace_dir), old_title, graph_traces=mgr.last_traces if hasattr(mgr, 'last_traces') else None, usage=mgr.last_usage if hasattr(mgr, 'last_usage') else None)
-            if sid:
-                from .database import insert_session, update_session
-                insert_session(sid, "admin", old_title, f"memory/sessions/{sid}.json")
-                fpath = Path(str(mgr.workspace_dir)) / "memory" / "sessions" / f"{sid}.json"
-                if fpath.exists():
-                    sz = fpath.stat().st_size / (1024 * 1024)
-                    turns = len(old_history) // 2
-                    update_session(sid, turn_count=turns, json_size_mb=round(sz, 3), message_count=len(old_history))
+            mgr.fire_session_end()
+            sid = mgr.current_session_id
+            from .database import insert_session, update_session, save_session_cost
+            insert_session(sid, "admin", mgr.session_title, f"memory/sessions/{sid}.json")
+            fpath = Path(str(mgr.workspace_dir)) / "memory" / "sessions" / f"{sid}.json"
+            if fpath.exists():
+                sz = fpath.stat().st_size / (1024 * 1024)
+                turns = len(mgr.session_history) // 2
+                update_session(sid, turn_count=turns, json_size_mb=round(sz, 3), message_count=len(mgr.session_history))
+            if mgr.last_usage:
+                model_breakdown = {}
+                for t in (mgr.last_traces or []):
+                    m = t.get("model")
+                    if m:
+                        model_breakdown[m] = model_breakdown.get(m, 0) + t.get("total_tokens", 0)
+                save_session_cost(
+                    sid,
+                    total_tokens=mgr.last_usage.get("total_tokens", 0),
+                    prompt_tokens=mgr.last_usage.get("prompt_tokens", 0),
+                    completion_tokens=mgr.last_usage.get("completion_tokens", 0),
+                    model_breakdown=model_breakdown,
+                )
         except Exception:
             pass
 
+    mgr.reset_session_history()
+    now = mgr.session_start_time
     mgr.session_title = _placeholder_title(now, str(mgr.workspace_dir))
 
     sid = now.strftime("%Y%m%d_%H%M%S")
@@ -757,6 +761,73 @@ def create_session(mgr: SessionManager = Depends(get_mgr)):
         "created_at": now.isoformat(),
         "message_count": 0,
         "fast_model_configured": mgr.is_fast_model_configured(),
+    }
+
+
+@router.post("/sessions/{session_id}/resume")
+def resume_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
+    """Resume an archived session into a new active session.
+
+    Archives the current session (if any), loads the archived session's
+    messages, and returns the new session info with messages.
+    """
+    # 1. Archive current session if it has messages
+    if mgr.session_history and len(mgr.session_history) >= 2:
+        try:
+            mgr.fire_session_end()
+            old_sid = mgr.current_session_id
+            from .database import insert_session, update_session, save_session_cost
+            fpath = f"memory/sessions/{old_sid}.json"
+            insert_session(old_sid, "admin", mgr.session_title, fpath)
+            fp = Path(str(mgr.workspace_dir)) / fpath
+            if fp.exists():
+                sz = fp.stat().st_size / (1024 * 1024)
+                turns = len(mgr.session_history) // 2
+                update_session(old_sid, turn_count=turns, json_size_mb=round(sz, 3),
+                               message_count=len(mgr.session_history))
+            if mgr.last_usage:
+                model_breakdown = {}
+                for t in (mgr.last_traces or []):
+                    m = t.get("model")
+                    if m:
+                        model_breakdown[m] = model_breakdown.get(m, 0) + t.get("total_tokens", 0)
+                save_session_cost(
+                    old_sid,
+                    total_tokens=mgr.last_usage.get("total_tokens", 0),
+                    prompt_tokens=mgr.last_usage.get("prompt_tokens", 0),
+                    completion_tokens=mgr.last_usage.get("completion_tokens", 0),
+                    model_breakdown=model_breakdown,
+                )
+        except Exception:
+            pass
+
+    # 2. Load the target archived session
+    archive = get_archive(session_id, str(mgr.workspace_dir))
+    if archive is None:
+        raise HTTPException(status_code=404, detail="Archived session not found")
+
+    archive_messages = archive.get("messages", [])
+    archive_title = archive.get("title", DEFAULT_TITLE)
+
+    # 3. Reset session state and load archive messages
+    mgr.reset_session_history(title=archive_title)
+    mgr.session_history = list(archive_messages)
+    mgr.needs_title = False
+
+    # 4. Create DB record for the new session
+    new_sid = mgr.current_session_id
+    try:
+        from .database import insert_session
+        insert_session(new_sid, "admin", archive_title, filepath=None)
+    except Exception:
+        pass
+
+    return {
+        "id": new_sid,
+        "title": archive_title,
+        "created_at": mgr.session_start_time.isoformat(),
+        "message_count": len(mgr.session_history),
+        "messages": list(mgr.session_history),
     }
 
 
