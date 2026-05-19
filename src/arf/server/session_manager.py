@@ -14,7 +14,7 @@ import yaml
 
 from ..resources.manager import ResourceRegistry
 from ..resources.model_adapter import ModelAdapter
-from ..agent import ARFAgent
+from ..engine.dispatcher import Dispatcher
 from .sessions import DEFAULT_TITLE
 from .fast_model import load_fast_model, is_fast_model_configured
 from .hook_runner import HookRunner, generate_default_config
@@ -28,7 +28,7 @@ class SessionManager:
         self.workspace_dir = workspace_dir.resolve()
         self._system_dir: Path | None = None
         self._registry: ResourceRegistry | None = None
-        self._agent: ARFAgent | None = None
+        self._agent: Dispatcher | None = None
         self._agent_mtime: float = 0.0
 
         # Session state
