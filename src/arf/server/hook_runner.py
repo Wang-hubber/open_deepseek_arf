@@ -46,22 +46,17 @@ def _python_cmd() -> str:
 
 
 def _fix_python_cmd(command: str) -> str:
-    """Replace a non-existent python command in a hook command string with
-    one that is actually available on this system."""
+    """Replace python/python3 in a hook command with the one verified
+    to actually work on this system."""
     actual = _python_cmd()
-    # Split on whitespace to check the first token
     parts = command.split(None, 1)
     if not parts:
         return command
     exe = parts[0]
-    # Already correct — nothing to do
     if exe == actual:
         return command
-    # If the command uses python3 or python but that binary isn't available,
-    # swap to the one that exists.  Ignore absolute paths (e.g. /usr/bin/python3).
     if exe in ("python3", "python"):
-        if not shutil.which(exe):
-            return actual + (command[len(exe):] if command.startswith(exe) else command)
+        return actual + command[len(exe):]
     return command
 
 
