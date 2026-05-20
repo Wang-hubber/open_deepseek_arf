@@ -11,7 +11,9 @@ Exit-code contract (teaching version, unified):
 import json
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,34 @@ HOOK_EVENTS = ("SessionStart", "PreModelCall", "PostModelCall", "PreToolUse", "P
 MAX_ENV_PAYLOAD = 10000
 # Maximum size for stdin payloads
 MAX_STDIN_PAYLOAD = 200000
+
+
+def _python_cmd() -> str:
+    """Return an available Python command, probing the environment first."""
+    for candidate in ("python3", "python"):
+        if shutil.which(candidate):
+            return candidate
+    return sys.executable
+
+
+def _fix_python_cmd(command: str) -> str:
+    """Replace a non-existent python command in a hook command string with
+    one that is actually available on this system."""
+    actual = _python_cmd()
+    # Split on whitespace to check the first token
+    parts = command.split(None, 1)
+    if not parts:
+        return command
+    exe = parts[0]
+    # Already correct — nothing to do
+    if exe == actual:
+        return command
+    # If the command uses python3 or python but that binary isn't available,
+    # swap to the one that exists.  Ignore absolute paths (e.g. /usr/bin/python3).
+    if exe in ("python3", "python"):
+        if not shutil.which(exe):
+            return actual + (command[len(exe):] if command.startswith(exe) else command)
+    return command
 
 
 @dataclass
@@ -84,7 +114,7 @@ class HookRunner:
                 self._hooks[event] = [
                     HookDefinition(
                         name=h.get("name", "unnamed"),
-                        command=h.get("command", ""),
+                        command=_fix_python_cmd(h.get("command", "")),
                         timeout=h.get("timeout", DEFAULT_TIMEOUT),
                         enabled=h.get("enabled", True),
                         matcher=h.get("matcher"),
@@ -455,7 +485,7 @@ def generate_default_config(workspace: Path) -> Path:
     if config_path.exists():
         return config_path
 
-    python = "python3"
+    python = _python_cmd()
     default = {
         "version": 1,
         "hooks": {
