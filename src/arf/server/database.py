@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     filepath      TEXT,
     turn_count    INTEGER DEFAULT 0,
     json_size_mb  REAL DEFAULT 0,
-    message_count INTEGER DEFAULT 0
+    message_count INTEGER DEFAULT 0,
+    hidden        INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_username_updated ON sessions(username, updated_at DESC);
 
@@ -120,16 +121,28 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
 
 
 def _migrate_schema():
-    """Add event_type column if missing (schema migration from pre-0.1.0)."""
+    """Apply schema migrations for columns added after initial release."""
     conn = _get_conn()
 
+    # event_type on trace_events (pre-0.1.0)
     cur = conn.execute("PRAGMA table_info(trace_events)")
     cols = [r["name"] for r in cur.fetchall()]
     if "event_type" not in cols:
         conn.execute("ALTER TABLE trace_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''")
         for node, etype in _EVENT_TYPE_BY_NODE.items():
             conn.execute("UPDATE trace_events SET event_type = ? WHERE node = ?", (etype, node))
-        conn.commit()
+
+    # created_at on trace_events
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE trace_events ADD COLUMN created_at TEXT DEFAULT (datetime('now'))")
+
+    # hidden on sessions (soft-delete)
+    cur = conn.execute("PRAGMA table_info(sessions)")
+    sess_cols = [r["name"] for r in cur.fetchall()]
+    if "hidden" not in sess_cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN hidden INTEGER DEFAULT 0")
+
+    conn.commit()
 
 
 def init_db(db_path: str) -> None:
