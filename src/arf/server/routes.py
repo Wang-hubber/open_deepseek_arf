@@ -976,10 +976,10 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                     mgr.session_history.append(entry)
                 reasoning_text = ""
 
+                sid = mgr.current_session_id
                 traces = event.get("traces", [])
                 if traces:
                     mgr.last_traces = traces
-                    sid = mgr.current_session_id
                     enrich = lambda t: {**t, "session_id": sid, "username": "admin"}
                     try:
                         insert_trace_events([enrich(t) for t in traces], str(mgr.workspace_dir))
@@ -997,7 +997,6 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                             mgr.session_title = title
                             try:
                                 from .database import insert_session
-                                sid = mgr.current_session_id
                                 insert_session(sid, "admin", title, filepath=None)
                             except Exception:
                                 pass
