@@ -80,10 +80,36 @@ def main():
         archive["usage"] = usage
 
     path = session_dir / "archive.json"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(archive, ensure_ascii=False, indent=2))
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        raw = json.dumps(archive, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError) as e:
+        print(f"session_archiver: JSON serialization failed: {e}", file=sys.stderr)
+        # Fallback: sanitize conversation to string-only messages
+        try:
+            safe = []
+            for m in conversation:
+                if isinstance(m, dict):
+                    safe.append({
+                        "role": str(m.get("role", "")),
+                        "content": str(m.get("content", "")),
+                    })
+                else:
+                    safe.append({"role": "unknown", "content": str(m)})
+            archive["messages"] = safe
+            raw = json.dumps(archive, ensure_ascii=False, indent=2)
+        except Exception:
+            print(json.dumps({"archived": False, "reason": "serialization failed"}))
+            sys.exit(0)
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        print(f"session_archiver: write failed: {e}", file=sys.stderr)
+        print(json.dumps({"archived": False, "reason": f"write error: {e}"}))
+        sys.exit(1)
 
     print(json.dumps(
         {"archived": True, "session_id": session_id},
@@ -93,4 +119,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"session_archiver: unhandled error: {e}", file=sys.stderr)
+        print(json.dumps({"archived": False, "reason": str(e)}))
+        sys.exit(0)

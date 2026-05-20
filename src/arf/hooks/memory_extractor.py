@@ -166,4 +166,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"memory_extractor: unhandled error: {e}", file=sys.stderr)
+        print(json.dumps({"extracted": False, "reason": str(e)}))
+        sys.exit(0)

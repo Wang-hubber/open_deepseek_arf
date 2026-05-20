@@ -280,6 +280,13 @@ class SessionManager:
             stdin["usage"] = self.last_usage
 
         try:
+            # Debug: log available SessionEnd hooks
+            ses_hooks = runner._hooks.get("SessionEnd", [])
+            logger.info(
+                "SessionEnd hooks available: %d (%s)",
+                len(ses_hooks),
+                [(h.name, h.enabled, h.command[:60]) for h in ses_hooks],
+            )
             runner.run("SessionEnd", {
                 "session_id": sid,
                 "session_title": self.session_title,

@@ -96,10 +96,10 @@ class WSHandler:
             logger.info("Session already handled by another path, skipping archive")
             return
 
-        session_id = start_time.strftime("%Y%m%d_%H%M%S")
-
-        # Trigger SessionEnd via the unified fire_session_end path
-        # (trace emission, hook execution, and grace_period metadata are handled there)
+        # Trigger SessionEnd via the unified fire_session_end path.
+        # fire_session_end is idempotent — if already fired (e.g. by the
+        # streaming "done" handler), it returns early.
+        already_fired = self._mgr._session_end_fired
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -109,11 +109,21 @@ class WSHandler:
         except Exception:
             logger.exception("SessionEnd hooks failed")
 
+        # If SessionEnd was already handled by another path (streaming / HTTP),
+        # don't create a duplicate DB record with a different session_id.
+        if already_fired:
+            logger.info("SessionEnd already handled; skipping duplicate DB record")
+            self._mgr.reset_session_history()
+            return
+
+        session_id = start_time.strftime("%Y%m%d_%H%M%S_%f")
+        filepath = f"memory/sessions/{session_id}/archive.json"
+
         try:
             from .database import insert_session, update_session, save_session_cost
             from pathlib import Path
-            insert_session(session_id, "admin", title, f"memory/sessions/{session_id}.json")
-            fpath = Path(str(self._mgr.workspace_dir)) / "memory" / "sessions" / f"{session_id}.json"
+            insert_session(session_id, "admin", title, filepath)
+            fpath = Path(str(self._mgr.workspace_dir)) / filepath
             if fpath.exists():
                 sz = fpath.stat().st_size / (1024 * 1024)
                 turns = len(history) // 2
