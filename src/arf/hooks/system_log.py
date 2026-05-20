@@ -29,21 +29,32 @@ def main():
 
     ts = datetime.now(timezone.utc).isoformat()
 
-    parts = [f"[{ts}] event={event}"]
-    if session_id:
-        parts.append(f"session={session_id}")
+    entry = {
+        "ts": ts,
+        "event": event,
+        "session_id": session_id,
+    }
     if tool_name:
-        parts.append(f"tool={tool_name}")
+        entry["tool"] = tool_name
 
-    line = " ".join(parts)
+    # Include additional context from environment
+    for key in ("MODEL", "TURN", "DURATION_MS", "FINISH_REASON",
+                 "TOOL_CATEGORY", "STATUS",
+                 "PROMPT_TOKENS", "COMPLETION_TOKENS", "TOTAL_TOKENS"):
+        val = os.environ.get(f"ARF_HOOK_{key}", "")
+        if val:
+            try:
+                entry[key.lower()] = int(val) if val.isdigit() else float(val)
+            except (ValueError, TypeError):
+                entry[key.lower()] = val
 
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass  # non-critical
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"system_log hook error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    # Always succeed
     sys.exit(0)
 
 

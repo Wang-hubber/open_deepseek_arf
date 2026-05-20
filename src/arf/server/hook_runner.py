@@ -52,6 +52,9 @@ class HookRunner:
     Built-in hooks (title_generator, session_archiver, etc.) are trusted by
     default. User-added hooks are protected by the JWT-authenticated
     manage_hooks API.
+
+    When _trace_collector is set, each hook execution emits a detailed trace
+    event including command, exit_code, stdout, stderr, and duration.
     """
 
     def __init__(self, workspace: Path):
@@ -60,6 +63,7 @@ class HookRunner:
             event: [] for event in HOOK_EVENTS
         }
         self._config_mtime: float = 0.0
+        self._trace_collector = None
         self._load()
 
     # ---- config loading ---------------------------------------------------
@@ -89,6 +93,10 @@ class HookRunner:
                 ]
         except (json.JSONDecodeError, Exception) as e:
             logger.warning("Failed to load hook config %s: %s", path, e)
+
+    def set_trace_collector(self, collector) -> None:
+        """Inject a TraceCollector for per-hook execution trace events."""
+        self._trace_collector = collector
 
     def reload(self) -> None:
         """Re-read config if it changed on disk."""
@@ -178,10 +186,16 @@ class HookRunner:
         payload: dict,
         stdin_data: dict | None,
     ) -> HookResult:
-        env = self._build_env(event, payload)
-        stdin_str = self._build_stdin(event, payload, stdin_data)
+        t0 = time.monotonic()
+        exit_code = -1
+        stdout_text = ""
+        stderr_text = ""
+        hook_status = "ok"
+        error_msg = None
 
         try:
+            env = self._build_env(event, payload)
+            stdin_str = self._build_stdin(event, payload, stdin_data)
             r = subprocess.run(
                 hook_def.command,
                 shell=True,
@@ -192,37 +206,75 @@ class HookRunner:
                 encoding="utf-8",
                 timeout=hook_def.timeout,
             )
+            exit_code = r.returncode
+            stdout_text = r.stdout.strip() if r.stdout else ""
+            stderr_text = r.stderr.strip() if r.stderr else ""
 
             if r.returncode == 0:
                 data = None
-                if r.stdout.strip():
+                if stdout_text:
                     try:
-                        data = json.loads(r.stdout)
+                        data = json.loads(stdout_text)
                     except json.JSONDecodeError:
                         pass  # stdout was not JSON, treat as informational
-                return HookResult(exit_code=0, data=data)
+                result = HookResult(exit_code=0, data=data)
 
             elif r.returncode == 1:
-                reason = r.stderr.strip() or "Blocked by hook"
-                return HookResult(exit_code=1, message=reason)
+                hook_status = "blocked"
+                result = HookResult(exit_code=1, message=stderr_text or "Blocked by hook")
 
             elif r.returncode == 2:
-                msg = r.stderr.strip()
-                return HookResult(exit_code=2, message=msg)
+                result = HookResult(exit_code=2, message=stderr_text)
 
             else:
+                hook_status = "error"
+                error_msg = f"Unexpected exit code {r.returncode}"
                 logger.warning(
                     "Hook %s returned unexpected exit code %d",
                     hook_def.name, r.returncode,
                 )
-                return HookResult(exit_code=0)
+                result = HookResult(exit_code=0)
 
         except subprocess.TimeoutExpired:
+            hook_status = "error"
+            error_msg = f"Timeout after {hook_def.timeout}s"
             logger.warning("Hook %s timed out after %ds", hook_def.name, hook_def.timeout)
-            return HookResult(exit_code=0)
+            result = HookResult(exit_code=0)
         except Exception as e:
+            hook_status = "error"
+            error_msg = f"Hook '{hook_def.name}' failed: {e}"
             logger.warning("Hook %s failed: %s", hook_def.name, e)
-            return HookResult(exit_code=0)
+            result = HookResult(exit_code=0)
+
+        duration_ms = (time.monotonic() - t0) * 1000
+
+        # Emit per-hook execution trace for observability
+        if self._trace_collector:
+            meta = {
+                "hook_name": hook_def.name,
+                "hook_event": event,
+                "command": hook_def.command,
+                "exit_code": exit_code,
+                "stdout": stdout_text[:2000] if stdout_text else "",
+                "stderr": stderr_text[:2000] if stderr_text else "",
+            }
+            tool_name = (
+                payload.get("tool_name", "")
+                or payload.get("tool", "")
+                or None
+            )
+            self._trace_collector.emit({
+                "event_type": "lifecycle.hook_execution",
+                "node": "hook",
+                "tool_name": tool_name,
+                "model": payload.get("model"),
+                "status": hook_status,
+                "duration_ms": round(duration_ms, 1),
+                "error_msg": error_msg,
+                "metadata": meta,
+            })
+
+        return result
 
     # ---- env / stdin builders ---------------------------------------------
 
@@ -231,7 +283,14 @@ class HookRunner:
         env["ARF_HOOK_EVENT"] = event
         env["ARF_HOOK_WORKSPACE"] = str(self._workspace)
 
-        for key in ("session_id", "session_title", "tool_name", "model", "status"):
+        # Always inject session_id: payload first, fallback to trace_collector
+        sid = payload.get("session_id", "")
+        if not sid and self._trace_collector:
+            sid = self._trace_collector.current_session_id
+        if sid:
+            env["ARF_HOOK_SESSION_ID"] = str(sid)
+
+        for key in ("session_title", "tool_name", "model", "status"):
             val = payload.get(key, "")
             if val:
                 env[f"ARF_HOOK_{key.upper()}"] = str(val)

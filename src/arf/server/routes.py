@@ -537,7 +537,7 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
 
         try:
             from .database import insert_session
-            sid = mgr.session_start_time.strftime("%Y%m%d_%H%M%S")
+            sid = mgr.current_session_id
             insert_session(sid, "admin", mgr.session_title, filepath=None)
         except Exception:
             pass
@@ -569,9 +569,9 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
             payload.message, payload.history, workspace_dir
         )
         mgr.track_session(payload.message, response)
+        sid = mgr.current_session_id
         if traces:
             mgr.last_traces = traces
-            sid = mgr.current_session_id
             enrich = lambda t: {**t, "session_id": sid, "username": "admin"}
             try:
                 insert_trace_events([enrich(t) for t in traces], str(mgr.workspace_dir))
@@ -589,6 +589,7 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
                 )
         try:
             mgr.fire_session_end()
+            _finalize_session_db(mgr, sid)
         except Exception:
             pass
         display_history = _display_history(full_messages)
@@ -676,7 +677,7 @@ def get_active_session(mgr: SessionManager = Depends(get_mgr)):
     if not mgr.session_history:
         return None
     return {
-        "id": mgr.session_start_time.strftime("%Y%m%d_%H%M%S"),
+        "id": mgr.current_session_id,
         "title": mgr.session_title,
         "created_at": mgr.session_start_time.isoformat(),
         "message_count": len(mgr.session_history),
@@ -747,13 +748,7 @@ def create_session(mgr: SessionManager = Depends(get_mgr)):
     mgr.reset_session_history()
     now = mgr.session_start_time
     mgr.session_title = _placeholder_title(now, str(mgr.workspace_dir))
-
-    sid = now.strftime("%Y%m%d_%H%M%S")
-    try:
-        from .database import insert_session
-        insert_session(sid, "admin", mgr.session_title, filepath=None)
-    except Exception:
-        pass
+    sid = mgr.current_session_id
 
     return {
         "id": sid,
@@ -845,9 +840,8 @@ def update_session_title(session_id: str, payload: UpdateTitleRequest, mgr: Sess
 
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
-    ok = delete_archive(session_id, str(mgr.workspace_dir))
     from .database import delete_session_db
-    delete_session_db(session_id)
+    ok = delete_session_db(session_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
@@ -864,7 +858,7 @@ def generate_active_title(mgr: SessionManager = Depends(get_mgr)):
             mgr.session_title = title
             try:
                 from .database import update_session
-                sid = mgr.session_start_time.strftime("%Y%m%d_%H%M%S")
+                sid = mgr.current_session_id
                 update_session(sid, title=title)
             except Exception:
                 pass
@@ -1003,23 +997,60 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                             mgr.session_title = title
                             try:
                                 from .database import insert_session
-                                sid = mgr.session_start_time.strftime("%Y%m%d_%H%M%S")
+                                sid = mgr.current_session_id
                                 insert_session(sid, "admin", title, filepath=None)
                             except Exception:
                                 pass
                     except Exception:
                         pass
                 event["title"] = mgr.session_title
-                event["session_id"] = mgr.session_start_time.strftime("%Y%m%d_%H%M%S")
+                event["session_id"] = mgr.current_session_id
 
                 # Fire SessionEnd hooks on normal completion
                 try:
                     mgr.fire_session_end()
+                    # Update session DB after archiving (filepath, counts)
+                    _finalize_session_db(mgr, sid)
                 except Exception:
                     pass
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     except Exception as exc:
         yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)}, ensure_ascii=False)}\n\n"
+
+
+def _finalize_session_db(mgr, sid: str) -> None:
+    """Update session DB record with filepath, message count, and turn count
+    after the session_archiver hook has created the archive file.
+    """
+    from .database import update_session, save_session_cost
+    try:
+        fpath = f"memory/sessions/{sid}.json"
+        fp = Path(str(mgr.workspace_dir)) / fpath
+        if fp.exists():
+            sz = fp.stat().st_size / (1024 * 1024)
+            turns = len(mgr.session_history) // 2
+            update_session(
+                sid,
+                filepath=fpath,
+                turn_count=turns,
+                json_size_mb=round(sz, 3),
+                message_count=len(mgr.session_history),
+            )
+        if mgr.last_usage:
+            model_breakdown = {}
+            for t in (mgr.last_traces or []):
+                m = t.get("model")
+                if m:
+                    model_breakdown[m] = model_breakdown.get(m, 0) + t.get("total_tokens", 0)
+            save_session_cost(
+                sid,
+                total_tokens=mgr.last_usage.get("total_tokens", 0),
+                prompt_tokens=mgr.last_usage.get("prompt_tokens", 0),
+                completion_tokens=mgr.last_usage.get("completion_tokens", 0),
+                model_breakdown=model_breakdown,
+            )
+    except Exception:
+        pass
 
 
 def _placeholder_title(start_time, workspace_dir: str) -> str:

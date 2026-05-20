@@ -431,6 +431,9 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
             "metadata": json.dumps({
                 "hook_event": "PreModelCall",
                 "hook_status": "continue",
+                "turn": state["turn_count"],
+                "model": model_type,
+                "message_count": len(state.get("messages", [])),
             }, ensure_ascii=False),
         })
 
@@ -569,6 +572,12 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
             "metadata": json.dumps({
                 "hook_event": "PostModelCall",
                 "hook_status": "continue",
+                "turn": state["turn_count"],
+                "model": model_type,
+                "tokens": {
+                    "prompt": usage.get("prompt_tokens", 0),
+                    "completion": usage.get("completion_tokens", 0),
+                },
             }, ensure_ascii=False),
         })
 
@@ -712,6 +721,9 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
             "metadata": json.dumps({
                 "hook_event": "PreModelCall",
                 "hook_status": "continue",
+                "turn": state["turn_count"],
+                "model": model_type,
+                "message_count": len(state.get("messages", [])),
             }, ensure_ascii=False),
         })
 
@@ -794,6 +806,12 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
             "metadata": json.dumps({
                 "hook_event": "PostModelCall",
                 "hook_status": stream_status,
+                "turn": state["turn_count"],
+                "model": model_type,
+                "tokens": {
+                    "prompt": usage_acc.get("prompt_tokens", 0),
+                    "completion": usage_acc.get("completion_tokens", 0),
+                },
             }, ensure_ascii=False),
         })
 
@@ -1112,6 +1130,8 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
                     "hook_status": hook_pre_status,
                     "hook_message": hook_result.get("reason", "") or hook_result.get("inject", "") if hook_result else "",
                     "tool_category": tool_category,
+                    "tool_name": tool_name,
+                    "turn": state["turn_count"],
                 }, ensure_ascii=False),
             })
 
@@ -1224,6 +1244,8 @@ def execute_tools_node(state: AgentState, config: RunnableConfig) -> dict:
                     "hook_status": hook_post_status,
                     "hook_message": hook_result.get("reason", "") or hook_result.get("inject", "") if hook_result else "",
                     "tool_category": tool_category,
+                    "tool_name": tool_name,
+                    "turn": state["turn_count"],
                 }, ensure_ascii=False),
             })
 

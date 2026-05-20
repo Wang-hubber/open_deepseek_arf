@@ -238,12 +238,18 @@ class GraphEngine:
                             final.get("current_model", "?"),
                             {"classification": final.get("classification", "?")})
 
+        # Merge node_traces with lifecycle events from TraceCollector buffer
+        node_traces = final.get("node_traces", [])
+        tc = getattr(self, '_trace_collector', None)
+        if tc:
+            node_traces = node_traces + tc.snapshot()
+
         return GraphResult(
             response=final.get("final_response") or "No response generated.",
             history=self._display_history(final.get("messages", [])),
             raw_messages=final.get("messages", []),
             tool_events=final.get("tool_events", []),
-            transition_log=final.get("node_traces", []),
+            transition_log=node_traces,
             turns=final.get("turn_count", 1),
             truncated=final.get("truncated", False),
             usage=final.get("usage", {}),
@@ -293,13 +299,18 @@ class GraphEngine:
 
             # Done -- build final event from the last state
             if not done_yielded and final_state:
+                # Merge node_traces with lifecycle events from TraceCollector buffer
+                node_traces = final_state.get("node_traces", [])
+                tc = getattr(self, '_trace_collector', None)
+                if tc:
+                    node_traces = node_traces + tc.snapshot()
                 yield {
                     "type": "done",
                     "response": final_state.get("final_response", ""),
                     "history": self._display_history(final_state.get("messages", [])),
                     "raw_messages": final_state.get("messages", []),
                     "truncated": final_state.get("truncated", False),
-                    "traces": final_state.get("node_traces", []),
+                    "traces": node_traces,
                     "usage": final_state.get("usage", {}),
                 }
                 done_yielded = True

@@ -45,10 +45,11 @@ class SessionManager:
         self._hook_runner: HookRunner | None = None
         self._session_end_fired = False
         self._trace_collector = TraceCollector()
+        self._trace_collector.set_session(self.current_session_id)
 
     @property
     def current_session_id(self) -> str:
-        return self.session_start_time.strftime("%Y%m%d_%H%M%S")
+        return self.session_start_time.strftime("%Y%m%d_%H%M%S_%f")
 
     # ---- system dir ---------------------------------------------------
 
@@ -173,6 +174,7 @@ class SessionManager:
         if self._hook_runner is None:
             generate_default_config(self.workspace_dir)
             self._hook_runner = HookRunner(self.workspace_dir)
+            self._hook_runner.set_trace_collector(self._trace_collector)
         return self._hook_runner
 
     def get_trace_collector(self) -> "TraceCollector":
@@ -251,6 +253,17 @@ class SessionManager:
             },
         })
 
+        # Flush TraceCollector buffer to DB so lifecycle events (hook_execution,
+        # prompt_snapshot, etc.) are persisted at session end, not deferred to
+        # the next session start.
+        events = collector.flush()
+        if events:
+            try:
+                from .database import insert_trace_events
+                insert_trace_events(events, str(self.workspace_dir))
+            except Exception:
+                logger.exception("Failed to flush trace collector events")
+
         stdin: dict = {
             "conversation": list(self.session_history),
             "session_start": self.session_start_time.isoformat(),
@@ -270,12 +283,9 @@ class SessionManager:
             logger.exception("SessionEnd hooks failed on normal completion")
 
     def reset_session_history(self, title: str = DEFAULT_TITLE) -> None:
-        # Flush traces before clearing
+        # Flush traces before clearing (events already carry session_id from emit time)
         events = self._trace_collector.flush()
         if events:
-            sid = self.current_session_id
-            for e in events:
-                e["session_id"] = sid
             try:
                 from .database import insert_trace_events
                 insert_trace_events(events, str(self.workspace_dir))
@@ -289,6 +299,7 @@ class SessionManager:
         self.needs_title = True
         self.last_traces = []
         self.last_usage = None
+        self._trace_collector.set_session(self.current_session_id)
 
     def track_session(self, user_msg: str, assistant_response: str = "", reasoning: str = ""):
         self.session_history.append({"role": "user", "content": user_msg})

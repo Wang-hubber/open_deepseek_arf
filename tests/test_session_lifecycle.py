@@ -457,12 +457,13 @@ class TestStage3SessionCreation:
         mgr = SessionManager(ws)
 
         sid = mgr.current_session_id
-        # Format: YYYYMMDD_HHMMSS
-        assert len(sid) == 15
+        # Format: YYYYMMDD_HHMMSS_ffffff
+        assert len(sid) == 22
         assert "_" in sid
         parts = sid.split("_")
         assert len(parts[0]) == 8  # YYYYMMDD
         assert len(parts[1]) == 6  # HHMMSS
+        assert len(parts[2]) == 6  # ffffff (microseconds)
 
     def test_memory_section_reads_session_md(self, tmp_path):
         """Verify _memory_section reads from memory/session.md."""
@@ -906,41 +907,45 @@ class TestStage4ConversationLoop:
 class TestStage5SessionEnd:
     """Session end criteria, archiving, memory extraction."""
 
-    # ---- eviction --------------------------------------------------------
+    # ---- no eviction (user-managed) -------------------------------------
 
-    def test_evict_oldest_caps_at_max(self, tmp_path):
-        """_evict_oldest removes oldest files to stay at MAX_ARCHIVES."""
-        from arf.server.sessions import MAX_ARCHIVES, _evict_oldest
+    def test_no_eviction_preserves_all_files(self, tmp_path):
+        """All session archives are preserved — users manage lifecycle."""
+        from arf.hooks.session_archiver import main as archiver_main
+        import subprocess, sys
 
         ws = _make_workspace(tmp_path)
         sessions_dir = ws / "memory" / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        for i in range(MAX_ARCHIVES + 2):
-            path = sessions_dir / f"session_{i:04d}.json"
-            path.write_text(json.dumps({"id": f"session_{i:04d}"}))
-
-        _evict_oldest(sessions_dir)
+        # Create 15 sessions — more than the old MAX_ARCHIVES=10
+        archives_created = []
+        for i in range(15):
+            stdin = json.dumps({
+                "event": "SessionEnd",
+                "payload": {"session_id": f"session_{i:04d}", "session_title": f"Test {i}"},
+                "data": {
+                    "conversation": [
+                        {"role": "user", "content": f"msg {i}a"},
+                        {"role": "assistant", "content": f"msg {i}b"},
+                    ],
+                    "session_start": "2026-05-20T10:00:00+00:00",
+                    "message_count": 2,
+                },
+            })
+            r = subprocess.run(
+                [sys.executable, "-m", "arf.hooks.session_archiver"],
+                cwd=str(ws),
+                env={"ARF_HOOK_WORKSPACE": str(ws), "ARF_HOOK_SESSION_ID": f"session_{i:04d}"},
+                input=stdin,
+                capture_output=True, text=True, timeout=10,
+            )
+            archives_created.append(r.returncode == 0)
 
         files = sorted(sessions_dir.glob("*.json"))
-        assert len(files) == MAX_ARCHIVES
-        # session_0000 and session_0001 evicted
-        assert files[0].name == "session_0002.json"
+        assert len(files) == 15, f"Expected 15 archives, got {len(files)}"
+        assert all(archives_created)
 
-    def test_evict_oldest_noop_at_boundary(self, tmp_path):
-        """No eviction when exactly at MAX_ARCHIVES."""
-        from arf.server.sessions import MAX_ARCHIVES, _evict_oldest
-
-        ws = _make_workspace(tmp_path)
-        sessions_dir = ws / "memory" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-
-        for i in range(MAX_ARCHIVES):
-            path = sessions_dir / f"session_{i:04d}.json"
-            path.write_text(json.dumps({"id": f"session_{i:04d}"}))
-
-        _evict_oldest(sessions_dir)
-        assert len(list(sessions_dir.glob("*.json"))) == MAX_ARCHIVES
 
     # ---- list_archives --------------------------------------------------
 

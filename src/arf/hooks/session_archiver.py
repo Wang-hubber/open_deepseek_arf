@@ -22,17 +22,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-MAX_ARCHIVES = 10
-
-
-def _evict_oldest(sessions_dir: Path) -> None:
-    files = sorted(sessions_dir.glob("*.json"))
-    # Must match src/arf/server/sessions.py MAX_ARCHIVES
-    while len(files) > MAX_ARCHIVES:
-        oldest = files.pop(0)
-        oldest.unlink()
-
-
 def main():
     workspace = Path(os.environ.get("ARF_HOOK_WORKSPACE", "."))
     session_id = os.environ.get("ARF_HOOK_SESSION_ID", "")
@@ -94,7 +83,6 @@ def main():
         json.dumps(archive, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    _evict_oldest(sessions_dir)
 
     print(json.dumps(
         {"archived": True, "session_id": session_id},

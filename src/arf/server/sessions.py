@@ -1,7 +1,7 @@
 """Session archive management.
 
 Archives ended sessions as JSON files in workspace/memory/sessions/.
-Keeps at most MAX_ARCHIVES sessions, circularly overwriting the oldest.
+Users manage session lifecycle via the frontend delete button.
 """
 
 import json
@@ -11,7 +11,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MAX_ARCHIVES = 10
 DEFAULT_TITLE = "新会话"
 
 
@@ -70,12 +69,3 @@ def delete_archive(session_id: str, workspace_dir: str | Path) -> bool:
     path.unlink()
     logger.info("Session archive deleted: %s", session_id)
     return True
-
-
-def _evict_oldest(sessions_dir: Path):
-    """Remove the oldest archive if we're at capacity."""
-    files = sorted(sessions_dir.glob("*.json"))
-    while len(files) > MAX_ARCHIVES:
-        oldest = files.pop(0)
-        oldest.unlink()
-        logger.debug("Evicted old session archive: %s", oldest.name)

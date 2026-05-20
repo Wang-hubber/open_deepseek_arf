@@ -191,13 +191,14 @@ def insert_trace_events(events: list[dict], workspace_dir: str = "") -> None:
                 ne.get("status", "ok"),
                 ne.get("error_msg"),
                 ne.get("metadata"),
+                ne.get("timestamp", ne.get("created_at", _now())),
             ))
         conn.executemany(
             """INSERT INTO trace_events
                (session_id, username, turn, node, event_type, model, tool_name,
                 duration_ms, prompt_tokens, completion_tokens, total_tokens,
-                status, error_msg, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                status, error_msg, metadata, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
@@ -517,7 +518,7 @@ def list_sessions(username: str = "admin") -> list[dict]:
         rows = _get_conn().execute(
             "SELECT session_id AS id, title, created_at, updated_at, filepath, "
             "turn_count, json_size_mb, message_count "
-            "FROM sessions WHERE username = ? ORDER BY updated_at DESC",
+            "FROM sessions WHERE username = ? AND hidden = 0 ORDER BY updated_at DESC",
             (username,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -532,9 +533,11 @@ def get_session(session_id: str) -> dict | None:
 
 
 def delete_session_db(session_id: str) -> bool:
+    """Soft-delete a session: set hidden=1, preserving the record and any associated traces."""
     with _lock:
         cur = _get_conn().execute(
-            "DELETE FROM sessions WHERE session_id = ?", (session_id,)
+            "UPDATE sessions SET hidden = 1 WHERE session_id = ? AND hidden = 0",
+            (session_id,),
         )
         _get_conn().commit()
         return cur.rowcount > 0
