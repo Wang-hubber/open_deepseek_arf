@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import shutil
+from pathlib import Path
 
 from .session_manager import SessionManager
 
@@ -52,6 +54,19 @@ class WSHandler:
             return
 
         if not self._mgr.session_history or len(self._mgr.session_history) < 2:
+            # Clean up tentative session directory created by SessionStart's
+            # system_log hook — this session had no user messages.
+            sid = self._mgr.current_session_id
+            if sid != SessionManager.SYSTEM_SESSION_ID:
+                session_dir = Path(str(self._mgr.workspace_dir)) / "memory" / "sessions" / sid
+                if session_dir.exists():
+                    shutil.rmtree(session_dir)
+                # Soft-delete DB record if one was created
+                try:
+                    from .database import delete_session_db
+                    delete_session_db(sid)
+                except Exception:
+                    pass
             self._mgr.reset_session_history()
             return
 

@@ -297,14 +297,24 @@ class SessionManager:
             except Exception:
                 logger.exception("Failed to flush trace events")
 
+        was_system_phase = self._in_system_phase
+        had_messages = len(self.session_history) >= 2
+
         self._in_system_phase = False
         self._session_end_fired = False
         self.session_history = []
-        self.session_start_time = datetime.now(timezone.utc)
-        self.session_title = title
-        self.needs_title = True
         self.last_traces = []
         self.last_usage = None
+
+        # Only create a new timestamp if transitioning from system phase
+        # or if the previous session had real content. Empty sessions
+        # (just SessionStart via WS connect) reuse the existing timestamp
+        # so the chat uses the same session directory instead of creating a duplicate.
+        if was_system_phase or had_messages:
+            self.session_start_time = datetime.now(timezone.utc)
+
+        self.session_title = title
+        self.needs_title = True
         self._trace_collector.set_session(self.current_session_id)
 
     def track_session(self, user_msg: str, assistant_response: str = "", reasoning: str = ""):
