@@ -36,6 +36,7 @@ class SessionManager:
         self.session_start_time: datetime = datetime.now(timezone.utc)
         self.session_title: str = DEFAULT_TITLE
         self.needs_title: bool = True  # cleared after first title generation
+        self._in_system_phase: bool = True  # True until first user session begins
 
         # Graph trace data (populated by LangGraph engine when enabled)
         self.last_traces: list[dict] = []
@@ -47,8 +48,12 @@ class SessionManager:
         self._trace_collector = TraceCollector()
         self._trace_collector.set_session(self.current_session_id)
 
+    SYSTEM_SESSION_ID = "__system__"
+
     @property
     def current_session_id(self) -> str:
+        if self._in_system_phase:
+            return self.SYSTEM_SESSION_ID
         return self.session_start_time.strftime("%Y%m%d_%H%M%S_%f")
 
     # ---- system dir ---------------------------------------------------
@@ -292,6 +297,7 @@ class SessionManager:
             except Exception:
                 logger.exception("Failed to flush trace events")
 
+        self._in_system_phase = False
         self._session_end_fired = False
         self.session_history = []
         self.session_start_time = datetime.now(timezone.utc)

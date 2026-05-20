@@ -456,6 +456,13 @@ class TestStage3SessionCreation:
         ws = _make_workspace(tmp_path)
         mgr = SessionManager(ws)
 
+        # System phase — fixed session_id for init/config operations
+        assert mgr.current_session_id == "__system__"
+        assert mgr._in_system_phase is True
+
+        # Real session — after reset_session_history (triggered by user action)
+        mgr.reset_session_history()
+        assert mgr._in_system_phase is False
         sid = mgr.current_session_id
         # Format: YYYYMMDD_HHMMSS_ffffff
         assert len(sid) == 22
