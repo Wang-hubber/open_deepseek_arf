@@ -68,6 +68,10 @@ onMounted(async () => {
     } catch {
       // non-critical
     }
+  } else if (!sessionStore.activeSession && !sessionStore.isViewingArchive()) {
+    // No active session — show placeholder for lazy creation on first message
+    const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
+    sessionStore.startNewSession(`新会话 · ${hhmm}`)
   }
 
   connect(() => {

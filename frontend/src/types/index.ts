@@ -64,6 +64,7 @@ export interface SessionInfo {
   id: string
   title: string
   created_at: string
+  updated_at?: string | null
   ended_at?: string | null
   message_count: number
   turn_count?: number

@@ -362,6 +362,31 @@ function tokensDisplay(evt: TraceEvent): string {
                 </CollapsibleSection>
               </div>
 
+              <!-- Other hook events (PreModelCall, PostModelCall, SessionStart, SessionEnd, etc.) -->
+              <div v-for="h in group.hooks.filter(h => !['PreToolUse','PostToolUse'].includes(parseMeta(h).hook_event || ''))" :key="h.id" class="tv-card tv-card-hook">
+                <div class="tv-card-head">
+                  <span class="tv-card-icon">{{ nodeIcon('hook') }}</span>
+                  <span class="tv-card-node">{{ parseMeta(h).hook_event || 'hook' }}</span>
+                  <span v-if="parseMeta(h).hook_name" class="tv-card-model-name">{{ parseMeta(h).hook_name }}</span>
+                  <span :class="'tv-badge ' + statusBadgeClass(h.status)">{{ parseMeta(h).hook_status || statusLabel(h.status) }}</span>
+                  <span v-if="h.duration_ms" class="tv-card-dur">{{ formatMs(h.duration_ms) }}</span>
+                </div>
+                <CollapsibleSection title="Details" v-if="parseMeta(h).command || parseMeta(h).hook_message || h.error_msg">
+                  <div class="tv-meta-grid">
+                    <div v-if="parseMeta(h).command" class="tv-meta-item">
+                      <span class="tv-meta-label">Command</span>
+                      <span class="tv-meta-value">{{ parseMeta(h).command }}</span>
+                    </div>
+                    <div v-if="parseMeta(h).exit_code !== undefined" class="tv-meta-item">
+                      <span class="tv-meta-label">Exit Code</span>
+                      <span class="tv-meta-value">{{ parseMeta(h).exit_code }}</span>
+                    </div>
+                  </div>
+                  <div v-if="h.error_msg" class="tv-hook-msg" style="color: var(--error-text)">{{ h.error_msg }}</div>
+                  <div v-if="parseMeta(h).hook_message" class="tv-hook-msg">{{ parseMeta(h).hook_message }}</div>
+                </CollapsibleSection>
+              </div>
+
               <!-- Respond -->
               <div v-if="group.respond" class="tv-card tv-card-respond">
                 <div class="tv-card-head">

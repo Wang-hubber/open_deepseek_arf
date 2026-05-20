@@ -97,10 +97,6 @@ export const useSessionStore = defineStore('sessions', () => {
     return !!(activeSession.value && activeSession.value.message_count >= 2)
   }
 
-  function totalCount(): number {
-    return sessions.value.length + (hasActiveWithMessages() ? 1 : 0)
-  }
-
   async function generateActiveTitle() {
     if (!activeSession.value) return
     try {
@@ -143,7 +139,6 @@ export const useSessionStore = defineStore('sessions', () => {
     returnToActive,
     deleteSession,
     hasActiveWithMessages,
-    totalCount,
     generateActiveTitle,
     startNewSession,
     confirmNewSession,

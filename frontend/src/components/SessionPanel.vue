@@ -36,19 +36,19 @@ function relativeTime(isoStr: string | null | undefined): string {
 
 function combinedItems() {
   const items: {
-    id: string; title: string; timeLabel: string; messageCount: number; turnCount: number; jsonSizeMb: number; isActive: boolean; isPending?: boolean
+    id: string; title: string; timeLabel: string; sortKey: string; messageCount: number; turnCount: number; jsonSizeMb: number; isActive: boolean; isPending?: boolean
   }[] = []
 
   // Pending new session placeholder (frontend-only, not yet on backend)
   if (sessionStore.pendingNewSession) {
     items.push({
-      id: '__pending__', title: sessionStore.pendingPlaceholder, timeLabel: t('session.current'),
+      id: '__pending__', title: sessionStore.pendingPlaceholder, timeLabel: t('session.current'), sortKey: '',
       messageCount: 0, turnCount: 0, jsonSizeMb: 0, isActive: true, isPending: true,
     })
   } else if (sessionStore.activeSession) {
     const a = sessionStore.activeSession
     items.push({
-      id: a.id, title: a.title, timeLabel: t('session.current'),
+      id: a.id, title: a.title, timeLabel: t('session.current'), sortKey: '',
       messageCount: a.message_count, turnCount: 0, jsonSizeMb: 0, isActive: true,
     })
   }
@@ -58,6 +58,7 @@ function combinedItems() {
     items.push({
       id: s.id, title: s.title,
       timeLabel: relativeTime(s.ended_at || s.created_at),
+      sortKey: s.updated_at || s.created_at || '',
       messageCount: s.message_count,
       turnCount: s.turn_count || 0,
       jsonSizeMb: s.json_size_mb || 0,
@@ -68,7 +69,8 @@ function combinedItems() {
   items.sort((a, b) => {
     if (a.isActive) return -1
     if (b.isActive) return 1
-    return 0
+    // Most recent archives first
+    return (b.sortKey || '').localeCompare(a.sortKey || '')
   })
 
   return items
@@ -129,13 +131,6 @@ function createNewSession() {
   if (now - lastCreateTime < DEBOUNCE_MS) return
   lastCreateTime = now
 
-  const total = sessionStore.totalCount()
-  if (total >= 10 && sessionStore.sessions.length > 0) {
-    const oldest = sessionStore.sessions[sessionStore.sessions.length - 1]
-    if (!confirm(`${t('session.sessionLimit', { title: oldest.title })}`)) return
-  }
-
-  // Frontend-only placeholder — backend session is created lazily on first message
   chatStore.clearMessages()
   const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
   sessionStore.startNewSession(`新会话 · ${hhmm}`)
