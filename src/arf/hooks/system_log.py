@@ -1,4 +1,5 @@
-"""system_log hook -- logs hook events to workspace/memory/hook_events.log.
+"""system_log hook -- logs hook events per session under
+workspace/memory/sessions/<session_id>/hook_events.json.
 
 Usage:
     python -m arf.hooks.system_log
@@ -22,10 +23,14 @@ def main():
     session_id = os.environ.get("ARF_HOOK_SESSION_ID", "")
     tool_name = os.environ.get("ARF_HOOK_TOOL_NAME", "")
 
-    # Ensure log directory exists
-    log_dir = workspace / "memory"
+    # Write per-session hook events alongside the session archive
+    if session_id:
+        log_dir = workspace / "memory" / "sessions" / session_id
+    else:
+        # Fallback for events that fire before a session is established
+        log_dir = workspace / "memory"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "hook_events.log"
+    log_path = log_dir / "hook_events.json"
 
     ts = datetime.now(timezone.utc).isoformat()
 
@@ -51,6 +56,8 @@ def main():
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     except Exception as e:
         print(f"system_log hook error: {e}", file=sys.stderr)
         sys.exit(1)

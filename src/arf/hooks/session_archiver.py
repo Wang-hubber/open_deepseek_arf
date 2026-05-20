@@ -79,10 +79,10 @@ def main():
         archive["usage"] = usage
 
     path = sessions_dir / f"{session_id}.json"
-    path.write_text(
-        json.dumps(archive, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(archive, ensure_ascii=False, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
 
     print(json.dumps(
         {"archived": True, "session_id": session_id},

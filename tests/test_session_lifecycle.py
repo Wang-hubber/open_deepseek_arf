@@ -1063,7 +1063,7 @@ class TestStage5SessionEnd:
         )
 
         assert result.returncode == 0
-        log_path = ws / "memory" / "hook_events.log"
+        log_path = ws / "memory" / "sessions" / "test123" / "hook_events.json"
         assert log_path.exists()
         content = log_path.read_text(encoding="utf-8")
         assert "PreModelCall" in content
