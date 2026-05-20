@@ -44,9 +44,9 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 def _write_archive(ws, session_id, messages, title="Test", usage=None, traces=None,
                    created_at=None):
-    """Write an archive JSON file directly (replaces removed archive_session)."""
-    sessions_dir = ws / "memory" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    """Write an archive JSON file directly under sessions/<id>/archive.json."""
+    session_dir = ws / "memory" / "sessions" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc)
     archive = {
@@ -62,7 +62,7 @@ def _write_archive(ws, session_id, messages, title="Test", usage=None, traces=No
     if usage:
         archive["usage"] = usage
 
-    path = sessions_dir / f"{session_id}.json"
+    path = session_dir / "archive.json"
     path.write_text(json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
     return session_id
 
@@ -949,7 +949,7 @@ class TestStage5SessionEnd:
             )
             archives_created.append(r.returncode == 0)
 
-        files = sorted(sessions_dir.glob("*.json"))
+        files = sorted(sessions_dir.glob("*/archive.json"))
         assert len(files) == 15, f"Expected 15 archives, got {len(files)}"
         assert all(archives_created)
 
@@ -985,7 +985,7 @@ class TestStage5SessionEnd:
         result = update_title(sid, "Updated Title", str(ws))
         assert result is True
 
-        data = json.loads((ws / "memory" / "sessions" / f"{sid}.json").read_text(encoding="utf-8"))
+        data = json.loads((ws / "memory" / "sessions" / sid / "archive.json").read_text(encoding="utf-8"))
         assert data["title"] == "Updated Title"
 
     def test_delete_archive(self, tmp_path):
@@ -998,7 +998,7 @@ class TestStage5SessionEnd:
 
         result = delete_archive(sid, str(ws))
         assert result is True
-        assert not (ws / "memory" / "sessions" / f"{sid}.json").exists()
+        assert not (ws / "memory" / "sessions" / sid / "archive.json").exists()
 
     def test_session_archiver_hook_creates_file(self, tmp_path):
         """The session_archiver hook should archive sessions."""
@@ -1043,7 +1043,7 @@ class TestStage5SessionEnd:
         output = json.loads(result.stdout)
         assert output.get("archived") is True
 
-        archive_path = sessions_dir / "20260518_100000.json"
+        archive_path = sessions_dir / "20260518_100000" / "archive.json"
         assert archive_path.exists()
 
     def test_system_log_hook_writes_log(self, tmp_path):
@@ -1228,7 +1228,7 @@ class TestStage5SessionEnd:
         ]
         old_sid = _write_archive(ws, "20260518_100000", history, title="Old Session")
 
-        archive_path = ws / "memory" / "sessions" / f"{old_sid}.json"
+        archive_path = ws / "memory" / "sessions" / old_sid / "archive.json"
         assert archive_path.exists()
 
         # Simulate resume: load archive, create new session

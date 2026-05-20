@@ -510,7 +510,7 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
                 mgr.fire_session_end()
                 sid = mgr.current_session_id
                 from .database import insert_session, update_session, save_session_cost
-                fpath = f"memory/sessions/{sid}.json"
+                fpath = f"memory/sessions/{sid}/archive.json"
                 insert_session(sid, "admin", mgr.session_title, fpath)
                 fp = Path(workspace_dir) / fpath
                 if fp.exists():
@@ -723,7 +723,7 @@ def create_session(mgr: SessionManager = Depends(get_mgr)):
             mgr.fire_session_end()
             sid = mgr.current_session_id
             from .database import insert_session, update_session, save_session_cost
-            insert_session(sid, "admin", mgr.session_title, f"memory/sessions/{sid}.json")
+            insert_session(sid, "admin", mgr.session_title, f"memory/sessions/{sid}/archive.json")
             fpath = Path(str(mgr.workspace_dir)) / "memory" / "sessions" / f"{sid}.json"
             if fpath.exists():
                 sz = fpath.stat().st_size / (1024 * 1024)
@@ -777,7 +777,7 @@ def resume_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
             mgr.fire_session_end()
             old_sid = mgr.current_session_id
             from .database import insert_session, update_session, save_session_cost
-            fpath = f"memory/sessions/{old_sid}.json"
+            fpath = f"memory/sessions/{old_sid}/archive.json"
             insert_session(old_sid, "admin", mgr.session_title, fpath)
             fp = Path(str(mgr.workspace_dir)) / fpath
             if fp.exists():
@@ -1024,7 +1024,7 @@ def _finalize_session_db(mgr, sid: str) -> None:
     """
     from .database import update_session, save_session_cost
     try:
-        fpath = f"memory/sessions/{sid}.json"
+        fpath = f"memory/sessions/{sid}/archive.json"
         fp = Path(str(mgr.workspace_dir)) / fpath
         if fp.exists():
             sz = fp.stat().st_size / (1024 * 1024)

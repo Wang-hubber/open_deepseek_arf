@@ -56,7 +56,8 @@ def main():
         session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     sessions_dir = workspace / "memory" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_dir = sessions_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc)
     start_time = session_start_str or now.isoformat()
@@ -78,7 +79,7 @@ def main():
     if usage:
         archive["usage"] = usage
 
-    path = sessions_dir / f"{session_id}.json"
+    path = session_dir / "archive.json"
     with open(path, "w", encoding="utf-8") as f:
         f.write(json.dumps(archive, ensure_ascii=False, indent=2))
         f.flush()

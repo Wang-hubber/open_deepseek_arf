@@ -49,6 +49,11 @@ function onVisibilityChange() {
   }
 }
 
+function _showPlaceholder() {
+  const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
+  sessionStore.startNewSession(`新会话 · ${hhmm}`)
+}
+
 onMounted(async () => {
   try {
     const prefs = await api.get<{ language?: string }>('/api/preferences')
@@ -69,9 +74,19 @@ onMounted(async () => {
       // non-critical
     }
   } else if (!sessionStore.activeSession && !sessionStore.isViewingArchive()) {
-    // No active session — show placeholder for lazy creation on first message
-    const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
-    sessionStore.startNewSession(`新会话 · ${hhmm}`)
+    // No active session — try loading the most recent archived session
+    const recent = sessionStore.sessions[0]
+    if (recent) {
+      try {
+        const data = await sessionStore.fetchArchive(recent.id)
+        chatStore.renderFromHistory(data.messages || [])
+      } catch {
+        // fall through to placeholder
+        _showPlaceholder()
+      }
+    } else {
+      _showPlaceholder()
+    }
   }
 
   connect(() => {
