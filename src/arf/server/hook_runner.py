@@ -30,10 +30,18 @@ MAX_STDIN_PAYLOAD = 200000
 
 
 def _python_cmd() -> str:
-    """Return an available Python command, probing the environment first."""
+    """Return a working Python command, verified by actual execution."""
     for candidate in ("python3", "python"):
         if shutil.which(candidate):
-            return candidate
+            try:
+                r = subprocess.run(
+                    [candidate, "-c", "print('ok')"],
+                    capture_output=True, timeout=3,
+                )
+                if r.returncode == 0:
+                    return candidate
+            except Exception:
+                continue
     return sys.executable
 
 
