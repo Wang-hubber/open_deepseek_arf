@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 DEFAULT_TITLE = "新会话"
 
 
+def _sanitize_surrogates(obj):
+    """Recursively replace lone surrogate characters that break UTF-8 encoding."""
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            return obj.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
+
 def _archive_path(workspace_dir: str | Path, session_id: str) -> Path:
     return Path(workspace_dir) / "memory" / "sessions" / session_id / "archive.json"
 
@@ -29,7 +44,7 @@ def list_archives(workspace_dir: str | Path) -> list[dict]:
     results = []
     for p in sorted(sessions_dir.glob("*/archive.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = _sanitize_surrogates(json.loads(p.read_text(encoding="utf-8")))
             results.append({
                 "id": data["id"],
                 "title": data.get("title", DEFAULT_TITLE),
@@ -48,7 +63,7 @@ def get_archive(session_id: str, workspace_dir: str | Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _sanitize_surrogates(json.loads(path.read_text(encoding="utf-8")))
     except (json.JSONDecodeError, KeyError):
         return None
 
@@ -59,11 +74,12 @@ def update_title(session_id: str, title: str, workspace_dir: str | Path) -> bool
     if not path.exists():
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _sanitize_surrogates(json.loads(path.read_text(encoding="utf-8")))
         data["title"] = title
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        raw = json.dumps(data, ensure_ascii=False, indent=2)
+        path.write_text(raw, encoding="utf-8")
         return True
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError, UnicodeEncodeError):
         return False
 
 

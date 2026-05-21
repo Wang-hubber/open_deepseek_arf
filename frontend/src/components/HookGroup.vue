@@ -38,7 +38,7 @@ function formatMs(ms: number | undefined): string {
 </script>
 
 <template>
-  <div v-if="hooks.length > 0 || true" class="hg-root">
+  <div class="hg-root">
     <div class="hg-header" @click="expanded = !expanded">
       <span class="hg-arrow" :class="{ open: expanded }">▶</span>
       <span class="hg-icon">🪝</span>

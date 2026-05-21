@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from '@/composables/useI18n'
 import type { Turn } from '@/types'
 import TurnInput from './TurnInput.vue'
@@ -14,6 +14,15 @@ const props = defineProps<{
 
 const expanded = ref(false)
 
+const safeSnippet = computed(() => {
+  const s = props.turn?.input?.snippet
+  return typeof s === 'string' ? s : String(s ?? '')
+})
+
+function toggle() {
+  expanded.value = !expanded.value
+}
+
 function formatMs(ms: number | undefined): string {
   if (!ms) return '-'
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
@@ -27,14 +36,14 @@ function formatTokens(n: number): string {
 
 <template>
   <div class="tc-root" :class="{ expanded }">
-    <div class="tc-header" @click="expanded = !expanded">
+    <div class="tc-header" @click="toggle">
       <span class="tc-arrow" :class="{ open: expanded }">▶</span>
       <span class="tc-icon">{{ turn.input.type === 'user' ? '📥' : '🤖' }}</span>
       <span class="tc-label">
         Turn {{ turn.turnIndex }}
         <span class="tc-type">({{ turn.input.type === 'user' ? t('trace.userInput') : t('trace.agentInput') }})</span>
       </span>
-      <span class="tc-snippet">{{ turn.input.snippet.slice(0, 60) }}{{ turn.input.snippet.length > 60 ? '...' : '' }}</span>
+      <span class="tc-snippet">{{ safeSnippet.slice(0, 60) }}{{ safeSnippet.length > 60 ? '...' : '' }}</span>
       <span class="tc-stats">
         {{ formatTokens(turn.stats.totalTokens) }} {{ t('trace.tokens') }}
         <template v-if="turn.stats.iterationCount > 0">

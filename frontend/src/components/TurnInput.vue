@@ -1,23 +1,29 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from '@/composables/useI18n'
 import type { TurnInput as TurnInputType } from '@/types'
 
 const { t } = useI18n()
 
 const props = defineProps<{
-  input: TurnInputType
+  input: TurnInputType | null | undefined
 }>()
+
+const safeSnippet = computed(() => {
+  const s = props.input?.snippet
+  return typeof s === 'string' ? s : String(s ?? '')
+})
 </script>
 
 <template>
-  <div class="ti-root">
+  <div v-if="input" class="ti-root">
     <div class="ti-header">
       <span class="ti-icon">{{ input.type === 'user' ? '📥' : '🤖' }}</span>
       <span class="ti-label">
         {{ input.type === 'user' ? t('trace.userInput') : t('trace.agentInput') }}
       </span>
     </div>
-    <div class="ti-content">{{ input.snippet }}</div>
+    <div class="ti-content">{{ safeSnippet }}</div>
   </div>
 </template>
 

@@ -145,7 +145,7 @@ export function useTrace() {
         const meta = parseMeta(evt)
         boundaries.push({
           index: i, type: 'agent',
-          snippet: meta.intent || meta.phase || 'Agent handoff',
+          snippet: String(meta.intent || meta.phase || 'Agent handoff'),
           sourceEvent: evt,
         })
         continue
@@ -153,7 +153,7 @@ export function useTrace() {
 
       if (evt.node === 'call_model') {
         const meta = parseMeta(evt)
-        const snippet = meta.model_input_snippet || ''
+        const snippet = String(meta.model_input_snippet || '')
         if (snippet && snippet !== lastInputSnippet) {
           lastInputSnippet = snippet
           boundaries.push({ index: i, type: 'user', snippet, sourceEvent: evt })
