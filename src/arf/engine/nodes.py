@@ -624,6 +624,9 @@ def call_model_node(state: AgentState, config: RunnableConfig) -> dict:
         if reasoning:
             assistant_msg["reasoning_content"] = reasoning
         result["messages"] = [assistant_msg]
+        # transition=None marks the end of a user turn (graph routes to respond).
+        # The frontend TraceView Turn grouping depends on this value — a new user
+        # message arriving after this triggers a Turn boundary.
         result["transition"] = None
         result["final_response"] = content
 
@@ -853,6 +856,9 @@ async def call_model_node_stream(state: AgentState, config: RunnableConfig, writ
         if reasoning_content:
             assistant_msg["reasoning_content"] = reasoning_content
         result["messages"] = [assistant_msg]
+        # transition=None marks the end of a user turn (graph routes to respond).
+        # The frontend TraceView Turn grouping depends on this value — a new user
+        # message arriving after this triggers a Turn boundary.
         result["transition"] = None
         result["final_response"] = text_content
 
