@@ -37,9 +37,6 @@ docs/
 # Vite cache
 .vite/
 
-# Contribution guide (local only)
-贡献者须知.md
-
 # Claude Code
 .claude/
 .superpowers/
