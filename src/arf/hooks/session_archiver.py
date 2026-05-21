@@ -22,6 +22,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+def _sanitize_surrogates(obj):
+    """Recursively replace lone surrogate characters in strings."""
+    if isinstance(obj, str):
+        # encode with surrogateescape then decode with replace
+        return obj.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
+
 def main():
     workspace = Path(os.environ.get("ARF_HOOK_WORKSPACE", "."))
     session_id = os.environ.get("ARF_HOOK_SESSION_ID", "")
@@ -29,16 +41,19 @@ def main():
 
     # Read stdin
     stdin_raw = sys.stdin.read()
+    print(f"[session_archiver] stdin_len={len(stdin_raw)} session_id={session_id!r}", file=sys.stderr)
     try:
         input_data = json.loads(stdin_raw) if stdin_raw.strip() else {}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"[session_archiver] JSON parse error: {e}", file=sys.stderr)
         input_data = {}
 
     data = input_data.get("data", {})
-    conversation = data.get("conversation", [])
+    conversation = _sanitize_surrogates(data.get("conversation", []))
     session_start_str = data.get("session_start", "")
     graph_traces = data.get("graph_traces")
     usage = data.get("usage")
+    print(f"[session_archiver] conv_len={len(conversation)} start={session_start_str[:30]}", file=sys.stderr)
 
     if not conversation or len(conversation) < 2:
         print(json.dumps({"archived": False, "reason": "too few messages"}))
@@ -80,10 +95,49 @@ def main():
         archive["usage"] = usage
 
     path = session_dir / "archive.json"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(archive, ensure_ascii=False, indent=2))
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        raw = json.dumps(archive, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError) as e:
+        print(f"session_archiver: JSON serialization failed: {e}", file=sys.stderr)
+        # Fallback: sanitize conversation to string-only messages
+        try:
+            safe = []
+            for m in conversation:
+                if isinstance(m, dict):
+                    safe.append({
+                        "role": str(m.get("role", "")),
+                        "content": str(m.get("content", "")),
+                    })
+                else:
+                    safe.append({"role": "unknown", "content": str(m)})
+            archive["messages"] = safe
+            raw = json.dumps(archive, ensure_ascii=False, indent=2)
+        except Exception:
+            print(json.dumps({"archived": False, "reason": "serialization failed"}))
+            sys.exit(0)
+
+    print(f"[session_archiver] writing {len(raw)} bytes to {path}", file=sys.stderr)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        print(f"session_archiver: write failed ({type(e).__name__}): {e}", file=sys.stderr)
+        # If UTF-8 encoding failed due to surrogates, retry with ascii escaping
+        if isinstance(e, UnicodeEncodeError):
+            try:
+                raw = json.dumps(archive, ensure_ascii=True, indent=2)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(raw)
+                    f.flush()
+                    os.fsync(f.fileno())
+                print(json.dumps({"archived": True, "session_id": session_id}, ensure_ascii=False))
+                sys.exit(0)
+            except Exception as e2:
+                print(f"session_archiver: ascii fallback also failed: {e2}", file=sys.stderr)
+        print(json.dumps({"archived": False, "reason": f"write error: {e}"}))
+        sys.exit(1)
 
     print(json.dumps(
         {"archived": True, "session_id": session_id},
@@ -93,4 +147,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"session_archiver: unhandled error: {e}", file=sys.stderr)
+        print(json.dumps({"archived": False, "reason": str(e)}))
+        sys.exit(0)

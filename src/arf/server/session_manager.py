@@ -235,9 +235,15 @@ class SessionManager:
 
     def fire_session_end(self, trigger: str = "stream_done"):
         """Fire SessionEnd hooks. Idempotent — only fires once per session."""
+        logger.info(
+            "fire_session_end(trigger=%s, sid=%s): fired=%s, history_len=%d",
+            trigger, self.current_session_id, self._session_end_fired, len(self.session_history),
+        )
         if self._session_end_fired:
+            logger.info("fire_session_end: skipping (already fired)")
             return
         if not self.session_history or len(self.session_history) < 2:
+            logger.info("fire_session_end: skipping (history too short: %d)", len(self.session_history))
             return
         self._session_end_fired = True
 
@@ -280,6 +286,13 @@ class SessionManager:
             stdin["usage"] = self.last_usage
 
         try:
+            # Debug: log available SessionEnd hooks
+            ses_hooks = runner._hooks.get("SessionEnd", [])
+            logger.info(
+                "SessionEnd hooks available: %d (%s)",
+                len(ses_hooks),
+                [(h.name, h.enabled, h.command[:60]) for h in ses_hooks],
+            )
             runner.run("SessionEnd", {
                 "session_id": sid,
                 "session_title": self.session_title,
@@ -297,14 +310,24 @@ class SessionManager:
             except Exception:
                 logger.exception("Failed to flush trace events")
 
+        was_system_phase = self._in_system_phase
+        had_messages = len(self.session_history) >= 2
+
         self._in_system_phase = False
         self._session_end_fired = False
         self.session_history = []
-        self.session_start_time = datetime.now(timezone.utc)
-        self.session_title = title
-        self.needs_title = True
         self.last_traces = []
         self.last_usage = None
+
+        # Only create a new timestamp if transitioning from system phase
+        # or if the previous session had real content. Empty sessions
+        # (just SessionStart via WS connect) reuse the existing timestamp
+        # so the chat uses the same session directory instead of creating a duplicate.
+        if was_system_phase or had_messages:
+            self.session_start_time = datetime.now(timezone.utc)
+
+        self.session_title = title
+        self.needs_title = True
         self._trace_collector.set_session(self.current_session_id)
 
     def track_session(self, user_msg: str, assistant_response: str = "", reasoning: str = ""):

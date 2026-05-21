@@ -504,8 +504,12 @@ def chat(payload: ChatRequest, mgr: SessionManager = Depends(get_mgr)):
     agent.language = "zh"
     workspace_dir = str(mgr.workspace_dir)
 
-    if payload.new_session:
-        if mgr.session_history and len(mgr.session_history) >= 2:
+    # Transition out of system phase on first user message, even if the
+    # frontend didn't flag this as a new session (e.g. after resuming an
+    # archive or viewing old sessions). Without this the session would
+    # stay pinned to "__system__" and never get a real session_id.
+    if payload.new_session or mgr._in_system_phase:
+        if payload.new_session and mgr.session_history and len(mgr.session_history) >= 2:
             try:
                 mgr.fire_session_end()
                 sid = mgr.current_session_id
@@ -976,10 +980,10 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                     mgr.session_history.append(entry)
                 reasoning_text = ""
 
+                sid = mgr.current_session_id
                 traces = event.get("traces", [])
                 if traces:
                     mgr.last_traces = traces
-                    sid = mgr.current_session_id
                     enrich = lambda t: {**t, "session_id": sid, "username": "admin"}
                     try:
                         insert_trace_events([enrich(t) for t in traces], str(mgr.workspace_dir))
@@ -997,7 +1001,6 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
                             mgr.session_title = title
                             try:
                                 from .database import insert_session
-                                sid = mgr.current_session_id
                                 insert_session(sid, "admin", title, filepath=None)
                             except Exception:
                                 pass

@@ -281,6 +281,17 @@ class HookRunner:
 
         duration_ms = (time.monotonic() - t0) * 1000
 
+        # Log hook result directly — not dependent on trace collector flush timing.
+        detail = ""
+        if hook_status != "ok" and stderr_text:
+            detail = f" stderr={stderr_text[:200]}"
+        elif stdout_text:
+            detail = f" stdout={stdout_text[:200]}"
+        logger.info(
+            "Hook %s [%s] exit=%d status=%s dur=%.0fms%s",
+            hook_def.name, event, exit_code, hook_status, duration_ms, detail,
+        )
+
         # Emit per-hook execution trace for observability
         if self._trace_collector:
             meta = {
@@ -483,13 +494,15 @@ class HookRunner:
 
 
 def generate_default_config(workspace: Path) -> Path:
-    """Write default .hooks.json if it doesn't exist. Returns the path."""
-    config_path = workspace / ".hooks.json"
-    if config_path.exists():
-        return config_path
+    """Write or update .hooks.json with all required hooks.
 
+    If the file doesn't exist, creates it with the full default set.
+    If it exists, merges in any missing events / hooks so that upgrades
+    don't silently leave required hooks (e.g. session_archiver) absent.
+    """
+    config_path = workspace / ".hooks.json"
     python = _python_cmd()
-    default = {
+    default: dict = {
         "version": 1,
         "hooks": {
             "SessionStart": [
@@ -554,9 +567,39 @@ def generate_default_config(workspace: Path) -> Path:
             ],
         },
     }
-    config_path.write_text(
-        json.dumps(default, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    logger.info("Generated default hook config at %s", config_path)
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+            changed = False
+            existing_hooks: dict = existing.get("hooks", {})
+            for event, hooks in default["hooks"].items():
+                if event not in existing_hooks:
+                    existing_hooks[event] = hooks
+                    changed = True
+                else:
+                    existing_names = {h.get("name") for h in existing_hooks[event]}
+                    for hook in hooks:
+                        if hook["name"] not in existing_names:
+                            existing_hooks[event].append(hook)
+                            changed = True
+            if changed:
+                existing["version"] = default["version"]
+                config_path.write_text(
+                    json.dumps(existing, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info("Merged missing hooks into %s", config_path)
+        except Exception:
+            logger.exception("Failed to update hook config, regenerating")
+            config_path.write_text(
+                json.dumps(default, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("Regenerated default hook config at %s", config_path)
+    else:
+        config_path.write_text(
+            json.dumps(default, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Generated default hook config at %s", config_path)
     return config_path
