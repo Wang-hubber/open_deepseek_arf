@@ -29,15 +29,6 @@ watch(selectedSession, async (sid) => {
   if (sid) {
     await fetchSessionDetail(sid)
     feedback.value = await fetchFeedback(sid)
-    if (chartContainer.value) {
-      renderChart()
-    }
-  }
-})
-
-watch(events, () => {
-  if (chartContainer.value) {
-    renderChart()
   }
 })
 
@@ -75,17 +66,21 @@ const turnGroups = computed<TraceEventGroup[]>(() => {
     })
 })
 
-function maxDurationForTurn(group: TraceEventGroup): number {
-  let m = 1
-  if (group.modelCall?.duration_ms) m = Math.max(m, group.modelCall.duration_ms)
-  for (const t of group.toolCalls) {
-    if (t.duration_ms) m = Math.max(m, t.duration_ms)
+interface TimelineItem { event: TraceEvent; time: Date; timeStr: string; meta: ParsedTraceMetadata }
+
+const timeline = computed<TimelineItem[]>(() => {
+  const items: TimelineItem[] = []
+  for (const e of events.value) {
+    const time = e.created_at ? new Date(e.created_at) : new Date()
+    items.push({
+      event: e, time,
+      timeStr: time.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(time.getMilliseconds()).padStart(3, '0'),
+      meta: parseMeta(e),
+    })
   }
-  for (const h of group.hooks) {
-    if (h.duration_ms) m = Math.max(m, h.duration_ms)
-  }
-  return m
-}
+  items.sort((a, b) => a.time.getTime() - b.time.getTime())
+  return items
+})
 
 function formatMs(ms: number | undefined) {
   if (!ms) return '-'
@@ -106,12 +101,48 @@ function statusLabel(status: string) {
   return labels[status] || status
 }
 
-function nodeIcon(node: string) {
-  const icons: Record<string, string> = {
-    classify: '🎯', call_model: '🧠', execute_tools: '🔧',
-    respond: '✅', recovery: '🔄', hook: '🔗',
+function eventTypeIcon(evt: TraceEvent): string {
+  if (evt.node) {
+    const icons: Record<string, string> = { classify: '🎯', call_model: '🧠', execute_tools: '🔧', respond: '✅', recovery: '🔄', hook: '🔗' }
+    return icons[evt.node] || '⚙️'
   }
-  return icons[node] || '⚙️'
+  const lc = evt as any
+  const icons: Record<string, string> = {
+    'lifecycle.session_start': '🚀', 'lifecycle.session_end': '🏁',
+    'lifecycle.hook_execution': '🪝', 'lifecycle.handoff': '🤝',
+    'lifecycle.compaction': '📦', 'lifecycle.prompt_snapshot': '📸',
+    'lifecycle.model_switch': '🔄', 'lifecycle.init': '⚡', 'lifecycle.config': '⚙️',
+  }
+  return icons[lc.event_type] || '📌'
+}
+
+function eventTypeLabel(evt: TraceEvent): string {
+  if (evt.node) return evt.node
+  return ((evt as any).event_type || '').replace('lifecycle.', '').replace('graph.', '')
+}
+
+function eventBorderColor(evt: TraceEvent): string {
+  const m: Record<string, string> = { classify: 'var(--accent)', call_model: '#6366f1', execute_tools: 'var(--success)', respond: 'var(--success)', recovery: '#f59e0b', hook: '#8b5cf6' }
+  if (evt.node) return m[evt.node] || '#646480'
+  const lm: Record<string, string> = {
+    'lifecycle.session_start': '#3b82f6', 'lifecycle.session_end': '#6366f1',
+    'lifecycle.hook_execution': '#a78bfa', 'lifecycle.handoff': '#06b6d4',
+    'lifecycle.compaction': '#f97316', 'lifecycle.prompt_snapshot': '#64748b',
+    'lifecycle.model_switch': '#eab308', 'lifecycle.init': '#22c55e', 'lifecycle.config': '#64748b',
+  }
+  return lm[(evt as any).event_type] || '#646480'
+}
+
+function copyEventJson(evt: TraceEvent) {
+  navigator.clipboard.writeText(JSON.stringify(evt, null, 2))
+}
+
+function formatMetaJson(meta: ParsedTraceMetadata, evt: TraceEvent): string {
+  const enriched: any = { ...(meta || {}) }
+  if (evt.model && !('model' in enriched)) enriched.model = evt.model
+  if (evt.tool_name && !('tool_name' in enriched)) enriched.tool_name = evt.tool_name
+  if (evt.error_msg) enriched.error_msg = evt.error_msg
+  return JSON.stringify(enriched, null, 2)
 }
 
 function bgColor(status: string) {
@@ -121,9 +152,29 @@ function bgColor(status: string) {
   return '#22c55e'
 }
 
+const sessionStats = computed(() => {
+  let modelCalls = 0, toolCalls = 0, hookOk = 0, hookErr = 0, hookBlocked = 0
+  for (const e of events.value) {
+    if (e.node === 'call_model') modelCalls++
+    if (e.node === 'execute_tools') toolCalls++
+    if (e.node === 'hook' || (e as any).event_type === 'lifecycle.hook_execution') {
+      if (e.status === 'ok') hookOk++
+      else if (e.status === 'error') hookErr++
+      else if (e.status === 'blocked_by_hook') hookBlocked++
+    }
+  }
+  return { modelCalls, toolCalls, hookOk, hookErr, hookBlocked, totalEvents: events.value.length }
+})
+
+function nodeIcon(node: string) { return eventTypeIcon({ node } as TraceEvent) }
+
+watch(timeline, () => {
+  if (chartContainer.value) renderChart()
+})
+
 function renderChart() {
   const el = chartContainer.value
-  if (!el || turnGroups.value.length === 0) return
+  if (!el || timeline.value.length === 0) return
 
   if (chartInstance.value) {
     chartInstance.value.dispose()
@@ -135,21 +186,16 @@ function renderChart() {
   const categories: string[] = []
   const durations: number[] = []
   const colors: string[] = []
-  const nodeLabels: string[] = []
 
-  for (const group of turnGroups.value) {
-    const prefix = `T${group.turn}`
-    for (const e of group.events) {
-      if (e.duration_ms && e.duration_ms > 0) {
-        const label = e.tool_name
-          ? `${prefix} ${e.node}:${e.tool_name}`
-          : `${prefix} ${e.node}`
-        categories.push(label)
-        durations.push(e.duration_ms)
-        colors.push(bgColor(e.status))
-        nodeLabels.push(e.node)
-        if (e.model) nodeLabels[nodeLabels.length - 1] += ` (${e.model})`
-      }
+  for (const item of timeline.value) {
+    const e = item.event
+    if (e.duration_ms && e.duration_ms > 0) {
+      const label = e.tool_name
+        ? `${item.timeStr} ${eventTypeLabel(e)}:${e.tool_name}`
+        : `${item.timeStr} ${eventTypeLabel(e)}`
+      categories.push(label)
+      durations.push(e.duration_ms)
+      colors.push(bgColor(e.status))
     }
   }
 
@@ -251,166 +297,43 @@ function tokensDisplay(evt: TraceEvent): string {
 
         <div v-if="loading" class="tv-empty">加载中...</div>
 
+        <!-- Session stats chips -->
+        <div v-if="sessionStats.totalEvents" class="tv-session-stats">
+          <span class="tv-stat-chip">📊 {{ sessionStats.totalEvents }} 事件</span>
+          <span class="tv-stat-chip">🧠 {{ sessionStats.modelCalls }} 模型</span>
+          <span class="tv-stat-chip">🔧 {{ sessionStats.toolCalls }} 工具</span>
+          <span class="tv-stat-chip">🪝 {{ sessionStats.hookOk + sessionStats.hookErr + sessionStats.hookBlocked }} hooks</span>
+          <span v-if="sessionStats.hookErr" class="tv-stat-chip tv-stat-chip-err">{{ sessionStats.hookErr }} err</span>
+          <span v-if="sessionStats.hookBlocked" class="tv-stat-chip tv-stat-chip-warn">{{ sessionStats.hookBlocked }} blocked</span>
+        </div>
+
         <!-- Duration chart overview -->
-        <div v-if="turnGroups.length" ref="chartContainer" class="tv-chart-container"></div>
+        <div v-if="timeline.length" ref="chartContainer" class="tv-chart-container"></div>
 
-        <!-- Round-by-round timeline -->
+        <!-- Unified timeline -->
         <div class="tv-timeline">
-          <div v-for="group in turnGroups" :key="group.turn" class="tv-round">
-            <div class="tv-round-header">
-              <span class="tv-round-num">Turn {{ group.turn }}</span>
-              <span class="tv-round-summary">
-                {{ group.events.length }} 事件
-                <template v-if="group.modelCall?.total_tokens">
-                  · {{ group.modelCall.total_tokens.toLocaleString() }} tokens
-                </template>
-              </span>
+          <div v-for="(item, idx) in timeline" :key="item.event.id ?? idx" class="tv-timeline-item">
+            <div class="tv-tl-time">
+              <span class="tv-tl-time-text">{{ item.timeStr }}</span>
+              <span v-if="item.event.turn" class="tv-tl-turn">T{{ item.event.turn }}</span>
             </div>
-
-            <div class="tv-round-body">
-              <!-- Classify -->
-              <div v-if="group.classify" class="tv-card tv-card-classify">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('classify') }}</span>
-                  <span class="tv-card-node">classify</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(group.classify.status)">{{ statusLabel(group.classify.status) }}</span>
-                  <span v-if="group.classify.duration_ms" class="tv-card-dur">{{ formatMs(group.classify.duration_ms) }}</span>
-                </div>
-                <template v-if="parseMeta(group.classify).classification">
-                  <CollapsibleSection title="Details" :defaultOpen="false">
-                    <div class="tv-meta-grid">
-                      <div class="tv-meta-item">
-                        <span class="tv-meta-label">Classification</span>
-                        <span class="tv-meta-value">{{ parseMeta(group.classify).classification }}</span>
-                      </div>
-                      <div class="tv-meta-item">
-                        <span class="tv-meta-label">Model</span>
-                        <span class="tv-meta-value">{{ parseMeta(group.classify).resolved_model }}</span>
-                      </div>
-                    </div>
-                  </CollapsibleSection>
-                </template>
+            <div
+              class="tv-card"
+              :style="{ borderLeftColor: eventBorderColor(item.event) }"
+            >
+              <div class="tv-card-head">
+                <span class="tv-card-icon">{{ eventTypeIcon(item.event) }}</span>
+                <span class="tv-card-node">{{ eventTypeLabel(item.event) }}</span>
+                <span v-if="item.event.model" class="tv-card-model-name">{{ item.event.model }}</span>
+                <span v-if="item.event.tool_name" class="tv-card-model-name">{{ item.event.tool_name }}</span>
+                <span :class="'tv-badge ' + statusBadgeClass(item.event.status)">{{ statusLabel(item.event.status) }}</span>
+                <span v-if="item.event.duration_ms" class="tv-card-dur">{{ formatMs(item.event.duration_ms) }}</span>
+                <span v-if="item.event.total_tokens" class="tv-card-tokens">{{ tokensDisplay(item.event) }}</span>
+                <button class="tv-copy-btn" title="复制 JSON" @click.stop="copyEventJson(item.event)">⎘</button>
               </div>
-
-              <!-- Model call -->
-              <div v-if="group.modelCall" class="tv-card tv-card-model">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('call_model') }}</span>
-                  <span class="tv-card-node">call_model</span>
-                  <span v-if="group.modelCall.model" class="tv-card-model-name">{{ group.modelCall.model }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(group.modelCall.status)">{{ statusLabel(group.modelCall.status) }}</span>
-                  <span v-if="group.modelCall.duration_ms" class="tv-card-dur">{{ formatMs(group.modelCall.duration_ms) }}</span>
-                  <span v-if="group.modelCall.total_tokens" class="tv-card-tokens">{{ tokensDisplay(group.modelCall) }}</span>
-                </div>
-                <template v-if="parseMeta(group.modelCall).model_input_snippet || parseMeta(group.modelCall).model_output_snippet">
-                  <CollapsibleSection title="Input" v-if="parseMeta(group.modelCall).model_input_snippet">
-                    <pre class="tv-snippet">{{ parseMeta(group.modelCall).model_input_snippet }}</pre>
-                  </CollapsibleSection>
-                  <CollapsibleSection title="Output">
-                    <pre class="tv-snippet">{{ parseMeta(group.modelCall).model_output_snippet || '(tool calls only)' }}</pre>
-                  </CollapsibleSection>
-                </template>
-              </div>
-
-              <!-- Hooks before tools (PreToolUse) -->
-              <div v-for="h in group.hooks.filter(h => parseMeta(h).hook_event === 'PreToolUse')" :key="h.id" class="tv-card tv-card-hook">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('hook') }}</span>
-                  <span class="tv-card-node">PreToolUse</span>
-                  <span v-if="h.tool_name" class="tv-card-model-name">{{ h.tool_name }}</span>
-                  <span v-if="parseMeta(h).tool_category" class="tv-badge badge-cat">{{ parseMeta(h).tool_category }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(h.status)">{{ parseMeta(h).hook_status || statusLabel(h.status) }}</span>
-                  <span v-if="h.duration_ms" class="tv-card-dur">{{ formatMs(h.duration_ms) }}</span>
-                </div>
-                <CollapsibleSection title="Hook Output" v-if="parseMeta(h).hook_message">
-                  <div class="tv-hook-msg">{{ parseMeta(h).hook_message }}</div>
-                </CollapsibleSection>
-              </div>
-
-              <!-- Tool calls -->
-              <div v-for="tc in group.toolCalls" :key="tc.id" class="tv-card tv-card-tool">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('execute_tools') }}</span>
-                  <span class="tv-card-node">execute_tools</span>
-                  <span v-if="tc.tool_name" class="tv-card-model-name">{{ tc.tool_name }}</span>
-                  <span v-if="parseMeta(tc).tool_category" class="tv-badge badge-cat">{{ parseMeta(tc).tool_category }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(tc.status)">{{ statusLabel(tc.status) }}</span>
-                  <span v-if="tc.duration_ms" class="tv-card-dur">{{ formatMs(tc.duration_ms) }}</span>
-                </div>
-                <template v-if="tc.status !== 'blocked_by_hook'">
-                  <CollapsibleSection title="Tool Input" v-if="parseMeta(tc).tool_input_snippet">
-                    <pre class="tv-snippet">{{ parseMeta(tc).tool_input_snippet }}</pre>
-                  </CollapsibleSection>
-                  <CollapsibleSection title="Tool Output">
-                    <pre class="tv-snippet">{{ parseMeta(tc).tool_output_snippet || '(empty)' }}</pre>
-                  </CollapsibleSection>
-                </template>
-              </div>
-
-              <!-- Hooks after tools (PostToolUse) -->
-              <div v-for="h in group.hooks.filter(h => parseMeta(h).hook_event === 'PostToolUse')" :key="h.id" class="tv-card tv-card-hook">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('hook') }}</span>
-                  <span class="tv-card-node">PostToolUse</span>
-                  <span v-if="h.tool_name" class="tv-card-model-name">{{ h.tool_name }}</span>
-                  <span v-if="parseMeta(h).tool_category" class="tv-badge badge-cat">{{ parseMeta(h).tool_category }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(h.status)">{{ parseMeta(h).hook_status || statusLabel(h.status) }}</span>
-                  <span v-if="h.duration_ms" class="tv-card-dur">{{ formatMs(h.duration_ms) }}</span>
-                </div>
-                <CollapsibleSection title="Hook Output" v-if="parseMeta(h).hook_message">
-                  <div class="tv-hook-msg">{{ parseMeta(h).hook_message }}</div>
-                </CollapsibleSection>
-              </div>
-
-              <!-- Other hook events (PreModelCall, PostModelCall, SessionStart, SessionEnd, etc.) -->
-              <div v-for="h in group.hooks.filter(h => !['PreToolUse','PostToolUse'].includes(parseMeta(h).hook_event || ''))" :key="h.id" class="tv-card tv-card-hook">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('hook') }}</span>
-                  <span class="tv-card-node">{{ parseMeta(h).hook_event || 'hook' }}</span>
-                  <span v-if="parseMeta(h).hook_name" class="tv-card-model-name">{{ parseMeta(h).hook_name }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(h.status)">{{ parseMeta(h).hook_status || statusLabel(h.status) }}</span>
-                  <span v-if="h.duration_ms" class="tv-card-dur">{{ formatMs(h.duration_ms) }}</span>
-                </div>
-                <CollapsibleSection title="Details" v-if="parseMeta(h).command || parseMeta(h).hook_message || h.error_msg">
-                  <div class="tv-meta-grid">
-                    <div v-if="parseMeta(h).command" class="tv-meta-item">
-                      <span class="tv-meta-label">Command</span>
-                      <span class="tv-meta-value">{{ parseMeta(h).command }}</span>
-                    </div>
-                    <div v-if="parseMeta(h).exit_code !== undefined" class="tv-meta-item">
-                      <span class="tv-meta-label">Exit Code</span>
-                      <span class="tv-meta-value">{{ parseMeta(h).exit_code }}</span>
-                    </div>
-                  </div>
-                  <div v-if="h.error_msg" class="tv-hook-msg" style="color: var(--error-text)">{{ h.error_msg }}</div>
-                  <div v-if="parseMeta(h).hook_message" class="tv-hook-msg">{{ parseMeta(h).hook_message }}</div>
-                </CollapsibleSection>
-              </div>
-
-              <!-- Respond -->
-              <div v-if="group.respond" class="tv-card tv-card-respond">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('respond') }}</span>
-                  <span class="tv-card-node">respond</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(group.respond.status)">{{ statusLabel(group.respond.status) }}</span>
-                </div>
-                <CollapsibleSection title="Response" v-if="parseMeta(group.respond).response_snippet">
-                  <pre class="tv-snippet">{{ parseMeta(group.respond).response_snippet }}</pre>
-                </CollapsibleSection>
-              </div>
-
-              <!-- Recovery -->
-              <div v-if="group.recovery" class="tv-card tv-card-recovery">
-                <div class="tv-card-head">
-                  <span class="tv-card-icon">{{ nodeIcon('recovery') }}</span>
-                  <span class="tv-card-node">recovery</span>
-                  <span v-if="parseMeta(group.recovery).recovery_type" class="tv-card-model-name">{{ parseMeta(group.recovery).recovery_type }}</span>
-                  <span :class="'tv-badge ' + statusBadgeClass(group.recovery.status)">{{ statusLabel(group.recovery.status) }}</span>
-                </div>
-                <CollapsibleSection title="Details" v-if="parseMeta(group.recovery).error_snippet">
-                  <pre class="tv-snippet tv-snippet-error">{{ parseMeta(group.recovery).error_snippet }}</pre>
-                </CollapsibleSection>
-              </div>
+              <CollapsibleSection title="Metadata" :defaultOpen="false">
+                <pre class="tv-snippet">{{ formatMetaJson(item.meta, item.event) }}</pre>
+              </CollapsibleSection>
             </div>
           </div>
         </div>
@@ -506,27 +429,25 @@ function tokensDisplay(evt: TraceEvent): string {
   overflow: hidden;
 }
 
-/* ── Timeline ── */
-.tv-timeline { flex: 1; }
+/* ── Session stats ── */
+.tv-session-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.tv-stat-chip { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full, 99px); background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+.tv-stat-chip-err { background: rgba(239,68,68,0.12); color: #ef4444; }
+.tv-stat-chip-warn { background: rgba(245,158,11,0.12); color: #f59e0b; }
 
-.tv-round {
-  margin-bottom: 20px;
-}
-.tv-round-header {
-  display: flex; align-items: baseline; gap: 12px;
-  padding-bottom: 6px; margin-bottom: 8px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-}
-.tv-round-num {
-  font-size: 13px; font-weight: 700; color: var(--accent);
-}
-.tv-round-summary {
-  font-size: 11px; color: var(--text-muted);
-}
+/* ── Unified Timeline ── */
+.tv-timeline { flex: 1; position: relative; padding-left: 20px; }
+.tv-timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0.02)); }
+.tv-timeline-item { position: relative; margin-bottom: 10px; padding-left: 18px; }
+.tv-timeline-item::before { content: ''; position: absolute; left: -15px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.tv-tl-time { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-family: 'JetBrains Mono', monospace; }
+.tv-tl-time-text { font-size: 11px; color: var(--text-muted); }
+.tv-tl-turn { font-size: 10px; color: var(--accent); background: rgba(99,102,241,0.12); padding: 0 5px; border-radius: var(--radius-full, 99px); }
 
-.tv-round-body {
-  display: flex; flex-direction: column; gap: 6px;
-}
+/* Copy button */
+.tv-copy-btn { margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.15s; }
+.tv-card-head:hover .tv-copy-btn { opacity: 1; }
+.tv-copy-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
 
 /* ── Cards ── */
 .tv-card {
