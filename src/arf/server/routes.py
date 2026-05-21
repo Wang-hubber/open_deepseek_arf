@@ -14,7 +14,7 @@ from ..resources.model_adapter import ModelAdapter
 from .database import (
     record_usage, insert_trace_events,
 )
-from .session_manager import SessionManager
+from .session_manager import SessionManager, _sanitize_text
 from .sessions import list_archives, get_archive, update_title, delete_archive, DEFAULT_TITLE
 
 router = APIRouter(prefix="/api")
@@ -944,7 +944,7 @@ def _display_history(full_messages: list[dict]) -> list[dict]:
 
 def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
     reasoning_text = ""
-    mgr.session_history.append({"role": "user", "content": payload.message})
+    mgr.session_history.append({"role": "user", "content": _sanitize_text(payload.message)})
     try:
         for event in agent.chat_stream_with_tools(
             payload.message, payload.history, project_dir
@@ -960,23 +960,23 @@ def _stream_chat(agent, payload: ChatRequest, mgr, project_dir: str):
             if etype == "tool_call":
                 mgr.session_history.append({
                     "role": "tool_call",
-                    "content": f"[{event.get('name', event.get('tool', ''))}] {event.get('arguments', '')}",
-                    "tool_call_id": event.get("id", ""),
-                    "name": event.get("name", event.get("tool", "")),
-                    "arguments": event.get("arguments", ""),
+                    "content": _sanitize_text(f"[{event.get('name', event.get('tool', ''))}] {event.get('arguments', '')}"),
+                    "tool_call_id": _sanitize_text(event.get("id", "")),
+                    "name": _sanitize_text(event.get("name", event.get("tool", ""))),
+                    "arguments": _sanitize_text(event.get("arguments", "")),
                 })
             elif etype == "tool_result":
                 mgr.session_history.append({
                     "role": "tool_result",
-                    "content": str(event.get("result", ""))[:500],
-                    "tool_call_id": event.get("id", ""),
-                    "name": event.get("tool", ""),
+                    "content": _sanitize_text(str(event.get("result", ""))[:500]),
+                    "tool_call_id": _sanitize_text(event.get("id", "")),
+                    "name": _sanitize_text(event.get("tool", "")),
                 })
             elif etype == "done":
                 if reasoning_text or event.get("response"):
-                    entry: dict = {"role": "assistant", "content": event.get("response", "")}
+                    entry: dict = {"role": "assistant", "content": _sanitize_text(event.get("response", ""))}
                     if reasoning_text:
-                        entry["reasoning_content"] = reasoning_text
+                        entry["reasoning_content"] = _sanitize_text(reasoning_text)
                     mgr.session_history.append(entry)
                 reasoning_text = ""
 

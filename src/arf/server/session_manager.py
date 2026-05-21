@@ -10,6 +10,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_text(s: str) -> str:
+    """Replace lone surrogate characters that can't be encoded to UTF-8."""
+    if not s:
+        return s
+    try:
+        s.encode("utf-8")
+        return s
+    except UnicodeEncodeError:
+        return s.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 import yaml
 
 from ..resources.manager import ResourceRegistry
@@ -331,11 +343,11 @@ class SessionManager:
         self._trace_collector.set_session(self.current_session_id)
 
     def track_session(self, user_msg: str, assistant_response: str = "", reasoning: str = ""):
-        self.session_history.append({"role": "user", "content": user_msg})
+        self.session_history.append({"role": "user", "content": _sanitize_text(user_msg)})
         if assistant_response or reasoning:
-            entry: dict = {"role": "assistant", "content": assistant_response}
+            entry: dict = {"role": "assistant", "content": _sanitize_text(assistant_response)}
             if reasoning:
-                entry["reasoning_content"] = reasoning
+                entry["reasoning_content"] = _sanitize_text(reasoning)
             self.session_history.append(entry)
 
     # ---- fast model ---------------------------------------------------
