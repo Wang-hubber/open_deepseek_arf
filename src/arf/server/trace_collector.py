@@ -1,12 +1,13 @@
 """TraceCollector — in-memory event buffer, flushed to SQLite on session end."""
 
 import hashlib
+import threading
 import uuid
 from datetime import datetime, timezone
 
 
 class TraceCollector:
-    """In-memory buffer for trace events. Not thread-safe — use from a single thread.
+    """In-memory buffer for trace events. Thread-safe.
 
     Events accumulate during a session. On session_end, flush() returns
     all events for batch INSERT into SQLite.
@@ -18,14 +19,17 @@ class TraceCollector:
     def __init__(self):
         self._buffer: list[dict] = []
         self._current_session_id: str = ""
+        self._lock = threading.Lock()
 
     def set_session(self, session_id: str) -> None:
         """Update current session ID so subsequent emit() calls tag events correctly."""
-        self._current_session_id = session_id
+        with self._lock:
+            self._current_session_id = session_id
 
     @property
     def current_session_id(self) -> str:
-        return self._current_session_id
+        with self._lock:
+            return self._current_session_id
 
     def emit(self, event: dict) -> None:
         """Add an event to the buffer with defaults for all standard fields.
@@ -48,20 +52,24 @@ class TraceCollector:
         event.setdefault("status", "ok")
         event.setdefault("error_msg", None)
         event.setdefault("metadata", {})
-        self._buffer.append(event)
+        with self._lock:
+            self._buffer.append(event)
 
     def snapshot(self) -> list[dict]:
         """Return a copy of buffered events without clearing."""
-        return list(self._buffer)
+        with self._lock:
+            return list(self._buffer)
 
     def flush(self) -> list[dict]:
         """Return all buffered events and clear the buffer."""
-        events = list(self._buffer)
-        self._buffer.clear()
-        return events
+        with self._lock:
+            events = list(self._buffer)
+            self._buffer.clear()
+            return events
 
     def __len__(self) -> int:
-        return len(self._buffer)
+        with self._lock:
+            return len(self._buffer)
 
 
 def compute_prompt_hash(prompt_text: str) -> str:

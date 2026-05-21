@@ -281,6 +281,14 @@ class HookRunner:
 
         duration_ms = (time.monotonic() - t0) * 1000
 
+        # Log hook result directly — not dependent on trace collector flush timing.
+        if hook_status != "ok" or exit_code != 0:
+            logger.info(
+                "Hook %s [%s] exit=%d status=%s dur=%.0fms stderr=%s",
+                hook_def.name, event, exit_code, hook_status, duration_ms,
+                (stderr_text or "")[:200],
+            )
+
         # Emit per-hook execution trace for observability
         if self._trace_collector:
             meta = {
