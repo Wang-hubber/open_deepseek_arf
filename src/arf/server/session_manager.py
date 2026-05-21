@@ -236,8 +236,8 @@ class SessionManager:
     def fire_session_end(self, trigger: str = "stream_done"):
         """Fire SessionEnd hooks. Idempotent — only fires once per session."""
         logger.info(
-            "fire_session_end(trigger=%s): fired=%s, history_len=%d",
-            trigger, self._session_end_fired, len(self.session_history),
+            "fire_session_end(trigger=%s, sid=%s): fired=%s, history_len=%d",
+            trigger, self.current_session_id, self._session_end_fired, len(self.session_history),
         )
         if self._session_end_fired:
             logger.info("fire_session_end: skipping (already fired)")

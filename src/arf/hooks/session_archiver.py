@@ -29,9 +29,11 @@ def main():
 
     # Read stdin
     stdin_raw = sys.stdin.read()
+    print(f"[session_archiver] stdin_len={len(stdin_raw)} session_id={session_id!r}", file=sys.stderr)
     try:
         input_data = json.loads(stdin_raw) if stdin_raw.strip() else {}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"[session_archiver] JSON parse error: {e}", file=sys.stderr)
         input_data = {}
 
     data = input_data.get("data", {})
@@ -39,6 +41,7 @@ def main():
     session_start_str = data.get("session_start", "")
     graph_traces = data.get("graph_traces")
     usage = data.get("usage")
+    print(f"[session_archiver] conv_len={len(conversation)} start={session_start_str[:30]}", file=sys.stderr)
 
     if not conversation or len(conversation) < 2:
         print(json.dumps({"archived": False, "reason": "too few messages"}))
@@ -101,6 +104,7 @@ def main():
             print(json.dumps({"archived": False, "reason": "serialization failed"}))
             sys.exit(0)
 
+    print(f"[session_archiver] writing {len(raw)} bytes to {path}", file=sys.stderr)
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(raw)
