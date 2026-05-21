@@ -22,6 +22,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+def _sanitize_surrogates(obj):
+    """Recursively replace lone surrogate characters in strings."""
+    if isinstance(obj, str):
+        # encode with surrogateescape then decode with replace
+        return obj.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
+
 def main():
     workspace = Path(os.environ.get("ARF_HOOK_WORKSPACE", "."))
     session_id = os.environ.get("ARF_HOOK_SESSION_ID", "")
@@ -37,7 +49,7 @@ def main():
         input_data = {}
 
     data = input_data.get("data", {})
-    conversation = data.get("conversation", [])
+    conversation = _sanitize_surrogates(data.get("conversation", []))
     session_start_str = data.get("session_start", "")
     graph_traces = data.get("graph_traces")
     usage = data.get("usage")
@@ -110,8 +122,20 @@ def main():
             f.write(raw)
             f.flush()
             os.fsync(f.fileno())
-    except OSError as e:
-        print(f"session_archiver: write failed: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"session_archiver: write failed ({type(e).__name__}): {e}", file=sys.stderr)
+        # If UTF-8 encoding failed due to surrogates, retry with ascii escaping
+        if isinstance(e, UnicodeEncodeError):
+            try:
+                raw = json.dumps(archive, ensure_ascii=True, indent=2)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(raw)
+                    f.flush()
+                    os.fsync(f.fileno())
+                print(json.dumps({"archived": True, "session_id": session_id}, ensure_ascii=False))
+                sys.exit(0)
+            except Exception as e2:
+                print(f"session_archiver: ascii fallback also failed: {e2}", file=sys.stderr)
         print(json.dumps({"archived": False, "reason": f"write error: {e}"}))
         sys.exit(1)
 
