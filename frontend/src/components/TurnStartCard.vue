@@ -25,7 +25,8 @@ function formatMs(ms: number | undefined): string {
       <span class="tsc-label">{{ t('trace.turnStart') }}</span>
       <span class="tsc-meta">{{ turnStart.events.length }} {{ t('trace.events') }} · {{ formatMs(turnStart.durationMs) }}</span>
     </div>
-    <div v-if="expanded && turnStart.events.length" class="tsc-body">
+    <div v-if="expanded" class="tsc-body">
+      <div v-if="turnStart.events.length === 0" class="tsc-empty">—</div>
       <div v-for="e in turnStart.events" :key="e.id" class="tsc-event">
         <span class="tsc-event-node">{{ e.node || (e as any).event_type || 'event' }}</span>
         <span v-if="e.duration_ms" class="tsc-event-dur">{{ formatMs(e.duration_ms) }}</span>
@@ -55,6 +56,7 @@ function formatMs(ms: number | undefined): string {
 .tsc-label { font-weight: 600; }
 .tsc-meta { margin-left: auto; font-size: 11px; color: var(--text-muted); font-family: monospace; }
 .tsc-body { padding: 6px 12px 8px; border-top: 1px solid var(--border-light); }
+.tsc-empty { color: var(--text-muted); font-size: 11px; padding: 2px 0; text-align: center; }
 .tsc-event {
   display: flex; align-items: center; gap: 8px;
   padding: 3px 0; font-size: 11px; color: var(--text-muted);

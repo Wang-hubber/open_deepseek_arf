@@ -86,7 +86,7 @@ function handleExportStructured() {
           <h4>{{ t('trace.feedback') }}</h4>
           <div v-for="fb in feedback" :key="fb.id" class="tv-fb-item">
             <span class="tv-fb-rating">{{ fb.rating === 1 ? '👍' : '👎' }}</span>
-            <span class="tv-fb-msg">{{ t('trace.feedbackMessage', { index: fb.message_index + 1 }) }}</span>
+            <span class="tv-fb-msg">消息 #{{ fb.message_index + 1 }}</span>
             <span v-if="fb.feedback_text" class="tv-fb-text"> — "{{ fb.feedback_text }}"</span>
           </div>
         </div>
