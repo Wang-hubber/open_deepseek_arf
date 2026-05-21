@@ -315,6 +315,59 @@ export interface FeedbackItem {
   created_at: string
 }
 
+// ── Turn-based trace display types ──
+
+export interface TurnInput {
+  type: 'user' | 'agent'
+  snippet: string
+  timestamp: string
+  sourceEvent?: TraceEvent
+}
+
+export interface ToolCallPair {
+  call: TraceEvent
+  result?: TraceEvent
+}
+
+export interface Iteration {
+  index: number
+  reasoning?: TraceEvent
+  preToolUseHooks: TraceEvent[]
+  toolCalls: ToolCallPair[]
+  afterToolHooks: TraceEvent[]
+  isFinal: boolean
+}
+
+export interface Turn {
+  turnIndex: number
+  input: TurnInput
+  iterations: Iteration[]
+  postModelHooks: TraceEvent[]
+  sessionEndHooks?: TraceEvent[]
+  stats: {
+    totalTokens: number
+    iterationCount: number
+    durationMs: number
+  }
+}
+
+export interface TurnStart {
+  events: TraceEvent[]
+  durationMs: number
+}
+
+export interface StructuredSession {
+  sessionId: string
+  title?: string
+  turnStart: TurnStart
+  turns: Turn[]
+  stats: {
+    totalTurns: number
+    totalTokens: number
+    totalDurationMs: number
+  }
+}
+
 export interface ResourceStat {
   name: string
   call_count: number
