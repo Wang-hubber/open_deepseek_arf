@@ -31,7 +31,7 @@ ARF is a **single-user, self-hosted dual-agent framework**. It runs on your mach
 
 ### 本地优先，基于文件系统
 
-Everything lives in a workspace directory on your machine. Models, tools, skills, memory, session archives — all files. No cloud SaaS, no managed database, no telemetry. Git-native: your entire agent configuration and history is version-controllable.
+Everything lives in a workspace directory. Models, tools, skills, memory, session archives — all files. No cloud SaaS, no managed database, no telemetry. Git-native: your entire agent configuration and history is version-controllable.
 
 ```
 my_workspace/
@@ -61,13 +61,28 @@ Every conversation, every model call, every tool execution, every hook invocatio
 - **6-table SQLite trace database** captures the full lifecycle: session start/end, model calls (tokens, latency, snippets), tool executions (input/output), hook runs (exit codes, stdout/stderr), prompt snapshots, and graph node transitions
 - **Waterfall visualization** in the frontend renders each turn as a time-proportional cascade of classify → compact → call_model → execute_tools → respond
 - **Session archives** persist complete conversation history with traces and usage stats as JSON files, greppable and portable
-- **Hook events** log every lifecycle transition with timing, payload summaries, and exit status
 
 Trace data answers the questions that matter: *What did the agent do? Why did it choose that model? How long did each step take? What tokens were consumed?*
 
 ### 单用户自持的双Agent智能体
 
 ARF presents as a two-agent system: a **User Agent** handles your tasks directly; a **System Agent** handles internal operations (memory extraction, title generation, error recovery). They share the same workspace but operate independently. The user sees a single, coherent assistant — the dual-agent architecture is an implementation detail that improves reliability without adding cognitive overhead.
+
+<br/>
+
+## Framework vs. MVP
+
+ARF is a **framework** — a set of conventions, a resource system, a graph engine, and an observability layer. What ships today is the **MVP application** built on top of it: a single-user chat assistant with a Vue 3 frontend.
+
+| Layer | What it is | Examples |
+|-------|-----------|----------|
+| **Framework** | Conventions, engine, resource system, trace infrastructure | `ResourceRegistry`, `GraphEngine`, dual-source resource loading, hook exit-code contract, SQLite trace schema, prompt pipeline |
+| **MVP App** | A concrete chat application built on the framework | Vue 3 frontend, session sidebar, multi-model routing, `session_archiver` hook, `title_generator` hook |
+| **User workspace** | Your models, tools, skills, memory — what you build on top | Model configs, custom tools, `long_term.md`, workspace YAML |
+
+The MVP demonstrates what the framework can do. You can build something entirely different — a CLI tool, a headless automation agent, a code review bot — using the same framework conventions without touching the frontend at all.
+
+**The current MVP has a multi-session sidebar.** This is an MVP implementation detail, not a framework requirement. The framework itself has no opinion on session management — it provides `SessionManager` as a building block.
 
 <br/>
 
@@ -92,7 +107,7 @@ Browser opens at **http://localhost:5173** — enter your API key and start chat
 | Command | Purpose |
 |---------|---------|
 | `arf init <name>` | Create a new workspace |
-| `arf start` | Launch backend + frontend (recommended) |
+| `arf start` | Launch backend + frontend |
 | `arf web` | Backend only (FastAPI + WebSocket + SSE) |
 | `arf stop` | Stop running processes |
 | `arf reload` | Stop + restart |
@@ -172,9 +187,11 @@ Trace is the backbone of ARF's observability. Every lifecycle event is captured.
 
 ## TODO
 
+The framework's next milestone: **single-user, infinite-context Agent** — the MVP application evolves from a chat tool with session management into a seamless, continuous conversation experience.
+
 | Priority | Item |
 |----------|------|
-| **P0** | **Single-session infinite-context experience** — deprecate multi-session management. The user should never see a "session list." Conversations flow continuously in a single, infinite context; archiving and context compaction happen transparently. The current multi-session sidebar, resume/delete buttons, and session-switching UX will be removed in favor of seamless continuity. |
+| **P0** | **Infinite-context single-session experience** — deprecate multi-session sidebar, resume/delete buttons, and session-switching UX. The user never sees a "session list." Conversations flow continuously; archiving and context compaction happen transparently in the background. This is the natural expression of the framework's design philosophy: the framework provides the engine, the application becomes invisible. |
 | **P0** | Sandbox runtime — security isolation for tool execution |
 | **P1** | `arf chat` — interactive CLI chat |
 | **P1** | `arf run` — headless batch execution mode |
