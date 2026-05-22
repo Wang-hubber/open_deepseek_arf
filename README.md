@@ -20,14 +20,16 @@
 
 <br/>
 
-<h3 align="center">Everything between the model and the user — resource system, agent engine,<br/>observability infrastructure — in a single, self-hosted directory.</h3>
+<h3 align="center">Harness = OS Kernel. Model = CPU. Agent = Computer.</h3>
 <p align="center">Local-first. Filesystem-native. Convention over configuration. Fully traceable. Self-evolving.</p>
 
 <br/>
 
 ## Design Philosophy
 
-A model alone is not an agent. It needs tools, memory, skills — a runtime that orchestrates reasoning, action, and verification. ARF provides that layer. It is an **agent framework** built on a single conviction: the filesystem is the right abstraction for agent resource management.
+A model is raw compute — powerful, but not a computer. It needs memory management, process scheduling, interrupt handling, a file system, and security boundaries. ARF provides those. It is an **agent framework** built on a single architectural insight: **the Harness layer is the kernel of AI-native computing**.
+
+The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the problems every agent engineer faces. ARF does not invent new abstractions. It adapts proven OS patterns to the token era.
 
 ### 本地优先，基于文件系统
 
@@ -62,8 +64,6 @@ Every model call, every tool execution, every hook invocation — recorded. Trac
 - **Waterfall visualization** — each turn rendered as a time-proportional cascade of classify → compact → call_model → execute_tools → respond
 - **Session archives** — complete conversation + trace + usage stats as portable JSON
 
-Trace answers: *What did the agent do? Why this model? How long did each step take? What did it cost?*
-
 ### 单用户自持的双Agent智能体
 
 User Agent handles your tasks. System Agent handles internal operations — memory extraction, title generation, error recovery. Separate execution, shared workspace. The user sees one assistant; the dual architecture is an implementation detail that raises reliability without adding cognitive load.
@@ -82,13 +82,59 @@ Each task domain runs as a closed loop:
 
 Agents iterate, converging toward **local optima** within their domains. When a cluster of such specialists collaborates, the system exhibits capabilities beyond any individual. **Emergence happens. Generalization follows.**
 
-This is the path: not a monolithic super-model, but a **society of self-growing agents** — scaffolding from specialized competence toward general intelligence. ARF provides the runtime, the resource system, and the trace infrastructure for that society to form.
+This is the path: not a monolithic super-model, but a **society of self-growing agents** — scaffolding from specialized competence toward general intelligence.
 
 <br/>
 
-## Framework vs. Application
+## Harness as Kernel — Problem-Domain Architecture
 
-ARF is a **framework** — a set of conventions, a resource system, a graph engine, and an observability layer. What ships today is the **reference application**: a single-user chat assistant with a Vue 3 frontend.
+> **Model + Harness = Agent. CPU + Kernel = Computer.**
+>
+> The Harness is the kernel of AI-native computing. Token is the instruction. Agent session is the process. Tool call is the system call. Every hard problem in agent engineering has a mature counterpart in operating systems. We adapt, not invent.
+
+The following table structures the entire Harness problem space by domain, mapping each to its OS counterpart, ARF's current implementation, and the planned evolution path.
+
+| Problem | OS Solution | ARF Current | Evolution |
+|---------|-------------|------------|-----------|
+| **Context window exhaustion (OOM)** | Virtual memory + page swapping: evict cold pages to disk, fault in on demand | Context compaction: sliding-window summary at 75% threshold; conversation history swapped to `archive.json` | Fine-grained "page fault": retrieve and inject minimal semantic units (function signatures, key decisions) rather than whole context blocks; LRU eviction by relevance |
+| **Long-term memory & state persistence** | File system: persistent storage indexed by path | Three-layer memory: `session.md` (short-term), `long_term.md` (profile/facts), `sessions/*.json` (archives); auto-extraction via `memory_extractor` hook | Semantic file system: agent-maintained knowledge graph index; memory accessible by semantic path ("user's preferences about Python typing"), not just literal path |
+| **Fast/slow reasoning dispatch** | Multi-level cache: L1 fast-small, L2 slow-large; CPU predicts hit | Two-tier classifier: `quick_thinking` ↔ `deep_thinking` auto-routing; `quick_no_thinking` reserved for background tasks; automatic degradation on model unavailability | Hardware-aware dynamic dispatch: task complexity × latency budget × KV cache occupancy → auto-select L1/L2/L3 reasoning; same-session transparent model switching with "process migration" of context |
+| **Model compute resource allocation** | big.LITTLE heterogeneous scheduling: lightweight tasks on efficiency cores, heavy on performance | Configurable max_turns per agent; model resolution by priority (`quick_thinking` → `deep_thinking` → any configured); tool-level progressive disclosure limits per-call compute | Adaptive model "core" scheduler: real-time task difficulty monitoring; in-session model switching without context loss; weak-model ensemble collaboration exceeding single strong model |
+| **External capability invocation** | System calls + coprocessors: CPU invokes NPU/GPU/disk via interrupt + I/O | Tool calling: `tool.yaml` + `function.py` per tool; MCP protocol support on roadmap; subprocess hooks as separation boundary (exit code 0/1/2 contract) | Hardware-accelerated tool execution: high-frequency tools (code interpreter, search) wrapped as standard "coprocessor" interfaces; parallel batch dispatch with DMA-style async I/O |
+| **Task parallelism & concurrency** | Superscalar/out-of-order execution + multi-core: independent instructions issued in parallel | Sub-agent spawning via `SysAgent` handoff; worktree isolation for independent subtasks; thread-pool hook execution | Multi-agent pipeline optimization: automatic task dependency graph analysis; dynamic parallelism tuning; inter-agent pipeline depth and throughput optimization |
+| **External interrupt & user intervention** | Hardware interrupt: save state → ISR → restore state | Async dual-buffer: user can inject messages mid-stream via SSE; session pause via idle timeout; hook inject exit code (2) for message injection | Agent signal standardization: universal interrupt vectors (pause / redirect / undo / inject); keyboard and voice multi-modal real-time interruption without session restart |
+| **Resource deadlock & contention** | Resource allocation graph + detection/avoidance: lock hierarchy, timeout rollback | Single agent model; file editing serialized through `file_writer` with workspace-scoped paths | Agent concurrency control: distributed lock manager (DLM) for shared resources; optimistic concurrency; automatic deadlock detection and cycle breaking between agents |
+| **Identity, permissions & security boundaries** | Protection rings (Ring 0–3) + ACL: kernel mode has full privilege, user mode restricted | Dual-source isolation: system resources read-only (Ring 0), user workspace read-write (Ring 3); workspace path sandboxing (no traversal); hooks run as independent subprocesses | Least-privilege auto-derivation: agent granted minimal toolset and data view for current task; permission scope expands/contracts dynamically with task phase |
+
+<br/>
+
+## Architecture
+
+ARF decouples **what** (control) from **how** (execution). The filesystem is the bridge.
+
+```
+┌─────────────────────────────────────────────────────┐
+│              CONTROL LAYER (declarative)              │
+│  models/    tools/    skills/    arf_agent.yaml      │
+│  (YAML — human-readable, git-trackable)              │
+└──────────────────────┬──────────────────────────────┘
+                       │  filesystem discovery
+┌──────────────────────┴──────────────────────────────┐
+│              EXECUTION LAYER (LangGraph)              │
+│  ResourceRegistry → UserAgent/SysAgent → GraphEngine │
+│  classify → compact → call_model → execute_tools     │
+│  FastAPI + WebSocket + SSE → Vue 3 frontend          │
+└─────────────────────────────────────────────────────┘
+```
+
+Key engineering choices:
+
+- **Dual-source resources** — system resources ship with the framework (read-only, 18 tools + 18 skills). User resources live in the workspace (read-write, override by name). Framework upgrades never clobber customizations.
+- **Self-evolution** — the agent scaffolds, writes, and registers new tools and skills at runtime. A conversation can produce a permanent capability.
+- **Subprocess hooks** — six lifecycle events, exit-code contract (0 = continue, 1 = block, 2 = inject). Hooks run as independent processes with their own timeout and failure domain.
+- **Hot reload** — file watcher detects resource changes; registry updates without restart.
+
+### Framework vs. Application
 
 | Layer | Scope | Examples |
 |-------|-------|----------|
@@ -96,9 +142,30 @@ ARF is a **framework** — a set of conventions, a resource system, a graph engi
 | **Reference App** | A concrete agent built on the framework | Vue 3 frontend, session sidebar, model routing, `session_archiver`, `title_generator` |
 | **User workspace** | What you build on top | Model configs, custom tools, `long_term.md`, workspace YAML |
 
-The reference app demonstrates capability. You can build something entirely different — a CLI tool, a headless automation agent, a code review bot — using the same conventions, without touching the frontend.
+**The multi-session sidebar is a reference implementation detail**, not a framework constraint. The framework provides `SessionManager` as a building block and makes no further prescription.
 
-**The multi-session sidebar in the current app is a reference implementation detail**, not a framework constraint. The framework provides `SessionManager` as a building block and makes no further prescription.
+<br/>
+
+## Trace System
+
+| Trace Event | Records |
+|-------------|---------|
+| `lifecycle.session_start` | Workspace, transport, timestamp |
+| `lifecycle.session_end` | Message count, duration, trigger |
+| `lifecycle.prompt_snapshot` | Prompt hash, length, active tools |
+| `lifecycle.hook_execution` | Hook name, event, exit code, stdout/stderr |
+| `lifecycle.init` | Registry counts, agent build params |
+| `lifecycle.config` | Agent rebuild triggers |
+
+| Node | Recorded |
+|------|----------|
+| `classify` | Classification (`medium`/`complex`), resolved model |
+| `call_model` | Model, tokens, I/O snippets, latency |
+| `execute_tools` | Tool name, category, I/O snippets, latency |
+| `hook` | Event type, exit status, hook name |
+| `respond` | Response snippet, truncation flag |
+
+Waterfall viewer at `/traces` — each turn as a time-proportional block, expandable to token counts, I/O snippets, and tool execution detail.
 
 <br/>
 
@@ -142,73 +209,6 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 | `ARF_CLASSIFIER_ENABLED` | `0` | Auto model routing (set `1` to activate) |
 
 Model config: `models/<name>/config.yaml` — `base_url`, `api_key`, `model_name`, `temperature`, etc.
-
-<br/>
-
-## Architecture
-
-ARF decouples **what** (control) from **how** (execution). The filesystem is the bridge.
-
-```
-┌─────────────────────────────────────────────────────┐
-│              CONTROL LAYER (declarative)              │
-│  models/    tools/    skills/    arf_agent.yaml      │
-│  (YAML — human-readable, git-trackable)              │
-└──────────────────────┬──────────────────────────────┘
-                       │  filesystem discovery
-┌──────────────────────┴──────────────────────────────┐
-│              EXECUTION LAYER (LangGraph)              │
-│  ResourceRegistry → UserAgent/SysAgent → GraphEngine │
-│  classify → compact → call_model → execute_tools     │
-│  FastAPI + WebSocket + SSE → Vue 3 frontend          │
-└─────────────────────────────────────────────────────┘
-```
-
-Key engineering choices:
-
-- **Dual-source resources** — system resources ship with the framework (read-only, 18 tools + 18 skills). User resources live in the workspace (read-write, override by name). Framework upgrades never clobber customizations.
-- **Self-evolution** — the agent scaffolds, writes, and registers new tools and skills at runtime. A conversation can produce a permanent capability.
-- **Subprocess hooks** — six lifecycle events, exit-code contract (0 = continue, 1 = block, 2 = inject). Hooks run as independent processes with their own timeout and failure domain. A crashed hook cannot bring down the agent.
-- **Hot reload** — file watcher detects resource changes; registry updates without restart.
-
-<br/>
-
-## Trace System
-
-| Trace Event | Records |
-|-------------|---------|
-| `lifecycle.session_start` | Workspace, transport, timestamp |
-| `lifecycle.session_end` | Message count, duration, trigger |
-| `lifecycle.prompt_snapshot` | Prompt hash, length, active tools |
-| `lifecycle.hook_execution` | Hook name, event, exit code, stdout/stderr |
-| `lifecycle.init` | Registry counts, agent build params |
-| `lifecycle.config` | Agent rebuild triggers |
-
-Per-turn, per-node traces:
-
-| Node | Recorded |
-|------|----------|
-| `classify` | Classification (`medium`/`complex`), resolved model |
-| `call_model` | Model, tokens (prompt/completion/total), I/O snippets, latency |
-| `execute_tools` | Tool name, category, input/output snippets, latency |
-| `hook` | Event type, exit status, hook name |
-| `respond` | Response snippet, truncation flag |
-
-Waterfall viewer at `/traces` — each turn as a time-proportional block, expandable to token counts, I/O snippets, and tool execution detail.
-
-<br/>
-
-## Roadmap
-
-| Priority | Item |
-|----------|------|
-| **P0** | **Infinite-context single-session experience** — deprecate multi-session sidebar. The user never sees a session list. Conversations flow continuously; archiving and compaction happen transparently. |
-| **P0** | Sandbox runtime for tool execution |
-| **P1** | `arf chat` — interactive CLI |
-| **P1** | `arf run` — headless batch execution |
-| **P2** | Plugin/extension system |
-| **P2** | MCP (Model Context Protocol) support |
-| **P3** | Tool approval flow — human-in-the-loop for sensitive operations |
 
 <br/>
 
