@@ -31,7 +31,7 @@ A model is raw compute — powerful, but not a computer. It needs memory managem
 
 The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the problems every agent engineer faces. ARF does not invent new abstractions. It adapts proven OS patterns to the token era.
 
-### 本地优先，基于文件系统
+### Local-First, Filesystem-Native
 
 Everything lives in a workspace directory. Models, tools, skills, memory, session archives — all files on disk. No cloud SaaS. No managed database. No telemetry. Your configuration is YAML, your version control is Git, your history is grep-able.
 
@@ -48,15 +48,15 @@ my_workspace/
 └── .hooks.json             # lifecycle hook definitions
 ```
 
-### 约定大于配置
+### Convention over Configuration
 
 Four entity types — **model**, **tool**, **skill**, **hook** — each following a predictable directory convention. The framework discovers; you don't register. No decorators. No base classes. No import hooks. A tool is two files: `tool.yaml` for the schema, `function.py` for the logic. That's the entire API surface.
 
-### 渐进式披露
+### Progressive Disclosure
 
 The agent doesn't blast every capability into every API call. Nine kernel tools (~800 tokens) are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. Long tool outputs land on disk with a summary in context. The agent pays only for what it actually uses. This is **context engineering** applied systematically — not an afterthought, but architecture.
 
-### 可追踪可回溯
+### Fully Traceable
 
 Every model call, every tool execution, every hook invocation — recorded. Trace is a first-class subsystem, not a log file bolted on.
 
@@ -64,7 +64,7 @@ Every model call, every tool execution, every hook invocation — recorded. Trac
 - **Waterfall visualization** — each turn rendered as a time-proportional cascade of classify → compact → call_model → execute_tools → respond
 - **Session archives** — complete conversation + trace + usage stats as portable JSON
 
-### 单用户自持的双Agent智能体
+### Single-User, Self-Hosted Dual-Agent
 
 User Agent handles your tasks. System Agent handles internal operations — memory extraction, title generation, error recovery. Separate execution, shared workspace. The user sees one assistant; the dual architecture is an implementation detail that raises reliability without adding cognitive load.
 
@@ -77,7 +77,7 @@ ARF is a **breeding ground for self-growing agents**. Every agent spawned under 
 Each task domain runs as a closed loop:
 
 ```
-感知 (Perceive) → 思考 (Reason) → 行动 (Act) → 验证 (Verify) → 感知 ...
+Perceive → Reason → Act → Verify → Perceive ...
 ```
 
 Agents iterate, converging toward **local optima** within their domains. When a cluster of such specialists collaborates, the system exhibits capabilities beyond any individual. **Emergence happens. Generalization follows.**
