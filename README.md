@@ -25,6 +25,10 @@
 
 <br/>
 
+> **Built by DeepSeek V4 Pro & Claude Code.** The author provided design direction and code review only — not a single line was manually written. If you still doubt whether Agent Harness works, this project is the proof.
+
+<br/>
+
 ## Design Philosophy
 
 A model is raw compute — powerful, but not a computer. It needs memory management, process scheduling, interrupt handling, a file system, and security boundaries. ARF provides those. It is an **agent framework** built on a single architectural insight: **the Harness layer is the kernel of AI-native computing**.
