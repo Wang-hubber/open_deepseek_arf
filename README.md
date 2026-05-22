@@ -70,6 +70,22 @@ ARF presents as a two-agent system: a **User Agent** handles your tasks directly
 
 <br/>
 
+## Vision
+
+ARF is not just a chat assistant. It is a **breeding ground for self-growing agents**. Every agent spawned under the ARF framework is an intelligent individual that grows within its task scenario. They all share the same foundational capability — **resource perception and utilization** — yet each develops distinct techniques and behavioral emphases shaped by its domain.
+
+Each task scenario operates as a closed loop:
+
+```
+感知 (Perceive) → 思考 (Reason) → 行动 (Act) → 验证 (Verify) → 感知 ...
+```
+
+Agents iterate this loop, converging toward **local optima** within their domains. And when a cluster of such agents — each a specialist in its own right — collaborates and competes, the system as a whole begins to exhibit capabilities beyond any individual. **Emergence happens. Generalization follows.**
+
+This is the path from ARF to AGI: not a monolithic super-model, but a **society of self-growing agents**, scaffolding from specialized competence toward general intelligence.
+
+<br/>
+
 ## Framework vs. MVP
 
 ARF is a **framework** — a set of conventions, a resource system, a graph engine, and an observability layer. What ships today is the **MVP application** built on top of it: a single-user chat assistant with a Vue 3 frontend.
