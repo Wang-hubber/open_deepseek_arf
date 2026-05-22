@@ -88,7 +88,7 @@ async function handleClick(id: string, isActive: boolean) {
     }
   } else {
     try {
-      const data = await sessionStore.fetchArchive(id)
+      const data = await sessionStore.viewArchive(id)
       chatStore.renderFromHistory(data.messages || [])
     } catch (e: any) {
       alert(t('session.loadFailed', { msg: e.message }))

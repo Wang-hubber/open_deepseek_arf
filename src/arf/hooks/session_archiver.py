@@ -35,6 +35,7 @@ def _sanitize_surrogates(obj):
 
 
 def main():
+    sys.stdin.reconfigure(encoding="utf-8")
     workspace = Path(os.environ.get("ARF_HOOK_WORKSPACE", "."))
     session_id = os.environ.get("ARF_HOOK_SESSION_ID", "")
     session_title = os.environ.get("ARF_HOOK_SESSION_TITLE", "新会话")

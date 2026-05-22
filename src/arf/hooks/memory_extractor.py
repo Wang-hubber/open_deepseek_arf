@@ -109,6 +109,7 @@ def _format_conversation(history: list[dict]) -> str:
 
 
 def main():
+    sys.stdin.reconfigure(encoding="utf-8")
     workspace = Path(os.environ.get("ARF_HOOK_WORKSPACE", "."))
 
     stdin_raw = sys.stdin.read()

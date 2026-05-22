@@ -57,6 +57,18 @@ export function useChat() {
 
       abortController = new AbortController()
 
+      // Auto-resume: if viewing an archived session without an active session,
+      // resume it before sending the message so the conversation continues.
+      const archiveId = sessionStore.viewingArchiveId
+      if (archiveId && !sessionStore.activeSession && !sessionStore.isPendingNewSession()) {
+        try {
+          const resumed = await sessionStore.resumeSession(archiveId)
+          chatStore.renderFromHistory(resumed.messages || [])
+        } catch {
+          // Resume failed, proceed as new session
+        }
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers,

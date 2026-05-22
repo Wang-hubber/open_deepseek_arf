@@ -324,6 +324,7 @@ class HookRunner:
 
     def _build_env(self, event: str, payload: dict) -> dict:
         env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
         env["ARF_HOOK_EVENT"] = event
         env["ARF_HOOK_WORKSPACE"] = str(self._workspace)
 
