@@ -8,7 +8,7 @@ export const useAppStore = defineStore('app', () => {
   const language = ref(localStorage.getItem('arf_language') || 'zh')
   const usageRefreshKey = ref(0)
 
-  const currentPage = computed(() => {
+  const currentPage = computed<'loading' | 'welcome' | 'config' | 'chat'>(() => {
     if (loading.value) return 'loading'
     if (configStatus.value?.configured && localStorage.getItem('arf_seen_welcome')) return 'chat'
     return 'welcome'

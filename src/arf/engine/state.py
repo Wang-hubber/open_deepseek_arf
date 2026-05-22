@@ -45,6 +45,10 @@ class AgentState(TypedDict):
     # Control plane
     turn_count: int
     max_turns: int
+    # None = terminal (graph routes to respond). The frontend TraceView
+    # depends on transition=None to detect Turn boundaries — a None value
+    # means the current user/agent turn has completed. Do not repurpose
+    # None semantics without updating frontend Turn grouping logic.
     transition: Optional[str]
     continuation_count: int
     compaction_count: int

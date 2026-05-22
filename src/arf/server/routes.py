@@ -19,6 +19,21 @@ from .sessions import list_archives, get_archive, update_title, delete_archive, 
 
 router = APIRouter(prefix="/api")
 
+
+def _sanitize_surrogates(obj):
+    """Recursively replace lone surrogate characters that break UTF-8 encoding."""
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            return obj.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
 _mgr: SessionManager | None = None
 
 
@@ -262,7 +277,7 @@ def trace_session_detail(session_id: str):
     events = get_trace_session_detail(session_id, "admin")
     if not events:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {"session_id": session_id, "events": events}
+    return {"session_id": session_id, "events": _sanitize_surrogates(events)}
 
 
 @router.get("/traces/summary")
@@ -314,8 +329,8 @@ def trace_export(session_id: str, mgr: SessionManager = Depends(get_mgr)):
     export_data = {
         "session_id": session_id,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "trace_events": events,
-        "conversation": messages,
+        "trace_events": _sanitize_surrogates(events),
+        "conversation": _sanitize_surrogates(messages),
     }
 
     tmp = tempfile.NamedTemporaryFile(
@@ -690,7 +705,7 @@ def get_active_session(mgr: SessionManager = Depends(get_mgr)):
 
 @router.get("/sessions/active/messages")
 def get_active_session_messages(mgr: SessionManager = Depends(get_mgr)):
-    return mgr.session_history
+    return _sanitize_surrogates(mgr.session_history)
 
 
 @router.get("/sessions")
@@ -708,7 +723,7 @@ def get_session(session_id: str, mgr: SessionManager = Depends(get_mgr)):
     if row.get("filepath"):
         archive = get_archive(session_id, str(mgr.workspace_dir))
         if archive:
-            return archive
+            return _sanitize_surrogates(archive)
     return {
         "id": row["session_id"],
         "title": row["title"],

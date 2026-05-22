@@ -22,9 +22,6 @@ function navigateToPage() {
     case 'welcome':
       router.replace('/welcome')
       break
-    case 'config':
-      router.replace('/config')
-      break
     case 'chat':
       router.replace('/')
       break
