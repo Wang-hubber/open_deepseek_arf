@@ -98,5 +98,9 @@ function formatTokens(n: number): string {
   font-family: monospace; font-size: 10px; color: var(--text-muted);
   white-space: nowrap; flex-shrink: 0;
 }
-.tc-body { border-top: 1px solid var(--border-light); }
+.tc-body {
+  border-top: 1px solid var(--border-light);
+  /* Override global styles from variables.css (meant for ToolCard) */
+  max-height: none; opacity: 1; overflow: visible;
+}
 </style>
