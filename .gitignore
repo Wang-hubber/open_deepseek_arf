@@ -55,3 +55,7 @@ zhihu_article*.md
 .DS_Store
 Thumbs.db
 .hooks.json
+
+# Project artifacts (not tracked)
+tests/
+docs/

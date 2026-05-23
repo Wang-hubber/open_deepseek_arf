@@ -181,7 +181,7 @@ ARF 将**做什么**（控制）与**怎么做**（执行）解耦。文件系�
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd frontend && npm install && cd ..
+cd app/web && npm install && cd ..
 
 arf init my_workspace
 arf start --workspace my_workspace
@@ -224,7 +224,7 @@ arf start --workspace my_workspace
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd frontend && npm install && npm run dev
+cd app/web && npm install && npm run dev
 ```
 
 **核心技术栈：** Python 3.10+ · FastAPI · LangGraph · Vue 3 · TypeScript · Vite · SQLite

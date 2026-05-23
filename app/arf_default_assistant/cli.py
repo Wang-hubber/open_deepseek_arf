@@ -55,7 +55,7 @@ def cmd_start(args):
     _kill_port(8000)
 
     # Check frontend
-    frontend_dir = APP_DIR / ".." / ".." / "frontend"
+    frontend_dir = APP_DIR / ".." / "web"
     has_frontend = frontend_dir.exists() and (frontend_dir / "package.json").exists()
     if has_frontend and not (frontend_dir / "node_modules").exists():
         print("Installing frontend dependencies (npm install)...")

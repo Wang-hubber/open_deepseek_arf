@@ -181,7 +181,7 @@ Requires Python ≥ 3.10 and Node.js ≥ 18.
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd frontend && npm install && cd ..
+cd app/web && npm install && cd ..
 
 arf init my_workspace
 arf start --workspace my_workspace
@@ -224,7 +224,7 @@ See [贡献者须知.md](./贡献者须知.md) for the contributor guide.
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd frontend && npm install && npm run dev
+cd app/web && npm install && npm run dev
 ```
 
 **Core stack:** Python 3.10+ · FastAPI · LangGraph · Vue 3 · TypeScript · Vite · SQLite
