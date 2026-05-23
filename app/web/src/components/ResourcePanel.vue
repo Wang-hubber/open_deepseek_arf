@@ -271,7 +271,7 @@ defineExpose({ load })
 
 <style scoped>
 #resource-panel-right {
-  grid-column: 3; grid-row: 2;
+  grid-column: 2; grid-row: 2;
   background: var(--bg-panel); border-left: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
 }
