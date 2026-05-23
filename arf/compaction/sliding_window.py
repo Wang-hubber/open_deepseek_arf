@@ -12,7 +12,7 @@ from arf.core.state import AgentState
 logger = logging.getLogger("arf.compaction")
 
 # DeepSeek V4 context window (tokens)
-DEFAULT_WINDOW_SIZE = 128_000
+DEFAULT_WINDOW_SIZE = 131_072
 
 
 class SlidingWindowCompactor:

@@ -9,7 +9,7 @@ class ModelConfig(BaseModel):
     model: str
     api_base: str = "https://api.deepseek.com"
     api_key_env: str = "DEEPSEEK_API_KEY"
-    context_window: int = 128_000  # max tokens for this model
+    context_window: int = 131_072  # max tokens for this model
     kwargs: dict = Field(default_factory=dict)
 
 

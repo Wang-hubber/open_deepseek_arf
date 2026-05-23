@@ -11,7 +11,7 @@ ARF 通过滑动窗口压缩防止上下文窗口耗尽（OOM）。参照 Claude
     │
     ├─ [2] ModelRouter 路由 → 选定模型（quick / deep）
     │       │
-    │       └─ 获取模型的 context_window（如 131072）
+    │       └─ 获取模型的 context_window（flash 800k / pro 1M）
     │
     ├─ [3] should_compact(state, window_size)
     │       last_token_usage > threshold × window_size ?
@@ -31,7 +31,7 @@ ARF 通过滑动窗口压缩防止上下文窗口耗尽（OOM）。参照 Claude
 
 **触发条件**：
 ```python
-def should_compact(self, state, threshold=0.75, window_size=128_000):
+def should_compact(self, state, threshold=0.75, window_size=131_072):
     last_usage = state.get("last_token_usage", 0)  # 上一轮用量
     return last_usage > threshold * window_size
 ```
@@ -109,10 +109,10 @@ advanced:
 models:
   - name: quick
     model: deepseek-v4-flash
-    context_window: 131072        # 模型实际窗口大小
+    context_window: 800000             # flash 800k 窗口
   - name: deep
     model: deepseek-v4-pro
-    context_window: 131072
+    context_window: 1000000            # pro 1M 窗口
 ```
 
 ## 引擎流转
