@@ -101,6 +101,9 @@ class BaseAgent:
         self._event_bus = event_bus
         self._memory_store = memory_store
         self._tool_resolver = tool_resolver
+        # Auto-create usage tracker (framework default)
+        from arf.observability.usage_tracker import UsageTracker
+        self._usage_tracker = UsageTracker(event_bus)
 
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
@@ -134,7 +137,10 @@ class BaseAgent:
                     except _json.JSONDecodeError:
                         params = {}
                     tool_calls.append({"id": tc.id, "name": tc.function.name, "params": params})
-            return {"content": msg.content or "", "tool_calls": tool_calls}
+            usage = {}
+            if hasattr(msg, "usage") and msg.usage:
+                usage = dict(msg.usage)
+            return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage}
 
         async def _stream_model(messages: list[dict], model_name: str = ""):
             """Token-level streaming via ModelAdapter.chat_stream_full."""
@@ -160,6 +166,10 @@ class BaseAgent:
     @property
     def tool_resolver(self):
         return self._tool_resolver
+
+    @property
+    def usage_tracker(self):
+        return self._usage_tracker
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState

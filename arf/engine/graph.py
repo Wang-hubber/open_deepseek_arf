@@ -130,7 +130,8 @@ class GraphEngine:
                 break
             self._emit("model_call_start", {"model": state["current_model"], "turn": turn}, session_id=session_id)
             response = await self._call_model(msgs, state["current_model"])
-            self._emit("model_call_end", {"model": state["current_model"], "turn": turn}, session_id=session_id)
+            self._emit("model_call_end", {"model": state["current_model"], "turn": turn,
+                       "usage": response.get("usage", {}) if isinstance(response, dict) else {}}, session_id=session_id)
 
             if self.hook_runner:
                 await self.hook_runner.fire("post_model_call", {"response": response})

@@ -66,18 +66,6 @@ async def lifespan(app: FastAPI):
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
-    # Hook token counting into model calls
-    _original_call = _agent._engine._call_model
-    async def _counted_call(messages, model_name=""):
-        global _token_stats
-        _token_stats["calls"] += 1
-        # Estimate tokens from message length (rough: 3 chars ≈ 1 token)
-        _token_stats["tokens_in"] += sum(len(str(m.get("content",""))) for m in messages) // 3
-        result = await _original_call(messages, model_name)
-        _token_stats["tokens_out"] += len(str(result.get("content",""))) // 3
-        return result
-    _agent._engine.set_call_model(_counted_call)
-
     logger.info(f"Agent '{cfg.name}' ready")
     yield
     # ---- SHUTDOWN ----
@@ -394,30 +382,19 @@ async def preferences():
     """User preferences stub."""
     return JSONResponse({"language": "zh-CN", "theme": "auto"})
 
-# ---- Token counter (accumulated from model calls) ----
-_token_stats = {"calls": 0, "tokens_in": 0, "tokens_out": 0}
-
 @app.get("/api/usage/summary")
 async def usage_summary(period: str = "month"):
-    """Usage stats matching frontend UsageSummary interface."""
-    total = _token_stats["tokens_in"] + _token_stats["tokens_out"]
+    """Usage stats from framework UsageTracker."""
     return JSONResponse({
-        "total_tokens": total,
-        "total_calls": _token_stats["calls"],
-        "by_model": [
-            {
-                "model_name": m.model,
-                "model_type": m.name,
-                "prompt_tokens": _token_stats["tokens_in"],
-                "completion_tokens": _token_stats["tokens_out"],
-                "total_tokens": total,
-                "calls": _token_stats["calls"],
-            }
-            for m in _agent.config.models
-        ],
+        **_agent.usage_tracker.summary(),
         "sessions": 1,
         "period": period,
     })
+
+@app.get("/api/usage/detail")
+async def usage_detail(from_date: str, to_date: str, model: str = ""):
+    """Usage detail stub — aggregated data, no per-day breakdown yet."""
+    return JSONResponse([])
 
 @app.get("/api/health")
 async def health():
