@@ -25,7 +25,7 @@ pip install -e ".[dev]"
 
 # 5. 设置 API Key (选一个)
 #    Windows PowerShell:
-$env:DEEPSEEK_API_KEY = "sk-xxxxxxxxxxxxxxxx"
+$env:DEEPSEEK_API_KEY = "sk-xxxxxxxxxxxxxxxx"  # 注意：值必须加引号
 #    Windows CMD:
 set DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 #    Linux/Mac:

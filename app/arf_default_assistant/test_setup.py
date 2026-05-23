@@ -7,7 +7,7 @@ Windows (PowerShell) 测试流程:
   3. python -m venv .venv
   4. .venv\Scripts\activate
   5. pip install -e ".[dev]"
-  6. $env:DEEPSEEK_API_KEY = "sk-xxx"
+  6. $env:DEEPSEEK_API_KEY = "sk-xxx"   (注意：值必须加引号)
   7. cd app\arf_default_assistant
   8. python test_setup.py          <-- run this script
   9. python cli.py start           <-- start server
@@ -57,7 +57,7 @@ def main():
     # 2. DEEPSEEK_API_KEY
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     all_ok &= check("DEEPSEEK_API_KEY set", bool(key),
-                    "OK" if key else "未设置 | PowerShell: $env:DEEPSEEK_API_KEY = \"sk-xxx\" | CMD: set DEEPSEEK_API_KEY=sk-xxx | Linux: export DEEPSEEK_API_KEY=sk-xxx")
+                    "OK" if key else "未设置 | PowerShell: $env:DEEPSEEK_API_KEY = \"sk-xxx\" (值必须加引号) | CMD: set DEEPSEEK_API_KEY=sk-xxx | Linux: export DEEPSEEK_API_KEY=sk-xxx")
 
     # 3. Framework imports
     try:
