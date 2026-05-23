@@ -35,27 +35,6 @@ A model is raw compute — powerful, but not a computer. It needs memory managem
 
 The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the problems every agent engineer faces. ARF does not invent new abstractions. It adapts proven OS patterns to the token era.
 
-
-### Convention over Configuration
-
-Four entity types — **model**, **tool**, **skill**, **hook** — each following a predictable directory convention. The framework discovers; you don't register. No decorators. No base classes. No import hooks. A tool is two files: `tool.yaml` for the schema, `function.py` for the logic. That's the entire API surface.
-
-### Progressive Disclosure
-
-The agent doesn't blast every capability into every API call. Nine kernel tools (~800 tokens) are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. Long tool outputs land on disk with a summary in context. The agent pays only for what it actually uses. This is **context engineering** applied systematically — not an afterthought, but architecture.
-
-### Fully Traceable
-
-Every model call, every tool execution, every hook invocation — recorded. Trace is a first-class subsystem, not a log file bolted on.
-
-- **6-table SQLite trace database** — session lifecycle, model calls (tokens, latency, snippets), tool I/O, hook exit codes, prompt snapshots, graph node transitions
-- **Waterfall visualization** — each turn rendered as a time-proportional cascade of classify → compact → call_model → execute_tools → respond
-- **Session archives** — complete conversation + trace + usage stats as portable JSON
-
-### Single-User, Self-Hosted Dual-Agent
-
-User Agent handles your tasks. System Agent handles internal operations — memory extraction, title generation, error recovery. Separate execution, shared workspace. The user sees one assistant; the dual architecture is an implementation detail that raises reliability without adding cognitive load.
-
 <br/>
 
 ## Vision
@@ -197,6 +176,32 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 | `ARF_CLASSIFIER_ENABLED` | `0` | Auto model routing (set `1` to activate) |
 
 Model config: `models/<name>/config.yaml` — `base_url`, `api_key`, `model_name`, `temperature`, etc.
+
+<br/>
+
+## Reference App Design
+
+The following patterns are implementation details of the reference app (`app/arf_default_assistant/`), not framework constraints.
+
+### Convention over Configuration
+
+Four entity types — **model**, **tool**, **skill**, **hook** — each following a predictable directory convention. The framework discovers; you don't register. No decorators. No base classes. No import hooks. A tool is two files: `tool.yaml` for the schema, `function.py` for the logic. That's the entire API surface.
+
+### Progressive Disclosure
+
+The agent doesn't blast every capability into every API call. Nine kernel tools (~800 tokens) are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. Long tool outputs land on disk with a summary in context. The agent pays only for what it actually uses. This is **context engineering** applied systematically — not an afterthought, but architecture.
+
+### Fully Traceable
+
+Every model call, every tool execution, every hook invocation — recorded. Trace is a first-class subsystem, not a log file bolted on.
+
+- **6-table SQLite trace database** — session lifecycle, model calls (tokens, latency, snippets), tool I/O, hook exit codes, prompt snapshots, graph node transitions
+- **Waterfall visualization** — each turn rendered as a time-proportional cascade of classify → compact → call_model → execute_tools → respond
+- **Session archives** — complete conversation + trace + usage stats as portable JSON
+
+### Single-User, Self-Hosted Dual-Agent
+
+User Agent handles your tasks. System Agent handles internal operations — memory extraction, title generation, error recovery. Separate execution, shared workspace. The user sees one assistant; the dual architecture is an implementation detail that raises reliability without adding cognitive load.
 
 <br/>
 
