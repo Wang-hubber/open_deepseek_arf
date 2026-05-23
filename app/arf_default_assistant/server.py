@@ -92,13 +92,13 @@ class ChatReq(BaseModel):
     message: str
 
 
-@app.post("/chat")
+@app.post("/api/chat")
 async def chat(req: ChatReq):
     result = await _agent.chat(req.message)
     return JSONResponse({"content": result})
 
 
-@app.get("/chat/stream")
+@app.get("/api/chat/stream")
 async def chat_stream(message: str = Query(...)):
     async def gen():
         try:
@@ -114,7 +114,7 @@ async def chat_stream(message: str = Query(...)):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-@app.get("/trace")
+@app.get("/api/trace")
 async def get_trace():
     trace_dir = Path("./memory/sessions")
     sessions = {}
@@ -127,7 +127,7 @@ async def get_trace():
     return JSONResponse({"sessions": sessions})
 
 
-@app.get("/trace/stream")
+@app.get("/api/trace/stream")
 async def trace_stream():
     async def gen():
         try:
@@ -141,7 +141,7 @@ async def trace_stream():
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-@app.get("/config/status")
+@app.get("/api/config/status")
 async def config_status():
     cfg = _agent.config
     return JSONResponse({
@@ -158,7 +158,7 @@ async def config_status():
     })
 
 
-@app.get("/resources/{res_type}")
+@app.get("/api/resources/{res_type}")
 async def list_resources(res_type: str):
     if res_type == "tools":
         items = [
@@ -175,14 +175,14 @@ async def list_resources(res_type: str):
     return JSONResponse({"type": res_type, "items": items, "count": len(items)})
 
 
-@app.post("/save")
+@app.post("/api/save")
 async def manual_save():
     from lazy_persistence import save_archive_async
     await save_archive_async(_agent)
     return JSONResponse({"status": "saved"})
 
 
-@app.get("/archive")
+@app.get("/api/archive")
 async def download_archive():
     p = Path("memory/archive.json")
     if p.exists():
@@ -190,7 +190,7 @@ async def download_archive():
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
-@app.post("/reload")
+@app.post("/api/reload")
 async def reload_config():
     """Reload agent config and reinitialize the agent."""
     global _agent
@@ -207,7 +207,7 @@ class FeedbackReq(BaseModel):
     comment: str = ""
 
 
-@app.post("/feedback")
+@app.post("/api/feedback")
 async def feedback(req: FeedbackReq):
     log = Path("memory/feedback.jsonl")
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +216,7 @@ async def feedback(req: FeedbackReq):
     return JSONResponse({"status": "recorded"})
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health():
     return JSONResponse({
         "status": "ok",
