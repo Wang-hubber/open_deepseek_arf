@@ -35,22 +35,6 @@ A model is raw compute — powerful, but not a computer. It needs memory managem
 
 The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the problems every agent engineer faces. ARF does not invent new abstractions. It adapts proven OS patterns to the token era.
 
-### Local-First, Filesystem-Native
-
-Everything lives in a workspace directory. Models, tools, skills, memory, session archives — all files on disk. No cloud SaaS. No managed database. No telemetry. Your configuration is YAML, your version control is Git, your history is grep-able.
-
-```
-my_workspace/
-├── arf_agent.yaml          # agent config
-├── models/                 # model definitions (endpoints, credentials, parameters)
-├── tools/                  # custom tools
-├── skills/                 # reusable prompt + tool orchestration templates
-├── memory/
-│   ├── memory.json         # persistent memory store (facts, preferences, decisions)
-│   ├── archive.json        # full conversation archive
-│   └── sessions/           # per-session trace events
-└── .hooks.json             # lifecycle hook definitions
-```
 
 ### Convention over Configuration
 
