@@ -54,32 +54,39 @@ def cmd_start(args):
     # Kill any existing process on port
     _kill_port(8000)
 
-    # Start uvicorn
+    # Check frontend
+    frontend_dir = APP_DIR / ".." / ".." / "frontend"
+    has_frontend = frontend_dir.exists() and (frontend_dir / "package.json").exists()
+    if has_frontend and not (frontend_dir / "node_modules").exists():
+        print("Frontend dependencies not installed. Run: cd frontend && npm install")
+        if not args.no_frontend:
+            print("Skipping frontend. Use --no-frontend to suppress this check, or install deps.")
+            has_frontend = False
+
+    # Start uvicorn — inherit stdout/stderr so logs are visible
     uvicorn_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(APP_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
     )
     print(f"Server starting (PID {uvicorn_proc.pid})...")
     time.sleep(2)
 
-    # Optionally start frontend
-    frontend_dir = APP_DIR / ".." / ".." / "frontend"
+    # Start frontend — inherit stdout/stderr so vite logs are visible
     frontend_proc = None
-    if frontend_dir.exists() and not args.no_frontend:
+    if has_frontend and not args.no_frontend:
         npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
         frontend_proc = subprocess.Popen(
             [npm_cmd, "run", "dev", "--", "--host", "127.0.0.1"],
             cwd=str(frontend_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
         )
         print(f"Frontend starting (PID {frontend_proc.pid})...")
 
-    print(f"Server ready at http://127.0.0.1:8000")
-    print(f"Frontend:  http://127.0.0.1:5173")
-    print("Press Ctrl+C to stop.")
+    print(f"")
+    print(f"  Backend:  http://127.0.0.1:8000")
+    if has_frontend and not args.no_frontend:
+        print(f"  Frontend: http://127.0.0.1:5173")
+    print(f"")
+    print(f"Press Ctrl+C to stop.")
     try:
         uvicorn_proc.wait()
     except KeyboardInterrupt:
