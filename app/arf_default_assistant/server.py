@@ -130,8 +130,10 @@ async def _sse_chat(message: str):
             elif t == "tool_call_end":
                 result = "success" if event.data.get("success") else "error"
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')})}\n\n"
-        # Send done after stream completes
-        yield f"data: {json.dumps({'type': 'done', 'history': [], 'session_id': 'default', 'title': 'ARF Assistant'})}\n\n"
+        # Send done with actual history from state_store
+        state = await _agent.state_store.get("default")
+        history = state.get("messages", []) if state else []
+        yield f"data: {json.dumps({'type': 'done', 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
 
