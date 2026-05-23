@@ -252,6 +252,11 @@ async def health():
         "agent": _agent.config.name if _agent else "not initialized",
     })
 
+@app.get("/api/debug/state")
+async def debug_state():
+    state = await _agent.state_store.get("default")
+    return JSONResponse({"has_state": state is not None, "messages": len(state.get("messages",[])) if state else 0})
+
 # ---- Session stubs (single infinite session — no session management) ----
 @app.get("/api/sessions")
 async def sessions_list():
@@ -272,10 +277,16 @@ async def ws_stub(ws: WebSocket):
     await ws.accept()
     await ws.close()
 
-# Static files (frontend) -- if built
+# Static files (frontend) + SPA fallback
 frontend_dir = Path("../web/dist")
 if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="static")
+    app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
+
+    from fastapi.responses import FileResponse
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        """SPA fallback: all non-/api/ requests → index.html (Vue Router handles the rest)."""
+        return FileResponse(frontend_dir / "index.html")
 
 
 def main():
