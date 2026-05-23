@@ -10,20 +10,21 @@
 |---|---|---|---|---|
 | **core** | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
 | **agent** | 进程 | Agent 生命周期管理 | Pydantic 配置驱动，代码优先 | `create_agent(config=AgentConfig(...))` |
-| **engine** | CPU 流水线 | 执行循环、自动 checkpoint、并行工具调用 | ReAct 循环 + StateStore 自动持久化 + ToolExecutor 并发 | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` |
-| **observability** | 系统监控 (perf/strace) + 本地调试 | 框架黑盒，出问题无法定位 | OTel Span 导出 + Rich TUI 实时调试面板 | `EventBus` + `Tracer` + `TuiDashboard`（共享事件源） |
+| **engine** | CPU 流水线 + 事务管理器 | 执行循环、checkpoint、并行tool调用、事务回滚、规划跟踪 | ReAct + StateStore + ToolExecutor + Transaction + Planner | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` + `TransactionContext` + `Planner` |
+| **observability** | 系统监控 + 录放机 | 框架黑盒，出问题无法定位且无法复现 | OTel Span + Rich TUI + Record/Replay | `EventBus` + `Tracer` + `TuiDashboard` + `ReplayController` |
 | **streaming** | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE/WebSocket 推送 | `EventBus` + `EventStream`（共享事件源） |
 | **guardrails** | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | engine 三处硬编码调用点 (输入/输出/工具参数) | `GuardRunner` (engine 统一入口，内部封装三种护栏) |
+| **evaluation** | 基准测试 (benchmark) | 改了prompt/工具不知道变好变坏 | 轨迹收集 + 指标计算 + 数据集回放 + 回归测试 | `EvalRunner` + `MetricCollector` |
 | **compaction** | 虚拟内存 + 页交换 | 上下文窗口爆掉 | 75% 阈值滑动窗口压缩 | `CompactionStrategy` |
-| **memory** | 文件系统 + 搜索引擎 | 记了但不会"回忆" | store 层 + 独立检索层，engine 节点自动触发 | `MemoryStore` + `MemoryRetriever` |
+| **memory** | 文件系统 + 搜索引擎 + 知识编辑器 | 只检索不写入，记忆无法生长 | store + retrieve + write/fusion 完整闭环 | `MemoryStore` + `MemoryRetriever` + `MemoryWriter` |
 | **routing** | 多级缓存 (L1/L2) | 所有请求打同一个模型 | 二级分类器 | `ModelRouter` |
 | **hooks** | 系统调用 | 自定义扩展点 | 6 事件节点，subprocess + 退出码契约 | `HookRunner` + `HookDefinition` |
 | **sandbox** | 进程隔离 | 工具访问越界 | 路径沙箱 | `ToolSandbox` |
 | **concurrency** | 乱序执行 + 多核 | 任务层面并行调度 | 顺序执行（占位） | `TaskScheduler` |
 | **human_loop** | 硬件中断 + 审批工作流 | 该停时停不下来，停了恢复不了 | 暂停/审批/超时/恢复 + 依赖 StateStore 快照 | `ApprovalPoint` + `ApprovalChannel` |
-| **communication** | 进程间通信 (IPC) | 多 Agent 无法协作 | Agent 消息总线 + 任务委托 + Supervisor 编排 | `AgentBus` + `TaskDelegator` + `Supervisor` + `SharedWorkspace` |
-| **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | ToolResolver 统一入口(内部封装 Provider+Retriever+Backend) | `ToolResolver` (engine 唯一 tool 接口) |
-| **errors** | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试次数 + 退避 + 降级策略 | `ErrorPolicy` |
+| **communication** | IPC + 分布式共识 | 多Agent聋子, Supervisor中心化, 无共享状态并发保护 | AgentBus + 去中心化Peer + SharedWorkspace锁 | `AgentBus` + `PeerAgent` + `Supervisor` + `SharedWorkspace` + `Lock` |
+| **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | ToolResolver (内部封装 Provider+Retriever+Backend) | `ToolResolver` (engine 唯一 tool 接口) |
+| **errors** | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试 + 退避 + 降级 + 事务回滚 | `ErrorPolicy` + `TransactionContext` |
 
 ## 核心设计：`arf/core` — 统一类型层
 
@@ -38,17 +39,18 @@ arf/core/
 │   ├── tracer.py         # Tracer
 │   ├── event_bus.py      # EventBus (streaming + observability 共享)
 │   ├── guardrails.py     # GuardRunner, InputGuardrail, OutputGuardrail, ToolGuardrail
+│   ├── eval.py           # EvalRunner, MetricCalculator
+│   ├── replay.py         # ReplayController
 │   ├── compaction.py     # CompactionStrategy
-│   ├── memory.py         # MemoryStore, MemoryRetriever
+│   ├── memory.py         # MemoryStore, MemoryRetriever, MemoryWriter
 │   ├── resources.py      # ToolResolver, ToolProvider, ToolRetriever, ToolBackend
 │   ├── routing.py        # ModelRouter
 │   ├── hooks.py          # HookRunner
 │   ├── sandbox.py        # ToolSandbox
 │   ├── concurrency.py    # TaskScheduler
 │   ├── human_loop.py     # ApprovalPoint, ApprovalChannel
-│   ├── communication.py  # AgentBus, TaskDelegator, Supervisor
-│   ├── resources.py      # ToolProvider, ToolBackend
-│   ├── engine.py         # LoopStrategy, StateStore, ToolExecutor
+│   ├── communication.py  # AgentBus, PeerAgent, Supervisor, SharedWorkspace, Lock, ConsensusProtocol
+│   ├── engine.py         # LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner
 │   └── errors.py         # ErrorPolicy
 ├── events.py             # AgentEvent — 统一事件模型
 ├── state.py              # AgentState, TurnContext, MemoryEntry
@@ -229,14 +231,15 @@ open_deepseek_arf/
 │   ├── compaction/                # sliding_window.py
 │   ├── sandbox/                   # path_sandbox.py
 │   ├── guardrails/                # none_guard.py, regex_clean.py, path_check.py
+│   ├── evaluation/                # runner.py, metrics.py (EvalRunner + 内建指标)
 │   ├── human_loop/                # approval_points.py, channels/
 │   │   └── channels/              # console.py, websocket.py
 │   ├── streaming/                 # adapters/ (SSE, WebSocket — EventBus 的传输层)
-│   ├── observability/             # otel.py (OTLP导出), tui.py (Rich调试面板)
-│   ├── communication/             # in_memory_bus.py, supervisor.py
+│   ├── observability/             # otel.py, tui.py, replay.py
+│   ├── communication/             # in_memory_bus.py, supervisor.py, peer.py
 │   ├── errors/                    # retry.py, fallback.py
 │   └── concurrency/               # sequential.py
-│   ├── testing/                    # InMemory* 测试替身，方便开发者单元测试
+│   ├── testing/                   # InMemory* 测试替身，方便开发者单元测试
 │   │   ├── __init__.py             # 导出所有 fake 实现
 │   │   ├── fake_bus.py             # InMemoryEventBus
 │   │   ├── fake_store.py           # InMemoryStateStore, InMemoryMemoryStore
@@ -294,6 +297,52 @@ class ToolExecutor(Protocol):
 ### MemoryRetriever 触发时机
 
 engine 在 **compact 之前** 调用 `MemoryRetriever.retrieve()`，`query_context` 为当前会话最近 N 条消息。检索结果写入 `state.context_summary`，由 prompt pipeline 的 `{{MEMORY}}` 占位符消费。**这是 engine 节点的内置行为，不是可选的 hook。**
+
+### MemoryWriter — 记忆写入与融合
+
+**解决的问题**: MemoryStore + MemoryRetriever 只覆盖了记忆的消费侧。Agent 在对话中通过工具调用和模型输出持续产生新知识——用户偏好、项目决策、关键事实——这些需要在对话过程中被主动提取、去重、与旧记忆融合或淘汰。
+
+OS 类比: 文件系统的 write + 日志合并 (compaction)。不是每次 write 就开新文件，而是写入日志、定期合并、清理冗余。
+
+```python
+# arf/core/protocols/memory.py
+
+class MemoryWriter(Protocol):
+    """记忆写入与融合——记忆管线的生产侧。
+    engine 在每个 turn 结束后调用，传入当前对话片段。
+    writer 内部完成提取→去重→融合→淘汰的完整流程。"""
+
+    async def extract_and_write(
+        self,
+        store: MemoryStore,
+        turn_messages: list[dict],      # 当前 turn 的对话消息
+        existing_entries: list[MemoryEntry],  # 已有相关记忆（由 retriever 提供）
+    ) -> list[MemoryEntry]:             # 返回写入后的受影响条目
+        ...
+
+@dataclass
+class MemoryEntry:
+    id: str
+    content: str                         # 记忆内容
+    category: Literal["fact", "preference", "decision", "context"]
+    timestamp: float
+    source_turn: int                     # 来源 turn
+    relevance_score: float = 1.0         # 检索相关性，writer 可通过设为 0.0 标记淘汰
+    replaces: str | None = None          # 替代的旧条目 ID（冲突解决）
+```
+
+**engine 中的调用位置**: 每个 turn 结束后，在 `StateStore.put()` 之前调用。流程:
+
+```
+turn 结束
+  ├─ MemoryRetriever.retrieve(query, session_id, max_tokens, top_k)
+  │     → 获取已有相关记忆（用于去重和融合判断）
+  ├─ MemoryWriter.extract_and_write(store, turn_messages, existing_entries)
+  │     → 提取本 turn 新知识，与已有记忆合并、去重、淘汰过期信息
+  └─ StateStore.put(session_id, state)
+```
+
+**默认实现**: `RuleBasedWriter` — 基于提示词模板让模型从对话中提取事实、偏好、决策，与已有条目比较后决定 add/update/delete。写入策略可配置: `append_only`（只累加不淘汰）、`dedup_merge`（去重合并）、`lru_evict`（LRU 淘汰，超出 max_entries 时淘汰最旧/最低分条目）。
 
 ### ToolResolver — Resources 层高层接口
 
@@ -386,6 +435,144 @@ class ErrorAction:
 
 默认实现: `DefaultErrorPolicy` — 工具错误重试 2 次指数退避，模型 429 重试 3 次，5xx 降级到 fallback 链中下一个模型。
 
+### TransactionContext — 事务性回滚
+
+**解决的问题**: StateStore 在 turn 边界保存快照，但工具链执行到一半失败时，仅重试无法回滚已执行的工具副作用（文件已写入、API 已调用）。需要**将一组工具调用包装为事务**，失败时自动回滚到上一个一致性边界。
+
+OS 类比: 数据库的 ACID 事务。`BEGIN` → 执行一组操作 → 成功则 `COMMIT`，失败则 `ROLLBACK`。文件系统的 journaling（ext4 的 jbd2）。
+
+```python
+# arf/core/protocols/engine.py
+
+class TransactionContext(Protocol):
+    """将一组工具调用包装为原子事务。engine 在执行工具链前调用 begin()，
+    全部成功后调用 commit()，任何失败调用 rollback()。"""
+
+    async def begin(self, session_id: str, turn: int) -> Transaction: ...
+
+    async def commit(self, tx: Transaction) -> None: ...
+
+    async def rollback(self, tx: Transaction, error: Exception) -> RollbackResult: ...
+
+@dataclass
+class Transaction:
+    id: str
+    session_id: str
+    turn: int
+    state_snapshot: dict           # turn 前的 AgentState 快照
+    tool_results: list[ToolResult]  # 已执行的工具结果（用于回滚参考）
+
+@dataclass
+class RollbackResult:
+    success: bool                   # 是否全部回滚成功
+    rollbacks: list[dict]           # 每个工具的回滚状态
+    unresolved: list[str]           # 无法自动回滚的副作用（需人工介入）
+    restored_state: dict            # 恢复到 turn 边界的状态
+```
+
+**engine 调用流程**:
+```
+engine: 收到 tool_calls
+  ├─ TransactionContext.begin(session_id, turn)
+  │     → 保存 state snapshot，标记事务开始
+  ├─ ToolExecutor.execute(tool_calls)  ← 并行/顺序执行
+  │     ├─ 全部成功 → TransactionContext.commit(tx)
+  │     │     → 清除 snapshot，写入结果到 state
+  │     └─ 任一失败 → ErrorPolicy.on_tool_error() 决定是否重试
+  │           └─ 重试耗尽 → TransactionContext.rollback(tx, error)
+  │                 → 恢复 state snapshot，执行每个工具的回滚逻辑
+  └─ 继续 loop 或 respond
+```
+
+**默认实现**: `SnapshotRollback` — begin 时保存完整 AgentState 深拷贝，commit 直接丢弃快照，rollback 恢复快照 + 对每个已执行的 `ToolResult` 调用工具自身的 `rollback` 回调（如果工具定义了的话）。对于无回滚回调的副作用（如网络请求已发出），标记为 `unresolved` 并写入 state 供后续 human_loop 审批。
+
+**限制**: 框架不保证所有工具副作用可逆（如已发送的邮件）。不可逆副作用通过 `RollbackResult.unresolved` 上报，由 `ErrorPolicy` → `HumanLoopManager` 升级为人工决策。
+
+### Planner — 规划与自我修正
+
+**解决的问题**: `loop_strategy: plan_execute` 只是一个标签。真实的多步任务需要: 生成计划 → 跟踪子目标状态 → 执行中各子目标间切换 → 检测偏离 → 修正计划。没有规划状态机和子目标跟踪，Agent 在复杂任务中会迷路。
+
+OS 类比: CPU 的指令调度器 + 分支预测 + 推测执行恢复。CPU 不是"先规划完全部指令再执行"，而是在执行中持续预测、检测、回滚。Agent 的 Planner 同理。
+
+```python
+# arf/core/protocols/engine.py
+
+class Planner(Protocol):
+    """通用规划上下文。不是"一次生成计划然后执行"，而是持续维护计划状态机，
+    在执行中根据反馈修正。LoopStrategy 的 build_graph 将 Planner 作为
+    规划节点插入到执行循环中。"""
+
+    async def generate_plan(
+        self,
+        task: str,
+        context: TurnContext,
+        tools: list[ToolDefinition],
+    ) -> Plan: ...
+
+    async def update_progress(
+        self,
+        plan: Plan,
+        completed_step: PlanStep,
+        result: ToolResult,
+    ) -> Plan: ...
+
+    async def detect_divergence(
+        self,
+        plan: Plan,
+        current_state: AgentState,
+    ) -> DivergenceResult: ...
+
+    async def revise(
+        self,
+        plan: Plan,
+        divergence: DivergenceResult,
+        context: TurnContext,
+    ) -> Plan: ...
+
+
+@dataclass
+class Plan:
+    id: str
+    goal: str                          # 最终目标
+    steps: list[PlanStep]              # 有序子目标
+    current_step_index: int = 0
+    status: Literal["draft", "executing", "revising", "completed", "failed"]
+
+@dataclass
+class PlanStep:
+    id: str
+    description: str                   # 子目标描述
+    tool_hint: str | None = None       # 预期使用的工具
+    status: Literal["pending", "in_progress", "completed", "skipped", "failed"]
+    depends_on: list[str]              # 依赖的前置步骤 ID 列表
+    result_summary: str = ""
+
+@dataclass
+class DivergenceResult:
+    diverged: bool
+    reason: str
+    affected_steps: list[str]
+    suggested_revision: str
+```
+
+**默认实现**: `PromptBasedPlanner` — 通过模型调用生成和修正计划，plan state 存储在 `AgentState.plan` 字段中，每个 turn 结束后自动调用 `update_progress` 和 `detect_divergence`。
+
+**engine 中的规划循环**:
+```
+START
+  ├─ [无计划] → Planner.generate_plan(task, ctx, tools)
+  │              → state.plan = Plan (draft)
+  ├─ [有计划] → 取 state.plan.steps[plan.current_step_index]
+  │              → call_model (注入当前子目标上下文)
+  │              → execute_tools
+  │              → Planner.update_progress(plan, step, result)
+  ├─ Planner.detect_divergence(plan, state)
+  │     ├─ diverged → Planner.revise(plan, divergence, ctx)
+  │     │              → state.plan.status = "revising"
+  │     └─ on track → 继续下一个 step
+  └─ [所有 steps completed] → respond
+```
+
 ### GuardRunner — engine 中的护栏执行点
 
 ```python
@@ -472,6 +659,253 @@ class ToolGuardrail(Protocol):
 - hooks 是用户可选扩展，用户可以增删改
 - sandbox 管 OS 层资源隔离（文件系统边界）
 - guardrails 管应用层语义安全（内容安全、注入防御）
+
+### ReplayController — Record & Replay 确定性重放
+
+**解决的问题**: 调试 Agent 的难点在于非确定性——LLM 随机性、并行工具调度时序、外部 API 返回变化。即便有 TUI 面板和 OTel 导出，开发者也无法精确复现某次异常会话进行步进调试。从"监控"到"可调试"的鸿沟需要 Record & Replay 来填补。
+
+OS 类比: rr (Mozilla 的 record & replay debugger)。录制整个进程的一次执行，包括所有非确定性输入（系统调用返回值、信号到达时序），然后无限次回放，每次回放都确定性地走到同一个执行路径。Agent 的"系统调用"就是 model 输出和 tool 返回。
+
+```python
+# arf/core/protocols/replay.py
+
+class ReplayController(Protocol):
+    """录制和回放 Agent 会话。录制时拦截所有非确定性输入（model response、
+    tool result、hook 注入），写入轨迹文件。回放时按顺序注入录制值，
+    Agent 走确定性执行路径。"""
+
+    async def start_recording(self, session_id: str) -> None: ...
+
+    async def record_model_output(
+        self, session_id: str, turn: int, model_name: str, output: str
+    ) -> None: ...
+
+    async def record_tool_result(
+        self, session_id: str, turn: int, tool_name: str, params: dict, result: dict
+    ) -> None: ...
+
+    async def stop_recording(self) -> ReplayTrace: ...
+
+    async def replay(
+        self,
+        trace: ReplayTrace,
+        *,
+        start_turn: int = 0,           # 从指定 turn 开始回放
+        breakpoints: list[int] | None = None,  # 在指定 turn 暂停，允许步进
+        mock_model_outputs: dict[int, str] | None = None,  # 覆盖特定 turn 的模型输出
+    ) -> AsyncIterator[AgentEvent]: ...
+
+
+@dataclass
+class ReplayTrace:
+    session_id: str
+    agent_config_hash: str            # 录制时的 config 指纹
+    arf_version: str                  # 录制时的框架版本
+    turns: list[TurnRecord]
+
+@dataclass
+class TurnRecord:
+    turn: int
+    model_name: str
+    model_input: dict                 # 发给 API 的完整 messages
+    model_output: str                 # API 返回的完整 response
+    tool_calls: list[ToolCallRecord]
+
+@dataclass
+class ToolCallRecord:
+    tool_name: str
+    params: dict
+    result: dict
+    timestamp: float
+```
+
+**录制与回放的集成点**:
+
+```
+录制模式 (ARF_REPLAY_MODE=record):
+  engine: call_model → ReplayController.record_model_output(...)
+  engine: execute_tool → ReplayController.record_tool_result(...)
+  session_end → ReplayController.stop_recording() → ReplayTrace.json
+
+回放模式 (ARF_REPLAY_MODE=replay):
+  engine: call_model → ReplayController.replay(...) 返回录制的 model_output（不调API）
+  engine: execute_tool → 正常执行（默认）或 mock 录制值
+  breakpoints → 在指定 turn 暂停，await 开发者输入继续
+```
+
+**默认实现**: `FileReplayController` — 轨迹存为 JSON 文件，回放时按 turn 顺序注入。支持单步模式（每 turn 暂停等待回车）。
+
+**使用场景**:
+- **回归测试**: 录制正确行为轨迹，改 prompt/工具后回放，对比输出差异
+- **调试**: 录制异常会话，在错误 turn 前设 breakpoint，步进观察
+- **CI**: 回放轨迹作为集成测试，验证框架升级后行为一致性
+
+### Evaluation — 基准测试与回归测试
+
+**解决的问题**: Agent 开发的核心痛点之一是"改了 prompt/工具/路由策略，不知道是变好还是变坏"。可观测性只解决"看到"（发生了什么），不解决"衡量"（这是更好的吗）。框架应内建评估基础设施，让开发者定义测试集、运行评估、对比基线。
+
+OS 类比: 基准测试套件 (SPEC, sysbench) + 回归测试框架。CPU 改微架构后跑 SPEC 得知性能变化；Agent 改 prompt 后跑 eval 得知质量变化。
+
+```python
+# arf/core/protocols/evaluation.py
+
+class EvalRunner(Protocol):
+    """评估运行器——对数据集运行 Agent，收集轨迹和指标，生成对比报告。"""
+
+    async def run(
+        self,
+        agent: "BaseAgent",
+        dataset: EvalDataset,
+        metrics: list[MetricCalculator],
+        *,
+        baseline: EvalReport | None = None,   # 基线报告（对比用）
+        max_parallel: int = 1,                 # 并行运行数
+    ) -> EvalReport: ...
+
+
+class MetricCalculator(Protocol):
+    """从轨迹中提取指标。框架提供内置指标，用户可自定义。"""
+
+    async def compute(
+        self,
+        trace: ReplayTrace,
+        expected: EvalCase,
+    ) -> dict[str, float]: ...
+
+
+@dataclass
+class EvalDataset:
+    name: str
+    cases: list[EvalCase]
+
+@dataclass
+class EvalCase:
+    id: str
+    input: str                         # 用户消息
+    expected_tools: list[str] | None    # 预期调用的工具名（可选）
+    expected_output_contains: list[str] | None  # 预期输出包含的关键词（可选）
+    max_turns: int | None               # 允许的最大 turn 数
+
+@dataclass
+class EvalReport:
+    run_id: str
+    dataset_name: str
+    agent_config_hash: str
+    timestamp: float
+    summary: EvalSummary               # 总览: 成功率、平均耗时、工具准确性
+    per_case: list[CaseResult]         # 每个 case 的详细结果
+    comparison: ComparisonReport | None  # 与基线的对比（如有）
+
+@dataclass
+class EvalSummary:
+    total: int
+    passed: int
+    failed: int
+    pass_rate: float
+    avg_turns: float
+    avg_tool_calls: float
+    avg_duration_seconds: float
+    tool_accuracy: float               # expected_tools 匹配率
+
+@dataclass
+class CaseResult:
+    case_id: str
+    passed: bool
+    turns: int
+    tool_calls: list[str]
+    duration_seconds: float
+    trace: ReplayTrace                 # 完整轨迹，用于深入分析
+    metrics: dict[str, float]          # {metric_name: value}
+    error: str | None = None
+
+@dataclass
+class ComparisonReport:
+    baseline_run_id: str
+    changes: list[MetricChange]
+
+@dataclass
+class MetricChange:
+    metric_name: str
+    baseline_value: float
+    current_value: float
+    delta: float
+    direction: Literal["improved", "regressed", "unchanged"]
+```
+
+**框架内建指标**:
+- `SuccessRate` — 是否在 max_turns 内完成任务（无 tool error、无 guardrail block）
+- `ToolAccuracy` — `expected_tools` 是否按序出现在实际工具调用中
+- `TurnEfficiency` — 完成任务所需的平均 turn 数（越少越好）
+- `OutputContains` — `expected_output_contains` 中几个关键词出现在最终响应中
+
+**最小可行实现**: 从 YAML/JSON 文件加载 `EvalDataset`，`agent.evaluate(dataset, metrics)` 运行并输出 `EvalReport.to_markdown()`:
+
+```
+# Eval Report: code_generation_v1
+| Case | Pass | Turns | Tools | Duration |
+|------|------|-------|-------|---------|
+| basic_fix   | PASS | 3 | file_reader, file_writer | 12.3s |
+| multi_file  | PASS | 5 | file_reader×3, file_writer×2 | 28.1s |
+| error_retry | FAIL | 8 | file_reader, file_reader, file_deleter | 45.2s |
+| --- | --- | --- | --- | --- |
+| Summary      | 2/3 (66.7%) | avg 5.3 turns | accuracy 80% |
+
+Comparison vs baseline (abc123):
+  - SuccessRate: 66.7% → 66.7% (unchanged)
+  - TurnEfficiency: 5.7 → 5.3 (improved -7%)
+  - ToolAccuracy: 75% → 80% (improved +5%)
+```
+
+### 去中心化通信原语
+
+**解决的问题**: 多 Agent 通信设计以 `Supervisor` 为中心编排，但真实多 Agent 场景需要去中心化的点对点协商（AutoGen swarm、多智能体辩论）。`SharedWorkspace` 仅简单读写，无锁、一致性保证、冲突解决——多 Agent 并行操作共享状态时数据竞争和死锁推给应用层。
+
+```python
+# arf/core/protocols/communication.py (追加)
+
+class PeerAgent(Protocol):
+    """去中心化 Agent 端点——不依赖 Supervisor 即可相互发现、协商、协作。
+    每个 PeerAgent 同时是消息生产者与消费者，Supervisor 是可选的上层编排器。"""
+    async def broadcast(self, message: AgentMessage) -> None: ...
+    async def negotiate(self, proposal: dict, peers: list[str]) -> ConsensusResult: ...
+    async def join_swarm(self, swarm_id: str) -> None: ...
+    async def leave_swarm(self) -> None: ...
+
+class Lock(Protocol):
+    """SharedWorkspace 的并发控制原语。多 Agent 写入同一 key 前获取锁，
+    防止竞争写入导致数据损坏。"""
+    async def acquire(self, resource_key: str, owner: str, ttl: float = 30.0) -> bool: ...
+    async def release(self, resource_key: str, owner: str) -> None: ...
+    async def wait_for(self, resource_key: str, timeout: float) -> bool: ...  # 阻塞等待锁释放
+
+class ConsensusProtocol(Protocol):
+    """多 Agent 达成一致意见的协商机制。如: 多数投票、轮值主席、raft 简化版。
+    用于 Agent 群体需要一致决策的场景（如代码审查是否通过、技术方案选型）。"""
+    async def propose(self, proposal: dict, voters: list[str]) -> ConsensusResult: ...
+    async def vote(self, proposal_id: str, vote: Literal["approve", "reject", "abstain"]) -> None: ...
+
+@dataclass
+class ConsensusResult:
+    proposal_id: str
+    approved: bool
+    vote_counts: dict[str, int]    # {"approve": 3, "reject": 1, "abstain": 0}
+    threshold: float               # 通过阈值
+    resolution: str                # 最终决议
+```
+
+**默认实现**:
+- `PeerAgent` → 基于 `AgentBus` 的去中心化实现，无 Supervisor 也可工作（Supervisor 是可选的编排层插件）
+- `Lock` → `InMemoryLock`（单进程 async primitives）
+- `ConsensusProtocol` → `MajorityVote`（多数票通过，默认 threshold 0.5）
+
+**在 SharedWorkspace 中的集成**: `SharedWorkspace.write(key, value)` 内部可选获取 `Lock`。agent config 中配置冲突策略:
+
+```yaml
+shared_workspace:
+  conflict_strategy: lock        # lock: 写前获取锁, merge: 自动合并, last_wins: 最后写入覆盖
+  lock_ttl: 30s
+  consensus: majority_vote       # majority_vote | unanimous | delegated
+```
 
 ---
 
@@ -1130,19 +1564,25 @@ AgentConfig(name=..., ...)  ← Pydantic 校验      YAML 文件 → AgentConfig
                            │
             ┌──────────────┼──────────────┬──────────────┐
             │              │              │              │
-      StateStore     EventBus     ToolExecutor   ToolResolver   GuardRunner
-      (checkpoint)  (events)     (并行tool调用)  (统一tool入口)  (三处硬编码)
+      StateStore     EventBus     ToolExecutor     ToolResolver   GuardRunner
+      (checkpoint)  (events)     (并行tool调用)    (统一tool入口)  (三处硬编码)
+            │              │              │              │              │
+            │         ReplayController  TransactionCtx  Planner    MemoryWriter
+            │         (录制/回放/断点)   (事务回滚)     (规划修正)  (记忆写入)
             │              │              │              │              │
             └──────────────┼──────────────┼──────────────┼──────────────┘
                            ▼
             GraphEngine(...)  ← DI 注入所有协议实现
               + LoopStrategy (react / plan_execute / direct)
-              + MemoryRetriever (在 compact 前自动触发)
-              + ToolResolver (engine 唯一 tool 入口,
-                              内部封装 Provider+Retriever+Backend)
-              + GuardRunner (输入/输出/工具参数三处硬编码调用)
-              + ErrorPolicy (工具/模型/护栏失败时自动执行)
-              + HumanLoopManager (审批暂停 → StateStore.put → 恢复)
+              + MemoryRetriever (compact 前)
+              + MemoryWriter (turn 结束后)
+              + ToolResolver (engine 唯一 tool 入口)
+              + GuardRunner (三处硬编码调用)
+              + TransactionContext (工具链事务包装)
+              + Planner (计划生成/跟踪/修正)
+              + ErrorPolicy (失败 → 重试/降级/回滚)
+              + HumanLoopManager (暂停 → StateStore.put → 恢复)
+              + ReplayController (录制模式拦截 model/tool, 回放模式注入)
 ```
 
 用户传入可选项 → 按用户配置使用；未传入 → 框架默认（通常为透传、旁路或禁用）。
@@ -1152,8 +1592,8 @@ AgentConfig(name=..., ...)  ← Pydantic 校验      YAML 文件 → AgentConfig
 1. **`arf/core` + 骨架** — 建立统一类型层，所有 Protocol 和数据结构收拢到 `arf/core/`。所有子模块的 `protocol.py` 移入 `core/protocols/`。
 2. **引擎层** — 搬运 `engine/`，加入 `StateStore` checkpoint、`ToolExecutor` 并发工具调用、MemoryRetriever 触发节点、ErrorPolicy 集成。
 3. **EventBus** — 统一事件总线替代 streaming/observability 两套系统。
-4. **resources + memory + hooks + agent** — 搬运并清理，resources 层实现 `ToolResolver` 封装 `ToolProvider` + `ToolRetriever` + `ToolBackend`；memory 加入 `MemoryRetriever`。
-5. **补齐所有默认实现** — 为每个域提供最小可行实现（如上述各节所述）。
+4. **resources + memory + hooks + agent** — 搬运并清理，resources 层实现 `ToolResolver`；memory 加入 `MemoryRetriever` + `MemoryWriter`。
+5. **补齐所有默认实现** — 为每个域提供最小可行实现（含 `MemoryWriter`、`TransactionContext`、`Planner`、`ReplayController`、`EvalRunner`、`PeerAgent`、`Lock`、`ConsensusProtocol`）。
 6. **前端隔离 + 验证** — 前端移入 `app/web/`，确认框架零应用依赖。
 
 每步独立提交。备份分支 `arfwithapp` 保留当前完整代码。
