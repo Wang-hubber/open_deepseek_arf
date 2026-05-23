@@ -96,8 +96,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
-signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
+# Shutdown handled by FastAPI lifespan (cross-platform, no signal tricks)
 
 
 class ChatReq(BaseModel):

@@ -55,9 +55,13 @@ class GraphEngine:
         """Late-binding injection of the streaming model API call function."""
         self._stream_model = stream_model
 
-    def _emit(self, event_type: str, data: dict) -> None:
+    def _emit(self, event_type: str, data: dict, session_id: str = "", agent_name: str = "") -> None:
         if self.event_bus:
-            self.event_bus.emit(AgentEvent(type=event_type, data=data, turn=data.get("turn", 0)))
+            self.event_bus.emit(AgentEvent(
+                type=event_type, data=data, turn=data.get("turn", 0),
+                session_id=session_id or data.get("session_id", ""),
+                agent_name=agent_name or data.get("agent_name", ""),
+            ))
 
     def _last_user_message(self, state: AgentState) -> str:
         for m in reversed(state.get("messages", [])):
@@ -80,7 +84,7 @@ class GraphEngine:
 
     async def invoke(self, state: AgentState) -> AgentState:
         session_id = state.get("session_id", "default")
-        self._emit("session_start", {"session_id": session_id})
+        self._emit("session_start", {"session_id": session_id}, session_id=session_id)
 
         while self.loop_strategy.should_continue(state):
             turn = state.get("current_turn", 0) + 1
@@ -124,9 +128,9 @@ class GraphEngine:
 
             if not self._call_model:
                 break
-            self._emit("model_call_start", {"model": state["current_model"], "turn": turn})
+            self._emit("model_call_start", {"model": state["current_model"], "turn": turn}, session_id=session_id)
             response = await self._call_model(msgs, state["current_model"])
-            self._emit("model_call_end", {"model": state["current_model"], "turn": turn})
+            self._emit("model_call_end", {"model": state["current_model"], "turn": turn}, session_id=session_id)
 
             if self.hook_runner:
                 await self.hook_runner.fire("post_model_call", {"response": response})
@@ -165,7 +169,7 @@ class GraphEngine:
 
             # 7. Transaction + execute
             for tc in valid_calls:
-                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn})
+                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn}, session_id=session_id)
             tx = None
             if self.transaction_ctx:
                 tx = await self.transaction_ctx.begin(session_id, turn)
@@ -208,7 +212,7 @@ class GraphEngine:
             if turn >= self._max_turns:
                 break
 
-        self._emit("session_end", {"session_id": session_id})
+        self._emit("session_end", {"session_id": session_id}, session_id=session_id)
         return state
 
     async def astream(self, state: AgentState):
