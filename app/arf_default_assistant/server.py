@@ -381,13 +381,13 @@ async def sessions_create():
 
 @app.get("/api/sessions/active")
 async def sessions_active():
+    return JSONResponse({"session_id": "default", "title": "ARF Assistant"})
+
+@app.get("/api/sessions/active/messages")
+async def sessions_active_messages():
     state = await _agent.state_store.get("default")
     messages = state.get("messages", []) if state else []
-    return JSONResponse({
-        "session_id": "default",
-        "title": "ARF Assistant",
-        "messages": messages,
-    })
+    return JSONResponse(messages)
 
 # ---- WebSocket stub (single session — no real-time sync needed) ----
 from fastapi import WebSocket
