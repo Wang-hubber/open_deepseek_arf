@@ -42,7 +42,7 @@ class StaticYamlToolProvider:
             yaml_path = tool_dir / "tool.yaml"
             if not yaml_path.exists():
                 continue
-            raw = yaml.safe_load(yaml_path.read_text())
+            raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             cfg = ToolConfig(**raw)
             self._tools[cfg.name] = cfg
 

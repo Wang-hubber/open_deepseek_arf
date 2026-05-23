@@ -34,7 +34,7 @@ async def save_archive_async(agent) -> None:
             "timestamp": time.time(),
             "arf_version": "1.0",
         }
-        ARCHIVE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        ARCHIVE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"[persistence] Archive saved: {len(data['messages'])} messages")
     except Exception as e:
         print(f"[persistence] Archive save failed: {e}")
@@ -74,7 +74,7 @@ def save_archive(agent) -> None:
             "timestamp": time.time(),
             "arf_version": "1.0",
         }
-        ARCHIVE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        ARCHIVE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"[persistence] Archive saved: {len(data['messages'])} messages")
     except Exception as e:
         print(f"[persistence] Archive save failed: {e}")
@@ -85,7 +85,7 @@ def load_archive() -> dict | None:
         print("[persistence] No archive -- starting fresh")
         return None
     try:
-        data = json.loads(ARCHIVE_PATH.read_text())
+        data = json.loads(ARCHIVE_PATH.read_text(encoding="utf-8"))
         print(f"[persistence] Archive loaded: {len(data.get('messages', []))} messages")
         return data
     except Exception as e:

@@ -30,7 +30,7 @@ class FileReplayController:
             path.write_text(json.dumps({"session_id": trace.session_id, "ar_version": trace.arf_version, "turns": [
                 {"turn": t.turn, "model_name": t.model_name, "model_output": t.model_output, "tool_calls": t.tool_calls}
                 for t in trace.turns
-            ]}, indent=2, default=str))
+            ]}, indent=2, default=str), encoding="utf-8")
         self._recording = None
         return trace
 

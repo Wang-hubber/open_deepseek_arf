@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
-"""ARF Assistant — 环境验证脚本 | Environment verification script
+r"""ARF Assistant — 环境验证脚本 | Environment verification script
 
-Windows 测试流程 | Windows test flow:
+Windows (PowerShell) 测试流程:
   1. git clone git@gitee.com:dalaydata/open_deepseek_arf.git
   2. cd open_deepseek_arf
   3. python -m venv .venv
-  4. .venv\Scripts\activate        (Linux: source .venv/bin/activate)
+  4. .venv\Scripts\activate
   5. pip install -e ".[dev]"
-  6. set DEEPSEEK_API_KEY=sk-xxx   (Linux: export DEEPSEEK_API_KEY=sk-xxx)
+  6. $env:DEEPSEEK_API_KEY = "sk-xxx"
   7. cd app\arf_default_assistant
-  8. python test_setup.py          ← 运行此脚本
-  9. python cli.py init            ← 初始化工作区
- 10. python cli.py chat "hello"    ← 测试对话
+  8. python test_setup.py          <-- run this script
+  9. python cli.py start           <-- start server
+ 10. python cli.py chat "hello"    <-- test chat
+
+Linux/Mac 测试流程:
+  1. git clone git@gitee.com:dalaydata/open_deepseek_arf.git
+  2. cd open_deepseek_arf
+  3. python -m venv .venv
+  4. source .venv/bin/activate
+  5. pip install -e ".[dev]"
+  6. export DEEPSEEK_API_KEY=sk-xxx
+  7. cd app/arf_default_assistant
+  8. python test_setup.py          <-- run this script
+  9. python cli.py start           <-- start server
+ 10. python cli.py chat "hello"    <-- test chat
 """
+
+# (Note: PowerShell uses $env:VAR = "value", CMD uses set VAR=value.
+#  This script checks os.environ, which both set correctly.)
 
 import sys
 import os
@@ -42,7 +57,7 @@ def main():
     # 2. DEEPSEEK_API_KEY
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     all_ok &= check("DEEPSEEK_API_KEY set", bool(key),
-                    "OK" if key else "请设置环境变量 | Set env var: set DEEPSEEK_API_KEY=sk-xxx")
+                    "OK" if key else "未设置 | PowerShell: $env:DEEPSEEK_API_KEY = \"sk-xxx\" | CMD: set DEEPSEEK_API_KEY=sk-xxx | Linux: export DEEPSEEK_API_KEY=sk-xxx")
 
     # 3. Framework imports
     try:

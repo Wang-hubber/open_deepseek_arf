@@ -40,7 +40,7 @@ class FileMemoryStore:
         path = self._dir / "memory.json"
         if not path.exists():
             return []
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         return [MemoryEntry(**d) for d in data]
 
     def _write(self, entries: list[MemoryEntry]) -> None:
@@ -60,5 +60,6 @@ class FileMemoryStore:
                 ],
                 indent=2,
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )

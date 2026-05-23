@@ -169,7 +169,7 @@ def cmd_validate(args):
     print(f"OK   agent.yaml ({agent_yaml.stat().st_size} bytes)")
 
     import yaml
-    cfg = yaml.safe_load(agent_yaml.read_text())
+    cfg = yaml.safe_load(agent_yaml.read_text(encoding="utf-8"))
     tools = cfg.get("tools", [])
     for t in tools:
         name = t.get("name", "")

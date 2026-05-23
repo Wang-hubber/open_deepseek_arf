@@ -5,36 +5,39 @@
 ## 快速开始
 
 ```bash
-# 1. 克隆仓库
+# 1. 克隆
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 
 # 2. 创建虚拟环境
 python -m venv .venv
-# Windows:
+
+# 3. 激活 (选一个)
+#    Windows PowerShell:
 .venv\Scripts\activate
-# Linux/Mac:
+#    Windows CMD:
+.venv\Scripts\activate.bat
+#    Linux/Mac:
 source .venv/bin/activate
 
-# 3. 安装
+# 4. 安装
 pip install -e ".[dev]"
 
-# 4. 设置 API Key
-# Windows:
+# 5. 设置 API Key (选一个)
+#    Windows PowerShell:
+$env:DEEPSEEK_API_KEY = "sk-xxxxxxxxxxxxxxxx"
+#    Windows CMD:
 set DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
-# Linux/Mac:
+#    Linux/Mac:
 export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 
-# 5. 环境验证
-cd app/arf_default_assistant
+# 6. 环境验证
+cd app\arf_default_assistant    # (Linux: cd app/arf_default_assistant)
 python test_setup.py
 
-# 6. 启动服务
+# 7. 启动服务
 python cli.py start
-
-# 7. 打开浏览器
-# http://127.0.0.1:8000/docs  — API 文档
-# http://127.0.0.1:8000       — 前端界面（需先 cd frontend && npm install && npm run build）
+# 打开 http://127.0.0.1:8000/docs 查看 API 文档
 ```
 
 ## CLI 命令

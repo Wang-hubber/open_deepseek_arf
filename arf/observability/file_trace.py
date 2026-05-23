@@ -35,7 +35,7 @@ class FileTraceStore:
         records: list[dict] = []
         if path.exists():
             try:
-                records = json.loads(path.read_text())
+                records = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 records = []
         records.append({
@@ -46,14 +46,14 @@ class FileTraceStore:
             "trace_id": event.trace_id,
             "span_id": event.span_id,
         })
-        path.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+        path.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def load(self, session_id: str) -> list[dict]:
         """加载指定 session 的完整轨迹"""
         path = self._dir / f"{session_id}.json"
         if not path.exists():
             return []
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def list_sessions(self) -> list[str]:
         """列出所有已记录的 session ID"""

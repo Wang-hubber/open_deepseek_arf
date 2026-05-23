@@ -64,7 +64,7 @@ class AgentConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "AgentConfig":
-        raw = yaml.safe_load(Path(path).read_text())
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         version = raw.pop("schema_version", "0.0")
         if version not in {"1.0", "0.0"}:
             raise ValueError(f"Unsupported schema version: {version}")
@@ -75,4 +75,4 @@ class AgentConfig(BaseModel):
         d.mkdir(parents=True, exist_ok=True)
         data = self.model_dump(exclude_none=True, exclude={"schema_version"})
         header = f"# arf_version: {self.schema_version}\n"
-        (d / "agent.yaml").write_text(header + yaml.dump(data, allow_unicode=True))
+        (d / "agent.yaml").write_text(header + yaml.dump(data, allow_unicode=True), encoding="utf-8")

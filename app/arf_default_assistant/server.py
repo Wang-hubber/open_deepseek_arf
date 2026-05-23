@@ -108,7 +108,7 @@ async def get_trace():
     if trace_dir.exists():
         for p in sorted(trace_dir.glob("*.json")):
             try:
-                sessions[p.stem] = json.loads(p.read_text())
+                sessions[p.stem] = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 sessions[p.stem] = []
     return JSONResponse({"sessions": sessions})
