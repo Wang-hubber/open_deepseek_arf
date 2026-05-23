@@ -243,20 +243,26 @@ sandbox:
 models:
   quick:
     name: quick
-    provider: openai          # openai | anthropic | custom
-    model: deepseek-v4-flash  # 模型 ID
-    api_base: https://api.deepseek.com/v1
+    api_type: openai           # openai | anthropic | custom
+      # API 协议类型，决定框架用哪个 ModelAdapter 构造请求
+      # API protocol type — which ModelAdapter handles request construction
+    model: deepseek-v4-flash  # 模型 ID | Model ID
+    api_base: https://api.deepseek.com
+      # API 端点 | API endpoint. 框架根据 api_type 自动追加路径
+      # (openai → /v1/chat/completions, anthropic → /v1/messages)
+      # Framework auto-appends path based on api_type
     api_key_env: DEEPSEEK_API_KEY
-    kwargs:                   # 透传给 provider，框架不校验
+      # 从哪个环境变量读取 API Key | Which env var holds the API key
+    kwargs:                   # 透传给 API，框架不校验 | Passthrough, unvalidated
       reasoning_effort: high
       max_tokens: 8192
       temperature: 1.0
 
   deep:
     name: deep
-    provider: openai
+    api_type: openai
     model: deepseek-v4-pro
-    api_base: https://api.deepseek.com/v1
+    api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     kwargs:
       reasoning_effort: max
@@ -264,9 +270,9 @@ models:
 
   cheap:
     name: cheap
-    provider: openai
+    api_type: openai
     model: deepseek-v4-flash
-    api_base: https://api.deepseek.com/v1
+    api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     kwargs:
       max_tokens: 1024
@@ -368,10 +374,27 @@ execution:
   timeout: 30s
 
 activation:
+  # 激活策略 | Activation strategy
+  # 控制工具何时出现在模型的 tool_definitions 中（会占用上下文 token）
+  # Controls when the tool appears in model's tool_definitions (costs context tokens)
   mode: kernel
-    # kernel: 始终激活，每次 API 调用携带 tool_definition
-    # discoverable: 按需激活（Agent 通过 resource_loader 加载）
-    # passive: 不自动激活，仅手动引用
+    # ─── kernel ───
+    # 始终激活。每次 API 调用的 tool_definitions 都包含此工具。
+    # 适用: 高频核心工具（文件读写、搜索），Agent 在几乎每轮对话都可能用到
+    # Always active. Included in every API call's tool_definitions.
+    # Use for: high-frequency core tools (file I/O, search) needed in most turns.
+    #
+    # ─── discoverable ───
+    # 按需激活。默认不发 tool_definition，Agent 通过 resource_loader 按需加载。
+    # 适用: 使用频率中等的工具，减少每轮调用的上下文开销
+    # On-demand. Tool definition not sent by default; Agent loads via
+    # resource_loader when needed. Use for: medium-frequency tools to
+    # reduce per-turn context overhead.
+    #
+    # ─── passive ───
+    # 被动可见。不自动激活，仅手动引用。适用: 实验性工具、危险操作
+    # Passive. Not auto-activated; manual reference only.
+    # Use for: experimental tools, dangerous operations
 ```
 
 ### skill.yaml
@@ -393,7 +416,30 @@ tools:
   - web_search
 
 activation:
+  # 激活策略 | Activation strategy
+  # 控制 skill 何时被注入到模型的上下文中的可见范围
+  # Controls when the skill becomes visible in the model's context
   mode: discoverable
+    # ─── kernel ───
+    # 始终激活。每次 API 调用的 system_prompt 都包含此 skill 的 prompt。
+    # 适用: 核心能力，Agent 在所有任务中都需要知道它
+    # Always active. Skill's prompt is included in every API call's
+    # system_prompt. Use for: core capabilities the agent always needs.
+    #
+    # ─── discoverable ───
+    # 按需激活。Agent 在 inventory 中看到 skill 名称和简介，需要时通过
+    # resource_loader 工具加载完整 prompt。推荐大多数 skill 使用此模式。
+    # 好处: 不占用上下文窗口直到实际需要
+    # On-demand. Agent sees the skill name + summary in inventory; loads
+    # full prompt via resource_loader tool when needed. Recommended for
+    # most skills. Benefit: no context-window cost until actually used.
+    #
+    # ─── passive ───
+    # 被动可见。不在 inventory 中列出，仅当 Agent 通过其他途径知晓后
+    # 手动引用时才加载。适用: 实验性 skill、仅特定场景触发的 skill
+    # Passive. Not listed in inventory; only loaded when the agent
+    # explicitly references it by name. Use for: experimental skills,
+    # skills triggered only in specific scenarios
 ```
 
 ## Pydantic 模型（代码创建路径）
@@ -403,12 +449,14 @@ activation:
 ```python
 class ModelConfig(BaseModel):
     """单个模型的配置 | framework 仅管理路由/适配所需最小字段"""
-    name: str                             # 模型逻辑名
-    provider: Literal["openai", "anthropic", "custom"] = "openai"
-    model: str                            # provider 模型 ID
-    api_base: str = "https://api.deepseek.com/v1"
+    name: str                                      # 模型逻辑名
+    api_type: Literal["openai", "anthropic", "custom"] = "openai"
+        # API 协议类型，决定框架用哪个 ModelAdapter
+    model: str                                     # provider 模型 ID
+    api_base: str = "https://api.deepseek.com"
+        # API 端点，框架根据 api_type 自动追加路径后缀
     api_key_env: str = "DEEPSEEK_API_KEY"
-    kwargs: dict = {}                     # 透传给 provider，框架不校验
+    kwargs: dict = {}                              # 透传给 API，框架不校验
 ```
 
 ### AgentConfig
