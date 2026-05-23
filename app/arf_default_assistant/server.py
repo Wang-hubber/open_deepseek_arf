@@ -156,6 +156,20 @@ async def trace_stream():
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+@app.post("/api/config/register-deepseek")
+async def config_register_deepseek(req: dict):
+    """Accept DeepSeek API key, register models (frontend ConfigPage flow)."""
+    api_key = (req or {}).get("api_key", "").strip()
+    if not api_key:
+        return JSONResponse({"error": "API key required"}, status_code=400)
+    # Models already configured in agent.yaml — just confirm
+    return JSONResponse({
+        "ok": True,
+        "action": "register_deepseek",
+        "models_created": [m.name for m in _agent.config.models],
+        "models": [{"name": m.name, "model": m.model} for m in _agent.config.models],
+    })
+
 @app.get("/api/config/status")
 async def config_status():
     cfg = _agent.config
@@ -238,6 +252,25 @@ async def health():
         "agent": _agent.config.name if _agent else "not initialized",
     })
 
+# ---- Session stubs (single infinite session — no session management) ----
+@app.get("/api/sessions")
+async def sessions_list():
+    return JSONResponse([])
+
+@app.post("/api/sessions")
+async def sessions_create():
+    return JSONResponse({"session_id": "default", "title": "ARF Assistant"})
+
+@app.get("/api/sessions/active")
+async def sessions_active():
+    return JSONResponse({"session_id": "default", "title": "ARF Assistant"})
+
+# ---- WebSocket stub (single session — no real-time sync needed) ----
+from fastapi import WebSocket
+@app.websocket("/ws")
+async def ws_stub(ws: WebSocket):
+    await ws.accept()
+    await ws.close()
 
 # Static files (frontend) -- if built
 frontend_dir = Path("../web/dist")
