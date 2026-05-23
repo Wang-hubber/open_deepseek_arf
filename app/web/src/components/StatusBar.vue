@@ -4,12 +4,10 @@ import { useAppStore } from '@/stores/app'
 import { useI18n } from '@/composables/useI18n'
 
 const props = defineProps<{
-  showMobileSessions: boolean
   showMobileResources: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'toggle-sessions'): void
   (e: 'toggle-resources'): void
 }>()
 
@@ -27,12 +25,6 @@ function onLanguageChange() {
 <template>
   <div id="status-bar">
     <span class="status-left">
-      <button class="sb-btn sb-btn-icon mobile-only" :title="t('common.menu')" @click="emit('toggle-sessions')">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-        </svg>
-      </button>
-
       <span class="dot dot-ok" title="当前会话激活模型"></span>
       <span class="model-name">{{ appStore.configStatus?.model_name || 'ARF Agent' }}</span>
     </span>
