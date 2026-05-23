@@ -62,6 +62,10 @@ class GraphEngine:
         """Late-binding injection of the streaming model API call function."""
         self._stream_model = stream_model
 
+    def set_model_windows(self, windows: dict[str, int]) -> None:
+        """Store model_name → context_window mapping for compaction decisions."""
+        self._model_windows = windows
+
     def _emit(self, event_type: str, data: dict, session_id: str = "", agent_name: str = "") -> None:
         if self.event_bus:
             self.event_bus.emit(AgentEvent(
@@ -124,20 +128,28 @@ class GraphEngine:
                         f"- {e.content}" for e in entries if e.relevance_score > 0
                     )
 
-            # 1.5 Compaction — after memory retrieval, before model call
-            if self.compaction and self.compaction.should_compact(state):
-                self._emit("compaction_start", {"turn": turn, "msg_count": len(state.get("messages", []))}, session_id=session_id)
-                state = await self.compaction.compact(state)
-                self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
+            # 2. Route to best model for this turn (before compaction — need model's window size)
+            model = state["current_model"]
+            if self.model_router:
+                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                state["current_model"] = model
 
-            # 2. Get tool definitions
+            # 2.5 Compaction — after routing (uses selected model's window), before model call
+            if self.compaction:
+                window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                if self.compaction.should_compact(state, window_size=window):
+                    self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
+                    state = await self.compaction.compact(state)
+                    self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
+
+            # 3. Get tool definitions
             tools = []
             if self.tool_resolver:
                 tools = await self.tool_resolver.get_tool_definitions(
                     self._last_user_message(state), top_k=10
                 )
 
-            # 3. Build messages & call model
+            # 4. Build messages & call model
             msgs = [{"role": "system", "content": self._system_prompt}]
             if state.get("context_summary"):
                 msgs[0]["content"] += f"\n\n## Memory\n{state['context_summary']}"
@@ -154,14 +166,12 @@ class GraphEngine:
 
             if not self._call_model:
                 break
-            # Route to best model for this turn
-            model = state["current_model"]
-            if self.model_router:
-                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
-                state["current_model"] = model
 
             self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
             response = await self._call_model(msgs, model, tools=tools)
+            # Track token usage for next turn's compaction decision
+            if isinstance(response, dict) and response.get("usage"):
+                state["last_token_usage"] = response["usage"].get("total_tokens", 0)
             self._emit("model_call_end", {"model": model, "turn": turn,
                        "usage": response.get("usage", {}) if isinstance(response, dict) else {},
                        "content": response.get("content", "") if isinstance(response, dict) else ""},
@@ -256,13 +266,18 @@ class GraphEngine:
             if self.hook_runner:
                 await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
 
-            # 8. Add results to messages
+            # 8. Add results to messages (with tool output summarization)
             for tc in valid_calls:
                 r = results.get(tc.get("id", ""))
                 if r:
+                    content = str(r.data) if r.success else f"Error: {r.error}"
+                    if r.success and self.compaction and content:
+                        content = await self.compaction.summarize_tool_output(
+                            tc.get("name", "unknown"), content, turn
+                        )
                     state["messages"].append({
                         "role": "tool", "tool_call_id": tc["id"],
-                        "content": str(r.data) if r.success else f"Error: {r.error}"
+                        "content": content,
                     })
             state["tool_results"] = {
                 k: {"success": v.success, "data": v.data, "error": v.error}
@@ -322,25 +337,27 @@ class GraphEngine:
                         f"- {e.content}" for e in entries if e.relevance_score > 0
                     )
 
-            # Compaction — after memory retrieval, before model call
-            if self.compaction and self.compaction.should_compact(state):
-                yield self._make_event(type="compaction_start",
-                                 data={"turn": turn, "msg_count": len(state.get("messages", []))},
-                                 turn=turn, session_id=session_id)
-                state = await self.compaction.compact(state)
-                yield self._make_event(type="compaction_end",
-                                 data={"turn": turn, "msg_count": len(state.get("messages", [])),
-                                       "summary_len": len(state.get("context_summary", ""))},
-                                 turn=turn, session_id=session_id)
-
-            msgs = [{"role": "system", "content": self._system_prompt}]
-            summary = state.get("context_summary", "")
-            if summary:
-                msgs[0]["content"] += f"\n\n## Memory\n{summary}"
-            msgs.extend(state.get("messages", []))
-
             if not self._call_model:
                 break
+
+            # Route to best model for this turn (before compaction — need model's window)
+            model = state["current_model"]
+            if self.model_router:
+                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                state["current_model"] = model
+
+            # Compaction — after routing (uses selected model's window), before model call
+            if self.compaction:
+                window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                if self.compaction.should_compact(state, window_size=window):
+                    yield self._make_event(type="compaction_start",
+                                     data={"turn": turn, "model": model, "msg_count": len(state.get("messages", []))},
+                                     turn=turn, session_id=session_id)
+                    state = await self.compaction.compact(state)
+                    yield self._make_event(type="compaction_end",
+                                     data={"turn": turn, "msg_count": len(state.get("messages", [])),
+                                           "summary_len": len(state.get("context_summary", ""))},
+                                     turn=turn, session_id=session_id)
 
             # Get tool definitions for this turn
             tools: list[dict] = []
@@ -349,11 +366,11 @@ class GraphEngine:
                     self._last_user_message(state), top_k=10
                 )
 
-            # Route to best model for this turn
-            model = state["current_model"]
-            if self.model_router:
-                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
-                state["current_model"] = model
+            msgs = [{"role": "system", "content": self._system_prompt}]
+            summary = state.get("context_summary", "")
+            if summary:
+                msgs[0]["content"] += f"\n\n## Memory\n{summary}"
+            msgs.extend(state.get("messages", []))
 
             yield self._make_event(type="model_call_start",
                              data={"model": model, "turn": turn},
@@ -410,6 +427,10 @@ class GraphEngine:
                                    "usage": stream_usage},
                              turn=turn, session_id=session_id)
 
+            # Track token usage for next turn's compaction decision
+            if stream_usage and stream_usage.get("total_tokens", 0) > 0:
+                state["last_token_usage"] = stream_usage["total_tokens"]
+
             tool_calls = self._pars_tool_calls(resp)
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
@@ -455,8 +476,13 @@ class GraphEngine:
                                        "error": str(r.error)[:500] if r and r.error else ""},
                                  turn=turn, session_id=session_id)
                 if r:
+                    content = str(r.data) if r.success else f"Error: {r.error}"
+                    if r.success and self.compaction and content:
+                        content = await self.compaction.summarize_tool_output(
+                            tc.get("name", "unknown"), content, turn
+                        )
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
-                                              "content": str(r.data) if r.success else f"Error: {r.error}"})
+                                              "content": content})
             if self.hook_runner:
                 await self.hook_runner.fire("post_tool_exec", {"tool_calls": tool_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
             await self.state_store.put(session_id, state)

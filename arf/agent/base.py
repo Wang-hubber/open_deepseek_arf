@@ -229,6 +229,10 @@ class BaseAgent:
             max_turns=(adv.max_turns if adv else 50),
             **override_protocols,
         )
+        # Pass model context windows to engine for compaction decisions
+        self._engine.set_model_windows(
+            {m.name: m.context_window for m in config.models}
+        )
         self._state_store = state_store
         self._event_bus = event_bus
         self._memory_store = memory_store
