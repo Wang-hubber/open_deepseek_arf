@@ -54,14 +54,16 @@ def cmd_start(args):
     # Kill any existing process on port
     _kill_port(8000)
 
-    # Check frontend
+    # Build frontend
     frontend_dir = APP_DIR / ".." / "web"
+    npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
     has_frontend = frontend_dir.exists() and (frontend_dir / "package.json").exists()
-    if has_frontend and not (frontend_dir / "node_modules").exists():
-        print("Installing frontend dependencies (npm install)...")
-        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
-        subprocess.run([npm_cmd, "install"], cwd=str(frontend_dir), check=True)
-        print("Frontend dependencies installed.")
+    if has_frontend:
+        if not (frontend_dir / "node_modules").exists():
+            print("Installing frontend dependencies...")
+            subprocess.run([npm_cmd, "install"], cwd=str(frontend_dir), check=True)
+        print("Building frontend...")
+        subprocess.run([npm_cmd, "run", "build"], cwd=str(frontend_dir), check=True)
 
     # Setup log directory
     log_dir = APP_DIR / "logs"
@@ -78,32 +80,15 @@ def cmd_start(args):
     print(f"Server starting (PID {uvicorn_proc.pid}), logs: logs{os.sep}server.log")
     time.sleep(2)
 
-    # Start frontend — write to log file
-    frontend_proc = None
-    if has_frontend and not args.no_frontend:
-        frontend_log = open(log_dir / "frontend.log", "a", encoding="utf-8")
-        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
-        frontend_proc = subprocess.Popen(
-            [npm_cmd, "run", "dev", "--", "--host", "127.0.0.1"],
-            cwd=str(frontend_dir),
-            stdout=frontend_log,
-            stderr=subprocess.STDOUT,
-        )
-        print(f"Frontend starting (PID {frontend_proc.pid}), logs: logs{os.sep}frontend.log")
-
     print(f"")
-    print(f"  Backend:  http://127.0.0.1:8000")
-    if has_frontend and not args.no_frontend:
-        print(f"  Frontend: http://127.0.0.1:5173")
-    print(f"  Logs:     {log_dir}")
+    print(f"  →  http://127.0.0.1:8000")
+    print(f"  Logs: {log_dir}")
     print(f"")
     print(f"Press Ctrl+C to stop.")
     try:
         uvicorn_proc.wait()
     except KeyboardInterrupt:
         uvicorn_proc.terminate()
-        if frontend_proc:
-            frontend_proc.terminate()
 
 
 def _kill_port(port: int):
