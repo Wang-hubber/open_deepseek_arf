@@ -63,6 +63,13 @@ class GraphEngine:
                 agent_name=agent_name or data.get("agent_name", ""),
             ))
 
+    def _make_event(self, type: str, data: dict, turn: int = 0, session_id: str = "") -> AgentEvent:
+        """Create an AgentEvent and publish to EventBus (if set)."""
+        event = AgentEvent(type=type, data=data, turn=turn, session_id=session_id)
+        if self.event_bus:
+            self.event_bus.emit(event)
+        return event
+
     def _last_user_message(self, state: AgentState) -> str:
         for m in reversed(state.get("messages", [])):
             if m.get("role") == "user":
@@ -124,17 +131,31 @@ class GraphEngine:
             msgs.extend(state.get("messages", []))
 
             if self.hook_runner:
-                await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+                self._emit("hook_start", {"event": "pre_model_call", "turn": turn}, session_id=session_id)
+                results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+                self._emit("hook_end", {"event": "pre_model_call", "turn": turn,
+                           "count": len(results),
+                           "passed": sum(1 for r in results if r.exit_code == 0),
+                           "failed": sum(1 for r in results if r.exit_code != 0)},
+                           session_id=session_id)
 
             if not self._call_model:
                 break
             self._emit("model_call_start", {"model": state["current_model"], "turn": turn}, session_id=session_id)
             response = await self._call_model(msgs, state["current_model"])
             self._emit("model_call_end", {"model": state["current_model"], "turn": turn,
-                       "usage": response.get("usage", {}) if isinstance(response, dict) else {}}, session_id=session_id)
+                       "usage": response.get("usage", {}) if isinstance(response, dict) else {},
+                       "content": response.get("content", "") if isinstance(response, dict) else ""},
+                       session_id=session_id)
 
             if self.hook_runner:
-                await self.hook_runner.fire("post_model_call", {"response": response})
+                self._emit("hook_start", {"event": "post_model_call", "turn": turn}, session_id=session_id)
+                results = await self.hook_runner.fire("post_model_call", {"response": response})
+                self._emit("hook_end", {"event": "post_model_call", "turn": turn,
+                           "count": len(results),
+                           "passed": sum(1 for r in results if r.exit_code == 0),
+                           "failed": sum(1 for r in results if r.exit_code != 0)},
+                           session_id=session_id)
 
             # 4. Guard output
             response_text = response if isinstance(response, str) else response.get("content", "")
@@ -177,8 +198,11 @@ class GraphEngine:
             results = await self.tool_executor.execute(valid_calls)
             for tc in valid_calls:
                 r = results.get(tc.get("id", ""))
-                self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn,
-                          "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0})
+                self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
+                          "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0,
+                          "result": str(r.data)[:500] if r and r.success and r.data else "",
+                          "error": str(r.error)[:500] if r and r.error else ""},
+                          session_id=session_id)
             if self.transaction_ctx and tx:
                 all_ok = all(r.success for r in results.values())
                 if all_ok:
@@ -221,7 +245,7 @@ class GraphEngine:
         Uses _stream_model for token-level streaming if available,
         falls back to _call_model otherwise."""
         session_id = state.get("session_id", "default")
-        yield AgentEvent(type="session_start", data={"session_id": session_id},
+        yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
 
         while self.loop_strategy.should_continue(state):
@@ -237,33 +261,42 @@ class GraphEngine:
             if not self._call_model:
                 break
 
-            yield AgentEvent(type="model_call_start",
+            yield self._make_event(type="model_call_start",
                              data={"model": state["current_model"], "turn": turn},
                              turn=turn, session_id=session_id)
 
             if self._stream_model:
                 # Token-level streaming
                 full_text = ""
+                stream_usage: dict = {}
                 async for chunk in self._stream_model(msgs, state["current_model"]):
                     if chunk.get("type") == "chunk":
                         full_text += chunk.get("content", "")
-                        yield AgentEvent(type="thinking_delta",
+                        yield self._make_event(type="thinking_delta",
                                          data={"content": chunk.get("content", ""),
                                                "reasoning": chunk.get("reasoning", "")},
                                          turn=turn, session_id=session_id)
                     elif chunk.get("type") == "tool_call":
-                        yield AgentEvent(type="tool_call_start",
+                        yield self._make_event(type="tool_call_start",
                                          data={"tool_name": chunk.get("name", ""), "id": chunk.get("id", ""),
                                                "arguments": chunk.get("arguments", "")},
                                          turn=turn, session_id=session_id)
+                    elif chunk.get("type") == "usage":
+                        stream_usage = {
+                            "prompt_tokens": chunk.get("prompt_tokens", 0),
+                            "completion_tokens": chunk.get("completion_tokens", 0),
+                            "total_tokens": chunk.get("total_tokens", 0),
+                        }
                 resp = {"content": full_text, "tool_calls": []}
             else:
                 # Sync fallback
                 resp = await self._call_model(msgs, state["current_model"])
+                stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
-            yield AgentEvent(type="model_call_end",
+            yield self._make_event(type="model_call_end",
                              data={"model": state["current_model"], "turn": turn,
-                                   "content": resp.get("content", "")},
+                                   "content": resp.get("content", ""),
+                                   "usage": stream_usage},
                              turn=turn, session_id=session_id)
 
             tool_calls = self._pars_tool_calls(resp)
@@ -273,15 +306,18 @@ class GraphEngine:
                 break
 
             for tc in tool_calls:
-                yield AgentEvent(type="tool_call_start",
+                yield self._make_event(type="tool_call_start",
                                  data={"tool_name": tc.get("name", ""), "turn": turn},
                                  turn=turn, session_id=session_id)
             results = await self.tool_executor.execute(tool_calls)
             for tc in tool_calls:
                 r = results.get(tc.get("id", ""))
-                yield AgentEvent(type="tool_call_end",
-                                 data={"tool_name": tc.get("name", ""), "turn": turn,
-                                       "success": r.success if r else False},
+                yield self._make_event(type="tool_call_end",
+                                 data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
+                                       "success": r.success if r else False,
+                                       "duration_ms": r.duration_ms if r else 0,
+                                       "result": str(r.data)[:500] if r and r.success and r.data else "",
+                                       "error": str(r.error)[:500] if r and r.error else ""},
                                  turn=turn, session_id=session_id)
                 if r:
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
@@ -291,5 +327,5 @@ class GraphEngine:
             if turn >= self._max_turns:
                 break
 
-        yield AgentEvent(type="session_end", data={"session_id": session_id},
+        yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)

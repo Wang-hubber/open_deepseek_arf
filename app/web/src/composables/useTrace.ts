@@ -5,6 +5,16 @@ import type {
   StructuredSession, Turn, TurnInput, Iteration, ToolCallPair, TurnStart,
 } from '@/types'
 
+// AgentEvent — the actual wire format from FileTraceStore (NOT SQL TraceEvent)
+interface AgentEvent {
+  type: string
+  data: Record<string, any>
+  turn: number
+  timestamp: number
+  trace_id: string
+  span_id: string
+}
+
 export function useTrace() {
   const api = useApi()
   const sessions = ref<TraceSession[]>([])
@@ -28,7 +38,8 @@ export function useTrace() {
     loading.value = true
     try {
       const res: any = await api.get(`/api/traces/sessions/${sessionId}`)
-      events.value = res.events || []
+      // events come as AgentEvent[] from FileTraceStore
+      events.value = (res.events || []) as TraceEvent[]
     } catch {
       events.value = []
     } finally {
@@ -45,85 +56,158 @@ export function useTrace() {
     }
   }
 
-  // ── Turn grouping ────────────────────────────────────────────────────────
+  // ── AgentEvent helpers ──────────────────────────────────────────────────
 
-  function parseMeta(evt: TraceEvent): Record<string, any> {
-    if (!evt.metadata) return {}
-    try { return JSON.parse(evt.metadata) } catch { return {} }
+  function asAgentEvent(evt: any): AgentEvent {
+    return evt as AgentEvent
   }
 
-  function sumTokens(events: TraceEvent[]): number {
-    return events.reduce((s, e) => s + (e.total_tokens || 0), 0)
+  function ts(evt: AgentEvent): number {
+    return (evt.timestamp || 0) * 1000 // seconds → ms for Date
   }
 
-  function computeDuration(events: TraceEvent[]): number {
-    if (events.length === 0) return 0
-    const times = events
-      .map(e => e.created_at ? new Date(e.created_at).getTime() : 0)
-      .filter(t => t > 0)
-    if (times.length < 2) return events.reduce((s, e) => s + (e.duration_ms || 0), 0)
-    return Math.max(...times) - Math.min(...times)
+  function dataField(evt: AgentEvent, key: string, fallback: any = ''): any {
+    return evt.data?.[key] ?? fallback
   }
 
-  function buildIterations(events: TraceEvent[]): Iteration[] {
-    const callModels = events.filter(e => e.node === 'call_model')
-    const respondEvent = events.find(e => e.node === 'respond')
-    const iterations: Iteration[] = []
+  // ── Turn grouping (AgentEvent format) ───────────────────────────────────
 
-    for (let i = 0; i < callModels.length; i++) {
-      const cm = callModels[i]
-      const isFinal = i === callModels.length - 1 && respondEvent !== undefined
+  function sumTokens(evts: AgentEvent[]): number {
+    let total = 0
+    for (const e of evts) {
+      if (e.type === 'model_call_end') {
+        total += (e.data?.usage?.total_tokens || 0) as number
+      }
+    }
+    return total
+  }
 
-      const toolsInTurn = events.filter(e =>
-        e.node === 'execute_tools' && e.turn === cm.turn
-      )
+  function computeDuration(evts: AgentEvent[]): number {
+    if (evts.length === 0) return 0
+    // Sum per-tool durations, plus time between first and last event
+    let sum = 0
+    for (const e of evts) {
+      if (e.type === 'tool_call_end') {
+        sum += (e.data?.duration_ms || 0) as number
+      }
+    }
+    const times = evts.map(e => ts(e)).filter(t => t > 0)
+    if (times.length >= 2) sum += Math.max(...times) - Math.min(...times)
+    return sum
+  }
 
-      const preToolUseHooks = events.filter(e => {
-        if ((e as any).event_type !== 'lifecycle.hook_execution') return false
-        const meta = parseMeta(e)
-        return meta.hook_event === 'PreToolUse' && e.turn === cm.turn
-      })
+  function buildIterations(turnEvents: AgentEvent[]): Iteration[] {
+    // Collect thinking_delta content (accumulated before any model_call_end)
+    const allThinking: string[] = []
+    for (const e of turnEvents) {
+      if (e.type === 'thinking_delta') {
+        allThinking.push(dataField(e, 'content', '') + dataField(e, 'reasoning', ''))
+      }
+    }
+    const reasoningText = allThinking.join('')
 
-      const afterToolHooks = events.filter(e => {
-        if ((e as any).event_type !== 'lifecycle.hook_execution') return false
-        const meta = parseMeta(e)
-        return meta.hook_event === 'PostToolUse' && e.turn === cm.turn
-      })
-
-      const toolCalls: ToolCallPair[] = toolsInTurn.map(t => ({ call: t }))
-
-      iterations.push({
-        index: i + 1,
-        reasoning: cm,
-        preToolUseHooks,
-        toolCalls,
-        afterToolHooks,
-        isFinal,
-      })
+    // Pair tool_call_start → tool_call_end by matching name within the turn
+    const toolPairs: ToolCallPair[] = []
+    const pending = new Map<string, AgentEvent>() // id → start event
+    for (const e of turnEvents) {
+      if (e.type === 'tool_call_start') {
+        const id = dataField(e, 'id', '') || dataField(e, 'tool_name', '')
+        if (id) pending.set(id, e)
+      } else if (e.type === 'tool_call_end') {
+        const id = dataField(e, 'id', '') || dataField(e, 'tool_name', '')
+        const start = id ? (pending.get(id) || pending.values().next().value) : pending.values().next().value
+        if (start) {
+          if (id) pending.delete(id)
+          else pending.clear()
+          // Build TraceEvent-compatible call artifact from start
+          const callEvent: any = {
+            ...start,
+            node: 'execute_tools',
+            tool_name: dataField(start, 'tool_name', 'unknown'),
+            duration_ms: dataField(e, 'duration_ms', 0),
+            status: dataField(e, 'success', false) ? 'ok' : 'error',
+            error_msg: dataField(e, 'error', ''),
+            metadata: JSON.stringify({
+              tool_input_snippet: dataField(start, 'arguments', ''),
+            }),
+          }
+          const resultEvent: any = {
+            ...e,
+            node: 'execute_tools',
+            tool_name: dataField(e, 'tool_name', ''),
+            status: dataField(e, 'success', false) ? 'ok' : 'error',
+            metadata: JSON.stringify({
+              tool_output_snippet: dataField(e, 'result', ''),
+            }),
+          }
+          toolPairs.push({ call: callEvent, result: resultEvent })
+        }
+      }
     }
 
-    if (callModels.length === 0 && respondEvent) {
-      iterations.push({
-        index: 1,
-        reasoning: undefined,
-        preToolUseHooks: [],
-        toolCalls: [],
-        afterToolHooks: [],
-        isFinal: true,
-      })
+    // Build reasoning TraceEvent-compatible artifact
+    const reasoningEvent: any = reasoningText ? {
+      type: 'model_call_end',
+      data: {},
+      turn: turnEvents[0]?.turn || 0,
+      timestamp: turnEvents[0]?.timestamp || 0,
+      node: 'call_model',
+      duration_ms: 0,
+      metadata: JSON.stringify({ model_output_snippet: reasoningText }),
+    } : null
+
+    // Collect hook events
+    const preToolUseHooks: any[] = []
+    const afterToolHooks: any[] = []
+    for (const e of turnEvents) {
+      if (e.type === 'hook_start' || e.type === 'hook_end') {
+        const hookEvent: any = {
+          ...e,
+          node: 'hook',
+          event_type: 'lifecycle.hook_execution',
+          metadata: JSON.stringify({
+            hook_event: dataField(e, 'event', ''),
+            hook_status: e.type === 'hook_end' ? (
+              (dataField(e, 'failed', 0) === 0) ? 'ok' : 'partial_failure'
+            ) : 'running',
+            hook_message: e.type === 'hook_end'
+              ? `passed: ${dataField(e, 'passed', 0)}, failed: ${dataField(e, 'failed', 0)}`
+              : '',
+          }),
+        }
+        if (dataField(e, 'event', '').startsWith('pre_')) {
+          preToolUseHooks.push(hookEvent)
+        } else {
+          afterToolHooks.push(hookEvent)
+        }
+      }
     }
 
-    return iterations
+    if (toolPairs.length === 0 && !reasoningEvent && preToolUseHooks.length === 0 && afterToolHooks.length === 0) {
+      return []
+    }
+
+    const iteration: Iteration = {
+      index: 1,
+      reasoning: reasoningEvent || undefined,
+      preToolUseHooks,
+      toolCalls: toolPairs,
+      afterToolHooks,
+      isFinal: !toolPairs.length || (turnEvents.some(e => e.type === 'model_call_end' && !dataField(e, 'content', ''))),
+    }
+
+    return [iteration]
   }
 
   function groupSessionEvents(
     sessionId: string,
-    events: TraceEvent[],
+    rawEvents: TraceEvent[],
     title?: string,
   ): StructuredSession {
-    const sorted = [...events].sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
+    const evts = rawEvents.map(e => asAgentEvent(e as any))
+
+    // Sort by timestamp
+    const sorted = [...evts].sort((a, b) => ts(a) - ts(b))
 
     if (sorted.length === 0) {
       return {
@@ -134,86 +218,86 @@ export function useTrace() {
       }
     }
 
-    interface Boundary { index: number; type: 'user' | 'agent'; snippet: string; sourceEvent?: TraceEvent }
-    const boundaries: Boundary[] = []
-    let lastInputSnippet = ''
-
-    for (let i = 0; i < sorted.length; i++) {
-      const evt = sorted[i]
-
-      if ((evt as any).event_type === 'lifecycle.handoff') {
-        const meta = parseMeta(evt)
-        boundaries.push({
-          index: i, type: 'agent',
-          snippet: String(meta.intent || meta.phase || 'Agent handoff'),
-          sourceEvent: evt,
-        })
-        continue
-      }
-
-      if (evt.node === 'call_model') {
-        const meta = parseMeta(evt)
-        const snippet = String(meta.model_input_snippet || '')
-        if (snippet && snippet !== lastInputSnippet) {
-          lastInputSnippet = snippet
-          boundaries.push({ index: i, type: 'user', snippet, sourceEvent: evt })
-        }
-      }
+    // Group events by turn number
+    const turnMap = new Map<number, AgentEvent[]>()
+    for (const e of sorted) {
+      const t = e.turn || 0
+      if (!turnMap.has(t)) turnMap.set(t, [])
+      turnMap.get(t)!.push(e)
     }
 
-    if (boundaries.length === 0) {
+    const turnNums = [...turnMap.keys()].sort((a, b) => a - b)
+    if (turnNums.length === 0) {
       return {
         sessionId, title,
-        turnStart: { events: sorted, durationMs: computeDuration(sorted) },
+        turnStart: { events: [], durationMs: 0 },
         turns: [],
-        stats: {
-          totalTurns: 0,
-          totalTokens: sumTokens(sorted),
-          totalDurationMs: computeDuration(sorted),
-        },
+        stats: { totalTurns: 0, totalTokens: 0, totalDurationMs: 0 },
       }
     }
 
-    const firstIdx = boundaries[0].index
-    const turnStartEvents = sorted.slice(0, firstIdx)
+    // First turn (session_start) is turnStart
+    const firstTurnEvents = turnMap.get(turnNums[0]) || []
+    const turnStartEvents: any[] = firstTurnEvents.filter(e => e.type === 'session_start')
     const turnStart: TurnStart = {
       events: turnStartEvents,
-      durationMs: computeDuration(turnStartEvents),
+      durationMs: computeDuration(firstTurnEvents),
     }
 
+    // Build Turn objects from remaining turns
     const turns: Turn[] = []
-    for (let b = 0; b < boundaries.length; b++) {
-      const startIdx = boundaries[b].index
-      const endIdx = b + 1 < boundaries.length ? boundaries[b + 1].index : sorted.length
-      const turnEvents = sorted.slice(startIdx, endIdx)
+    // Find user messages from state to use as turn input snippets
+    // The model_call_start events serve as turn boundaries
+    for (let ti = 0; ti < turnNums.length; ti++) {
+      const tn = turnNums[ti]
+      const turnEvents = turnMap.get(tn) || []
+      // Skip turn 0 (session_start only)
+      if (tn === 0 && turnEvents.every(e => e.type === 'session_start')) continue
+
+      // Extract user input snippet from context — use turn number as fallback
+      const inputSnippet = `Turn ${tn}`
 
       const input: TurnInput = {
-        type: boundaries[b].type,
-        snippet: boundaries[b].snippet,
-        timestamp: sorted[startIdx].created_at,
-        sourceEvent: boundaries[b].sourceEvent,
+        type: 'user',
+        snippet: inputSnippet,
+        timestamp: turnEvents.length > 0
+          ? new Date(ts(turnEvents[0])).toISOString()
+          : new Date().toISOString(),
       }
 
       const iterations = buildIterations(turnEvents)
 
-      const postModelHooks = turnEvents.filter(e => {
-        if ((e as any).event_type !== 'lifecycle.hook_execution') return false
-        return parseMeta(e).hook_event === 'PostModelCall'
-      })
-
-      const sessionEndHooks = turnEvents.filter(e => {
-        if ((e as any).event_type !== 'lifecycle.hook_execution') return false
-        return parseMeta(e).hook_event === 'SessionEnd'
-      })
+      // Collect post-model hooks and session-end hooks
+      const postModelHooks: any[] = []
+      const sessionEndHooks: any[] = []
+      for (const e of turnEvents) {
+        if (e.type === 'hook_start' || e.type === 'hook_end') {
+          const eventName = dataField(e, 'event', '')
+          const hookEvent: any = {
+            ...e,
+            node: 'hook',
+            event_type: 'lifecycle.hook_execution',
+            metadata: JSON.stringify({
+              hook_event: eventName,
+              hook_status: e.type === 'hook_end' ? 'ok' : 'running',
+            }),
+          }
+          if (eventName === 'post_model_call') {
+            postModelHooks.push(hookEvent)
+          } else if (eventName.includes('session_end') || eventName === 'session_end') {
+            sessionEndHooks.push(hookEvent)
+          }
+        }
+      }
 
       const stats = {
         totalTokens: sumTokens(turnEvents),
-        iterationCount: iterations.filter(it => !it.isFinal).length,
+        iterationCount: iterations.length,
         durationMs: computeDuration(turnEvents),
       }
 
       turns.push({
-        turnIndex: b + 1,
+        turnIndex: ti,
         input, iterations,
         postModelHooks,
         sessionEndHooks: sessionEndHooks.length > 0 ? sessionEndHooks : undefined,
@@ -234,7 +318,8 @@ export function useTrace() {
 
   const structuredSession = computed<StructuredSession | null>(() => {
     if (events.value.length === 0) return null
-    const sid = events.value[0]?.session_id || ''
+    const raw = events.value as any[]
+    const sid = raw[0]?.session_id || raw[0]?.data?.session_id || ''
     const session = sessions.value.find(s => s.session_id === sid)
     return groupSessionEvents(sid, events.value, session?.title)
   })
