@@ -47,6 +47,10 @@ class GraphEngine:
         self._system_prompt = system_prompt
         self._max_turns = max_turns
 
+    def set_call_model(self, call_model) -> None:
+        """Late-binding injection of the model API call function."""
+        self._call_model = call_model
+
     def _emit(self, event_type: str, data: dict) -> None:
         if self.event_bus:
             self.event_bus.emit(AgentEvent(type=event_type, data=data, turn=data.get("turn", 0)))

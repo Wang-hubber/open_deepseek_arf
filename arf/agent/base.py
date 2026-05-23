@@ -99,6 +99,8 @@ class BaseAgent:
         )
         self._state_store = state_store
         self._event_bus = event_bus
+        self._memory_store = memory_store
+        self._tool_resolver = tool_resolver
 
     @property
     def state_store(self):
@@ -107,6 +109,14 @@ class BaseAgent:
     @property
     def event_bus(self):
         return self._event_bus
+
+    @property
+    def memory_store(self):
+        return self._memory_store
+
+    @property
+    def tool_resolver(self):
+        return self._tool_resolver
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState

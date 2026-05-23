@@ -35,3 +35,11 @@ class DefaultToolResolver:
                 if hasattr(p, "execute"):
                     return await p.execute(tool_name, params)
         return ToolResult(tool_name=tool_name, success=False, error=f"Tool '{tool_name}' not found")
+
+    async def reload(self) -> None:
+        """Reload all providers — clears cached tool lists for re-scan."""
+        for p in self._providers:
+            if hasattr(p, "_tools"):
+                p._tools.clear()
+            if hasattr(p, "_functions"):
+                p._functions.clear()
