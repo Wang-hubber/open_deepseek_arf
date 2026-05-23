@@ -8,12 +8,12 @@
 
 | 域 | OS 类比 | 解决的致命问题 | 最小可行实现 | Framework 接口 |
 |---|---|---|---|---|
-| **core** ✨ | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
+| **core** | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
 | **agent** | 进程 | Agent 生命周期管理 | Pydantic 配置驱动，代码优先 | `create_agent(config=AgentConfig(...))` |
 | **engine** | CPU 流水线 | 执行循环、自动 checkpoint、并行工具调用 | ReAct 循环 + StateStore 自动持久化 + ToolExecutor 并发 | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` |
-| **observability** ✨ | 系统监控 (perf/strace) + 本地调试 | 框架黑盒，出问题无法定位 | OTel Span 导出 + Rich TUI 实时调试面板 | `EventBus` + `Tracer` + `TuiDashboard`（共享事件源） |
-| **streaming** ✨ | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE/WebSocket 推送 | `EventBus` + `EventStream`（共享事件源） |
-| **guardrails** ✨ | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | engine 三处硬编码调用点 (输入/输出/工具参数) | `GuardRunner` (engine 统一入口，内部封装三种护栏) |
+| **observability** | 系统监控 (perf/strace) + 本地调试 | 框架黑盒，出问题无法定位 | OTel Span 导出 + Rich TUI 实时调试面板 | `EventBus` + `Tracer` + `TuiDashboard`（共享事件源） |
+| **streaming** | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE/WebSocket 推送 | `EventBus` + `EventStream`（共享事件源） |
+| **guardrails** | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | engine 三处硬编码调用点 (输入/输出/工具参数) | `GuardRunner` (engine 统一入口，内部封装三种护栏) |
 | **compaction** | 虚拟内存 + 页交换 | 上下文窗口爆掉 | 75% 阈值滑动窗口压缩 | `CompactionStrategy` |
 | **memory** | 文件系统 + 搜索引擎 | 记了但不会"回忆" | store 层 + 独立检索层，engine 节点自动触发 | `MemoryStore` + `MemoryRetriever` |
 | **routing** | 多级缓存 (L1/L2) | 所有请求打同一个模型 | 二级分类器 | `ModelRouter` |
@@ -21,9 +21,9 @@
 | **sandbox** | 进程隔离 | 工具访问越界 | 路径沙箱 | `ToolSandbox` |
 | **concurrency** | 乱序执行 + 多核 | 任务层面并行调度 | 顺序执行（占位） | `TaskScheduler` |
 | **human_loop** | 硬件中断 + 审批工作流 | 该停时停不下来，停了恢复不了 | 暂停/审批/超时/恢复 + 依赖 StateStore 快照 | `ApprovalPoint` + `ApprovalChannel` |
-| **communication** ✨ | 进程间通信 (IPC) | 多 Agent 无法协作 | Agent 消息总线 + 任务委托 + Supervisor 编排 | `AgentBus` + `TaskDelegator` + `Supervisor` + `SharedWorkspace` |
+| **communication** | 进程间通信 (IPC) | 多 Agent 无法协作 | Agent 消息总线 + 任务委托 + Supervisor 编排 | `AgentBus` + `TaskDelegator` + `Supervisor` + `SharedWorkspace` |
 | **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | ToolResolver 统一入口(内部封装 Provider+Retriever+Backend) | `ToolResolver` (engine 唯一 tool 接口) |
-| **errors** ✨ | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试次数 + 退避 + 降级策略 | `ErrorPolicy` |
+| **errors** | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试次数 + 退避 + 降级策略 | `ErrorPolicy` |
 
 ## 核心设计：`arf/core` — 统一类型层
 
@@ -165,7 +165,6 @@ class TuiDashboard:
 │  deep_thinking:   2 calls      │  12:00:08  file_writer  █  │
 │     tokens: 800 in / 3,200 out │  12:00:15  file_reader  ██ │
 │  ─────────────────────         │  12:00:22  web_fetch   ████│
-│  Total cost: ¥0.47             │                             │
 │  Tokens this session: 12,400   │                             │
 ├────────────────────────────────┴────────────────────────────┤
 │  Last Model Output                                          │
@@ -179,7 +178,7 @@ class TuiDashboard:
 
 **面板区域**:
 - **Header**: agent name、session id、运行时长、当前 turn
-- **Model Calls**: 每种模型的调用次数、token 消耗（输入/输出）、费用估算
+- **Model Calls**: 每种模型的调用次数、token 消耗（输入/输出）
 - **Tool Timeline**: 工具调用的甘特式时间线，显示调用顺序和耗时
 - **Output**: 最近一条模型输出摘要，实时刷新
 - **热键**: `Enter` 暂停/恢复刷新，`q` 退出面板，`t` 切换 token 明细
@@ -195,7 +194,7 @@ observability:
     # console | otlp | none
 ```
 
-**与 streaming 的区别**: TUI 是开发者本地调试工具，展示内部指标（token 消耗、调用次数、费用）；streaming 是用户产品级 UI 的数据源，展示实时进度和结果。两者都从 EventBus 读取，但展示不同维度的信息。
+**与 streaming 的区别**: TUI 是开发者本地调试工具，展示内部指标（token 消耗、调用次数、工具耗时）；streaming 是用户产品级 UI 的数据源，展示实时进度和结果。两者都从 EventBus 读取，但展示不同维度的信息。
 
 ---
 
@@ -207,7 +206,7 @@ open_deepseek_arf/
 │
 ├── arf/                           # 框架 (pip install -e .)
 │   ├── __init__.py                # create_agent, AgentConfig, public Protocols
-│   ├── core/                      # ★ 统一类型层: 所有 Protocol + 数据结构
+│   ├── core/                      # 统一类型层: 所有 Protocol + 数据结构
 │   │   ├── protocols/             # engine.py, memory.py, guardrails.py, ...
 │   │   ├── events.py              # AgentEvent
 │   │   ├── state.py               # AgentState, TurnContext, MemoryEntry
@@ -237,7 +236,7 @@ open_deepseek_arf/
 │   ├── communication/             # in_memory_bus.py, supervisor.py
 │   ├── errors/                    # retry.py, fallback.py
 │   └── concurrency/               # sequential.py
-│   ├── testing/                    # ★ InMemory* 测试替身，方便开发者单元测试
+│   ├── testing/                    # InMemory* 测试替身，方便开发者单元测试
 │   │   ├── __init__.py             # 导出所有 fake 实现
 │   │   ├── fake_bus.py             # InMemoryEventBus
 │   │   ├── fake_store.py           # InMemoryStateStore, InMemoryMemoryStore
@@ -636,7 +635,6 @@ human_loop:
     strategy: tool_name_allowlist
       # always_auto: 从不暂停（默认）
       # tool_name_allowlist: 仅白名单工具触发
-      # cost_threshold: 费用预估超阈值触发
     allowlist:
       - delete_file
       - execute_command
