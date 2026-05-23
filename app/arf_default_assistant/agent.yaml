@@ -1,0 +1,198 @@
+# arf_version: 1.0
+name: arf_assistant
+description: >
+  可自我演进的 AI 助手。擅长代码编写、文件管理、网络搜索、资源创建。
+  作为主 Agent (User) 与用户交互，资源创建等系统操作移交给 SysAgent。
+
+models:
+  - name: quick
+    api_type: openai
+    model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      reasoning_effort: high
+      temperature: 0.7
+
+  - name: deep
+    api_type: openai
+    model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      reasoning_effort: max
+
+tools:
+  - name: file_reader
+    description: 读取文件内容或列出目录
+    parameters: {type: object, properties: {path: {type: string, description: 文件路径}}, required: [path]}
+    activation: kernel
+
+  - name: file_writer
+    description: 写入文件（创建或覆盖）
+    parameters: {type: object, properties: {path: {type: string}, content: {type: string}}, required: [path, content]}
+    activation: kernel
+
+  - name: file_deleter
+    description: 软删除文件（重命名为 .deleted 后缀）
+    parameters: {type: object, properties: {path: {type: string}}, required: [path]}
+    activation: kernel
+
+  - name: file_download
+    description: 生成工作区文件的下载链接
+    parameters: {type: object, properties: {path: {type: string}}, required: [path]}
+    activation: discoverable
+
+  - name: web_search
+    description: 搜索互联网（DuckDuckGo）
+    parameters: {type: object, properties: {query: {type: string}}, required: [query]}
+    activation: kernel
+
+  - name: web_fetch
+    description: 获取网页内容（HTTP GET）
+    parameters: {type: object, properties: {url: {type: string}}, required: [url]}
+    activation: kernel
+
+  - name: python_exec
+    description: 执行 Python 代码片段
+    parameters: {type: object, properties: {code: {type: string}}, required: [code]}
+    activation: discoverable
+
+  - name: handoff_to_sys
+    description: 将资源创建/修改操作移交给 SysAgent
+    parameters: {type: object, properties: {task: {type: string, description: 任务描述}, context: {type: string, description: 任务上下文}}, required: [task]}
+    activation: kernel
+
+  - name: resource_loader
+    description: 动态加载/激活工具或技能
+    parameters: {type: object, properties: {name: {type: string}, type: {type: string, enum: [tool, skill]}}, required: [name, type]}
+    activation: discoverable
+
+  - name: resource_scaffold
+    description: 创建新资源骨架（工具或技能目录）
+    parameters: {type: object, properties: {type: {type: string, enum: [tool, skill]}, name: {type: string}, description: {type: string}}, required: [type, name]}
+    activation: discoverable
+
+  - name: resource_registrar
+    description: 查询已注册资源的配置状态和依赖关系
+    parameters: {type: object}
+    activation: discoverable
+
+  - name: memory_store
+    description: 写入记忆（事实、偏好、决策、上下文）
+    parameters: {type: object, properties: {content: {type: string}, category: {type: string, enum: [fact, preference, decision, context]}}, required: [content]}
+    activation: kernel
+
+  - name: manage_hooks
+    description: 管理会话生命周期钩子（查看/启用/禁用）
+    parameters: {type: object, properties: {action: {type: string, enum: [list, enable, disable]}, hook_name: {type: string}}}
+    activation: discoverable
+
+  - name: model_switch
+    description: 切换当前对话使用的模型
+    parameters: {type: object, properties: {model: {type: string}}, required: [model]}
+    activation: discoverable
+
+hooks:
+  - name: self_evolve
+    type: post_tool_exec
+    run: ["python ./hooks/self_evolve.py"]
+    timeout: 5s
+
+advanced:
+  max_turns: 50
+  critical_rules: |
+    1. Always read a file before editing it — never edit from memory.
+    2. When a tool fails, analyze the error and retry before giving up.
+    3. For creating or modifying tools/skills/models, hand off to sys_agent via handoff_to_sys.
+    4. Self-evolve: create new tools or skills when existing ones are insufficient for the task.
+
+agents:
+  - name: sys_agent
+    description: 系统工程师——处理资源创建、模型配置、工具/技能生成等系统级操作
+    models:
+      - name: deep
+        api_type: openai
+        model: deepseek-v4-pro
+        api_base: https://api.deepseek.com
+        api_key_env: DEEPSEEK_API_KEY
+        kwargs:
+          reasoning_effort: max
+    tools:
+      - name: file_reader
+        activation: kernel
+      - name: file_writer
+        activation: kernel
+      - name: file_deleter
+        activation: kernel
+      - name: resource_loader
+        activation: kernel
+      - name: resource_scaffold
+        activation: kernel
+      - name: resource_registrar
+        activation: kernel
+      - name: web_fetch
+        activation: kernel
+    skills:
+      - name: resource_scaffold
+        description: 创建新资源骨架（工具或技能目录结构）
+        prompt: |
+          You create new tools and skills as directory scaffolds.
+          A tool skeleton = tool.yaml + function.py in tools/<name>/
+          A skill skeleton = skill.yaml in skills/
+          Use resource_scaffold to create the directory, then file_writer to fill content.
+          After creation, use resource_loader to activate the new resource.
+        tools: [file_writer, resource_loader]
+        activation: kernel
+      - name: tool_generator
+        description: 生成完整的工具实现（tool.yaml + function.py）
+        prompt: |
+          Generate a complete tool implementation:
+          1. tool.yaml: with name, description, proper JSON Schema parameters, execution config, activation mode
+          2. function.py: with async def execute(**kwargs) function
+          Validate JSON Schema validity and Python syntax before writing.
+          Target directory: tools/<tool_name>/
+        tools: [file_writer, resource_scaffold]
+        activation: discoverable
+      - name: skill_generator
+        description: 生成技能定义（skill.yaml）
+        prompt: |
+          Generate skill.yaml with:
+          1. Clear, actionable prompt template
+          2. Appropriate recommended tool list
+          3. Suitable activation mode (kernel/discoverable/passive)
+          Validate YAML format before writing.
+          Target: skills/<skill_name>.yaml
+        tools: [file_writer]
+        activation: discoverable
+      - name: validate_tool
+        description: 校验工具完整性（schema + 接口匹配）
+        prompt: |
+          Validate a tool's completeness:
+          1. tool.yaml JSON Schema is valid and has all required fields
+          2. function.py has execute(**kwargs) with correct signature
+          3. Parameters in schema match function signature
+          4. No missing imports or syntax errors
+        tools: [file_reader]
+        activation: discoverable
+      - name: validate_skill
+        description: 校验技能完整性（格式 + 质量）
+        prompt: |
+          Validate a skill's completeness:
+          1. skill.yaml has valid YAML syntax
+          2. prompt is clear and actionable
+          3. Recommended tool list entries exist and are registered
+          4. Activation mode is appropriate
+        tools: [file_reader, resource_registrar]
+        activation: discoverable
+    advanced:
+      max_turns: 15
+
+handover:
+  rules:
+    - from_agent: arf_assistant
+      to_agent: sys_agent
+      trigger: "创建或修改 tools/skills/models 目录下的资源文件"
+    - from_agent: sys_agent
+      to_agent: arf_assistant
+      trigger: "资源操作完成或需要用户确认"

@@ -22,7 +22,7 @@ class SkillConfig(BaseModel):
 
 class ToolConfig(BaseModel):
     name: str
-    description: str
+    description: str = ""          # optional for sub-agent tool references
     parameters: dict = Field(default_factory=dict)
     source: str | None = None
     provider: Literal["static_yaml", "mcp"] = "static_yaml"
