@@ -11,7 +11,7 @@ async def execute(code: str) -> dict:
             [sys.executable, "-c", code],
             capture_output=True,
             timeout=30,
-            text=True,
+            encoding="utf-8",
         )
         return {
             "ok": True,

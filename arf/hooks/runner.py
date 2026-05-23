@@ -48,9 +48,9 @@ class SubprocessHookRunner:
                     rc = proc.returncode or 0
                     hr = HookResult(
                         hook_name=hook.name, exit_code=rc,
-                        stdout=stdout.decode() if stdout else "",
-                        stderr=stderr.decode() if stderr else "",
-                        injected_message=stdout.decode() if rc == 2 and stdout else None,
+                        stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
+                        stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
+                        injected_message=stdout.decode("utf-8", errors="replace") if rc == 2 and stdout else None,
                     )
                     results.append(hr)
                     if rc != 0:
