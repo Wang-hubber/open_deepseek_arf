@@ -129,15 +129,15 @@ async def _sse_chat(message: str):
             elif t == "tool_call_end":
                 result = "success" if event.data.get("success") else "error"
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
-        # Send done: only current exchange (small JSON, won't fail parse)
+        # Send done with FULL history for frontend renderFromHistory
         state = await _agent.state_store.get("default")
-        messages = state.get("messages", []) if state else []
-        slim = []
-        for m in reversed(messages):
-            if len(slim) >= 2:
+        history = state.get("messages", []) if state else []
+        last = ""
+        for m in reversed(history):
+            if m.get("role") == "assistant":
+                last = m.get("content", "")
                 break
-            slim.insert(0, m)
-        yield f"data: {json.dumps({'type': 'done', 'history': slim, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
 
@@ -381,7 +381,13 @@ async def sessions_create():
 
 @app.get("/api/sessions/active")
 async def sessions_active():
-    return JSONResponse({"session_id": "default", "title": "ARF Assistant"})
+    state = await _agent.state_store.get("default")
+    messages = state.get("messages", []) if state else []
+    return JSONResponse({
+        "session_id": "default",
+        "title": "ARF Assistant",
+        "messages": messages,
+    })
 
 # ---- WebSocket stub (single session — no real-time sync needed) ----
 from fastapi import WebSocket
