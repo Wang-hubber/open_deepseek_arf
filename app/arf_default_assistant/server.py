@@ -229,10 +229,32 @@ async def config_status():
 
 @app.get("/api/resources")
 async def resources_all():
-    """List all resources (for frontend ResourcePanel init)."""
-    tools = [{"name": t.name, "description": t.description, "activation": t.activation} for t in _agent.config.tools]
-    skills = [{"name": s.name, "description": s.description, "tools": s.tools} for s in _agent.config.skills]
-    return JSONResponse({"tools": tools, "skills": skills})
+    """List all resources — matches old frontend ResourcePanel format."""
+    system_tools = [{"name": t.name, "description": t.description, "source": "system",
+                      "active": t.activation == "kernel", "activation": t.activation}
+                    for t in _agent.config.tools]
+    system_skills = [{"name": s.name, "description": s.description, "source": "system",
+                       "active": s.activation == "kernel", "activation": s.activation}
+                     for s in _agent.config.skills]
+    # Match old ResourceRegistry.list_all() format
+    tools = [{"name": t.name, "description": t.description, "source": "system",
+              "readonly": True, "configured": True, "required": False,
+              "depends_on": [], "activation": t.activation}
+             for t in _agent.config.tools]
+    skills = [{"name": s.name, "description": s.description, "source": "system",
+               "readonly": True, "configured": True, "required": False,
+               "depends_on": [], "activation": s.activation}
+              for s in _agent.config.skills]
+    models = [{"name": m.name, "description": m.model, "source": "system",
+               "readonly": False, "configured": True, "required": True,
+               "depends_on": [], "model_name": m.model}
+              for m in _agent.config.models]
+    return JSONResponse({"tools": tools, "skills": skills, "models": models})
+
+@app.get("/api/resources/unconfigured")
+async def resources_unconfigured(required_only: bool = False):
+    """List unconfigured resources (stub — all tools are pre-configured)."""
+    return JSONResponse([])
 
 @app.get("/api/resources/{res_type}")
 async def list_resources(res_type: str):
