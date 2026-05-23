@@ -287,7 +287,15 @@ class GraphEngine:
                             "completion_tokens": chunk.get("completion_tokens", 0),
                             "total_tokens": chunk.get("total_tokens", 0),
                         }
-                resp = {"content": full_text, "tool_calls": []}
+                    elif chunk.get("type") == "error":
+                        yield self._make_event(type="error",
+                                         data={"code": chunk.get("code", 0),
+                                               "detail": chunk.get("detail", "")},
+                                         turn=turn, session_id=session_id)
+                        resp = {"content": "", "tool_calls": []}
+                        break
+                else:
+                    resp = {"content": full_text, "tool_calls": []}
             else:
                 # Sync fallback
                 resp = await self._call_model(msgs, state["current_model"])

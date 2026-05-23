@@ -136,6 +136,12 @@ async def _sse_chat(message: str):
             elif t == "tool_call_end":
                 result = "success" if event.data.get("success") else "error"
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
+            elif t == "error":
+                detail = event.data.get("detail", "API error")
+                code = event.data.get("code", 0)
+                yield f"data: {json.dumps({'type': 'error', 'detail': f'[{code}] {detail}'}, ensure_ascii=False)}\n\n"
+                return  # stop here, don't send done
+
         # Send done with FULL history for frontend renderFromHistory
         state = await _agent.state_store.get("default")
         history = state.get("messages", []) if state else []
