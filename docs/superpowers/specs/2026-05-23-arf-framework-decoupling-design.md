@@ -11,9 +11,9 @@
 | **core** ✨ | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
 | **agent** | 进程 | Agent 生命周期管理 | Pydantic 配置驱动，代码优先 | `create_agent(config=AgentConfig(...))` |
 | **engine** | CPU 流水线 | 执行循环、自动 checkpoint、并行工具调用 | ReAct 循环 + StateStore 自动持久化 + ToolExecutor 并发 | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` |
-| **observability** ✨ | 系统监控 (perf/strace) | 框架黑盒，出问题无法定位 | 统一事件流 → OTel Span 导出 | `EventBus` + `Tracer`（共享事件源） |
+| **observability** ✨ | 系统监控 (perf/strace) + 本地调试 | 框架黑盒，出问题无法定位 | OTel Span 导出 + Rich TUI 实时调试面板 | `EventBus` + `Tracer` + `TuiDashboard`（共享事件源） |
 | **streaming** ✨ | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE/WebSocket 推送 | `EventBus` + `EventStream`（共享事件源） |
-| **guardrails** ✨ | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | 输入/输出/工具参数三阶段校验 | `InputGuardrail` + `OutputGuardrail` + `ToolGuardrail` |
+| **guardrails** ✨ | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | engine 三处硬编码调用点 (输入/输出/工具参数) | `GuardRunner` (engine 统一入口，内部封装三种护栏) |
 | **compaction** | 虚拟内存 + 页交换 | 上下文窗口爆掉 | 75% 阈值滑动窗口压缩 | `CompactionStrategy` |
 | **memory** | 文件系统 + 搜索引擎 | 记了但不会"回忆" | store 层 + 独立检索层，engine 节点自动触发 | `MemoryStore` + `MemoryRetriever` |
 | **routing** | 多级缓存 (L1/L2) | 所有请求打同一个模型 | 二级分类器 | `ModelRouter` |
@@ -22,7 +22,7 @@
 | **concurrency** | 乱序执行 + 多核 | 任务层面并行调度 | 顺序执行（占位） | `TaskScheduler` |
 | **human_loop** | 硬件中断 + 审批工作流 | 该停时停不下来，停了恢复不了 | 暂停/审批/超时/恢复 + 依赖 StateStore 快照 | `ApprovalPoint` + `ApprovalChannel` |
 | **communication** ✨ | 进程间通信 (IPC) | 多 Agent 无法协作 | Agent 消息总线 + 任务委托 + Supervisor 编排 | `AgentBus` + `TaskDelegator` + `Supervisor` + `SharedWorkspace` |
-| **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | 静态 YAML + MCP Provider + ToolRetriever | `ResourceRegistry` + `ToolProvider` + `ToolBackend` + `ToolRetriever` |
+| **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | ToolResolver 统一入口(内部封装 Provider+Retriever+Backend) | `ToolResolver` (engine 唯一 tool 接口) |
 | **errors** ✨ | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试次数 + 退避 + 降级策略 | `ErrorPolicy` |
 
 ## 核心设计：`arf/core` — 统一类型层
@@ -37,9 +37,10 @@ arf/core/
 ├── protocols/
 │   ├── tracer.py         # Tracer
 │   ├── event_bus.py      # EventBus (streaming + observability 共享)
-│   ├── guardrails.py     # InputGuardrail, OutputGuardrail, ToolGuardrail
+│   ├── guardrails.py     # GuardRunner, InputGuardrail, OutputGuardrail, ToolGuardrail
 │   ├── compaction.py     # CompactionStrategy
-│   ├── memory.py         # MemoryStore, MemoryRetriever, ToolRetriever
+│   ├── memory.py         # MemoryStore, MemoryRetriever
+│   ├── resources.py      # ToolResolver, ToolProvider, ToolRetriever, ToolBackend
 │   ├── routing.py        # ModelRouter
 │   ├── hooks.py          # HookRunner
 │   ├── sandbox.py        # ToolSandbox
@@ -114,6 +115,88 @@ class EventStream(Protocol):
 
 streaming/observability 不再是两个独立域，而是 EventBus 的两个消费者。
 
+### Observability 默认实现：Tracer + TUI Dashboard
+
+两个消费者订阅同一个 EventBus，职责不同：
+
+```
+EventBus.subscribe(event_types=None)  ← 全量事件
+  ├── OTelTracer     → OTLP Span 导出 (Jaeger/Grafana)
+  └── TuiDashboard   → Rich 终端实时面板 (本地调试)
+```
+
+#### Tracer：OTel Span 导出
+
+```python
+# arf/core/protocols/tracer.py
+
+class Tracer(Protocol):
+    """消费 EventBus 全量事件，转换为 OTel Span 导出。
+    通过环境变量 OTEL_EXPORTER=console|otlp|none 选择导出方式。"""
+    async def consume(self, bus: EventBus) -> None: ...
+```
+
+默认 `OtelTracer` 将 `AgentEvent` 的 `trace_id`/`span_id`/`parent_span_id` 直接映射为 OTel Span，span name = event type。携带 `session_id`、`agent_name`、`model_name`、`turn` 等标准 attribute。
+
+#### TuiDashboard：Rich 实时调试面板
+
+```python
+# arf/observability/tui.py
+
+class TuiDashboard:
+    """Rich 驱动的终端实时调试面板。消费 EventBus，显示 Agent 运行的
+    关键指标和事件时间线。通过环境变量 ARF_TUI=1 或 agent.yaml 配置启用。
+    仅在开发/调试场景使用，生产环境关闭。"""
+
+    async def consume(self, bus: EventBus) -> None: ...
+```
+
+面板布局：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ARF Agent: my_agent                    Session: abc123     │
+│  Uptime: 00:12:34    Turn: 5/50                             │
+├────────────────────────────────┬────────────────────────────┤
+│  Model Calls                   │  Tool Calls Timeline       │
+│  ─────────────────────         │  ─────────────────────     │
+│  quick_thinking:  3 calls      │  12:00:01  file_reader  ██ │
+│     tokens: 1,200 in / 800 out │  12:00:03  web_search   ███│
+│  deep_thinking:   2 calls      │  12:00:08  file_writer  █  │
+│     tokens: 800 in / 3,200 out │  12:00:15  file_reader  ██ │
+│  ─────────────────────         │  12:00:22  web_fetch   ████│
+│  Total cost: ¥0.47             │                             │
+│  Tokens this session: 12,400   │                             │
+├────────────────────────────────┴────────────────────────────┤
+│  Last Model Output                                          │
+│  ────────────────────────────────────────────────────────── │
+│  I'll read the file first to understand the current         │
+│  implementation before making changes...                    │
+│                                                             │
+│  [Enter: pause  |  q: quit dashboard  |  t: token detail]   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**面板区域**:
+- **Header**: agent name、session id、运行时长、当前 turn
+- **Model Calls**: 每种模型的调用次数、token 消耗（输入/输出）、费用估算
+- **Tool Timeline**: 工具调用的甘特式时间线，显示调用顺序和耗时
+- **Output**: 最近一条模型输出摘要，实时刷新
+- **热键**: `Enter` 暂停/恢复刷新，`q` 退出面板，`t` 切换 token 明细
+
+**数据来源均来自 EventBus**，TuiDashboard 不主动轮询任何状态。默认在 `ARF_TUI=1` 时启用，或通过 agent config:
+
+```yaml
+observability:
+  tui_enabled: true
+    # 是否启用 Rich TUI 调试面板 (仅开发环境)
+    # 生产环境建议关闭，使用 OTLP 导出
+  otel_exporter: console
+    # console | otlp | none
+```
+
+**与 streaming 的区别**: TUI 是开发者本地调试工具，展示内部指标（token 消耗、调用次数、费用）；streaming 是用户产品级 UI 的数据源，展示实时进度和结果。两者都从 EventBus 读取，但展示不同维度的信息。
+
 ---
 
 ## 目录结构
@@ -150,10 +233,18 @@ open_deepseek_arf/
 │   ├── human_loop/                # approval_points.py, channels/
 │   │   └── channels/              # console.py, websocket.py
 │   ├── streaming/                 # adapters/ (SSE, WebSocket — EventBus 的传输层)
-│   ├── observability/             # otel.py (EventBus → OTel Span 转换器)
+│   ├── observability/             # otel.py (OTLP导出), tui.py (Rich调试面板)
 │   ├── communication/             # in_memory_bus.py, supervisor.py
 │   ├── errors/                    # retry.py, fallback.py
 │   └── concurrency/               # sequential.py
+│   ├── testing/                    # ★ InMemory* 测试替身，方便开发者单元测试
+│   │   ├── __init__.py             # 导出所有 fake 实现
+│   │   ├── fake_bus.py             # InMemoryEventBus
+│   │   ├── fake_store.py           # InMemoryStateStore, InMemoryMemoryStore
+│   │   ├── fake_tools.py           # InMemoryToolResolver, InMemoryToolExecutor
+│   │   ├── fake_guards.py          # InMemoryGuardRunner (透传)
+│   │   ├── fake_agents.py          # InMemoryAgentBus, InMemorySupervisor
+│   │   └── fake_channel.py         # InMemoryApprovalChannel
 │
 ├── app/                           # 应用层 + 前端
 │   ├── web/                       # 前端 (现在的 frontend/)
@@ -205,21 +296,73 @@ class ToolExecutor(Protocol):
 
 engine 在 **compact 之前** 调用 `MemoryRetriever.retrieve()`，`query_context` 为当前会话最近 N 条消息。检索结果写入 `state.context_summary`，由 prompt pipeline 的 `{{MEMORY}}` 占位符消费。**这是 engine 节点的内置行为，不是可选的 hook。**
 
-### ToolRetriever — 与 MemoryRetriever 对等
+### ToolResolver — Resources 层高层接口
 
 ```python
-# arf/core/protocols/memory.py
+# arf/core/protocols/resources.py
+
+class ToolResolver(Protocol):
+    """Resources 层对 engine 暴露的唯一工具接口。
+    内部封装 ToolProvider + ToolRetriever + ToolBackend 的全部复杂度。
+    engine 不关心工具来自本地 YAML 还是 MCP 远程，也不关心如何检索——
+    它只需要根据当前上下文拿到一组可用的 ToolDefinition。
+    """
+    async def get_tool_definitions(
+        self,
+        query_context: str,           # 当前对话上下文
+        top_k: int = 10,              # 检索后保留的工具数量上限
+    ) -> list[ToolDefinition]: ...
+
+    async def execute(
+        self,
+        tool_name: str,
+        params: dict,
+    ) -> ToolResult: ...
+
+
+@dataclass
+class ToolDefinition:
+    """发给模型 API 的标准化 tool schema——engine 只关心这个"""
+    name: str
+    description: str
+    parameters: dict                  # JSON Schema
+```
+
+**内部实现层次** (`resources/`):
+```
+ToolResolver.get_tool_definitions()
+  ├── ToolProvider.list_tools()        # 聚合 static_yaml + MCP → 全量列表
+  ├── ToolRetriever.retrieve()         # 语义检索 top-k
+  └── → list[ToolDefinition]           # engine 可直接序列化给 API
+
+ToolResolver.execute()
+  ├── ToolProvider.resolve(name)       # 找到工具来源
+  ├── ToolBackend.execute()            # function / subprocess → ToolResult
+  └── → ToolResult
+```
+
+ToolProvider、ToolRetriever、ToolBackend 是 Resources 层内部实现细节，不暴露给 engine。
+
+```python
+# 内部 Protocol (engine 不可见 | engine never sees these)
+
+class ToolProvider(Protocol):
+    """工具来源抽象 — 本地 YAML 或远程 MCP 服务器"""
+    async def list_tools(self) -> list[ToolConfig]: ...
+    async def resolve(self, name: str) -> ToolConfig | None: ...
 
 class ToolRetriever(Protocol):
-    """根据当前任务上下文动态挑选 top-k 工具/技能。
-    全局可能注册 500+ 工具（含 MCP 远程），全部发给模型是灾难。
-    engine 在构建 tool_definitions 前调用此接口。"""
+    """根据任务上下文动态挑选 top-k 工具"""
     async def retrieve(
         self,
         query_context: str,
         available_tools: list[ToolConfig],
         top_k: int = 10,
     ) -> list[ToolConfig]: ...
+
+class ToolBackend(Protocol):
+    """工具执行后端 — 绑定到具体 Python 函数或 subprocess"""
+    async def execute(self, tool_config: ToolConfig, params: dict) -> ToolResult: ...
 ```
 
 ### ErrorPolicy
@@ -243,6 +386,93 @@ class ErrorAction:
 ```
 
 默认实现: `DefaultErrorPolicy` — 工具错误重试 2 次指数退避，模型 429 重试 3 次，5xx 降级到 fallback 链中下一个模型。
+
+### GuardRunner — engine 中的护栏执行点
+
+```python
+# arf/core/protocols/guardrails.py
+
+class GuardRunner(Protocol):
+    """engine 在固定位置调用的护栏统一入口。
+    内部组装 InputGuardrail + OutputGuardrail + ToolGuardrail，
+    支持串联多个规则链。engine 不关心内部实现。"""
+
+    async def check_input(self, message: str, context: dict) -> GuardResult:
+        """engine 在收到用户消息后、进入 loop 前调用"""
+        ...
+
+    async def check_output(self, message: str, context: dict) -> GuardResult:
+        """engine 在模型输出后、传递给用户或工具前调用"""
+        ...
+
+    async def check_tool_params(self, tool_name: str, params: dict) -> GuardResult:
+        """engine 在工具执行前调用"""
+        ...
+
+@dataclass
+class GuardResult:
+    allowed: bool
+    reason: str = ""
+    modified_message: str | None = None  # 护栏修改后的内容（PII 清洗等）
+```
+
+**engine 中的调用位置**（硬编码，用户不可移除。通过 `strategy: none` 透传）:
+
+```
+engine loop:
+  │
+  ├─ 收到用户消息
+  │    └─ guard_runner.check_input(message, ctx)      ← 输入护栏
+  │       ├─ allowed  → 继续
+  │       ├─ modified → 替换为 modified_message，继续
+  │       └─ blocked  → ErrorPolicy.on_guardrail_block()
+  │
+  ├─ model 返回 response
+  │    └─ guard_runner.check_output(response, ctx)     ← 输出护栏
+  │       ├─ allowed  → 继续
+  │       ├─ modified → 替换为 modified_message，继续
+  │       └─ blocked  → ErrorPolicy.on_guardrail_block()
+  │
+  └─ 工具调用前
+       └─ guard_runner.check_tool_params(name, params) ← 工具参数护栏
+          ├─ allowed  → 执行工具
+          ├─ modified → 使用 modified_params，继续
+          └─ blocked  → ErrorPolicy.on_guardrail_block()
+```
+
+**内部实现**（engine 不可见 | engine never sees these）:
+
+```python
+class DefaultGuardRunner:
+    def __init__(self, input_guard, output_guard, tool_guard):
+        self._input = input_guard
+        self._output = output_guard
+        self._tool = tool_guard
+
+    async def check_input(self, message, ctx):
+        return await self._input.check(message, ctx)
+    # ... check_output, check_tool_params 同理
+
+class InputGuardrail(Protocol):
+    async def check(self, message: str, context: dict) -> GuardResult: ...
+
+class OutputGuardrail(Protocol):
+    async def check(self, message: str, context: dict) -> GuardResult: ...
+
+class ToolGuardrail(Protocol):
+    async def check(self, tool_name: str, params: dict) -> GuardResult: ...
+```
+
+**默认实现**:
+- `NoneInputGuard` — 透传所有输入
+- `RegexOutputGuard` — 正则清洗 API key、手机号等 PII
+- `PathToolGuard` — 检测路径穿越 (`../`、绝对路径)
+
+**与 hook / sandbox 的关系**:
+- guardrails 是框架安全基础设施，**不可被用户移除**（只能通过策略配置透传）
+- hooks 是用户可选扩展，用户可以增删改
+- sandbox 管 OS 层资源隔离（文件系统边界）
+- guardrails 管应用层语义安全（内容安全、注入防御）
 
 ---
 
@@ -364,8 +594,8 @@ memory:
 # ----------------------------------------------------------------------------
 tool_retrieval:
   enabled: false
-    # true: engine 在构建 tool_definitions 前用 ToolRetriever 精简
-    # false: 直接用 kernel 列表
+    # true: ToolResolver 启用检索模式（内部调用 ToolRetriever 精简后返回）
+    # false: 直接返回 kernel 列表，不走检索
   top_k: 10
     # 检索后保留的工具数量
 
@@ -695,8 +925,19 @@ agent = create_agent(config=AgentConfig(
 # YAML 入口: 加载已有配置
 agent = create_agent(agent_dir="./my_agent")
 
-# 导出 YAML: 分享用途
+# 导出 YAML: 分享用途，自动写入 arf_version 元数据
 agent.config.to_yaml("./my_agent_export/")
+# → my_agent_export/agent.yaml 头部:
+#   # arf_version: 1.0
+#   name: my_agent
+#   ...
+
+# YAML 加载: 自动检测版本
+agent = create_agent(agent_dir="./my_agent")
+# 框架内部流程:
+#   1. 读取 arf_version 字段
+#   2. 如果版本不兼容 → 报错提示，给出迁移指引
+#   3. 如果版本可迁移 → 自动转换到当前 schema (或提示运行 migration CLI)
 
 # 配置热更新: 在 turn 边界安全切换
 agent.reconfigure(loop_strategy="direct")
@@ -720,6 +961,9 @@ class ModelConfig(BaseModel):
 ```python
 class AgentConfig(BaseModel):
     """Agent 完整配置，Pydantic 校验 + IDE 类型补全"""
+    schema_version: str = "1.0"                      # 框架自动写入，用户不设置
+        # Schema 版本号，用于 YAML 导出时的兼容性检查和迁移
+        # Schema version for YAML export compatibility checks & migration
     name: str                                         # 必填
     role: str                                         # 必填
     task: str                                         # 必填
@@ -745,6 +989,136 @@ class AgentConfig(BaseModel):
     reload: ReloadConfig | None = None
 ```
 
+## YAML Schema 版本化
+
+**解决的问题**: `AgentConfig` 随框架演进会增减字段、重命名或改语义。已导出的 YAML 配置在升级框架后必须能被正确识别。
+
+### 机制
+
+```yaml
+# agent.yaml 头部元数据 | YAML header metadata
+# arf_version: 1.0
+name: my_agent
+# ...
+```
+
+- **导出时**: `AgentConfig.to_yaml()` 自动在第一行写入 `# arf_version: {schema_version}`
+- **加载时**: `BaseAgent.from_dir()` 读取 `arf_version`，与框架支持的版本范围比较
+- **兼容规则**: 同主版本号兼容（1.x ↔ 1.x），跨主版本拒绝加载并提示迁移
+
+```python
+# arf/agent/config.py
+
+class AgentConfig(BaseModel):
+    schema_version: str = Field(default="1.0", frozen=True)
+        # 框架自动写入，用户不设。导出时写入 arf_version 元数据。
+        # Auto-managed by framework. Written as arf_version in YAML header.
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "AgentConfig":
+        raw = yaml.safe_load(open(path))
+        version = raw.get("schema_version", "0.0")  # 0.0 = 未版本化的旧配置
+        if version not in cls._supported_versions():
+            raise SchemaVersionError(
+                f"Config schema v{version} not supported by this framework "
+                f"(supports: {cls._supported_versions()}). "
+                f"Run `arf migrate --from {version}` to upgrade."
+            )
+        if version != cls._current_version():
+            raw = cls._migrate(raw, from_version=version)
+        return cls(**raw)
+
+    @staticmethod
+    def _supported_versions() -> set[str]:
+        return {"1.0"}
+
+    @staticmethod
+    def _current_version() -> str:
+        return "1.0"
+
+    @staticmethod
+    def _migrate(data: dict, from_version: str) -> dict:
+        # 未来版本迁移链: 0.0→1.0, 1.0→2.0, ...
+        migrations = {
+            "0.0": _migrate_0_to_1,
+        }
+        migrator = migrations.get(from_version)
+        return migrator(data) if migrator else data
+```
+
+未带 `schema_version` 的历史配置（如当前 `arf_user_agent.yaml`）自动识别为 `"0.0"`，由迁移链处理。
+
+## `arf/testing` — InMemory 测试替身
+
+**解决的问题**: 所有核心组件都是 Protocol，开发者单元测试自己的 Agent 逻辑时，不希望依赖真实的 API 调用、subprocess、外部 MCP 服务器或审批终端交互。框架应提供一套完整的 InMemory 实现，让测试只需 import `arf.testing` 即可开始。
+
+### 使用示例
+
+```python
+from arf.testing import (
+    InMemoryEventBus,
+    InMemoryStateStore,
+    InMemoryMemoryStore,
+    InMemoryToolResolver,
+    InMemoryGuardRunner,
+    InMemoryApprovalChannel,
+)
+
+# 组装测试 Agent
+test_agent = create_agent(config=AgentConfig(
+    name="test",
+    role="test",
+    task="test",
+    description="test agent",
+    system_prompt=SystemPromptConfig(
+        template="You are a test assistant.",
+        pipeline=[],
+        critical_rules="",
+    ),
+    models=[ModelConfig(name="mock", api_type="openai", model="mock")],
+))
+
+# 替换为 fake 实现——所有操作在内存中完成
+test_agent._inject(
+    event_bus=InMemoryEventBus(),
+    state_store=InMemoryStateStore(),
+    tool_resolver=InMemoryToolResolver({
+        "get_weather": ToolDefinition(
+            name="get_weather",
+            description="Get weather",
+            parameters={"type": "object", "properties": {}, "required": []},
+        ),
+    }),
+    guard_runner=InMemoryGuardRunner(),  # 全部透传
+)
+
+# 测试——无网络、无 subprocess、无外部依赖
+response = await test_agent.chat("Hello")
+assert response is not None
+
+# 验证工具调用历史
+assert test_agent.state_store.get("test_session") is not None
+events = test_agent.event_bus.collect("tool_call_start")
+assert len(events) == 0  # 不应触发工具调用
+```
+
+### 提供的 InMemory 实现
+
+| Fake 类 | 实现 Protocol | 默认行为 |
+|---|---|---|
+| `InMemoryEventBus` | `EventBus` | asyncio.Queue 内存广播，`collect(type)` 方法用于断言 |
+| `InMemoryStateStore` | `StateStore` | dict 存储，支持 `snapshots` 属性遍历所有 checkpoint |
+| `InMemoryMemoryStore` | `MemoryStore` | dict 存储，可预设 `seed_entries` |
+| `InMemoryMemoryRetriever` | `MemoryRetriever` | 返回预设的 `seed_entries`（不做语义检索） |
+| `InMemoryToolResolver` | `ToolResolver` | 预设 `tool_map: dict[str, ToolDefinition]`，`execute` 返回假结果 |
+| `InMemoryToolExecutor` | `ToolExecutor` | 并发执行预设函数，记录调用历史 |
+| `InMemoryGuardRunner` | `GuardRunner` | 全部透传（allowed=True） |
+| `InMemoryApprovalChannel` | `ApprovalChannel` | 自动批准，`responses` 属性可遍历审批历史 |
+| `InMemoryAgentBus` | `AgentBus` | 内存消息路由，`sent_messages` 属性可遍历 |
+| `InMemoryTaskDelegator` | `TaskDelegator` | 预设返回值，记录委托历史 |
+
+所有 Fake 类提供 `reset()` 方法清空状态，`history` / `calls` 属性暴露操作记录用于断言。默认行为是最小可行的旁路实现——需要模拟失败场景时通过 `set_error()` / `set_block()` 等方法配置。
+
 ## 创建流程
 
 ```
@@ -756,17 +1130,19 @@ AgentConfig(name=..., ...)  ← Pydantic 校验      YAML 文件 → AgentConfig
                            ▼
                  BaseAgent._from_config(cfg)
                            │
-            ┌──────────────┼──────────────┐
-            │              │              │
-      StateStore     EventBus        ToolExecutor
-      (checkpoint)   (emit events)   (并行工具调用)
-            │              │              │
-            └──────────────┼──────────────┘
+            ┌──────────────┼──────────────┬──────────────┐
+            │              │              │              │
+      StateStore     EventBus     ToolExecutor   ToolResolver   GuardRunner
+      (checkpoint)  (events)     (并行tool调用)  (统一tool入口)  (三处硬编码)
+            │              │              │              │              │
+            └──────────────┼──────────────┼──────────────┼──────────────┘
                            ▼
             GraphEngine(...)  ← DI 注入所有协议实现
               + LoopStrategy (react / plan_execute / direct)
               + MemoryRetriever (在 compact 前自动触发)
-              + ToolRetriever (在构建 tool_defs 前自动触发)
+              + ToolResolver (engine 唯一 tool 入口,
+                              内部封装 Provider+Retriever+Backend)
+              + GuardRunner (输入/输出/工具参数三处硬编码调用)
               + ErrorPolicy (工具/模型/护栏失败时自动执行)
               + HumanLoopManager (审批暂停 → StateStore.put → 恢复)
 ```
@@ -778,7 +1154,7 @@ AgentConfig(name=..., ...)  ← Pydantic 校验      YAML 文件 → AgentConfig
 1. **`arf/core` + 骨架** — 建立统一类型层，所有 Protocol 和数据结构收拢到 `arf/core/`。所有子模块的 `protocol.py` 移入 `core/protocols/`。
 2. **引擎层** — 搬运 `engine/`，加入 `StateStore` checkpoint、`ToolExecutor` 并发工具调用、MemoryRetriever 触发节点、ErrorPolicy 集成。
 3. **EventBus** — 统一事件总线替代 streaming/observability 两套系统。
-4. **resources + memory + hooks + agent** — 搬运并清理，加入 `ToolBackend`、`ToolRetriever`、`MemoryRetriever`。
+4. **resources + memory + hooks + agent** — 搬运并清理，resources 层实现 `ToolResolver` 封装 `ToolProvider` + `ToolRetriever` + `ToolBackend`；memory 加入 `MemoryRetriever`。
 5. **补齐所有默认实现** — 为每个域提供最小可行实现（如上述各节所述）。
 6. **前端隔离 + 验证** — 前端移入 `app/web/`，确认框架零应用依赖。
 
