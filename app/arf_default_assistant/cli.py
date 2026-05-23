@@ -58,10 +58,10 @@ def cmd_start(args):
     frontend_dir = APP_DIR / ".." / ".." / "frontend"
     has_frontend = frontend_dir.exists() and (frontend_dir / "package.json").exists()
     if has_frontend and not (frontend_dir / "node_modules").exists():
-        print("Frontend dependencies not installed. Run: cd frontend && npm install")
-        if not args.no_frontend:
-            print("Skipping frontend. Use --no-frontend to suppress this check, or install deps.")
-            has_frontend = False
+        print("Installing frontend dependencies (npm install)...")
+        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+        subprocess.run([npm_cmd, "install"], cwd=str(frontend_dir), check=True)
+        print("Frontend dependencies installed.")
 
     # Start uvicorn — inherit stdout/stderr so logs are visible
     uvicorn_proc = subprocess.Popen(
