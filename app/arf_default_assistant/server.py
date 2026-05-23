@@ -192,10 +192,13 @@ async def traces_sessions(limit: int = 20):
     sessions = []
     if trace_dir.exists():
         for p in sorted(trace_dir.glob("*.json"), reverse=True)[:limit]:
+            sid = p.stem
+            if not sid or sid == ".json":  # skip corrupted files
+                continue
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 sessions.append({
-                    "session_id": p.stem,
+                    "session_id": sid,
                     "event_count": len(data) if isinstance(data, list) else 0,
                 })
             except Exception:
@@ -203,6 +206,29 @@ async def traces_sessions(limit: int = 20):
     if not sessions:
         sessions.append({"session_id": "default", "event_count": 0})
     return JSONResponse(sessions)
+
+@app.get("/api/traces/sessions/{session_id}")
+async def traces_session_detail(session_id: str):
+    """Get detailed trace events for a specific session."""
+    trace_dir = Path("./memory/sessions")
+    path = trace_dir / f"{session_id}.json"
+    if not path.exists():
+        return JSONResponse({"turns": [], "events": []})
+    try:
+        events = json.loads(path.read_text(encoding="utf-8"))
+        return JSONResponse({"turns": _group_turns(events), "events": events})
+    except Exception:
+        return JSONResponse({"turns": [], "events": []})
+
+def _group_turns(events: list) -> list:
+    """Group trace events by turn number."""
+    turns = {}
+    for e in events:
+        t = e.get("turn", 0)
+        if t not in turns:
+            turns[t] = {"turn": t, "events": []}
+        turns[t]["events"].append(e)
+    return sorted(turns.values(), key=lambda x: x["turn"])
 
 @app.get("/api/traces/summary")
 async def traces_summary():
@@ -357,6 +383,11 @@ async def feedback(req: FeedbackReq):
         f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}, ensure_ascii=False) + "\n")
     return JSONResponse({"status": "recorded"})
 
+@app.get("/api/feedback/{session_id}")
+async def feedback_get(session_id: str):
+    """Get feedback for a session (stub)."""
+    return JSONResponse([])
+
 
 @app.get("/api/preferences")
 async def preferences():
@@ -368,8 +399,25 @@ _token_stats = {"calls": 0, "tokens_in": 0, "tokens_out": 0}
 
 @app.get("/api/usage/summary")
 async def usage_summary(period: str = "month"):
-    """Usage stats from actual model calls."""
-    return JSONResponse({**_token_stats, "sessions": 1, "period": period})
+    """Usage stats matching frontend UsageSummary interface."""
+    total = _token_stats["tokens_in"] + _token_stats["tokens_out"]
+    return JSONResponse({
+        "total_tokens": total,
+        "total_calls": _token_stats["calls"],
+        "by_model": [
+            {
+                "model_name": m.model,
+                "model_type": m.name,
+                "prompt_tokens": _token_stats["tokens_in"],
+                "completion_tokens": _token_stats["tokens_out"],
+                "total_tokens": total,
+                "calls": _token_stats["calls"],
+            }
+            for m in _agent.config.models
+        ],
+        "sessions": 1,
+        "period": period,
+    })
 
 @app.get("/api/health")
 async def health():
