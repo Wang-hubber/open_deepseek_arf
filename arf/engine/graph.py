@@ -3,7 +3,7 @@ import json
 from typing import Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
-    ToolResolver, MemoryRetriever, MemoryWriter, HookRunner,
+    ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
     GuardRunner, EventBus, ErrorPolicy,
 )
 from arf.core.state import AgentState, TurnContext
@@ -20,6 +20,7 @@ class GraphEngine:
         tool_resolver: ToolResolver,
         transaction_ctx: TransactionContext | None = None,
         planner: Planner | None = None,
+        memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
         memory_writer: MemoryWriter | None = None,
         hook_runner: HookRunner | None = None,
@@ -37,6 +38,7 @@ class GraphEngine:
         self.tool_resolver = tool_resolver
         self.transaction_ctx = transaction_ctx
         self.planner = planner
+        self.memory_store = memory_store
         self.memory_retriever = memory_retriever
         self.memory_writer = memory_writer
         self.hook_runner = hook_runner
@@ -102,15 +104,10 @@ class GraphEngine:
             self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
 
             # 1. Memory retrieval — before compaction
-            if self.memory_retriever and self.memory_writer:
+            if self.memory_retriever and self.memory_writer and self.memory_store:
                 query = self._last_user_message(state)
-                from arf.core.protocols.memory import MemoryStore
-                class _DummyStore:
-                    async def load(self, sid): return []
-                    async def save(self, e): pass
-                    async def delete(self, eid): pass
                 entries = await self.memory_retriever.retrieve(
-                    store=_DummyStore(),
+                    store=self.memory_store,
                     query_context=query,
                     session_id=session_id,
                     max_tokens=2000,
@@ -243,9 +240,9 @@ class GraphEngine:
             }
 
             # 9. Memory write — after turn
-            if self.memory_writer:
+            if self.memory_writer and self.memory_store:
                 await self.memory_writer.extract_and_write(
-                    store=_DummyStore(),
+                    store=self.memory_store,
                     turn_messages=state["messages"][-4:],
                     existing_entries=[],
                 )
@@ -275,6 +272,20 @@ class GraphEngine:
             yield self._make_event(type="user_input",
                              data={"content": user_msg, "turn": turn},
                              turn=turn, session_id=session_id)
+
+            # Memory retrieval before this turn
+            if self.memory_retriever and self.memory_writer and self.memory_store:
+                entries = await self.memory_retriever.retrieve(
+                    store=self.memory_store,
+                    query_context=user_msg,
+                    session_id=session_id,
+                    max_tokens=2000,
+                    top_k=5,
+                )
+                if entries:
+                    state["context_summary"] = "\n".join(
+                        f"- {e.content}" for e in entries if e.relevance_score > 0
+                    )
 
             msgs = [{"role": "system", "content": self._system_prompt}]
             summary = state.get("context_summary", "")
@@ -351,6 +362,12 @@ class GraphEngine:
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
                 await self.state_store.put(session_id, state)
+                if self.memory_writer and self.memory_store:
+                    await self.memory_writer.extract_and_write(
+                        store=self.memory_store,
+                        turn_messages=state["messages"][-4:],
+                        existing_entries=[],
+                    )
                 break
 
             # Append assistant message with tool_calls BEFORE executing tools
@@ -386,6 +403,14 @@ class GraphEngine:
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
                                               "content": str(r.data) if r.success else f"Error: {r.error}"})
             await self.state_store.put(session_id, state)
+
+            # Memory extraction after tool execution turn
+            if self.memory_writer and self.memory_store:
+                await self.memory_writer.extract_and_write(
+                    store=self.memory_store,
+                    turn_messages=state["messages"][-4:],
+                    existing_entries=[],
+                )
 
             if turn >= self._max_turns:
                 break

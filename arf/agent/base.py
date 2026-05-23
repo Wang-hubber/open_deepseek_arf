@@ -126,6 +126,7 @@ class BaseAgent:
             tool_resolver=tool_resolver,
             transaction_ctx=transaction_ctx,
             planner=planner,
+            memory_store=memory_store,
             memory_retriever=memory_retriever,
             memory_writer=memory_writer,
             hook_runner=hook_runner,
