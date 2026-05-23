@@ -23,6 +23,49 @@ from arf.human_loop.approval_points import AlwaysAutoApprove
 from arf.human_loop.channels.console import ConsoleChannel
 
 
+def _build_system_prompt(config: AgentConfig) -> str:
+    """Build system prompt from AgentConfig.system_prompt template.
+
+    Supports placeholders filled by engine at runtime:
+      {{AGENT_NAME}}      → config.name
+      {{CRITICAL_RULES}}  → config.system_prompt.critical_rules
+      {{INVENTORY}}       → kernel tools + skills (progressive disclosure)
+    Falls back to auto-generated prompt if no template provided.
+    """
+    sp = config.system_prompt
+    template = sp.template.strip()
+    if not template:
+        # Fallback for configs without explicit system_prompt
+        template = (
+            f"You are {config.name}, an AI assistant.\n\n"
+            f"## Capabilities\n{config.description}\n\n"
+        )
+
+    # Build inventory: kernel tools + discoverable skills (name + one-line desc)
+    kernel_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "kernel"]
+    skills = config.skills
+
+    inv_lines = []
+    if kernel_tools:
+        inv_lines.append("## Available Tools\n")
+        for t in kernel_tools:
+            inv_lines.append(f"- `{t.name}`: {t.description}")
+    if skills:
+        inv_lines.append("\n## Available Skills\n")
+        inv_lines.append("Skills are loaded on demand. Read a skill's full instructions via `file_reader`:\n")
+        for s in skills:
+            inv_lines.append(f"- `{s.name}`: {s.description or '(no description)'}  → read `skills/{s.name}.yaml`")
+
+    inventory = "\n".join(inv_lines) if inv_lines else ""
+
+    prompt = template
+    prompt = prompt.replace("{{AGENT_NAME}}", config.name)
+    prompt = prompt.replace("{{CRITICAL_RULES}}", sp.critical_rules or "")
+    prompt = prompt.replace("{{INVENTORY}}", inventory)
+
+    return prompt
+
+
 class BaseAgent:
     def __init__(self, config: AgentConfig, **override_protocols) -> None:
         self.config = config
@@ -74,11 +117,7 @@ class BaseAgent:
         planner = override_protocols.pop("planner", None)
 
         # 10. Build engine
-        system_prompt = (
-            f"You are {config.name}, an AI assistant.\n\n"
-            f"## Capabilities\n{config.description}\n\n"
-            f"{'## Critical Rules\n' + (adv.critical_rules if adv else '') if adv and (adv.critical_rules if adv else '') else ''}"
-        )
+        system_prompt = _build_system_prompt(config)
 
         self._engine = GraphEngine(
             loop_strategy=loop_strategy,

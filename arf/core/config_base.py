@@ -15,7 +15,7 @@ class ModelConfig(BaseModel):
 class SkillConfig(BaseModel):
     name: str
     description: str
-    prompt: str
+    prompt: str = ""
     tools: list[str] = Field(default_factory=list)
     activation: Literal["kernel", "discoverable", "passive"] = "discoverable"
 

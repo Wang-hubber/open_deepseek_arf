@@ -1,8 +1,47 @@
 # arf_version: 1.0
 name: arf_assistant
+role: 主助手
+task: 与用户对话、调用工具完成任务、工具不足时交接给 SysAgent
 description: >
   可自我演进的 AI 助手。擅长代码编写、文件管理、网络搜索、资源创建。
-  作为主 Agent (User) 与用户交互，资源创建等系统操作移交给 SysAgent。
+  作为主 Agent 与用户交互，资源创建等系统操作移交给 SysAgent。
+
+system_prompt:
+  template: |
+    You are {{AGENT_NAME}}, an AI assistant.
+
+    ## Capabilities
+    You help users accomplish tasks through natural language conversation.
+    You can read and write files, browse the web, manage memory, and process documents.
+
+    {{INVENTORY}}
+
+    ## Critical Rules
+    {{CRITICAL_RULES}}
+
+  critical_rules: |
+    ### R1: Verify, then answer
+    Never state file contents, current model, active tools, or any runtime state from memory.
+    Call the relevant tool FIRST, then answer from the tool result. Guessing is always wrong.
+
+    ### R2: Tool calls produce action, not text
+    Saying "switched to X" or "created Y" without calling the tool is a violation.
+    To use a tool, you MUST call it. Text description is not a substitute.
+
+    ### R3: Verify after action
+    After calling a tool that changes state, verify the result.
+    If the tool says it succeeded, report success. If it failed, analyze and retry.
+
+    ### R4: Handoff for privileged operations
+    Call `handoff_to_sys` when:
+    - User asks to create/modify/delete a tool, skill, or model
+    - You need to write to tools/, skills/, or models/ paths
+    - Any task your current toolset cannot fulfill
+
+    ### R5: Progressive skill loading
+    Skills listed under Available Skills are loaded on demand.
+    When a skill matches the user's intent, read its full instructions via `file_reader`.
+    Example: `file_reader` with `operation: read` and `path: skills/code_review.yaml`
 
 models:
   - name: quick
@@ -25,7 +64,7 @@ models:
 tools:
   - name: file_reader
     description: 读取文件内容或列出目录
-    parameters: {type: object, properties: {path: {type: string, description: 文件路径}}, required: [path]}
+    parameters: {type: object, properties: {path: {type: string, description: 文件路径}, operation: {type: string, enum: [read, list], default: read}}, required: [path]}
     activation: kernel
 
   - name: file_writer
@@ -93,6 +132,31 @@ tools:
     parameters: {type: object, properties: {model: {type: string}}, required: [model]}
     activation: discoverable
 
+skills:
+  - name: file_ops
+    description: Comprehensive file operations — read, write, list, delete, download
+    tools: [file_reader, file_writer, file_deleter, file_download]
+    activation: kernel
+
+  - name: code_review
+    description: Review code changes for correctness, style, and potential bugs
+    tools: [file_reader]
+    activation: discoverable
+
+  - name: debug
+    description: Systematic debugging of errors and unexpected behavior
+    tools: [file_reader, file_writer, python_exec, web_search]
+    activation: discoverable
+
+  - name: error_handler
+    description: Self-healing error handling — analyze tool errors, fix and retry
+    activation: discoverable
+
+  - name: resource_scaffold
+    description: Generate a new Tool or Skill resource from requirements
+    tools: [file_writer, resource_loader]
+    activation: discoverable
+
 hooks:
   - name: self_evolve
     type: post_tool_exec
@@ -101,15 +165,40 @@ hooks:
 
 advanced:
   max_turns: 50
-  critical_rules: |
-    1. Always read a file before editing it — never edit from memory.
-    2. When a tool fails, analyze the error and retry before giving up.
-    3. For creating or modifying tools/skills/models, hand off to sys_agent via handoff_to_sys.
-    4. Self-evolve: create new tools or skills when existing ones are insufficient for the task.
 
 agents:
   - name: sys_agent
-    description: 系统工程师——处理资源创建、模型配置、工具/技能生成等系统级操作
+    role: 系统工程师
+    task: 资源创建、模型配置、工具/技能生成等系统级操作
+    description: 处理资源创建、模型配置、工具/技能生成等系统级操作
+    system_prompt:
+      template: |
+        You are the ARF System Engineer. You create and orchestrate tools, skills, and models.
+
+        {{INVENTORY}}
+
+        ## Critical Rules
+        {{CRITICAL_RULES}}
+
+      critical_rules: |
+        ### Gate 1 — Design
+        Read `skills/resource_scaffold.yaml` for the format spec.
+        Present the design before writing. Wait for user approval ("go ahead", "yes", "确认").
+        Do NOT call file_writer yet.
+
+        ### Gate 2 — Write
+        Only after explicit approval, call file_writer to create each file.
+
+        ### Gate 3 — Validate
+        Read `skills/validate_tool.yaml` or `skills/validate_skill.yaml` and follow its checklist.
+
+        ### Gate 4 — Activate
+        Call `resource_loader` to activate the new resource.
+
+        ### File Writer Path Restrictions
+        You CAN use file_writer for paths under tools/, skills/.
+        But for user workspace files (uploads/, output/), call handoff_to_sys back.
+
     models:
       - name: deep
         api_type: openai
@@ -118,6 +207,7 @@ agents:
         api_key_env: DEEPSEEK_API_KEY
         kwargs:
           reasoning_effort: max
+
     tools:
       - name: file_reader
         activation: kernel
@@ -133,58 +223,29 @@ agents:
         activation: kernel
       - name: web_fetch
         activation: kernel
+
     skills:
       - name: resource_scaffold
-        description: 创建新资源骨架（工具或技能目录结构）
-        prompt: |
-          You create new tools and skills as directory scaffolds.
-          A tool skeleton = tool.yaml + function.py in tools/<name>/
-          A skill skeleton = skill.yaml in skills/
-          Use resource_scaffold to create the directory, then file_writer to fill content.
-          After creation, use resource_loader to activate the new resource.
+        description: Generate a new Tool or Skill resource from requirements
         tools: [file_writer, resource_loader]
         activation: kernel
       - name: tool_generator
-        description: 生成完整的工具实现（tool.yaml + function.py）
-        prompt: |
-          Generate a complete tool implementation:
-          1. tool.yaml: with name, description, proper JSON Schema parameters, execution config, activation mode
-          2. function.py: with async def execute(**kwargs) function
-          Validate JSON Schema validity and Python syntax before writing.
-          Target directory: tools/<tool_name>/
+        description: Generate complete tool implementations (tool.yaml + function.py)
         tools: [file_writer, resource_scaffold]
         activation: discoverable
       - name: skill_generator
-        description: 生成技能定义（skill.yaml）
-        prompt: |
-          Generate skill.yaml with:
-          1. Clear, actionable prompt template
-          2. Appropriate recommended tool list
-          3. Suitable activation mode (kernel/discoverable/passive)
-          Validate YAML format before writing.
-          Target: skills/<skill_name>.yaml
+        description: Generate skill definitions (skill.yaml)
         tools: [file_writer]
         activation: discoverable
       - name: validate_tool
-        description: 校验工具完整性（schema + 接口匹配）
-        prompt: |
-          Validate a tool's completeness:
-          1. tool.yaml JSON Schema is valid and has all required fields
-          2. function.py has execute(**kwargs) with correct signature
-          3. Parameters in schema match function signature
-          4. No missing imports or syntax errors
+        description: Validate tool completeness (schema + interface match)
         tools: [file_reader]
         activation: discoverable
       - name: validate_skill
-        description: 校验技能完整性（格式 + 质量）
-        prompt: |
-          Validate a skill's completeness:
-          1. skill.yaml has valid YAML syntax
-          2. prompt is clear and actionable
-          3. Recommended tool list entries exist and are registered
-          4. Activation mode is appropriate
+        description: Validate skill completeness (format + quality)
         tools: [file_reader, resource_registrar]
         activation: discoverable
+
     advanced:
       max_turns: 15
 
@@ -192,7 +253,7 @@ handover:
   rules:
     - from_agent: arf_assistant
       to_agent: sys_agent
-      trigger: "创建或修改 tools/skills/models 目录下的资源文件"
+      trigger: "创建或修改 resources(tools/skills/models) 目录下的资源文件"
     - from_agent: sys_agent
       to_agent: arf_assistant
       trigger: "资源操作完成或需要用户确认"

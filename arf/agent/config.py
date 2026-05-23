@@ -16,7 +16,6 @@ class AdvancedConfig(BaseModel):
     """All internal framework mechanisms with production-grade defaults."""
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
     max_turns: int = 50
-    critical_rules: str = ""
     routing: RoutingConfig | None = None
     compaction: CompactionConfig | None = None
     memory: MemoryConfig | None = None
@@ -42,11 +41,22 @@ class AdvancedConfig(BaseModel):
         return adv
 
 
+class SystemPromptConfig(BaseModel):
+    """System prompt template with critical rules.
+    Supports {{PLACEHOLDERS}} filled by engine at runtime."""
+    template: str = ""
+    critical_rules: str = ""
+
+
 class AgentConfig(BaseModel):
-    """Agent = name + description + 4 core resources."""
+    """Agent = name + role + task + system_prompt + 4 core resources.
+    User-facing: model/skill/tool/hook. Framework auto-handles the rest."""
     schema_version: str = Field(default="1.0", frozen=True)
     name: str
+    role: str = ""
+    task: str = ""
     description: str
+    system_prompt: SystemPromptConfig = Field(default_factory=SystemPromptConfig)
     models: list[ModelConfig]
     skills: list[SkillConfig] = Field(default_factory=list)
     tools: list[ToolConfig] = Field(default_factory=list)
