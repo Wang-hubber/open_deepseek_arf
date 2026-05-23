@@ -63,28 +63,39 @@ def cmd_start(args):
         subprocess.run([npm_cmd, "install"], cwd=str(frontend_dir), check=True)
         print("Frontend dependencies installed.")
 
-    # Start uvicorn — inherit stdout/stderr so logs are visible
+    # Setup log directory
+    log_dir = APP_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    server_log = open(log_dir / "server.log", "a", encoding="utf-8")
+
+    # Start uvicorn — write to log file
     uvicorn_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(APP_DIR),
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
     )
-    print(f"Server starting (PID {uvicorn_proc.pid})...")
+    print(f"Server starting (PID {uvicorn_proc.pid}), logs: logs{os.sep}server.log")
     time.sleep(2)
 
-    # Start frontend — inherit stdout/stderr so vite logs are visible
+    # Start frontend — write to log file
     frontend_proc = None
     if has_frontend and not args.no_frontend:
+        frontend_log = open(log_dir / "frontend.log", "a", encoding="utf-8")
         npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
         frontend_proc = subprocess.Popen(
             [npm_cmd, "run", "dev", "--", "--host", "127.0.0.1"],
             cwd=str(frontend_dir),
+            stdout=frontend_log,
+            stderr=subprocess.STDOUT,
         )
-        print(f"Frontend starting (PID {frontend_proc.pid})...")
+        print(f"Frontend starting (PID {frontend_proc.pid}), logs: logs{os.sep}frontend.log")
 
     print(f"")
     print(f"  Backend:  http://127.0.0.1:8000")
     if has_frontend and not args.no_frontend:
         print(f"  Frontend: http://127.0.0.1:5173")
+    print(f"  Logs:     {log_dir}")
     print(f"")
     print(f"Press Ctrl+C to stop.")
     try:

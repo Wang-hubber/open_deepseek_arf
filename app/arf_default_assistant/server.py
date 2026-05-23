@@ -1,5 +1,6 @@
 """ARF Default Assistant -- FastAPI server with lazy persistence."""
 import json
+import logging
 import signal
 import sys
 import time
@@ -11,6 +12,18 @@ from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# ---- Logging setup ----
+Path("logs").mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("logs/server.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("arf-assistant")
 
 # Add project root and CWD to path so imports work
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -48,19 +61,19 @@ async def lifespan(app: FastAPI):
             "metadata": archive.get("metadata", {}),
         }
         await _agent.state_store.put("default", state)
-        print(f"[server] Restored state: {len(state['messages'])} messages, turn {state['current_turn']}")
+        logger.info(f"Restored state: {len(state['messages'])} messages, turn {state['current_turn']}")
 
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
-    print(f"[server] Agent '{cfg.name}' ready")
+    logger.info(f"Agent '{cfg.name}' ready")
     yield
     # ---- SHUTDOWN ----
-    print("[server] Shutting down...")
+    logger.info("Shutting down...")
     from lazy_persistence import save_archive_async
     if _agent:
         await save_archive_async(_agent)
-    print("[server] Goodbye")
+    logger.info("Goodbye")
 
 
 app = FastAPI(title="ARF Assistant", lifespan=lifespan)
