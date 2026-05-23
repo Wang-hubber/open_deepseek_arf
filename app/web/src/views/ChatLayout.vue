@@ -23,6 +23,10 @@ function toggleResources() {
 }
 
 async function loadHistory() {
+  // Always ensure active session exists
+  if (!sessionStore.activeSession) {
+    sessionStore.activeSession = { id: 'default', title: 'ARF Assistant', created_at: new Date().toISOString(), message_count: 0 }
+  }
   try {
     const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
     if (messages?.length) {
@@ -43,7 +47,6 @@ onMounted(async () => {
     if (prefs?.language) appStore.setLanguage(prefs.language)
   } catch { /* non-critical */ }
 
-  sessionStore.activeSession = { id: 'default', title: 'ARF Assistant', created_at: new Date().toISOString(), message_count: 0 }
   await loadHistory()
   window.addEventListener('beforeunload', onBeforeUnload)
 })
