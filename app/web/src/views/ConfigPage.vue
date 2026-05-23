@@ -17,7 +17,7 @@ const activeTab = ref<'deepseek' | 'other'>('deepseek')
 const dsApiKey = ref('')
 const dsSubmitting = ref(false)
 const dsError = ref('')
-const dsResult = ref<{ models: { name: string; model_name: string }[]; active_model: string } | null>(null)
+const dsResult = ref<{ models: { name: string; model: string }[]; active_model: string } | null>(null)
 
 async function deepseekRegister() {
   const key = dsApiKey.value.trim()
@@ -45,7 +45,7 @@ function enterSystem() {
   const res = dsResult.value
   appStore.setConfigStatus({
     configured: true,
-    model_name: res?.models?.[0]?.model_name || res?.models?.[0]?.model || 'DeepSeek',
+    model_name: res?.models?.[0]?.model || 'DeepSeek',
     model_type: 'deep_thinking',
   })
   router.replace('/')
@@ -120,7 +120,7 @@ function onOtherSaved(_name: string) {
           <ul class="model-list">
             <li v-for="m in dsResult.models" :key="m.name">
               <code>{{ m.name }}</code>
-              <span class="model-spec">→ {{ m.model_name }}</span>
+              <span class="model-spec">→ {{ m.model }}</span>
             </li>
           </ul>
           <p class="active-hint">
