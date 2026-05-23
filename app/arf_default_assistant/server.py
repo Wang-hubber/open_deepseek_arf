@@ -1,6 +1,8 @@
 """ARF Default Assistant -- FastAPI server with lazy persistence."""
+import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 import time
@@ -277,16 +279,51 @@ async def config_register_deepseek(req: dict):
 async def config_status():
     cfg = _agent.config
     m = cfg.models[0] if cfg.models else None
+    configured = await _verify_api_key(cfg)
     return JSONResponse({
-        "configured": True,
+        "configured": configured,
         "model_name": m.model if m else "",
         "model_type": "deep_thinking",
         "config_name": m.name if m else "",
-        # Extended info (non-breaking)
         "agent_name": cfg.name,
         "models": [x.name for x in cfg.models],
         "tool_count": len(cfg.tools),
     })
+
+
+_api_key_cache: dict[str, bool | float] = {"valid": False, "checked_at": 0}
+
+async def _verify_api_key(cfg) -> bool:
+    """Quick API call (max_tokens=1) to verify the key. Cached for 60s."""
+    now = time.time()
+    if now - _api_key_cache["checked_at"] < 60:
+        return _api_key_cache["valid"]
+    if not cfg or not cfg.models:
+        _api_key_cache.update(valid=False, checked_at=now)
+        return False
+    m = cfg.models[0]
+    key = os.environ.get(m.api_key_env, "")
+    if not key.strip():
+        _api_key_cache.update(valid=False, checked_at=now)
+        return False
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(
+                f"{m.api_base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": m.model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
+            )
+        valid = resp.status_code == 200
+        _api_key_cache.update(valid=valid, checked_at=now)
+        return valid
+    except Exception:
+        _api_key_cache.update(valid=False, checked_at=now)
+        return False
 
 
 @app.get("/api/resources")
