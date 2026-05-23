@@ -120,6 +120,33 @@ class BaseAgent:
         else:
             memory_retriever = override_protocols.pop("memory_retriever", RecentFirstRetriever())
 
+        # 3.5 Compaction — sliding window when context exceeds threshold
+        compaction = override_protocols.pop("compaction", None)
+        cmp_cfg = (adv.compaction or AdvancedConfig.default().compaction) if adv else None
+        if cmp_cfg and cmp_cfg.strategy != "none" and not compaction:
+            from arf.compaction.sliding_window import SlidingWindowCompactor
+            _summarizer = None
+            if _mem_model_call:
+                async def _summarize(msgs: list[dict]) -> str:
+                    text = "\n".join(
+                        f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
+                        for m in msgs[-20:]  # last 20 messages for summary
+                    )
+                    prompt = (
+                        "Summarize the key facts, decisions, and context from this conversation history.\n"
+                        "Keep it concise (2-4 sentences). Focus on what was discussed and decided.\n\n"
+                        f"{text}\n\nSummary:"
+                    )
+                    try:
+                        return (await _mem_model_call(prompt)).strip()
+                    except Exception:
+                        return "(conversation summary unavailable)"
+                _summarizer = _summarize
+            compaction = SlidingWindowCompactor(
+                threshold=cmp_cfg.threshold,
+                summarizer=_summarizer,
+            )
+
         # 4. Guardrails
         guard_runner = override_protocols.pop("guard_runner", DefaultGuardRunner(
             input_guard=NoneInputGuard(),
@@ -197,6 +224,7 @@ class BaseAgent:
             event_bus=event_bus,
             error_policy=error_policy,
             model_router=model_router,
+            compaction=compaction,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             **override_protocols,

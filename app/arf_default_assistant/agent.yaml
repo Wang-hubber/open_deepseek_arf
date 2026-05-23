@@ -178,6 +178,9 @@ advanced:
       complex: deep
     fallback:
       deep: quick
+  compaction:
+    strategy: sliding_window
+    threshold: 0.75
 
 agents:
   - name: sys_agent

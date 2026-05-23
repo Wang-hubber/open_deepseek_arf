@@ -4,7 +4,7 @@ from typing import Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
     ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
-    GuardRunner, EventBus, ErrorPolicy, ModelRouter,
+    GuardRunner, EventBus, ErrorPolicy, ModelRouter, CompactionStrategy,
 )
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
@@ -28,6 +28,7 @@ class GraphEngine:
         event_bus: EventBus | None = None,
         error_policy: ErrorPolicy | None = None,
         model_router: ModelRouter | None = None,
+        compaction: CompactionStrategy | None = None,
         call_model: Callable | None = None,
         stream_model: Callable | None = None,
         system_prompt: str = "",
@@ -47,6 +48,7 @@ class GraphEngine:
         self.event_bus = event_bus
         self.error_policy = error_policy
         self.model_router = model_router
+        self.compaction = compaction
         self._call_model = call_model
         self._stream_model = stream_model
         self._system_prompt = system_prompt
@@ -107,7 +109,7 @@ class GraphEngine:
             user_msg = self._last_user_message(state)
             self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
 
-            # 1. Memory retrieval — before compaction
+            # 1. Memory retrieval
             if self.memory_retriever and self.memory_writer and self.memory_store:
                 query = self._last_user_message(state)
                 entries = await self.memory_retriever.retrieve(
@@ -121,6 +123,12 @@ class GraphEngine:
                     state["context_summary"] = "\n".join(
                         f"- {e.content}" for e in entries if e.relevance_score > 0
                     )
+
+            # 1.5 Compaction — after memory retrieval, before model call
+            if self.compaction and self.compaction.should_compact(state):
+                self._emit("compaction_start", {"turn": turn, "msg_count": len(state.get("messages", []))}, session_id=session_id)
+                state = await self.compaction.compact(state)
+                self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
 
             # 2. Get tool definitions
             tools = []
@@ -313,6 +321,17 @@ class GraphEngine:
                     state["context_summary"] = "\n".join(
                         f"- {e.content}" for e in entries if e.relevance_score > 0
                     )
+
+            # Compaction — after memory retrieval, before model call
+            if self.compaction and self.compaction.should_compact(state):
+                yield self._make_event(type="compaction_start",
+                                 data={"turn": turn, "msg_count": len(state.get("messages", []))},
+                                 turn=turn, session_id=session_id)
+                state = await self.compaction.compact(state)
+                yield self._make_event(type="compaction_end",
+                                 data={"turn": turn, "msg_count": len(state.get("messages", [])),
+                                       "summary_len": len(state.get("context_summary", ""))},
+                                 turn=turn, session_id=session_id)
 
             msgs = [{"role": "system", "content": self._system_prompt}]
             summary = state.get("context_summary", "")
