@@ -18,12 +18,13 @@ watch(() => appStore.currentPage, () => {
 })
 
 function navigateToPage() {
+  const currentRoute = router.currentRoute.value.name
   switch (appStore.currentPage) {
     case 'welcome':
-      router.replace('/welcome')
+      if (currentRoute !== 'welcome') router.replace('/welcome')
       break
     case 'chat':
-      router.replace('/')
+      if (currentRoute === 'welcome') router.replace('/')
       break
   }
 }

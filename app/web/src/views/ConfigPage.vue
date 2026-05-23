@@ -42,10 +42,11 @@ async function deepseekRegister() {
 }
 
 function enterSystem() {
+  const res = dsResult.value
   appStore.setConfigStatus({
     configured: true,
-    model_name: 'deepseek-v4-flash',
-    model_type: 'quick_no_thinking',
+    model_name: res?.models?.[0]?.model_name || res?.models?.[0]?.model || 'DeepSeek',
+    model_type: 'deep_thinking',
   })
   router.replace('/')
 }

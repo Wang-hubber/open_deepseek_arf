@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -193,7 +193,7 @@ async def traces_sessions(limit: int = 20):
                 pass
     if not sessions:
         sessions.append({"session_id": "default", "event_count": 0})
-    return JSONResponse(sessions)
+    return JSONResponse({"sessions": sessions})
 
 @app.get("/api/traces/sessions/{session_id}")
 async def traces_session_detail(session_id: str):
@@ -237,7 +237,11 @@ async def traces_summary():
     return JSONResponse({
         "total_sessions": sessions_count,
         "total_events": total_events,
+        "total_tokens": total_events,  # rough estimate (each event ≈ 1 token metadata)
         "total_turns": 0,
+        "thumbs_up": 0,
+        "thumbs_down": 0,
+        "total": sessions_count,
     })
 
 
@@ -409,23 +413,29 @@ async def debug_state():
     return JSONResponse({"has_state": state is not None, "messages": len(state.get("messages",[])) if state else 0})
 
 # ---- Session stubs (single infinite session — no session management) ----
+from datetime import datetime, timezone
+
+def _session_defaults():
+    """Shared defaults for the single-session model."""
+    archive = Path("memory/archive.json")
+    created_at = datetime.fromtimestamp(archive.stat().st_mtime, tz=timezone.utc).isoformat() if archive.exists() else datetime.now(timezone.utc).isoformat()
+    return {"id": "default", "session_id": "default", "title": "ARF Assistant", "created_at": created_at}
+
 @app.get("/api/sessions")
 async def sessions_list():
     return JSONResponse([])
 
 @app.post("/api/sessions")
 async def sessions_create():
-    return JSONResponse({"session_id": "default", "title": "ARF Assistant"})
+    state = await _agent.state_store.get("default")
+    messages = state.get("messages", []) if state else []
+    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
 
 @app.get("/api/sessions/active")
 async def sessions_active():
     state = await _agent.state_store.get("default")
     messages = state.get("messages", []) if state else []
-    return JSONResponse({
-        "session_id": "default",
-        "title": "ARF Assistant",
-        "message_count": len(messages),
-    })
+    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
 
 @app.get("/api/sessions/active/messages")
 async def sessions_active_messages():
@@ -439,6 +449,38 @@ from fastapi import WebSocket
 async def ws_stub(ws: WebSocket):
     await ws.accept()
     await ws.close()
+
+# ---- Resource stats stubs ----
+@app.get("/api/traces/resource-stats")
+async def traces_resource_stats(period: str = "all"):
+    return JSONResponse({"resources": [], "period": period})
+
+@app.get("/api/traces/resource-stats/{name}")
+async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: str = ""):
+    return JSONResponse({"name": name, "daily": [], "from_date": from_date, "to_date": to_date})
+
+# ---- Trace export stub ----
+@app.get("/api/traces/export")
+async def traces_export(session_id: str):
+    p = Path(f"memory/sessions/{session_id}.json")
+    if p.exists():
+        return FileResponse(p, media_type="application/json")
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+# ---- File upload stub ----
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = None):
+    return JSONResponse({"ok": True, "path": "", "filename": "", "size": 0, "content_type": "", "preview": ""})
+
+# ---- Config test stub ----
+@app.post("/api/config/test")
+async def config_test(req: dict):
+    return JSONResponse({"ok": True, "response": "Connection OK"})
+
+# ---- Usage models pricing stub ----
+@app.get("/api/usage/models/pricing")
+async def usage_models_pricing():
+    return JSONResponse([])
 
 # Static files (frontend) + SPA fallback
 frontend_dir = Path("../web/dist")

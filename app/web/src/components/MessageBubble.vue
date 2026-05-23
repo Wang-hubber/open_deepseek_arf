@@ -61,8 +61,11 @@ function escapeHtml(s: string): string {
       <!-- Thinking (collapsible) -->
       <div v-if="thinking" class="thinking-section">
         <div class="thinking-header" @click="(e: Event) => {
-          const body = (e.target as HTMLElement).closest('.thinking-section')?.querySelector('.thinking-body')
+          const section = (e.target as HTMLElement).closest('.thinking-section')
+          const body = section?.querySelector('.thinking-body')
+          const arrow = section?.querySelector('.th-arrow')
           body?.classList.toggle('open')
+          arrow?.classList.toggle('open')
         }">
           <span class="th-arrow">▶</span>
           <span>{{ t('common.thinking') }}</span>
