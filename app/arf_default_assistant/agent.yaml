@@ -117,11 +117,6 @@ tools:
     parameters: {type: object}
     activation: discoverable
 
-  - name: memory_store
-    description: 写入记忆（事实、偏好、决策、上下文）
-    parameters: {type: object, properties: {content: {type: string}, category: {type: string, enum: [fact, preference, decision, context]}}, required: [content]}
-    activation: kernel
-
   - name: manage_hooks
     description: 管理会话生命周期钩子（查看/启用/禁用）
     parameters: {type: object, properties: {action: {type: string, enum: [list, enable, disable]}, hook_name: {type: string}}}
@@ -165,6 +160,16 @@ hooks:
 
 advanced:
   max_turns: 50
+  memory:
+    store: file
+    workspace: ./memory
+    retriever: llm
+    writer: llm
+    max_tokens: 2000
+    top_k: 5
+    model: quick
+    temperature: 0.3
+    thinking_enabled: false
   routing:
     strategy: two_tier
     default: quick

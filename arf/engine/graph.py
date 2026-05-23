@@ -187,6 +187,13 @@ class GraphEngine:
             tool_calls = self._pars_tool_calls(response)
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": response_text})
+                if self.memory_writer and self.memory_store:
+                    existing = await self.memory_store.load(session_id)
+                    await self.memory_writer.extract_and_write(
+                        store=self.memory_store,
+                        turn_messages=state["messages"][-4:],
+                        existing_entries=existing,
+                    )
                 await self.state_store.put(session_id, state)
                 break
 
@@ -256,10 +263,11 @@ class GraphEngine:
 
             # 9. Memory write — after turn
             if self.memory_writer and self.memory_store:
+                existing = await self.memory_store.load(session_id)
                 await self.memory_writer.extract_and_write(
                     store=self.memory_store,
                     turn_messages=state["messages"][-4:],
-                    existing_entries=[],
+                    existing_entries=existing,
                 )
 
             # 10. Checkpoint
@@ -388,10 +396,11 @@ class GraphEngine:
                 state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
                 await self.state_store.put(session_id, state)
                 if self.memory_writer and self.memory_store:
+                    existing = await self.memory_store.load(session_id)
                     await self.memory_writer.extract_and_write(
                         store=self.memory_store,
                         turn_messages=state["messages"][-4:],
-                        existing_entries=[],
+                        existing_entries=existing,
                     )
                 break
 
@@ -435,10 +444,11 @@ class GraphEngine:
 
             # Memory extraction after tool execution turn
             if self.memory_writer and self.memory_store:
+                existing = await self.memory_store.load(session_id)
                 await self.memory_writer.extract_and_write(
                     store=self.memory_store,
                     turn_messages=state["messages"][-4:],
-                    existing_entries=[],
+                    existing_entries=existing,
                 )
 
             if turn >= self._max_turns:

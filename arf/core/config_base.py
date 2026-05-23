@@ -58,9 +58,13 @@ class CompactionConfig(BaseModel):
 class MemoryConfig(BaseModel):
     store: Literal["file", "sqlite", "none"] = "file"
     workspace: str = "./memory"
-    retriever: Literal["recent_first", "semantic"] = "recent_first"
+    retriever: Literal["recent_first", "semantic", "llm"] = "llm"
+    writer: Literal["rule", "llm"] = "llm"
     max_tokens: int = 2000
     top_k: int = 5
+    model: str = "quick"           # which configured model to use for memory ops
+    temperature: float = 0.3
+    thinking_enabled: bool = False  # disable reasoning for cost savings
 
 
 class GuardrailsConfig(BaseModel):

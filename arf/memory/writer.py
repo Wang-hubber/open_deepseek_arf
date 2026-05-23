@@ -1,11 +1,14 @@
 """RuleBasedMemoryWriter — extract facts from conversation turns using heuristics."""
 from __future__ import annotations
 
+import logging
 import re
 import time
 import uuid
 
 from arf.core.protocols import MemoryEntry, MemoryStore, MemoryWriter
+
+logger = logging.getLogger("arf.memory.writer")
 
 # Keyword → category mapping.  English + Chinese.
 _EXTRACTION_RULES: list[tuple[list[str], str]] = [
@@ -70,6 +73,8 @@ class RuleBasedMemoryWriter:
                 continue
             seen_contents.add(snippet)
 
+            logger.debug("Rule-based memory extraction: category=%s content=%.80s...", category, snippet)
+
             entry = MemoryEntry(
                 id=str(uuid.uuid4()),
                 content=snippet,
@@ -80,6 +85,8 @@ class RuleBasedMemoryWriter:
             await store.save(entry)
             new_entries.append(entry)
 
+        if new_entries:
+            logger.info("Rule-based memory: extracted %d new entries", len(new_entries))
         return new_entries + existing_entries
 
     def _classify(self, content: str) -> str | None:

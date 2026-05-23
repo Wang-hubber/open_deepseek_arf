@@ -155,6 +155,8 @@ async def _sse_chat(message: str):
                 break
         yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
     except Exception as e:
+        import traceback
+        logger.error(f"SSE chat error: {traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
 
 
@@ -422,7 +424,8 @@ async def resources_all():
               for s in _agent.config.skills]
     models = [{"name": m.name, "description": m.model, "source": "system",
                "readonly": False, "configured": True, "required": True,
-               "depends_on": [], "model_name": m.model}
+               "depends_on": [], "model_name": m.model,
+               "config_page": "DeepSeekConfigForm"}
               for m in _agent.config.models]
     return JSONResponse({"tools": tools, "skills": skills, "models": models})
 
@@ -430,6 +433,23 @@ async def resources_all():
 async def resources_unconfigured(required_only: bool = False):
     """List unconfigured resources (stub — all tools are pre-configured)."""
     return JSONResponse([])
+
+@app.get("/api/resources/models/{name}")
+async def get_model_config(name: str):
+    """Return config for a specific model (used by DeepSeekConfigForm)."""
+    for m in _agent.config.models:
+        if m.name == name:
+            return JSONResponse({"config": {
+                "model_name": m.model,
+                "base_url": m.api_base,
+                "api_key": os.environ.get(m.api_key_env, ""),
+            }})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+@app.post("/api/resources/model/{name}/configure")
+async def configure_model(name: str, req: dict):
+    """Save model config (placeholder — models are pre-configured in agent.yaml)."""
+    return JSONResponse({"ok": True})
 
 @app.get("/api/resources/{res_type}")
 async def list_resources(res_type: str):

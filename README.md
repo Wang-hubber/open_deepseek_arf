@@ -46,9 +46,9 @@ my_workspace/
 ├── tools/                  # custom tools
 ├── skills/                 # reusable prompt + tool orchestration templates
 ├── memory/
-│   ├── session.md          # short-term context
-│   ├── long_term.md        # persistent profile & facts
-│   └── sessions/           # archived sessions with full trace
+│   ├── memory.json         # persistent memory store (facts, preferences, decisions)
+│   ├── archive.json        # full conversation archive
+│   └── sessions/           # per-session trace events
 └── .hooks.json             # lifecycle hook definitions
 ```
 
@@ -101,7 +101,7 @@ The following table structures the entire Harness problem space by domain, mappi
 | Problem | OS Solution | Current (MVP) | Evolution |
 |---------|-------------|---------------|-----------|
 | **Context window exhaustion (OOM)** | Virtual memory + page swapping: evict cold pages to disk, fault in on demand | Sliding-window compaction at 75% context threshold; old turns summarized into `context_summary`, re-compacted on subsequent cycles. Archives written at session end but not faulted back into active context. | Fine-grained "page fault": retrieve and inject minimal semantic units (function signatures, key decisions) rather than whole context blocks; LRU eviction by relevance |
-| **Long-term memory & state persistence** | File system: persistent storage indexed by path | Three-layer file-based memory: `session.md` (short-term context), `long_term.md` (persistent profile), `sessions/*.json` (full archives). `memory_extractor` hook auto-extracts facts on session end; merging into long-term memory requires agent review. | Semantic file system: agent-maintained knowledge graph index; memory accessible by semantic path ("user's preferences about Python typing"), not just literal path |
+| **Long-term memory & state persistence** | File system: persistent storage indexed by path | `FileMemoryStore` (JSON-backed) with `LLMMemoryWriter` for automatic extraction and `LLMMemoryRetriever` for semantic retrieval. Memory extracted after every turn — no explicit tool call needed. Supports add/update/delete via LLM dedup against existing entries. [Design doc →](docs/memory-pipeline.md) | Semantic file system: agent-maintained knowledge graph index; memory accessible by semantic path ("user's preferences about Python typing"), not just literal path |
 | **Fast/slow reasoning dispatch** | Multi-level cache: L1 fast-small, L2 slow-large; CPU predicts hit | Two-tier classifier: `quick_thinking` for medium tasks, `deep_thinking` for complex; `quick_no_thinking` for background work (compaction, title generation). Degradation chain in classifier path; direct model calls lack universal fallback. | Hardware-aware dynamic dispatch: task complexity × latency budget × KV cache occupancy auto-selects L1/L2/L3 reasoning; same-session transparent model switching with context "process migration" |
 | **Model compute resource allocation** | big.LITTLE heterogeneous scheduling: lightweight tasks on efficiency cores, heavy on performance | Configurable `max_turns` per agent, enforced at graph routing. Model resolution by priority (`quick_thinking` → `deep_thinking` → any configured). Tool output truncated at 2000 chars with full result saved to disk and summary kept in context. | Adaptive model "core" scheduler: real-time task difficulty monitoring; in-session model switching without context loss; weak-model ensemble collaboration exceeding single strong model |
 | **External capability invocation & tool sandbox** | System calls + coprocessors + process isolation (chroot, containers): CPU invokes accelerator via interrupt, each syscall gates through kernel permission check | Tool calling: `tool.yaml` (JSON Schema) + `function.py` per tool, loaded via dual-source registry. Hook exit-code contract (0=continue, 1=block, 2=inject). Path sandbox prevents workspace escape. Tools execute in-process; no per-invocation sandbox or deny→ask→allow permission pipeline. MCP protocol in roadmap. | Per-tool deny→ask→allow permission gating. Each invocation runs in isolated sandbox with resource quotas (CPU, memory, network). Hardware-accelerated dispatch with DMA-style async I/O for high-frequency tools |
