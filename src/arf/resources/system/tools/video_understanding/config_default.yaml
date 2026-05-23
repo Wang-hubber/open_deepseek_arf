@@ -1,4 +1,0 @@
-name: video_understanding
-description: "视频理解，对视频内容进行理解和分析"
-required: false
-depends_on: []

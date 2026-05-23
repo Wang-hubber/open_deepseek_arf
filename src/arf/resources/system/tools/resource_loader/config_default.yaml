@@ -1,4 +1,0 @@
-name: resource_loader
-description: "资源激活管理，支持激活、停用和列出已激活的工具"
-required: false
-depends_on: []

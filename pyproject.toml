@@ -31,9 +31,8 @@ dev = [
 ]
 
 [project.scripts]
-arf = "src.arf.cli:main"
 arf-assistant = "app.arf_default_assistant.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["arf", "arf.*", "src.arf", "src.arf.*"]
+include = ["arf", "arf.*"]

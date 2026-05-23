@@ -1,4 +1,0 @@
-name: web_search
-description: "联网搜索，使用搜索引擎检索互联网信息并返回摘要结果"
-required: false
-depends_on: []

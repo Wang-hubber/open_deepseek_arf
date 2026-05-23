@@ -1,6 +1,0 @@
-name: ocr
-description: "OCR 文字识别，对文档图片中的文字进行识别和提取"
-required: false
-depends_on:
-  - type: model
-    name: vlm

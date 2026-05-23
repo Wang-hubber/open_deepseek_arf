@@ -1,4 +1,0 @@
-name: db_operator
-description: "SQLite 数据库操作，支持建表、增改查等基本 SQL 操作"
-required: false
-depends_on: []

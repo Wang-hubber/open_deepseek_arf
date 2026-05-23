@@ -1,4 +1,0 @@
-name: model_switch
-description: "运行时模型切换技能，指导 LLM 根据任务复杂度选择合适的模型"
-required: false
-depends_on: []

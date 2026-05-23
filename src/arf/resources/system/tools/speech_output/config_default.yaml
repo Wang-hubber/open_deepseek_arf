@@ -1,6 +1,0 @@
-name: speech_output
-description: "语音输出，将文本转换为语音并输出"
-required: false
-depends_on:
-  - type: model
-    name: tts

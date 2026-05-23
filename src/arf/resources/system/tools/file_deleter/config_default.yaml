@@ -1,4 +1,0 @@
-name: file_deleter
-description: "删除文件"
-required: false
-depends_on: []

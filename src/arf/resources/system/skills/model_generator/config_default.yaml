@@ -1,4 +1,0 @@
-name: model_generator
-description: "模型生成器，根据用户自然语言需求自动匹配模型槽位并生成配置"
-required: false
-depends_on: []

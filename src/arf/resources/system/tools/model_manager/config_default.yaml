@@ -1,4 +1,0 @@
-name: model_manager
-description: "模型管理，支持模型的创建、查看、更新、删除、测试和切换"
-required: false
-depends_on: []

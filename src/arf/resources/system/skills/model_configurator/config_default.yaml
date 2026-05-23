@@ -1,4 +1,0 @@
-name: model_configurator
-description: "模型配置器，新增或修改模型的连接配置（API 地址、密钥、模型名称等）"
-required: false
-depends_on: []

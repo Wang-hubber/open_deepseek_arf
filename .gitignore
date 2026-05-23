@@ -56,6 +56,9 @@ zhihu_article*.md
 Thumbs.db
 .hooks.json
 
+# API keys
+.env
+
 # Project artifacts (not tracked)
 tests/
 docs/

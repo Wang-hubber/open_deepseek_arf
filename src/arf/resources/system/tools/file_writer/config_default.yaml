@@ -1,4 +1,0 @@
-name: file_writer
-description: "写入文件，支持创建新文件和覆盖已有文件"
-required: false
-depends_on: []

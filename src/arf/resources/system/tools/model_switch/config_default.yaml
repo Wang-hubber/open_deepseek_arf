@@ -1,4 +1,0 @@
-name: model_switch
-description: "运行时模型热切换，根据任务复杂度在 quick_no_thinking / quick_thinking / deep_thinking 三级模型间切换，目标级别不可用时自动降级到更高级模型"
-required: false
-depends_on: []

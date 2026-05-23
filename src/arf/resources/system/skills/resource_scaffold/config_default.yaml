@@ -1,4 +1,0 @@
-name: resource_scaffold
-description: "资源脚手架，根据需求描述生成新的 Tool 或 Skill 的定义文件"
-required: false
-depends_on: []

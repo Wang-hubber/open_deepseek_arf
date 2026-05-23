@@ -1,4 +1,0 @@
-name: file_reader
-description: "读取文件和目录列表，支持读文件和列目录两种操作"
-required: false
-depends_on: []

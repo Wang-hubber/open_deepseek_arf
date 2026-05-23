@@ -39,12 +39,29 @@ from arf.core.state import AgentState
 _agent = None
 
 
+def _load_dotenv() -> None:
+    """Load .env file into os.environ (simple parser, no python-dotenv needed)."""
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     global _agent
 
     # ---- STARTUP ----
+    _load_dotenv()
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
 
@@ -263,17 +280,41 @@ async def trace_stream():
 
 @app.post("/api/config/register-deepseek")
 async def config_register_deepseek(req: dict):
-    """Accept DeepSeek API key, register models (frontend ConfigPage flow)."""
+    """Accept DeepSeek API key, persist to .env and in-process env."""
     api_key = (req or {}).get("api_key", "").strip()
     if not api_key:
         return JSONResponse({"error": "API key required"}, status_code=400)
-    # Models already configured in agent.yaml — just confirm
+
+    # Persist to .env file for restart survival
+    _save_api_key(api_key)
+    # Set for current process (and child processes)
+    os.environ["DEEPSEEK_API_KEY"] = api_key
+    # Invalidate config cache so next status check re-verifies with new key
+    _api_key_cache["checked_at"] = 0
+
     return JSONResponse({
         "ok": True,
         "action": "register_deepseek",
         "models_created": [m.name for m in _agent.config.models],
         "models": [{"name": m.name, "model": m.model} for m in _agent.config.models],
     })
+
+
+def _save_api_key(key: str) -> None:
+    """Write or update DEEPSEEK_API_KEY in .env file."""
+    env_path = Path(".env")
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("DEEPSEEK_API_KEY="):
+            lines[i] = f"DEEPSEEK_API_KEY={key}"
+            found = True
+            break
+    if not found:
+        lines.append(f"DEEPSEEK_API_KEY={key}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 @app.get("/api/config/status")
 async def config_status():

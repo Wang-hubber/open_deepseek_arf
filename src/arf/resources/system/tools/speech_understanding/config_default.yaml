@@ -1,6 +1,0 @@
-name: speech_understanding
-description: "语音理解，将音频中的语音转换为结构化文本理解结果"
-required: false
-depends_on:
-  - type: model
-    name: stt
