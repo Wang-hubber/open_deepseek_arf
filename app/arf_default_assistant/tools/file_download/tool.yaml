@@ -1,0 +1,17 @@
+name: file_download
+description: Generate a downloadable link for a workspace file
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: "File path relative to workspace"
+    label:
+      type: string
+      description: "Optional display label for the download link"
+  required:
+    - path
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: discoverable

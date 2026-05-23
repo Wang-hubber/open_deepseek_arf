@@ -1,0 +1,17 @@
+name: web_fetch
+description: Fetch web page content via HTTP GET with browser-like headers
+parameters:
+  type: object
+  properties:
+    url:
+      type: string
+      description: "URL to fetch"
+    timeout:
+      type: integer
+      description: "Request timeout in seconds, default 15"
+  required:
+    - url
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel

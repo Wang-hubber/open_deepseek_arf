@@ -1,0 +1,14 @@
+name: skill_generator
+description: Generate skill definitions (skill.yaml)
+prompt: |
+  Generate skill.yaml with:
+
+  1. Clear, actionable prompt template
+  2. Appropriate recommended tool list
+  3. Suitable activation mode (kernel/discoverable/passive)
+
+  Validate YAML format before writing.
+  Target: skills/<skill_name>.yaml
+tools:
+  - file_writer
+activation: discoverable

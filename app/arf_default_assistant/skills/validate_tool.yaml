@@ -1,0 +1,12 @@
+name: validate_tool
+description: Validate tool completeness (schema + interface match)
+prompt: |
+  Validate a tool's completeness:
+
+  1. tool.yaml JSON Schema is valid and has all required fields
+  2. function.py has execute(**kwargs) with correct signature
+  3. Parameters in schema match function signature
+  4. No missing imports or syntax errors
+tools:
+  - file_reader
+activation: discoverable

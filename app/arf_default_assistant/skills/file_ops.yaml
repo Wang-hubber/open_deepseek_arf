@@ -1,0 +1,36 @@
+name: file_ops
+description: Comprehensive file operations — read, write, list, delete, download
+prompt: |
+  # File Operations
+
+  You have access to file manipulation tools. Follow these patterns:
+
+  ## Reading Files
+  - Always use file_reader with operation="read" to read file contents
+  - Use operation="list" to explore directory structure
+  - Before editing a file, read it first
+
+  ## Writing Files
+  - Use file_writer to create or overwrite files
+  - Always include complete file content (not diffs)
+  - Create parent directories as needed
+  - For tools/skills/models paths, use handoff_to_sys
+
+  ## Deleting Files
+  - Use file_deleter for soft-deletion (renames with _deleted)
+  - Cannot delete directories
+
+  ## Downloading Files
+  - Use file_download to generate download links for users
+  - All paths are relative to workspace root
+
+  ## Path Rules
+  - All paths are relative to the workspace root
+  - Path traversal (..) is blocked
+  - System resources start with @sys/ prefix and are read-only
+tools:
+  - file_reader
+  - file_writer
+  - file_deleter
+  - file_download
+activation: kernel

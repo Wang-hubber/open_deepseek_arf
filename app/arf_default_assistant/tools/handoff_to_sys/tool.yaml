@@ -1,0 +1,17 @@
+name: handoff_to_sys
+description: Hand off resource creation/modification tasks to SysAgent
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: "Task description in natural language"
+    context:
+      type: string
+      description: "Additional context for the task"
+  required:
+    - task
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel

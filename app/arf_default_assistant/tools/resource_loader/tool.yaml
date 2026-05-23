@@ -1,0 +1,19 @@
+name: resource_loader
+description: Look up a tool or skill definition from the tools/ or skills/ directory
+parameters:
+  type: object
+  properties:
+    name:
+      type: string
+      description: "Resource name to look up"
+    type:
+      type: string
+      enum: [tool, skill]
+      description: "Type of resource"
+  required:
+    - name
+    - type
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: discoverable

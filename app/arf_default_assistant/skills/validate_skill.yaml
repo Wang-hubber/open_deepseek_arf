@@ -1,0 +1,13 @@
+name: validate_skill
+description: Validate skill completeness (format + quality)
+prompt: |
+  Validate a skill's completeness:
+
+  1. skill.yaml has valid YAML syntax
+  2. prompt is clear and actionable
+  3. Recommended tool list entries exist and are registered
+  4. Activation mode is appropriate
+tools:
+  - file_reader
+  - resource_registrar
+activation: discoverable

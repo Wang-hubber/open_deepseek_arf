@@ -1,0 +1,14 @@
+name: tool_generator
+description: Generate complete tool implementations (tool.yaml + function.py)
+prompt: |
+  Generate a complete tool implementation:
+
+  1. tool.yaml: with name, description, proper JSON Schema parameters, execution config, activation mode
+  2. function.py: with async def execute(**kwargs) function
+
+  Validate JSON Schema validity and Python syntax before writing.
+  Target directory: tools/<tool_name>/
+tools:
+  - file_writer
+  - resource_scaffold
+activation: discoverable
