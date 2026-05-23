@@ -4,7 +4,7 @@ import { useAppStore } from '@/stores/app'
 import { useI18n } from '@/composables/useI18n'
 
 const props = defineProps<{
-  showMobileResources: boolean
+  showResources: boolean
 }>()
 
 const emit = defineEmits<{
@@ -52,7 +52,7 @@ function onLanguageChange() {
         <option value="en">EN</option>
       </select>
 
-      <button class="sb-btn sb-btn-icon mobile-only" :title="t('common.resources')" @click="emit('toggle-resources')">
+      <button class="sb-btn sb-btn-icon" :title="t('common.resources')" @click="emit('toggle-resources')">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
     </span>

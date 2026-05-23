@@ -206,10 +206,23 @@ async def traces_sessions(limit: int = 20):
 
 @app.get("/api/traces/summary")
 async def traces_summary():
-    """Summary for TraceView stats bar."""
+    """Summary for TraceView stats bar — from actual data."""
+    trace_dir = Path("./memory/sessions")
+    total_events = 0
+    sessions_count = 0
+    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                total_events += len(data)
+            sessions_count += 1
+        except Exception:
+            pass
+    if sessions_count == 0:
+        sessions_count = 1  # default session always exists
     return JSONResponse({
-        "total_sessions": 1,
-        "total_events": 0,
+        "total_sessions": sessions_count,
+        "total_events": total_events,
         "total_turns": 0,
     })
 

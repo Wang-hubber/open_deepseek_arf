@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import StatusBar from '@/components/StatusBar.vue'
 import ChatPanel from '@/components/ChatPanel.vue'
 import ResourcePanel from '@/components/ResourcePanel.vue'
@@ -10,19 +11,25 @@ import { useAppStore } from '@/stores/app'
 import { useApi } from '@/composables/useApi'
 import type { ChatMessage } from '@/types'
 
+const route = useRoute()
 const sessionStore = useSessionStore()
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const api = useApi()
 
-// Single infinite session — no sidebar needed
-const showMobileResources = ref(false)
+const showResources = ref(true)
 
-function toggleMobileResources() {
-  showMobileResources.value = !showMobileResources.value
+function toggleResources() {
+  showResources.value = !showResources.value
 }
-function closeOverlays() {
-  showMobileResources.value = false
+
+async function loadHistory() {
+  try {
+    const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
+    if (messages?.length) {
+      chatStore.renderFromHistory(messages)
+    }
+  } catch { /* non-critical */ }
 }
 
 function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -32,26 +39,21 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 }
 
 onMounted(async () => {
-  // Preferences
   try {
     const prefs = await api.get<{ language?: string }>('/api/preferences')
-    if (prefs?.language) {
-      appStore.setLanguage(prefs.language)
-    }
+    if (prefs?.language) appStore.setLanguage(prefs.language)
   } catch { /* non-critical */ }
 
-  // Ensure default session exists
   sessionStore.activeSession = { id: 'default', title: 'ARF Assistant', created_at: new Date().toISOString(), message_count: 0 }
-
-  // Load history if available
-  try {
-    const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
-    if (messages?.length) {
-      chatStore.renderFromHistory(messages)
-    }
-  } catch { /* non-critical */ }
-
+  await loadHistory()
   window.addEventListener('beforeunload', onBeforeUnload)
+})
+
+// Reload history when navigating back to /
+watch(() => route.path, async (to, from) => {
+  if (to === '/' && from !== '/') {
+    await loadHistory()
+  }
 })
 
 onUnmounted(() => {
@@ -60,16 +62,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div id="main-layout">
+  <div id="main-layout" :class="{ 'resources-hidden': !showResources }">
     <StatusBar
-      :show-mobile-resources="showMobileResources"
-      @toggle-resources="toggleMobileResources"
+      :show-resources="showResources"
+      @toggle-resources="toggleResources"
     />
     <ChatPanel />
-    <ResourcePanel
-      :overlay="showMobileResources"
-      @close-overlay="closeOverlays"
-    />
+    <ResourcePanel v-if="showResources" />
     <UsageBar />
   </div>
 </template>
@@ -81,6 +80,9 @@ onUnmounted(() => {
   grid-template-rows: 44px 1fr auto;
   height: 100vh;
   background: var(--bg-root);
+}
+#main-layout.resources-hidden {
+  grid-template-columns: 1fr;
 }
 #main-layout :deep(#usage-bar) {
   grid-column: 1 / -1;
@@ -96,7 +98,7 @@ onUnmounted(() => {
 }
 
 @media (min-width: 1600px) {
-  #main-layout {
+  #main-layout:not(.resources-hidden) {
     grid-template-columns: 1fr 320px;
   }
 }
