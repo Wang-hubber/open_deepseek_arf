@@ -163,13 +163,23 @@ class BaseAgent:
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
+        # Load existing state to preserve conversation history
+        existing = await self._state_store.get(session_id)
+        if existing:
+            messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
+            turn = existing.get("current_turn", 0)
+            summary = existing.get("context_summary", "")
+        else:
+            messages = [{"role": "user", "content": user_message}]
+            turn = 0
+            summary = ""
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": messages,
             "current_model": self.config.models[0].name if self.config.models else "default",
-            "current_turn": 0,
-            "context_summary": "",
+            "current_turn": turn,
+            "context_summary": summary,
             "tool_results": {},
             "plan": None,
             "metadata": {},
@@ -182,13 +192,22 @@ class BaseAgent:
 
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
+        existing = await self._state_store.get(session_id)
+        if existing:
+            messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
+            turn = existing.get("current_turn", 0)
+            summary = existing.get("context_summary", "")
+        else:
+            messages = [{"role": "user", "content": user_message}]
+            turn = 0
+            summary = ""
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": messages,
             "current_model": self.config.models[0].name if self.config.models else "default",
-            "current_turn": 0,
-            "context_summary": "",
+            "current_turn": turn,
+            "context_summary": summary,
             "tool_results": {},
             "plan": None,
             "metadata": {},
