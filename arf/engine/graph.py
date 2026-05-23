@@ -98,6 +98,9 @@ class GraphEngine:
             turn = state.get("current_turn", 0) + 1
             state["current_turn"] = turn
 
+            user_msg = self._last_user_message(state)
+            self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
+
             # 1. Memory retrieval — before compaction
             if self.memory_retriever and self.memory_writer:
                 query = self._last_user_message(state)
@@ -204,7 +207,10 @@ class GraphEngine:
 
             # 7. Transaction + execute
             for tc in valid_calls:
-                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn}, session_id=session_id)
+                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
+                           "id": tc.get("id", ""),
+                           "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
+                           session_id=session_id)
             tx = None
             if self.transaction_ctx:
                 tx = await self.transaction_ctx.begin(session_id, turn)
@@ -264,6 +270,11 @@ class GraphEngine:
         while self.loop_strategy.should_continue(state):
             turn = state.get("current_turn", 0) + 1
             state["current_turn"] = turn
+
+            user_msg = self._last_user_message(state)
+            yield self._make_event(type="user_input",
+                             data={"content": user_msg, "turn": turn},
+                             turn=turn, session_id=session_id)
 
             msgs = [{"role": "system", "content": self._system_prompt}]
             summary = state.get("context_summary", "")
@@ -357,7 +368,9 @@ class GraphEngine:
 
             for tc in tool_calls:
                 yield self._make_event(type="tool_call_start",
-                                 data={"tool_name": tc.get("name", ""), "turn": turn},
+                                 data={"tool_name": tc.get("name", ""), "turn": turn,
+                                       "id": tc.get("id", ""),
+                                       "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                  turn=turn, session_id=session_id)
             results = await self.tool_executor.execute(tool_calls)
             for tc in tool_calls:

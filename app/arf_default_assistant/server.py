@@ -137,8 +137,8 @@ async def _sse_chat(message: str):
             elif t == "tool_call_start":
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_end":
-                result = "success" if event.data.get("success") else "error"
-                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
+                success = event.data.get("success", False)
+                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"
             elif t == "error":
                 detail = event.data.get("detail", "API error")
                 code = event.data.get("code", 0)

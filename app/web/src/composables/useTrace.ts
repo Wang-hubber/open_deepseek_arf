@@ -254,8 +254,9 @@ export function useTrace() {
       // Skip turn 0 (session_start only)
       if (tn === 0 && turnEvents.every(e => e.type === 'session_start')) continue
 
-      // Extract user input snippet from context — use turn number as fallback
-      const inputSnippet = `Turn ${tn}`
+      // Extract user input from user_input trace event
+      const userInputEvt = turnEvents.find(e => e.type === 'user_input')
+      const inputSnippet = userInputEvt ? dataField(userInputEvt, 'content', `Turn ${tn}`) : `Turn ${tn}`
 
       const input: TurnInput = {
         type: 'user',

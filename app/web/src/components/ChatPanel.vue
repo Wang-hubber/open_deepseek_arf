@@ -96,10 +96,9 @@ setCallbacks({
   onToolResult(id, result, tool) {
     const tc = currentToolCalls.value.find(t => t.id === id)
     if (tc) {
-      let isError = false, errorMsg = ''
-      try { const p = JSON.parse(result); if (p?.error) { isError = true; errorMsg = p.error } } catch {}
-      if (isError) { tc.status = 'failed'; tc.error = errorMsg }
-      else { tc.status = 'completed'; tc.result = result }
+      // result is now the actual content string (not just "success"/"error")
+      tc.status = 'completed'
+      tc.result = result || ''
     }
 
     // Reload resources when file_writer creates tools/skills

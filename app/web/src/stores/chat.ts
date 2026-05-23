@@ -79,13 +79,29 @@ export const useChatStore = defineStore('chat', () => {
         addSystemMsg(m.content)
       } else if (m.role === 'tool_result') {
         const callId = (m as any).tool_call_id || ''
-        // Update matching pending tool call to completed/failed
         const tc = pendingToolCalls.find(t => t.id === callId)
         if (tc) {
           tc.status = 'completed'
           tc.result = m.content
         }
-        // Also check the last assistant message's toolCalls
+        if (displayMessages.value.length > 0) {
+          const last = displayMessages.value[displayMessages.value.length - 1]
+          if (last.role === 'assistant' && last.toolCalls) {
+            const mtc = last.toolCalls.find(t => t.id === callId)
+            if (mtc) {
+              mtc.status = 'completed'
+              mtc.result = m.content
+            }
+          }
+        }
+      } else if (m.role === 'tool') {
+        // Current framework format: role="tool" with tool_call_id
+        const callId = (m as any).tool_call_id || ''
+        const tc = pendingToolCalls.find(t => t.id === callId)
+        if (tc) {
+          tc.status = 'completed'
+          tc.result = m.content
+        }
         if (displayMessages.value.length > 0) {
           const last = displayMessages.value[displayMessages.value.length - 1]
           if (last.role === 'assistant' && last.toolCalls) {

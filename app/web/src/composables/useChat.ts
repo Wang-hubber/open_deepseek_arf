@@ -145,21 +145,15 @@ export function useChat() {
       const id = evt.id
       const tc = toolCalls.value.find(t => t.id === id)
       if (tc) {
-        let isError = false
-        let errorMsg = ''
-        try {
-          const p = JSON.parse(evt.result)
-          if (p && p.error) { isError = true; errorMsg = p.error }
-        } catch { /* not JSON */ }
-        if (isError) {
-          tc.status = 'failed'
-          tc.error = errorMsg
-        } else {
+        if (evt.result === 'success') {
           tc.status = 'completed'
-          tc.result = evt.result
+          tc.result = (evt as any).content || evt.result
+        } else {
+          tc.status = 'failed'
+          tc.error = (evt as any).error_msg || evt.result
         }
       }
-      if (onToolResult) onToolResult(id, evt.result, evt.tool || '')
+      if (onToolResult) onToolResult(id, (evt as any).content || evt.result, evt.tool || '')
     } else if (evt.type === 'done') {
       isStreaming.value = false
       chatStore.setHistory(evt.history || [])
