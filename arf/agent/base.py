@@ -102,6 +102,42 @@ class BaseAgent:
         self._memory_store = memory_store
         self._tool_resolver = tool_resolver
 
+        # ---- Auto-inject model API call ----
+        self._inject_model_calls(config)
+
+    def _inject_model_calls(self, config) -> None:
+        """Create ModelAdapter for each configured model and inject call_model into engine."""
+        import os as _os, json as _json, asyncio as _asyncio
+        from arf.core.model_adapter import ModelAdapter
+
+        adapters: dict[str, ModelAdapter] = {}
+        for m in config.models:
+            api_key = _os.environ.get(m.api_key_env, "")
+            adapters[m.name] = ModelAdapter({
+                "base_url": m.api_base,
+                "api_key": api_key,
+                "model_name": m.model,
+                **m.kwargs,
+            })
+        default_name = config.models[0].name
+
+        async def _call_model(messages: list[dict], model_name: str = "") -> dict:
+            adapter = adapters.get(model_name, adapters[default_name])
+            msg = await _asyncio.to_thread(
+                adapter.chat_complete, messages, tools=None,
+            )
+            tool_calls = []
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        params = _json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    except _json.JSONDecodeError:
+                        params = {}
+                    tool_calls.append({"id": tc.id, "name": tc.function.name, "params": params})
+            return {"content": msg.content or "", "tool_calls": tool_calls}
+
+        self._engine.set_call_model(_call_model)
+
     @property
     def state_store(self):
         return self._state_store
