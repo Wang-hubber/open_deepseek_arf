@@ -124,10 +124,26 @@ class BaseAgent:
             })
         default_name = config.models[0].name
 
-        async def _call_model(messages: list[dict], model_name: str = "") -> dict:
+        def _to_openai_tools(tools):
+            """Convert framework ToolDefinition list to OpenAI tool format."""
+            if not tools:
+                return None
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in tools
+            ]
+
+        async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
             adapter = adapters.get(model_name, adapters[default_name])
             msg = await _asyncio.to_thread(
-                adapter.chat_complete, messages, tools=None,
+                adapter.chat_complete, messages, tools=_to_openai_tools(tools),
             )
             tool_calls = []
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -140,12 +156,13 @@ class BaseAgent:
             usage = {}
             if hasattr(msg, "usage") and msg.usage:
                 usage = dict(msg.usage)
-            return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage}
+            reasoning = getattr(msg, "reasoning_content", None) or ""
+            return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage, "reasoning": reasoning}
 
-        async def _stream_model(messages: list[dict], model_name: str = ""):
+        async def _stream_model(messages: list[dict], model_name: str = "", tools=None):
             """Token-level streaming via ModelAdapter.chat_stream_full."""
             adapter = adapters.get(model_name, adapters[default_name])
-            for chunk in adapter.chat_stream_full(messages, tools=None):
+            for chunk in adapter.chat_stream_full(messages, tools=_to_openai_tools(tools)):
                 yield chunk
 
         self._engine.set_call_model(_call_model)

@@ -1,4 +1,5 @@
 """GraphEngine — DI-driven Agent execution loop."""
+import json
 from typing import Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
@@ -142,7 +143,7 @@ class GraphEngine:
             if not self._call_model:
                 break
             self._emit("model_call_start", {"model": state["current_model"], "turn": turn}, session_id=session_id)
-            response = await self._call_model(msgs, state["current_model"])
+            response = await self._call_model(msgs, state["current_model"], tools=tools)
             self._emit("model_call_end", {"model": state["current_model"], "turn": turn,
                        "usage": response.get("usage", {}) if isinstance(response, dict) else {},
                        "content": response.get("content", "") if isinstance(response, dict) else ""},
@@ -178,6 +179,18 @@ class GraphEngine:
                 state["messages"].append({"role": "assistant", "content": response_text})
                 await self.state_store.put(session_id, state)
                 break
+
+            # Append assistant message with tool_calls before execution
+            assistant_tool_calls = [
+                {"id": tc.get("id", ""), "type": "function",
+                 "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
+                for tc in tool_calls
+            ]
+            assistant_msg = {"role": "assistant", "content": response_text, "tool_calls": assistant_tool_calls}
+            if isinstance(response, dict) and response.get("reasoning"):
+                assistant_msg["reasoning_content"] = response["reasoning"]
+            state["messages"].append(assistant_msg)
+            await self.state_store.put(session_id, state)
 
             # 6. Guard tool params + execute
             valid_calls = []
@@ -261,6 +274,13 @@ class GraphEngine:
             if not self._call_model:
                 break
 
+            # Get tool definitions for this turn
+            tools: list[dict] = []
+            if self.tool_resolver:
+                tools = await self.tool_resolver.get_tool_definitions(
+                    self._last_user_message(state), top_k=10
+                )
+
             yield self._make_event(type="model_call_start",
                              data={"model": state["current_model"], "turn": turn},
                              turn=turn, session_id=session_id)
@@ -268,19 +288,28 @@ class GraphEngine:
             if self._stream_model:
                 # Token-level streaming
                 full_text = ""
+                full_reasoning = ""
                 stream_usage: dict = {}
-                async for chunk in self._stream_model(msgs, state["current_model"]):
+                stream_tool_calls: list[dict] = []
+                async for chunk in self._stream_model(msgs, state["current_model"], tools=tools):
                     if chunk.get("type") == "chunk":
                         full_text += chunk.get("content", "")
+                        reasoning = chunk.get("reasoning", "")
+                        if reasoning:
+                            full_reasoning += reasoning
                         yield self._make_event(type="thinking_delta",
                                          data={"content": chunk.get("content", ""),
-                                               "reasoning": chunk.get("reasoning", "")},
+                                               "reasoning": reasoning},
                                          turn=turn, session_id=session_id)
                     elif chunk.get("type") == "tool_call":
-                        yield self._make_event(type="tool_call_start",
-                                         data={"tool_name": chunk.get("name", ""), "id": chunk.get("id", ""),
-                                               "arguments": chunk.get("arguments", "")},
-                                         turn=turn, session_id=session_id)
+                        tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
+                              "params": {}}
+                        try:
+                            tc["params"] = json.loads(chunk.get("arguments", "{}"))
+                        except Exception:
+                            tc["params"] = {"raw": chunk.get("arguments", "")}
+                        stream_tool_calls.append(tc)
+                        # Don't yield here — yield after _pars_tool_calls (avoid duplicate)
                     elif chunk.get("type") == "usage":
                         stream_usage = {
                             "prompt_tokens": chunk.get("prompt_tokens", 0),
@@ -295,10 +324,10 @@ class GraphEngine:
                         resp = {"content": "", "tool_calls": []}
                         break
                 else:
-                    resp = {"content": full_text, "tool_calls": []}
+                    resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
             else:
                 # Sync fallback
-                resp = await self._call_model(msgs, state["current_model"])
+                resp = await self._call_model(msgs, state["current_model"], tools=tools)
                 stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
             yield self._make_event(type="model_call_end",
@@ -312,6 +341,19 @@ class GraphEngine:
                 state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
                 await self.state_store.put(session_id, state)
                 break
+
+            # Append assistant message with tool_calls BEFORE executing tools
+            assistant_tool_calls = [
+                {"id": tc.get("id", ""), "type": "function",
+                 "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
+                for tc in tool_calls
+            ]
+            assistant_msg: dict = {"role": "assistant", "content": resp.get("content") or "", "tool_calls": assistant_tool_calls}
+            # DeepSeek requires reasoning_content to be passed back in thinking mode
+            if resp.get("reasoning"):
+                assistant_msg["reasoning_content"] = resp["reasoning"]
+            state["messages"].append(assistant_msg)
+            await self.state_store.put(session_id, state)
 
             for tc in tool_calls:
                 yield self._make_event(type="tool_call_start",
