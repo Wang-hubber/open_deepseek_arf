@@ -4,7 +4,6 @@ import { useRoute } from 'vue-router'
 import StatusBar from '@/components/StatusBar.vue'
 import ChatPanel from '@/components/ChatPanel.vue'
 import ResourcePanel from '@/components/ResourcePanel.vue'
-import UsageBar from '@/components/UsageBar.vue'
 import { useSessionStore } from '@/stores/sessions'
 import { useChatStore } from '@/stores/chat'
 import { useAppStore } from '@/stores/app'
@@ -69,7 +68,6 @@ onUnmounted(() => {
     />
     <ChatPanel />
     <ResourcePanel v-if="showResources" />
-    <UsageBar />
   </div>
 </template>
 
@@ -77,23 +75,17 @@ onUnmounted(() => {
 #main-layout {
   display: grid;
   grid-template-columns: 1fr 280px;
-  grid-template-rows: 44px 1fr auto;
+  grid-template-rows: 40px 1fr;
   height: 100vh;
   background: var(--bg-root);
 }
 #main-layout.resources-hidden {
   grid-template-columns: 1fr;
 }
-#main-layout :deep(#usage-bar) {
-  grid-column: 1 / -1;
-}
 
 @media (max-width: 900px) {
   #main-layout {
     grid-template-columns: 1fr;
-  }
-  #main-layout :deep(#resource-panel-right) {
-    display: none;
   }
 }
 

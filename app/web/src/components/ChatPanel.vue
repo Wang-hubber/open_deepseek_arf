@@ -433,7 +433,7 @@ function escapeHtml(s: string): string {
 
 <style scoped>
 #chat-panel {
-  grid-column: 2; grid-row: 2;
+  grid-column: 1; grid-row: 2;
   display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   position: relative; background: var(--bg-root);
 }
