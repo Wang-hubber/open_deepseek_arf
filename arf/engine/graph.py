@@ -120,7 +120,9 @@ class GraphEngine:
 
             if not self._call_model:
                 break
+            self._emit("model_call_start", {"model": state["current_model"], "turn": turn})
             response = await self._call_model(msgs, state["current_model"])
+            self._emit("model_call_end", {"model": state["current_model"], "turn": turn})
 
             if self.hook_runner:
                 await self.hook_runner.fire("post_model_call", {"response": response})
@@ -157,10 +159,16 @@ class GraphEngine:
                 valid_calls = tool_calls
 
             # 7. Transaction + execute
+            for tc in valid_calls:
+                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn})
             tx = None
             if self.transaction_ctx:
                 tx = await self.transaction_ctx.begin(session_id, turn)
             results = await self.tool_executor.execute(valid_calls)
+            for tc in valid_calls:
+                r = results.get(tc.get("id", ""))
+                self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn,
+                          "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0})
             if self.transaction_ctx and tx:
                 all_ok = all(r.success for r in results.values())
                 if all_ok:
