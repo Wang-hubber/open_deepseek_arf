@@ -95,6 +95,8 @@ class GraphEngine:
     async def invoke(self, state: AgentState) -> AgentState:
         session_id = state.get("session_id", "default")
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
+        if self.hook_runner:
+            await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
             turn = state.get("current_turn", 0) + 1
@@ -202,7 +204,9 @@ class GraphEngine:
             else:
                 valid_calls = tool_calls
 
-            # 7. Transaction + execute
+            # 7. Hooks + Transaction + execute
+            if self.hook_runner:
+                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
             for tc in valid_calls:
                 self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
                            "id": tc.get("id", ""),
@@ -225,6 +229,9 @@ class GraphEngine:
                     await self.transaction_ctx.commit(tx)
                 else:
                     await self.transaction_ctx.rollback(tx, Exception("tool failure"))
+
+            if self.hook_runner:
+                await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
 
             # 8. Add results to messages
             for tc in valid_calls:
@@ -253,6 +260,8 @@ class GraphEngine:
             if turn >= self._max_turns:
                 break
 
+        if self.hook_runner:
+            await self.hook_runner.fire("session_end", {"session_id": session_id})
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
         return state
 
@@ -263,6 +272,8 @@ class GraphEngine:
         session_id = state.get("session_id", "default")
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
+        if self.hook_runner:
+            await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
             turn = state.get("current_turn", 0) + 1
@@ -383,6 +394,8 @@ class GraphEngine:
             state["messages"].append(assistant_msg)
             await self.state_store.put(session_id, state)
 
+            if self.hook_runner:
+                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": tool_calls, "turn": turn})
             for tc in tool_calls:
                 yield self._make_event(type="tool_call_start",
                                  data={"tool_name": tc.get("name", ""), "turn": turn,
@@ -402,6 +415,8 @@ class GraphEngine:
                 if r:
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
                                               "content": str(r.data) if r.success else f"Error: {r.error}"})
+            if self.hook_runner:
+                await self.hook_runner.fire("post_tool_exec", {"tool_calls": tool_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
             await self.state_store.put(session_id, state)
 
             # Memory extraction after tool execution turn
@@ -415,5 +430,7 @@ class GraphEngine:
             if turn >= self._max_turns:
                 break
 
+        if self.hook_runner:
+            await self.hook_runner.fire("session_end", {"session_id": session_id})
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)
