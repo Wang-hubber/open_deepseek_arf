@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arf"
 version = "0.1.0"
-description = "ARF — AI 工作区管理框架"
-requires-python = ">=3.10"
+description = "ARF — AI Agent Runtime Framework"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
@@ -18,6 +18,11 @@ dependencies = [
     "python-multipart>=0.0.6",
     "langgraph>=0.4.0",
     "langchain-core>=0.3.0",
+    "pydantic>=2.0",
+    "rich>=13.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "httpx>=0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -26,18 +31,9 @@ dev = [
 ]
 
 [project.scripts]
-arf = "arf.cli:main"
+arf = "src.arf.cli:main"
+arf-assistant = "app.arf_default_assistant.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-arf = [
-    "resources/system/models/*/config_default.yaml",
-    "resources/system/tools/*/tool.yaml",
-    "resources/system/tools/*/function.py",
-    "resources/system/skills/*/skill.yaml",
-    "server/static/index.html",
-    "server/static/assets/*",
-    "agent/*.yaml",
-]
+where = ["."]
+include = ["arf", "arf.*", "src.arf", "src.arf.*"]
