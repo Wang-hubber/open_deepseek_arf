@@ -124,16 +124,16 @@ async def _sse_chat(message: str):
                 chunk = {"type": "chunk", "content": event.data.get("content", "")}
                 if event.data.get("reasoning"):
                     chunk["reasoning"] = event.data["reasoning"]
-                yield f"data: {json.dumps(chunk)}\n\n"
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif t == "tool_call_start":
-                yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_end":
                 result = "success" if event.data.get("success") else "error"
-                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
         # Send done: session_id only, no history (frontend manages its own display)
-        yield f"data: {json.dumps({'type': 'done', 'response': '', 'history': None, 'session_id': 'default', 'title': 'ARF Assistant'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'response': '', 'history': None, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
     except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/chat/stream")
@@ -159,7 +159,7 @@ async def chat_stream(message: str = Query(...)):
                 event = queue.get_nowait()
                 yield f"data: {json.dumps({'type': event.type, 'data': event.data, 'timestamp': event.timestamp, 'turn': event.turn}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
         finally:
             collector.cancel()
             yield "data: [DONE]\n\n"
@@ -217,7 +217,7 @@ async def trace_stream():
                     f"data: {json.dumps({'type': event.type, 'data': event.data, 'turn': event.turn}, ensure_ascii=False)}\n\n"
                 )
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -335,7 +335,7 @@ async def feedback(req: FeedbackReq):
     log = Path("memory/feedback.jsonl")
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a") as f:
-        f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}) + "\n")
+        f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}, ensure_ascii=False) + "\n")
     return JSONResponse({"status": "recorded"})
 
 
