@@ -66,6 +66,18 @@ async def lifespan(app: FastAPI):
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
+    # Hook token counting into model calls
+    _original_call = _agent._engine._call_model
+    async def _counted_call(messages, model_name=""):
+        global _token_stats
+        _token_stats["calls"] += 1
+        # Estimate tokens from message length (rough: 3 chars ≈ 1 token)
+        _token_stats["tokens_in"] += sum(len(str(m.get("content",""))) for m in messages) // 3
+        result = await _original_call(messages, model_name)
+        _token_stats["tokens_out"] += len(str(result.get("content",""))) // 3
+        return result
+    _agent._engine.set_call_model(_counted_call)
+
     logger.info(f"Agent '{cfg.name}' ready")
     yield
     # ---- SHUTDOWN ----
@@ -141,6 +153,34 @@ async def get_trace():
                 pass
     return JSONResponse({"events": events})
 
+@app.get("/api/traces/sessions")
+async def traces_sessions(limit: int = 20):
+    """List sessions with trace data (for TraceView dropdown)."""
+    trace_dir = Path("./memory/sessions")
+    sessions = []
+    if trace_dir.exists():
+        for p in sorted(trace_dir.glob("*.json"), reverse=True)[:limit]:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                sessions.append({
+                    "session_id": p.stem,
+                    "event_count": len(data) if isinstance(data, list) else 0,
+                })
+            except Exception:
+                pass
+    if not sessions:
+        sessions.append({"session_id": "default", "event_count": 0})
+    return JSONResponse(sessions)
+
+@app.get("/api/traces/summary")
+async def traces_summary():
+    """Summary for TraceView stats bar."""
+    return JSONResponse({
+        "total_sessions": 1,
+        "total_events": 0,
+        "total_turns": 0,
+    })
+
 
 @app.get("/api/trace/stream")
 async def trace_stream():
@@ -186,6 +226,13 @@ async def config_status():
         },
     })
 
+
+@app.get("/api/resources")
+async def resources_all():
+    """List all resources (for frontend ResourcePanel init)."""
+    tools = [{"name": t.name, "description": t.description, "activation": t.activation} for t in _agent.config.tools]
+    skills = [{"name": s.name, "description": s.description, "tools": s.tools} for s in _agent.config.skills]
+    return JSONResponse({"tools": tools, "skills": skills})
 
 @app.get("/api/resources/{res_type}")
 async def list_resources(res_type: str):
@@ -244,6 +291,19 @@ async def feedback(req: FeedbackReq):
         f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}) + "\n")
     return JSONResponse({"status": "recorded"})
 
+
+@app.get("/api/preferences")
+async def preferences():
+    """User preferences stub."""
+    return JSONResponse({"language": "zh-CN", "theme": "auto"})
+
+# ---- Token counter (accumulated from model calls) ----
+_token_stats = {"calls": 0, "tokens_in": 0, "tokens_out": 0}
+
+@app.get("/api/usage/summary")
+async def usage_summary(period: str = "month"):
+    """Usage stats from actual model calls."""
+    return JSONResponse({**_token_stats, "sessions": 1, "period": period})
 
 @app.get("/api/health")
 async def health():
