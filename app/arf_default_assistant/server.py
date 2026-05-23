@@ -291,12 +291,38 @@ async def config_register_deepseek(req: dict):
     if not api_key:
         return JSONResponse({"error": "API key required"}, status_code=400)
 
+    global _agent
+
     # Persist to .env file for restart survival
     _save_api_key(api_key)
-    # Set for current process (and child processes)
+    # Set for current process
     os.environ["DEEPSEEK_API_KEY"] = api_key
     # Invalidate config cache so next status check re-verifies with new key
     _api_key_cache["checked_at"] = 0
+
+    # Recreate agent so ModelAdapter picks up the new key from os.environ
+    from lazy_persistence import save_archive_async, load_archive
+    if _agent:
+        await save_archive_async(_agent)
+    archive = load_archive()
+    cfg = AgentConfig.from_yaml("agent.yaml")
+    _agent = create_agent(config=cfg)
+    if archive:
+        state: AgentState = {
+            "session_id": "default",
+            "agent_name": cfg.name,
+            "messages": archive.get("messages", []),
+            "current_model": cfg.models[0].name if cfg.models else "default",
+            "current_turn": archive.get("current_turn", 0),
+            "context_summary": archive.get("context_summary", ""),
+            "tool_results": {},
+            "plan": None,
+            "metadata": archive.get("metadata", {}),
+        }
+        await _agent.state_store.put("default", state)
+    # Re-attach FileTraceStore to new agent's event bus
+    from arf.observability import FileTraceStore
+    FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
     return JSONResponse({
         "ok": True,
