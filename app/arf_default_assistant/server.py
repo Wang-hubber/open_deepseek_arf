@@ -130,8 +130,15 @@ async def _sse_chat(message: str):
             elif t == "tool_call_end":
                 result = "success" if event.data.get("success") else "error"
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
-        # Send done: session_id only, no history (frontend manages its own display)
-        yield f"data: {json.dumps({'type': 'done', 'response': '', 'history': None, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
+        # Send done: only current exchange (small JSON, won't fail parse)
+        state = await _agent.state_store.get("default")
+        messages = state.get("messages", []) if state else []
+        slim = []
+        for m in reversed(messages):
+            if len(slim) >= 2:
+                break
+            slim.insert(0, m)
+        yield f"data: {json.dumps({'type': 'done', 'history': slim, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
 
