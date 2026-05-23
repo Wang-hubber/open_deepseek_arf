@@ -51,9 +51,9 @@ onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
 })
 
-// Reload history when navigating back to /
-watch(() => route.path, async (to, from) => {
-  if (to === '/' && from !== '/') {
+// Reload history whenever route lands on /
+watch(() => route.path, async (path) => {
+  if (path === '/') {
     await loadHistory()
   }
 })
