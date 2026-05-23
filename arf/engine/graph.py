@@ -146,6 +146,7 @@ class GraphEngine:
             tool_calls = self._pars_tool_calls(response)
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": response_text})
+                await self.state_store.put(session_id, state)
                 break
 
             # 6. Guard tool params + execute
