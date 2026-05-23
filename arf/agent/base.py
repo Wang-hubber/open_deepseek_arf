@@ -119,6 +119,15 @@ class BaseAgent:
         # 10. Build engine
         system_prompt = _build_system_prompt(config)
 
+        # Auto-create model router if routing config is set
+        model_router = None
+        if adv and adv.routing and len(config.models) > 1:
+            from arf.routing.two_tier import TwoTierRouter
+            model_router = TwoTierRouter(
+                config=adv.routing,
+                models=[m.name for m in config.models],
+            )
+
         self._engine = GraphEngine(
             loop_strategy=loop_strategy,
             state_store=state_store,
@@ -133,6 +142,7 @@ class BaseAgent:
             guard_runner=guard_runner,
             event_bus=event_bus,
             error_policy=error_policy,
+            model_router=model_router,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             **override_protocols,

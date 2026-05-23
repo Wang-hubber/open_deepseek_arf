@@ -4,7 +4,7 @@ from typing import Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
     ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
-    GuardRunner, EventBus, ErrorPolicy,
+    GuardRunner, EventBus, ErrorPolicy, ModelRouter,
 )
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
@@ -27,6 +27,7 @@ class GraphEngine:
         guard_runner: GuardRunner | None = None,
         event_bus: EventBus | None = None,
         error_policy: ErrorPolicy | None = None,
+        model_router: ModelRouter | None = None,
         call_model: Callable | None = None,
         stream_model: Callable | None = None,
         system_prompt: str = "",
@@ -45,6 +46,7 @@ class GraphEngine:
         self.guard_runner = guard_runner
         self.event_bus = event_bus
         self.error_policy = error_policy
+        self.model_router = model_router
         self._call_model = call_model
         self._stream_model = stream_model
         self._system_prompt = system_prompt
@@ -144,9 +146,15 @@ class GraphEngine:
 
             if not self._call_model:
                 break
-            self._emit("model_call_start", {"model": state["current_model"], "turn": turn}, session_id=session_id)
-            response = await self._call_model(msgs, state["current_model"], tools=tools)
-            self._emit("model_call_end", {"model": state["current_model"], "turn": turn,
+            # Route to best model for this turn
+            model = state["current_model"]
+            if self.model_router:
+                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                state["current_model"] = model
+
+            self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
+            response = await self._call_model(msgs, model, tools=tools)
+            self._emit("model_call_end", {"model": model, "turn": turn,
                        "usage": response.get("usage", {}) if isinstance(response, dict) else {},
                        "content": response.get("content", "") if isinstance(response, dict) else ""},
                        session_id=session_id)
@@ -314,8 +322,14 @@ class GraphEngine:
                     self._last_user_message(state), top_k=10
                 )
 
+            # Route to best model for this turn
+            model = state["current_model"]
+            if self.model_router:
+                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                state["current_model"] = model
+
             yield self._make_event(type="model_call_start",
-                             data={"model": state["current_model"], "turn": turn},
+                             data={"model": model, "turn": turn},
                              turn=turn, session_id=session_id)
 
             if self._stream_model:
@@ -324,7 +338,7 @@ class GraphEngine:
                 full_reasoning = ""
                 stream_usage: dict = {}
                 stream_tool_calls: list[dict] = []
-                async for chunk in self._stream_model(msgs, state["current_model"], tools=tools):
+                async for chunk in self._stream_model(msgs, model, tools=tools):
                     if chunk.get("type") == "chunk":
                         full_text += chunk.get("content", "")
                         reasoning = chunk.get("reasoning", "")
@@ -360,11 +374,11 @@ class GraphEngine:
                     resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
             else:
                 # Sync fallback
-                resp = await self._call_model(msgs, state["current_model"], tools=tools)
+                resp = await self._call_model(msgs, model, tools=tools)
                 stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
             yield self._make_event(type="model_call_end",
-                             data={"model": state["current_model"], "turn": turn,
+                             data={"model": model, "turn": turn,
                                    "content": resp.get("content", ""),
                                    "usage": stream_usage},
                              turn=turn, session_id=session_id)

@@ -165,6 +165,14 @@ hooks:
 
 advanced:
   max_turns: 50
+  routing:
+    strategy: two_tier
+    default: quick
+    classify:
+      medium: quick
+      complex: deep
+    fallback:
+      deep: quick
 
 agents:
   - name: sys_agent
@@ -248,6 +256,9 @@ agents:
 
     advanced:
       max_turns: 15
+      routing:
+        strategy: static
+        default: deep
 
 handover:
   rules:
