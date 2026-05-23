@@ -21,9 +21,12 @@ export const useChatStore = defineStore('chat', () => {
     displayMessages.value.push({ role: 'assistant', content, thinking })
   }
 
+  const renderVersion = ref(0)
+
   function clearMessages() {
     displayMessages.value = []
     chatHistory.value = []
+    renderVersion.value++
   }
 
   function setHistory(history: ChatMessage[]) {
@@ -107,6 +110,7 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
     chatHistory.value = messages.filter(m => m.role === 'user' || m.role === 'assistant')
+    renderVersion.value++
   }
 
   function startStreaming() {
@@ -138,6 +142,7 @@ export const useChatStore = defineStore('chat', () => {
     addUserMsg,
     addSystemMsg,
     addAssistantMsg,
+    renderVersion,
     clearMessages,
     setHistory,
     renderFromHistory,

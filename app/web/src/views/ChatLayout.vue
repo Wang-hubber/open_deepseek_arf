@@ -23,16 +23,16 @@ function toggleResources() {
 }
 
 async function loadHistory() {
-  // Always ensure active session exists
   if (!sessionStore.activeSession) {
     sessionStore.activeSession = { id: 'default', title: 'ARF Assistant', created_at: new Date().toISOString(), message_count: 0 }
   }
   try {
     const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
+    console.log('[ChatLayout] loadHistory got', messages?.length || 0, 'messages')
     if (messages?.length) {
       chatStore.renderFromHistory(messages)
     }
-  } catch { /* non-critical */ }
+  } catch (e) { console.log('[ChatLayout] loadHistory error:', e) }
 }
 
 function onBeforeUnload(e: BeforeUnloadEvent) {

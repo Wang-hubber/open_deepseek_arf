@@ -51,6 +51,13 @@ const currentError = ref('')
 // Track completed messages before streaming started
 const baseMessageCount = ref(0)
 
+// Sync baseMessageCount when renderFromHistory is called (e.g. nav back)
+watch(() => chatStore.renderVersion, () => {
+  if (!isStreaming.value) {
+    baseMessageCount.value = chatStore.displayMessages.length
+  }
+})
+
 // Feedback state: map of assistant_message_index → { rating, text }
 const feedbackMap = reactive<Record<number, { rating: number; text?: string }>>({})
 
