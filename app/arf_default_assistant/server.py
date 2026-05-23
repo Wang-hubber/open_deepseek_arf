@@ -117,8 +117,11 @@ class ChatReq(BaseModel):
 async def chat(req: ChatReq):
     if req.stream:
         return StreamingResponse(_sse_chat(req.message), media_type="text/event-stream")
-    result = await _agent.chat(req.message)
-    return JSONResponse({"content": result})
+    try:
+        result = await _agent.chat(req.message)
+        return JSONResponse({"content": result})
+    except Exception as e:
+        return JSONResponse({"content": "", "error": str(e)}, status_code=500)
 
 
 async def _sse_chat(message: str):
