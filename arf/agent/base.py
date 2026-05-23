@@ -136,7 +136,14 @@ class BaseAgent:
                     tool_calls.append({"id": tc.id, "name": tc.function.name, "params": params})
             return {"content": msg.content or "", "tool_calls": tool_calls}
 
+        async def _stream_model(messages: list[dict], model_name: str = ""):
+            """Token-level streaming via ModelAdapter.chat_stream_full."""
+            adapter = adapters.get(model_name, adapters[default_name])
+            for chunk in adapter.chat_stream_full(messages, tools=None):
+                yield chunk
+
         self._engine.set_call_model(_call_model)
+        self._engine.set_stream_model(_stream_model)
 
     @property
     def state_store(self):

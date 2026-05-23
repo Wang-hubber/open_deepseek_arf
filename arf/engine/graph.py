@@ -51,6 +51,10 @@ class GraphEngine:
         """Late-binding injection of the model API call function."""
         self._call_model = call_model
 
+    def set_stream_model(self, stream_model) -> None:
+        """Late-binding injection of the streaming model API call function."""
+        self._stream_model = stream_model
+
     def _emit(self, event_type: str, data: dict) -> None:
         if self.event_bus:
             self.event_bus.emit(AgentEvent(type=event_type, data=data, turn=data.get("turn", 0)))
@@ -208,5 +212,79 @@ class GraphEngine:
         return state
 
     async def astream(self, state: AgentState):
-        """Async streaming execution — yields AgentEvent at each step."""
-        yield state
+        """Streaming execution — yields AgentEvent at each step of the loop.
+        Uses _stream_model for token-level streaming if available,
+        falls back to _call_model otherwise."""
+        session_id = state.get("session_id", "default")
+        yield AgentEvent(type="session_start", data={"session_id": session_id},
+                         session_id=session_id)
+
+        while self.loop_strategy.should_continue(state):
+            turn = state.get("current_turn", 0) + 1
+            state["current_turn"] = turn
+
+            msgs = [{"role": "system", "content": self._system_prompt}]
+            summary = state.get("context_summary", "")
+            if summary:
+                msgs[0]["content"] += f"\n\n## Memory\n{summary}"
+            msgs.extend(state.get("messages", []))
+
+            if not self._call_model:
+                break
+
+            yield AgentEvent(type="model_call_start",
+                             data={"model": state["current_model"], "turn": turn},
+                             turn=turn, session_id=session_id)
+
+            if self._stream_model:
+                # Token-level streaming
+                full_text = ""
+                async for chunk in self._stream_model(msgs, state["current_model"]):
+                    if chunk.get("type") == "chunk":
+                        full_text += chunk.get("content", "")
+                        yield AgentEvent(type="thinking_delta",
+                                         data={"content": chunk.get("content", ""),
+                                               "reasoning": chunk.get("reasoning", "")},
+                                         turn=turn, session_id=session_id)
+                    elif chunk.get("type") == "tool_call":
+                        yield AgentEvent(type="tool_call_start",
+                                         data={"tool_name": chunk.get("name", ""), "id": chunk.get("id", ""),
+                                               "arguments": chunk.get("arguments", "")},
+                                         turn=turn, session_id=session_id)
+                resp = {"content": full_text, "tool_calls": []}
+            else:
+                # Sync fallback
+                resp = await self._call_model(msgs, state["current_model"])
+
+            yield AgentEvent(type="model_call_end",
+                             data={"model": state["current_model"], "turn": turn,
+                                   "content": resp.get("content", "")},
+                             turn=turn, session_id=session_id)
+
+            tool_calls = self._pars_tool_calls(resp)
+            if not tool_calls:
+                state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
+                await self.state_store.put(session_id, state)
+                break
+
+            for tc in tool_calls:
+                yield AgentEvent(type="tool_call_start",
+                                 data={"tool_name": tc.get("name", ""), "turn": turn},
+                                 turn=turn, session_id=session_id)
+            results = await self.tool_executor.execute(tool_calls)
+            for tc in tool_calls:
+                r = results.get(tc.get("id", ""))
+                yield AgentEvent(type="tool_call_end",
+                                 data={"tool_name": tc.get("name", ""), "turn": turn,
+                                       "success": r.success if r else False},
+                                 turn=turn, session_id=session_id)
+                if r:
+                    state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
+                                              "content": str(r.data) if r.success else f"Error: {r.error}"})
+            await self.state_store.put(session_id, state)
+
+            if turn >= self._max_turns:
+                break
+
+        yield AgentEvent(type="session_end", data={"session_id": session_id},
+                         session_id=session_id)

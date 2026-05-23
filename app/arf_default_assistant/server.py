@@ -102,12 +102,38 @@ signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
 
 class ChatReq(BaseModel):
     message: str
+    stream: bool = False
+    history: list[dict] | None = None
+    new_session: bool = False
 
 
 @app.post("/api/chat")
 async def chat(req: ChatReq):
+    if req.stream:
+        return StreamingResponse(_sse_chat(req.message), media_type="text/event-stream")
     result = await _agent.chat(req.message)
     return JSONResponse({"content": result})
+
+
+async def _sse_chat(message: str):
+    """Stream chat via framework agent.astream(), translate events to frontend format."""
+    try:
+        async for event in _agent.astream(message):
+            t = event.type
+            if t == "thinking_delta":
+                chunk = {"type": "chunk", "content": event.data.get("content", "")}
+                if event.data.get("reasoning"):
+                    chunk["reasoning"] = event.data["reasoning"]
+                yield f"data: {json.dumps(chunk)}\n\n"
+            elif t == "tool_call_start":
+                yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')})}\n\n"
+            elif t == "tool_call_end":
+                result = "success" if event.data.get("success") else "error"
+                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('tool_name', 'call_0'), 'result': result, 'tool': event.data.get('tool_name', '')})}\n\n"
+        # Send done after stream completes
+        yield f"data: {json.dumps({'type': 'done', 'history': [], 'session_id': 'default', 'title': 'ARF Assistant'})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
 
 
 @app.get("/api/chat/stream")
