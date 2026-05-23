@@ -6,25 +6,36 @@
 
 ## 问题域（框架层职责）
 
-| 域 | OS 类比 | 解决的致命问题 | 最小可行实现 | Framework 接口 |
-|---|---|---|---|---|
-| **core** | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
-| **agent** | 进程 | Agent 生命周期管理 | Pydantic 配置驱动，代码优先 | `create_agent(config=AgentConfig(...))` |
-| **engine** | CPU 流水线 + 事务管理器 | 执行循环、checkpoint、并行tool调用、事务回滚、规划跟踪 | ReAct + StateStore + ToolExecutor + Transaction + Planner | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` + `TransactionContext` + `Planner` |
-| **observability** | 系统监控 + 录放机 | 框架黑盒，出问题无法定位且无法复现 | OTel Span + Rich TUI + Record/Replay | `EventBus` + `Tracer` + `TuiDashboard` + `ReplayController` |
-| **streaming** | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE/WebSocket 推送 | `EventBus` + `EventStream`（共享事件源） |
-| **guardrails** | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | engine 三处硬编码调用点 (输入/输出/工具参数) | `GuardRunner` (engine 统一入口，内部封装三种护栏) |
-| **evaluation** | 基准测试 (benchmark) | 改了prompt/工具不知道变好变坏 | 轨迹收集 + 指标计算 + 数据集回放 + 回归测试 | `EvalRunner` + `MetricCollector` |
-| **compaction** | 虚拟内存 + 页交换 | 上下文窗口爆掉 | 75% 阈值滑动窗口压缩 | `CompactionStrategy` |
-| **memory** | 文件系统 + 搜索引擎 + 知识编辑器 | 只检索不写入，记忆无法生长 | store + retrieve + write/fusion 完整闭环 | `MemoryStore` + `MemoryRetriever` + `MemoryWriter` |
-| **routing** | 多级缓存 (L1/L2) | 所有请求打同一个模型 | 二级分类器 | `ModelRouter` |
-| **hooks** | 系统调用 | 自定义扩展点 | 6 事件节点，subprocess + 退出码契约 | `HookRunner` + `HookDefinition` |
-| **sandbox** | 进程隔离 | 工具访问越界 | 路径沙箱 | `ToolSandbox` |
-| **concurrency** | 乱序执行 + 多核 | 任务层面并行调度 | 顺序执行（占位） | `TaskScheduler` |
-| **human_loop** | 硬件中断 + 审批工作流 | 该停时停不下来，停了恢复不了 | 暂停/审批/超时/恢复 + 依赖 StateStore 快照 | `ApprovalPoint` + `ApprovalChannel` |
-| **communication** | IPC + 分布式共识 | 多Agent聋子, Supervisor中心化, 无共享状态并发保护 | AgentBus + 去中心化Peer + SharedWorkspace锁 | `AgentBus` + `PeerAgent` + `Supervisor` + `SharedWorkspace` + `Lock` |
-| **resources** | 文件系统索引 + 远程挂载 | 工具只能本地 YAML，无法接入远程 | ToolResolver (内部封装 Provider+Retriever+Backend) | `ToolResolver` (engine 唯一 tool 接口) |
-| **errors** | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 重试 + 退避 + 降级 + 事务回滚 | `ErrorPolicy` + `TransactionContext` |
+| 域 | 用户可见 | OS 类比 | 解决的致命问题 | 最小可行实现 | Framework 接口 |
+|---|---|---|---|---|---|
+| **agent** | 核心用户界面 | 进程 | Agent 生命周期管理 | 极简配置: name + description + 4种资源 | `create_agent(config=AgentConfig(...))` |
+| **models** | 核心用户界面 | CPU 型号 | 用什么模型 | 声明模型名 + API 端点 + 可选 kwargs | `ModelConfig` |
+| **skills** | 核心用户界面 | 可执行程序 | 组合 prompt + 工具的复合能力 | prompt 模板 + 关联工具列表 | `SkillConfig` |
+| **tools** | 核心用户界面 | 指令集 (ISA) | Agent 可调用的外部能力 | tool.yaml + function.py / MCP 远程 | `ToolConfig` + `ToolResolver` |
+| **hooks** | 核心用户界面 | 系统调用 | 生命周期扩展点 | 6 事件节点 + subprocess + 退出码契约 | `HookDefinition` + `HookRunner` |
+| **multi-agent** | 核心用户界面 | 分布式系统 | 声明子 Agent + 协作关系，框架自动构建通信基础设施 | agents 列表 + handover/supervisor | `AgentConfig.agents` + `HandoverConfig` |
+| **core** | 框架内部 | 内核类型系统 | 跨模块 Protocol 散落各处，engine 无法合法引用 | 统一的 Protocol + 核心数据结构集合 | 所有 Protocol 定义 + `AgentState`、`TurnContext`、`AgentEvent` 等 |
+| **engine** | 框架内部 | CPU 流水线 + 事务管理器 | 执行循环、checkpoint、并行tool调用、事务回滚、规划 | ReAct + StateStore + ToolExecutor + Transaction + Planner | `GraphEngine` + `LoopStrategy` + `StateStore` + `ToolExecutor` + `TransactionContext` + `Planner` |
+| **resources** | 框架内部 | 文件系统索引 + 远程挂载 | 工具来源统一封装：本地 YAML + MCP + 检索 + 执行 | ToolResolver 封装 Provider+Retriever+Backend | `ToolResolver` (engine 唯一 tool 入口) |
+| **observability** | 高级可覆盖 | 系统监控 + 录放机 | 框架黑盒，出问题无法定位且无法复现 | OTel Span + Rich TUI + Record/Replay (默认开启) | `EventBus` + `Tracer` + `TuiDashboard` + `ReplayController` |
+| **streaming** | 高级可覆盖 | 管道 (pipe) | 用户盯白屏等结果 | 统一事件流 → SSE 全事件推送 (默认开启) | `EventBus` + `EventStream`（共享事件源） |
+| **guardrails** | 高级可覆盖 | 防火墙 + 杀毒软件 | 模型输出不可信，缺少语义安全层 | 默认透传输入 + 正则清洗输出 + 路径检查 | `GuardRunner` (engine 三处硬编码调用) |
+| **routing** | 高级可覆盖 | 多级缓存 (L1/L2) | 所有请求打同一个模型 | 单模型 static (默认) → two_tier (多模型时自动启用) | `ModelRouter` |
+| **compaction** | 高级可覆盖 | 虚拟内存 + 页交换 | 上下文窗口爆掉 | 75% 阈值滑动窗口 (根据模型 ctx 大小自动判定是否启用) | `CompactionStrategy` |
+| **memory** | 高级可覆盖 | 文件系统 + 搜索引擎 + 知识编辑器 | 只检索不写入，记忆无法生长 | file store + recent_first + rule-based write (默认开启) | `MemoryStore` + `MemoryRetriever` + `MemoryWriter` |
+| **error** | 高级可覆盖 | 异常处理 + 看门狗 | 工具/模型失败行为不可预测 | 工具 2 次指数退避重试 + 模型 3 次重试/5xx 降级 + 事务回滚 (默认开启) | `ErrorPolicy` + `TransactionContext` |
+| **human_loop** | 高级可覆盖 | 硬件中断 + 审批工作流 | 该停时停不下来，停了恢复不了 | 自动放行 (默认) → 可配置工具白名单触发审批 | `ApprovalPoint` + `ApprovalChannel` |
+| **sandbox** | 高级可覆盖 | 进程隔离 | 工具访问越界 | 路径隔离 (默认开启) | `ToolSandbox` |
+| **evaluation** | 用户提供数据 | 基准测试 (benchmark) | 改了prompt/工具不知道变好变坏 | 用户提供 EvalDataset → 框架跑指标 + 对比基线 | `EvalRunner` + `MetricCollector` |
+| **communication** | 声明式配置 | IPC + 分布式共识 | 多Agent聋子, 共享状态无并发保护 | 用户声明 handover/supervisor → 框架自动构建 AgentBus/Peer/Lock | `AgentBus` + `PeerAgent` + `Supervisor` + `SharedWorkspace` + `Lock` |
+| **concurrency** | 框架内部 | 乱序执行 + 多核 | 任务层面并行调度 | 顺序执行（占位） | `TaskScheduler` |
+
+> **用户可见性说明 | Visibility guide**:
+> - **核心用户界面**: 用户直接配置，Agent 的 4+1 种核心资源（model/skill/tool/hook/agent）
+> - **高级可覆盖**: `AdvancedConfig.default()` 提供生产级默认值，用户通过 `advanced:` 字段 opt-in 调优
+> - **用户提供数据**: 框架提供运行器，用户提供测试数据集（eval dataset）/ 交接规则（handover rules）
+> - **声明式配置**: 用户声明意图（谁和谁交接），框架自动构建底层基础设施
+> - **框架内部**: 对用户完全透明，框架自动处理
 
 ## 核心设计：`arf/core` — 统一类型层
 
@@ -911,9 +922,17 @@ shared_workspace:
 
 ## 配置格式
 
-**设计原则**: 代码优先，YAML 辅助。用户主要入口是 `create_agent(config=AgentConfig(...))`。YAML 是 AgentConfig 的序列化格式，用于分享和持久化，而非主要编程界面。
+**设计原则**: 用户界面极简——Agent 只是 model / skill / tool / hook 四种资源的组合。框架内置领域最佳默认行为，高级配置 opt-in 下沉。
 
-### agent.yaml（完整版）
+**用户心智模型**:
+```
+Agent = 身份(name, description) + Model(用什么模型) + Skill(有什么技能) + Tool(有什么工具) + Hook(生命周期回调)
+多Agent = 多个 Agent + Handover(交接规则) 或 Supervisor(监督规则)
+```
+
+所有 compaction、memory、routing、guardrails、errors、human_loop 等框架内部机制由 `AdvancedConfig.default()` 自动推导，用户只在需要调优时通过 `advanced:` 字段覆盖。
+
+### agent.yaml（极简版 — 用户日常编写的形态）
 
 ```yaml
 # ============================================================================
@@ -1335,44 +1354,71 @@ class SharedWorkspace(Protocol):
 ```python
 from arf import create_agent, AgentConfig, ModelConfig
 
-# 推荐入口: 代码组装
+# 新用户入门: 只需 4+1 个核心概念
 agent = create_agent(config=AgentConfig(
-    name="my_agent",
-    role="编程助手",
-    task="协助开发者完成日常编码、调试和代码审查",
-    description="擅长 Python、TypeScript、Go。不擅长 UI 设计。",
-    system_prompt=SystemPromptConfig(
-        template="You are {{AGENT_NAME}}...",
-        pipeline=[...],
-        critical_rules="1. Always read before editing...",
-    ),
+    name="code-helper",
+    description="擅长 Python、TypeScript 代码生成与调试。不擅长 UI 设计。",
     models=[
         ModelConfig(name="quick", api_type="openai", model="deepseek-v4-flash"),
         ModelConfig(name="deep", api_type="openai", model="deepseek-v4-pro"),
     ],
-    loop_strategy="react",
-    max_turns=50,
+    skills=[
+        SkillConfig(
+            name="code_review",
+            description="结构化代码审查",
+            prompt="You are a strict code reviewer...",
+            tools=["file_reader", "web_search"],
+        ),
+    ],
+    tools=[
+        ToolConfig(name="file_reader", description="读取文件", parameters=...),
+        ToolConfig(name="web_search", description="搜索网络", source="./tools/web_search.yaml"),
+    ],
+    hooks=[
+        HookDefinition(name="audit", type="pre_tool_exec", run=["python ./hooks/audit.py"]),
+    ],
 ))
+# 框架自动推导: AdvancedConfig.default() → loop_strategy、compaction、memory、routing、guardrails...
+# Framework auto-derives all internal policies from the 4 core resources.
+
+# 高级用户: 通过 advanced= 覆盖特定域
+agent = create_agent(config=AgentConfig(
+    name="code-helper",
+    description="...",
+    models=[...],
+    tools=[...],
+    advanced=AdvancedConfig(
+        loop_strategy="plan_execute",
+        memory=MemoryConfig(store="sqlite", retriever="semantic"),
+        routing=RoutingConfig(strategy="two_tier", classify={"medium": "quick", "complex": "deep"}),
+    ),
+))
+
+# 多 Agent: 声明子 Agent + 交接规则，框架自动构建通信基础设施
+team = create_agent(config=AgentConfig(
+    name="dev-team",
+    description="Multi-agent development team",
+    models=[...],
+    agents=[
+        AgentConfig(name="architect", description="System architecture", tools=[...]),
+        AgentConfig(name="coder", description="Code writing", tools=[...]),
+        AgentConfig(name="reviewer", description="Code review", skills=[...]),
+    ],
+    handover=HandoverConfig(rules=[
+        HandoverRule(from_agent="architect", to_agent="coder", trigger="design approved"),
+        HandoverRule(from_agent="coder", to_agent="reviewer", trigger="code ready"),
+    ]),
+))
+# 内部: 自动构建 AgentBus(InMemoryBus)、为子 Agent 注入 PeerAgent、构建交接路由表
 
 # YAML 入口: 加载已有配置
 agent = create_agent(agent_dir="./my_agent")
 
 # 导出 YAML: 分享用途，自动写入 arf_version 元数据
 agent.config.to_yaml("./my_agent_export/")
-# → my_agent_export/agent.yaml 头部:
-#   # arf_version: 1.0
-#   name: my_agent
-#   ...
-
-# YAML 加载: 自动检测版本
-agent = create_agent(agent_dir="./my_agent")
-# 框架内部流程:
-#   1. 读取 arf_version 字段
-#   2. 如果版本不兼容 → 报错提示，给出迁移指引
-#   3. 如果版本可迁移 → 自动转换到当前 schema (或提示运行 migration CLI)
 
 # 配置热更新: 在 turn 边界安全切换
-agent.reconfigure(loop_strategy="direct")
+agent.reconfigure(advanced=AdvancedConfig(loop_strategy="direct"))
 ```
 
 ### ModelConfig
@@ -1392,33 +1438,95 @@ class ModelConfig(BaseModel):
 
 ```python
 class AgentConfig(BaseModel):
-    """Agent 完整配置，Pydantic 校验 + IDE 类型补全"""
-    schema_version: str = "1.0"                      # 框架自动写入，用户不设置
-        # Schema 版本号，用于 YAML 导出时的兼容性检查和迁移
-        # Schema version for YAML export compatibility checks & migration
-    name: str                                         # 必填
-    role: str                                         # 必填
-    task: str                                         # 必填
-    description: str                                  # 必填: 能力描述
-    system_prompt: SystemPromptConfig                 # 必填
-    models: list[ModelConfig]                         # 必填
+    """Agent 完整配置。
+    用户界面极简: name + description + 4 种核心资源。
+    所有内部机制通过 AdvancedConfig.default() 自动推导。
+    """
+    schema_version: str = Field(default="1.0", frozen=True)
+        # 框架自动管理，用户不设置
 
-    # 可选——不填则对应模块使用默认或禁用
+    # ---- 身份 | Identity (必填) ----
+    name: str
+    description: str
+        # Agent 能力概述，注入 system prompt 的 {{INVENTORY}} section
+
+    # ---- 4 种核心资源 | 4 Core Resources ----
+    models: list[ModelConfig]                         # 必填: 至少一个
+    skills: list[SkillConfig] = []                    # 可选
+    tools: list[ToolConfig] = []                      # 可选
+    hooks: list[HookDefinition] = []                  # 可选
+
+    # ---- 高级配置 | Advanced (全部可选) ----
+    advanced: AdvancedConfig | None = None
+        # None → 框架调用 AdvancedConfig.default() 自动推导
+        # 用户可覆盖任意子域，未覆盖的域保持默认
+
+    # ---- 多 Agent | Multi-Agent (可选) ----
+    agents: list["AgentConfig"] | None = None         # 子 Agent
+    handover: HandoverConfig | None = None            # 交接规则
+    supervisor: SupervisorConfig | None = None        # 监督规则
+
+
+class AdvancedConfig(BaseModel):
+    """所有框架内部机制，全部有生产级默认值。
+    用户不填 = 框架自动选择最优策略。
+    """
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
-    router: RouterConfig | None = None
-    compaction: CompactionConfig | None = None
-    memory: MemoryConfig | None = None
-    tool_retrieval: ToolRetrievalConfig | None = None
-    guardrails: GuardrailsConfig | None = None
-    errors: ErrorConfig | None = None
-    human_loop: HumanLoopConfig | None = None
-    streaming: StreamingConfig | None = None
-    sandbox: SandboxConfig | None = None
-    hooks: list[HookDefinition] = []
-    tools: list[ToolConfig] = []
-    skills: list[SkillConfig] = []
     max_turns: int = 50
+    critical_rules: str = ""                          # 注入 system prompt 的硬约束
+        # 撰写规则: ≤5 条，正面祈使句，不与 sandbox/guardrails 重复
+
+    routing: RoutingConfig | None = None
+        # None → 单模型 static；多模型时自动启用 two_tier
+    compaction: CompactionConfig | None = None
+        # None → 模型 ctx < 32K 时自动启用 75% sliding_window
+    memory: MemoryConfig | None = None
+        # None → file store + recent_first + rule-based writer
+    guardrails: GuardrailsConfig | None = None
+        # None → 全透传（生产环境建议至少启用 output: regex_clean）
+    errors: ErrorConfig | None = None
+        # None → 工具 2 次指数退避重试 + 模型 3 次重试/5xx 降级
+    human_loop: HumanLoopConfig | None = None
+        # None → 自动放行
+    streaming: StreamingConfig | None = None
+        # None → SSE 全事件推送
+    sandbox: SandboxConfig | None = None
+        # None → 路径隔离，禁止逃逸
+    tool_retrieval: ToolRetrievalConfig | None = None
+        # None → tools > 20 时自动启用 top_k=10
     reload: ReloadConfig | None = None
+        # None → 关闭
+
+    @classmethod
+    def default(cls) -> "AdvancedConfig":
+        return cls()
+
+    @classmethod
+    def auto_derive(cls, agent: "AgentConfig") -> "AdvancedConfig":
+        """根据 4 种核心资源自动推导策略。"""
+        adv = cls.default()
+        total_tools = len(agent.tools) + sum(len(s.tools) for s in agent.skills)
+        if total_tools > 20:
+            adv.tool_retrieval = ToolRetrievalConfig(enabled=True, top_k=10)
+        if len(agent.models) > 1:
+            adv.routing = RoutingConfig(strategy="two_tier")
+        return adv
+
+
+class HandoverConfig(BaseModel):
+    """多 Agent 交接规则 — 用户声明意图，框架自动构建基础设施"""
+    rules: list[HandoverRule]
+
+class HandoverRule(BaseModel):
+    from_agent: str
+    to_agent: str
+    trigger: str                                      # 触发条件描述
+
+
+class SupervisorConfig(BaseModel):
+    """中心化监督 — 替代 handover 模式"""
+    type: Literal["round_robin", "llm_router", "custom"] = "round_robin"
+    llm_model: str | None = None                      # llm_router 模式使用的模型名
 ```
 
 ## YAML Schema 版本化
@@ -1554,16 +1662,17 @@ assert len(events) == 0  # 不应触发工具调用
 ## 创建流程
 
 ```
-代码路径 (推荐)                                 YAML 路径 (导入)
-─────────────────                               ────────────────
-AgentConfig(name=..., ...)  ← Pydantic 校验      YAML 文件 → AgentConfig(**data)
-        │                                              │
-        └──────────────────┬───────────────────────────┘
-                           ▼
-                 BaseAgent._from_config(cfg)
-                           │
-            ┌──────────────┼──────────────┬──────────────┐
-            │              │              │              │
+代码路径 (推荐)                                    YAML 路径 (导入)
+─────────────────                                  ────────────────
+AgentConfig(                                        YAML 文件 → AgentConfig(**data)
+  name, description,                                       │
+  models, skills, tools, hooks,  ← 4 种核心资源             │
+  agents, handover,              ← 多 Agent 声明            │
+  advanced=AdvancedConfig(...)   ← 可选覆盖                 │
+)                                                           │
+        │                                                   │
+        ├─ advanced is None → AdvancedConfig.auto_derive()  │
+        └──────────────────┬────────────────────────────────┘
       StateStore     EventBus     ToolExecutor     ToolResolver   GuardRunner
       (checkpoint)  (events)     (并行tool调用)    (统一tool入口)  (三处硬编码)
             │              │              │              │              │
