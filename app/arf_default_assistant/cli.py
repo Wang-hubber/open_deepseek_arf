@@ -70,14 +70,15 @@ def cmd_start(args):
     if frontend_dir.exists() and not args.no_frontend:
         npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
         frontend_proc = subprocess.Popen(
-            [npm_cmd, "run", "dev"],
+            [npm_cmd, "run", "dev", "--", "--host", "127.0.0.1"],
             cwd=str(frontend_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         print(f"Frontend starting (PID {frontend_proc.pid})...")
 
-    print("Server ready at http://127.0.0.1:8000")
+    print(f"Server ready at http://127.0.0.1:8000")
+    print(f"Frontend:  http://127.0.0.1:5173")
     print("Press Ctrl+C to stop.")
     try:
         uvicorn_proc.wait()
