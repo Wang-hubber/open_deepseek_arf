@@ -17,7 +17,7 @@ const chatStore = useChatStore()
 const appStore = useAppStore()
 const api = useApi()
 
-const showResources = ref(true)
+const showResources = ref(false)
 
 function toggleResources() {
   showResources.value = !showResources.value
