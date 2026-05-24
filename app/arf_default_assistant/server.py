@@ -37,6 +37,7 @@ from arf.agent.config import AgentConfig
 from arf.core.state import AgentState
 
 _agent = None
+_active_cancel_events: dict[str, asyncio.Event] = {}  # session_id → cancel event
 
 
 def _load_dotenv() -> None:
@@ -125,7 +126,15 @@ async def chat(req: ChatReq):
 
 
 async def _sse_chat(message: str):
-    """Stream chat via framework agent.astream(), translate events to frontend format."""
+    """Stream chat via framework agent.astream(), translate events to frontend format.
+
+    Creates a cancel event and injects it into the engine so that
+    POST /api/chat/cancel or client disconnect can stop the agent.
+    """
+    cancel_evt = asyncio.Event()
+    _active_cancel_events["default"] = cancel_evt
+    _agent._engine.set_cancel_event(cancel_evt)
+
     try:
         async for event in _agent.astream(message):
             t = event.type
@@ -143,7 +152,12 @@ async def _sse_chat(message: str):
                 detail = event.data.get("detail", "API error")
                 code = event.data.get("code", 0)
                 yield f"data: {json.dumps({'type': 'error', 'detail': f'[{code}] {detail}'}, ensure_ascii=False)}\n\n"
-                return  # stop here, don't send done
+                return
+            elif t == "session_end":
+                reason = event.data.get("reason", "")
+                if reason == "cancelled":
+                    yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                    return
 
         # Send done with FULL history for frontend renderFromHistory
         state = await _agent.state_store.get("default")
@@ -154,10 +168,57 @@ async def _sse_chat(message: str):
                 last = m.get("content", "")
                 break
         yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
+    except asyncio.CancelledError:
+        # Client disconnected — cancel the agent
+        cancel_evt.set()
+        logger.info("SSE client disconnected, cancelling agent")
     except Exception as e:
         import traceback
         logger.error(f"SSE chat error: {traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+    finally:
+        _active_cancel_events.pop("default", None)
+        # Reset cancel event so next request starts fresh
+        _agent._engine.set_cancel_event(None)
+        cancel_evt.clear()
+
+
+@app.post("/api/chat/cancel")
+async def cancel_chat():
+    """Cancel the in-flight streaming chat for the default session."""
+    evt = _active_cancel_events.get("default")
+    if evt and not evt.is_set():
+        evt.set()
+        logger.info("Chat cancelled via API")
+        return JSONResponse({"status": "cancelled"})
+    return JSONResponse({"status": "no_active_chat"})
+
+
+@app.post("/api/chat/undo")
+async def undo_chat(steps: int = 1):
+    """Undo N user-interaction rounds. Restores checkpointed state."""
+    if steps < 1:
+        return JSONResponse({"error": "steps must be >= 1"}, status_code=400)
+    engine = _agent._engine
+    available = engine.checkpoint_count()
+    if available < steps:
+        return JSONResponse({"status": "insufficient_checkpoints", "available": available, "requested": steps})
+    restored = engine.undo(steps)
+    if restored is None:
+        return JSONResponse({"status": "no_checkpoints"})
+    # Write restored state back to state store
+    await _agent.state_store.put("default", restored)
+    msg_count = len(restored.get("messages", []))
+    remaining = engine.checkpoint_count()
+    logger.info(f"Undo {steps} round(s): restored to {msg_count} messages, {remaining} checkpoints remain")
+    return JSONResponse({"status": "undone", "steps": steps, "messages": msg_count, "remaining_checkpoints": remaining})
+
+
+@app.get("/api/chat/undo/status")
+async def undo_status():
+    """Return how many undo checkpoints are available."""
+    engine = _agent._engine
+    return JSONResponse({"available": engine.checkpoint_count(), "max": 3})
 
 
 @app.get("/api/chat/stream")

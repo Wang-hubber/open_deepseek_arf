@@ -347,21 +347,26 @@ class BaseAgent:
             messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
             turn = existing.get("current_turn", 0)
             summary = existing.get("context_summary", "")
+            interaction = existing.get("interaction_round", 0) + 1
         else:
             messages = [{"role": "user", "content": user_message}]
             turn = 0
             summary = ""
+            interaction = 0
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
             "messages": messages,
             "current_model": self.config.models[0].name if self.config.models else "default",
             "current_turn": turn,
+            "interaction_round": interaction,
             "context_summary": summary,
             "tool_results": {},
             "plan": None,
             "metadata": {},
         }
+        # Push checkpoint before engine execution (for undo)
+        self._engine.push_checkpoint(state)
         result = await self._engine.invoke(state)
         for m in reversed(result.get("messages", [])):
             if m.get("role") == "assistant":
@@ -375,21 +380,26 @@ class BaseAgent:
             messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
             turn = existing.get("current_turn", 0)
             summary = existing.get("context_summary", "")
+            interaction = existing.get("interaction_round", 0) + 1
         else:
             messages = [{"role": "user", "content": user_message}]
             turn = 0
             summary = ""
+            interaction = 0
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
             "messages": messages,
             "current_model": self.config.models[0].name if self.config.models else "default",
             "current_turn": turn,
+            "interaction_round": interaction,
             "context_summary": summary,
             "tool_results": {},
             "plan": None,
             "metadata": {},
         }
+        # Push checkpoint before engine execution (for undo)
+        self._engine.push_checkpoint(state)
         async for event in self._engine.astream(state):
             yield event
 

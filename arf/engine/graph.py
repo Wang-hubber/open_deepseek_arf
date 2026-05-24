@@ -1,5 +1,9 @@
 """GraphEngine — DI-driven Agent execution loop."""
+import asyncio
+import copy
 import json
+from collections import deque
+from pathlib import Path
 from typing import Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
@@ -31,6 +35,7 @@ class GraphEngine:
         compaction: CompactionStrategy | None = None,
         call_model: Callable | None = None,
         stream_model: Callable | None = None,
+        cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
     ):
@@ -53,6 +58,87 @@ class GraphEngine:
         self._stream_model = stream_model
         self._system_prompt = system_prompt
         self._max_turns = max_turns
+        self._cancel_event = cancel_event
+        self._checkpoints: deque[dict] = deque(maxlen=3)  # rolling 3 snapshots
+        self._interaction_round = 0
+
+    @property
+    def cancel_event(self) -> asyncio.Event | None:
+        return self._cancel_event
+
+    def set_cancel_event(self, event: asyncio.Event) -> None:
+        """Late-binding: inject a cancellation token after construction."""
+        self._cancel_event = event
+
+    def push_checkpoint(self, state: AgentState, workspace_dir: str = "") -> None:
+        """Save a deep copy of state and snapshot workspace files (max 5).
+
+        Files are backed up to memory/checkpoints/{round}/.
+        On undo, files are restored from the matching checkpoint.
+        """
+        import shutil
+        round_num = state.get("interaction_round", 0)
+        snapshot = copy.deepcopy(dict(state))
+        self._checkpoints.append(snapshot)
+
+        # Snapshot workspace files
+        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
+        ckpt_dir = Path("memory/checkpoints") / str(round_num)
+        if ckpt_dir.exists():
+            shutil.rmtree(ckpt_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Backup files modified in workspace (non-dir, non-git)
+        if wsp.exists():
+            for f in wsp.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    rel = f.relative_to(wsp)
+                    dest = ckpt_dir / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dest)
+
+    def undo(self, steps: int = 1, workspace_dir: str = "") -> AgentState | None:
+        """Pop N checkpoints, restore state and workspace files, or None."""
+        import shutil
+        if steps < 1 or steps > len(self._checkpoints):
+            return None
+
+        target_round = self._checkpoints[-(steps + 1)]["interaction_round"] if len(self._checkpoints) > steps else -1
+
+        # Restore workspace files from the target checkpoint
+        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
+        ckpt_dir = Path("memory/checkpoints") / str(target_round) if target_round >= 0 else None
+
+        for _ in range(steps):
+            removed = self._checkpoints.pop()
+            # Clean up the checkpoint dir we're undoing past
+            old_ckpt = Path("memory/checkpoints") / str(removed.get("interaction_round", 0))
+            if old_ckpt.exists():
+                shutil.rmtree(old_ckpt)
+
+        if ckpt_dir and ckpt_dir.exists() and wsp.exists():
+            # Remove current workspace files (keep dirs)
+            for f in wsp.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    f.unlink()
+            # Restore from checkpoint
+            for f in ckpt_dir.rglob("*"):
+                if f.is_file():
+                    rel = f.relative_to(ckpt_dir)
+                    dest = wsp / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dest)
+
+        if not self._checkpoints:
+            return None
+        return copy.deepcopy(self._checkpoints[-1])
+
+    def checkpoint_count(self) -> int:
+        return len(self._checkpoints)
+
+    def _cancelled(self) -> bool:
+        """Check if execution has been cancelled (non-blocking)."""
+        return self._cancel_event is not None and self._cancel_event.is_set()
 
     def set_call_model(self, call_model) -> None:
         """Late-binding injection of the model API call function."""
@@ -68,6 +154,7 @@ class GraphEngine:
 
     def _emit(self, event_type: str, data: dict, session_id: str = "", agent_name: str = "") -> None:
         if self.event_bus:
+            data["round"] = self._interaction_round
             self.event_bus.emit(AgentEvent(
                 type=event_type, data=data, turn=data.get("turn", 0),
                 session_id=session_id or data.get("session_id", ""),
@@ -87,6 +174,16 @@ class GraphEngine:
                 return m.get("content", "")
         return ""
 
+    def _inject_hook_messages(self, results, state: AgentState) -> None:
+        """Check hook results for exit-code-2 injection messages."""
+        if not results:
+            return
+        for r in results:
+            if r.exit_code == 2 and r.injected_message:
+                msg = r.injected_message.strip()
+                if msg:
+                    state["messages"].append({"role": "system", "content": f"[Hook: {r.hook_name}] {msg}"})
+
     def _pars_tool_calls(self, response) -> list[dict]:
         """Parse tool_calls from a model response (dict or string)."""
         if isinstance(response, dict):
@@ -102,11 +199,15 @@ class GraphEngine:
 
     async def invoke(self, state: AgentState) -> AgentState:
         session_id = state.get("session_id", "default")
+        self._interaction_round = state.get("interaction_round", 0)
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
         if self.hook_runner:
             await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
+            if self._cancelled():
+                self._emit("session_end", {"session_id": session_id, "reason": "cancelled"}, session_id=session_id)
+                break
             turn = state.get("current_turn", 0) + 1
             state["current_turn"] = turn
 
@@ -163,6 +264,7 @@ class GraphEngine:
                            "passed": sum(1 for r in results if r.exit_code == 0),
                            "failed": sum(1 for r in results if r.exit_code != 0)},
                            session_id=session_id)
+                self._inject_hook_messages(results, state)
 
             if not self._call_model:
                 break
@@ -185,6 +287,7 @@ class GraphEngine:
                            "passed": sum(1 for r in results if r.exit_code == 0),
                            "failed": sum(1 for r in results if r.exit_code != 0)},
                            session_id=session_id)
+                self._inject_hook_messages(results, state)
 
             # 4. Guard output
             response_text = response if isinstance(response, str) else response.get("content", "")
@@ -273,7 +376,8 @@ class GraphEngine:
 
             # 7. Hooks + Transaction + execute
             if self.hook_runner:
-                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                self._inject_hook_messages(results, state)
             for tc in valid_calls:
                 self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
                            "id": tc.get("id", ""),
@@ -298,7 +402,8 @@ class GraphEngine:
                     await self.transaction_ctx.rollback(tx, Exception("tool failure"))
 
             if self.hook_runner:
-                await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                hook_results = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                self._inject_hook_messages(hook_results, state)
 
             # 8. Add results to messages (with tool output summarization)
             for tc in valid_calls:
@@ -343,12 +448,18 @@ class GraphEngine:
         Uses _stream_model for token-level streaming if available,
         falls back to _call_model otherwise."""
         session_id = state.get("session_id", "default")
+        self._interaction_round = state.get("interaction_round", 0)
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
         if self.hook_runner:
             await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
+            if self._cancelled():
+                yield self._make_event(type="session_end",
+                                 data={"session_id": session_id, "reason": "cancelled"},
+                                 session_id=session_id)
+                break
             turn = state.get("current_turn", 0) + 1
             state["current_turn"] = turn
 
@@ -532,7 +643,8 @@ class GraphEngine:
                                  turn=turn, session_id=session_id)
 
             if self.hook_runner:
-                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                h_results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                self._inject_hook_messages(h_results, state)
             for tc in valid_calls:
                 yield self._make_event(type="tool_call_start",
                                  data={"tool_name": tc.get("name", ""), "turn": turn,
@@ -558,7 +670,8 @@ class GraphEngine:
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
                                               "content": content})
             if self.hook_runner:
-                await self.hook_runner.fire("post_tool_exec", {"tool_calls": tool_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                self._inject_hook_messages(hr, state)
             await self.state_store.put(session_id, state)
 
             # Memory extraction after tool execution turn

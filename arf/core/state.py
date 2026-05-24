@@ -10,6 +10,7 @@ class AgentState(TypedDict, total=False):
     messages: list[dict]
     current_model: str
     current_turn: int
+    interaction_round: int       # user-interaction round (groups internal turns)
     context_summary: str
     tool_results: dict[str, dict]
     plan: dict | None
