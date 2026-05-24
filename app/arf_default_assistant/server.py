@@ -675,8 +675,8 @@ async def ws_stub(ws: WebSocket):
 async def traces_resource_stats(period: str = "all"):
     """Compute per-tool and per-model usage stats from trace data."""
     trace_dir = Path("./memory/sessions")
-    tools: dict[str, int] = {}
-    models: dict[str, dict] = {}
+    # resource_name → {call_count, success_count, failure_count, total_duration_ms, type, tokens}
+    resources: dict[str, dict] = {}
     for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -686,30 +686,45 @@ async def traces_resource_stats(period: str = "all"):
                 d = e.get("data", {})
                 if e.get("type") == "tool_call_end":
                     tn = d.get("tool_name", "unknown")
-                    tools[tn] = tools.get(tn, 0) + 1
+                    if tn not in resources:
+                        resources[tn] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0, "type": "tool", "tokens": 0}
+                    r = resources[tn]
+                    r["call_count"] += 1
+                    if d.get("success"):
+                        r["success_count"] += 1
+                    else:
+                        r["failure_count"] += 1
+                    r["total_duration_ms"] += d.get("duration_ms", 0)
                 if e.get("type") == "model_call_end":
                     mn = d.get("model", "unknown")
-                    if mn not in models:
-                        models[mn] = {"calls": 0, "tokens": 0}
-                    models[mn]["calls"] += 1
-                    models[mn]["tokens"] += d.get("usage", {}).get("total_tokens", 0)
+                    if mn not in resources:
+                        resources[mn] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0, "type": "model", "tokens": 0}
+                    r = resources[mn]
+                    r["call_count"] += 1
+                    r["success_count"] += 1  # model calls that return are successful
+                    r["tokens"] += d.get("usage", {}).get("total_tokens", 0)
         except Exception:
             pass
-    resources = [
-        {"name": k, "type": "tool", "calls": v}
-        for k, v in sorted(tools.items(), key=lambda x: -x[1])
-    ] + [
-        {"name": k, "type": "model", "calls": v["calls"], "tokens": v["tokens"]}
-        for k, v in sorted(models.items(), key=lambda x: -x[1]["calls"])
-    ]
-    return JSONResponse({"resources": resources, "period": period})
+    result = []
+    for name, r in sorted(resources.items(), key=lambda x: -x[1]["call_count"]):
+        avg_ms = round(r["total_duration_ms"] / r["call_count"], 1) if r["call_count"] > 0 else 0
+        result.append({
+            "name": name,
+            "type": r["type"],
+            "call_count": r["call_count"],
+            "success_count": r["success_count"],
+            "failure_count": r["failure_count"],
+            "avg_duration_ms": avg_ms,
+            "tokens": r["tokens"],
+        })
+    return JSONResponse({"resources": result, "period": period})
 
 
 @app.get("/api/traces/resource-stats/{name}")
 async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: str = ""):
     """Per-resource daily stats from trace."""
     trace_dir = Path("./memory/sessions")
-    daily: dict[str, int] = {}
+    daily: dict[str, dict] = {}
     for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -720,12 +735,29 @@ async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: 
                 if d.get("tool_name") == name or d.get("model") == name:
                     ts = e.get("timestamp", 0)
                     day = __import__("datetime").datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-                    daily[day] = daily.get(day, 0) + 1
+                    if day not in daily:
+                        daily[day] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0}
+                    r = daily[day]
+                    r["call_count"] += 1
+                    if e.get("type") == "tool_call_end":
+                        if d.get("success"):
+                            r["success_count"] += 1
+                        else:
+                            r["failure_count"] += 1
+                        r["total_duration_ms"] += d.get("duration_ms", 0)
+                    elif e.get("type") == "model_call_end":
+                        r["success_count"] += 1
         except Exception:
             pass
     return JSONResponse({
         "name": name,
-        "daily": [{"date": k, "count": v} for k, v in sorted(daily.items())],
+        "daily": [{
+            "day": k,
+            "call_count": v["call_count"],
+            "success_count": v["success_count"],
+            "failure_count": v["failure_count"],
+            "avg_duration_ms": round(v["total_duration_ms"] / v["call_count"], 1) if v["call_count"] > 0 else None,
+        } for k, v in sorted(daily.items())],
         "from_date": from_date, "to_date": to_date,
     })
 

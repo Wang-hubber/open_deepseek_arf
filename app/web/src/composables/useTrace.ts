@@ -8,11 +8,16 @@ import type {
 // AgentEvent — the actual wire format from FileTraceStore (NOT SQL TraceEvent)
 interface AgentEvent {
   type: string
-  data: Record<string, any>
+  data: Record<string, any>  // includes 'round' (user interaction round)
   turn: number
   timestamp: number
   trace_id: string
   span_id: string
+}
+
+function eventRound(e: AgentEvent): number {
+  const r = e.data?.round
+  return (r != null && r >= 0) ? r : 0
 }
 
 export function useTrace() {
@@ -218,16 +223,28 @@ export function useTrace() {
       }
     }
 
-    // Group events by turn number
-    const turnMap = new Map<number, AgentEvent[]>()
+    // Group events by interaction round (user interaction), then by turn within each round
+    const roundMap = new Map<number, Map<number, AgentEvent[]>>()
     for (const e of sorted) {
+      const r = eventRound(e)
       const t = e.turn || 0
+      if (!roundMap.has(r)) roundMap.set(r, new Map())
+      const turnMap = roundMap.get(r)!
       if (!turnMap.has(t)) turnMap.set(t, [])
       turnMap.get(t)!.push(e)
     }
 
-    const turnNums = [...turnMap.keys()].sort((a, b) => a - b)
-    if (turnNums.length === 0) {
+    const roundNums = [...roundMap.keys()].sort((a, b) => a - b)
+    // Flatten: all turns across all rounds, ordered by round then turn
+    const turnNums: { round: number; turn: number }[] = []
+    for (const r of roundNums) {
+      const turnMap = roundMap.get(r)!
+      const tns = [...turnMap.keys()].sort((a, b) => a - b)
+      for (const t of tns) {
+        turnNums.push({ round: r, turn: t })
+      }
+    }
+    if (turnNums.length === 0 || roundNums.length === 0) {
       return {
         sessionId, title,
         turnStart: { events: [], durationMs: 0 },
@@ -236,21 +253,32 @@ export function useTrace() {
       }
     }
 
-    // First turn (session_start) is turnStart
-    const firstTurnEvents = turnMap.get(turnNums[0]) || []
+    // First turn's first round events for session start
+    const firstRT = turnNums[0]
+    const firstTurnEvents = roundMap.get(firstRT.round)?.get(firstRT.turn) || []
     const turnStartEvents: any[] = firstTurnEvents.filter(e => e.type === 'session_start')
     const turnStart: TurnStart = {
       events: turnStartEvents,
       durationMs: computeDuration(firstTurnEvents),
     }
 
-    // Build Turn objects from remaining turns
+    // Build Turn objects — each = one user interaction round containing internal turns
     const turns: Turn[] = []
-    // Find user messages from state to use as turn input snippets
-    // The model_call_start events serve as turn boundaries
-    for (let ti = 0; ti < turnNums.length; ti++) {
-      const tn = turnNums[ti]
-      const turnEvents = turnMap.get(tn) || []
+    for (let ri = 0; ri < roundNums.length; ri++) {
+      const rn = roundNums[ri]
+      const turnMapInRound = roundMap.get(rn)!
+      const tns = [...turnMapInRound.keys()].sort((a, b) => a - b)
+
+      // Gather all events for this round
+      const roundEvents: AgentEvent[] = []
+      for (const t of tns) {
+        roundEvents.push(...(turnMapInRound.get(t) || []))
+      }
+      // Skip round 0 if it only has session_start
+      if (rn === 0 && roundEvents.every(e => e.type === 'session_start')) continue
+
+      const tn = tns[0]
+      const turnEvents = turnMapInRound.get(tn) || []
       // Skip turn 0 (session_start only)
       if (tn === 0 && turnEvents.every(e => e.type === 'session_start')) continue
 
@@ -266,12 +294,13 @@ export function useTrace() {
           : new Date().toISOString(),
       }
 
-      const iterations = buildIterations(turnEvents)
+      // Build iterations from ALL events in this round (across internal turns)
+      const iterations = buildIterations(roundEvents)
 
-      // Collect post-model hooks and session-end hooks
+      // Collect post-model hooks and session-end hooks for this round
       const postModelHooks: any[] = []
       const sessionEndHooks: any[] = []
-      for (const e of turnEvents) {
+      for (const e of roundEvents) {
         if (e.type === 'hook_start' || e.type === 'hook_end') {
           const eventName = dataField(e, 'event', '')
           const hookEvent: any = {
@@ -291,14 +320,15 @@ export function useTrace() {
         }
       }
 
+      const internalTurnCount = tns.length
       const stats = {
-        totalTokens: sumTokens(turnEvents),
-        iterationCount: iterations.length,
-        durationMs: computeDuration(turnEvents),
+        totalTokens: sumTokens(roundEvents),
+        iterationCount: internalTurnCount,
+        durationMs: computeDuration(roundEvents),
       }
 
       turns.push({
-        turnIndex: ti,
+        turnIndex: rn,
         input, iterations,
         postModelHooks,
         sessionEndHooks: sessionEndHooks.length > 0 ? sessionEndHooks : undefined,

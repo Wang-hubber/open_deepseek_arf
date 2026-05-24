@@ -40,8 +40,8 @@ function formatTokens(n: number): string {
       <span class="tc-arrow" :class="{ open: expanded }">▶</span>
       <span class="tc-icon">{{ turn.input.type === 'user' ? '📥' : '🤖' }}</span>
       <span class="tc-label">
-        Turn {{ turn.turnIndex }}
-        <span class="tc-type">({{ turn.input.type === 'user' ? t('trace.userInput') : t('trace.agentInput') }})</span>
+        Round {{ turn.turnIndex }}
+        <span class="tc-type">({{ turn.stats.iterationCount }} 内部迭代)</span>
       </span>
       <span class="tc-snippet">{{ safeSnippet.slice(0, 60) }}{{ safeSnippet.length > 60 ? '...' : '' }}</span>
       <span class="tc-stats">
