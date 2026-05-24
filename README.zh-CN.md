@@ -68,6 +68,7 @@ Agent 在此回路中持续迭代，收敛于各自领域的**局部最优解**�
 | **工具沙箱与安全边界** | 系统调用 + 保护环（Ring 0–3）+ ACL：内核门控每次调用，用户态受限 | 工具调用：`tool.yaml`（JSON Schema）+ `function.py`。`PathCheckToolGuard` 阻断 `..` 和绝对路径。双源隔离：框架资源只读，用户工作区读写。Hook 退出码契约（0=继续，1=阻断，2=注入）。 [设计文档 →](docs/tool-sandbox.md) | 逐工具 deny→ask→allow 权限门控。每次调用独立沙箱隔离（CPU、内存、网络配额）。最小权限自动推导。MCP 协议集成。 |
 | **并发与死锁预防** | 超标量执行 + 资源分配图：依赖分析，锁层级 | 顺序 Agent 执行避免并发。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 [设计文档 →](docs/skill-pipeline.md) | 多 Agent 流水线：自动 DAG 分析；Worktree 隔离；动态并行；分布式锁管理器。 |
 | **外部中断与用户干预** | 硬件中断：保存现场 → 执行 ISR → 恢复现场 | `cancel_event` 异步取消 + `POST /api/chat/cancel`。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook exit-code-2 消息注入。 [设计文档 →](docs/interrupt.md) | 通用中断向量（暂停/重定向）；多模态实时打断；会话空闲超时。 |
+| **Trace 与可观测性** | 系统监控 + 日志：结构化事件日志，实时指标 | 15 种事件类型通过 EventBus 流式分发 → `FileTraceStore`（每 session 一个 JSON）+ `UsageTracker`（token 统计）。前端瀑布流按交互轮次分组，可展开查看工具调用细节。SSE 实时推送。 [设计文档 →](docs/trace.md) | SQLite Trace 数据库；OpenTelemetry 导出；Trace 搜索/过滤；父子 Span 关联追踪。 |
 
 <br/>
 
