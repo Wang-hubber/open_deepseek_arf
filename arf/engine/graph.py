@@ -227,15 +227,33 @@ class GraphEngine:
             state["messages"].append(assistant_msg)
             await self.state_store.put(session_id, state)
 
-            # 6. Guard tool params + execute
+            # 6. Guard tool params + permissions + execute
             valid_calls = []
+            denied_calls = []
             if self.guard_runner:
                 for tc in tool_calls:
-                    gr = await self.guard_runner.check_tool_params(tc.get("name", ""), tc.get("params", {}))
-                    if gr.allowed:
-                        valid_calls.append(tc)
+                    name = tc.get("name", "")
+                    params = tc.get("params", {})
+                    # Path sandbox check (hard block)
+                    gr = await self.guard_runner.check_tool_params(name, params)
+                    if not gr.allowed:
+                        denied_calls.append((name, gr.reason))
+                        continue
+                    # Permission check (deny/ask/allow)
+                    perm = self.guard_runner.check_tool_permission(name, params)
+                    if perm == "deny":
+                        denied_calls.append((name, "denied by permission config"))
+                        continue
+                    # 'ask' → would yield to approval channel (future)
+                    valid_calls.append(tc)
             else:
                 valid_calls = tool_calls
+
+            # Emit denied tool calls as errors
+            for name, reason in denied_calls:
+                self._emit("tool_call_end", {"tool_name": name, "turn": turn, "id": "",
+                           "success": False, "error": f"Blocked: {reason}"},
+                           session_id=session_id)
 
             # 7. Hooks + Transaction + execute
             if self.hook_runner:
@@ -457,16 +475,41 @@ class GraphEngine:
             state["messages"].append(assistant_msg)
             await self.state_store.put(session_id, state)
 
+            # Guard tool params + permissions (streaming path)
+            valid_calls = []
+            denied_calls = []
+            if self.guard_runner:
+                for tc in tool_calls:
+                    name = tc.get("name", "")
+                    params = tc.get("params", {})
+                    gr = await self.guard_runner.check_tool_params(name, params)
+                    if not gr.allowed:
+                        denied_calls.append((name, gr.reason))
+                        continue
+                    perm = self.guard_runner.check_tool_permission(name, params)
+                    if perm == "deny":
+                        denied_calls.append((name, "denied by permission config"))
+                        continue
+                    valid_calls.append(tc)
+            else:
+                valid_calls = tool_calls
+
+            for name, reason in denied_calls:
+                yield self._make_event(type="tool_call_end",
+                                 data={"tool_name": name, "turn": turn, "id": "",
+                                       "success": False, "error": f"Blocked: {reason}"},
+                                 turn=turn, session_id=session_id)
+
             if self.hook_runner:
-                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": tool_calls, "turn": turn})
-            for tc in tool_calls:
+                await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+            for tc in valid_calls:
                 yield self._make_event(type="tool_call_start",
                                  data={"tool_name": tc.get("name", ""), "turn": turn,
                                        "id": tc.get("id", ""),
                                        "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                  turn=turn, session_id=session_id)
-            results = await self.tool_executor.execute(tool_calls)
-            for tc in tool_calls:
+            results = await self.tool_executor.execute(valid_calls)
+            for tc in valid_calls:
                 r = results.get(tc.get("id", ""))
                 yield self._make_event(type="tool_call_end",
                                  data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),

@@ -162,10 +162,11 @@ class BaseAgent:
             )
 
         # 4. Guardrails
+        _workspace_root = str(tools_dir.parent.resolve())
         guard_runner = override_protocols.pop("guard_runner", DefaultGuardRunner(
             input_guard=NoneInputGuard(),
             output_guard=RegexOutputGuard(),
-            tool_guard=PathCheckToolGuard(),
+            tool_guard=PathCheckToolGuard(workspace_root=_workspace_root),
         ))
 
         # 5. Error + Transaction
