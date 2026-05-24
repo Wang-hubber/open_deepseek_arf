@@ -37,9 +37,11 @@ const toolCount = computed(() => props.iteration.toolCalls.length)
       <span class="ic-arrow" :class="{ open: expanded }">▶</span>
       <span class="ic-icon">{{ iteration.isFinal ? '✅' : '🔄' }}</span>
       <span class="ic-label">
-        {{ iteration.isFinal ? t('trace.finalReply') : `${t('trace.iteration')} ${iteration.index}` }}
+        <template v-if="iteration.isFinal">{{ t('trace.finalReply') }}</template>
+        <template v-else>{{ t('trace.iteration') }} {{ iteration.index }}</template>
+        <template v-if="iteration.internalTurn != null"> · T{{ iteration.internalTurn }}</template>
       </span>
-      <span v-if="!iteration.isFinal && toolCount" class="ic-tool-count">
+      <span v-if="toolCount" class="ic-tool-count">
         🧠 → {{ toolCount > 1 ? `🔧×${toolCount}` : '🔧' }}
       </span>
       <span v-if="iterDuration" class="ic-dur">{{ formatMs(iterDuration) }}</span>

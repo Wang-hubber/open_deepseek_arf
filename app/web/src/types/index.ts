@@ -331,6 +331,7 @@ export interface ToolCallPair {
 
 export interface Iteration {
   index: number
+  internalTurn?: number
   reasoning?: TraceEvent
   preToolUseHooks: TraceEvent[]
   toolCalls: ToolCallPair[]

@@ -277,25 +277,32 @@ export function useTrace() {
       // Skip round 0 if it only has session_start
       if (rn === 0 && roundEvents.every(e => e.type === 'session_start')) continue
 
-      const tn = tns[0]
-      const turnEvents = turnMapInRound.get(tn) || []
-      // Skip turn 0 (session_start only)
-      if (tn === 0 && turnEvents.every(e => e.type === 'session_start')) continue
-
-      // Extract user input from user_input trace event
-      const userInputEvt = turnEvents.find(e => e.type === 'user_input')
-      const inputSnippet = userInputEvt ? dataField(userInputEvt, 'content', `Turn ${tn}`) : `Turn ${tn}`
+      // Find user input from ANY internal turn in this round
+      const userInputEvt = roundEvents.find(e => e.type === 'user_input')
+      const inputSnippet = userInputEvt ? dataField(userInputEvt, 'content', `Round ${rn}`) : `Round ${rn}`
 
       const input: TurnInput = {
         type: 'user',
         snippet: inputSnippet,
-        timestamp: turnEvents.length > 0
-          ? new Date(ts(turnEvents[0])).toISOString()
+        timestamp: roundEvents.length > 0
+          ? new Date(ts(roundEvents[0])).toISOString()
           : new Date().toISOString(),
       }
 
-      // Build iterations from ALL events in this round (across internal turns)
-      const iterations = buildIterations(roundEvents)
+      // Build iterations PER internal turn (not once for all round events)
+      const allIterations: Iteration[] = []
+      for (let ti = 0; ti < tns.length; ti++) {
+        const itTurnEvents = turnMapInRound.get(tns[ti]) || []
+        const iters = buildIterations(itTurnEvents)
+        if (iters.length > 0) {
+          // Label each iteration with its internal turn index
+          for (const iter of iters) {
+            iter.index = ti + 1
+            iter.internalTurn = tns[ti]
+          }
+          allIterations.push(...iters)
+        }
+      }
 
       // Collect post-model hooks and session-end hooks for this round
       const postModelHooks: any[] = []
@@ -320,16 +327,15 @@ export function useTrace() {
         }
       }
 
-      const internalTurnCount = tns.length
       const stats = {
         totalTokens: sumTokens(roundEvents),
-        iterationCount: internalTurnCount,
+        iterationCount: tns.length,
         durationMs: computeDuration(roundEvents),
       }
 
       turns.push({
         turnIndex: rn,
-        input, iterations,
+        input, iterations: allIterations,
         postModelHooks,
         sessionEndHooks: sessionEndHooks.length > 0 ? sessionEndHooks : undefined,
         stats,
