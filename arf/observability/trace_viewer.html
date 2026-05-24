@@ -95,16 +95,32 @@ document.getElementById('filePicker').addEventListener('change', e => {
 document.getElementById('timeFrom').addEventListener('change', applyFilter);
 document.getElementById('timeTo').addEventListener('change', applyFilter);
 
-async function loadUrl() {
+const DEFAULT_DATA_URL = '/api/traces/sessions/default';
+
+async function loadUrl(silent) {
   const url = document.getElementById('urlInput').value.trim();
   if(!url) return;
+  await fetchAndProcess(url, silent);
+}
+
+async function fetchAndProcess(url, silent) {
   try {
     const resp = await fetch(url);
     const data = await resp.json();
-    const events = data.events || data;
+    const events = data.events || data.turns?.flatMap(t => t.events) || data;
     process(Array.isArray(events) ? events : []);
-  } catch(e) { alert('Failed to load: ' + e.message); }
+  } catch(e) { if(!silent) alert('Failed to load: ' + e.message); }
 }
+
+// Auto-load from query param or default API when served from same origin
+(function autoLoad() {
+  const params = new URLSearchParams(location.search);
+  const dataUrl = params.get('data') || (location.hostname !== '' ? DEFAULT_DATA_URL : null);
+  if (dataUrl) {
+    document.getElementById('urlInput').value = dataUrl;
+    fetchAndProcess(dataUrl, true);
+  }
+})();
 
 function process(events) {
   allEvents = events.sort((a,b) => (a.timestamp||0) - (b.timestamp||0));
@@ -166,7 +182,7 @@ function render() {
       <div class="round-header" onclick="toggleRound(this)">
         <span class="arrow">▶</span>
         <span class="round-num">Round ${round}</span>
-        <span class="round-summary">${st.models['quick']||0 + st.models['deep']||0} model calls · ${st.total} events · ${(st.tokens/1000).toFixed(1)}k tokens</span>
+        <span class="round-summary">${Object.values(st.models).reduce((a,b)=>a+b,0)} model calls · ${st.total} events · ${(st.tokens/1000).toFixed(1)}k tokens</span>
       </div>
       <div class="round-body">${turns.map(([turn, tevs]) => renderTurn(turn, tevs)).join('')}</div>
     </div>`;
