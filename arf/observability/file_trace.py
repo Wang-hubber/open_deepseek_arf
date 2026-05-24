@@ -24,8 +24,8 @@ class FileTraceStore:
     async def _consume(self, bus) -> None:
         try:
             async for event in bus.subscribe():
-                if event.type in ("session_start", "session_end"):
-                    continue
+                if event.type in ("session_start", "session_end", "thinking_delta"):
+                    continue  # skip streaming noise; model_call_end has full response
                 self._append(event.session_id, event)
         except asyncio.CancelledError:
             pass
