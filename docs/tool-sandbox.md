@@ -98,6 +98,27 @@ advanced:
 | 无 MCP 协议支持 | MCP 工具提供者集成 |
 | 无符号链接检测 | `Path.resolve()` + `is_relative_to()` 校验 |
 
+## 验证
+
+```python
+# Path traversal blocked
+await guard.check("file_reader", {"path": "../../../etc/passwd"})
+# → GuardResult(allowed=False, reason="Path traversal blocked: '../../../etc/passwd'")
+
+# Absolute path blocked
+await guard.check("file_reader", {"path": "/etc/passwd"})
+# → GuardResult(allowed=False, reason="Absolute path blocked: '/etc/passwd'")
+
+# Permission deny by pattern
+pc.check("python_exec", {"code": "sudo rm -rf /"})  # → "deny"
+
+# Safe tool auto-allowed
+pc.check("file_reader", {"path": "hello.txt"})  # → "allow"
+
+# Unknown tool asks
+pc.check("python_exec", {"code": "print(1)"})  # → "ask"
+```
+
 ## 与 OS 模式的对应
 
 | OS 概念 | ARF 实现 |
