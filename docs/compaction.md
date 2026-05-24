@@ -64,14 +64,37 @@ async def compact(self, state):
 
 ## LLM Summarizer
 
-默认使用 `deepseek-v4-flash`，无思考，温度 0.3（与 memory model 共享实例）：
+参照 Claude Code 的 compact 指令设计。默认使用 `deepseek-v4-flash`，无思考，温度 0.3。
 
-```python
-async def _summarize(msgs):
-    text = "\n".join(f"[{m['role']}] {m['content'][:200]}" for m in msgs[-20:])
-    prompt = "Summarize the key facts, decisions, and context...\n{text}\n\nSummary:"
-    return await _mem_model_call(prompt)
+**结构化摘要提示词**：
+
 ```
+You are compacting conversation history to free context space.
+Write a structured summary that preserves the essential state:
+
+<conversation>...</conversation>
+
+Output with these sections (omit empty ones):
+- Completed: tasks finished, problems solved
+- In Progress: current task, remaining TODO items
+- Files Modified: paths and what was changed
+- Decisions: architectural choices, agreed approaches
+- Facts & Preferences: user info, likes/dislikes, constraints
+- Errors & Debugging: error messages, stack traces, hypotheses
+- Next Steps: what should happen next
+
+Rules:
+- Be specific: include file paths, function names, error messages verbatim
+- Be concise: each bullet one line, 3-8 bullets per section
+- Preserve reasoning: why decisions were made, not just what
+- Keep user facts intact: name, location, preferences, skills
+```
+
+- 取最近 **30 条**旧消息，每条截断至 300 字符
+- 结构化输出确保关键信息不被压缩丢失
+- 错误和堆栈跟踪原文保留
+- 用户事实不被摘要模糊化
+- 失败时静默降级
 
 ## 工具输出摘要
 

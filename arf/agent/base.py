@@ -129,14 +129,28 @@ class BaseAgent:
             if _mem_model_call:
                 async def _summarize(msgs: list[dict]) -> str:
                     text = "\n".join(
-                        f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
-                        for m in msgs[-20:]  # last 20 messages for summary
+                        f"[{m.get('role', '?')}] {m.get('content', '')[:300]}"
+                        for m in msgs[-30:]  # last 30 messages for context
                     )
                     prompt = (
-                        "Summarize the key facts, decisions, and context from this conversation history.\n"
-                        "Keep it concise (2-4 sentences). Focus on what was discussed and decided.\n\n"
-                        f"{text}\n\nSummary:"
-                    )
+                        "You are compacting conversation history to free context space.\n"
+                        "Write a structured summary that preserves the essential state:\n\n"
+                        "<conversation>\n{text}\n</conversation>\n\n"
+                        "Output a concise summary with these sections (omit empty ones):\n"
+                        "- Completed: tasks finished, problems solved\n"
+                        "- In Progress: current task, remaining TODO items\n"
+                        "- Files Modified: paths and what was changed\n"
+                        "- Decisions: architectural choices, agreed approaches\n"
+                        "- Facts & Preferences: user info, likes/dislikes, constraints\n"
+                        "- Errors & Debugging: error messages, stack traces, hypotheses\n"
+                        "- Next Steps: what should happen next\n\n"
+                        "Rules:\n"
+                        "- Be specific: include file paths, function names, error messages verbatim\n"
+                        "- Be concise: each bullet one line, 3-8 bullets per section\n"
+                        "- Preserve reasoning: why decisions were made, not just what\n"
+                        "- Keep user facts intact: name, location, preferences, skills\n\n"
+                        "Summary:"
+                    ).replace("{text}", text)
                     try:
                         return (await _mem_model_call(prompt)).strip()
                     except Exception:
