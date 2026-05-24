@@ -175,6 +175,38 @@ class GraphEngine:
             self.event_bus.emit(event)
         return event
 
+    def _repair_state(self, state: AgentState) -> AgentState:
+        """Strip incomplete tool_calls sequences that cause 400 errors.
+
+        If the last assistant message has tool_calls but no tool messages follow,
+        remove the incomplete assistant message (and any orphaned tool messages).
+        """
+        msgs = state.get("messages", [])
+        if not msgs:
+            return state
+        # Find the last assistant message with tool_calls
+        last_tc_idx = -1
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "assistant" and msgs[i].get("tool_calls"):
+                last_tc_idx = i
+                break
+        if last_tc_idx < 0:
+            return state
+        # Check if any tool messages follow this assistant message
+        has_tool_responses = False
+        for i in range(last_tc_idx + 1, len(msgs)):
+            if msgs[i].get("role") == "tool":
+                has_tool_responses = True
+                break
+        if not has_tool_responses:
+            # Strip from the incomplete assistant message onward
+            import logging
+            logging.getLogger("arf.engine").warning(
+                "Repairing state: stripping incomplete tool_calls at index %d", last_tc_idx
+            )
+            state["messages"] = msgs[:last_tc_idx]
+        return state
+
     def _last_user_message(self, state: AgentState) -> str:
         for m in reversed(state.get("messages", [])):
             if m.get("role") == "user":
@@ -205,6 +237,7 @@ class GraphEngine:
         return []
 
     async def invoke(self, state: AgentState) -> AgentState:
+        state = self._repair_state(state)
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
@@ -335,7 +368,8 @@ class GraphEngine:
             if isinstance(response, dict) and response.get("reasoning"):
                 assistant_msg["reasoning_content"] = response["reasoning"]
             state["messages"].append(assistant_msg)
-            await self.state_store.put(session_id, state)
+            # NOTE: do NOT state_store.put() here — tool results not yet appended.
+            # Saving incomplete tool_calls sequence causes 400 on next request.
 
             # 6. Guard tool params + pipeline + permissions + execute
             valid_calls = []
@@ -454,6 +488,7 @@ class GraphEngine:
         """Streaming execution — yields AgentEvent at each step of the loop.
         Uses _stream_model for token-level streaming if available,
         falls back to _call_model otherwise."""
+        state = self._repair_state(state)
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
         yield self._make_event(type="session_start", data={"session_id": session_id},
