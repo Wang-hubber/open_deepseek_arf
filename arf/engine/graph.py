@@ -170,6 +170,7 @@ class GraphEngine:
 
     def _make_event(self, type: str, data: dict, turn: int = 0, session_id: str = "") -> AgentEvent:
         """Create an AgentEvent and publish to EventBus (if set)."""
+        data["round"] = self._interaction_round
         event = AgentEvent(type=type, data=data, turn=turn, session_id=session_id)
         if self.event_bus:
             self.event_bus.emit(event)
