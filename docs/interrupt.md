@@ -121,6 +121,25 @@ Round 2: hello.txt(v3)  ← 改坏了
 - 文件备份在 `memory/checkpoints/{round}/`，undo 时恢复
 - `.git` 目录自动排除
 
+### 对话内 Undo 工具
+
+框架提供 `undo` 工具，LLM 可在对话中直接调用，用户说"撤回"即可触发：
+
+```yaml
+tools:
+  - name: undo
+    description: 撤销最近的对话轮次（状态 + 文件双回滚）
+    parameters: {type: object, properties: {steps: {type: integer, default: 1}}}
+    activation: kernel
+```
+
+调用流程：
+```
+用户: "上次改错了，撤销" → LLM 调用 undo(steps=1)
+→ engine.undo(1) → 恢复消息 + 文件
+→ LLM: "已撤销，文件已恢复"
+```
+
 ## 验证
 
 | 场景 | 结果 |
@@ -133,6 +152,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 | 再 undo 1 步 | ✅ 文件恢复到 v1 |
 | undo 超出快照数 | ✅ 返回 None |
 | 滚动窗口淘汰最老快照 | ✅ 最多保留 3 个 |
+| 对话内 undo 工具 | ✅ LLM 调用 → 文件恢复 → 用户无感 |
 
 ## 与 OS 模式的对应
 

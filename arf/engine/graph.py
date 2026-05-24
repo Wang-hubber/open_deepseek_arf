@@ -98,26 +98,31 @@ class GraphEngine:
                     shutil.copy2(f, dest)
 
     def undo(self, steps: int = 1, workspace_dir: str = "") -> AgentState | None:
-        """Pop N checkpoints, restore state and workspace files, or None."""
+        """Pop N checkpoints, restore state and workspace files, or None.
+
+        The POPPED checkpoint represents the state BEFORE the last N rounds,
+        so we restore from it (not from the remaining stack top).
+        """
         import shutil
         if steps < 1 or steps > len(self._checkpoints):
             return None
 
-        target_round = self._checkpoints[-(steps + 1)]["interaction_round"] if len(self._checkpoints) > steps else -1
-
-        # Restore workspace files from the target checkpoint
-        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
-        ckpt_dir = Path("memory/checkpoints") / str(target_round) if target_round >= 0 else None
-
+        # Pop N checkpoints — keep reference to the last popped (target to restore)
+        target = None
         for _ in range(steps):
-            removed = self._checkpoints.pop()
-            # Clean up the checkpoint dir we're undoing past
-            old_ckpt = Path("memory/checkpoints") / str(removed.get("interaction_round", 0))
-            if old_ckpt.exists():
-                shutil.rmtree(old_ckpt)
+            target = self._checkpoints.pop()
 
-        if ckpt_dir and ckpt_dir.exists() and wsp.exists():
-            # Remove current workspace files (keep dirs)
+        if target is None:
+            return None
+
+        target_round = target.get("interaction_round", 0)
+
+        # Restore workspace files from target checkpoint
+        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
+        ckpt_dir = Path("memory/checkpoints") / str(target_round)
+
+        if ckpt_dir.exists() and wsp.exists():
+            # Remove current workspace files
             for f in wsp.rglob("*"):
                 if f.is_file() and ".git" not in f.parts:
                     f.unlink()
@@ -128,10 +133,12 @@ class GraphEngine:
                     dest = wsp / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(f, dest)
+            # Clean up restored checkpoint dir + all newer ones
+            for d in Path("memory/checkpoints").iterdir():
+                if d.is_dir() and int(d.name) >= target_round:
+                    shutil.rmtree(d)
 
-        if not self._checkpoints:
-            return None
-        return copy.deepcopy(self._checkpoints[-1])
+        return copy.deepcopy(target)
 
     def checkpoint_count(self) -> int:
         return len(self._checkpoints)

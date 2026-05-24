@@ -1,0 +1,13 @@
+name: undo
+description: 撤销最近的对话轮次（状态 + 文件双回滚）
+parameters:
+  type: object
+  properties:
+    steps:
+      type: integer
+      description: "回退步数（默认 1）"
+      default: 1
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel
