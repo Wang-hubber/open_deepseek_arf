@@ -153,6 +153,12 @@ skills:
     description: Generate a new Tool or Skill resource from requirements
     tools: [file_writer, resource_loader]
     activation: discoverable
+    pipeline:
+      - tool: file_writer
+        description: "Create tool.yaml and function.py scaffold files"
+      - tool: resource_loader
+        depends_on: [file_writer]
+        description: "Activate the newly created resource"
 
 hooks:
   - name: self_evolve

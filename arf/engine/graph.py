@@ -227,13 +227,23 @@ class GraphEngine:
             state["messages"].append(assistant_msg)
             await self.state_store.put(session_id, state)
 
-            # 6. Guard tool params + permissions + execute
+            # 6. Guard tool params + pipeline + permissions + execute
             valid_calls = []
             denied_calls = []
+            # Load active skill pipeline from state
+            pipeline_data = state.get("active_pipeline")
+            import_completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
             if self.guard_runner:
                 for tc in tool_calls:
                     name = tc.get("name", "")
                     params = tc.get("params", {})
+                    # Pipeline order check (hard block — framework guarantee)
+                    if pipeline_data:
+                        from arf.skills.pipeline import SkillPipeline
+                        sp = SkillPipeline(pipeline_data.get("steps", []))
+                        if not sp.can_execute(name, import_completed):
+                            denied_calls.append((name, sp.validation_error(name, import_completed)))
+                            continue
                     # Path sandbox check (hard block)
                     gr = await self.guard_runner.check_tool_params(name, params)
                     if not gr.allowed:
@@ -248,6 +258,12 @@ class GraphEngine:
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls
+
+            # Track completed pipeline steps
+            if pipeline_data:
+                for tc in valid_calls:
+                    import_completed.add(tc.get("name", ""))
+                state["active_pipeline"]["completed"] = list(import_completed)
 
             # Emit denied tool calls as errors
             for name, reason in denied_calls:
@@ -475,13 +491,22 @@ class GraphEngine:
             state["messages"].append(assistant_msg)
             await self.state_store.put(session_id, state)
 
-            # Guard tool params + permissions (streaming path)
+            # Guard tool params + pipeline + permissions (streaming path)
             valid_calls = []
             denied_calls = []
+            pipeline_data = state.get("active_pipeline")
+            s_completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
             if self.guard_runner:
                 for tc in tool_calls:
                     name = tc.get("name", "")
                     params = tc.get("params", {})
+                    # Pipeline order check (hard block)
+                    if pipeline_data:
+                        from arf.skills.pipeline import SkillPipeline
+                        sp = SkillPipeline(pipeline_data.get("steps", []))
+                        if not sp.can_execute(name, s_completed):
+                            denied_calls.append((name, sp.validation_error(name, s_completed)))
+                            continue
                     gr = await self.guard_runner.check_tool_params(name, params)
                     if not gr.allowed:
                         denied_calls.append((name, gr.reason))
@@ -493,6 +518,12 @@ class GraphEngine:
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls
+
+            # Track completed pipeline steps
+            if pipeline_data:
+                for tc in valid_calls:
+                    s_completed.add(tc.get("name", ""))
+                state["active_pipeline"]["completed"] = list(s_completed)
 
             for name, reason in denied_calls:
                 yield self._make_event(type="tool_call_end",

@@ -13,12 +13,18 @@ class ModelConfig(BaseModel):
     kwargs: dict = Field(default_factory=dict)
 
 
+class PipelineStep(BaseModel):
+    tool: str
+    description: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+
 class SkillConfig(BaseModel):
     name: str
     description: str
     prompt: str = ""
     tools: list[str] = Field(default_factory=list)
     activation: Literal["kernel", "discoverable", "passive"] = "discoverable"
+    pipeline: list[PipelineStep] = Field(default_factory=list)
 
 
 class ToolConfig(BaseModel):
