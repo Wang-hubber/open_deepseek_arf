@@ -319,25 +319,34 @@ def _group_turns(events: list) -> list:
 
 @app.get("/api/traces/summary")
 async def traces_summary():
-    """Summary for TraceView stats bar — from actual data."""
+    """Summary for TraceView stats bar — computed from actual trace data."""
     trace_dir = Path("./memory/sessions")
     total_events = 0
     sessions_count = 0
+    total_tokens = 0
+    total_turns = 0
+    all_turns: set[int] = set()
     for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 total_events += len(data)
+                for e in data:
+                    all_turns.add(e.get("turn", 0))
+                    usage = e.get("data", {}).get("usage", {})
+                    if isinstance(usage, dict):
+                        total_tokens += usage.get("total_tokens", 0)
             sessions_count += 1
         except Exception:
             pass
     if sessions_count == 0:
-        sessions_count = 1  # default session always exists
+        sessions_count = 1
+    total_turns = len(all_turns)
     return JSONResponse({
         "total_sessions": sessions_count,
         "total_events": total_events,
-        "total_tokens": total_events,  # rough estimate (each event ≈ 1 token metadata)
-        "total_turns": 0,
+        "total_tokens": total_tokens,
+        "total_turns": total_turns,
         "thumbs_up": 0,
         "thumbs_down": 0,
         "total": sessions_count,
@@ -661,14 +670,64 @@ async def ws_stub(ws: WebSocket):
     await ws.accept()
     await ws.close()
 
-# ---- Resource stats stubs ----
+# ---- Resource stats (from trace data) ----
 @app.get("/api/traces/resource-stats")
 async def traces_resource_stats(period: str = "all"):
-    return JSONResponse({"resources": [], "period": period})
+    """Compute per-tool and per-model usage stats from trace data."""
+    trace_dir = Path("./memory/sessions")
+    tools: dict[str, int] = {}
+    models: dict[str, dict] = {}
+    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                continue
+            for e in data:
+                d = e.get("data", {})
+                if e.get("type") == "tool_call_end":
+                    tn = d.get("tool_name", "unknown")
+                    tools[tn] = tools.get(tn, 0) + 1
+                if e.get("type") == "model_call_end":
+                    mn = d.get("model", "unknown")
+                    if mn not in models:
+                        models[mn] = {"calls": 0, "tokens": 0}
+                    models[mn]["calls"] += 1
+                    models[mn]["tokens"] += d.get("usage", {}).get("total_tokens", 0)
+        except Exception:
+            pass
+    resources = [
+        {"name": k, "type": "tool", "calls": v}
+        for k, v in sorted(tools.items(), key=lambda x: -x[1])
+    ] + [
+        {"name": k, "type": "model", "calls": v["calls"], "tokens": v["tokens"]}
+        for k, v in sorted(models.items(), key=lambda x: -x[1]["calls"])
+    ]
+    return JSONResponse({"resources": resources, "period": period})
+
 
 @app.get("/api/traces/resource-stats/{name}")
 async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: str = ""):
-    return JSONResponse({"name": name, "daily": [], "from_date": from_date, "to_date": to_date})
+    """Per-resource daily stats from trace."""
+    trace_dir = Path("./memory/sessions")
+    daily: dict[str, int] = {}
+    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                continue
+            for e in data:
+                d = e.get("data", {})
+                if d.get("tool_name") == name or d.get("model") == name:
+                    ts = e.get("timestamp", 0)
+                    day = __import__("datetime").datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                    daily[day] = daily.get(day, 0) + 1
+        except Exception:
+            pass
+    return JSONResponse({
+        "name": name,
+        "daily": [{"date": k, "count": v} for k, v in sorted(daily.items())],
+        "from_date": from_date, "to_date": to_date,
+    })
 
 # ---- Trace export stub ----
 @app.get("/api/traces/export")
