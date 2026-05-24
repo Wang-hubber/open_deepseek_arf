@@ -10,15 +10,17 @@ async def execute(steps: int = 1) -> dict:
             return {"ok": False, "error": "Agent not initialized yet"}
 
         engine = agent._engine
+        effective_steps = steps + 1  # +1 for the checkpoint just pushed for this round
         available = engine.checkpoint_count()
-        if available < steps:
+        if available < effective_steps:
             return {
                 "ok": False,
                 "error": f"Only {available} checkpoints available, requested {steps}",
                 "available": available,
             }
 
-        restored = engine.undo(steps)
+        # steps+1: skip the checkpoint just pushed for this undo round itself
+        restored = engine.undo(steps + 1)
         if restored is None:
             return {"ok": False, "error": "No checkpoints available"}
 
