@@ -43,7 +43,6 @@ export function useTrace() {
     loading.value = true
     try {
       const res: any = await api.get(`/api/traces/sessions/${sessionId}`)
-      // events come as AgentEvent[] from FileTraceStore
       events.value = (res.events || []) as TraceEvent[]
     } catch {
       events.value = []
@@ -89,7 +88,6 @@ export function useTrace() {
 
   function computeDuration(evts: AgentEvent[]): number {
     if (evts.length === 0) return 0
-    // Sum per-tool durations, plus time between first and last event
     let sum = 0
     for (const e of evts) {
       if (e.type === 'tool_call_end') {
@@ -101,20 +99,106 @@ export function useTrace() {
     return sum
   }
 
-  function buildIterations(turnEvents: AgentEvent[]): Iteration[] {
-    // Collect thinking_delta content (accumulated before any model_call_end)
-    const allThinking: string[] = []
-    for (const e of turnEvents) {
-      if (e.type === 'thinking_delta') {
-        allThinking.push(dataField(e, 'content', '') + dataField(e, 'reasoning', ''))
-      }
+  function collectHooks(events: AgentEvent[]): { pre: any[]; post: any[] } {
+    const pre: any[] = []; const post: any[] = []
+    for (const e of events) {
+      if (e.type !== 'hook_start' && e.type !== 'hook_end') continue
+      const eventName = dataField(e, 'event', '')
+      const hook = {
+        ...e, node: 'hook', event_type: 'lifecycle.hook_execution',
+        metadata: JSON.stringify({
+          hook_event: eventName,
+          hook_status: e.type === 'hook_end'
+            ? (dataField(e, 'failed', 0) === 0 ? 'ok' : 'partial_failure')
+            : 'running',
+          hook_message: e.type === 'hook_end'
+            ? `passed: ${dataField(e, 'passed', 0)}, failed: ${dataField(e, 'failed', 0)}`
+            : '',
+        }),
+      } as any
+      if (eventName.startsWith('pre_')) pre.push(hook)
+      else post.push(hook)
     }
-    const reasoningText = allThinking.join('')
+    return { pre, post }
+  }
 
-    // Pair tool_call_start → tool_call_end by matching name within the turn
-    const toolPairs: ToolCallPair[] = []
-    const pending = new Map<string, AgentEvent>() // id → start event
+  function buildIterations(turnEvents: AgentEvent[]): Iteration[] {
+    // Find model_call_start events as iteration boundaries
+    const modelStarts: AgentEvent[] = []
     for (const e of turnEvents) {
+      if (e.type === 'model_call_start') modelStarts.push(e)
+    }
+    // Also include model_call_end without start (shouldn't happen but be safe)
+    const modelEnds: AgentEvent[] = []
+    for (const e of turnEvents) {
+      if (e.type === 'model_call_end') modelEnds.push(e)
+    }
+
+    // Use model_call_start as boundaries
+    const boundaries = modelStarts.length > 0 ? modelStarts : modelEnds
+    if (boundaries.length === 0) {
+      // No model calls — just pair any tool calls
+      const toolPairs = pairToolCalls(turnEvents)
+      const hooks = collectHooks(turnEvents)
+      if (toolPairs.length === 0 && hooks.pre.length === 0 && hooks.post.length === 0) return []
+      return [{
+        index: 1, toolCalls: toolPairs,
+        preToolUseHooks: hooks.pre, afterToolHooks: hooks.post, isFinal: true,
+      }]
+    }
+
+    const iterations: Iteration[] = []
+    for (let bi = 0; bi < boundaries.length; bi++) {
+      const bTs = ts(boundaries[bi])
+      const nextTs = bi + 1 < boundaries.length ? ts(boundaries[bi + 1]) : Infinity
+
+      // Events in [bTs, nextTs)
+      const inRange: AgentEvent[] = []
+      for (const e of turnEvents) {
+        const et = ts(e)
+        if (et >= bTs && et < nextTs) inRange.push(e)
+      }
+
+      // Find model_call_end in this range for response text
+      const mcEnd = inRange.find(e => e.type === 'model_call_end')
+      const content = mcEnd ? dataField(mcEnd, 'content', '') : ''
+
+      // Tool calls in range
+      const toolEvents = inRange.filter(e => e.type === 'tool_call_start' || e.type === 'tool_call_end')
+      const toolPairs = pairToolCalls(toolEvents)
+
+      // Hooks in range
+      const hooks = collectHooks(inRange)
+
+      // Reasoning block: show model content as thinking/response
+      const reasoningEvent = content ? ({
+        type: 'model_call_end', data: {}, turn: boundaries[bi].turn,
+        timestamp: boundaries[bi].timestamp, node: 'call_model', duration_ms: 0,
+        metadata: JSON.stringify({ model_output_snippet: content.slice(0, 3000) }),
+      } as any) : null
+
+      const isLast = bi === boundaries.length - 1
+      const hasToolCalls = toolPairs.length > 0
+      const hasContent = !!content
+
+      iterations.push({
+        index: bi + 1,
+        internalTurn: boundaries[bi].turn,
+        reasoning: reasoningEvent || undefined,
+        preToolUseHooks: hooks.pre as any,
+        toolCalls: toolPairs,
+        afterToolHooks: hooks.post as any,
+        isFinal: isLast && hasContent && !hasToolCalls,
+      })
+    }
+
+    return iterations
+  }
+
+  function pairToolCalls(events: AgentEvent[]): ToolCallPair[] {
+    const toolPairs: ToolCallPair[] = []
+    const pending = new Map<string, AgentEvent>()
+    for (const e of events) {
       if (e.type === 'tool_call_start') {
         const id = dataField(e, 'id', '') || dataField(e, 'tool_name', '')
         if (id) pending.set(id, e)
@@ -122,86 +206,27 @@ export function useTrace() {
         const id = dataField(e, 'id', '') || dataField(e, 'tool_name', '')
         const start = id ? (pending.get(id) || pending.values().next().value) : pending.values().next().value
         if (start) {
-          if (id) pending.delete(id)
-          else pending.clear()
-          // Build TraceEvent-compatible call artifact from start
-          const callEvent: any = {
-            ...start,
-            node: 'execute_tools',
-            tool_name: dataField(start, 'tool_name', 'unknown'),
-            duration_ms: dataField(e, 'duration_ms', 0),
-            status: dataField(e, 'success', false) ? 'ok' : 'error',
-            error_msg: dataField(e, 'error', ''),
-            metadata: JSON.stringify({
-              tool_input_snippet: dataField(start, 'arguments', ''),
-            }),
-          }
-          const resultEvent: any = {
-            ...e,
-            node: 'execute_tools',
-            tool_name: dataField(e, 'tool_name', ''),
-            status: dataField(e, 'success', false) ? 'ok' : 'error',
-            metadata: JSON.stringify({
-              tool_output_snippet: dataField(e, 'result', ''),
-            }),
-          }
-          toolPairs.push({ call: callEvent, result: resultEvent })
+          if (id) pending.delete(id); else pending.clear()
+          toolPairs.push({
+            call: {
+              ...start, node: 'execute_tools' as any,
+              tool_name: dataField(start, 'tool_name', 'unknown'),
+              duration_ms: dataField(e, 'duration_ms', 0),
+              status: dataField(e, 'success', false) ? 'ok' : 'error',
+              error_msg: dataField(e, 'error', ''),
+              metadata: JSON.stringify({ tool_input_snippet: dataField(start, 'arguments', '') }),
+            } as any,
+            result: {
+              ...e, node: 'execute_tools' as any,
+              tool_name: dataField(e, 'tool_name', ''),
+              status: dataField(e, 'success', false) ? 'ok' : 'error',
+              metadata: JSON.stringify({ tool_output_snippet: dataField(e, 'result', '') }),
+            } as any,
+          })
         }
       }
     }
-
-    // Build reasoning TraceEvent-compatible artifact
-    const reasoningEvent: any = reasoningText ? {
-      type: 'model_call_end',
-      data: {},
-      turn: turnEvents[0]?.turn || 0,
-      timestamp: turnEvents[0]?.timestamp || 0,
-      node: 'call_model',
-      duration_ms: 0,
-      metadata: JSON.stringify({ model_output_snippet: reasoningText }),
-    } : null
-
-    // Collect hook events
-    const preToolUseHooks: any[] = []
-    const afterToolHooks: any[] = []
-    for (const e of turnEvents) {
-      if (e.type === 'hook_start' || e.type === 'hook_end') {
-        const hookEvent: any = {
-          ...e,
-          node: 'hook',
-          event_type: 'lifecycle.hook_execution',
-          metadata: JSON.stringify({
-            hook_event: dataField(e, 'event', ''),
-            hook_status: e.type === 'hook_end' ? (
-              (dataField(e, 'failed', 0) === 0) ? 'ok' : 'partial_failure'
-            ) : 'running',
-            hook_message: e.type === 'hook_end'
-              ? `passed: ${dataField(e, 'passed', 0)}, failed: ${dataField(e, 'failed', 0)}`
-              : '',
-          }),
-        }
-        if (dataField(e, 'event', '').startsWith('pre_')) {
-          preToolUseHooks.push(hookEvent)
-        } else {
-          afterToolHooks.push(hookEvent)
-        }
-      }
-    }
-
-    if (toolPairs.length === 0 && !reasoningEvent && preToolUseHooks.length === 0 && afterToolHooks.length === 0) {
-      return []
-    }
-
-    const iteration: Iteration = {
-      index: 1,
-      reasoning: reasoningEvent || undefined,
-      preToolUseHooks,
-      toolCalls: toolPairs,
-      afterToolHooks,
-      isFinal: !toolPairs.length || (turnEvents.some(e => e.type === 'model_call_end' && !dataField(e, 'content', ''))),
-    }
-
-    return [iteration]
+    return toolPairs
   }
 
   function groupSessionEvents(
@@ -210,8 +235,6 @@ export function useTrace() {
     title?: string,
   ): StructuredSession {
     const evts = rawEvents.map(e => asAgentEvent(e as any))
-
-    // Sort by timestamp
     const sorted = [...evts].sort((a, b) => ts(a) - ts(b))
 
     if (sorted.length === 0) {
@@ -223,7 +246,7 @@ export function useTrace() {
       }
     }
 
-    // Group events by interaction round (user interaction), then by turn within each round
+    // Group events by interaction round → internal turn
     const roundMap = new Map<number, Map<number, AgentEvent[]>>()
     for (const e of sorted) {
       const r = eventRound(e)
@@ -235,16 +258,7 @@ export function useTrace() {
     }
 
     const roundNums = [...roundMap.keys()].sort((a, b) => a - b)
-    // Flatten: all turns across all rounds, ordered by round then turn
-    const turnNums: { round: number; turn: number }[] = []
-    for (const r of roundNums) {
-      const turnMap = roundMap.get(r)!
-      const tns = [...turnMap.keys()].sort((a, b) => a - b)
-      for (const t of tns) {
-        turnNums.push({ round: r, turn: t })
-      }
-    }
-    if (turnNums.length === 0 || roundNums.length === 0) {
+    if (roundNums.length === 0) {
       return {
         sessionId, title,
         turnStart: { events: [], durationMs: 0 },
@@ -253,16 +267,16 @@ export function useTrace() {
       }
     }
 
-    // First turn's first round events for session start
-    const firstRT = turnNums[0]
-    const firstTurnEvents = roundMap.get(firstRT.round)?.get(firstRT.turn) || []
-    const turnStartEvents: any[] = firstTurnEvents.filter(e => e.type === 'session_start')
+    // Session start from first round's first turn
+    const firstTurnMap = roundMap.get(roundNums[0])!
+    const firstTurnKeys = [...firstTurnMap.keys()].sort((a, b) => a - b)
+    const firstTurnEvents = firstTurnMap.get(firstTurnKeys[0]) || []
     const turnStart: TurnStart = {
-      events: turnStartEvents,
+      events: firstTurnEvents.filter(e => e.type === 'session_start') as any,
       durationMs: computeDuration(firstTurnEvents),
     }
 
-    // Build Turn objects — each = one user interaction round containing internal turns
+    // Build Turn objects — each = one user interaction round
     const turns: Turn[] = []
     for (let ri = 0; ri < roundNums.length; ri++) {
       const rn = roundNums[ri]
@@ -271,66 +285,47 @@ export function useTrace() {
 
       // Gather all events for this round
       const roundEvents: AgentEvent[] = []
-      for (const t of tns) {
-        roundEvents.push(...(turnMapInRound.get(t) || []))
-      }
-      // Skip round 0 if it only has session_start
+      for (const t of tns) roundEvents.push(...(turnMapInRound.get(t) || []))
+
+      // Skip round 0 if only session_start
       if (rn === 0 && roundEvents.every(e => e.type === 'session_start')) continue
 
-      // Find user input from ANY internal turn in this round
       const userInputEvt = roundEvents.find(e => e.type === 'user_input')
       const inputSnippet = userInputEvt ? dataField(userInputEvt, 'content', `Round ${rn}`) : `Round ${rn}`
 
       const input: TurnInput = {
         type: 'user',
         snippet: inputSnippet,
-        timestamp: roundEvents.length > 0
-          ? new Date(ts(roundEvents[0])).toISOString()
-          : new Date().toISOString(),
+        timestamp: roundEvents.length > 0 ? new Date(ts(roundEvents[0])).toISOString() : new Date().toISOString(),
       }
 
-      // Build iterations PER internal turn (not once for all round events)
+      // Build iterations per internal turn
       const allIterations: Iteration[] = []
       for (let ti = 0; ti < tns.length; ti++) {
         const itTurnEvents = turnMapInRound.get(tns[ti]) || []
         const iters = buildIterations(itTurnEvents)
-        if (iters.length > 0) {
-          // Label each iteration with its internal turn index
-          for (const iter of iters) {
-            iter.index = ti + 1
-            iter.internalTurn = tns[ti]
-          }
-          allIterations.push(...iters)
+        for (const iter of iters) {
+          iter.internalTurn = tns[ti]
         }
+        allIterations.push(...iters)
       }
 
-      // Collect post-model hooks and session-end hooks for this round
+      // Hooks for this round
       const postModelHooks: any[] = []
       const sessionEndHooks: any[] = []
       for (const e of roundEvents) {
         if (e.type === 'hook_start' || e.type === 'hook_end') {
           const eventName = dataField(e, 'event', '')
           const hookEvent: any = {
-            ...e,
-            node: 'hook',
-            event_type: 'lifecycle.hook_execution',
+            ...e, node: 'hook', event_type: 'lifecycle.hook_execution',
             metadata: JSON.stringify({
               hook_event: eventName,
               hook_status: e.type === 'hook_end' ? 'ok' : 'running',
             }),
           }
-          if (eventName === 'post_model_call') {
-            postModelHooks.push(hookEvent)
-          } else if (eventName.includes('session_end') || eventName === 'session_end') {
-            sessionEndHooks.push(hookEvent)
-          }
+          if (eventName === 'post_model_call') postModelHooks.push(hookEvent as any)
+          else if (eventName.includes('session_end') || eventName === 'session_end') sessionEndHooks.push(hookEvent as any)
         }
-      }
-
-      const stats = {
-        totalTokens: sumTokens(roundEvents),
-        iterationCount: tns.length,
-        durationMs: computeDuration(roundEvents),
       }
 
       turns.push({
@@ -338,13 +333,16 @@ export function useTrace() {
         input, iterations: allIterations,
         postModelHooks,
         sessionEndHooks: sessionEndHooks.length > 0 ? sessionEndHooks : undefined,
-        stats,
+        stats: {
+          totalTokens: sumTokens(roundEvents),
+          iterationCount: tns.length,
+          durationMs: computeDuration(roundEvents),
+        },
       })
     }
 
     return {
-      sessionId, title,
-      turnStart, turns,
+      sessionId, title, turnStart, turns,
       stats: {
         totalTurns: turns.length,
         totalTokens: sumTokens(sorted),
@@ -363,10 +361,7 @@ export function useTrace() {
 
   async function submitFeedback(sessionId: string, messageIndex: number, rating: number, feedbackText = '') {
     const res: any = await api.post('/api/feedback', {
-      session_id: sessionId,
-      message_index: messageIndex,
-      rating,
-      feedback_text: feedbackText,
+      session_id: sessionId, message_index: messageIndex, rating, feedback_text: feedbackText,
     })
     return res.ok
   }
@@ -375,15 +370,12 @@ export function useTrace() {
     try {
       const res: any = await api.get(`/api/feedback/${sessionId}`)
       return res.feedback || []
-    } catch {
-      return []
-    }
+    } catch { return [] }
   }
 
   function exportTrace(sessionId: string) {
     const token = localStorage.getItem('arf_token')
-    const url = `/api/traces/export?session_id=${encodeURIComponent(sessionId)}`
-    fetch(url, {
+    fetch(`/api/traces/export?session_id=${encodeURIComponent(sessionId)}`, {
       headers: token ? { 'Authorization': `Bearer ${token}` } : {},
     })
       .then(r => r.json())
