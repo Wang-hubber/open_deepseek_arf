@@ -98,6 +98,14 @@ FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 UsageTracker(event_bus)  # BaseAgent 自动创建
 ```
 
+## 独立 Trace Viewer
+
+框架默认提供一个单文件 HTML trace 查看器，零依赖，浏览器直接打开：
+
+- **访问**：`/trace-viewer`（开发模式）
+- **能力**：按交互轮次折叠/展开、时间范围筛选、token 统计、工具调用详情
+- **数据源**：可从文件选择器加载 JSON，或从 API URL 拉取
+
 ## 当前限制
 
 - JSON 文件存储（非 SQLite），大 session 全量加载

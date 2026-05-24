@@ -615,6 +615,13 @@ def _session_defaults():
     created_at = datetime.fromtimestamp(archive.stat().st_mtime, tz=timezone.utc).isoformat() if archive.exists() else datetime.now(timezone.utc).isoformat()
     return {"id": "default", "session_id": "default", "title": "ARF Assistant", "created_at": created_at}
 
+@app.get("/trace-viewer")
+async def trace_viewer():
+    """Serve the standalone trace viewer HTML (framework default debugging tool)."""
+    viewer_path = Path(__file__).parent.parent.parent / "arf/observability/trace_viewer.html"
+    return FileResponse(viewer_path, media_type="text/html")
+
+
 @app.get("/api/sessions")
 async def sessions_list():
     return JSONResponse([])
