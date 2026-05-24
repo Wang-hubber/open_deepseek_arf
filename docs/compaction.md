@@ -92,6 +92,8 @@ async def summarize_tool_output(self, tool_name, output, turn):
     return f"[Tool output truncated — full at {path}]\n{output[:2000]}..."
 ```
 
+**已验证**：`file_reader` 读取 README（14k chars）→ `memory/tool_outputs/turn_N_file_reader.txt` 保存完整内容，上下文仅保留截断版本。
+
 ## 配置
 
 ### 压缩配置（agent.yaml）
