@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
 from arf.agent.factory import create_agent
 from arf.agent.config import AgentConfig
+from arf.agent.registry import set_agent
 from arf.core.state import AgentState
 
 _agent = None
@@ -65,6 +66,8 @@ async def lifespan(app: FastAPI):
     _load_dotenv()
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
+    set_agent(_agent)
+    set_agent(_agent)
 
     from lazy_persistence import load_archive
     archive = load_archive()
@@ -99,7 +102,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ARF Assistant", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -373,6 +376,7 @@ async def config_register_deepseek(req: dict):
     archive = load_archive()
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
+    set_agent(_agent)
     if archive:
         state: AgentState = {
             "session_id": "default",
@@ -553,6 +557,7 @@ async def reload_config():
         await save_archive_async(_agent)
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
+    set_agent(_agent)
     return JSONResponse({"status": "reloaded", "name": cfg.name})
 
 
@@ -697,7 +702,7 @@ if frontend_dir.exists():
 
 def main():
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":
