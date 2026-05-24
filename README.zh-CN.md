@@ -208,41 +208,17 @@ agents:
 
 ## 快速开始
 
-需要 Python ≥ 3.10 和 Node.js ≥ 18。
+需要 Python ≥ 3.10。
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd app/web && npm install && cd ..
-arf init my_workspace
-arf start --workspace my_workspace
+arf test_setup   # 验证环境
+arf start        # 启动服务
 ```
 
-浏览器打开 **http://localhost:5173**——输入 API 密钥即可开始。
-
-### CLI 命令参考
-
-| 命令 | 用途 |
-|------|------|
-| `arf init <name>` | 创建新工作区 |
-| `arf start` | 启动后端 + 前端 |
-| `arf web` | 仅启动后端（FastAPI + SSE） |
-| `arf stop` | 停止运行中的进程 |
-| `arf reload` | 停止 + 重启 |
-| `arf list [tools\|skills\|models]` | 列出已注册资源 |
-| `arf validate` | 检查工作区资源完整性 |
-| `arf clone <type> <name>` | 将系统资源克隆到工作区以便定制 |
-
-### 配置
-
-| 环境变量 | 默认值 | 用途 |
-|----------|--------|------|
-| `ARF_SERVE_STATIC` | `1` | 后端托管前端静态文件 |
-| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS 允许来源 |
-| `ARF_IDLE_TIMEOUT` | `600` | 会话空闲超时（秒） |
-
-模型配置：`agent.yaml` — `base_url`、`api_key_env`、`model`、`context_window`、`temperature` 等。
+浏览器打开 **http://localhost:5173**，输入 API 密钥即可开始。
 
 <br/>
 

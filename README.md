@@ -208,41 +208,17 @@ agents:
 
 ## Quick Start
 
-Requires Python ≥ 3.10 and Node.js ≥ 18.
+Requires Python ≥ 3.10.
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-cd app/web && npm install && cd ..
-arf init my_workspace
-arf start --workspace my_workspace
+arf test_setup   # verify environment
+arf start        # launch service
 ```
 
 Browser opens at **http://localhost:5173** — enter your API key and start.
-
-### CLI Reference
-
-| Command | Purpose |
-|---------|---------|
-| `arf init <name>` | Create a new workspace |
-| `arf start` | Launch backend + frontend |
-| `arf web` | Backend only (FastAPI + SSE) |
-| `arf stop` | Stop running processes |
-| `arf reload` | Stop + restart |
-| `arf list [tools\|skills\|models]` | List registered resources |
-| `arf validate` | Check workspace resource integrity |
-| `arf clone <type> <name>` | Copy a system resource to workspace for customization |
-
-### Configuration
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ARF_SERVE_STATIC` | `1` | Serve frontend from backend |
-| `ARF_CORS_ORIGINS` | `localhost:5173` | CORS allowed origins |
-| `ARF_IDLE_TIMEOUT` | `600` | Session idle timeout (seconds) |
-
-Model config: `agent.yaml` — `base_url`, `api_key_env`, `model`, `context_window`, `temperature`, etc.
 
 <br/>
 
