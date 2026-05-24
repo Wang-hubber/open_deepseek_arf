@@ -5,32 +5,33 @@ ARF 将 Trace 作为一等框架能力。每次模型调用、工具执行、Hoo
 ## Architecture
 
 ```
-GraphEngine 每步操作
-    │
+GraphEngine._emit / _make_event
+    │  自动注入 data.round（用户交互轮次）
     ▼
 EventBus.emit(AgentEvent)
     │
     ├─ FileTraceStore → memory/sessions/{session_id}.json
+    │   (跳过 thinking_delta — model_call_end 已含完整响应)
     │
     ├─ UsageTracker → memory/usage.json (token 统计)
     │
     ├─ SSE stream → /api/trace/stream (实时前端推送)
     │
-    └─ 前端 TraceView → 瀑布流时间线
+    └─ 前端 TraceView → 按交互轮次分组的瀑布流
 ```
 
 ## 事件类型
 
-15 种结构化事件，每条事件包含 `type`、`data`、`turn`、`timestamp`、`interaction_round`：
+每条事件包含 `type`, `data`(含 `round`), `turn`, `timestamp`：
 
 | 事件 | 触发时机 | 关键字段 |
 |------|----------|----------|
 | `session_start` | 会话开始 | session_id |
-| `session_end` | 会话结束 / 取消 | session_id, reason |
+| `session_end` | 会话结束/取消 | session_id, reason |
 | `user_input` | 用户发送消息 | content, turn |
 | `model_call_start` | 模型调用开始 | model, turn |
 | `model_call_end` | 模型调用结束 | model, usage, content |
-| `thinking_delta` | 流式思考增量 | content, reasoning |
+| `thinking_delta` | 流式思考增量 | content, reasoning *(仅 SSE，不入磁盘)* |
 | `tool_call_start` | 工具调用开始 | tool_name, arguments |
 | `tool_call_end` | 工具调用结束 | tool_name, success, result, error, duration_ms |
 | `compaction_start` | 压缩开始 | msg_count, model |
@@ -39,77 +40,59 @@ EventBus.emit(AgentEvent)
 | `hook_end` | Hook 执行结束 | event, passed, failed |
 | `error` | 执行错误 | detail, code |
 
-## 存储
+## 交互轮次分组
 
-### FileTraceStore
+`round` 字段由引擎自动注入到每条事件（`_emit` 和 `_make_event` 均已覆盖）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。
 
-`arf/observability/file_trace.py` — JSON 文件持久化。
+```
+Round 0 (3 内部迭代)
+├── 用户输入: "我是谁"
+├── 迭代 1 · T7
+│   ├── 🤖 模型响应: "让我看看工作区文件"
+│   ├── 🔧 file_reader (list .)
+│   │   ├── 调用参数: {"operation": "list", "path": "."}
+│   │   └── 运行结果: {'items': [...], 'count': 5}
+│   ├── 🪝 工具前钩子 (pre_tool_exec)
+│   └── 🪝 工具后钩子 (post_tool_exec)
+├── 迭代 2 · T8
+│   └── 🤖 模型响应: "再读一个文件"
+├── 迭代 3 · T9
+│   └── ✅ 最终回复: "你是 ARF 框架的创造者王协"
+```
 
-- 每个 session 一个文件 `memory/sessions/{session_id}.json`
-- 每条事件一行 JSON record（append-only 语义，当前全量读写）
-- 订阅 EventBus，自动记录
-- 过滤 session_start/session_end，避免重复
+## 前端瀑布流
 
-### UsageTracker
+`/traces` 页面 — 三级层级展开：
 
-`arf/observability/usage_tracker.py` — Token 用量统计。
-
-- 订阅 `model_call_end` 事件，累加 token 计数
-- 持久化到 `memory/usage.json`
-- 提供 `summary()` 接口供 API 查询
+- **Round**（用户交互轮次）：折叠显示输入摘要 + token 统计
+- **Iteration**（内部迭代）：每次 model_call + 关联 tool calls + hooks
+- **Detail**：工具参数/结果、推理内容、Hook 退出码
 
 ## API
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/trace` | GET | 全量事件（所有 session） |
+| `/api/trace` | GET | 全量事件 |
 | `/api/traces/sessions` | GET | Session 列表 |
-| `/api/traces/sessions/{id}` | GET | Session 详情（含按 turn 分组） |
-| `/api/traces/summary` | GET | 统计摘要 |
+| `/api/traces/sessions/{id}` | GET | Session 详情 |
+| `/api/traces/summary` | GET | 统计（events, tokens, turns） |
+| `/api/traces/resource-stats` | GET | 工具/模型调用统计 |
 | `/api/traces/export` | GET | 原始 JSON 下载 |
 | `/api/trace/stream` | GET | SSE 实时推送 |
 
-## 前端瀑布流
+## 存储
 
-`/traces` 页面 — 时间比例瀑布流可视化。
+- **FileTraceStore**：`memory/sessions/{session_id}.json`，过滤 `thinking_delta`（75% 噪音消除），`session_start`/`session_end` 不入库
+- **UsageTracker**：`memory/usage.json`，累加 `model_call_end.usage.total_tokens`
 
-- **按交互轮次分组**：`interaction_round` 字段区分用户交互 vs 引擎内部迭代
-- **层级展开**：Turn → Iteration → ToolCall / Reasoning / Hook
-- **工具调用卡片**：参数、结果、耗时、成功/失败
-- **思考过程**：展开查看模型推理内容
-- **Hook 状态**：退出码徽章（0=通过 / 1=失败 / 2=注入）
+## 独立 Trace Viewer
 
-## 交互轮次 vs 内部迭代
-
-```
-用户交互轮次 (interaction_round: 3)
-├── 内部迭代 1 (turn: 15): model_call → tool_call(file_reader) → 继续
-├── 内部迭代 2 (turn: 16): model_call → tool_call(file_writer) → 继续
-└── 内部迭代 3 (turn: 17): model_call → 文本响应 → break
-```
-
-前端默认按轮次折叠显示，可展开查看内部迭代详情。
+`/trace-viewer` — 单文件 HTML，零依赖：折叠/展开、时间筛选、token 统计。
 
 ## 配置
 
 ```python
-# server.py 启动时自动挂载
-FileTraceStore(_agent.event_bus, dir="./memory/sessions")
-UsageTracker(event_bus)  # BaseAgent 自动创建
+FileTraceStore(_agent.event_bus, dir="./memory/sessions")  # server.py 启动时
+UsageTracker(event_bus)   # BaseAgent 自动创建
+archive.json              # 持久化 interaction_round，重启不丢失
 ```
-
-## 独立 Trace Viewer
-
-框架默认提供一个单文件 HTML trace 查看器，零依赖，浏览器直接打开：
-
-- **访问**：`/trace-viewer`（开发模式）
-- **能力**：按交互轮次折叠/展开、时间范围筛选、token 统计、工具调用详情
-- **数据源**：可从文件选择器加载 JSON，或从 API URL 拉取
-
-## 当前限制
-
-- JSON 文件存储（非 SQLite），大 session 全量加载
-- 无 trace 搜索/过滤
-- 无自动清理/归档
-- OpenTelemetry 导出为 stub
-- `trace_id`/`span_id` 字段已预留但未填充
