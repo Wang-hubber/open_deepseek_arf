@@ -47,38 +47,12 @@
 
 | 问题 | OS 方案 | 当前实现 | 演进方向 |
 |------|--------|----------|----------|
-| **内存管理（OOM + 持久化）** | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 [→](docs/compaction.md) [→](docs/memory-pipeline.md) | 语义单元检索；知识图谱索引 |
-| **模型路由与资源分配** | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型处理框架后台任务。每轮动态切换。 [→](docs/model-routing.md) | 硬件感知调度；弱模型协作 |
-| **工具沙箱与安全边界** | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。Hook 退出码契约（0/1/2）。权限 deny→ask→allow 管道。 [→](docs/tool-sandbox.md) | 每次调用独立沙箱；MCP 协议 |
-| **并发与死锁预防** | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 [→](docs/skill-pipeline.md) | 多 Agent DAG 分析；Worktree 隔离 |
-| **外部中断与用户干预** | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 [→](docs/interrupt.md) | 暂停/重定向向量；空闲超时 |
-| **Trace 与可观测性** | 系统监控 + 结构化事件日志 | 13 种事件类型通过 EventBus → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。资源统计 API。独立查看器。 [→](docs/trace.md) | SQLite Trace 数据库；OpenTelemetry 导出 |
-
-### 架构
-
-ARF 将**做什么**（控制）与**怎么做**（执行）解耦。文件系统是两者之间的桥梁。
-
-```
-┌─────────────────────────────────────────────────────┐
-│              控制层（声明式，What）                      │
-│  models/    tools/    skills/    agent.yaml          │
-│  （YAML——人类可读，Git 可追踪）                          │
-└──────────────────────┬──────────────────────────────┘
-                       │  文件系统自动发现
-┌──────────────────────┴──────────────────────────────┐
-│              执行层（How）                             │
-│  ResourceRegistry → UserAgent/SysAgent → GraphEngine │
-│  classify → compact → call_model → execute_tools     │
-│  FastAPI + SSE → Vue 3 前端                          │
-└─────────────────────────────────────────────────────┘
-```
-
-核心工程选择：
-
-- **双源资源体系**——框架随发布提供系统资源（只读），用户工作区按名称覆盖（读写）。升级永不会覆盖定制。
-- **自演进**——智能体在运行时创建并注册新工具和技能。一次对话产生永久能力。
-- **子进程 Hook**——六个生命周期事件，退出码契约（0=继续，1=阻断，2=注入）。独立进程运行，拥有独立的超时和故障域。
-- **热重载**——文件监听器检测资源变更，注册表无重启更新。
+| **内存管理（OOM + 持久化）** | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 [压缩 →](docs/compaction.md) [记忆 →](docs/memory-pipeline.md) | 语义单元检索；知识图谱索引 |
+| **模型路由与资源分配** | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型处理框架后台任务。每轮动态切换。 [模型路由 →](docs/model-routing.md) | 硬件感知调度；弱模型协作 |
+| **工具沙箱与安全边界** | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。Hook 退出码契约（0/1/2）。权限 deny→ask→allow 管道。 [沙箱 →](docs/tool-sandbox.md) | 每次调用独立沙箱；MCP 协议 |
+| **并发与死锁预防** | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 [Skill Pipeline →](docs/skill-pipeline.md) | 多 Agent DAG 分析；Worktree 隔离 |
+| **外部中断与用户干预** | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 [中断 →](docs/interrupt.md) | 暂停/重定向向量；空闲超时 |
+| **Trace 与可观测性** | 系统监控 + 结构化事件日志 | 13 种事件类型通过 EventBus → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。资源统计 API。独立查看器。 [Trace →](docs/trace.md) | SQLite Trace 数据库；OpenTelemetry 导出 |
 
 ### 框架 vs. 应用
 
@@ -118,7 +92,7 @@ skills:
 
 ### 渐进式披露
 
-九个内核工具（约 800 tokens）始终激活，其余按需通过 `resource_loader` 加载、执行、停用。智能体只为实际使用的能力付费。
+仅必备内核工具始终激活，其余按需通过 `resource_loader` 加载、执行、停用。智能体只为实际使用的能力付费。
 
 ### 记忆——自动抽取与检索
 

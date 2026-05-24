@@ -47,38 +47,12 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 
 | Problem | OS Solution | Current | Evolution |
 |---------|-------------|---------|-----------|
-| **Memory management (OOM + persistence)** | Virtual memory + file system | Token-aware sliding window compaction at 75% threshold. LLM summarization of evicted turns. Automatic fact/preference/decision extraction with dedup and semantic retrieval. Long tool outputs written to disk. [→](docs/compaction.md) [→](docs/memory-pipeline.md) | Semantic-unit retrieval; knowledge graph index |
-| **Model routing & resource allocation** | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model for framework background tasks. Per-turn dynamic switching. [→](docs/model-routing.md) | Hardware-aware dispatch; weak-model ensemble |
-| **Tool sandbox & security boundaries** | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Hook exit-code contract (0/1/2). Permission deny→ask→allow pipeline. [→](docs/tool-sandbox.md) | Per-invocation sandbox; MCP protocol |
-| **Concurrency & deadlock prevention** | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. [→](docs/skill-pipeline.md) | Multi-agent DAG analysis; worktree isolation |
-| **External interrupt & user intervention** | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. [→](docs/interrupt.md) | Pause/redirect vectors; idle timeout |
-| **Trace & observability** | System monitoring + structured event log | 13 event types via EventBus → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Resource stats API. Standalone viewer. [→](docs/trace.md) | SQLite trace DB; OpenTelemetry export |
-
-### Architecture
-
-ARF decouples **what** (control) from **how** (execution). The filesystem is the bridge.
-
-```
-┌─────────────────────────────────────────────────────┐
-│              CONTROL LAYER (declarative)              │
-│  models/    tools/    skills/    agent.yaml          │
-│  (YAML — human-readable, git-trackable)              │
-└──────────────────────┬──────────────────────────────┘
-                       │  filesystem discovery
-┌──────────────────────┴──────────────────────────────┐
-│              EXECUTION LAYER                          │
-│  ResourceRegistry → UserAgent/SysAgent → GraphEngine │
-│  classify → compact → call_model → execute_tools     │
-│  FastAPI + SSE → Vue 3 frontend                      │
-└─────────────────────────────────────────────────────┘
-```
-
-Core engineering choices:
-
-- **Dual-source resources** — framework ships system resources (read-only). User workspace overrides by name (read-write). Upgrades never clobber customizations.
-- **Self-evolution** — the agent creates and registers new tools and skills at runtime. A conversation produces a permanent capability.
-- **Subprocess hooks** — six lifecycle events, exit-code contract (0=continue, 1=block, 2=inject). Independent processes with timeout and failure domain.
-- **Hot reload** — file watcher detects resource changes; registry updates without restart.
+| **Memory management (OOM + persistence)** | Virtual memory + file system | Token-aware sliding window compaction at 75% threshold. LLM summarization of evicted turns. Automatic fact/preference/decision extraction with dedup and semantic retrieval. Long tool outputs written to disk. [Compaction →](docs/compaction.md) [Memory →](docs/memory-pipeline.md) | Semantic-unit retrieval; knowledge graph index |
+| **Model routing & resource allocation** | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model for framework background tasks. Per-turn dynamic switching. [Model Routing →](docs/model-routing.md) | Hardware-aware dispatch; weak-model ensemble |
+| **Tool sandbox & security boundaries** | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Hook exit-code contract (0/1/2). Permission deny→ask→allow pipeline. [Sandbox →](docs/tool-sandbox.md) | Per-invocation sandbox; MCP protocol |
+| **Concurrency & deadlock prevention** | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. [Skill Pipeline →](docs/skill-pipeline.md) | Multi-agent DAG analysis; worktree isolation |
+| **External interrupt & user intervention** | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. [Interrupt →](docs/interrupt.md) | Pause/redirect vectors; idle timeout |
+| **Trace & observability** | System monitoring + structured event log | 13 event types via EventBus → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Resource stats API. Standalone viewer. [Trace →](docs/trace.md) | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
 
@@ -118,7 +92,7 @@ skills:
 
 ### Progressive Disclosure
 
-Nine kernel tools (~800 tokens) are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. The agent pays only for what it actually uses.
+Only essential kernel tools are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. The agent pays only for what it actually uses.
 
 ### Memory — Automatic Extraction & Retrieval
 
