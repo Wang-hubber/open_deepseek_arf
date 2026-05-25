@@ -28,6 +28,8 @@ def _build_system_prompt(config: AgentConfig) -> str:
 
     Supports placeholders filled by engine at runtime:
       {{AGENT_NAME}}      → config.name
+      {{AGENT_ROLE}}      → config.role
+      {{AGENT_TASK}}      → config.task
       {{CRITICAL_RULES}}  → config.system_prompt.critical_rules
       {{INVENTORY}}       → kernel tools + skills (progressive disclosure)
     Falls back to auto-generated prompt if no template provided.
@@ -36,10 +38,14 @@ def _build_system_prompt(config: AgentConfig) -> str:
     template = sp.template.strip()
     if not template:
         # Fallback for configs without explicit system_prompt
-        template = (
-            f"You are {config.name}, an AI assistant.\n\n"
-            f"## Capabilities\n{config.description}\n\n"
-        )
+        lines = [f"You are {config.name}, an AI assistant."]
+        if config.role:
+            lines.append(f"Role: {config.role}")
+        if config.task:
+            lines.append(f"Task: {config.task}")
+        if config.description:
+            lines.append(f"\n## Capabilities\n{config.description}")
+        template = "\n".join(lines) + "\n\n"
 
     # Build inventory: kernel tools + discoverable skills (name + one-line desc)
     kernel_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "kernel"]
@@ -60,6 +66,8 @@ def _build_system_prompt(config: AgentConfig) -> str:
 
     prompt = template
     prompt = prompt.replace("{{AGENT_NAME}}", config.name)
+    prompt = prompt.replace("{{AGENT_ROLE}}", config.role or "")
+    prompt = prompt.replace("{{AGENT_TASK}}", config.task or "")
     prompt = prompt.replace("{{CRITICAL_RULES}}", sp.critical_rules or "")
     prompt = prompt.replace("{{INVENTORY}}", inventory)
 
@@ -79,7 +87,9 @@ class BaseAgent:
         tools_dir = override_protocols.pop("tools_dir", Path("./tools"))
         skills_dir = override_protocols.pop("skills_dir", Path("./skills"))
         models_dir = override_protocols.pop("models_dir", Path("./models"))
-        watch_enabled = override_protocols.pop("watch_enabled", True)
+        reload_cfg = adv.reload if adv else None
+        watch_enabled = override_protocols.pop("watch_enabled",
+            reload_cfg.watch if reload_cfg else True)
 
         from arf.resources.providers.skill_provider import SkillProvider
         from arf.resources.providers.model_provider import ModelProvider
@@ -106,7 +116,8 @@ class BaseAgent:
         # FileWatcher
         file_watcher = None
         if watch_enabled:
-            file_watcher = FileWatcher(poll_interval=5.0)
+            poll_interval = float(reload_cfg.poll_interval) if reload_cfg else 5.0
+            file_watcher = FileWatcher(poll_interval=poll_interval)
 
             async def _on_fs_change(changed_paths):
                 if hasattr(resource_resolver, "reload_dynamic"):

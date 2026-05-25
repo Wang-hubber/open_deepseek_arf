@@ -250,7 +250,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 |---|-------|----------|
 | 1 | (fixed 2026-05-25) `ResourceCache` wired into all three Providers | `arf/resources/cache.py` |
 | 2 | (fixed 2026-05-25) CLI commands missing `/api/` prefix — all 5 occurrences corrected | `app/arf_default_assistant/cli.py` |
-| 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`) | `arf/agent/config.py` |
+| 3 | `agent.yaml` fields parsed but never read: `role`/`task` wired into system prompt; `reload` wired; remaining `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` + multi-agent fields still pending | `arf/agent/config.py` |
 | 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
 | 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
@@ -258,7 +258,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 8 | (fixed 2026-05-25) `set_agent()` called twice in lifespan — duplicate removed | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
-| 11 | `ReloadConfig` never read — `BaseAgent` hardcodes `watch_enabled=True`, ignoring config | `arf/agent/base.py:82` |
+| 11 | (fixed 2026-05-25) `ReloadConfig` wired — `watch` and `poll_interval` now read by BaseAgent | `arf/agent/base.py`, `config_base.py` |
 | 12 | `EventType` Literal defines 15 types; `approval_required`/`approval_resolved` reserved for approval channel; `user_input` added to Literal | `arf/core/events.py` |
 | 13 | (fixed 2026-05-25) `CompactionConfig.strategy` — removed `"summarization"` from Literal | `arf/core/config_base.py` |
 | 14 | (fixed 2026-05-25) README concurrency description updated — agent loop sequential, tool calls parallel | README overview table |
@@ -272,7 +272,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | D1 | (fixed 2026-05-25) Event type count unified across docs; `user_input` added to EventType Literal | `arf/core/events.py`, `docs/trace.md`, README |
 | D2 | (fixed 2026-05-25) `ResourceCache` now wired — doc description matches actual architecture | `docs/resource-registry.md` |
 | D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
-| D4 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |
+| D4 | (fixed 2026-05-25) `ReloadConfig.watch` default now `True`, `poll_interval` added to model | `arf/core/config_base.py` |
 | D5 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |
 | D6 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
 | D7 | App README says "14 tools", actual filesystem has 15; `docs/app/tools.md` correctly says 15 | `app/arf_default_assistant/README.md` |

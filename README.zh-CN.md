@@ -250,7 +250,7 @@ python cli.py start    # 启动服务
 |---|------|------|
 | 1 | (已修复 2026-05-25) `ResourceCache` 已接入全部三个 Provider | `arf/resources/cache.py` |
 | 2 | (已修复 2026-05-25) CLI 命令缺少 `/api/` 前缀——全部 5 处已修正 | `app/arf_default_assistant/cli.py` |
-| 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`） | `arf/agent/config.py` |
+| 3 | `agent.yaml` 字段已解析但未读取：`role`/`task` 已接入 system prompt；`reload` 已接入；剩余 `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` 及多 Agent 字段仍未接线 | `arf/agent/config.py` |
 | 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
 | 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
@@ -258,7 +258,7 @@ python cli.py start    # 启动服务
 | 8 | (已修复 2026-05-25) `set_agent()` 在 lifespan 中重复调用——已删除 | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
-| 11 | `ReloadConfig` 从未被读取——`BaseAgent` 硬编码 `watch_enabled=True`，忽略配置 | `arf/agent/base.py:82` |
+| 11 | (已修复 2026-05-25) `ReloadConfig` 已接入——`watch` 和 `poll_interval` 由 BaseAgent 读取 | `arf/agent/base.py`、`config_base.py` |
 | 12 | `EventType` Literal 定义 15 种类型；`approval_required`/`approval_resolved` 为审批通道预留；`user_input` 已补入 Literal | `arf/core/events.py` |
 | 13 | (已修复 2026-05-25) `CompactionConfig.strategy` — 移除无用的 `"summarization"` 枚举值 | `arf/core/config_base.py` |
 | 14 | (已修复 2026-05-25) README 并发描述已修正——Agent 循环顺序，工具调用并行 | README 总览表 |
@@ -272,7 +272,7 @@ python cli.py start    # 启动服务
 | D1 | (已修复 2026-05-25) 事件类型数量统一为 15 种；`user_input` 已补入 EventType Literal | `arf/core/events.py`、`docs/trace.md`、README |
 | D2 | (已修复 2026-05-25) `ResourceCache` 已接入，文档描述与实际架构一致 | `docs/resource-registry.md` |
 | D3 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
-| D4 | `reload.watch` 文档说默认 `true` 但 Pydantic 模型定义 `watch: bool = False` | `docs/resource-registry.md`、`docs/app/advanced.md` |
+| D4 | (已修复 2026-05-25) `ReloadConfig.watch` 默认值改为 `True`，`poll_interval` 已补入模型 | `arf/core/config_base.py` |
 | D5 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
 | D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
 | D7 | App README 写"14 个工具"，实际文件系统 15 个；`docs/app/tools.md` 正确写了 15 | `app/arf_default_assistant/README.md` |

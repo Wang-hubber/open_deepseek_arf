@@ -112,7 +112,8 @@ class ToolRetrievalConfig(BaseModel):
 
 
 class ReloadConfig(BaseModel):
-    watch: bool = False
+    watch: bool = True
+    poll_interval: float = 5.0
     signals: list[str] = Field(default_factory=lambda: ["SIGHUP"])
 
 
