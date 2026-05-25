@@ -67,22 +67,27 @@ async def lifespan(app: FastAPI):
     _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
 
-    from lazy_persistence import load_archive
-    archive = load_archive(str(app_context.workspace_dir))
-    if archive:
-        state: AgentState = {
-            "session_id": "default",
-            "agent_name": cfg.name,
-            "messages": archive.get("messages", []),
-            "current_model": cfg.models[0].name if cfg.models else "default",
-            "current_turn": archive.get("current_turn", 0),
-            "context_summary": archive.get("context_summary", ""),
-            "tool_results": {},
-            "plan": None,
-            "metadata": archive.get("metadata", {}),
-        }
-        await _agent.state_store.put("default", state)
-        logger.info(f"Restored state: {len(state['messages'])} messages, turn {state['current_turn']}")
+    # Restore state from FileStateStore (primary persistence), fall back to archive.json
+    state = await _agent.state_store.get("default")
+    if state:
+        logger.info(f"Restored state: {len(state.get('messages', []))} messages, turn {state.get('current_turn', 0)}")
+    else:
+        from lazy_persistence import load_archive
+        archive = load_archive(str(app_context.workspace_dir))
+        if archive:
+            state = {
+                "session_id": "default",
+                "agent_name": cfg.name,
+                "messages": archive.get("messages", []),
+                "current_model": cfg.models[0].name if cfg.models else "default",
+                "current_turn": archive.get("current_turn", 0),
+                "context_summary": archive.get("context_summary", ""),
+                "tool_results": {},
+                "plan": None,
+                "metadata": archive.get("metadata", {}),
+            }
+            await _agent.state_store.put("default", state)
+            logger.info(f"Restored state from archive: {len(state['messages'])} messages")
 
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
@@ -387,24 +392,9 @@ async def config_register_deepseek(req: dict):
     _api_key_cache["checked_at"] = 0
 
     # Recreate agent so ModelAdapter picks up the new key from os.environ
-    from lazy_persistence import load_archive
-    archive = load_archive(str(app_context.workspace_dir))
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
-    if archive:
-        state: AgentState = {
-            "session_id": "default",
-            "agent_name": cfg.name,
-            "messages": archive.get("messages", []),
-            "current_model": cfg.models[0].name if cfg.models else "default",
-            "current_turn": archive.get("current_turn", 0),
-            "context_summary": archive.get("context_summary", ""),
-            "tool_results": {},
-            "plan": None,
-            "metadata": archive.get("metadata", {}),
-        }
-        await _agent.state_store.put("default", state)
     # Re-attach FileTraceStore to new agent's event bus
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
