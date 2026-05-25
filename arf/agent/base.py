@@ -7,7 +7,7 @@ from arf.engine.checkpoint import InMemoryStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
 from arf.engine.loop_strategies.planner import PromptBasedPlanner
 from arf.event_bus import InMemoryEventBus
-from arf.resources.resolver import DefaultToolResolver
+from arf.resources.resolver import ResourceResolver
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.memory.file_store import FileMemoryStore
 from arf.memory.recent_first import RecentFirstRetriever
@@ -77,8 +77,48 @@ class BaseAgent:
 
         # 2. Resources
         tools_dir = override_protocols.pop("tools_dir", Path("./tools"))
-        providers = override_protocols.pop("providers", [ToolProvider(tools_dir)])
-        tool_resolver = override_protocols.pop("tool_resolver", DefaultToolResolver(providers))
+        skills_dir = override_protocols.pop("skills_dir", Path("./skills"))
+        models_dir = override_protocols.pop("models_dir", Path("./models"))
+        watch_enabled = override_protocols.pop("watch_enabled", True)
+
+        from arf.resources.providers.skill_provider import SkillProvider
+        from arf.resources.providers.model_provider import ModelProvider
+        from arf.resources.file_watcher import FileWatcher
+
+        tool_provider = ToolProvider(tools_dir)
+        skill_provider = SkillProvider(skills_dir)
+        model_provider = ModelProvider(models_dir)
+
+        # Build override dict from agent.yaml for merge-on-read
+        overrides = {
+            "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
+            "skills": [s.model_dump(exclude_none=True) for s in (config.skills or [])],
+            "models": [m.model_dump(exclude_none=True) for m in (config.models or [])],
+        }
+
+        resource_resolver = override_protocols.pop("tool_resolver", ResourceResolver(
+            tool_provider=tool_provider,
+            skill_provider=skill_provider,
+            model_provider=model_provider,
+            agent_yaml_overrides=overrides,
+        ))
+
+        # FileWatcher
+        file_watcher = None
+        if watch_enabled:
+            file_watcher = FileWatcher(poll_interval=5.0)
+
+            async def _on_fs_change(changed_paths):
+                if hasattr(resource_resolver, "reload_dynamic"):
+                    await resource_resolver.reload_dynamic()
+
+            for d in [tools_dir, skills_dir, models_dir]:
+                path = Path(d)
+                if path.exists():
+                    file_watcher.add_watch(path, _on_fs_change)
+
+        self._file_watcher = file_watcher
+        self._resource_resolver = resource_resolver
 
         # 3. Memory — LLM-driven by default, falls back to rule-based
         mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
@@ -183,7 +223,7 @@ class BaseAgent:
         hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list))
 
         # 7. Tool executor
-        tool_executor = override_protocols.pop("tool_executor", ConcurrentToolExecutor(tool_resolver))
+        tool_executor = override_protocols.pop("tool_executor", ConcurrentToolExecutor(resource_resolver))
 
         # 8. Loop strategy
         ls_name = (adv.loop_strategy if adv else "react") if adv else "react"
@@ -228,7 +268,7 @@ class BaseAgent:
             loop_strategy=loop_strategy,
             state_store=state_store,
             tool_executor=tool_executor,
-            tool_resolver=tool_resolver,
+            tool_resolver=resource_resolver,
             transaction_ctx=transaction_ctx,
             planner=planner,
             memory_store=memory_store,
@@ -251,7 +291,7 @@ class BaseAgent:
         self._state_store = state_store
         self._event_bus = event_bus
         self._memory_store = memory_store
-        self._tool_resolver = tool_resolver
+        self._tool_resolver = resource_resolver
         # Auto-create usage tracker (framework default)
         from arf.observability.usage_tracker import UsageTracker
         self._usage_tracker = UsageTracker(event_bus)
