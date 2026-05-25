@@ -102,7 +102,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ARF Assistant", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:5173",   # Vite dev server
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -432,6 +436,16 @@ def _save_api_key(key: str) -> None:
         lines.append(f"DEEPSEEK_API_KEY={key}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+
+def _mask_api_key(key: str) -> str:
+    """Mask an API key for safe display — show only last 4 characters."""
+    if not key:
+        return ""
+    if len(key) <= 4:
+        return "****"
+    return key[:3] + "****" + key[-4:]
+
+
 @app.get("/api/config/status")
 async def config_status():
     cfg = _agent.config
@@ -518,10 +532,13 @@ async def get_model_config(name: str):
     """Return config for a specific model (used by DeepSeekConfigForm)."""
     for m in _agent.config.models:
         if m.name == name:
+            raw = os.environ.get(m.api_key_env, "")
+            masked = _mask_api_key(raw)
             return JSONResponse({"config": {
                 "model_name": m.model,
                 "base_url": m.api_base,
-                "api_key": os.environ.get(m.api_key_env, ""),
+                "api_key": masked,
+                "api_key_configured": bool(raw),
             }})
     return JSONResponse({"error": "not found"}, status_code=404)
 
