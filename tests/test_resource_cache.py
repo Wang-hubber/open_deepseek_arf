@@ -36,6 +36,30 @@ def test_frozen_kernel_rejects_writes():
         cache.kernel["b"] = {}
 
 
+def test_frozen_kernel_rejects_pop():
+    cache = ResourceCache()
+    cache.kernel["a"] = {"val": 1}
+    cache.freeze_kernel()
+    with pytest.raises(RuntimeError, match="kernel.*frozen"):
+        cache.kernel.pop("a")
+
+
+def test_frozen_kernel_rejects_popitem():
+    cache = ResourceCache()
+    cache.kernel["a"] = {"val": 1}
+    cache.freeze_kernel()
+    with pytest.raises(RuntimeError, match="kernel.*frozen"):
+        cache.kernel.popitem()
+
+
+def test_frozen_kernel_rejects_clear():
+    cache = ResourceCache()
+    cache.kernel["a"] = {"val": 1}
+    cache.freeze_kernel()
+    with pytest.raises(RuntimeError, match="kernel.*frozen"):
+        cache.kernel.clear()
+
+
 def test_invalidate_dynamic_clears_dynamic_only():
     cache = ResourceCache()
     cache.kernel["k"] = {"name": "k"}

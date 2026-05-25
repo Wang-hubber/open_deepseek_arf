@@ -22,6 +22,21 @@ class _FrozenDict(dict):
             raise RuntimeError("kernel cache is frozen — cannot modify after init")
         super().__delitem__(key)
 
+    def pop(self, key, *args):
+        if self._frozen:
+            raise RuntimeError("kernel cache is frozen — cannot modify after init")
+        return super().pop(key, *args)
+
+    def popitem(self):
+        if self._frozen:
+            raise RuntimeError("kernel cache is frozen — cannot modify after init")
+        return super().popitem()
+
+    def clear(self):
+        if self._frozen:
+            raise RuntimeError("kernel cache is frozen — cannot modify after init")
+        super().clear()
+
 
 class ResourceCache:
     """Split cache for framework resources.
