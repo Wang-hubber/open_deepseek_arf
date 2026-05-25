@@ -222,17 +222,18 @@ agents:
 
 ## Quick Start
 
-Requires Python ≥ 3.10.
+Requires Python ≥ 3.11.
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-arf test_setup   # verify environment
-arf start        # launch service
+cd app/arf_default_assistant
+python test_setup.py   # verify environment
+python cli.py start    # launch service
 ```
 
-Browser opens at **http://localhost:5173** — enter your API key and start.
+Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 <br/>
 
@@ -253,6 +254,7 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 | 5 | `TwoTierRouter.fallback_from()` implemented but engine never calls it on model failure | `arf/routing/`, `arf/engine/graph.py` |
 | 6 | `CompactionStrategy` protocol missing `window_size` and `summarize_tool_output` | `arf/core/protocols/compaction.py` |
 | 7 | Dual-source isolation (framework R/O, workspace R/W) is app-level convention, not framework-enforced | app `tools/*/function.py` |
+| 8 | `arf` CLI entry point missing (`arf/cli.py` doesn't exist); `arf-assistant` not installed (`app` not in `packages.include`) | `pyproject.toml`, `arf/cli.py` |
 
 ### Evolution Directions
 

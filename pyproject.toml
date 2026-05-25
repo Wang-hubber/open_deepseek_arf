@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arf"
 version = "0.1.0"
-description = "ARF — AI Agent Runtime Framework"
+description = "ARF — Agent Resources & Runtime Framework"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",

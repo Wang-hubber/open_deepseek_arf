@@ -222,17 +222,18 @@ agents:
 
 ## 快速开始
 
-需要 Python ≥ 3.10。
+需要 Python ≥ 3.11。
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
 cd open_deepseek_arf
 pip install -e .
-arf test_setup   # 验证环境
-arf start        # 启动服务
+cd app/arf_default_assistant
+python test_setup.py   # 验证环境
+python cli.py start    # 启动服务
 ```
 
-浏览器打开 **http://localhost:5173**，输入 API 密钥即可开始。
+浏览器打开 **http://127.0.0.1:8000**，输入 API 密钥即可开始。
 
 <br/>
 
@@ -253,6 +254,7 @@ arf start        # 启动服务
 | 5 | `TwoTierRouter.fallback_from()` 已实现但引擎未在模型失败时调用 | `arf/routing/`, `arf/engine/graph.py` |
 | 6 | `CompactionStrategy` protocol 缺少 `window_size` 和 `summarize_tool_output` | `arf/core/protocols/compaction.py` |
 | 7 | 双源隔离（框架只读/工作区读写）是应用层约定，非框架强制 | app 层 `tools/*/function.py` |
+| 8 | `arf` CLI 入口缺失（`arf/cli.py` 不存在），`arf-assistant` 未安装（`app` 不在 packages.include 中） | `pyproject.toml`, `arf/cli.py` |
 
 ### 演进方向
 
