@@ -106,7 +106,7 @@ class TwoTierRouter:
 
 ### 2.5 LLM 分类器
 
-分类器在 `base.py:203-216` 定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）：
+分类器在 `base.py:277-290` 定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）：
 
 ```python
 async def _classify(query: str) -> str:
@@ -203,6 +203,54 @@ advanced:
 |------|------|----------|
 | `two_tier` | LLM 分类器动态判断，每次 turn 可切换模型 | 主 Agent，面向用户任务 |
 | `static` | 始终使用 `default`，不分类 | SysAgent，所有任务都是确定性系统操作 |
+
+### 2.13 System Model — 框架后台任务的专用模型
+
+框架运行时会触发一系列后台操作——记忆抽取、记忆检索、上下文压缩、路由分类。这些操作对质量要求不高（分类错了只是多用一次 deep，摘要差点也能继续对话），但对延迟和成本敏感（每次 turn 都要跑）。如果走用户模型通道，这些隐形消耗会大幅推高 token 用量。
+
+ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**，称为 system model。它与用户任务模型共享同一个适配器池，不额外增加 API 连接。
+
+**定义流程**（`base.py:156-183`）：
+
+```
+agent.yaml                    config.models              ModelAdapter
+advanced.memory.model: quick → lookup by name → quick → _system_model_call
+                                     ↓ 找不到
+                              config.models[0]（回退）
+                                     ↓ 为空
+                              None → _system_model_call = None
+```
+
+- 从 `config.models` 中查找 `advanced.memory.model` 指定名字的模型（如 `quick`）
+- 找不到则回退到 `config.models[0]`
+- 用低温度（0.3）、关闭 thinking、`max_tokens=1024` 创建适配器
+- 最终产物是一个 `_system_model_call(prompt: str) -> str` 闭包——输入简短 prompt，返回纯文本
+
+**四个消费者及其退化行为**：
+
+| 功能 | 有 system_model | 无 system_model（退化） |
+|------|----------------|----------------------|
+| **记忆写入** | `LLMMemoryWriter` — LLM 从最近 4 条消息抽取事实/偏好/决策，去重后写入 `memory.json` | `RuleBasedMemoryWriter` — 中文/英文关键词 → category 映射，按 content 字符串去重 |
+| **记忆检索** | `LLMMemoryRetriever` — LLM 从记忆索引中筛选 top_k 条相关记忆注入 system prompt | `RecentFirstRetriever` — 按时间倒序返回最近记忆，不做语义匹配 |
+| **压缩摘要** | `_summarize` — LLM 将旧轮次压缩为结构化摘要（7 个维度），追加到 `context_summary` | `_summarizer = None` — 旧消息直接丢弃，不生成摘要 |
+| **路由分类** | `_classify` — LLM 判断 query 复杂度（medium / complex） | `classify()` 始终返回 `"medium"` — 全部走 quick 模型 |
+
+所有退化都是静默的——不报错、不阻塞主流程。框架通过 `if _system_model_call:` 模式检查是否存在，不存在时回退到确定性规则方案。
+
+**配置**：
+
+```yaml
+advanced:
+  memory:
+    model: quick            # 指定 system model，须与 models/ 中某个模型同名
+    temperature: 0.3        # 低温度减少随机性，降低 token 消耗
+    thinking_enabled: false # 后台任务不需要深度推理
+```
+
+**设计约束**：
+- system model 与用户模型共享同一个 API key（`api_key_env`），不单独认证
+- system model 在 BaseAgent 初始化时创建一次，生命周期与 Agent 相同
+- 不存在时不报错——框架静默退化到规则方案，面向无 LLM 环境
 
 ---
 
