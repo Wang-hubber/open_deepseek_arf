@@ -47,12 +47,12 @@
 
 | 问题 | OS 方案 | 当前实现 | 演进方向 |
 |------|--------|----------|----------|
-| **内存管理（OOM + 持久化）** | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 [压缩 →](docs/compaction.md) [记忆 →](docs/memory-pipeline.md) | 语义单元检索；知识图谱索引 |
-| **多模型调度与 KV cache** | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型（v4-flash with no thinking）处理框架后台任务。KV cache 由推理侧处理，框架有意不介入（DeepSeek 缓存机制已很强）。 [模型路由 →](docs/model-routing.md) | 模型硬件化；内核级专用小模型固化为硬件（LLM as hardware） |
-| **工具沙箱与安全边界** | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。Hook 退出码契约（0/1/2）。权限 deny→ask→allow 管道。 [沙箱 →](docs/tool-sandbox.md) | 每次调用独立沙箱；MCP 协议 |
-| **并发与死锁预防** | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 [Skill Pipeline →](docs/skill-pipeline.md) | 多 Agent DAG 分析；Worktree 隔离 |
-| **外部中断与用户干预** | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 [中断 →](docs/interrupt.md) | 暂停/重定向向量；空闲超时 |
-| **Trace 与可观测性** | 系统监控 + 结构化事件日志 | 13 种事件类型通过 EventBus → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。资源统计 API。独立查看器。 [Trace →](docs/trace.md) | SQLite Trace 数据库；OpenTelemetry 导出 |
+| **[内存管理 →](docs/memory-management.md)**<br>OOM + 持久化 | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 | 语义单元检索；知识图谱索引 |
+| **[多模型调度 →](docs/model-routing.md)**<br>KV cache | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型（v4-flash with no thinking）处理框架后台任务。KV cache 由推理侧处理，框架有意不介入。 | 模型硬件化；LLM as hardware |
+| **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。权限 deny→ask→allow 管道。 | 每次调用独立沙箱；MCP 协议 |
+| **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 | 多 Agent DAG 分析；Worktree 隔离 |
+| **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
+| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | 13 种事件类型通过 EventBus → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 
 ### 框架 vs. 应用
 
@@ -109,7 +109,7 @@ advanced:
     thinking_enabled: false
 ```
 
-[设计文档 →](docs/memory-pipeline.md)
+[设计文档 →](docs/memory-management.md)
 
 ### 压缩——Token 感知的上下文管理
 
@@ -122,7 +122,7 @@ advanced:
     threshold: 0.75
 ```
 
-[设计文档 →](docs/compaction.md)
+[设计文档 →](docs/memory-management.md)
 
 ### 模型路由——快慢分流
 
@@ -219,6 +219,33 @@ arf start        # 启动服务
 ```
 
 浏览器打开 **http://localhost:5173**，输入 API 密钥即可开始。
+
+<br/>
+
+## TODO
+
+### 待修复
+
+| # | 问题 | 位置 |
+|---|------|------|
+| 1 | 工具默认并行执行（`strategy="parallel"`），表中"顺序执行"不准确 | README, `ConcurrentToolExecutor` |
+| 2 | Hook 使用 `asyncio.gather` 协程并发，非"线程池" | README, `SubprocessHookRunner` |
+| 3 | `SequentialScheduler` 已定义但从未被使用 | `arf/concurrency/sequential.py` |
+| 4 | `SandboxConfig(allow_escape, writable_dirs)` 未接入任何 guard | `arf/guardrails/`, `arf/sandbox/` |
+| 5 | `TwoTierRouter.fallback_from()` 已实现但引擎未在模型失败时调用 | `arf/routing/`, `arf/engine/graph.py` |
+| 6 | `CompactionStrategy` protocol 缺少 `window_size` 和 `summarize_tool_output` | `arf/core/protocols/compaction.py` |
+| 7 | 双源隔离（框架只读/工作区读写）是应用层约定，非框架强制 | app 层 `tools/*/function.py` |
+
+### 演进方向
+
+| 模块 | 方向 |
+|------|------|
+| 内存管理 | 语义单元检索；知识图谱索引；主动预取；冷热分离；记忆衰减 |
+| 多模型调度 | 三级分类器（light/medium/complex）；连续负载跟踪；模型硬件化 |
+| 工具沙箱 | per-invocation 独立沙箱；MCP 协议集成；审批通道；递归参数检查 |
+| 并发 | 多 Agent DAG 调度；Worktree 隔离；并发度动态调整；事务性文件操作 |
+| 中断 | 暂停/恢复；持久化检查点；空闲超时；中断优先级 |
+| Trace | SQLite Trace 数据库；OpenTelemetry 导出；实时告警；性能剖面 |
 
 <br/>
 

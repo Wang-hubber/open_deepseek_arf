@@ -47,12 +47,12 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 
 | Problem | OS Solution | Current | Evolution |
 |---------|-------------|---------|-----------|
-| **Memory management (OOM + persistence)** | Virtual memory + file system | Token-aware sliding window compaction at 75% threshold. LLM summarization of evicted turns. Automatic fact/preference/decision extraction with dedup and semantic retrieval. Long tool outputs written to disk. [Compaction →](docs/compaction.md) [Memory →](docs/memory-pipeline.md) | Semantic-unit retrieval; knowledge graph index |
-| **Multi-model scheduling & KV cache** | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model (v4-flash with no thinking) for framework background tasks. KV cache is handled by the inference side — the framework intentionally stays out (DeepSeek's caching is already strong). [Model Routing →](docs/model-routing.md) | Model-hardware codification; kernel-level specialized small models fixed into silicon (LLM as hardware) |
-| **Tool sandbox & security boundaries** | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Hook exit-code contract (0/1/2). Permission deny→ask→allow pipeline. [Sandbox →](docs/tool-sandbox.md) | Per-invocation sandbox; MCP protocol |
-| **Concurrency & deadlock prevention** | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. [Skill Pipeline →](docs/skill-pipeline.md) | Multi-agent DAG analysis; worktree isolation |
-| **External interrupt & user intervention** | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. [Interrupt →](docs/interrupt.md) | Pause/redirect vectors; idle timeout |
-| **Trace & observability** | System monitoring + structured event log | 13 event types via EventBus → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Resource stats API. Standalone viewer. [Trace →](docs/trace.md) | SQLite trace DB; OpenTelemetry export |
+| **[Memory →](docs/memory-management.md)**<br>OOM + persistence | Virtual memory + file system | Token-aware sliding window compaction at 75% threshold. LLM summarization of evicted turns. Automatic fact/preference/decision extraction with dedup and semantic retrieval. Long tool outputs written to disk. | Semantic-unit retrieval; knowledge graph index |
+| **[Model Routing →](docs/model-routing.md)**<br>KV cache | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model (v4-flash with no thinking) for framework background tasks. KV cache is handled by the inference side. | Model-hardware codification; LLM as hardware |
+| **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Permission deny→ask→allow pipeline. | Per-invocation sandbox; MCP protocol |
+| **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. | Multi-agent DAG analysis; worktree isolation |
+| **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
+| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 13 event types via EventBus → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
 
@@ -109,7 +109,7 @@ advanced:
     thinking_enabled: false
 ```
 
-[Design doc →](docs/memory-pipeline.md)
+[Design doc →](docs/memory-management.md)
 
 ### Compaction — Token-Aware Context Management
 
@@ -122,7 +122,7 @@ advanced:
     threshold: 0.75
 ```
 
-[Design doc →](docs/compaction.md)
+[Design doc →](docs/memory-management.md)
 
 ### Model Routing — Fast/Slow Dispatch
 
@@ -219,6 +219,33 @@ arf start        # launch service
 ```
 
 Browser opens at **http://localhost:5173** — enter your API key and start.
+
+<br/>
+
+## TODO
+
+### Pending Fixes
+
+| # | Issue | Location |
+|---|-------|----------|
+| 1 | Tools execute in parallel by default (`strategy="parallel"`), not "sequential" | README, `ConcurrentToolExecutor` |
+| 2 | Hooks use `asyncio.gather` (coroutines), not "thread pool" | README, `SubprocessHookRunner` |
+| 3 | `SequentialScheduler` defined but never used | `arf/concurrency/sequential.py` |
+| 4 | `SandboxConfig(allow_escape, writable_dirs)` not wired into any guard | `arf/guardrails/`, `arf/sandbox/` |
+| 5 | `TwoTierRouter.fallback_from()` implemented but engine never calls it on model failure | `arf/routing/`, `arf/engine/graph.py` |
+| 6 | `CompactionStrategy` protocol missing `window_size` and `summarize_tool_output` | `arf/core/protocols/compaction.py` |
+| 7 | Dual-source isolation (framework R/O, workspace R/W) is app-level convention, not framework-enforced | app `tools/*/function.py` |
+
+### Evolution Directions
+
+| Module | Directions |
+|--------|------------|
+| Memory | Semantic-unit retrieval; knowledge graph index; prefetch; hot/cold tiering; memory decay |
+| Model Routing | Three-tier classifier (light/medium/complex); continuous load tracking; model-as-hardware |
+| Tool Sandbox | Per-invocation sandbox; MCP protocol; approval channel; recursive param checking |
+| Concurrency | Multi-agent DAG scheduling; worktree isolation; dynamic concurrency; transactional file ops |
+| Interrupt | Pause/resume; persistent checkpoints; idle timeout; interrupt priority |
+| Trace | SQLite trace DB; OpenTelemetry export; real-time alerts; performance profiling |
 
 <br/>
 

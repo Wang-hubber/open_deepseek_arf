@@ -84,39 +84,39 @@ class BaseAgent:
         mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
         memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_cfg.workspace if mem_cfg else "./memory"))
 
-        # Build a dedicated cheap model adapter for memory operations
-        _mem_model_call = None
+        # Build a dedicated cheap model adapter for system background tasks
+        _system_model_call = None
         if mem_cfg and mem_cfg.writer == "llm":
             import os as _os2, asyncio as _aio2
-            from arf.core.model_adapter import ModelAdapter as _MemAdapter
-            mem_model_cfg = next((m for m in config.models if m.name == mem_cfg.model), config.models[0])
-            _mem_adapter = _MemAdapter({
-                "base_url": mem_model_cfg.api_base,
-                "api_key": _os2.environ.get(mem_model_cfg.api_key_env, ""),
-                "model_name": mem_model_cfg.model,
+            from arf.core.model_adapter import ModelAdapter as _SystemAdapter
+            system_model_cfg = next((m for m in config.models if m.name == mem_cfg.model), config.models[0])
+            _system_adapter = _SystemAdapter({
+                "base_url": system_model_cfg.api_base,
+                "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
+                "model_name": system_model_cfg.model,
                 "temperature": mem_cfg.temperature,
                 "thinking_enabled": str(mem_cfg.thinking_enabled).lower(),
                 "max_tokens": 1024,
             })
-            async def _mem_model_call(prompt: str) -> str:
-                """Call the memory model with a simple prompt, return text content."""
+            async def _system_model_call(prompt: str) -> str:
+                """Call the system model with a simple prompt, return text content."""
                 msg = await _aio2.to_thread(
-                    _mem_adapter.chat_complete,
+                    _system_adapter.chat_complete,
                     [{"role": "user", "content": prompt}],
                     tools=None,
                     max_tokens=1024,
                 )
                 return msg.content or ""
 
-        if mem_cfg and mem_cfg.writer == "llm" and _mem_model_call:
+        if mem_cfg and mem_cfg.writer == "llm" and _system_model_call:
             from arf.memory.llm_writer import LLMMemoryWriter
-            memory_writer = override_protocols.pop("memory_writer", LLMMemoryWriter(_mem_model_call))
+            memory_writer = override_protocols.pop("memory_writer", LLMMemoryWriter(_system_model_call))
         else:
             memory_writer = override_protocols.pop("memory_writer", RuleBasedMemoryWriter())
 
-        if mem_cfg and mem_cfg.retriever == "llm" and _mem_model_call:
+        if mem_cfg and mem_cfg.retriever == "llm" and _system_model_call:
             from arf.memory.llm_retriever import LLMMemoryRetriever
-            memory_retriever = override_protocols.pop("memory_retriever", LLMMemoryRetriever(_mem_model_call))
+            memory_retriever = override_protocols.pop("memory_retriever", LLMMemoryRetriever(_system_model_call))
         else:
             memory_retriever = override_protocols.pop("memory_retriever", RecentFirstRetriever())
 
@@ -126,7 +126,7 @@ class BaseAgent:
         if cmp_cfg and cmp_cfg.strategy != "none" and not compaction:
             from arf.compaction.sliding_window import SlidingWindowCompactor
             _summarizer = None
-            if _mem_model_call:
+            if _system_model_call:
                 async def _summarize(msgs: list[dict]) -> str:
                     text = "\n".join(
                         f"[{m.get('role', '?')}] {m.get('content', '')[:300]}"
@@ -152,7 +152,7 @@ class BaseAgent:
                         "Summary:"
                     ).replace("{text}", text)
                     try:
-                        return (await _mem_model_call(prompt)).strip()
+                        return (await _system_model_call(prompt)).strip()
                     except Exception:
                         return "(conversation summary unavailable)"
                 _summarizer = _summarize
@@ -199,7 +199,7 @@ class BaseAgent:
         model_router = None
         if adv and adv.routing and len(config.models) > 1:
             from arf.routing.two_tier import TwoTierRouter
-            if _mem_model_call:
+            if _system_model_call:
                 async def _classify(query: str) -> str:
                     prompt = (
                         "Classify this task as 'medium' or 'complex'. "
@@ -209,7 +209,7 @@ class BaseAgent:
                         f"Task: {query[:300]}"
                     )
                     try:
-                        result = (await _mem_model_call(prompt)).strip().lower()
+                        result = (await _system_model_call(prompt)).strip().lower()
                         return result if result in ("medium", "complex") else "medium"
                     except Exception:
                         return "medium"
