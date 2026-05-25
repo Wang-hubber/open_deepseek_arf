@@ -63,6 +63,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 |---------|-------------|---------|-----------|
 | **[Memory →](docs/memory-management.md)**<br>OOM + persistence | Virtual memory + file system | Token-aware sliding window compaction at 75% threshold. LLM summarization of evicted turns. Automatic fact/preference/decision extraction with dedup and semantic retrieval. Long tool outputs written to disk. | Semantic-unit retrieval; knowledge graph index |
 | **[Model Routing →](docs/model-routing.md)**<br>KV cache | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model (v4-flash with no thinking) for framework background tasks. KV cache is handled by the inference side. | Model-hardware codification; LLM as hardware |
+| **[Resource Discovery →](docs/resource-registry.md)**<br>Registration & lifecycle | Registry + service manager (systemd/udev/launchd) | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. Kernel/dynamic split with freeze-once semantics. FileWatcher inotify+polling dual-track hot reload. ResourceResolver override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Permission deny→ask→allow pipeline. | Per-invocation sandbox; MCP protocol |
 | **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. | Multi-agent DAG analysis; worktree isolation |
 | **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
@@ -72,7 +73,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 
 | Layer | Scope | Examples |
 |-------|-------|----------|
-| **Framework** (`arf/`) | Conventions, engine, resource system, trace infrastructure | `GraphEngine`, `ResourceRegistry`, dual-source loading, hook exit-code contract, `EventBus`, `FileTraceStore` |
+| **Framework** (`arf/`) | Conventions, engine, resource system, trace infrastructure | `GraphEngine`, `ResourceResolver`, three Providers (Tool/Skill/Model), `ResourceCache`, `FileWatcher`, dual-source loading, hook exit-code contract, `EventBus`, `FileTraceStore` |
 | **Reference App** (`app/`) | A concrete agent built on the framework | Vue 3 frontend, model routing, `session_archiver`, memory pipeline, sandbox, undo |
 | **User workspace** | What you build on top | Model configs, custom tools and skills, `agent.yaml` |
 
@@ -265,6 +266,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | Memory | [memory-management.md](docs/memory-management.md) | Semantic-unit retrieval · knowledge graph index · prefetch · hot/cold tiering · memory decay |
 | Model Routing | [model-routing.md](docs/model-routing.md) | Three-tier classifier · continuous load tracking · model-as-hardware |
 | Tool Sandbox | [tool-sandbox.md](docs/tool-sandbox.md) | Per-invocation sandbox · MCP protocol · approval channel · recursive param checking |
+| Resource Discovery | [resource-registry.md](docs/resource-registry.md) | Hierarchical override merge · MCP multi-source · cross-reference validation · resource versioning |
 | Concurrency | [skill-pipeline.md](docs/skill-pipeline.md) | Multi-agent DAG scheduling · worktree isolation · transactional file ops |
 | Interrupt | [interrupt.md](docs/interrupt.md) | Pause/resume · persistent checkpoints · idle timeout · interrupt priority |
 | Trace | [trace.md](docs/trace.md) | SQLite trace DB · OpenTelemetry export · real-time alerts · performance profiling |

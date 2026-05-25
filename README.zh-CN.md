@@ -63,6 +63,7 @@
 |------|--------|----------|----------|
 | **[内存管理 →](docs/memory-management.md)**<br>OOM + 持久化 | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 | 语义单元检索；知识图谱索引 |
 | **[多模型调度 →](docs/model-routing.md)**<br>KV cache | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型（v4-flash with no thinking）处理框架后台任务。KV cache 由推理侧处理，框架有意不介入。 | 模型硬件化；LLM as hardware |
+| **[资源注册与发现 →](docs/resource-registry.md)**<br>注册与生命周期 | 注册表 + 服务管理器（systemd/udev/launchd） | 约定优于配置：每工具 `tool.yaml`+`function.py`，`skills/*.yaml`，`models/*.yaml`。内核/动态分离 + 冻结只读。FileWatcher inotify+轮询双轨自动热加载。ResourceResolver 覆盖合并 + `generate_config()` dump。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。权限 deny→ask→allow 管道。 | 每次调用独立沙箱；MCP 协议 |
 | **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 | 多 Agent DAG 分析；Worktree 隔离 |
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
@@ -72,7 +73,7 @@
 
 | 层级 | 范畴 | 举例 |
 |------|------|------|
-| **框架**（`arf/`） | 约定、引擎、资源系统、Trace 基础设施 | `GraphEngine`、`ResourceRegistry`、双源资源加载、Hook 退出码契约、`EventBus`、`FileTraceStore` |
+| **框架**（`arf/`） | 约定、引擎、资源系统、Trace 基础设施 | `GraphEngine`、`ResourceResolver`、三个 Provider（Tool/Skill/Model）、`ResourceCache`、`FileWatcher`、双源资源加载、Hook 退出码契约、`EventBus`、`FileTraceStore` |
 | **参考应用**（`app/`） | 基于框架构建的具体智能体 | Vue 3 前端、模型路由、`session_archiver`、记忆管道、沙箱、undo |
 | **用户工作区** | 你在框架之上的构建 | 模型配置、自定义工具和技能、`agent.yaml` |
 
@@ -265,6 +266,7 @@ python cli.py start    # 启动服务
 | 内存管理 | [memory-management.md](docs/memory-management.md) | 语义单元检索 · 知识图谱索引 · 主动预取 · 冷热分离 · 记忆衰减 |
 | 多模型调度 | [model-routing.md](docs/model-routing.md) | 三级分类器 · 连续负载跟踪 · 模型硬件化 |
 | 工具沙箱 | [tool-sandbox.md](docs/tool-sandbox.md) | 独立沙箱 · MCP 协议 · 审批通道 · 递归参数检查 |
+| 资源注册与发现 | [resource-registry.md](docs/resource-registry.md) | 层次化覆盖合并 · MCP 多源 Provider · 交叉引用验证 · 资源版本控制 |
 | 并发 | [skill-pipeline.md](docs/skill-pipeline.md) | 多 Agent DAG 调度 · Worktree 隔离 · 事务性文件操作 |
 | 中断 | [interrupt.md](docs/interrupt.md) | 暂停/恢复 · 持久化检查点 · 空闲超时 · 中断优先级 |
 | Trace | [trace.md](docs/trace.md) | SQLite 数据库 · OpenTelemetry 导出 · 实时告警 · 性能剖面 |
