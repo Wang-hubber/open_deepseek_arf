@@ -3,7 +3,7 @@ from pathlib import Path
 from arf.agent.config import AgentConfig, AdvancedConfig
 from arf.engine.graph import GraphEngine
 from arf.engine.loop_strategies.react import ReActStrategy
-from arf.engine.checkpoint import InMemoryStateStore
+from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
 from arf.engine.loop_strategies.planner import PromptBasedPlanner
 from arf.event_bus import InMemoryEventBus
@@ -81,7 +81,7 @@ class BaseAgent:
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        state_store = override_protocols.pop("state_store", InMemoryStateStore())
+        state_store = override_protocols.pop("state_store", FileStateStore())
 
         # 2. Resources
         tools_dir = override_protocols.pop("tools_dir", Path("./tools"))

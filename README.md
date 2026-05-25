@@ -251,7 +251,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 1 | (fixed 2026-05-25) `ResourceCache` wired into all three Providers | `arf/resources/cache.py` |
 | 2 | (fixed 2026-05-25) CLI commands missing `/api/` prefix — all 5 occurrences corrected | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` fields parsed but never read: `role`/`task` wired into system prompt; `reload` wired; remaining `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` + multi-agent fields still pending | `arf/agent/config.py` |
-| 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
+| 4 | (fixed 2026-05-25) `FileStateStore` added as default; app saves removed | `arf/engine/checkpoint.py` |
 | 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
 | 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
 | 7 | (closed — orphan tools are filesystem source-of-truth, agent.yaml is override layer only) | `app/arf_default_assistant/tools/` |
@@ -301,7 +301,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 | # | Issue | Current (App) | Target (Framework) |
 |---|-------|---------------|-------------------|
-| B1 | No disk state store | `lazy_persistence.py` serializes to `archive.json` | `FileStateStore` implementing `StateStore` |
+| B1 | (fixed 2026-05-25) Disk state store | `FileStateStore` as default, JSON per session | ✅ Done |
 | B2 | FileWatcher lifecycle manual | `server.py` calls `_agent._file_watcher.start/stop` | Framework auto-starts with engine |
 | B3 | API key management | `server.py` `.env` parser, validator, cache, register endpoint | Framework key store + validation |
 | B4 | Session management | `server.py` `_active_cancel_events`, session stubs | Framework session manager |

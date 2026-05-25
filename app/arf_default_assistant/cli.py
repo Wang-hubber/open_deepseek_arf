@@ -94,11 +94,6 @@ def cmd_start(args):
 def _kill_port(port: int):
     """Kill process on the given port."""
     try:
-        import httpx
-        httpx.post(f"http://127.0.0.1:{port}/api/save", timeout=5)
-    except Exception:
-        pass
-    try:
         import subprocess
         result = subprocess.run(
             ["lsof", "-ti", f":{port}"],
@@ -117,8 +112,7 @@ def _kill_port(port: int):
 
 
 def cmd_stop(args):
-    """Stop the server and save state."""
-    _httpx_post("/api/save")
+    """Stop the server."""
     _kill_port(8000)
     print("Server stopped.")
 

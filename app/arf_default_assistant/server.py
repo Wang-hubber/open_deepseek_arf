@@ -96,9 +96,6 @@ async def lifespan(app: FastAPI):
     if _agent and _agent._file_watcher:
         await _agent._file_watcher.stop()
     logger.info("Shutting down...")
-    from lazy_persistence import save_archive_async
-    if _agent:
-        await save_archive_async(_agent)
     logger.info("Goodbye")
 
 
@@ -178,9 +175,6 @@ async def _sse_chat(message: str):
                 last = m.get("content", "")
                 break
         yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
-        # Persist state immediately so refresh continues conversation
-        from lazy_persistence import save_archive_async
-        await save_archive_async(_agent)
     except asyncio.CancelledError:
         # Client disconnected — cancel the agent
         cancel_evt.set()
@@ -391,9 +385,7 @@ async def config_register_deepseek(req: dict):
     _api_key_cache["checked_at"] = 0
 
     # Recreate agent so ModelAdapter picks up the new key from os.environ
-    from lazy_persistence import save_archive_async, load_archive
-    if _agent:
-        await save_archive_async(_agent)
+    from lazy_persistence import load_archive
     archive = load_archive()
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
@@ -596,12 +588,6 @@ async def list_resources(res_type: str):
     return JSONResponse({"type": res_type, "items": items, "count": len(items)})
 
 
-@app.post("/api/save")
-async def manual_save():
-    from lazy_persistence import save_archive_async
-    await save_archive_async(_agent)
-    return JSONResponse({"status": "saved"})
-
 
 @app.get("/api/archive")
 async def download_archive():
@@ -615,9 +601,6 @@ async def download_archive():
 async def reload_config():
     """Reload agent config and reinitialize the agent."""
     global _agent
-    if _agent:
-        from lazy_persistence import save_archive_async
-        await save_archive_async(_agent)
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
     set_agent(_agent)

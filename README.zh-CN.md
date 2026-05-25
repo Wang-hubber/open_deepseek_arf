@@ -251,7 +251,7 @@ python cli.py start    # 启动服务
 | 1 | (已修复 2026-05-25) `ResourceCache` 已接入全部三个 Provider | `arf/resources/cache.py` |
 | 2 | (已修复 2026-05-25) CLI 命令缺少 `/api/` 前缀——全部 5 处已修正 | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` 字段已解析但未读取：`role`/`task` 已接入 system prompt；`reload` 已接入；剩余 `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` 及多 Agent 字段仍未接线 | `arf/agent/config.py` |
-| 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
+| 4 | (已修复 2026-05-25) `FileStateStore` 已添加为默认实现；app 手动保存已移除 | `arf/engine/checkpoint.py` |
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
 | 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
 | 7 | (已关闭 —— 孤儿工具属约定优于配置，文件系统即真相源，agent.yaml 仅作覆盖层) | `app/arf_default_assistant/tools/` |
@@ -301,7 +301,7 @@ python cli.py start    # 启动服务
 
 | # | 问题 | 当前（App 层） | 目标（框架层） |
 |---|------|---------------|---------------|
-| B1 | 无磁盘状态存储 | `lazy_persistence.py` 序列化到 `archive.json` | `FileStateStore` 实现 `StateStore` |
+| B1 | (已修复 2026-05-25) 磁盘状态存储 | `FileStateStore` 默认实现，每 session JSON 文件 | ✅ 完成 |
 | B2 | FileWatcher 生命周期手动管理 | `server.py` 调用 `_agent._file_watcher.start/stop` | 框架随引擎自动启动 |
 | B3 | API 密钥管理 | `server.py` `.env` 解析、验证、缓存、注册端点 | 框架密钥存储 + 验证 |
 | B4 | Session 管理 | `server.py` `_active_cancel_events`、session stubs | 框架 Session 管理器 |
