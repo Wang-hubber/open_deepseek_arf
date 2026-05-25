@@ -67,7 +67,6 @@ async def lifespan(app: FastAPI):
     cfg = AgentConfig.from_yaml("agent.yaml")
     _agent = create_agent(config=cfg)
     set_agent(_agent)
-    set_agent(_agent)
 
     from lazy_persistence import load_archive
     archive = load_archive()

@@ -255,7 +255,7 @@ python cli.py start    # 启动服务
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
 | 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
 | 7 | 3 个工具在文件系统但不在 `agent.yaml`（`manage_hooks`/`text_to_upper`/`resource_scaffold`） | `app/arf_default_assistant/tools/` |
-| 8 | `set_agent()` 在 lifespan 中重复调用 | `app/arf_default_assistant/server.py:70` |
+| 8 | (已修复 2026-05-25) `set_agent()` 在 lifespan 中重复调用——已删除 | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
 | 11 | `ReloadConfig` 从未被读取——`BaseAgent` 硬编码 `watch_enabled=True`，忽略配置 | `arf/agent/base.py:82` |

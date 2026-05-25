@@ -255,7 +255,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
 | 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
 | 7 | 3 tools on filesystem but not in `agent.yaml` (`manage_hooks`/`text_to_upper`/`resource_scaffold`) | `app/arf_default_assistant/tools/` |
-| 8 | `set_agent()` called twice in lifespan | `app/arf_default_assistant/server.py:70` |
+| 8 | (fixed 2026-05-25) `set_agent()` called twice in lifespan — duplicate removed | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
 | 11 | `ReloadConfig` never read — `BaseAgent` hardcodes `watch_enabled=True`, ignoring config | `arf/agent/base.py:82` |
