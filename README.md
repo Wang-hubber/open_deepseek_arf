@@ -277,7 +277,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | D6 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
 | D7 | (fixed 2026-05-25) App README tool count corrected from 14 to 15 | `app/arf_default_assistant/README.md` |
 | D8 | (fixed 2026-05-25) Hook execution order doc corrected — `asyncio.gather` parallel, not sequential | `docs/app/hooks.md` |
-| D9 | `agent.yaml` main `models:` only declares `deep`, but routing config references `quick` (which exists only on filesystem) — implicit reference confusing | `app/arf_default_assistant/agent.yaml` |
+| D9 | (fixed 2026-05-25) agent.yaml `models:` section removed — filesystem is sole source of truth | `app/arf_default_assistant/agent.yaml` |
 
 [Full fact-check report →](docs/fact-check-2026-05-25.md)
 

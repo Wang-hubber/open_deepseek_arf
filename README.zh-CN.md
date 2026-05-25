@@ -277,7 +277,7 @@ python cli.py start    # 启动服务
 | D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
 | D7 | (已修复 2026-05-25) App README 工具数量从 14 修正为 15 | `app/arf_default_assistant/README.md` |
 | D8 | (已修复 2026-05-25) Hook 执行顺序文档修正——`asyncio.gather` 并行，非顺序执行 | `docs/app/hooks.md` |
-| D9 | `agent.yaml` 主 `models:` 段只声明 `deep`，但路由配置引用 `quick`（仅存在于文件系统）——隐式引用不直观 | `app/arf_default_assistant/agent.yaml` |
+| D9 | (已修复 2026-05-25) agent.yaml `models:` 段移除——文件系统即真相源，保留空白注释 | `app/arf_default_assistant/agent.yaml` |
 
 [完整事实校验报告 →](docs/fact-check-2026-05-25.md)
 

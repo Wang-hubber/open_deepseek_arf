@@ -45,6 +45,12 @@ system_prompt:
     When a skill matches the user's intent, read its full instructions via `file_reader`.
     Example: `file_reader` with `operation: read` and `path: skills/code_review.yaml`
 
+# models are defined in models/*.yaml — filesystem is source of truth.
+# Uncomment below to override specific fields (merged on top of filesystem):
+# models:
+#   - name: deep
+#     temperature: 0.3
+
 tools:
   - name: file_reader
     description: 读取文件内容或列出目录
