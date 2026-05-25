@@ -269,9 +269,11 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 
 <br/>
 
-## Contributing
+## Framework Dev / App Building
 
-See [App Developer Guide](./贡献者须知.md).
+**Building apps on ARF**: See the [App Developer Guide](./贡献者须知.md) — start from a minimal `agent.yaml`, configure models/tools/skills/hooks, launch the server.
+
+**Hacking on the framework**: Check the [TODO](#todo) section for pending fixes and evolution directions. Framework code lives in `arf/`, with dependency injection allowing you to replace any default implementation.
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git

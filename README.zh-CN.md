@@ -269,9 +269,11 @@ arf start        # 启动服务
 
 <br/>
 
-## 参与贡献
+## 二次开发 / 框架应用
 
-详见 [App 开发者须知](./贡献者须知.md)。
+**基于 ARF 构建 App**：详见 [App 开发者须知](./贡献者须知.md)——从零写一个 `agent.yaml`，配置模型、工具、技能、Hook，启动服务。
+
+**参与框架开发**：参见底部 [TODO](#todo) 中的待修复问题和演进方向。框架代码位于 `arf/`，依赖注入设计允许替换任意默认实现。
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
