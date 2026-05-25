@@ -89,12 +89,11 @@ async def lifespan(app: FastAPI):
     FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
     logger.info(f"Agent '{cfg.name}' ready")
-    if _agent._file_watcher:
-        asyncio.create_task(_agent._file_watcher.start())
+    await _agent.start()
     yield
     # ---- SHUTDOWN ----
-    if _agent and _agent._file_watcher:
-        await _agent._file_watcher.stop()
+    if _agent:
+        await _agent.stop()
     logger.info("Shutting down...")
     logger.info("Goodbye")
 
@@ -140,7 +139,7 @@ async def _sse_chat(message: str):
     """
     cancel_evt = asyncio.Event()
     _active_cancel_events["default"] = cancel_evt
-    _agent._engine.set_cancel_event(cancel_evt)
+    _agent.engine.set_cancel_event(cancel_evt)
 
     try:
         async for event in _agent.astream(message):
@@ -186,7 +185,7 @@ async def _sse_chat(message: str):
     finally:
         _active_cancel_events.pop("default", None)
         # Reset cancel event so next request starts fresh
-        _agent._engine.set_cancel_event(None)
+        _agent.engine.set_cancel_event(None)
         cancel_evt.clear()
 
 
@@ -206,7 +205,7 @@ async def undo_chat(steps: int = 1):
     """Undo N user-interaction rounds. Restores checkpointed state."""
     if steps < 1:
         return JSONResponse({"error": "steps must be >= 1"}, status_code=400)
-    engine = _agent._engine
+    engine = _agent.engine
     available = engine.checkpoint_count()
     effective_steps = steps + 1  # +1 for the checkpoint just pushed for this round
     if available < effective_steps:
@@ -226,7 +225,7 @@ async def undo_chat(steps: int = 1):
 @app.get("/api/chat/undo/status")
 async def undo_status():
     """Return how many undo checkpoints are available."""
-    engine = _agent._engine
+    engine = _agent.engine
     return JSONResponse({"available": engine.checkpoint_count(), "max": 3})
 
 
@@ -548,7 +547,7 @@ async def resources_generate_config():
     if not hasattr(_agent, '_resource_resolver'):
         return JSONResponse({"error": "resource resolver not available"}, status_code=500)
     import yaml
-    config_data = await _agent._resource_resolver.generate_config()
+    config_data = await _agent.resource_resolver.generate_config()
     config_data["name"] = _agent.config.name
     config_data["description"] = _agent.config.description or ""
     yaml_text = yaml.dump(config_data, allow_unicode=True, default_flow_style=False)
@@ -611,7 +610,7 @@ async def reload_config():
 async def resources_reload():
     """Clear dynamic resource cache — forces re-scan on next access."""
     if hasattr(_agent, '_resource_resolver'):
-        await _agent._resource_resolver.reload_dynamic()
+        await _agent.resource_resolver.reload_dynamic()
         return JSONResponse({"status": "reloaded", "scope": "dynamic"})
     return JSONResponse({"error": "resource resolver not available"}, status_code=500)
 

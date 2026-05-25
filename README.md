@@ -252,14 +252,14 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 2 | (fixed 2026-05-25) CLI commands missing `/api/` prefix — all 5 occurrences corrected | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` fields parsed but never read: `role`/`task` wired into system prompt; `reload` wired; remaining `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` + multi-agent fields still pending | `arf/agent/config.py` |
 | 4 | (fixed 2026-05-25) `FileStateStore` added as default; app saves removed | `arf/engine/checkpoint.py` |
-| 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
-| 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
+| 5 | (fixed 2026-05-25) `BaseAgent.start()/stop()` manage FileWatcher lifecycle | `arf/agent/base.py` |
+| 6 | (fixed 2026-05-25) `engine`/`resource_resolver`/`start()`/`stop()` public API added | `arf/agent/base.py` |
 | 7 | (closed — orphan tools are filesystem source-of-truth, agent.yaml is override layer only) | `app/arf_default_assistant/tools/` |
 | 8 | (fixed 2026-05-25) `set_agent()` called twice in lifespan — duplicate removed | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
 | 11 | (fixed 2026-05-25) `ReloadConfig` wired — `watch` and `poll_interval` now read by BaseAgent | `arf/agent/base.py`, `config_base.py` |
-| 12 | `EventType` Literal defines 15 types; `approval_required`/`approval_resolved` reserved for approval channel; `user_input` added to Literal | `arf/core/events.py` |
+| 12 | (fixed 2026-05-25) `EventType` cleaned up — `user_input` added, dead types removed, approvals reserved | `arf/core/events.py` |
 | 13 | (fixed 2026-05-25) `CompactionConfig.strategy` — removed `"summarization"` from Literal | `arf/core/config_base.py` |
 | 14 | (fixed 2026-05-25) README concurrency description updated — agent loop sequential, tool calls parallel | README overview table |
 
@@ -271,10 +271,10 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 |---|-------|----------|
 | D1 | (fixed 2026-05-25) Event type count unified across docs; `user_input` added to EventType Literal | `arf/core/events.py`, `docs/trace.md`, README |
 | D2 | (fixed 2026-05-25) `ResourceCache` now wired — doc description matches actual architecture | `docs/resource-registry.md` |
-| D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
+| D3 | (closed — line numbers removed from all 5 design docs; fragile refs eliminated) | — |
 | D4 | (fixed 2026-05-25) `ReloadConfig.watch` default now `True`, `poll_interval` added to model | `arf/core/config_base.py` |
 | D5 | (fixed 2026-05-25) Summarizer code location corrected to `base.py:186-214` | `docs/memory-management.md` |
-| D6 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
+| D6 | (closed — `docs/app/dual-agent.md` correctly notes multi-agent scheduler not yet wired) | — |
 | D7 | (fixed 2026-05-25) App README tool count corrected from 14 to 15 | `app/arf_default_assistant/README.md` |
 | D8 | (fixed 2026-05-25) Hook execution order doc corrected — `asyncio.gather` parallel, not sequential | `docs/app/hooks.md` |
 | D9 | (fixed 2026-05-25) agent.yaml `models:` section removed — filesystem is sole source of truth | `app/arf_default_assistant/agent.yaml` |
@@ -302,7 +302,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | # | Issue | Current (App) | Target (Framework) |
 |---|-------|---------------|-------------------|
 | B1 | (fixed 2026-05-25) Disk state store | `FileStateStore` as default, JSON per session | ✅ Done |
-| B2 | FileWatcher lifecycle manual | `server.py` calls `_agent._file_watcher.start/stop` | Framework auto-starts with engine |
+| B2 | (fixed 2026-05-25) FileWatcher lifecycle | `agent.start()/stop()` manages FileWatcher | ✅ Done |
 | B3 | API key management | `server.py` `.env` parser, validator, cache, register endpoint | Framework key store + validation |
 | B4 | Session management | `server.py` `_active_cancel_events`, session stubs | Framework session manager |
 | B5 | Trace API endpoints | `server.py` `/api/trace/*` routes | Framework FastAPI router |

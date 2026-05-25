@@ -252,14 +252,14 @@ python cli.py start    # 启动服务
 | 2 | (已修复 2026-05-25) CLI 命令缺少 `/api/` 前缀——全部 5 处已修正 | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` 字段已解析但未读取：`role`/`task` 已接入 system prompt；`reload` 已接入；剩余 `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` 及多 Agent 字段仍未接线 | `arf/agent/config.py` |
 | 4 | (已修复 2026-05-25) `FileStateStore` 已添加为默认实现；app 手动保存已移除 | `arf/engine/checkpoint.py` |
-| 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
-| 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
+| 5 | (已修复 2026-05-25) `BaseAgent.start()/stop()` 管理 FileWatcher 生命周期 | `arf/agent/base.py` |
+| 6 | (已修复 2026-05-25) `engine`/`resource_resolver`/`start()`/`stop()` 公共 API 已添加 | `arf/agent/base.py` |
 | 7 | (已关闭 —— 孤儿工具属约定优于配置，文件系统即真相源，agent.yaml 仅作覆盖层) | `app/arf_default_assistant/tools/` |
 | 8 | (已修复 2026-05-25) `set_agent()` 在 lifespan 中重复调用——已删除 | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
 | 11 | (已修复 2026-05-25) `ReloadConfig` 已接入——`watch` 和 `poll_interval` 由 BaseAgent 读取 | `arf/agent/base.py`、`config_base.py` |
-| 12 | `EventType` Literal 定义 15 种类型；`approval_required`/`approval_resolved` 为审批通道预留；`user_input` 已补入 Literal | `arf/core/events.py` |
+| 12 | (已修复 2026-05-25) `EventType` 清理——`user_input` 补入，死类型移除，审批通道预留 | `arf/core/events.py` |
 | 13 | (已修复 2026-05-25) `CompactionConfig.strategy` — 移除无用的 `"summarization"` 枚举值 | `arf/core/config_base.py` |
 | 14 | (已修复 2026-05-25) README 并发描述已修正——Agent 循环顺序，工具调用并行 | README 总览表 |
 
@@ -271,10 +271,10 @@ python cli.py start    # 启动服务
 |---|------|------|
 | D1 | (已修复 2026-05-25) 事件类型数量统一为 15 种；`user_input` 已补入 EventType Literal | `arf/core/events.py`、`docs/trace.md`、README |
 | D2 | (已修复 2026-05-25) `ResourceCache` 已接入，文档描述与实际架构一致 | `docs/resource-registry.md` |
-| D3 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
+| D3 | (已关闭 —— 行号引用已从 5 份设计文档移除，此问题项消除) | — |
 | D4 | (已修复 2026-05-25) `ReloadConfig.watch` 默认值改为 `True`，`poll_interval` 已补入模型 | `arf/core/config_base.py` |
 | D5 | (已修复 2026-05-25) Summarizer 代码位置修正为 `base.py:186-214` | `docs/memory-management.md` |
-| D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
+| D6 | (已关闭 —— `docs/app/dual-agent.md` 已正确标注多 Agent 调度器未接线) | — |
 | D7 | (已修复 2026-05-25) App README 工具数量从 14 修正为 15 | `app/arf_default_assistant/README.md` |
 | D8 | (已修复 2026-05-25) Hook 执行顺序文档修正——`asyncio.gather` 并行，非顺序执行 | `docs/app/hooks.md` |
 | D9 | (已修复 2026-05-25) agent.yaml `models:` 段移除——文件系统即真相源，保留空白注释 | `app/arf_default_assistant/agent.yaml` |
@@ -302,7 +302,7 @@ python cli.py start    # 启动服务
 | # | 问题 | 当前（App 层） | 目标（框架层） |
 |---|------|---------------|---------------|
 | B1 | (已修复 2026-05-25) 磁盘状态存储 | `FileStateStore` 默认实现，每 session JSON 文件 | ✅ 完成 |
-| B2 | FileWatcher 生命周期手动管理 | `server.py` 调用 `_agent._file_watcher.start/stop` | 框架随引擎自动启动 |
+| B2 | (已修复 2026-05-25) FileWatcher 生命周期 | `agent.start()/stop()` 管理 FileWatcher | ✅ 完成 |
 | B3 | API 密钥管理 | `server.py` `.env` 解析、验证、缓存、注册端点 | 框架密钥存储 + 验证 |
 | B4 | Session 管理 | `server.py` `_active_cancel_events`、session stubs | 框架 Session 管理器 |
 | B5 | Trace API 端点 | `server.py` `/api/trace/*` 路由 | 框架 FastAPI router |

@@ -410,8 +410,29 @@ class BaseAgent:
         return self._tool_resolver
 
     @property
+    def resource_resolver(self):
+        """Alias for tool_resolver — handles tools, skills, and models."""
+        return self._tool_resolver
+
+    @property
+    def engine(self):
+        """GraphEngine — for cancel, undo, checkpoint introspection."""
+        return self._engine
+
+    @property
     def usage_tracker(self):
         return self._usage_tracker
+
+    async def start(self) -> None:
+        """Start the FileWatcher (called once event loop is ready)."""
+        if self._file_watcher:
+            import asyncio
+            asyncio.create_task(self._file_watcher.start())
+
+    async def stop(self) -> None:
+        """Stop the FileWatcher (called on shutdown)."""
+        if self._file_watcher:
+            await self._file_watcher.stop()
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
