@@ -89,19 +89,15 @@
 
 四种实体类型——**model**、**tool**、**skill**、**hook**——每种遵循可预期的目录约定。框架自动发现，无需手动注册。一个工具就是两个文件：`tool.yaml`（Schema）+ `function.py`（逻辑）。
 
-应用在 `agent.yaml` 中声明工具和技能：
+工具和技能定义在文件系统——每个工具一个 `tool.yaml`+`function.py`，技能 `skills/*.yaml`。框架自动发现。`agent.yaml` 仅在需要时覆盖个别字段：
 
 ```yaml
 tools:
   - name: file_reader
-    description: 读取文件或列出目录
-    parameters: {type: object, properties: {operation: ...}, required: [operation, path]}
-    activation: kernel
+    activation: kernel   # 仅覆盖激活方式，其余来自文件系统
 
 skills:
   - name: code_review
-    description: 审查代码变更的正确性
-    tools: [file_reader, file_writer]
     activation: discoverable
 ```
 

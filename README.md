@@ -89,19 +89,15 @@ The reference app at `app/arf_default_assistant/` demonstrates how an applicatio
 
 Four entity types — **model**, **tool**, **skill**, **hook** — each following a predictable directory convention. The framework discovers; you don't register. A tool is two files: `tool.yaml` (schema) + `function.py` (logic). That's the entire API surface.
 
-The app declares tools and skills in `agent.yaml`:
+Tools and skills live on the filesystem — `tool.yaml` + `function.py` per tool, `skills/*.yaml`. The framework discovers them automatically. `agent.yaml` only overrides specific fields when needed:
 
 ```yaml
 tools:
   - name: file_reader
-    description: 读取文件或列出目录
-    parameters: {type: object, properties: {operation: ...}, required: [operation, path]}
-    activation: kernel
+    activation: kernel   # override activation only; the rest from filesystem
 
 skills:
   - name: code_review
-    description: Review code changes for correctness
-    tools: [file_reader, file_writer]
     activation: discoverable
 ```
 
