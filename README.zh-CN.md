@@ -248,14 +248,18 @@ python cli.py start    # 启动服务
 
 | # | 问题 | 位置 |
 |---|------|------|
-| 1 | 工具默认并行执行（`strategy="parallel"`），表中"顺序执行"不准确 | `ConcurrentToolExecutor` |
-| 2 | Hook 使用 `asyncio.gather` 协程并发，非"线程池" | `SubprocessHookRunner` |
-| 3 | `SequentialScheduler` 已定义但从未被使用 | `arf/concurrency/sequential.py` |
-| 4 | `SandboxConfig(allow_escape, writable_dirs)` 未接入任何 guard | `arf/guardrails/`, `arf/sandbox/` |
-| 5 | `TwoTierRouter.fallback_from()` 已实现但引擎未在模型失败时调用 | `arf/routing/`, `arf/engine/graph.py` |
-| 6 | `CompactionStrategy` protocol 缺少 `window_size` 和 `summarize_tool_output` | `arf/core/protocols/compaction.py` |
-| 7 | 双源隔离（框架只读/工作区读写）是应用层约定，非框架强制 | app 层 `tools/*/function.py` |
-| 8 | `arf` CLI 入口缺失（`arf/cli.py` 不存在），`arf-assistant` 未安装（`app` 不在 packages.include 中） | `pyproject.toml`, `arf/cli.py` |
+| 1 | `ResourceCache` 完整实现但从未被任何 Provider 使用 | `arf/resources/cache.py` |
+| 2 | CLI 三个命令缺少 `/api/` 前缀（`/chat` → `/api/chat`） | `app/arf_default_assistant/cli.py` |
+| 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails` 等） | `arf/agent/config.py` |
+| 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
+| 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
+| 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
+| 7 | 3 个工具在文件系统但不在 `agent.yaml`（`manage_hooks`/`text_to_upper`/`resource_scaffold`） | `app/arf_default_assistant/tools/` |
+| 8 | `set_agent()` 在 lifespan 中重复调用 | `app/arf_default_assistant/server.py:70` |
+| 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
+| 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
+
+[完整事实校验报告 →](docs/fact-check-2026-05-25.md)
 
 ### 演进方向
 

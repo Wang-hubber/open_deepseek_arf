@@ -248,14 +248,18 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 | # | Issue | Location |
 |---|-------|----------|
-| 1 | Tools execute in parallel by default (`strategy="parallel"`), not "sequential" | `ConcurrentToolExecutor` |
-| 2 | Hooks use `asyncio.gather` (coroutines), not "thread pool" | `SubprocessHookRunner` |
-| 3 | `SequentialScheduler` defined but never used | `arf/concurrency/sequential.py` |
-| 4 | `SandboxConfig(allow_escape, writable_dirs)` not wired into any guard | `arf/guardrails/`, `arf/sandbox/` |
-| 5 | `TwoTierRouter.fallback_from()` implemented but engine never calls it on model failure | `arf/routing/`, `arf/engine/graph.py` |
-| 6 | `CompactionStrategy` protocol missing `window_size` and `summarize_tool_output` | `arf/core/protocols/compaction.py` |
-| 7 | Dual-source isolation (framework R/O, workspace R/W) is app-level convention, not framework-enforced | app `tools/*/function.py` |
-| 8 | `arf` CLI entry point missing (`arf/cli.py` doesn't exist); `arf-assistant` not installed (`app` not in `packages.include`) | `pyproject.toml`, `arf/cli.py` |
+| 1 | `ResourceCache` fully implemented but never imported by any Provider | `arf/resources/cache.py` |
+| 2 | CLI commands missing `/api/` prefix (`/chat` → `/api/chat`) | `app/arf_default_assistant/cli.py` |
+| 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails` etc.) | `arf/agent/config.py` |
+| 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
+| 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
+| 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
+| 7 | 3 tools on filesystem but not in `agent.yaml` (`manage_hooks`/`text_to_upper`/`resource_scaffold`) | `app/arf_default_assistant/tools/` |
+| 8 | `set_agent()` called twice in lifespan | `app/arf_default_assistant/server.py:70` |
+| 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
+| 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
+
+[Full fact-check report →](docs/fact-check-2026-05-25.md)
 
 ### Evolution Directions
 
