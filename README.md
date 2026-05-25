@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="./pyproject.toml"><img src="https://img.shields.io/badge/python-3.10+-5fa04e?style=flat-square&labelColor=161b22&logo=python&logoColor=white" alt="Python 3.10+"/></a>
+  <a href="./pyproject.toml"><img src="https://img.shields.io/badge/python-3.11+-5fa04e?style=flat-square&labelColor=161b22&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b949e?style=flat-square&labelColor=161b22" alt="license"/></a>
   <a href="https://github.com/Wang-hubber/open_deepseek_arf/stargazers"><img src="https://img.shields.io/github/stars/Wang-hubber/open_deepseek_arf.svg?style=flat-square&color=dbab09&labelColor=161b22&logo=github&logoColor=white" alt="GitHub stars"/></a>
 </p>
@@ -270,15 +270,14 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | # | Issue | Location |
 |---|-------|----------|
 | D1 | "13 event types" — code defines 15; doc lists `user_input` which isn't in the Literal type | `docs/trace.md`, README |
-| D2 | Python version: badge shows 3.10+, Quick Start says ≥3.11, core stack says 3.10+, pyproject.toml says ≥3.11 | README, `pyproject.toml` |
-| D3 | `ResourceCache` extensively documented as architecture component despite being dead code | `docs/resource-registry.md` |
-| D4 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
-| D5 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |
-| D6 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |
-| D7 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
-| D8 | App README says "14 tools", actual filesystem has 15; `docs/app/tools.md` correctly says 15 | `app/arf_default_assistant/README.md` |
-| D9 | Hook execution documented as "order-preserving" but `SubprocessHookRunner` uses `asyncio.gather` (parallel) | `docs/app/hooks.md` |
-| D10 | `agent.yaml` main `models:` only declares `deep`, but routing config references `quick` (which exists only on filesystem) — implicit reference confusing | `app/arf_default_assistant/agent.yaml` |
+| D2 | `ResourceCache` extensively documented as architecture component despite being dead code | `docs/resource-registry.md` |
+| D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
+| D4 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |
+| D5 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |
+| D6 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
+| D7 | App README says "14 tools", actual filesystem has 15; `docs/app/tools.md` correctly says 15 | `app/arf_default_assistant/README.md` |
+| D8 | Hook execution documented as "order-preserving" but `SubprocessHookRunner` uses `asyncio.gather` (parallel) | `docs/app/hooks.md` |
+| D9 | `agent.yaml` main `models:` only declares `deep`, but routing config references `quick` (which exists only on filesystem) — implicit reference confusing | `app/arf_default_assistant/agent.yaml` |
 
 [Full fact-check report →](docs/fact-check-2026-05-25.md)
 
@@ -324,7 +323,7 @@ pip install -e .
 cd app/web && npm install && npm run dev
 ```
 
-**Core stack:** Python 3.10+ · FastAPI · Vue 3 · TypeScript · Vite
+**Core stack:** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
 
 <br/>
 

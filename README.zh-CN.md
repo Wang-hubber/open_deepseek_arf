@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="./pyproject.toml"><img src="https://img.shields.io/badge/python-3.10+-5fa04e?style=flat-square&labelColor=161b22&logo=python&logoColor=white" alt="Python 3.10+"/></a>
+  <a href="./pyproject.toml"><img src="https://img.shields.io/badge/python-3.11+-5fa04e?style=flat-square&labelColor=161b22&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b949e?style=flat-square&labelColor=161b22" alt="license"/></a>
   <a href="https://github.com/Wang-hubber/open_deepseek_arf/stargazers"><img src="https://img.shields.io/github/stars/Wang-hubber/open_deepseek_arf.svg?style=flat-square&color=dbab09&labelColor=161b22&logo=github&logoColor=white" alt="GitHub stars"/></a>
 </p>
@@ -270,15 +270,14 @@ python cli.py start    # 启动服务
 | # | 问题 | 位置 |
 |---|------|------|
 | D1 | "13 种事件类型"——代码定义 15 种；文档列出了 `user_input` 但它不在类型定义中 | `docs/trace.md`、README |
-| D2 | Python 版本：badge 显示 3.10+，Quick Start 说 ≥3.11，底部技术栈说 3.10+，pyproject.toml 说 ≥3.11 | README、`pyproject.toml` |
-| D3 | `ResourceCache` 作为架构组件被大量文档描述却从未被代码使用 | `docs/resource-registry.md` |
-| D4 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
-| D5 | `reload.watch` 文档说默认 `true` 但 Pydantic 模型定义 `watch: bool = False` | `docs/resource-registry.md`、`docs/app/advanced.md` |
-| D6 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
-| D7 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
-| D8 | App README 写"14 个工具"，实际文件系统 15 个；`docs/app/tools.md` 正确写了 15 | `app/arf_default_assistant/README.md` |
-| D9 | Hook 执行文档写"按声明顺序执行"但 `SubprocessHookRunner` 使用 `asyncio.gather`（并行） | `docs/app/hooks.md` |
-| D10 | `agent.yaml` 主 `models:` 段只声明 `deep`，但路由配置引用 `quick`（仅存在于文件系统）——隐式引用不直观 | `app/arf_default_assistant/agent.yaml` |
+| D2 | `ResourceCache` 作为架构组件被大量文档描述却从未被代码使用 | `docs/resource-registry.md` |
+| D3 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
+| D4 | `reload.watch` 文档说默认 `true` 但 Pydantic 模型定义 `watch: bool = False` | `docs/resource-registry.md`、`docs/app/advanced.md` |
+| D5 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
+| D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
+| D7 | App README 写"14 个工具"，实际文件系统 15 个；`docs/app/tools.md` 正确写了 15 | `app/arf_default_assistant/README.md` |
+| D8 | Hook 执行文档写"按声明顺序执行"但 `SubprocessHookRunner` 使用 `asyncio.gather`（并行） | `docs/app/hooks.md` |
+| D9 | `agent.yaml` 主 `models:` 段只声明 `deep`，但路由配置引用 `quick`（仅存在于文件系统）——隐式引用不直观 | `app/arf_default_assistant/agent.yaml` |
 
 [完整事实校验报告 →](docs/fact-check-2026-05-25.md)
 
@@ -324,7 +323,7 @@ pip install -e .
 cd app/web && npm install && npm run dev
 ```
 
-**核心技术栈：** Python 3.10+ · FastAPI · Vue 3 · TypeScript · Vite
+**核心技术栈：** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
 
 <br/>
 
