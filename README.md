@@ -271,7 +271,7 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 
 ## Contributing
 
-See [贡献者须知.md](./贡献者须知.md).
+See [App Developer Guide](./贡献者须知.md).
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git

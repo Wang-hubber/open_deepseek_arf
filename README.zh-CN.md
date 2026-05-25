@@ -271,7 +271,7 @@ arf start        # 启动服务
 
 ## 参与贡献
 
-详见 [贡献者须知.md](./贡献者须知.md)。
+详见 [App 开发者须知](./贡献者须知.md)。
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
