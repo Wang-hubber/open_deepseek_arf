@@ -254,7 +254,7 @@ python cli.py start    # 启动服务
 | 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
 | 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
-| 7 | 3 个工具在文件系统但不在 `agent.yaml`（`manage_hooks`/`text_to_upper`/`resource_scaffold`） | `app/arf_default_assistant/tools/` |
+| 7 | (已关闭 —— 孤儿工具属约定优于配置，文件系统即真相源，agent.yaml 仅作覆盖层) | `app/arf_default_assistant/tools/` |
 | 8 | (已修复 2026-05-25) `set_agent()` 在 lifespan 中重复调用——已删除 | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
