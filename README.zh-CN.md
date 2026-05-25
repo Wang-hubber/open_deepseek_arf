@@ -240,17 +240,17 @@ python cli.py start    # 启动服务
 
 ## TODO
 
-> 以下条目记录了事实校验发现的不一致和文档中讨论的演进方向。欢迎贡献者认领。
+> 以下条目记录了系统事实校验发现的不一致和文档中讨论的演进方向。欢迎贡献者认领。
 
-### 待修复
+### 待修复 — 代码
 
 *确认于 2026-05-25 对源码的事实校验。*
 
 | # | 问题 | 位置 |
 |---|------|------|
 | 1 | `ResourceCache` 完整实现但从未被任何 Provider 使用 | `arf/resources/cache.py` |
-| 2 | CLI 三个命令缺少 `/api/` 前缀（`/chat` → `/api/chat`） | `app/arf_default_assistant/cli.py` |
-| 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails` 等） | `arf/agent/config.py` |
+| 2 | CLI 命令缺少 `/api/` 前缀（`/chat`→`/api/chat`，`/save`→`/api/save`，`/resources/`→`/api/resources/`） | `app/arf_default_assistant/cli.py` |
+| 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`） | `arf/agent/config.py` |
 | 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
 | 6 | App 频繁访问 `_agent._engine`、`_agent._resource_resolver` 等私有属性 | `app/arf_default_assistant/server.py` |
@@ -258,6 +258,27 @@ python cli.py start    # 启动服务
 | 8 | `set_agent()` 在 lifespan 中重复调用 | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
+| 11 | `ReloadConfig` 从未被读取——`BaseAgent` 硬编码 `watch_enabled=True`，忽略配置 | `arf/agent/base.py:82` |
+| 12 | `EventType` Literal 定义了 15 种类型但引擎只 emit 13 种（`tool_call_result`/`approval_required`/`approval_resolved` 未使用；`user_input` emit 但不在 Literal 中） | `arf/core/events.py` |
+| 13 | `CompactionConfig.strategy` 包含 `"summarization"` 选项但行为与 `"sliding_window"` 完全相同 | `arf/core/config_base.py:62`、`base.py:171` |
+| 14 | Agent 循环顺序执行但单轮工具调用并行（`ConcurrentToolExecutor`）——README 总览表写"顺序执行" | `arf/engine/tool_executor.py` |
+
+### 待修复 — 文档
+
+*确认于 2026-05-25 对文档与代码的交叉校验。*
+
+| # | 问题 | 位置 |
+|---|------|------|
+| D1 | "13 种事件类型"——代码定义 15 种；文档列出了 `user_input` 但它不在类型定义中 | `docs/trace.md`、README |
+| D2 | Python 版本：badge 显示 3.10+，Quick Start 说 ≥3.11，底部技术栈说 3.10+，pyproject.toml 说 ≥3.11 | README、`pyproject.toml` |
+| D3 | `ResourceCache` 作为架构组件被大量文档描述却从未被代码使用 | `docs/resource-registry.md` |
+| D4 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
+| D5 | `reload.watch` 文档说默认 `true` 但 Pydantic 模型定义 `watch: bool = False` | `docs/resource-registry.md`、`docs/app/advanced.md` |
+| D6 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
+| D7 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
+| D8 | App README 写"14 个工具"，实际文件系统 15 个；`docs/app/tools.md` 正确写了 15 | `app/arf_default_assistant/README.md` |
+| D9 | Hook 执行文档写"按声明顺序执行"但 `SubprocessHookRunner` 使用 `asyncio.gather`（并行） | `docs/app/hooks.md` |
+| D10 | `agent.yaml` 主 `models:` 段只声明 `deep`，但路由配置引用 `quick`（仅存在于文件系统）——隐式引用不直观 | `app/arf_default_assistant/agent.yaml` |
 
 [完整事实校验报告 →](docs/fact-check-2026-05-25.md)
 
@@ -274,6 +295,19 @@ python cli.py start    # 启动服务
 | 并发 | [skill-pipeline.md](docs/skill-pipeline.md) | 多 Agent DAG 调度 · Worktree 隔离 · 事务性文件操作 |
 | 中断 | [interrupt.md](docs/interrupt.md) | 暂停/恢复 · 持久化检查点 · 空闲超时 · 中断优先级 |
 | Trace | [trace.md](docs/trace.md) | SQLite 数据库 · OpenTelemetry 导出 · 实时告警 · 性能剖面 |
+
+### App/框架边界
+
+*应下沉到框架层的能力。*
+
+| # | 问题 | 当前（App 层） | 目标（框架层） |
+|---|------|---------------|---------------|
+| B1 | 无磁盘状态存储 | `lazy_persistence.py` 序列化到 `archive.json` | `FileStateStore` 实现 `StateStore` |
+| B2 | FileWatcher 生命周期手动管理 | `server.py` 调用 `_agent._file_watcher.start/stop` | 框架随引擎自动启动 |
+| B3 | API 密钥管理 | `server.py` `.env` 解析、验证、缓存、注册端点 | 框架密钥存储 + 验证 |
+| B4 | Session 管理 | `server.py` `_active_cancel_events`、session stubs | 框架 Session 管理器 |
+| B5 | Trace API 端点 | `server.py` `/api/trace/*` 路由 | 框架 FastAPI router |
+| B6 | SSE 事件翻译 | `server.py` `_sse_chat()` 139 行事件翻译器 | 框架 SSE 适配器 |
 
 <br/>
 

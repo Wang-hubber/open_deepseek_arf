@@ -240,17 +240,17 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 ## TODO
 
-> Issues found during source-code fact-checking, and evolution directions discussed in the design docs. Contributors welcome.
+> Issues found during systematic source-code and documentation fact-checking. Contributors welcome.
 
-### Pending Fixes
+### Pending Fixes — Code
 
 *Confirmed 2026-05-25 via source review.*
 
 | # | Issue | Location |
 |---|-------|----------|
 | 1 | `ResourceCache` fully implemented but never imported by any Provider | `arf/resources/cache.py` |
-| 2 | CLI commands missing `/api/` prefix (`/chat` → `/api/chat`) | `app/arf_default_assistant/cli.py` |
-| 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails` etc.) | `arf/agent/config.py` |
+| 2 | CLI commands missing `/api/` prefix (`/chat`→`/api/chat`, `/save`→`/api/save`, `/resources/`→`/api/resources/`) | `app/arf_default_assistant/cli.py` |
+| 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`) | `arf/agent/config.py` |
 | 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |
 | 6 | App accesses `_agent._engine`, `_agent._resource_resolver` etc. (private internals) | `app/arf_default_assistant/server.py` |
@@ -258,6 +258,27 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 8 | `set_agent()` called twice in lifespan | `app/arf_default_assistant/server.py:70` |
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
+| 11 | `ReloadConfig` never read — `BaseAgent` hardcodes `watch_enabled=True`, ignoring config | `arf/agent/base.py:82` |
+| 12 | `EventType` Literal has 15 types but engine emits 13 (`tool_call_result`/`approval_required`/`approval_resolved` unused; `user_input` emitted but not in Literal) | `arf/core/events.py` |
+| 13 | `CompactionConfig.strategy` includes `"summarization"` option with zero behavioral difference from `"sliding_window"` | `arf/core/config_base.py:62`, `base.py:171` |
+| 14 | Agent loop sequential but single-turn tool calls parallel (`ConcurrentToolExecutor`) — README overview table says "Sequential execution" | `arf/engine/tool_executor.py` |
+
+### Pending Fixes — Docs
+
+*Confirmed 2026-05-25 via cross-referencing docs vs code.*
+
+| # | Issue | Location |
+|---|-------|----------|
+| D1 | "13 event types" — code defines 15; doc lists `user_input` which isn't in the Literal type | `docs/trace.md`, README |
+| D2 | Python version: badge shows 3.10+, Quick Start says ≥3.11, core stack says 3.10+, pyproject.toml says ≥3.11 | README, `pyproject.toml` |
+| D3 | `ResourceCache` extensively documented as architecture component despite being dead code | `docs/resource-registry.md` |
+| D4 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
+| D5 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |
+| D6 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |
+| D7 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
+| D8 | App README says "14 tools", actual filesystem has 15; `docs/app/tools.md` correctly says 15 | `app/arf_default_assistant/README.md` |
+| D9 | Hook execution documented as "order-preserving" but `SubprocessHookRunner` uses `asyncio.gather` (parallel) | `docs/app/hooks.md` |
+| D10 | `agent.yaml` main `models:` only declares `deep`, but routing config references `quick` (which exists only on filesystem) — implicit reference confusing | `app/arf_default_assistant/agent.yaml` |
 
 [Full fact-check report →](docs/fact-check-2026-05-25.md)
 
@@ -274,6 +295,19 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | Concurrency | [skill-pipeline.md](docs/skill-pipeline.md) | Multi-agent DAG scheduling · worktree isolation · transactional file ops |
 | Interrupt | [interrupt.md](docs/interrupt.md) | Pause/resume · persistent checkpoints · idle timeout · interrupt priority |
 | Trace | [trace.md](docs/trace.md) | SQLite trace DB · OpenTelemetry export · real-time alerts · performance profiling |
+
+### App/Framework Boundary
+
+*Capabilities that should move from app to framework layer.*
+
+| # | Issue | Current (App) | Target (Framework) |
+|---|-------|---------------|-------------------|
+| B1 | No disk state store | `lazy_persistence.py` serializes to `archive.json` | `FileStateStore` implementing `StateStore` |
+| B2 | FileWatcher lifecycle manual | `server.py` calls `_agent._file_watcher.start/stop` | Framework auto-starts with engine |
+| B3 | API key management | `server.py` `.env` parser, validator, cache, register endpoint | Framework key store + validation |
+| B4 | Session management | `server.py` `_active_cancel_events`, session stubs | Framework session manager |
+| B5 | Trace API endpoints | `server.py` `/api/trace/*` routes | Framework FastAPI router |
+| B6 | SSE event translation | `server.py` `_sse_chat()` 139-line event translator | Framework SSE adapter |
 
 <br/>
 
