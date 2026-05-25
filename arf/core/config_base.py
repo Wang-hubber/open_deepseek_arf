@@ -59,7 +59,7 @@ class RoutingConfig(BaseModel):
 
 
 class CompactionConfig(BaseModel):
-    strategy: Literal["sliding_window", "summarization", "none"] = "sliding_window"
+    strategy: Literal["sliding_window", "none"] = "sliding_window"
     threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
 

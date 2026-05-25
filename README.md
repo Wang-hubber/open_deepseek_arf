@@ -65,7 +65,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **[Model Routing →](docs/model-routing.md)**<br>KV cache | Multi-level cache + big.LITTLE scheduling | Two-tier LLM classifier (medium→quick, complex→deep). Dedicated model (v4-flash with no thinking) for framework background tasks. KV cache is handled by the inference side. | Model-hardware codification; LLM as hardware |
 | **[Resource Discovery →](docs/resource-registry.md)**<br>Registration & lifecycle | Registry + service manager (systemd/udev/launchd) | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. Kernel/dynamic split with freeze-once semantics. FileWatcher inotify+polling dual-track hot reload. ResourceResolver override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Permission deny→ask→allow pipeline. | Per-invocation sandbox; MCP protocol |
-| **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. | Multi-agent DAG analysis; worktree isolation |
+| **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential agent loop; parallel tool calls within a turn via `ConcurrentToolExecutor`. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook `asyncio.gather` concurrency. | Multi-agent DAG analysis; worktree isolation |
 | **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
 | **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 15 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
@@ -260,8 +260,8 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
 | 11 | `ReloadConfig` never read — `BaseAgent` hardcodes `watch_enabled=True`, ignoring config | `arf/agent/base.py:82` |
 | 12 | `EventType` Literal defines 15 types; `approval_required`/`approval_resolved` reserved for approval channel; `user_input` added to Literal | `arf/core/events.py` |
-| 13 | `CompactionConfig.strategy` includes `"summarization"` option with zero behavioral difference from `"sliding_window"` | `arf/core/config_base.py:62`, `base.py:171` |
-| 14 | Agent loop sequential but single-turn tool calls parallel (`ConcurrentToolExecutor`) — README overview table says "Sequential execution" | `arf/engine/tool_executor.py` |
+| 13 | (fixed 2026-05-25) `CompactionConfig.strategy` — removed `"summarization"` from Literal | `arf/core/config_base.py` |
+| 14 | (fixed 2026-05-25) README concurrency description updated — agent loop sequential, tool calls parallel | README overview table |
 
 ### Pending Fixes — Docs
 

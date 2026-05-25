@@ -65,7 +65,7 @@
 | **[多模型调度 →](docs/model-routing.md)**<br>KV cache | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型（v4-flash with no thinking）处理框架后台任务。KV cache 由推理侧处理，框架有意不介入。 | 模型硬件化；LLM as hardware |
 | **[资源注册与发现 →](docs/resource-registry.md)**<br>注册与生命周期 | 注册表 + 服务管理器（systemd/udev/launchd） | 约定优于配置：每工具 `tool.yaml`+`function.py`，`skills/*.yaml`，`models/*.yaml`。内核/动态分离 + 冻结只读。FileWatcher inotify+轮询双轨自动热加载。ResourceResolver 覆盖合并 + `generate_config()` dump。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `tool.yaml` + `function.py` 每工具。`PathCheckToolGuard` 阻断路径穿越。双源隔离：框架只读，工作区读写。权限 deny→ask→allow 管道。 | 每次调用独立沙箱；MCP 协议 |
-| **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | 顺序执行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook 线程池并行。 | 多 Agent DAG 分析；Worktree 隔离 |
+| **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
 | **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 15 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 
@@ -260,8 +260,8 @@ python cli.py start    # 启动服务
 | 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
 | 11 | `ReloadConfig` 从未被读取——`BaseAgent` 硬编码 `watch_enabled=True`，忽略配置 | `arf/agent/base.py:82` |
 | 12 | `EventType` Literal 定义 15 种类型；`approval_required`/`approval_resolved` 为审批通道预留；`user_input` 已补入 Literal | `arf/core/events.py` |
-| 13 | `CompactionConfig.strategy` 包含 `"summarization"` 选项但行为与 `"sliding_window"` 完全相同 | `arf/core/config_base.py:62`、`base.py:171` |
-| 14 | Agent 循环顺序执行但单轮工具调用并行（`ConcurrentToolExecutor`）——README 总览表写"顺序执行" | `arf/engine/tool_executor.py` |
+| 13 | (已修复 2026-05-25) `CompactionConfig.strategy` — 移除无用的 `"summarization"` 枚举值 | `arf/core/config_base.py` |
+| 14 | (已修复 2026-05-25) README 并发描述已修正——Agent 循环顺序，工具调用并行 | README 总览表 |
 
 ### 待修复 — 文档
 
