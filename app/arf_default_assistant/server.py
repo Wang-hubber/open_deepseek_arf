@@ -90,8 +90,12 @@ async def lifespan(app: FastAPI):
     FileTraceStore(_agent.event_bus, dir="./memory/sessions")
 
     logger.info(f"Agent '{cfg.name}' ready")
+    if _agent._file_watcher:
+        asyncio.create_task(_agent._file_watcher.start())
     yield
     # ---- SHUTDOWN ----
+    if _agent and _agent._file_watcher:
+        await _agent._file_watcher.stop()
     logger.info("Shutting down...")
     from lazy_persistence import save_archive_async
     if _agent:
@@ -547,18 +551,47 @@ async def configure_model(name: str, req: dict):
     """Save model config (placeholder — models are pre-configured in agent.yaml)."""
     return JSONResponse({"ok": True})
 
+@app.get("/api/resources/generate-config")
+async def resources_generate_config():
+    """Scan filesystem and return complete agent.yaml text."""
+    if not hasattr(_agent, '_resource_resolver'):
+        return JSONResponse({"error": "resource resolver not available"}, status_code=500)
+    import yaml
+    config_data = await _agent._resource_resolver.generate_config()
+    config_data["name"] = _agent.config.name
+    config_data["description"] = _agent.config.description or ""
+    yaml_text = yaml.dump(config_data, allow_unicode=True, default_flow_style=False)
+    return JSONResponse({"yaml": yaml_text, "config": config_data})
+
+
 @app.get("/api/resources/{res_type}")
 async def list_resources(res_type: str):
+    resolver = getattr(_agent, '_resource_resolver', None)
     if res_type == "tools":
-        items = [
-            {"name": t.name, "description": t.description, "activation": t.activation}
-            for t in _agent.config.tools
-        ]
+        if resolver:
+            tools = await resolver.get_tool_definitions()
+            items = [{"name": t.name, "description": t.description} for t in tools]
+        else:
+            items = [{"name": t.name, "description": t.description, "activation": t.activation}
+                     for t in _agent.config.tools]
     elif res_type == "skills":
-        items = [
-            {"name": s.name, "description": s.description, "tools": s.tools}
-            for s in _agent.config.skills
-        ]
+        if resolver:
+            skills = resolver.get_skill_definitions()
+            items = [{"name": s.name, "description": s.description, "tools": s.tools}
+                     for s in skills]
+        else:
+            items = [{"name": s.name, "description": s.description, "tools": s.tools}
+                     for s in _agent.config.skills]
+    elif res_type == "models":
+        if resolver:
+            models = resolver.get_model_definitions()
+            items = [{"name": m.name, "model": m.model, "api_base": m.api_base}
+                     for m in models]
+        else:
+            items = [{"name": m.name, "description": m.model, "source": "system",
+                      "readonly": False, "configured": True, "required": True,
+                      "depends_on": [], "model_name": m.model, "config_page": "DeepSeekConfigForm"}
+                     for m in _agent.config.models]
     else:
         return JSONResponse({"error": f"unknown type: {res_type}"}, status_code=400)
     return JSONResponse({"type": res_type, "items": items, "count": len(items)})
@@ -590,6 +623,15 @@ async def reload_config():
     _agent = create_agent(config=cfg)
     set_agent(_agent)
     return JSONResponse({"status": "reloaded", "name": cfg.name})
+
+
+@app.post("/api/resources/reload")
+async def resources_reload():
+    """Clear dynamic resource cache — forces re-scan on next access."""
+    if hasattr(_agent, '_resource_resolver'):
+        await _agent._resource_resolver.reload_dynamic()
+        return JSONResponse({"status": "reloaded", "scope": "dynamic"})
+    return JSONResponse({"error": "resource resolver not available"}, status_code=500)
 
 
 class FeedbackReq(BaseModel):

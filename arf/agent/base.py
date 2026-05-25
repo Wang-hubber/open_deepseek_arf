@@ -129,24 +129,29 @@ class BaseAgent:
         if mem_cfg and mem_cfg.writer == "llm":
             import os as _os2, asyncio as _aio2
             from arf.core.model_adapter import ModelAdapter as _SystemAdapter
-            system_model_cfg = next((m for m in config.models if m.name == mem_cfg.model), config.models[0])
-            _system_adapter = _SystemAdapter({
-                "base_url": system_model_cfg.api_base,
-                "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
-                "model_name": system_model_cfg.model,
-                "temperature": mem_cfg.temperature,
-                "thinking_enabled": str(mem_cfg.thinking_enabled).lower(),
-                "max_tokens": 1024,
-            })
-            async def _system_model_call(prompt: str) -> str:
-                """Call the system model with a simple prompt, return text content."""
-                msg = await _aio2.to_thread(
-                    _system_adapter.chat_complete,
-                    [{"role": "user", "content": prompt}],
-                    tools=None,
-                    max_tokens=1024,
-                )
-                return msg.content or ""
+            system_model_cfg = next(
+                (m for m in config.models if m.name == mem_cfg.model),
+                config.models[0] if config.models else None,
+            )
+            if system_model_cfg:
+                _system_adapter = _SystemAdapter({
+                    "base_url": system_model_cfg.api_base,
+                    "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
+                    "model_name": system_model_cfg.model,
+                    "temperature": mem_cfg.temperature,
+                    "thinking_enabled": str(mem_cfg.thinking_enabled).lower(),
+                    "max_tokens": 1024,
+                })
+
+                async def _system_model_call(prompt: str) -> str:
+                    """Call the system model with a simple prompt, return text content."""
+                    msg = await _aio2.to_thread(
+                        _system_adapter.chat_complete,
+                        [{"role": "user", "content": prompt}],
+                        tools=None,
+                        max_tokens=1024,
+                    )
+                    return msg.content or ""
 
         if mem_cfg and mem_cfg.writer == "llm" and _system_model_call:
             from arf.memory.llm_writer import LLMMemoryWriter
@@ -313,7 +318,7 @@ class BaseAgent:
                 "model_name": m.model,
                 **m.kwargs,
             })
-        default_name = config.models[0].name
+        default_name = config.models[0].name if config.models else ""
 
         def _to_openai_tools(tools):
             """Convert framework ToolDefinition list to OpenAI tool format."""
