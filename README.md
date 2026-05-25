@@ -29,6 +29,18 @@
 
 <br/>
 
+## Reading Guide
+
+This document is organized in two parts plus a bottom section:
+
+- **Part I — Framework**: Core design philosophy and problem-domain landscape. Each problem name in the table links to a deep-dive design doc (three chapters: OS evolution / current implementation / evolution direction)
+- **Part II — Reference App**: How the application layer calls each framework capability, with config examples and design doc links
+- **Bottom [TODO](#todo)**: Known issues and evolution directions for contributors
+
+New readers: scan the overview table first for the big picture, then dive into specific docs as needed.
+
+<br/>
+
 ---
 
 ## Part I — Framework
@@ -44,6 +56,8 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 > **Model + Harness = Agent. CPU + Kernel = Computer.**
 >
 > Token is the instruction. Agent session is the process. Tool call is the system call.
+
+*Click any problem name for the full design document.*
 
 | Problem | OS Solution | Current | Evolution |
 |---------|-------------|---------|-----------|
@@ -224,12 +238,16 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 
 ## TODO
 
+> Issues found during source-code fact-checking, and evolution directions discussed in the design docs. Contributors welcome.
+
 ### Pending Fixes
+
+*Confirmed 2026-05-25 via source review.*
 
 | # | Issue | Location |
 |---|-------|----------|
-| 1 | Tools execute in parallel by default (`strategy="parallel"`), not "sequential" | README, `ConcurrentToolExecutor` |
-| 2 | Hooks use `asyncio.gather` (coroutines), not "thread pool" | README, `SubprocessHookRunner` |
+| 1 | Tools execute in parallel by default (`strategy="parallel"`), not "sequential" | `ConcurrentToolExecutor` |
+| 2 | Hooks use `asyncio.gather` (coroutines), not "thread pool" | `SubprocessHookRunner` |
 | 3 | `SequentialScheduler` defined but never used | `arf/concurrency/sequential.py` |
 | 4 | `SandboxConfig(allow_escape, writable_dirs)` not wired into any guard | `arf/guardrails/`, `arf/sandbox/` |
 | 5 | `TwoTierRouter.fallback_from()` implemented but engine never calls it on model failure | `arf/routing/`, `arf/engine/graph.py` |
@@ -238,14 +256,16 @@ Browser opens at **http://localhost:5173** — enter your API key and start.
 
 ### Evolution Directions
 
-| Module | Directions |
-|--------|------------|
-| Memory | Semantic-unit retrieval; knowledge graph index; prefetch; hot/cold tiering; memory decay |
-| Model Routing | Three-tier classifier (light/medium/complex); continuous load tracking; model-as-hardware |
-| Tool Sandbox | Per-invocation sandbox; MCP protocol; approval channel; recursive param checking |
-| Concurrency | Multi-agent DAG scheduling; worktree isolation; dynamic concurrency; transactional file ops |
-| Interrupt | Pause/resume; persistent checkpoints; idle timeout; interrupt priority |
-| Trace | SQLite trace DB; OpenTelemetry export; real-time alerts; performance profiling |
+*See Chapter 3 of each design doc for details.*
+
+| Module | Doc | Directions |
+|--------|-----|------------|
+| Memory | [memory-management.md](docs/memory-management.md) | Semantic-unit retrieval · knowledge graph index · prefetch · hot/cold tiering · memory decay |
+| Model Routing | [model-routing.md](docs/model-routing.md) | Three-tier classifier · continuous load tracking · model-as-hardware |
+| Tool Sandbox | [tool-sandbox.md](docs/tool-sandbox.md) | Per-invocation sandbox · MCP protocol · approval channel · recursive param checking |
+| Concurrency | [skill-pipeline.md](docs/skill-pipeline.md) | Multi-agent DAG scheduling · worktree isolation · transactional file ops |
+| Interrupt | [interrupt.md](docs/interrupt.md) | Pause/resume · persistent checkpoints · idle timeout · interrupt priority |
+| Trace | [trace.md](docs/trace.md) | SQLite trace DB · OpenTelemetry export · real-time alerts · performance profiling |
 
 <br/>
 

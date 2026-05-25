@@ -29,6 +29,18 @@
 
 <br/>
 
+## 阅读指引
+
+这份文档分为两大部分和底部待办清单：
+
+- **第一部分 — 框架**：核心设计理念和问题域全景。表格中每个问题名称都是一个链接，指向深度设计文档（每篇含 OS 方案演进 / 当前实现 / 演进方向三章）
+- **第二部分 — 参考应用**：展示应用层如何调用框架的每项能力，附配置示例和设计文档链接
+- **底部 [TODO](#todo)**：已知问题与演进方向汇总，面向贡献者
+
+新读者建议先扫一遍总览表格建立全景，再按需深入具体文档。
+
+<br/>
+
 ---
 
 ## 第一部分 — 框架
@@ -44,6 +56,8 @@
 > **Model + Harness = Agent。CPU + Kernel = Computer。**
 >
 > Token 是指令。Agent 会话是进程。工具调用是系统调用。
+
+*点击第一列的问题名称可查看深度设计文档。*
 
 | 问题 | OS 方案 | 当前实现 | 演进方向 |
 |------|--------|----------|----------|
@@ -224,12 +238,16 @@ arf start        # 启动服务
 
 ## TODO
 
+> 以下条目记录了事实校验发现的不一致和文档中讨论的演进方向。欢迎贡献者认领。
+
 ### 待修复
+
+*确认于 2026-05-25 对源码的事实校验。*
 
 | # | 问题 | 位置 |
 |---|------|------|
-| 1 | 工具默认并行执行（`strategy="parallel"`），表中"顺序执行"不准确 | README, `ConcurrentToolExecutor` |
-| 2 | Hook 使用 `asyncio.gather` 协程并发，非"线程池" | README, `SubprocessHookRunner` |
+| 1 | 工具默认并行执行（`strategy="parallel"`），表中"顺序执行"不准确 | `ConcurrentToolExecutor` |
+| 2 | Hook 使用 `asyncio.gather` 协程并发，非"线程池" | `SubprocessHookRunner` |
 | 3 | `SequentialScheduler` 已定义但从未被使用 | `arf/concurrency/sequential.py` |
 | 4 | `SandboxConfig(allow_escape, writable_dirs)` 未接入任何 guard | `arf/guardrails/`, `arf/sandbox/` |
 | 5 | `TwoTierRouter.fallback_from()` 已实现但引擎未在模型失败时调用 | `arf/routing/`, `arf/engine/graph.py` |
@@ -238,14 +256,16 @@ arf start        # 启动服务
 
 ### 演进方向
 
-| 模块 | 方向 |
-|------|------|
-| 内存管理 | 语义单元检索；知识图谱索引；主动预取；冷热分离；记忆衰减 |
-| 多模型调度 | 三级分类器（light/medium/complex）；连续负载跟踪；模型硬件化 |
-| 工具沙箱 | per-invocation 独立沙箱；MCP 协议集成；审批通道；递归参数检查 |
-| 并发 | 多 Agent DAG 调度；Worktree 隔离；并发度动态调整；事务性文件操作 |
-| 中断 | 暂停/恢复；持久化检查点；空闲超时；中断优先级 |
-| Trace | SQLite Trace 数据库；OpenTelemetry 导出；实时告警；性能剖面 |
+*详见各模块设计文档第3章。*
+
+| 模块 | 文档 | 方向 |
+|------|------|------|
+| 内存管理 | [memory-management.md](docs/memory-management.md) | 语义单元检索 · 知识图谱索引 · 主动预取 · 冷热分离 · 记忆衰减 |
+| 多模型调度 | [model-routing.md](docs/model-routing.md) | 三级分类器 · 连续负载跟踪 · 模型硬件化 |
+| 工具沙箱 | [tool-sandbox.md](docs/tool-sandbox.md) | 独立沙箱 · MCP 协议 · 审批通道 · 递归参数检查 |
+| 并发 | [skill-pipeline.md](docs/skill-pipeline.md) | 多 Agent DAG 调度 · Worktree 隔离 · 事务性文件操作 |
+| 中断 | [interrupt.md](docs/interrupt.md) | 暂停/恢复 · 持久化检查点 · 空闲超时 · 中断优先级 |
+| Trace | [trace.md](docs/trace.md) | SQLite 数据库 · OpenTelemetry 导出 · 实时告警 · 性能剖面 |
 
 <br/>
 
