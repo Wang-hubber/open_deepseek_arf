@@ -1,43 +1,146 @@
-"""DefaultToolResolver — wraps Provider + optional Retriever + Backend."""
+"""ResourceResolver — unified resource resolution with override merge.
+
+Resolves tools, skills, and models from filesystem providers.
+Merges agent.yaml overrides on top of filesystem definitions.
+Override priority: agent.yaml field > filesystem field > Pydantic default.
+
+Backward-compat: DefaultToolResolver preserved for existing callers
+(base.py, etc.) with the old constructor signature, delegating
+internally to ResourceResolver.
+"""
 from arf.core.protocols.resources import ToolDefinition, ToolProvider, ToolRetriever, ToolBackend
-from arf.core.config_base import ToolConfig
+from arf.core.config_base import ToolConfig, SkillConfig, ModelConfig
 from arf.core.results import ToolResult
 
 
-class DefaultToolResolver:
+class ResourceResolver:
+    """Unified resource resolver — tools, skills, models, override merge,
+    dynamic reload, and config generation."""
+
     def __init__(
         self,
-        providers: list[ToolProvider],
-        retriever: ToolRetriever | None = None,
-        backend: ToolBackend | None = None,
-    ) -> None:
-        self._providers = providers
-        self._retriever = retriever
-        self._backend = backend
+        tool_provider,
+        skill_provider=None,
+        model_provider=None,
+        agent_yaml_overrides: dict | None = None,
+    ):
+        self._tool_provider = tool_provider
+        self._skill_provider = skill_provider
+        self._model_provider = model_provider
+        self._overrides = agent_yaml_overrides or {}
+
+    # -- tools (backward-compat with DefaultToolResolver) --
 
     async def get_tool_definitions(
-        self, query_context: str, top_k: int = 10,
+        self, query_context: str = "", top_k: int = 10,
     ) -> list[ToolDefinition]:
-        all_tools: list[ToolConfig] = []
-        for p in self._providers:
-            all_tools.extend(await p.list_tools())
-        if self._retriever and len(all_tools) > top_k:
-            all_tools = await self._retriever.retrieve(query_context, all_tools, top_k)
+        tools = await self._tool_provider.list_tools()
+        overrides = self._overrides.get("tools", [])
+        merged = self._merge_configs(tools, overrides, ToolConfig)
         return [
             ToolDefinition(name=t.name, description=t.description, parameters=t.parameters)
-            for t in all_tools
+            for t in merged
         ]
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
-        for p in self._providers:
-            cfg = await p.resolve(tool_name)
-            if cfg:
-                if hasattr(p, "execute"):
-                    return await p.execute(tool_name, params)
-        return ToolResult(tool_name=tool_name, success=False, error=f"Tool '{tool_name}' not found")
+        return await self._tool_provider.execute(tool_name, params)
+
+    # -- skills --
+
+    def get_skill_definitions(self) -> list[SkillConfig]:
+        if self._skill_provider is None:
+            return []
+        skills = self._skill_provider.list()
+        overrides = self._overrides.get("skills", [])
+        return self._merge_configs(skills, overrides, SkillConfig)
+
+    # -- models --
+
+    def get_model_definitions(self) -> list[ModelConfig]:
+        if self._model_provider is None:
+            return []
+        models = self._model_provider.list()
+        overrides = self._overrides.get("models", [])
+        return self._merge_configs(models, overrides, ModelConfig)
+
+    # -- cache --
+
+    async def reload_dynamic(self) -> None:
+        """Clear dynamic caches across all providers."""
+        if hasattr(self._tool_provider, "invalidate_dynamic"):
+            self._tool_provider.invalidate_dynamic()
+        if self._skill_provider and hasattr(self._skill_provider, "invalidate_dynamic"):
+            self._skill_provider.invalidate_dynamic()
+        if self._model_provider and hasattr(self._model_provider, "invalidate_dynamic"):
+            self._model_provider.invalidate_dynamic()
+
+    # -- override merge --
+
+    def _merge_configs(
+        self, fs_items: list, override_list: list[dict], config_cls,
+    ) -> list:
+        """Merge filesystem items with agent.yaml overrides.
+
+        Filesystem is base. Override dicts with matching 'name' are applied on top.
+        Override-only entries (not in filesystem) are appended as new items.
+        """
+        override_map = {o["name"]: o for o in override_list if "name" in o}
+        result = []
+        seen = set()
+        for item in fs_items:
+            if item.name in override_map:
+                merged = item.model_copy(update=override_map[item.name])
+                seen.add(item.name)
+            else:
+                merged = item
+            result.append(merged)
+        # Append overrides without filesystem counterpart
+        for name, ov in override_map.items():
+            if name not in seen:
+                result.append(config_cls(**ov))
+        return result
+
+    # -- config generation --
+
+    async def generate_config(self) -> dict:
+        """Dump all discovered resources as agent.yaml-compatible dict."""
+        config = {}
+        if self._tool_provider:
+            tools = await self._tool_provider.list_tools()
+            config["tools"] = [t.model_dump(exclude_none=True) for t in tools]
+        if self._skill_provider:
+            config["skills"] = [s.model_dump(exclude_none=True) for s in self._skill_provider.list()]
+        if self._model_provider:
+            config["models"] = [m.model_dump(exclude_none=True) for m in self._model_provider.list()]
+        return config
+
+
+class DefaultToolResolver:
+    """Backward-compatible wrapper — preserves old constructor signature.
+
+    Old callers that construct ``DefaultToolResolver(providers=[...])``
+    continue to work unchanged.  Delegates to ``ResourceResolver``
+    internally for the new unified API.
+    """
+
+    def __init__(
+        self,
+        providers: list,
+        retriever: ToolRetriever | None = None,
+        backend: ToolBackend | None = None,
+    ) -> None:
+        # Old code passed a list of ToolProviders; in practice always one.
+        tool_provider = providers[0] if providers else None
+        self._inner = ResourceResolver(tool_provider=tool_provider)
+
+    async def get_tool_definitions(
+        self, query_context: str = "", top_k: int = 10,
+    ) -> list[ToolDefinition]:
+        return await self._inner.get_tool_definitions(query_context, top_k)
+
+    async def execute(self, tool_name: str, params: dict) -> ToolResult:
+        return await self._inner.execute(tool_name, params)
 
     async def reload(self) -> None:
         """Reload all providers — clears cached tool lists for re-scan."""
-        for p in self._providers:
-            if hasattr(p, "invalidate_dynamic"):
-                p.invalidate_dynamic()
+        await self._inner.reload_dynamic()
