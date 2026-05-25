@@ -67,7 +67,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `tool.yaml` + `function.py` per tool. `PathCheckToolGuard` blocks traversal. Dual-source isolation: framework read-only, workspace read-write. Permission deny→ask→allow pipeline. | Per-invocation sandbox; MCP protocol |
 | **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential execution. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook thread-pool parallelization. | Multi-agent DAG analysis; worktree isolation |
 | **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
-| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 13 event types via EventBus → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
+| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 15 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
 
@@ -199,7 +199,7 @@ Skills can declare tool pipelines with explicit dependencies. The engine enforce
 
 ### Trace — Full Pipeline Visibility
 
-13 event types stream via `EventBus` → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
+15 event types in EventType Literal, 13 emitted by engine → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
 
 [Design doc →](docs/trace.md)
 
@@ -259,7 +259,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
 | 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
 | 11 | `ReloadConfig` never read — `BaseAgent` hardcodes `watch_enabled=True`, ignoring config | `arf/agent/base.py:82` |
-| 12 | `EventType` Literal has 15 types but engine emits 13 (`tool_call_result`/`approval_required`/`approval_resolved` unused; `user_input` emitted but not in Literal) | `arf/core/events.py` |
+| 12 | `EventType` Literal defines 15 types; `approval_required`/`approval_resolved` reserved for approval channel; `user_input` added to Literal | `arf/core/events.py` |
 | 13 | `CompactionConfig.strategy` includes `"summarization"` option with zero behavioral difference from `"sliding_window"` | `arf/core/config_base.py:62`, `base.py:171` |
 | 14 | Agent loop sequential but single-turn tool calls parallel (`ConcurrentToolExecutor`) — README overview table says "Sequential execution" | `arf/engine/tool_executor.py` |
 
@@ -269,7 +269,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 | # | Issue | Location |
 |---|-------|----------|
-| D1 | "13 event types" — code defines 15; doc lists `user_input` which isn't in the Literal type | `docs/trace.md`, README |
+| D1 | (fixed 2026-05-25) Event type count unified across docs; `user_input` added to EventType Literal | `arf/core/events.py`, `docs/trace.md`, README |
 | D2 | `ResourceCache` extensively documented as architecture component despite being dead code | `docs/resource-registry.md` |
 | D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
 | D4 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |

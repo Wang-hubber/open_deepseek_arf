@@ -6,12 +6,13 @@ import time
 
 EventType = Literal[
     "session_start", "session_end",
+    "user_input",
     "thinking_delta",
     "model_call_start", "model_call_end",
     "tool_call_start", "tool_call_end",
-    "tool_call_result",
     "compaction_start", "compaction_end",
-    "approval_required", "approval_resolved",
+    "approval_required",   # reserved: approval channel (ask→pause→user confirm/resolve)
+    "approval_resolved",   # reserved: paired with approval_required
     "hook_start", "hook_end",
     "error",
 ]

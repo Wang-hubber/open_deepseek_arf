@@ -59,7 +59,7 @@ EventBus.emit(AgentEvent)
 
 `AgentEvent`（`arf/core/events.py`，30 行）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
 
-**13 种事件类型**（`EventType` Literal）：
+**15 种事件类型定义**（`EventType` Literal），引擎实际 emit 13 种，`approval_required` / `approval_resolved` 为审批通道预留：
 
 | 事件 | 触发时机 | 关键 data 字段 |
 |------|----------|---------------|
@@ -73,6 +73,8 @@ EventBus.emit(AgentEvent)
 | `tool_call_end` | 工具调用结束 | tool_name, success, result, error, duration_ms |
 | `compaction_start` | 压缩开始 | msg_count, model |
 | `compaction_end` | 压缩结束 | msg_count, summary_len |
+| `approval_required` | *(预留) 审批请求 | — |
+| `approval_resolved` | *(预留) 审批结果 | — |
 | `hook_start` | Hook 执行开始 | event (hook 名称) |
 | `hook_end` | Hook 执行结束 | event, passed, failed |
 | `error` | 执行错误 | detail, code |
