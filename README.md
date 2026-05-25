@@ -249,7 +249,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | # | Issue | Location |
 |---|-------|----------|
 | 1 | (fixed 2026-05-25) `ResourceCache` wired into all three Providers | `arf/resources/cache.py` |
-| 2 | CLI commands missing `/api/` prefix (`/chat`→`/api/chat`, `/save`→`/api/save`, `/resources/`→`/api/resources/`) | `app/arf_default_assistant/cli.py` |
+| 2 | (fixed 2026-05-25) CLI commands missing `/api/` prefix — all 5 occurrences corrected | `app/arf_default_assistant/cli.py` |
 | 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`) | `arf/agent/config.py` |
 | 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` lifecycle managed by app (`_agent._file_watcher.start/stop`), not framework | `arf/resources/file_watcher.py`, `server.py` |

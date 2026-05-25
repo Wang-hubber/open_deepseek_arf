@@ -44,7 +44,7 @@ def cmd_init(args):
 
 def cmd_chat(args):
     """Send a message to the assistant."""
-    result = _httpx_post("/chat", {"message": args.message})
+    result = _httpx_post("/api/chat", {"message": args.message})
     if result:
         print(result.get("content", ""))
 
@@ -95,7 +95,7 @@ def _kill_port(port: int):
     """Kill process on the given port."""
     try:
         import httpx
-        httpx.post(f"http://127.0.0.1:{port}/save", timeout=5)
+        httpx.post(f"http://127.0.0.1:{port}/api/save", timeout=5)
     except Exception:
         pass
     try:
@@ -118,7 +118,7 @@ def _kill_port(port: int):
 
 def cmd_stop(args):
     """Stop the server and save state."""
-    _httpx_post("/save")
+    _httpx_post("/api/save")
     _kill_port(8000)
     print("Server stopped.")
 
@@ -141,7 +141,7 @@ def cmd_web(args):
 
 def cmd_run(args):
     """Find and print a skill definition."""
-    result = _httpx_get("/resources/skills")
+    result = _httpx_get("/api/resources/skills")
     if result:
         for skill in result.get("items", []):
             if skill.get("name") == args.skill:
@@ -156,7 +156,7 @@ def cmd_list(args):
     """List resources (tools, skills, models)."""
     type_map = {"tools": "tools", "skills": "skills", "models": "models"}
     t = type_map.get(args.type, "tools")
-    result = _httpx_get(f"/resources/{t}")
+    result = _httpx_get(f"/api/resources/{t}")
     if result:
         print(f"{result['type'].capitalize()} ({result['count']}):")
         for item in result.get("items", []):

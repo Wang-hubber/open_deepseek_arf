@@ -249,7 +249,7 @@ python cli.py start    # 启动服务
 | # | 问题 | 位置 |
 |---|------|------|
 | 1 | (已修复 2026-05-25) `ResourceCache` 已接入全部三个 Provider | `arf/resources/cache.py` |
-| 2 | CLI 命令缺少 `/api/` 前缀（`/chat`→`/api/chat`，`/save`→`/api/save`，`/resources/`→`/api/resources/`） | `app/arf_default_assistant/cli.py` |
+| 2 | (已修复 2026-05-25) CLI 命令缺少 `/api/` 前缀——全部 5 处已修正 | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`） | `arf/agent/config.py` |
 | 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
 | 5 | `FileWatcher` 生命周期由 app 管理（`_agent._file_watcher.start/stop`），非框架 | `arf/resources/file_watcher.py`、`server.py` |
