@@ -11,6 +11,7 @@ class ModelConfig(BaseModel):
     api_key_env: str = "DEEPSEEK_API_KEY"
     context_window: int = 131_072  # max tokens for this model
     kwargs: dict = Field(default_factory=dict)
+    activation: Literal["kernel", "discoverable", "passive"] = "discoverable"
 
 
 class PipelineStep(BaseModel):

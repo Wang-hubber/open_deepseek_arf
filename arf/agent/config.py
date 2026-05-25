@@ -55,11 +55,11 @@ class AgentConfig(BaseModel):
     name: str
     role: str = ""
     task: str = ""
-    description: str
+    description: str = ""
     system_prompt: SystemPromptConfig = Field(default_factory=SystemPromptConfig)
-    models: list[ModelConfig]
-    skills: list[SkillConfig] = Field(default_factory=list)
-    tools: list[ToolConfig] = Field(default_factory=list)
+    models: list[ModelConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
+    skills: list[SkillConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
+    tools: list[ToolConfig] = Field(default_factory=list)    # optional — filesystem is source of truth
     hooks: list[HookDefinition] = Field(default_factory=list)
     advanced: AdvancedConfig | None = None
     agents: list["AgentConfig"] | None = None
