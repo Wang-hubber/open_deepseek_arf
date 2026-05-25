@@ -99,6 +99,24 @@ class BaseAgent:
         skill_provider = SkillProvider(skills_dir)
         model_provider = ModelProvider(models_dir)
 
+        # Merge filesystem models with agent.yaml overrides (filesystem is base).
+        # This gives init-phase code (adapters, system model, router) the full
+        # model list without depending on ResourceResolver's lazy merge-on-read.
+        fs_models = model_provider.list()
+        agent_models = {m.name: m for m in (config.models or [])}
+        merged_models: list = []
+        for fm in fs_models:
+            if fm.name in agent_models:
+                merged_models.append(
+                    fm.model_copy(update=agent_models[fm.name].model_dump(exclude_none=True))
+                )
+            else:
+                merged_models.append(fm)
+        for name, am in agent_models.items():
+            if not any(m.name == name for m in merged_models):
+                merged_models.append(am)
+        config.models = merged_models
+
         # Build override dict from agent.yaml for merge-on-read
         overrides = {
             "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
