@@ -250,14 +250,14 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 |---|-------|----------|
 | 1 | (fixed 2026-05-25) `ResourceCache` wired into all three Providers | `arf/resources/cache.py` |
 | 2 | (fixed 2026-05-25) CLI commands missing `/api/` prefix — all 5 occurrences corrected | `app/arf_default_assistant/cli.py` |
-| 3 | `agent.yaml` fields parsed but never read: `role`/`task` wired into system prompt; `reload` wired; remaining `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` + multi-agent fields still pending | `arf/agent/config.py` |
+| 3 | (fixed 2026-05-25) `role`/`task` wired; `reload`/`guardrails` wired; `human_loop`/`streaming`/`sandbox` removed from config | `arf/agent/config.py` |
 | 4 | (fixed 2026-05-25) `FileStateStore` added as default; app saves removed | `arf/engine/checkpoint.py` |
 | 5 | (fixed 2026-05-25) `BaseAgent.start()/stop()` manage FileWatcher lifecycle | `arf/agent/base.py` |
 | 6 | (fixed 2026-05-25) `engine`/`resource_resolver`/`start()`/`stop()` public API added | `arf/agent/base.py` |
 | 7 | (closed — orphan tools are filesystem source-of-truth, agent.yaml is override layer only) | `app/arf_default_assistant/tools/` |
 | 8 | (fixed 2026-05-25) `set_agent()` called twice in lifespan — duplicate removed | `app/arf_default_assistant/server.py:70` |
-| 9 | `ToolConfig.provider`/`backend`/`execution`/`source` parsed but never enforced | `arf/core/config_base.py` |
-| 10 | Multi-agent (`agents:`/`handover:`/`supervisor:`) parsed but never wired into engine | `arf/agent/config.py` |
+| 9 | (fixed 2026-05-25) `ToolConfig` dead fields (`source`/`provider`/`backend`/`execution`) removed | `arf/core/config_base.py` |
+| 10 | (deferred) Multi-agent — parsed but not wired; requires Dispatcher/Supervisor design | `arf/agent/config.py` |
 | 11 | (fixed 2026-05-25) `ReloadConfig` wired — `watch` and `poll_interval` now read by BaseAgent | `arf/agent/base.py`, `config_base.py` |
 | 12 | (fixed 2026-05-25) `EventType` cleaned up — `user_input` added, dead types removed, approvals reserved | `arf/core/events.py` |
 | 13 | (fixed 2026-05-25) `CompactionConfig.strategy` — removed `"summarization"` from Literal | `arf/core/config_base.py` |
@@ -303,10 +303,10 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 |---|-------|---------------|-------------------|
 | B1 | (fixed 2026-05-25) Disk state store | `FileStateStore` as default, JSON per session | ✅ Done |
 | B2 | (fixed 2026-05-25) FileWatcher lifecycle | `agent.start()/stop()` manages FileWatcher | ✅ Done |
-| B3 | API key management | `server.py` `.env` parser, validator, cache, register endpoint | Framework key store + validation |
-| B4 | Session management | `server.py` `_active_cancel_events`, session stubs | Framework session manager |
-| B5 | Trace API endpoints | `server.py` `/api/trace/*` routes | Framework FastAPI router |
-| B6 | SSE event translation | `server.py` `_sse_chat()` 139-line event translator | Framework SSE adapter |
+| B3 | (deferred) API key management | `server.py` `.env` parser, validator, cache, register | App concern — framework reads from os.environ |
+| B4 | (deferred) Session management | `server.py` `_active_cancel_events`, session stubs | App concern — single-session model |
+| B5 | (deferred) Trace API endpoints | `server.py` `/api/trace/*` routes | App concern — reference implementation |
+| B6 | (deferred) SSE event translation | `server.py` `_sse_chat()` 139-line event translator | App concern — UI protocol mapping |
 
 <br/>
 

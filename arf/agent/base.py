@@ -19,8 +19,6 @@ from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
 from arf.errors.retry import DefaultErrorPolicy
 from arf.errors.transaction import SnapshotRollback
-from arf.human_loop.approval_points import AlwaysAutoApprove
-from arf.human_loop.channels.console import ConsoleChannel
 
 
 def _build_system_prompt(config: AgentConfig) -> str:
@@ -235,12 +233,25 @@ class BaseAgent:
                 summarizer=_summarizer,
             )
 
-        # 4. Guardrails
+        # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
         _workspace_root = str(tools_dir.parent.resolve())
+        gr_cfg = adv.guardrails if adv else None
+        if gr_cfg and gr_cfg.input == "none":
+            input_guard = NoneInputGuard()
+        else:
+            input_guard = NoneInputGuard()  # only "none" implemented currently
+        if gr_cfg and gr_cfg.output == "none":
+            output_guard = None
+        else:
+            output_guard = RegexOutputGuard()  # default and only implemented option
+        if gr_cfg and gr_cfg.tool_params == "none":
+            tool_guard = None
+        else:
+            tool_guard = PathCheckToolGuard(workspace_root=_workspace_root)  # default, only implemented
         guard_runner = override_protocols.pop("guard_runner", DefaultGuardRunner(
-            input_guard=NoneInputGuard(),
-            output_guard=RegexOutputGuard(),
-            tool_guard=PathCheckToolGuard(workspace_root=_workspace_root),
+            input_guard=input_guard,
+            output_guard=output_guard,
+            tool_guard=tool_guard,
         ))
 
         # 5. Error + Transaction

@@ -6,8 +6,7 @@ import yaml
 from arf.core.config_base import (
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
-    GuardrailsConfig, ErrorConfig, HumanLoopConfig,
-    StreamingConfig, SandboxConfig, ToolRetrievalConfig,
+    GuardrailsConfig, ErrorConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
 )
 
@@ -21,9 +20,6 @@ class AdvancedConfig(BaseModel):
     memory: MemoryConfig | None = None
     guardrails: GuardrailsConfig | None = None
     errors: ErrorConfig | None = None
-    human_loop: HumanLoopConfig | None = None
-    streaming: StreamingConfig | None = None
-    sandbox: SandboxConfig | None = None
     tool_retrieval: ToolRetrievalConfig | None = None
     reload: ReloadConfig | None = None
 

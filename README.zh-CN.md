@@ -250,14 +250,14 @@ python cli.py start    # 启动服务
 |---|------|------|
 | 1 | (已修复 2026-05-25) `ResourceCache` 已接入全部三个 Provider | `arf/resources/cache.py` |
 | 2 | (已修复 2026-05-25) CLI 命令缺少 `/api/` 前缀——全部 5 处已修正 | `app/arf_default_assistant/cli.py` |
-| 3 | `agent.yaml` 字段已解析但未读取：`role`/`task` 已接入 system prompt；`reload` 已接入；剩余 `guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval` 及多 Agent 字段仍未接线 | `arf/agent/config.py` |
+| 3 | (已修复 2026-05-25) `role`/`task` 接入；`reload`/`guardrails` 接入；`human_loop`/`streaming`/`sandbox` 从配置中移除 | `arf/agent/config.py` |
 | 4 | (已修复 2026-05-25) `FileStateStore` 已添加为默认实现；app 手动保存已移除 | `arf/engine/checkpoint.py` |
 | 5 | (已修复 2026-05-25) `BaseAgent.start()/stop()` 管理 FileWatcher 生命周期 | `arf/agent/base.py` |
 | 6 | (已修复 2026-05-25) `engine`/`resource_resolver`/`start()`/`stop()` 公共 API 已添加 | `arf/agent/base.py` |
 | 7 | (已关闭 —— 孤儿工具属约定优于配置，文件系统即真相源，agent.yaml 仅作覆盖层) | `app/arf_default_assistant/tools/` |
 | 8 | (已修复 2026-05-25) `set_agent()` 在 lifespan 中重复调用——已删除 | `app/arf_default_assistant/server.py:70` |
-| 9 | `ToolConfig.provider`/`backend`/`execution`/`source` 已解析但未强制执行 | `arf/core/config_base.py` |
-| 10 | 多 Agent（`agents:`/`handover:`/`supervisor:`）已解析但未接入引擎 | `arf/agent/config.py` |
+| 9 | (已修复 2026-05-25) `ToolConfig` 死字段（`source`/`provider`/`backend`/`execution`）已移除 | `arf/core/config_base.py` |
+| 10 | (暂缓) 多 Agent — 已解析但未接线；需要 Dispatcher/Supervisor 架构设计 | `arf/agent/config.py` |
 | 11 | (已修复 2026-05-25) `ReloadConfig` 已接入——`watch` 和 `poll_interval` 由 BaseAgent 读取 | `arf/agent/base.py`、`config_base.py` |
 | 12 | (已修复 2026-05-25) `EventType` 清理——`user_input` 补入，死类型移除，审批通道预留 | `arf/core/events.py` |
 | 13 | (已修复 2026-05-25) `CompactionConfig.strategy` — 移除无用的 `"summarization"` 枚举值 | `arf/core/config_base.py` |
@@ -303,10 +303,10 @@ python cli.py start    # 启动服务
 |---|------|---------------|---------------|
 | B1 | (已修复 2026-05-25) 磁盘状态存储 | `FileStateStore` 默认实现，每 session JSON 文件 | ✅ 完成 |
 | B2 | (已修复 2026-05-25) FileWatcher 生命周期 | `agent.start()/stop()` 管理 FileWatcher | ✅ 完成 |
-| B3 | API 密钥管理 | `server.py` `.env` 解析、验证、缓存、注册端点 | 框架密钥存储 + 验证 |
-| B4 | Session 管理 | `server.py` `_active_cancel_events`、session stubs | 框架 Session 管理器 |
-| B5 | Trace API 端点 | `server.py` `/api/trace/*` 路由 | 框架 FastAPI router |
-| B6 | SSE 事件翻译 | `server.py` `_sse_chat()` 139 行事件翻译器 | 框架 SSE 适配器 |
+| B3 | (暂缓) API 密钥管理 | `server.py` `.env` 解析、验证、缓存、注册 | 应用层职责——框架从 os.environ 读取 |
+| B4 | (暂缓) Session 管理 | `server.py` `_active_cancel_events`、session stubs | 应用层职责——单 session 模型 |
+| B5 | (暂缓) Trace API 端点 | `server.py` `/api/trace/*` 路由 | 应用层职责——参考实现 |
+| B6 | (暂缓) SSE 事件翻译 | `server.py` `_sse_chat()` 139 行事件翻译器 | 应用层职责——UI 协议映射 |
 
 <br/>
 
