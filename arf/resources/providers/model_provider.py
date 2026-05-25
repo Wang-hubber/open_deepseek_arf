@@ -1,7 +1,10 @@
 """ModelProvider — scan models/*.yaml for model configs."""
+import logging
 from pathlib import Path
 import yaml
 from arf.core.config_base import ModelConfig
+
+logger = logging.getLogger(__name__)
 
 
 class ModelProvider:
@@ -35,18 +38,22 @@ class ModelProvider:
         self._loaded = False
 
     def _load(self) -> None:
-        self._loaded = True
         self._dynamic.clear()
         if not self._dir.exists():
+            self._loaded = True
             return
         for yaml_path in sorted(self._dir.glob("*.yaml")):
-            raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-            if not raw or "name" not in raw:
-                continue
-            activation = raw.pop("activation", "discoverable")
-            cfg = ModelConfig(**raw)
-            if activation == "kernel":
-                if cfg.name not in self._kernel:
-                    self._kernel[cfg.name] = cfg
-            else:
-                self._dynamic[cfg.name] = cfg
+            try:
+                raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                if not raw or "name" not in raw:
+                    continue
+                cfg = ModelConfig(**raw)
+                activation = cfg.activation
+                if activation == "kernel":
+                    if cfg.name not in self._kernel:
+                        self._kernel[cfg.name] = cfg
+                else:
+                    self._dynamic[cfg.name] = cfg
+            except Exception as e:
+                logger.warning("Skipping %s: %s", yaml_path, e)
+        self._loaded = True
