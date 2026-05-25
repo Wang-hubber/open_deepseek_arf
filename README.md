@@ -273,7 +273,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | D2 | (fixed 2026-05-25) `ResourceCache` now wired — doc description matches actual architecture | `docs/resource-registry.md` |
 | D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
 | D4 | (fixed 2026-05-25) `ReloadConfig.watch` default now `True`, `poll_interval` added to model | `arf/core/config_base.py` |
-| D5 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |
+| D5 | (fixed 2026-05-25) Summarizer code location corrected to `base.py:186-214` | `docs/memory-management.md` |
 | D6 | Dual-agent architecture described as working in README but multi-agent scheduler not wired | README Part II |
 | D7 | (fixed 2026-05-25) App README tool count corrected from 14 to 15 | `app/arf_default_assistant/README.md` |
 | D8 | (fixed 2026-05-25) Hook execution order doc corrected — `asyncio.gather` parallel, not sequential | `docs/app/hooks.md` |

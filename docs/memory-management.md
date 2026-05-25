@@ -94,7 +94,7 @@ def should_compact(self, state, threshold=0.75, window_size=None):
 - 摘要叠加而非覆盖：连续多轮压缩时，每轮生成的摘要累积保留，避免历史信息丢失
 - 失败静默降级：summarizer 调用异常时仅记录日志，丢弃旧消息继续执行
 
-**LLM Summarizer**（`base.py:129-157`）：复用框架的 system model（deepseek-v4-flash, thinking disabled, temp 0.3）。取最近 30 条旧消息，每条截断至 300 字符。结构化输出包含：Completed / In Progress / Files Modified / Decisions / Facts & Preferences / Errors & Debugging / Next Steps 七个部分。
+**LLM Summarizer**（`base.py:186-214`）：复用框架的 system model（deepseek-v4-flash, thinking disabled, temp 0.3）。取最近 30 条旧消息，每条截断至 300 字符。结构化输出包含：Completed / In Progress / Files Modified / Decisions / Facts & Preferences / Errors & Debugging / Next Steps 七个部分。
 
 **工具输出摘要**（`sliding_window.py:71-97`）：工具输出超过 2000 字符时，原文写入 `memory/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入内存，按需映射即可。
 

@@ -273,7 +273,7 @@ python cli.py start    # 启动服务
 | D2 | (已修复 2026-05-25) `ResourceCache` 已接入，文档描述与实际架构一致 | `docs/resource-registry.md` |
 | D3 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
 | D4 | (已修复 2026-05-25) `ReloadConfig.watch` 默认值改为 `True`，`poll_interval` 已补入模型 | `arf/core/config_base.py` |
-| D5 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
+| D5 | (已修复 2026-05-25) Summarizer 代码位置修正为 `base.py:186-214` | `docs/memory-management.md` |
 | D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
 | D7 | (已修复 2026-05-25) App README 工具数量从 14 修正为 15 | `app/arf_default_assistant/README.md` |
 | D8 | (已修复 2026-05-25) Hook 执行顺序文档修正——`asyncio.gather` 并行，非顺序执行 | `docs/app/hooks.md` |
