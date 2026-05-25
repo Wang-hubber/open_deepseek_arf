@@ -60,7 +60,7 @@ app/arf_default_assistant/
 ├── server.py           # FastAPI 服务
 ├── lazy_persistence.py # 存档/恢复
 ├── test_setup.py       # 环境验证脚本
-├── tools/              # 14 个工具
+├── tools/              # 15 个工具
 ├── skills/             # 9 个技能
 ├── hooks/              # 自演进钩子
 └── memory/             # 持久化存档

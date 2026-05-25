@@ -275,8 +275,8 @@ python cli.py start    # 启动服务
 | D4 | (已修复 2026-05-25) `ReloadConfig.watch` 默认值改为 `True`，`poll_interval` 已补入模型 | `arf/core/config_base.py` |
 | D5 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
 | D6 | README 第二部分将双 Agent 架构描述为已工作状态，但多 Agent 调度器未接线 | README 第二部分 |
-| D7 | App README 写"14 个工具"，实际文件系统 15 个；`docs/app/tools.md` 正确写了 15 | `app/arf_default_assistant/README.md` |
-| D8 | Hook 执行文档写"按声明顺序执行"但 `SubprocessHookRunner` 使用 `asyncio.gather`（并行） | `docs/app/hooks.md` |
+| D7 | (已修复 2026-05-25) App README 工具数量从 14 修正为 15 | `app/arf_default_assistant/README.md` |
+| D8 | (已修复 2026-05-25) Hook 执行顺序文档修正——`asyncio.gather` 并行，非顺序执行 | `docs/app/hooks.md` |
 | D9 | `agent.yaml` 主 `models:` 段只声明 `deep`，但路由配置引用 `quick`（仅存在于文件系统）——隐式引用不直观 | `app/arf_default_assistant/agent.yaml` |
 
 [完整事实校验报告 →](docs/fact-check-2026-05-25.md)

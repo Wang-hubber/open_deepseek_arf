@@ -81,5 +81,5 @@ hooks:
 - Hook 的 stdout 在退出码为 2 时被注入对话，其余情况被丢弃
 - stderr 被记录到框架日志
 - 超时的 Hook 被 SIGKILL 强制终止，退出码记录为 -1
-- 同一事件类型的多个 Hook 按 `agent.yaml` 声明顺序执行
+- 同一事件类型的多个 Hook 通过 `asyncio.gather` 并行启动，执行顺序不保证
 - `create_subprocess_shell` 意味着 shell 元字符会被解释——Hook 的 `run` 命令来自配置文件（受信输入），不是用户输入
