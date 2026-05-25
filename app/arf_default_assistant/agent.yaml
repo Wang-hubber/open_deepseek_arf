@@ -45,26 +45,6 @@ system_prompt:
     When a skill matches the user's intent, read its full instructions via `file_reader`.
     Example: `file_reader` with `operation: read` and `path: skills/code_review.yaml`
 
-models:
-  - name: quick
-    api_type: openai
-    model: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-    context_window: 800000
-    kwargs:
-      reasoning_effort: high
-      temperature: 0.7
-
-  - name: deep
-    api_type: openai
-    model: deepseek-v4-pro
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-    context_window: 1000000
-    kwargs:
-      reasoning_effort: max
-
 tools:
   - name: file_reader
     description: 读取文件内容或列出目录
@@ -124,17 +104,6 @@ tools:
   - name: model_switch
     description: 切换当前对话使用的模型
     parameters: {type: object, properties: {model: {type: string}}, required: [model]}
-    activation: discoverable
-
-skills:
-  - name: file_ops
-    description: Comprehensive file operations — read, write, list, delete, download
-    tools: [file_reader, file_writer, file_deleter, file_download]
-    activation: kernel
-
-
-  - name: error_handler
-    description: Self-healing error handling — analyze tool errors, fix and retry
     activation: discoverable
 
 hooks:

@@ -209,6 +209,29 @@ def cmd_validate(args):
     return True
 
 
+def cmd_config_generate(args):
+    """Scan filesystem resources and dump agent.yaml to stdout."""
+    import asyncio
+    import yaml
+    from arf.resources.providers.tool_provider import ToolProvider
+    from arf.resources.providers.skill_provider import SkillProvider
+    from arf.resources.providers.model_provider import ModelProvider
+    from arf.resources.resolver import ResourceResolver
+
+    async def _run():
+        tp = ToolProvider(APP_DIR / "tools")
+        sp = SkillProvider(APP_DIR / "skills")
+        mp = ModelProvider(APP_DIR / "models")
+        resolver = ResourceResolver(tp, sp, mp)
+        config = await resolver.generate_config()
+        config["name"] = "arf_assistant"
+        config["description"] = "Auto-generated config — edit to add overrides"
+        return config
+
+    config = asyncio.run(_run())
+    print(yaml.dump(config, allow_unicode=True, default_flow_style=False))
+
+
 def cmd_clone(args):
     """Clone a system tool/skill to the workspace."""
     src_root = APP_DIR / ".." / ".." / "src" / "arf" / "resources" / "system"
@@ -283,9 +306,18 @@ def main():
     p_clone.add_argument("name", help="Resource name")
     p_clone.set_defaults(func=cmd_clone)
 
+    # Config management
+    p_config = sub.add_parser("config", help="Config management")
+    p_config_sub = p_config.add_subparsers(dest="config_cmd")
+    p_gen = p_config_sub.add_parser("generate", help="Generate agent.yaml from filesystem")
+    p_gen.set_defaults(func=cmd_config_generate)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
+        sys.exit(1)
+    if args.command == "config" and getattr(args, "config_cmd", None) is None:
+        p_config.print_help()
         sys.exit(1)
     args.func(args)
 
