@@ -5,6 +5,7 @@ import yaml
 from arf.core.config_base import ToolConfig
 from arf.core.results import ToolResult
 from arf.resources.backends.function import FunctionBackend
+from arf.resources.cache import ResourceCache
 
 
 class ToolProvider:
@@ -16,8 +17,7 @@ class ToolProvider:
 
     def __init__(self, tools_dir: str | Path) -> None:
         self._dir = Path(tools_dir)
-        self._kernel: dict[str, ToolConfig] = {}
-        self._dynamic: dict[str, ToolConfig] = {}
+        self._cache = ResourceCache()
         self._tools: dict[str, ToolConfig] = {}  # backward-compat combined view
         self._functions: dict[str, callable] = {}  # backward-compat combined view
         self._kernel_functions: dict[str, callable] = {}
@@ -29,12 +29,12 @@ class ToolProvider:
     def list_kernel(self) -> list[ToolConfig]:
         if not self._loaded:
             self._load()
-        return list(self._kernel.values())
+        return list(self._cache.kernel.values())
 
     def list_dynamic(self) -> list[ToolConfig]:
         if not self._loaded:
             self._load()
-        return list(self._dynamic.values())
+        return list(self._cache.dynamic.values())
 
     async def list_tools(self) -> list[ToolConfig]:
         """Backward-compat alias for existing callers."""
@@ -60,9 +60,9 @@ class ToolProvider:
 
     def invalidate_dynamic(self) -> None:
         """Clear dynamic cache and dynamic function bindings. Kernel untouched."""
-        self._dynamic.clear()
+        self._cache.invalidate_dynamic()
         # Rebuild backward-compat combined view (kernel only now)
-        self._tools = dict(self._kernel)
+        self._tools = dict(self._cache.kernel)
         # Keep only kernel functions
         kernel_only_names = set(self._kernel_functions.keys())
         for name in list(self._functions.keys()):
@@ -74,10 +74,10 @@ class ToolProvider:
 
     def _load(self) -> None:
         self._loaded = True
-        self._dynamic.clear()
+        self._cache.invalidate_dynamic()
         self._functions.clear()
         if not self._dir.exists():
-            self._tools = dict(self._kernel)
+            self._tools = dict(self._cache.kernel)
             return
         for tool_dir in sorted(self._dir.iterdir()):
             if not tool_dir.is_dir():
@@ -103,16 +103,16 @@ class ToolProvider:
                         fn = mod.execute
 
             if activation == "kernel":
-                if name not in self._kernel:
-                    self._kernel[name] = cfg
+                if not self._cache.has_kernel(name):
+                    self._cache.kernel[name] = cfg
                     if fn:
                         self._kernel_functions[name] = fn
             else:
-                self._dynamic[name] = cfg
+                self._cache.dynamic[name] = cfg
                 if fn:
                     self._functions[name] = fn
 
         # Rebuild backward-compat combined view
-        self._tools = {**self._kernel, **self._dynamic}
+        self._tools = {**self._cache.kernel, **self._cache.dynamic}
         # _functions already has dynamic functions populated above
         self._functions.update(self._kernel_functions)

@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import yaml
 from arf.core.config_base import SkillConfig
+from arf.resources.cache import ResourceCache
 
 logger = logging.getLogger(__name__)
 
@@ -16,29 +17,28 @@ class SkillProvider:
 
     def __init__(self, skills_dir: str | Path):
         self._dir = Path(skills_dir)
-        self._kernel: dict[str, SkillConfig] = {}
-        self._dynamic: dict[str, SkillConfig] = {}
+        self._cache = ResourceCache()
         self._loaded = False
 
     def list_kernel(self) -> list[SkillConfig]:
         if not self._loaded:
             self._load()
-        return list(self._kernel.values())
+        return list(self._cache.kernel.values())
 
     def list_dynamic(self) -> list[SkillConfig]:
         if not self._loaded:
             self._load()
-        return list(self._dynamic.values())
+        return list(self._cache.dynamic.values())
 
     def list(self) -> list[SkillConfig]:
         return self.list_kernel() + self.list_dynamic()
 
     def invalidate_dynamic(self) -> None:
-        self._dynamic.clear()
+        self._cache.invalidate_dynamic()
         self._loaded = False
 
     def _load(self) -> None:
-        self._dynamic.clear()
+        self._cache.invalidate_dynamic()
         if not self._dir.exists():
             self._loaded = True
             return
@@ -50,10 +50,10 @@ class SkillProvider:
                 cfg = SkillConfig(**raw)
                 activation = getattr(cfg, "activation", "discoverable")
                 if activation == "kernel":
-                    if cfg.name not in self._kernel:
-                        self._kernel[cfg.name] = cfg
+                    if not self._cache.has_kernel(cfg.name):
+                        self._cache.kernel[cfg.name] = cfg
                 else:
-                    self._dynamic[cfg.name] = cfg
+                    self._cache.dynamic[cfg.name] = cfg
             except Exception as e:
                 logger.warning("Skipping %s: %s", yaml_path, e)
         self._loaded = True
