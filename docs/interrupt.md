@@ -66,16 +66,16 @@ LLM 下一轮可见注入消息
 
 ### 2.2 取消机制
 
-**引擎侧**（`graph.py:146-148`）：
+**引擎侧**（`graph.py`）：
 
 ```python
 def _cancelled(self) -> bool:
     return self._cancel_event is not None and self._cancel_event.is_set()
 ```
 
-在 `invoke()` 和 `astream()` 的 while 循环开始处检查（`graph.py:249-251`, `501-505`）。`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在下一个循环边界响应，类似硬件中断在当前指令边界响应。
+在 `invoke()` 和 `astream()` 的 while 循环开始处检查（`graph.py`, `501-505`）。`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在下一个循环边界响应，类似硬件中断在当前指令边界响应。
 
-**服务端**（`server.py:131-189`）：
+**服务端**（`server.py`）：
 
 - `POST /api/chat/cancel`：设置 `cancel_event`，引擎在下一轮检测到并退出
 - 客户端断开：`asyncio.CancelledError` 被 SSE 生成器捕获 → 设置 `cancel_event` → 引擎退出
@@ -83,7 +83,7 @@ def _cancelled(self) -> bool:
 
 ### 2.3 Hook 消息注入
 
-Hook 退出码 2 的消息被注入对话历史（`graph.py:217-225`）：
+Hook 退出码 2 的消息被注入对话历史（`graph.py`）：
 
 ```python
 def _inject_hook_messages(self, results, state):
@@ -99,17 +99,17 @@ def _inject_hook_messages(self, results, state):
 
 ### 2.4 Undo — 状态 + 文件双回滚
 
-`GraphEngine` 维护 3 个检查点的滚动窗口（`graph.py:62`）：
+`GraphEngine` 维护 3 个检查点的滚动窗口（`graph.py`）：
 
 ```python
 self._checkpoints: deque[dict] = deque(maxlen=3)
 ```
 
-**检查点创建**（`graph.py:73-98`）：每轮用户交互前（`base.py:369,402`），`push_checkpoint()` 同时保存：
+**检查点创建**（`graph.py`）：每轮用户交互前（`base.py:369,402`），`push_checkpoint()` 同时保存：
 1. 对话状态深拷贝（messages、current_model、context_summary）
 2. 工作区文件快照（复制到 `memory/checkpoints/{round}/`，排除 `.git`）
 
-**Undo 过程**（`graph.py:100-141`）：
+**Undo 过程**（`graph.py`）：
 
 ```
 Round 0: hello.txt(v1) → push_checkpoint → memory/checkpoints/0/hello.txt

@@ -76,7 +76,7 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
 
 **文件**：`arf/compaction/sliding_window.py`（98 行），`arf/agent/base.py`（summarizer 闭包）
 
-**触发机制**（`sliding_window.py:37-48`）：以上一轮模型调用返回的 `usage.total_tokens` 为信号，在下一轮模型调用之前判断。区别于直接统计 `len(messages)`，API 报告的 token 用量包含工具定义、system prompt 等隐形消耗，更准确。
+**触发机制**（`sliding_window.py`）：以上一轮模型调用返回的 `usage.total_tokens` 为信号，在下一轮模型调用之前判断。区别于直接统计 `len(messages)`，API 报告的 token 用量包含工具定义、system prompt 等隐形消耗，更准确。
 
 ```python
 def should_compact(self, state, threshold=0.75, window_size=None):
@@ -85,18 +85,18 @@ def should_compact(self, state, threshold=0.75, window_size=None):
     return last_usage > threshold * w
 ```
 
-**窗口跟随模型**：路由先于压缩执行（`graph.py:280-285`）。不同模型的 `context_window` 不同（如 flash 800k, pro 1M），引擎将当前选定模型的窗口大小传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
+**窗口跟随模型**：路由先于压缩执行（`graph.py`）。不同模型的 `context_window` 不同（如 flash 800k, pro 1M），引擎将当前选定模型的窗口大小传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
 
-**压缩行为**（`sliding_window.py:50-69`）：
+**压缩行为**（`sliding_window.py`）：
 
 - 保留最近 4 条消息（一个用户-助手往返 + 工具调用）
 - 旧消息通过 LLM 生成结构化摘要，追加 `[Earlier]` 标记到 `context_summary`
 - 摘要叠加而非覆盖：连续多轮压缩时，每轮生成的摘要累积保留，避免历史信息丢失
 - 失败静默降级：summarizer 调用异常时仅记录日志，丢弃旧消息继续执行
 
-**LLM Summarizer**（`base.py:186-214`）：复用框架的 system model（deepseek-v4-flash, thinking disabled, temp 0.3）。取最近 30 条旧消息，每条截断至 300 字符。结构化输出包含：Completed / In Progress / Files Modified / Decisions / Facts & Preferences / Errors & Debugging / Next Steps 七个部分。
+**LLM Summarizer**（`base.py`）：复用框架的 system model（deepseek-v4-flash, thinking disabled, temp 0.3）。取最近 30 条旧消息，每条截断至 300 字符。结构化输出包含：Completed / In Progress / Files Modified / Decisions / Facts & Preferences / Errors & Debugging / Next Steps 七个部分。
 
-**工具输出摘要**（`sliding_window.py:71-97`）：工具输出超过 2000 字符时，原文写入 `memory/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入内存，按需映射即可。
+**工具输出摘要**（`sliding_window.py`）：工具输出超过 2000 字符时，原文写入 `memory/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入内存，按需映射即可。
 
 ### 2.3 记忆管道
 
@@ -108,7 +108,7 @@ def should_compact(self, state, threshold=0.75, window_size=None):
 | `MemoryRetriever` | 语义检索 | `retrieve(store, query, session_id, max_tokens, top_k)` |
 | `MemoryWriter` | 自动抽取 | `extract_and_write(store, turn_messages, existing_entries)` |
 
-**MemoryEntry**（`core/protocols/memory.py:6-14`）：`id`（UUID）、`content`（记忆内容 ≤500 chars）、`category`（fact/preference/decision/context）、`timestamp`、`source_turn`、`relevance_score`、`replaces`（更新链）。
+**MemoryEntry**（`core/protocols/memory.py`）：`id`（UUID）、`content`（记忆内容 ≤500 chars）、`category`（fact/preference/decision/context）、`timestamp`、`source_turn`、`relevance_score`、`replaces`（更新链）。
 
 **FileMemoryStore**（`arf/memory/file_store.py`，65 行）：
 - 单文件 `memory/memory.json`，所有条目 JSON 序列化
@@ -116,13 +116,13 @@ def should_compact(self, state, threshold=0.75, window_size=None):
 - O(n) 扫描，无索引。数百条规模内可接受
 
 **LLMMemoryWriter**（`arf/memory/llm_writer.py`，155 行）：
-- 每 turn 结束后异步调用（`graph.py:469-475`），输入最近 4 条消息 + 已有记忆索引
+- 每 turn 结束后异步调用（`graph.py`），输入最近 4 条消息 + 已有记忆索引
 - LLM 返回 `{"actions": [{"action": "add|update|delete", "entry": {...}, "replaces": "old-id"}]}`
 - 去重由 LLM 判断——对比已有记忆索引，能修正、精炼或否定之前的记忆
 - JSON 解析失败时跳过该 turn，保留已有记忆。`_parse_json_response()` 支持 markdown 围栏、双花括号、截取外层 `{}` 等常见 LLM 输出格式
 
 **LLMMemoryRetriever**（`arf/memory/llm_retriever.py`，113 行）：
-- 每 turn 开始前调用（`graph.py:258-271`），输入用户消息 + 记忆摘要索引（id + category + 前 120 字符）
+- 每 turn 开始前调用（`graph.py`），输入用户消息 + 记忆摘要索引（id + category + 前 120 字符）
 - LLM 返回 `{"relevant_ids": [...]}`
 - 结果按 max_tokens 截断（chars/3 ≈ tokens），不超出 system prompt 预算
 - 回退链：JSON 解析失败 → RecentFirstRetriever；LLM 调用异常 → RecentFirstRetriever

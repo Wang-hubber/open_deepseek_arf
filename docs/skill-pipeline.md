@@ -70,11 +70,11 @@ class ConcurrentToolExecutor:
             resolved = await asyncio.gather(*tasks, return_exceptions=True)
 ```
 
-**事实校验**：引擎调用时未传 `strategy` 参数（`graph.py:431`），因此默认走 parallel 路径。README 表中"顺序执行"的说法不准确——Agent 循环是顺序的，但单轮工具调用是并行的。
+**事实校验**：引擎调用时未传 `strategy` 参数（`graph.py`），因此默认走 parallel 路径。README 表中"顺序执行"的说法不准确——Agent 循环是顺序的，但单轮工具调用是并行的。
 
 ### 2.3 Hook 并行触发
 
-`SubprocessHookRunner.fire()`（`arf/hooks/runner.py:21-72`）将所有匹配的 Hook 作为子进程并行启动：
+`SubprocessHookRunner.fire()`（`arf/hooks/runner.py`）将所有匹配的 Hook 作为子进程并行启动：
 
 ```python
 tasks = [_run_hook(h) for h in hooks]
@@ -99,7 +99,7 @@ skills:
         depends_on: [file_writer]
 ```
 
-引擎在每次工具调用前检查（`graph.py:386-391`）：
+引擎在每次工具调用前检查（`graph.py`）：
 
 ```python
 sp = SkillPipeline(pipeline_data.get("steps", []))

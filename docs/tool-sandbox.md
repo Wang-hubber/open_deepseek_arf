@@ -77,7 +77,7 @@ GraphEngine
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
 
-`arf/guardrails/path_check.py`（33 行）。在每次工具调用前执行（`graph.py:393`），检查所有字符串类型参数值：
+`arf/guardrails/path_check.py`（33 行）。在每次工具调用前执行（`graph.py`），检查所有字符串类型参数值：
 
 ```python
 class PathCheckToolGuard:
@@ -94,7 +94,7 @@ class PathCheckToolGuard:
         return GuardResult(allowed=True)
 ```
 
-`PathSandbox.validate_path()`（`arf/sandbox/path_sandbox.py:10-13`）将路径对工作区根解析后做 containment 判断。工作区根在 `base.py:165` 设为 `tools_dir.parent`（即应用目录）。
+`PathSandbox.validate_path()`（`arf/sandbox/path_sandbox.py`）将路径对工作区根解析后做 containment 判断。工作区根在 `base.py` 设为 `tools_dir.parent`（即应用目录）。
 
 **当前限制**：
 - 只检查顶层参数值，不递归检查嵌套结构中的字符串
@@ -128,7 +128,7 @@ def check(self, tool_name: str, params: dict) -> str:
     # 5. 以上都不匹配 → "ask"（安全默认）
 ```
 
-检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py:398-403` 中处理：`"deny"` 直接阻断并 emit 错误事件；`"ask"` 当前直接放行——审批通道尚未实现。
+检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py` 中处理：`"deny"` 直接阻断并 emit 错误事件；`"ask"` 当前直接放行——审批通道尚未实现。
 
 ### 2.6 Hook 退出码契约
 

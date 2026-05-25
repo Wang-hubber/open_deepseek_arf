@@ -106,7 +106,7 @@ class TwoTierRouter:
 
 ### 2.5 LLM 分类器
 
-分类器在 `base.py:277-290` 定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）：
+分类器在 `base.py` 定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）：
 
 ```python
 async def _classify(query: str) -> str:
@@ -125,7 +125,7 @@ async def _classify(query: str) -> str:
 
 ### 2.6 引擎集成
 
-在 `GraphEngine` 的每次 turn 调用模型前执行路由（`graph.py:274-277`）：
+在 `GraphEngine` 的每次 turn 调用模型前执行路由（`graph.py`）：
 
 ```python
 model = state["current_model"]
@@ -136,11 +136,11 @@ if self.model_router:
     state["current_model"] = model
 ```
 
-路由在压缩之前执行（`graph.py:280`），确保压缩使用正确模型的窗口大小。每次 turn 之间可无缝切换模型。
+路由在压缩之前执行（`graph.py`），确保压缩使用正确模型的窗口大小。每次 turn 之间可无缝切换模型。
 
 ### 2.7 自动推导
 
-`AdvancedConfig.auto_derive()`（`config.py:35-41`）：当 agent 配置了多个模型但未显式指定 routing 时，自动启用 two_tier 策略。
+`AdvancedConfig.auto_derive()`（`config.py`）：当 agent 配置了多个模型但未显式指定 routing 时，自动启用 two_tier 策略。
 
 ### 2.8 降级链
 
@@ -210,7 +210,7 @@ advanced:
 
 ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**，称为 system model。它与用户任务模型共享同一个适配器池，不额外增加 API 连接。
 
-**定义流程**（`base.py:156-183`）：
+**定义流程**（`base.py`）：
 
 ```
 agent.yaml                    config.models              ModelAdapter
