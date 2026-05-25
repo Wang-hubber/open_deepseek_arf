@@ -23,6 +23,8 @@ class FileWatcher:
         # Maps watched directory -> {file_path: mtime} for all tracked files
         self._mtimes: dict[Path, dict[Path, float]] = {}
         self._task: asyncio.Task | None = None
+        self._inotify_fd: int | None = None
+        self._inotify_wd_to_path: dict[int, Path] = {}
 
     # -- public API --
 
@@ -32,6 +34,20 @@ class FileWatcher:
         if path not in self._watched:
             self._watched[path] = []
             self._seed_mtimes(path)
+            if self._inotify_fd is not None:
+                import ctypes
+
+                libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                IN_CLOSE_WRITE = 0x00000008
+                IN_DELETE = 0x00000200
+                IN_MOVED_FROM = 0x00000040
+                IN_MOVED_TO = 0x00000080
+                IN_CREATE = 0x00000100
+                MASK = IN_CLOSE_WRITE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE
+                b = str(path).encode()
+                wd = libc.inotify_add_watch(self._inotify_fd, b, MASK)
+                if wd >= 0:
+                    self._inotify_wd_to_path[wd] = path
         self._watched[path].append(callback)
 
     def remove_watch(self, path: Path) -> None:
@@ -129,14 +145,15 @@ class FileWatcher:
             self._task = asyncio.create_task(self._poll_loop())
             return
 
-        wd_to_path: dict[int, Path] = {}
+        self._inotify_fd = fd
+        self._inotify_wd_to_path = {}
         for path in list(self._watched.keys()):
             if not path.exists():
                 continue
             b = str(path).encode()
             wd = libc.inotify_add_watch(fd, b, MASK)
             if wd >= 0:
-                wd_to_path[wd] = path
+                self._inotify_wd_to_path[wd] = path
 
         try:
             while True:
@@ -155,18 +172,21 @@ class FileWatcher:
                 while i + 16 <= len(buf):
                     wd = int.from_bytes(buf[i : i + 4], sys.byteorder)
                     mask = int.from_bytes(buf[i + 4 : i + 8], sys.byteorder)
-                    i += 16
-                    wpath = wd_to_path.get(wd)
+                    ev_len = int.from_bytes(buf[i + 12 : i + 16], sys.byteorder)
+                    aligned = (ev_len + 3) & ~3
+                    i += 16 + aligned
+                    wpath = self._inotify_wd_to_path.get(wd)
                     if wpath and (mask & MASK):
                         changed.add(wpath)
                 if changed:
                     await self._fire_callbacks(changed)
-                    if changed:
-                        self._seed_mtimes(changed.pop())
+                    for p in changed:
+                        self._seed_mtimes(p)
         except asyncio.CancelledError:
             raise
         finally:
             os.close(fd)
+            self._inotify_fd = None
 
     async def _fire_callbacks(self, changed: set[Path]) -> None:
         for path, callbacks in self._watched.items():
