@@ -8,7 +8,7 @@ from arf.engine.tool_executor import ConcurrentToolExecutor
 from arf.engine.loop_strategies.planner import PromptBasedPlanner
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import DefaultToolResolver
-from arf.resources.providers.static_yaml import StaticYamlToolProvider
+from arf.resources.providers.tool_provider import ToolProvider
 from arf.memory.file_store import FileMemoryStore
 from arf.memory.recent_first import RecentFirstRetriever
 from arf.memory.writer import RuleBasedMemoryWriter
@@ -77,7 +77,7 @@ class BaseAgent:
 
         # 2. Resources
         tools_dir = override_protocols.pop("tools_dir", Path("./tools"))
-        providers = override_protocols.pop("providers", [StaticYamlToolProvider(tools_dir)])
+        providers = override_protocols.pop("providers", [ToolProvider(tools_dir)])
         tool_resolver = override_protocols.pop("tool_resolver", DefaultToolResolver(providers))
 
         # 3. Memory — LLM-driven by default, falls back to rule-based

@@ -39,7 +39,5 @@ class DefaultToolResolver:
     async def reload(self) -> None:
         """Reload all providers — clears cached tool lists for re-scan."""
         for p in self._providers:
-            if hasattr(p, "_tools"):
-                p._tools.clear()
-            if hasattr(p, "_functions"):
-                p._functions.clear()
+            if hasattr(p, "invalidate_dynamic"):
+                p.invalidate_dynamic()
