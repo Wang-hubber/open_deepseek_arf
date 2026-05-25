@@ -248,7 +248,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 | # | Issue | Location |
 |---|-------|----------|
-| 1 | `ResourceCache` fully implemented but never imported by any Provider | `arf/resources/cache.py` |
+| 1 | (fixed 2026-05-25) `ResourceCache` wired into all three Providers | `arf/resources/cache.py` |
 | 2 | CLI commands missing `/api/` prefix (`/chat`→`/api/chat`, `/save`→`/api/save`, `/resources/`→`/api/resources/`) | `app/arf_default_assistant/cli.py` |
 | 3 | Many `agent.yaml` fields parsed but never read (`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`) | `arf/agent/config.py` |
 | 4 | `StateStore` has no disk backend — app's `lazy_persistence.py` manually serializes to `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
@@ -270,7 +270,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 | # | Issue | Location |
 |---|-------|----------|
 | D1 | (fixed 2026-05-25) Event type count unified across docs; `user_input` added to EventType Literal | `arf/core/events.py`, `docs/trace.md`, README |
-| D2 | `ResourceCache` extensively documented as architecture component despite being dead code | `docs/resource-registry.md` |
+| D2 | (fixed 2026-05-25) `ResourceCache` now wired — doc description matches actual architecture | `docs/resource-registry.md` |
 | D3 | Line counts in 16 locations off by 1 (tool_provider, skill_provider, etc.) and `pipeline.py` off by 45 | 7 design docs |
 | D4 | `reload.watch` documented as default `true` but Pydantic model has `watch: bool = False` | `docs/resource-registry.md`, `docs/app/advanced.md` |
 | D5 | Summarizer code location: doc says `base.py:129-157`, actual `base.py:174-203` | `docs/memory-management.md` |

@@ -248,7 +248,7 @@ python cli.py start    # 启动服务
 
 | # | 问题 | 位置 |
 |---|------|------|
-| 1 | `ResourceCache` 完整实现但从未被任何 Provider 使用 | `arf/resources/cache.py` |
+| 1 | (已修复 2026-05-25) `ResourceCache` 已接入全部三个 Provider | `arf/resources/cache.py` |
 | 2 | CLI 命令缺少 `/api/` 前缀（`/chat`→`/api/chat`，`/save`→`/api/save`，`/resources/`→`/api/resources/`） | `app/arf_default_assistant/cli.py` |
 | 3 | `agent.yaml` 大量字段被解析但从未读取（`role`/`task`/`agents`/`handover`/`guardrails`/`human_loop`/`streaming`/`sandbox`/`tool_retrieval`/`reload`） | `arf/agent/config.py` |
 | 4 | `StateStore` 无磁盘后端——app 的 `lazy_persistence.py` 手动序列化到 `archive.json` | `app/arf_default_assistant/lazy_persistence.py` |
@@ -270,7 +270,7 @@ python cli.py start    # 启动服务
 | # | 问题 | 位置 |
 |---|------|------|
 | D1 | (已修复 2026-05-25) 事件类型数量统一为 15 种；`user_input` 已补入 EventType Literal | `arf/core/events.py`、`docs/trace.md`、README |
-| D2 | `ResourceCache` 作为架构组件被大量文档描述却从未被代码使用 | `docs/resource-registry.md` |
+| D2 | (已修复 2026-05-25) `ResourceCache` 已接入，文档描述与实际架构一致 | `docs/resource-registry.md` |
 | D3 | 16 处行数与实际代码差 1 行，`pipeline.py` 偏差达 45 行（文档 ~80 实际 125） | 7 份设计文档 |
 | D4 | `reload.watch` 文档说默认 `true` 但 Pydantic 模型定义 `watch: bool = False` | `docs/resource-registry.md`、`docs/app/advanced.md` |
 | D5 | Summarizer 代码位置：文档说 `base.py:129-157`，实际 `base.py:174-203` | `docs/memory-management.md` |
