@@ -1,6 +1,7 @@
 """BaseAgent — assembles all Protocol implementations into a running Agent."""
 from pathlib import Path
 from arf.agent.config import AgentConfig, AdvancedConfig
+from arf.agent.app_context import AppContext
 from arf.engine.graph import GraphEngine
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
@@ -73,18 +74,20 @@ def _build_system_prompt(config: AgentConfig) -> str:
 
 
 class BaseAgent:
-    def __init__(self, config: AgentConfig, **override_protocols) -> None:
+    def __init__(self, config: AgentConfig, app_context: AppContext | None = None, **override_protocols) -> None:
         self.config = config
         adv = config.effective_advanced()
+        ctx = app_context
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        state_store = override_protocols.pop("state_store", FileStateStore())
+        default_state_dir = str(ctx.state_dir) if ctx else "./memory/state"
+        state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
 
-        # 2. Resources
-        tools_dir = override_protocols.pop("tools_dir", Path("./tools"))
-        skills_dir = override_protocols.pop("skills_dir", Path("./skills"))
-        models_dir = override_protocols.pop("models_dir", Path("./models"))
+        # 2. Resources — from AppContext if provided, otherwise defaults
+        tools_dir = override_protocols.pop("tools_dir", ctx.tools_dir if ctx else Path("./tools"))
+        skills_dir = override_protocols.pop("skills_dir", ctx.skills_dir if ctx else Path("./skills"))
+        models_dir = override_protocols.pop("models_dir", ctx.models_dir if ctx else Path("./models"))
         reload_cfg = adv.reload if adv else None
         watch_enabled = override_protocols.pop("watch_enabled",
             reload_cfg.watch if reload_cfg else True)
@@ -149,7 +152,9 @@ class BaseAgent:
 
         # 3. Memory — LLM-driven by default, falls back to rule-based
         mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
-        memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_cfg.workspace if mem_cfg else "./memory"))
+        default_workspace = str(ctx.workspace_dir) if ctx else "./memory"
+        mem_workspace = mem_cfg.workspace if mem_cfg else default_workspace
+        memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_workspace))
 
         # Build a dedicated cheap model adapter for system background tasks
         _system_model_call = None
@@ -397,9 +402,11 @@ class BaseAgent:
 
         async def _stream_model(messages: list[dict], model_name: str = "", tools=None):
             """Token-level streaming via ModelAdapter.chat_stream_full."""
+            import asyncio as _asyncio_stream
             adapter = adapters.get(model_name, adapters[default_name])
             for chunk in adapter.chat_stream_full(messages, tools=_to_openai_tools(tools)):
                 yield chunk
+                await _asyncio_stream.sleep(0)  # yield to event loop so ASGI can flush
 
         self._engine.set_call_model(_call_model)
         self._engine.set_stream_model(_stream_model)

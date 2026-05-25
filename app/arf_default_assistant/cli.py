@@ -8,7 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-APP_DIR = Path(__file__).parent.resolve()
+from agent_main import app_context
+APP_DIR = app_context.root
 
 
 def _httpx_get(path: str) -> dict | None:

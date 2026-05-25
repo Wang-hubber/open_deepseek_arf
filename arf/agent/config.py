@@ -74,7 +74,27 @@ class AgentConfig(BaseModel):
         version = raw.pop("schema_version", "0.0")
         if version not in {"1.0", "0.0"}:
             raise ValueError(f"Unsupported schema version: {version}")
-        return cls(**raw)
+        config = cls(**raw)
+        # Auto-load models from filesystem (filesystem is source of truth,
+        # agent.yaml overrides are merged on top).
+        models_dir = Path(path).parent / "models"
+        if models_dir.exists():
+            from arf.resources.providers.model_provider import ModelProvider
+            fs_models = ModelProvider(models_dir).list()
+            agent_models = {m.name: m for m in config.models}
+            merged: list[ModelConfig] = []
+            for fm in fs_models:
+                if fm.name in agent_models:
+                    merged.append(
+                        fm.model_copy(update=agent_models[fm.name].model_dump(exclude_none=True))
+                    )
+                else:
+                    merged.append(fm)
+            for name, am in agent_models.items():
+                if not any(m.name == name for m in merged):
+                    merged.append(am)
+            config.models = merged
+        return config
 
     def to_yaml(self, directory: str | Path) -> None:
         d = Path(directory)

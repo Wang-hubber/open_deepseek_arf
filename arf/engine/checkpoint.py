@@ -34,12 +34,12 @@ class InMemoryStateStore:
 class FileStateStore:
     """JSON-file-backed store. Survives process restarts.
 
-    Writes state to ``<workspace>/sessions/<session_id>.json`` on every put().
+    Writes state to ``<state_dir>/<session_id>.json`` on every put().
     Atomically writes to a temp file then renames to avoid corruption.
     """
 
-    def __init__(self, workspace: str | Path = "./memory") -> None:
-        self._dir = Path(workspace) / "sessions"
+    def __init__(self, state_dir: str | Path = "./memory/state") -> None:
+        self._dir = Path(state_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:

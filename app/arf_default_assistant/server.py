@@ -15,22 +15,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from agent_main import app_context
+
 # ---- Logging setup ----
-Path("logs").mkdir(parents=True, exist_ok=True)
+app_context.logs_dir.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/server.log", encoding="utf-8"),
+        logging.FileHandler(str(app_context.logs_dir / "server.log"), encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
 logger = logging.getLogger("arf-assistant")
 
-# Add project root and CWD to path so imports work
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
+sys.path.insert(0, str(app_context.root))
 
 from arf.agent.factory import create_agent
 from arf.agent.config import AgentConfig
@@ -43,7 +42,7 @@ _active_cancel_events: dict[str, asyncio.Event] = {}  # session_id → cancel ev
 
 def _load_dotenv() -> None:
     """Load .env file into os.environ (simple parser, no python-dotenv needed)."""
-    env_path = Path(".env")
+    env_path = app_context.root / ".env"
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -64,12 +63,12 @@ async def lifespan(app: FastAPI):
 
     # ---- STARTUP ----
     _load_dotenv()
-    cfg = AgentConfig.from_yaml("agent.yaml")
-    _agent = create_agent(config=cfg)
+    cfg = AgentConfig.from_yaml(str(app_context.config_path))
+    _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
 
     from lazy_persistence import load_archive
-    archive = load_archive()
+    archive = load_archive(str(app_context.workspace_dir))
     if archive:
         state: AgentState = {
             "session_id": "default",
@@ -86,7 +85,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"Restored state: {len(state['messages'])} messages, turn {state['current_turn']}")
 
     from arf.observability import FileTraceStore
-    FileTraceStore(_agent.event_bus, dir="./memory/sessions")
+    FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
 
     logger.info(f"Agent '{cfg.name}' ready")
     await _agent.start()
@@ -101,11 +100,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ARF Assistant", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:5173",   # Vite dev server
-    ],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -123,7 +118,14 @@ class ChatReq(BaseModel):
 @app.post("/api/chat")
 async def chat(req: ChatReq):
     if req.stream:
-        return StreamingResponse(_sse_chat(req.message), media_type="text/event-stream")
+        return StreamingResponse(
+            _sse_chat(req.message),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
     try:
         result = await _agent.chat(req.message)
         return JSONResponse({"content": result})
@@ -141,6 +143,10 @@ async def _sse_chat(message: str):
     _active_cancel_events["default"] = cancel_evt
     _agent.engine.set_cancel_event(cancel_evt)
 
+    # Padding to defeat browser fetch buffering (Chrome buffers ~2KB before
+    # surfacing data to ReadableStream reader).
+    yield ":" + " " * 2048 + "\n\n"
+
     try:
         async for event in _agent.astream(message):
             t = event.type
@@ -149,6 +155,7 @@ async def _sse_chat(message: str):
                 if event.data.get("reasoning"):
                     chunk["reasoning"] = event.data["reasoning"]
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0)
             elif t == "tool_call_start":
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_end":
@@ -262,10 +269,9 @@ async def chat_stream(message: str = Query(...)):
 
 @app.get("/api/trace")
 async def get_trace():
-    trace_dir = Path("./memory/sessions")
     events = []
-    if trace_dir.exists():
-        for p in sorted(trace_dir.glob("*.json")):
+    if app_context.trace_dir.exists():
+        for p in sorted(app_context.trace_dir.glob("*.json")):
             try:
                 events.extend(json.loads(p.read_text(encoding="utf-8")))
             except Exception:
@@ -275,10 +281,9 @@ async def get_trace():
 @app.get("/api/traces/sessions")
 async def traces_sessions(limit: int = 20):
     """List sessions with trace data (for TraceView dropdown)."""
-    trace_dir = Path("./memory/sessions")
     sessions = []
-    if trace_dir.exists():
-        for p in sorted(trace_dir.glob("*.json"), reverse=True)[:limit]:
+    if app_context.trace_dir.exists():
+        for p in sorted(app_context.trace_dir.glob("*.json"), reverse=True)[:limit]:
             sid = p.stem
             if not sid or sid == ".json":  # skip corrupted files
                 continue
@@ -297,8 +302,7 @@ async def traces_sessions(limit: int = 20):
 @app.get("/api/traces/sessions/{session_id}")
 async def traces_session_detail(session_id: str):
     """Get detailed trace events for a specific session."""
-    trace_dir = Path("./memory/sessions")
-    path = trace_dir / f"{session_id}.json"
+    path = app_context.trace_dir / f"{session_id}.json"
     if not path.exists():
         return JSONResponse({"turns": [], "events": []})
     try:
@@ -320,13 +324,12 @@ def _group_turns(events: list) -> list:
 @app.get("/api/traces/summary")
 async def traces_summary():
     """Summary for TraceView stats bar — computed from actual trace data."""
-    trace_dir = Path("./memory/sessions")
     total_events = 0
     sessions_count = 0
     total_tokens = 0
     total_turns = 0
     all_turns: set[int] = set()
-    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, list):
@@ -385,9 +388,9 @@ async def config_register_deepseek(req: dict):
 
     # Recreate agent so ModelAdapter picks up the new key from os.environ
     from lazy_persistence import load_archive
-    archive = load_archive()
-    cfg = AgentConfig.from_yaml("agent.yaml")
-    _agent = create_agent(config=cfg)
+    archive = load_archive(str(app_context.workspace_dir))
+    cfg = AgentConfig.from_yaml(str(app_context.config_path))
+    _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
     if archive:
         state: AgentState = {
@@ -404,7 +407,7 @@ async def config_register_deepseek(req: dict):
         await _agent.state_store.put("default", state)
     # Re-attach FileTraceStore to new agent's event bus
     from arf.observability import FileTraceStore
-    FileTraceStore(_agent.event_bus, dir="./memory/sessions")
+    FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
 
     return JSONResponse({
         "ok": True,
@@ -416,7 +419,7 @@ async def config_register_deepseek(req: dict):
 
 def _save_api_key(key: str) -> None:
     """Write or update DEEPSEEK_API_KEY in .env file."""
-    env_path = Path(".env")
+    env_path = app_context.root / ".env"
     lines: list[str] = []
     found = False
     if env_path.exists():
@@ -588,9 +591,24 @@ async def list_resources(res_type: str):
 
 
 
+@app.post("/api/save")
+async def save_archive():
+    """Save current conversation state to archive.json."""
+    state = await _agent.state_store.get("default")
+    if not state:
+        return JSONResponse({"status": "no_state"})
+    import copy
+    data = copy.deepcopy(dict(state))
+    data.pop("tool_results", None)
+    archive_path = app_context.workspace_dir / "archive.json"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return JSONResponse({"status": "saved", "messages": len(state.get("messages", []))})
+
+
 @app.get("/api/archive")
 async def download_archive():
-    p = Path("memory/archive.json")
+    p = app_context.workspace_dir / "archive.json"
     if p.exists():
         return FileResponse(p, media_type="application/json")
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -600,8 +618,8 @@ async def download_archive():
 async def reload_config():
     """Reload agent config and reinitialize the agent."""
     global _agent
-    cfg = AgentConfig.from_yaml("agent.yaml")
-    _agent = create_agent(config=cfg)
+    cfg = AgentConfig.from_yaml(str(app_context.config_path))
+    _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
     return JSONResponse({"status": "reloaded", "name": cfg.name})
 
@@ -622,7 +640,7 @@ class FeedbackReq(BaseModel):
 
 @app.post("/api/feedback")
 async def feedback(req: FeedbackReq):
-    log = Path("memory/feedback.jsonl")
+    log = app_context.workspace_dir / "feedback.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a") as f:
         f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}, ensure_ascii=False) + "\n")
@@ -670,14 +688,15 @@ from datetime import datetime, timezone
 
 def _session_defaults():
     """Shared defaults for the single-session model."""
-    archive = Path("memory/archive.json")
+    archive = app_context.workspace_dir / "archive.json"
     created_at = datetime.fromtimestamp(archive.stat().st_mtime, tz=timezone.utc).isoformat() if archive.exists() else datetime.now(timezone.utc).isoformat()
     return {"id": "default", "session_id": "default", "title": "ARF Assistant", "created_at": created_at}
 
 @app.get("/trace-viewer")
 async def trace_viewer():
     """Serve the standalone trace viewer HTML (framework default debugging tool)."""
-    viewer_path = Path(__file__).parent.parent.parent / "arf/observability/trace_viewer.html"
+    import arf.observability
+    viewer_path = Path(arf.observability.__file__).parent / "trace_viewer.html"
     return FileResponse(viewer_path, media_type="text/html")
 
 
@@ -714,10 +733,8 @@ async def ws_stub(ws: WebSocket):
 @app.get("/api/traces/resource-stats")
 async def traces_resource_stats(period: str = "all"):
     """Compute per-tool and per-model usage stats from trace data."""
-    trace_dir = Path("./memory/sessions")
-    # resource_name → {call_count, success_count, failure_count, total_duration_ms, type, tokens}
     resources: dict[str, dict] = {}
-    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if not isinstance(data, list):
@@ -763,9 +780,8 @@ async def traces_resource_stats(period: str = "all"):
 @app.get("/api/traces/resource-stats/{name}")
 async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: str = ""):
     """Per-resource daily stats from trace."""
-    trace_dir = Path("./memory/sessions")
     daily: dict[str, dict] = {}
-    for p in trace_dir.glob("*.json") if trace_dir.exists() else []:
+    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if not isinstance(data, list):
@@ -804,7 +820,7 @@ async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: 
 # ---- Trace export stub ----
 @app.get("/api/traces/export")
 async def traces_export(session_id: str):
-    p = Path(f"memory/sessions/{session_id}.json")
+    p = app_context.trace_dir / f"{session_id}.json"
     if p.exists():
         return FileResponse(p, media_type="application/json")
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -825,7 +841,7 @@ async def usage_models_pricing():
     return JSONResponse([])
 
 # Static files (frontend) + SPA fallback
-frontend_dir = Path("../web/dist")
+frontend_dir = app_context.root.parent / "web" / "dist"
 if frontend_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
 
