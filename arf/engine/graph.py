@@ -338,28 +338,15 @@ class GraphEngine:
             self._agent_checkpoints[current_agent] = self._checkpoints
             await self.state_store.put(f"{session_id}/{current_agent}", state)
 
-        # Restore checkpointed messages + inject tool call & result
+        # Restore checkpointed messages + replace handoff tool_result
         messages = cp["messages"]
         task = state.get("handoff_task", "")
-        tc_id = handoff_data.get("tool_call_id", "handoff_0")
 
-        messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": tc_id,
-                "type": "function",
-                "function": {
-                    "name": "handoff_to_sys",
-                    "arguments": '{"task":"' + task + '"}',
-                },
-            }],
-        })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc_id,
-            "content": result_content,
-        })
+        # The checkpoint messages end with:
+        #   assistant(tool_calls=[handoff_to_sys, ...]) + tool(result={...})
+        # Replace the original handoff tool result with sub-agent's response.
+        if messages and messages[-1].get("role") == "tool":
+            messages[-1]["content"] = result_content
 
         # Emit agent_switch back
         from_agent = current_agent
