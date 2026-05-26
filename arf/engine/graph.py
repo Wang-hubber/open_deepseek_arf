@@ -734,10 +734,20 @@ class GraphEngine:
                     gr = await self.guard_runner.check_tool_params(name, params)
                     if not gr.allowed:
                         denied_calls.append((name, gr.reason))
+                        yield self._make_event(
+                            type="guard_block",
+                            data={"tool_name": name, "guard": "path_check", "reason": gr.reason},
+                            turn=turn, session_id=session_id,
+                        )
                         continue
                     perm = self.guard_runner.check_tool_permission(name, params)
                     if perm == "deny":
                         denied_calls.append((name, "denied by permission config"))
+                        yield self._make_event(
+                            type="guard_block",
+                            data={"tool_name": name, "guard": "permission", "reason": "denied by config"},
+                            turn=turn, session_id=session_id,
+                        )
                         continue
                     if perm == "ask":
                         if self.approval_enabled:
@@ -754,16 +764,40 @@ class GraphEngine:
                                 await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
                             except asyncio.TimeoutError:
                                 self._pending_approvals.pop(decision_id, None)
+                                self._approval_results.pop(decision_id, None)
                                 denied_calls.append((name, "approval timed out"))
+                                yield self._make_event(
+                                    type="approval_resolved",
+                                    data={"decision_id": decision_id, "tool_name": name,
+                                          "approved": False, "reason": "timeout"},
+                                    turn=turn, session_id=session_id,
+                                )
                                 continue
                             approved = self._approval_results.pop(decision_id, False)
                             if not approved:
                                 denied_calls.append((name, "denied by user"))
+                                yield self._make_event(
+                                    type="approval_resolved",
+                                    data={"decision_id": decision_id, "tool_name": name,
+                                          "approved": False, "reason": "denied by user"},
+                                    turn=turn, session_id=session_id,
+                                )
                                 continue
                             # Approved — fall through to valid_calls
+                            yield self._make_event(
+                                type="approval_resolved",
+                                data={"decision_id": decision_id, "tool_name": name,
+                                      "approved": True, "reason": "approved"},
+                                turn=turn, session_id=session_id,
+                            )
                         else:
                             denied_calls.append((name, "requires approval (approval channel not enabled)"))
                             continue
+                    yield self._make_event(
+                        type="guard_pass",
+                        data={"tool_name": name},
+                        turn=turn, session_id=session_id,
+                    )
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls

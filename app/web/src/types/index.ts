@@ -124,6 +124,9 @@ export type SSEEvent =
   | { type: 'registration_required'; registration_id: string; template: Record<string, FormField>; resource_type: string; resource_name: string }
   | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
   | { type: 'approval_required'; decision_id: string; tool_name: string; params: Record<string, unknown> }
+  | { type: 'approval_resolved'; decision_id: string; tool_name: string; approved: boolean; reason: string }
+  | { type: 'guard_block'; tool_name: string; guard: string; reason: string }
+  | { type: 'guard_pass'; tool_name: string }
   | { type: 'error'; detail?: string }
   | { type: 'cancelled' }
 

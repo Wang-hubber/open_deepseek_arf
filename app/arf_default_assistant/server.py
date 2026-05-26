@@ -172,6 +172,12 @@ async def _sse_chat(message: str):
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"
             elif t == "approval_required":
                 yield f"data: {json.dumps({'type': 'approval_required', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'params': event.data.get('params', {})}, ensure_ascii=False)}\n\n"
+            elif t == "approval_resolved":
+                yield f"data: {json.dumps({'type': 'approval_resolved', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'approved': event.data.get('approved', False), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
+            elif t == "guard_block":
+                yield f"data: {json.dumps({'type': 'guard_block', 'tool_name': event.data.get('tool_name', ''), 'guard': event.data.get('guard', ''), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
+            elif t == "guard_pass":
+                yield f"data: {json.dumps({'type': 'guard_pass', 'tool_name': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
             elif t == "error":
                 detail = event.data.get("detail", "API error")
                 code = event.data.get("code", 0)

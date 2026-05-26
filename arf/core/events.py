@@ -11,8 +11,10 @@ EventType = Literal[
     "model_call_start", "model_call_end",
     "tool_call_start", "tool_call_end",
     "compaction_start", "compaction_end",
-    "approval_required",   # reserved: approval channel (ask→pause→user confirm/resolve)
-    "approval_resolved",   # reserved: paired with approval_required
+    "approval_required",
+    "approval_resolved",
+    "guard_block",          # PathCheckToolGuard or ToolPermissionChecker blocked a tool
+    "guard_pass",           # All guard checks passed for a tool
     "hook_start", "hook_end",
     "error",
 ]
