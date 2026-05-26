@@ -226,6 +226,8 @@ agents:
         activation: kernel
       - name: web_fetch
         activation: kernel
+      - name: handoff_to_sys
+        activation: kernel
 
     skills:
       - name: resource_scaffold
@@ -260,6 +262,12 @@ handover:
     - from_agent: arf_assistant
       to_agent: sys_agent
       trigger: "创建或修改 resources(tools/skills/models) 目录下的资源文件"
+      context:
+        raw_turns: 5
+        task_summary: true
     - from_agent: sys_agent
       to_agent: arf_assistant
       trigger: "资源操作完成或需要用户确认"
+      context:
+        raw_turns: 0
+        task_summary: true

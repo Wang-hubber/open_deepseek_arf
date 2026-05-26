@@ -6,6 +6,7 @@ export const useChatStore = defineStore('chat', () => {
   const chatHistory = ref<ChatMessage[]>([])
   const displayMessages = ref<{ role: string; content: string; thinking?: string; toolCalls?: ToolCallRecord[] }[]>([])
   const isStreaming = ref(false)
+  const activeAgentName = ref('')
   const attachments = ref<Attachment[]>([])
   const userScrolledUp = ref(false)
 
@@ -149,10 +150,16 @@ export const useChatStore = defineStore('chat', () => {
     attachments.value = []
   }
 
+  function setActiveAgent(name: string) {
+    activeAgentName.value = name
+  }
+
   return {
     chatHistory,
     displayMessages,
     isStreaming,
+    activeAgentName,
+    setActiveAgent,
     attachments,
     userScrolledUp,
     addUserMsg,

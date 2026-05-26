@@ -142,6 +142,8 @@ export function useChat() {
         tool_name: evt.tool_name,
         params: evt.params,
       }
+    } else if (evt.type === 'agent_switch') {
+      chatStore.setActiveAgent(evt.to || '')
     } else if (evt.type === 'done') {
       isStreaming.value = false
       chatStore.setHistory(evt.history || [])

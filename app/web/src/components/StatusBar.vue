@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/composables/useI18n'
 
 const props = defineProps<{
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const router = useRouter()
 const appStore = useAppStore()
+const chatStore = useChatStore()
 
 function onLanguageChange() {
   const lang = appStore.language
@@ -27,6 +29,7 @@ function onLanguageChange() {
     <span class="status-left">
       <span class="dot dot-ok" title="当前会话激活模型"></span>
       <span class="model-name">{{ appStore.configStatus?.model_name || 'ARF Agent' }}</span>
+      <span v-if="chatStore.activeAgentName && chatStore.activeAgentName !== 'arf_assistant'" class="agent-badge">{{ chatStore.activeAgentName }}</span>
     </span>
 
     <span class="status-right">
@@ -90,6 +93,12 @@ function onLanguageChange() {
 .model-name {
   color: var(--text-secondary); font-size: 12px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+.agent-badge {
+  color: var(--accent); font-size: 11px;
+  font-weight: 600; padding: 1px 8px;
+  border: 1px solid var(--accent); border-radius: 10px;
+  opacity: 0.85;
 }
 .status-user { color: var(--text-primary); font-weight: 600; font-size: 13px; }
 
