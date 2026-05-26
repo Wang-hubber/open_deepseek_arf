@@ -87,7 +87,7 @@ class ModelRouter(Protocol):
 
 ### 2.4 TwoTierRouter 实现
 
-`arf/routing/two_tier.py`（22 行）。核心逻辑是将 LLM 分类结果映射到模型名：
+`arf/routing/two_tier.py`。核心逻辑是将 LLM 分类结果映射到模型名：
 
 ```python
 class TwoTierRouter:
@@ -164,7 +164,7 @@ KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓�
 
 ### 2.10 ModelAdapter — 重试与容错
 
-`arf/core/model_adapter.py`（269 行）。统一的 OpenAI 兼容端点封装：
+`arf/core/model_adapter.py`。统一的 OpenAI 兼容端点封装：
 - **指数退避重试**：429/5xx 等瞬时错误自动重试（默认 3 次，退避基数 1.5x）
 - **DeepSeek thinking 翻译**：`thinking_enabled` → `extra_body["thinking"]` 的 enabled/disabled 格式
 - **流式支持**：`chat_stream_full()` 产出 `chunk`、`tool_call`、`usage`、`error` 四种事件

@@ -74,7 +74,7 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
 
 ### 2.2 压缩管道
 
-**文件**：`arf/compaction/sliding_window.py`（98 行），`arf/agent/base.py`（summarizer 闭包）
+**文件**：`arf/compaction/sliding_window.py`，`arf/agent/base.py`（summarizer 闭包）
 
 **触发机制**（`sliding_window.py`）：以上一轮模型调用返回的 `usage.total_tokens` 为信号，在下一轮模型调用之前判断。区别于直接统计 `len(messages)`，API 报告的 token 用量包含工具定义、system prompt 等隐形消耗，更准确。
 
@@ -110,24 +110,24 @@ def should_compact(self, state, threshold=0.75, window_size=None):
 
 **MemoryEntry**（`core/protocols/memory.py`）：`id`（UUID）、`content`（记忆内容 ≤500 chars）、`category`（fact/preference/decision/context）、`timestamp`、`source_turn`、`relevance_score`、`replaces`（更新链）。
 
-**FileMemoryStore**（`arf/memory/file_store.py`，65 行）：
+**FileMemoryStore**（`arf/memory/file_store.py`）：
 - 单文件 `memory/memory.json`，所有条目 JSON 序列化
 - `save()` 按 id 覆盖；`delete()` 按 id 移除
 - O(n) 扫描，无索引。数百条规模内可接受
 
-**LLMMemoryWriter**（`arf/memory/llm_writer.py`，155 行）：
+**LLMMemoryWriter**（`arf/memory/llm_writer.py`）：
 - 每 turn 结束后异步调用（`graph.py`），输入最近 4 条消息 + 已有记忆索引
 - LLM 返回 `{"actions": [{"action": "add|update|delete", "entry": {...}, "replaces": "old-id"}]}`
 - 去重由 LLM 判断——对比已有记忆索引，能修正、精炼或否定之前的记忆
 - JSON 解析失败时跳过该 turn，保留已有记忆。`_parse_json_response()` 支持 markdown 围栏、双花括号、截取外层 `{}` 等常见 LLM 输出格式
 
-**LLMMemoryRetriever**（`arf/memory/llm_retriever.py`，113 行）：
+**LLMMemoryRetriever**（`arf/memory/llm_retriever.py`）：
 - 每 turn 开始前调用（`graph.py`），输入用户消息 + 记忆摘要索引（id + category + 前 120 字符）
 - LLM 返回 `{"relevant_ids": [...]}`
 - 结果按 max_tokens 截断（chars/3 ≈ tokens），不超出 system prompt 预算
 - 回退链：JSON 解析失败 → RecentFirstRetriever；LLM 调用异常 → RecentFirstRetriever
 
-**RuleBasedMemoryWriter**（`arf/memory/writer.py`，100 行）：
+**RuleBasedMemoryWriter**（`arf/memory/writer.py`）：
 - 无 LLM 依赖的轻量替代，中英文关键词 → category 映射
 - 仅匹配 assistant 消息，最多 500 字符，按 content 字符串去重
 

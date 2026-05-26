@@ -124,11 +124,11 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 
 每个 Provider 遵循相同接口：`list_kernel()` / `list_dynamic()` / `invalidate_dynamic()`。
 
-**ToolProvider**（`arf/resources/providers/tool_provider.py`，119 行）扫描 `tools/{name}/` 目录。每个工具 = `tool.yaml`（Schema）+ `function.py`（逻辑）。`importlib.util.spec_from_file_location` 动态导入 `execute` 函数，执行走 `FunctionBackend`。
+**ToolProvider**（`arf/resources/providers/tool_provider.py`）扫描 `tools/{name}/` 目录。每个工具 = `tool.yaml`（Schema）+ `function.py`（逻辑）。`importlib.util.spec_from_file_location` 动态导入 `execute` 函数，执行走 `FunctionBackend`。
 
-**SkillProvider**（`arf/resources/providers/skill_provider.py`，60 行）扫描 `skills/*.yaml`。每个文件一个 SkillConfig。纯声明——无函数加载。
+**SkillProvider**（`arf/resources/providers/skill_provider.py`）扫描 `skills/*.yaml`。每个文件一个 SkillConfig。纯声明——无函数加载。
 
-**ModelProvider**（`arf/resources/providers/model_provider.py`，60 行）扫描 `models/*.yaml`。每个文件一个 ModelConfig。`activation` 字段用于内核/动态分离。
+**ModelProvider**（`arf/resources/providers/model_provider.py`）扫描 `models/*.yaml`。每个文件一个 ModelConfig。`activation` 字段用于内核/动态分离。
 
 三者并行启动，互不依赖。所有 Provider 接受 `fs_root` 参数，默认 `./`，可在测试中覆盖。
 
@@ -157,7 +157,7 @@ class _FrozenDict(dict):
 
 ### 2.4 ResourceResolver — 覆盖合并与配置生成
 
-`ResourceResolver`（`arf/resources/resolver.py`，147 行）封装三个 Provider，是所有资源查询的统一入口——对标注册表的查询 API。
+`ResourceResolver`（`arf/resources/resolver.py`）封装三个 Provider，是所有资源查询的统一入口——对标注册表的查询 API。
 
 ```
 优先级：agent.yaml 覆盖 > 文件系统字段 > Pydantic 默认值
@@ -188,7 +188,7 @@ class ResourceResolver:
 
 ### 2.5 FileWatcher — 跨平台自动重载
 
-`FileWatcher`（`arf/resources/file_watcher.py`，200 行）是对标 udev 的资源变更检测器，双轨实现：
+`FileWatcher`（`arf/resources/file_watcher.py`）是对标 udev 的资源变更检测器，双轨实现：
 
 - **Linux**：ctypes 调用 `inotify_init()` / `inotify_add_watch()`。`select.select` 异步等待。一次读取 4096 字节缓冲区，逐事件解析（wd + mask + cookie + len + name[aligned]）。监听 `IN_CLOSE_WRITE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE`。
 - **非 Linux**：`asyncio.sleep` 轮询 `os.stat` mtime 快照对比。

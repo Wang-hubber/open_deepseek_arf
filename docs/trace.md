@@ -57,7 +57,7 @@ EventBus.emit(AgentEvent)
 
 ### 2.2 事件模型
 
-`AgentEvent`（`arf/core/events.py`，30 行）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
+`AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
 
 **15 种事件类型定义**（`EventType` Literal），引擎实际 emit 13 种，`approval_required` / `approval_resolved` 为审批通道预留：
 
@@ -81,11 +81,11 @@ EventBus.emit(AgentEvent)
 
 ### 2.3 FileTraceStore
 
-`arf/observability/file_trace.py`（63 行）。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/sessions/{session_id}.json`。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。过滤后文件体积减少约 75%。
+`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/sessions/{session_id}.json`。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。过滤后文件体积减少约 75%。
 
 ### 2.4 UsageTracker
 
-`arf/observability/usage_tracker.py`（92 行）。订阅 `model_call_end` 事件，按模型累加 `prompt_tokens`、`completion_tokens`、`total_tokens`、`calls`。持久化到 `memory/usage.json`，启动时加载历史数据（重启不丢失）。`BaseAgent` 自动创建，应用层无需手动初始化。
+`arf/observability/usage_tracker.py`。订阅 `model_call_end` 事件，按模型累加 `prompt_tokens`、`completion_tokens`、`total_tokens`、`calls`。持久化到 `memory/usage.json`，启动时加载历史数据（重启不丢失）。`BaseAgent` 自动创建，应用层无需手动初始化。
 
 ### 2.5 交互轮次分组
 
@@ -123,7 +123,7 @@ Round 0 (3 次内部迭代)
 
 ### 2.8 回放控制器
 
-`FileReplayController`（`arf/observability/replay.py`，46 行）提供录制和确定性回放能力。录制时将每轮模型输出和工具结果序列化为 JSON。回放时按 turn 顺序 yield `AgentEvent`，支持起始 turn 和断点（用于调试）。用于评估和回归测试——同一组输入的多次回放应产生完全一致的输出。
+`FileReplayController`（`arf/observability/replay.py`）提供录制和确定性回放能力。录制时将每轮模型输出和工具结果序列化为 JSON。回放时按 turn 顺序 yield `AgentEvent`，支持起始 turn 和断点（用于调试）。用于评估和回归测试——同一组输入的多次回放应产生完全一致的输出。
 
 ### 2.9 OpenTelemetry 模块
 

@@ -67,7 +67,7 @@ GraphEngine
 
 ### 2.2 防护栏 — 框架级强制
 
-三个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`，41 行）组合，在引擎中统一调用：
+三个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`）组合，在引擎中统一调用：
 
 | 防护栏 | 位置 | 类型 | 行为 |
 |--------|------|------|------|
@@ -77,7 +77,7 @@ GraphEngine
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
 
-`arf/guardrails/path_check.py`（33 行）。在每次工具调用前执行（`graph.py`），检查所有字符串类型参数值：
+`arf/guardrails/path_check.py`。在每次工具调用前执行（`graph.py`），检查所有字符串类型参数值：
 
 ```python
 class PathCheckToolGuard:
@@ -117,7 +117,7 @@ class PathCheckToolGuard:
 
 ### 2.5 权限分级 — deny → ask → allow
 
-`ToolPermissionChecker`（`arf/guardrails/permissions.py`，77 行）：
+`ToolPermissionChecker`（`arf/guardrails/permissions.py`）：
 
 ```python
 def check(self, tool_name: str, params: dict) -> str:

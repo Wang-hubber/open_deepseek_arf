@@ -53,7 +53,7 @@ ARF 采用分层并发策略：
 
 ### 2.2 ConcurrentToolExecutor
 
-`arf/engine/tool_executor.py`（40 行）。默认 `strategy="parallel"`，通过 semaphore 限制最多 5 个并发工具调用：
+`arf/engine/tool_executor.py`。默认 `strategy="parallel"`，通过 semaphore 限制最多 5 个并发工具调用：
 
 ```python
 class ConcurrentToolExecutor:
@@ -87,7 +87,7 @@ Hook 间无依赖关系——一个 Hook 的退出码不影响其他 Hook 的启
 
 ### 2.4 Skill Pipeline — 在并行中插入顺序约束
 
-`arf/skills/pipeline.py`（约 80 行）。当 Skill 声明了 `pipeline` 字段时，框架强制执行工具调用的依赖顺序——这是一个**硬保证**，不是建议：
+`arf/skills/pipeline.py`。当 Skill 声明了 `pipeline` 字段时，框架强制执行工具调用的依赖顺序——这是一个**硬保证**，不是建议：
 
 ```yaml
 skills:
