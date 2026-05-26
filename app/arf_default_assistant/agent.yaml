@@ -123,8 +123,6 @@ advanced:
         - file_reader
         - web_search
         - web_fetch
-        - web_fetch_playwright
-        - memory_store
         - resource_loader
         - resource_registrar
         - resource_scaffold

@@ -265,8 +265,8 @@ cd app/web && npm install && npm run dev
 
 | # | 问题 | 位置 | 严重程度 |
 |---|------|------|---------|
-| 1 | **agent.yaml 死引用** — `web_fetch_playwright` 和 `memory_store` 在 `guardrails.permissions.allow` 列表中，但 `tools/` 目录下无对应实现 | `app/arf_default_assistant/agent.yaml` | 低 — 权限检查时这些名称无害，但会造成困惑 |
-
+> ~~**1. agent.yaml 死引用**~~ — **已于 2026-05-26 修复**。从 allow 列表中移除了 `web_fetch_playwright` 和 `memory_store`。
+>
 > ~~**2. invoke() 缺少 approval/guard 事件**~~ — **已于 2026-05-26 修复**。invoke/astream 两路径事件平面已统一：guard_block、guard_pass、approval_required、approval_resolved 在两路径均 emit；hook_start/hook_end 覆盖所有 hook 执行点；invoke 路径支持人工审批等待（复用 /api/chat/approve）。
 >
 > ~~**3. astream 路径缺少 hook 事件**~~ — 同上修复。
