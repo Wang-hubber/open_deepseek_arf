@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import logging
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -40,6 +41,9 @@ class GraphEngine:
         max_turns: int = 50,
         approval_enabled: bool = False,
         approval_allowlist: list[str] | None = None,
+        # Multi-agent support
+        sub_agent_configs: dict | None = None,
+        handoff_manager=None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -67,6 +71,11 @@ class GraphEngine:
         self._cancel_event = cancel_event
         self._checkpoints: deque[dict] = deque(maxlen=3)  # rolling 3 snapshots
         self._interaction_round = 0
+        # Multi-agent
+        self._sub_agent_configs: dict = sub_agent_configs or {}
+        self._handoff_manager = handoff_manager
+        self._handoff_checkpoint: dict | None = None
+        self._active_agent: str = ""
 
     @property
     def cancel_event(self) -> asyncio.Event | None:
@@ -177,6 +186,182 @@ class GraphEngine:
     def _cancelled(self) -> bool:
         """Check if execution has been cancelled (non-blocking)."""
         return self._cancel_event is not None and self._cancel_event.is_set()
+
+    # ---- multi-agent support ----
+
+    def _active_config(self, state: AgentState) -> dict:
+        """Return (system_prompt, tools, skills, max_turns) for active agent."""
+        agent_name = state.get("active_agent", "")
+        if agent_name and agent_name in self._sub_agent_configs:
+            sub = self._sub_agent_configs[agent_name]
+            cfg = sub["config"]
+            return {
+                "system_prompt": sub.get("system_prompt", ""),
+                "tools": cfg.tools,
+                "skills": cfg.skills,
+                "max_turns": cfg.effective_advanced().max_turns,
+                "hooks": cfg.hooks,
+                "adapters": sub.get("adapters", {}),
+            }
+
+        return {
+            "system_prompt": self._system_prompt,
+            "tools": [],
+            "skills": [],
+            "max_turns": self._max_turns,
+            "hooks": [],
+            "adapters": {},
+        }
+
+    async def _execute_handoff(self, state: AgentState, handoff_data: dict,
+                                current_model: str) -> AgentState:
+        """Execute forward handoff: checkpoint → resolve → build context → swap."""
+        from_agent = state.get("active_agent", "") or self._active_agent or ""
+
+        # 1. Checkpoint current state
+        self._handoff_checkpoint = {
+            "messages": list(state.get("messages", [])),
+            "active_agent": from_agent,
+            "current_turn": state.get("current_turn", 0),
+            "interaction_round": state.get("interaction_round", 0),
+        }
+
+        # 2. Resolve target
+        to_agent = await self._handoff_manager.resolve(from_agent, handoff_data)
+        if not to_agent:
+            state["handoff_error"] = f"No handover rule matches from '{from_agent}'"
+            return state
+
+        rule = self._handoff_manager.get_rule(from_agent, to_agent)
+        if not rule:
+            state["handoff_error"] = f"No rule for {from_agent} → {to_agent}"
+            return state
+
+        # 3. Build target context
+        target_cfg = self._sub_agent_configs.get(to_agent, {})
+        target_prompt = target_cfg.get("system_prompt", "")
+        new_messages = self._handoff_manager.build_target_context(
+            from_state=state,
+            rule=rule,
+            handoff_data=handoff_data,
+            target_system_prompt=target_prompt,
+        )
+
+        # 4. Generate task summary (if configured)
+        if rule.context.task_summary and self._handoff_manager._system_model_call:
+            try:
+                summary = await self._handoff_manager._system_model_call(
+                    f"Summarize this handoff task in one sentence (Chinese):\n"
+                    f"Task: {handoff_data.get('task', '')}\n"
+                    f"Context: {handoff_data.get('context', '')}"
+                )
+                for i, m in enumerate(new_messages):
+                    if m.get("content") == "__TASK_SUMMARY_PLACEHOLDER__":
+                        new_messages[i] = {
+                            "role": "system",
+                            "content": f"[Task Summary] {summary.strip()}",
+                        }
+            except Exception:
+                new_messages = [m for m in new_messages
+                                if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
+        else:
+            new_messages = [m for m in new_messages
+                            if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
+
+        # 5. Swap state
+        state["messages"] = new_messages
+        state["active_agent"] = to_agent
+        state["current_turn"] = 0
+        state["handoff_task"] = handoff_data.get("task", "")
+
+        # 6. Emit agent_switch
+        self._emit("agent_switch", {
+            "from": from_agent,
+            "to": to_agent,
+            "task": handoff_data.get("task", ""),
+        }, session_id=state.get("session_id", ""), agent_name=to_agent)
+
+        logging.getLogger("arf.engine").info(
+            "Handoff: %s → %s, task: %.80s", from_agent, to_agent,
+            handoff_data.get("task", "")
+        )
+        return state
+
+    async def _restore_from_handoff(self, state: AgentState,
+                                      handoff_data: dict) -> AgentState:
+        """Restore original agent after sub-agent handoff back."""
+        if not self._handoff_checkpoint:
+            return state
+
+        cp = self._handoff_checkpoint
+        result_content = ""
+
+        # Get sub-agent's last assistant message as result
+        for m in reversed(state.get("messages", [])):
+            if m.get("role") == "assistant":
+                result_content = m.get("content", "")
+                break
+
+        if not result_content:
+            result_content = "(handoff completed, no response)"
+
+        # Restore checkpointed messages + inject tool call & result
+        messages = cp["messages"]
+        task = state.get("handoff_task", "")
+        tc_id = handoff_data.get("tool_call_id", "handoff_0")
+
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tc_id,
+                "type": "function",
+                "function": {
+                    "name": "handoff_to_sys",
+                    "arguments": '{"task":"' + task + '"}',
+                },
+            }],
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tc_id,
+            "content": result_content,
+        })
+
+        # Emit agent_switch back
+        from_agent = state.get("active_agent", "")
+        to_agent = cp.get("active_agent", "")
+        self._emit("agent_switch", {
+            "from": from_agent,
+            "to": to_agent,
+            "task": "handoff complete",
+        }, session_id=state.get("session_id", ""), agent_name=to_agent)
+
+        # Swap state
+        state["messages"] = messages
+        state["active_agent"] = to_agent
+        state["current_turn"] = cp.get("current_turn", 0)
+        state["interaction_round"] = cp.get("interaction_round", 0)
+        state.pop("handoff_task", None)
+        self._handoff_checkpoint = None
+
+        return state
+
+    async def _resolve_tools_for_agent(self, state: AgentState, active: dict) -> list[dict]:
+        """Get tool definitions for the active agent, falling back to resolver."""
+        # Use active agent's tools list if available, else resolve from filesystem
+        active_tools = active.get("tools", [])
+        if active_tools:
+            return [
+                {"name": t.name, "description": t.description,
+                 "parameters": t.parameters}
+                for t in active_tools
+            ]
+        if self.tool_resolver:
+            return await self.tool_resolver.get_tool_definitions(
+                self._last_user_message(state), top_k=10
+            )
+        return []
 
     def set_call_model(self, call_model) -> None:
         """Late-binding injection of the model API call function."""
@@ -315,15 +500,12 @@ class GraphEngine:
                     state = await self.compaction.compact(state)
                     self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
 
-            # 3. Get tool definitions
-            tools = []
-            if self.tool_resolver:
-                tools = await self.tool_resolver.get_tool_definitions(
-                    self._last_user_message(state), top_k=10
-                )
+            # 3. Get tool definitions — use active agent's tools
+            active = self._active_config(state)
+            tools = await self._resolve_tools_for_agent(state, active)
 
             # 4. Build messages & call model
-            msgs = [{"role": "system", "content": self._system_prompt}]
+            msgs = [{"role": "system", "content": active["system_prompt"]}]
             if state.get("context_summary"):
                 msgs[0]["content"] += f"\n\n## Memory\n{state['context_summary']}"
             msgs.extend(state.get("messages", []))
@@ -511,6 +693,21 @@ class GraphEngine:
                 for k, v in results.items()
             }
 
+            # --- Handoff detection (invoke) ---
+            if self._handoff_manager and self._handoff_manager.has_rules:
+                handoff_signal = self._handoff_manager.detect(state["tool_results"])
+                if handoff_signal:
+                    state = await self._execute_handoff(state, handoff_signal, model)
+                    if state.get("handoff_error"):
+                        state["messages"].append({
+                            "role": "tool",
+                            "tool_call_id": handoff_signal.get("tool_call_id", ""),
+                            "content": f"Handoff failed: {state['handoff_error']}",
+                        })
+                        del state["handoff_error"]
+                        await self.state_store.put(session_id, state)
+                    continue
+
             # 9. Memory write — after turn
             if self.memory_writer and self.memory_store:
                 existing = await self.memory_store.load(session_id)
@@ -523,7 +720,7 @@ class GraphEngine:
             # 10. Checkpoint
             await self.state_store.put(session_id, state)
 
-            if turn >= self._max_turns:
+            if turn >= active["max_turns"]:
                 break
 
         if self.hook_runner:
@@ -596,11 +793,10 @@ class GraphEngine:
             # Get tool definitions for this turn
             tools: list[dict] = []
             if self.tool_resolver:
-                tools = await self.tool_resolver.get_tool_definitions(
-                    self._last_user_message(state), top_k=10
-                )
+                active = self._active_config(state)
+                tools = await self._resolve_tools_for_agent(state, active)
 
-            msgs = [{"role": "system", "content": self._system_prompt}]
+            msgs = [{"role": "system", "content": active["system_prompt"]}]
             summary = state.get("context_summary", "")
             if summary:
                 msgs[0]["content"] += f"\n\n## Memory\n{summary}"
@@ -849,6 +1045,30 @@ class GraphEngine:
             if self.hook_runner:
                 hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
                 self._inject_hook_messages(hr, state)
+
+            state["tool_results"] = {
+                k: {"success": v.success, "data": v.data, "error": v.error}
+                for k, v in results.items()
+            }
+
+            # --- Handoff detection (astream) ---
+            if self._handoff_manager and self._handoff_manager.has_rules:
+                handoff_signal = self._handoff_manager.detect(state["tool_results"])
+                if handoff_signal:
+                    state = await self._execute_handoff(state, handoff_signal, model)
+                    if state.get("handoff_error"):
+                        state["messages"].append({
+                            "role": "tool",
+                            "tool_call_id": handoff_signal.get("tool_call_id", ""),
+                            "content": f"Handoff failed: {state['handoff_error']}",
+                        })
+                        del state["handoff_error"]
+                        yield self._make_event(type="error",
+                                         data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
+                                         turn=turn, session_id=session_id)
+                    await self.state_store.put(session_id, state)
+                    continue
+
             await self.state_store.put(session_id, state)
 
             # Memory extraction after tool execution turn
@@ -860,7 +1080,7 @@ class GraphEngine:
                     existing_entries=existing,
                 )
 
-            if turn >= self._max_turns:
+            if turn >= active["max_turns"]:
                 break
 
         if self.hook_runner:

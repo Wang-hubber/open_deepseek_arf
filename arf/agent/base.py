@@ -292,6 +292,36 @@ class BaseAgent:
         # 9. Planner (optional)
         planner = override_protocols.pop("planner", None)
 
+        # 4.5 Sub-agents — create from config.agents
+        self._sub_agent_configs: dict = {}
+        if config.agents:
+            import os as _os3
+            from arf.core.model_adapter import ModelAdapter as _SubModelAdapter
+            for sub_cfg in config.agents:
+                sub_prompt = _build_system_prompt(sub_cfg)
+                sub_adapters = {}
+                for m in (sub_cfg.models or []):
+                    sub_adapters[m.type] = _SubModelAdapter({
+                        "base_url": m.api_base,
+                        "api_key": _os3.environ.get(m.api_key_env, ""),
+                        "model_name": m.model,
+                        **m.kwargs,
+                    })
+                self._sub_agent_configs[sub_cfg.name] = {
+                    "config": sub_cfg,
+                    "system_prompt": sub_prompt,
+                    "adapters": sub_adapters,
+                }
+
+        # 4.6 Handoff manager — from config.handover rules
+        from arf.engine.handoff import HandoffManager
+        handoff_manager = None
+        if config.handover and config.handover.rules:
+            handoff_manager = HandoffManager(
+                rules=config.handover.rules,
+                system_model_call=_system_model_call,
+            )
+
         # 10. Build engine
         system_prompt = _build_system_prompt(config)
 
@@ -344,6 +374,8 @@ class BaseAgent:
             max_turns=(adv.max_turns if adv else 50),
             approval_enabled=(adv.human_loop is not None and adv.human_loop.approval_points != "always_auto") if adv else False,
             approval_allowlist=(adv.human_loop.allowlist if adv and adv.human_loop else None),
+            sub_agent_configs=self._sub_agent_configs,
+            handoff_manager=handoff_manager,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions
@@ -452,6 +484,11 @@ class BaseAgent:
     @property
     def usage_tracker(self):
         return self._usage_tracker
+
+    @property
+    def sub_agent_configs(self) -> dict:
+        """Return {agent_name: {config, system_prompt, adapters}} for all sub-agents."""
+        return self._sub_agent_configs
 
     async def start(self) -> None:
         """Start the FileWatcher (called once event loop is ready)."""
