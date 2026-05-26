@@ -77,29 +77,65 @@ GraphEngine
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
 
-`arf/guardrails/path_check.py`。在每次工具调用前执行（`graph.py`），检查所有字符串类型参数值：
+`arf/guardrails/path_check.py`。在每次工具调用前执行（`graph.py`），递归检查所有参数（包括嵌套结构）中的字符串值：
 
 ```python
 class PathCheckToolGuard:
     async def check(self, tool_name: str, params: dict) -> GuardResult:
-        for v in params.values():
-            if not isinstance(v, str):
-                continue
-            if ".." in Path(v).parts:       # 目录遍历
-                return GuardResult(allowed=False, reason=f"Path traversal blocked")
-            if v.startswith("/"):            # 绝对路径
-                return GuardResult(allowed=False, reason=f"Absolute path blocked")
-            if not self._sandbox.validate_path(v):  # 解析后逃逸检测
-                return GuardResult(allowed=False, reason=f"Path escapes workspace")
+        if self._quota:
+            self._quota.reset()
+        for path_str in self._walk_strings(params):
+            result = self._check_one(path_str)
+            if not result.allowed:
+                return result
         return GuardResult(allowed=True)
+
+    def _check_one(self, v: str) -> GuardResult:
+        if ".." in Path(v).parts:          # 目录遍历
+            return GuardResult(allowed=False, reason=f"Path traversal blocked")
+        if v.startswith("/"):               # 绝对路径
+            return GuardResult(allowed=False, reason=f"Absolute path blocked")
+        if quota and depth > limit:         # 深度配额
+            return GuardResult(allowed=False, reason=f"Path depth exceeds limit")
+        if quota and count > limit:         # 数量配额
+            return GuardResult(allowed=False, reason=f"Path count exceeds limit")
+        if quota and deny_symlinks:         # 符号链接检测
+            if sandbox.has_symlink(v):
+                return GuardResult(allowed=False, reason=f"Symlink traversal blocked")
+        if not sandbox.validate_path(v):     # 工作区逃逸检测
+            return GuardResult(allowed=False, reason=f"Path escapes workspace")
+        return GuardResult(allowed=True)
+
+    @staticmethod
+    def _walk_strings(obj) -> Iterator[str]:
+        """递归遍历嵌套 dict/list 中所有字符串值"""
+        if isinstance(obj, str):
+            yield obj
+        elif isinstance(obj, dict):
+            for value in obj.values():
+                yield from PathCheckToolGuard._walk_strings(value)
+        elif isinstance(obj, (list, tuple, set)):
+            for item in obj:
+                yield from PathCheckToolGuard._walk_strings(item)
 ```
 
-`PathSandbox.validate_path()`（`arf/sandbox/path_sandbox.py`）将路径对工作区根解析后做 containment 判断。工作区根在 `base.py` 设为 `tools_dir.parent`（即应用目录）。
+`PathSandbox.has_symlink()`（`arf/sandbox/path_sandbox.py`）从根目录向下逐段检查原始路径的每个组件是否为符号链接——在 `resolve()` 之前检测，防止 symlink 劫持逃逸。
 
-**当前限制**：
-- 只检查顶层参数值，不递归检查嵌套结构中的字符串
-- 无符号链接检测（`Path.resolve()` 可能穿越 symlink）
-- 无 per-invocation 资源配额
+`ResourceQuota` 支持三个可选限制：
+
+| 配额 | 类型 | 说明 |
+|------|------|------|
+| `max_path_count` | `int \| None` | 单次调用最多检查的路径字符串数量 |
+| `max_path_depth` | `int \| None` | 单个路径的最大目录深度（`Path.parts` 长度） |
+| `deny_symlinks` | `bool` | 是否拦截 symlink 穿越（默认 `True`） |
+
+检测顺序（首次失败即返回）：
+1. 路径穿越（`..`）
+2. 绝对路径（以 `/` 开头）
+3. 路径深度超配额
+4. 路径数量超配额
+5. 符号链接穿越（可配置）
+6. 解析后工作区逃逸（PathSandbox containment）
 
 ### 2.4 双源隔离 — 应用层约定
 
@@ -178,7 +214,3 @@ ARF 的工具解析器架构（`ToolResolver` + `ToolProvider`）支持多提供
 ### 3.3 探索性方向
 
 **审批通道**：`check_tool_permission()` 返回 `"ask"` 时，引擎 emit `approval_required` 事件暂停执行，等待用户在前端确认。
-
-**递归参数检查**：扩展路径检查到嵌套字典/列表中的所有字符串值，而非仅顶层。
-
-**符号链接检测**：`PathSandbox` 中加入 symlink 解析后路径对比，防止 symlink 劫持逃逸。
