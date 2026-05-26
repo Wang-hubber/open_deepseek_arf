@@ -242,7 +242,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 ## Framework Dev / App Building
 
-**Building apps on ARF**: See the [App Developer Guide](./贡献者须知.md) — start from a minimal `agent.yaml`, configure models/tools/skills/hooks, launch the server.
+**Building apps on ARF**: See the [APP Developer Guide](./APP开发者指南.md) — start from a minimal `agent.yaml`, configure models/tools/skills/hooks, launch the server.
 
 **Hacking on the framework**: Check the [TODO](#todo) section for pending fixes and evolution directions. Framework code lives in `arf/`, with dependency injection allowing you to replace any default implementation.
 

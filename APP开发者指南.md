@@ -1,4 +1,4 @@
-# APP 开发者须知 — 从 0 到 1 构建你的 ARF Agent 应用
+# APP 开发者指南 — 从 0 到 1 构建你的 ARF Agent 应用
 
 > 本文档中的代码示例基于 `app/arf_default_assistant/` 版本。示例为教学目的可能有简化，完整代码请参考源文件。
 
