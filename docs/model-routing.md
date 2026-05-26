@@ -72,7 +72,7 @@ TwoTierRouter.classify(query)
 | 调度层 | 负责内容 | 模型选择方式 | 配置位置 |
 |--------|----------|-------------|----------|
 | **用户任务路由** | 每 turn 根据 query 复杂度选模型 | `TwoTierRouter` + LLM 分类器 | `advanced.routing` |
-| **框架任务分配** | 记忆、压缩、分类等后台操作 | 固定 system model | `advanced.memory.model` |
+| **框架任务分配** | 记忆、压缩、分类等后台操作 | 固定 system model | `advanced.system_model` |
 
 ### 2.3 协议
 
@@ -191,10 +191,7 @@ advanced:
     fallback:
       deep: quick
 
-  memory:
-    model: quick            # system model，框架后台任务共用
-    temperature: 0.3
-    thinking_enabled: false
+  system_model: quick      # 系统后台模型，框架任务共用
 ```
 
 ### 2.12 策略对比
@@ -214,14 +211,14 @@ ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**
 
 ```
 agent.yaml                    config.models              ModelAdapter
-advanced.memory.model: quick → lookup by name → quick → _system_model_call
+advanced.system_model: quick → lookup by name → quick → _system_model_call
                                      ↓ 找不到
                               config.models[0]（回退）
                                      ↓ 为空
                               None → _system_model_call = None
 ```
 
-- 从 `config.models` 中查找 `advanced.memory.model` 指定名字的模型（如 `quick`）
+- 从 `config.models` 中查找 `advanced.system_model` 指定的模型（如 `quick`）
 - 找不到则回退到 `config.models[0]`
 - 用低温度（0.3）、关闭 thinking、`max_tokens=1024` 创建适配器
 - 最终产物是一个 `_system_model_call(prompt: str) -> str` 闭包——输入简短 prompt，返回纯文本
@@ -241,10 +238,7 @@ advanced.memory.model: quick → lookup by name → quick → _system_model_call
 
 ```yaml
 advanced:
-  memory:
-    model: quick            # 指定 system model，须与 models/ 中某个模型同名
-    temperature: 0.3        # 低温度减少随机性，降低 token 消耗
-    thinking_enabled: false # 后台任务不需要深度推理
+  system_model: quick      # 系统后台模型，须与 models/ 中某个模型同名
 ```
 
 **设计约束**：

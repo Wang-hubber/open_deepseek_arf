@@ -119,13 +119,11 @@ The app **does not** implement its own memory. The framework's `LLMMemoryWriter`
 
 ```yaml
 advanced:
+  system_model: quick     # system model shared by memory, routing, compaction
   memory:
     store: file
     retriever: llm
     writer: llm
-    model: quick            # cheap model for memory ops
-    temperature: 0.3
-    thinking_enabled: false
 ```
 
 [Design doc →](docs/memory-management.md)

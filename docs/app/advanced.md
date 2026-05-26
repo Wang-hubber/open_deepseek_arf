@@ -45,7 +45,7 @@ advanced:
 ```
 
 - `strategy: static` 始终使用默认模型，不自动切换
-- 分类器使用 `memory.model` 指定的模型，不消耗推理 token
+- 分类器使用 `system_model` 指定的廉价模型，不开启深度推理
 
 ---
 

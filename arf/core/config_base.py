@@ -66,9 +66,6 @@ class MemoryConfig(BaseModel):
     writer: Literal["rule", "llm"] = "llm"
     max_tokens: int = 2000
     top_k: int = 5
-    model: str = "quick"           # which configured model to use for memory ops
-    temperature: float = 0.3
-    thinking_enabled: bool = False  # disable reasoning for cost savings
 
 
 class GuardrailsConfig(BaseModel):

@@ -148,6 +148,8 @@ advanced:
     strategy: sliding_window    # sliding_window | none
     threshold: 0.75             # 触发比例，按选定模型的 context_window 计算
 
+  system_model: quick           # 系统后台模型，低温度、关闭推理
+
   memory:
     store: file                 # file | sqlite | none
     workspace: ./memory
@@ -155,9 +157,6 @@ advanced:
     writer: llm                 # llm | rule
     max_tokens: 2000
     top_k: 5
-    model: quick                # 用廉价模型做记忆操作
-    temperature: 0.3
-    thinking_enabled: false
 ```
 
 ---

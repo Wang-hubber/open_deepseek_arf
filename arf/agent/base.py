@@ -156,22 +156,27 @@ class BaseAgent:
         mem_workspace = mem_cfg.workspace if mem_cfg else default_workspace
         memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_workspace))
 
-        # Build a dedicated cheap model adapter for system background tasks
+        # Build system model adapter for all background tasks (memory, routing, compaction).
+        # Uses advanced.system_model if set, otherwise falls back to the first configured model.
         _system_model_call = None
-        if mem_cfg and mem_cfg.writer == "llm":
+        system_model_name = adv.system_model if adv else None
+        if not system_model_name and config.models:
+            system_model_name = config.models[0].name
+
+        if system_model_name:
             import os as _os2, asyncio as _aio2
             from arf.core.model_adapter import ModelAdapter as _SystemAdapter
             system_model_cfg = next(
-                (m for m in config.models if m.name == mem_cfg.model),
-                config.models[0] if config.models else None,
+                (m for m in config.models if m.name == system_model_name),
+                None,
             )
             if system_model_cfg:
                 _system_adapter = _SystemAdapter({
                     "base_url": system_model_cfg.api_base,
                     "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
                     "model_name": system_model_cfg.model,
-                    "temperature": mem_cfg.temperature,
-                    "thinking_enabled": str(mem_cfg.thinking_enabled).lower(),
+                    "temperature": 0.3,
+                    "thinking_enabled": "false",
                     "max_tokens": 1024,
                 })
 

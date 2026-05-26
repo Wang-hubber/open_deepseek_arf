@@ -119,13 +119,11 @@ skills:
 
 ```yaml
 advanced:
+  system_model: quick     # 系统后台模型 — 记忆、路由分类、压缩共用
   memory:
     store: file
     retriever: llm
     writer: llm
-    model: quick            # 廉价模型处理记忆操作
-    temperature: 0.3
-    thinking_enabled: false
 ```
 
 [设计文档 →](docs/memory-management.md)

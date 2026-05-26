@@ -114,6 +114,9 @@ tools:
 
 advanced:
   max_turns: 50
+  # 系统后台模型 — 记忆提取/检索、路由分类、上下文压缩共用
+  # 应选廉价快速模型 (flash, thinking disabled, low temp)
+  system_model: quick
   memory:
     store: file
     workspace: ./memory
@@ -121,9 +124,6 @@ advanced:
     writer: llm
     max_tokens: 2000
     top_k: 5
-    model: quick
-    temperature: 0.3
-    thinking_enabled: false
   routing:
     strategy: two_tier
     default: quick
