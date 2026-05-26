@@ -585,29 +585,6 @@ async def list_resources(res_type: str):
 
 
 
-@app.post("/api/save")
-async def save_archive():
-    """Save current conversation state to archive.json."""
-    state = await _agent.state_store.get("default")
-    if not state:
-        return JSONResponse({"status": "no_state"})
-    import copy
-    data = copy.deepcopy(dict(state))
-    data.pop("tool_results", None)
-    archive_path = app_context.workspace_dir / "archive.json"
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    return JSONResponse({"status": "saved", "messages": len(state.get("messages", []))})
-
-
-@app.get("/api/archive")
-async def download_archive():
-    p = app_context.workspace_dir / "archive.json"
-    if p.exists():
-        return FileResponse(p, media_type="application/json")
-    return JSONResponse({"error": "not found"}, status_code=404)
-
-
 @app.post("/api/reload")
 async def reload_config():
     """Reload agent config and reinitialize the agent."""
@@ -616,15 +593,6 @@ async def reload_config():
     _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
     return JSONResponse({"status": "reloaded", "name": cfg.name})
-
-
-@app.post("/api/resources/reload")
-async def resources_reload():
-    """Clear dynamic resource cache — forces re-scan on next access."""
-    if hasattr(_agent, '_resource_resolver'):
-        await _agent.resource_resolver.reload_dynamic()
-        return JSONResponse({"status": "reloaded", "scope": "dynamic"})
-    return JSONResponse({"error": "resource resolver not available"}, status_code=500)
 
 
 class FeedbackReq(BaseModel):
@@ -682,8 +650,8 @@ from datetime import datetime, timezone
 
 def _session_defaults():
     """Shared defaults for the single-session model."""
-    archive = app_context.workspace_dir / "archive.json"
-    created_at = datetime.fromtimestamp(archive.stat().st_mtime, tz=timezone.utc).isoformat() if archive.exists() else datetime.now(timezone.utc).isoformat()
+    state_file = app_context.state_dir / "default.json"
+    created_at = datetime.fromtimestamp(state_file.stat().st_mtime, tz=timezone.utc).isoformat() if state_file.exists() else datetime.now(timezone.utc).isoformat()
     return {"id": "default", "session_id": "default", "title": "ARF Assistant", "created_at": created_at}
 
 @app.get("/trace-viewer")

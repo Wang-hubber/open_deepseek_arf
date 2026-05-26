@@ -112,12 +112,6 @@ tools:
     parameters: {type: object, properties: {model: {type: string}}, required: [model]}
     activation: discoverable
 
-hooks:
-  - name: self_evolve
-    type: post_tool_exec
-    run: ["python ./hooks/self_evolve.py"]
-    timeout: 5s
-
 advanced:
   max_turns: 50
   memory:
