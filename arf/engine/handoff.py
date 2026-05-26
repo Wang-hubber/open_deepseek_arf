@@ -106,14 +106,22 @@ class HandoffManager:
         ctx_cfg = rule.context
         messages = [{"role": "system", "content": target_system_prompt}]
 
-        # Raw context: last N turns
+        # Raw context: last N turns of conversation (user + clean assistant only)
         if ctx_cfg.raw_turns != 0:
             all_msgs = from_state.get("messages", [])
+            # Keep only user messages + assistant messages without tool_calls.
+            # Skip tool messages (no matching tool_calls in truncated context)
+            # and assistant messages with tool_calls (orphaned without results).
+            conv_msgs = [
+                m for m in all_msgs
+                if m.get("role") == "user"
+                or (m.get("role") == "assistant" and not m.get("tool_calls"))
+            ]
             if ctx_cfg.raw_turns > 0:
-                take = min(len(all_msgs), ctx_cfg.raw_turns * 2)
-                raw_context = all_msgs[-take:]
+                take = min(len(conv_msgs), ctx_cfg.raw_turns * 2)
+                raw_context = conv_msgs[-take:]
             else:
-                raw_context = all_msgs  # -1 = all
+                raw_context = conv_msgs  # -1 = all
             messages.extend(raw_context)
 
         # Task summary placeholder (populated by engine after LLM call)
