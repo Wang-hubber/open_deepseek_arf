@@ -413,17 +413,27 @@ class BaseAgent:
             """Convert framework ToolDefinition list to OpenAI tool format."""
             if not tools:
                 return None
-            return [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
-                for t in tools
-            ]
+            result = []
+            for t in tools:
+                if isinstance(t, dict):
+                    result.append({
+                        "type": "function",
+                        "function": {
+                            "name": t.get("name", ""),
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {}),
+                        },
+                    })
+                else:
+                    result.append({
+                        "type": "function",
+                        "function": {
+                            "name": getattr(t, "name", ""),
+                            "description": getattr(t, "description", ""),
+                            "parameters": getattr(t, "parameters", {}),
+                        },
+                    })
+            return result
 
         async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
             adapter = adapters.get(model_name, adapters[default_name])
