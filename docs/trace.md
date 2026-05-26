@@ -28,7 +28,7 @@ Google Dapper（2010）论文引发了分布式追踪浪潮。OpenTelemetry（20
 
 ### 1.3 对 ARF 的启发
 
-eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的 13 种事件类型。
+eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的 17 种事件类型。
 
 ---
 
@@ -42,14 +42,15 @@ GraphEngine._emit() / _make_event()
     ▼
 EventBus.emit(AgentEvent)
     │
-    ├─ FileTraceStore → memory/sessions/{session_id}.json
-    │   （跳过 session_start, session_end, thinking_delta）
+    ├─ FileTraceStore → memory/traces/{session_id}.json
+    │   （跳过 session_start, session_end, thinking_delta；
+    │    guard_block, guard_pass, approval_required, approval_resolved 落盘）
     │
     ├─ UsageTracker → memory/usage.json
     │   （按模型累加 model_call_end.usage.total_tokens）
     │
-    ├─ SSE stream → /api/trace/stream
-    │   （实时推送到前端 TraceView）
+    ├─ SSE stream → /api/chat (stream=True)
+    │   guard/approval 事件与 chunk、tool_call 一同实时推送
     │
     └─ 前端 TraceView → /traces 瀑布流
         （按交互轮次分组，三级展开）
@@ -59,7 +60,7 @@ EventBus.emit(AgentEvent)
 
 `AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
 
-**15 种事件类型定义**（`EventType` Literal），引擎实际 emit 13 种，`approval_required` / `approval_resolved` 为审批通道预留：
+**17 种事件类型定义**（`EventType` Literal）：
 
 | 事件 | 触发时机 | 关键 data 字段 |
 |------|----------|---------------|
@@ -73,15 +74,17 @@ EventBus.emit(AgentEvent)
 | `tool_call_end` | 工具调用结束 | tool_name, success, result, error, duration_ms |
 | `compaction_start` | 压缩开始 | msg_count, model |
 | `compaction_end` | 压缩结束 | msg_count, summary_len |
-| `approval_required` | *(预留) 审批请求 | — |
-| `approval_resolved` | *(预留) 审批结果 | — |
+| `guard_block` | 路径沙箱或权限检查拒绝 | tool_name, guard *(path_check\|permission)*, reason |
+| `guard_pass` | 所有 guard 检查通过 | tool_name |
+| `approval_required` | 审批通道：等待用户确认 | decision_id, tool_name, params |
+| `approval_resolved` | 审批通道：用户已决定 | decision_id, tool_name, approved, reason |
 | `hook_start` | Hook 执行开始 | event (hook 名称) |
 | `hook_end` | Hook 执行结束 | event, passed, failed |
 | `error` | 执行错误 | detail, code |
 
 ### 2.3 FileTraceStore
 
-`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/sessions/{session_id}.json`。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。过滤后文件体积减少约 75%。
+`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%。
 
 ### 2.4 UsageTracker
 
@@ -96,11 +99,16 @@ Round 0 (3 次内部迭代)
 ├── 用户输入: "我是谁"
 ├── 迭代 1
 │   ├── 模型响应: "让我看看工作区文件"
+│   ├── guard_pass (file_reader)          ← 路径沙箱 + 权限检查通过
 │   ├── file_reader (list .)
 │   ├── pre_tool_exec Hook
 │   └── post_tool_exec Hook
 ├── 迭代 2
-│   └── 模型响应: "再读一个文件"
+│   ├── 模型响应: "帮你写一个文件"
+│   ├── approval_required (file_writer)   ← 权限 ask，需审批
+│   ├── approval_resolved (approved)      ← 用户确认
+│   ├── guard_pass (file_writer)          ← 审批通过后 guard 放行
+│   └── file_writer (result)
 └── 迭代 3
     └── 最终回复: "你是 ARF 框架的创造者"
 ```

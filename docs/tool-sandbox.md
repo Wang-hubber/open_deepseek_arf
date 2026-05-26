@@ -202,8 +202,8 @@ advanced:
     tool_params: path_check
     permissions:
       deny: []
-      ask: [python_exec]
-      allow: [file_reader, file_writer, file_deleter, web_search, web_fetch, …]
+      ask: [file_writer, file_deleter, python_exec]
+      allow: [file_reader, web_search, web_fetch, …]
       deny_patterns: ["rm -rf", "sudo", "chmod 777"]
 
   human_loop:
