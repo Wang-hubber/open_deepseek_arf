@@ -71,11 +71,19 @@
 
 ### 框架 vs. 应用
 
-| 层级 | 范畴 | 举例 |
+**边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
+
+| 层级 | 范畴 | 能力 |
 |------|------|------|
-| **框架**（`arf/`） | 约定、引擎、资源系统、Trace 基础设施 | `GraphEngine`、`ResourceResolver`、三个 Provider（Tool/Skill/Model）、`ResourceCache`、`FileWatcher`、双源资源加载、Hook 退出码契约、`EventBus`、`FileTraceStore` |
-| **参考应用**（`app/`） | 基于框架构建的具体智能体 | Vue 3 前端、模型路由、`session_archiver`、记忆管道、沙箱、undo |
-| **用户工作区** | 你在框架之上的构建 | 模型配置、自定义工具和技能、`agent.yaml` |
+| **框架** (`arf/`) | **执行引擎** | `GraphEngine`（invoke + astream 双模式）、状态修复、checkpoint/undo 机制、cancel 取消令牌、Memory 提取→检索→写入管道、Compaction 上下文压缩、Guardrails 三道防线、ModelRouter 路由调用、Transaction 事务回滚 |
+| | **资源系统** | `ResourceResolver`（统一解析入口）、`ToolProvider` / `SkillProvider` / `ModelProvider`、`ResourceCache`（kernel/dynamic 双缓存）、`FileWatcher`（inotify/polling 文件变更检测）、双源加载（文件系统 + `agent.yaml` override 合并） |
+| | **Agent 组装** | `BaseAgent` — DI 注入全部协议实现、`AgentConfig` — YAML 驱动配置、`ModelAdapter` — 自动注入 call/stream、`LoopStrategy` — ReAct 策略 |
+| | **基础设施** | `EventBus`（`InMemoryEventBus`）、`FileTraceStore`（session 级 JSON 持久化）、`FileStateStore` / `InMemoryStateStore`、`UsageTracker`（用量统计）、`SubprocessHookRunner`（退出码契约：rc=2 → 消息注入）、`PathSandbox`（路径沙箱）、`TwoTierRouter`（LLM 分类路由）、`SlidingWindowCompactor`（滑动窗口压缩）、`SkillPipeline`（技能流水线排序）、`DefaultErrorPolicy` / `SnapshotRollback`（事务回滚）、`GuardDefaults`（PathCheck / Regex / None 三道防线） |
+| | **协议层** | 17 个 Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
+| **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等 14 个组件 |
+| | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、22 个 REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
+| | **CLI 工具** | init / start / stop / chat / list / validate / clone / config |
+| | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/self_evolve.py`、`session_archiver`（archive.json 存档/恢复）、DeepSeek API key 管理 |
 
 <br/>
 

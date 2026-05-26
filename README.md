@@ -71,11 +71,19 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 
 ### Framework vs. Application
 
-| Layer | Scope | Examples |
-|-------|-------|----------|
-| **Framework** (`arf/`) | Conventions, engine, resource system, trace infrastructure | `GraphEngine`, `ResourceResolver`, three Providers (Tool/Skill/Model), `ResourceCache`, `FileWatcher`, dual-source loading, hook exit-code contract, `EventBus`, `FileTraceStore` |
-| **Reference App** (`app/`) | A concrete agent built on the framework | Vue 3 frontend, model routing, `session_archiver`, memory pipeline, sandbox, undo |
-| **User workspace** | What you build on top | Model configs, custom tools and skills, `agent.yaml` |
+**Boundary principle**: The framework provides the mechanism (how); the application decides what to do through configuration + instantiation. `agent.yaml` is the bridge — the framework reads it and auto-assembles all capabilities; the app declares "what to use" without needing to know "how to implement."
+
+| Layer | Scope | Capabilities |
+|-------|-------|-------------|
+| **Framework** (`arf/`) | **Execution Engine** | `GraphEngine` (invoke + astream dual mode), state repair, checkpoint/undo mechanism, cancel token, Memory extract→retrieve→write pipeline, Compaction context compression, Guardrails three-line defense, ModelRouter dispatch, Transaction rollback |
+| | **Resource System** | `ResourceResolver` (unified resolution entry), `ToolProvider` / `SkillProvider` / `ModelProvider`, `ResourceCache` (kernel/dynamic split), `FileWatcher` (inotify/polling change detection), dual-source loading (filesystem + `agent.yaml` override merge) |
+| | **Agent Assembly** | `BaseAgent` — DI wires all protocol implementations, `AgentConfig` — YAML-driven configuration, `ModelAdapter` — auto-injects call/stream, `LoopStrategy` — ReAct strategy |
+| | **Infrastructure** | `EventBus` (`InMemoryEventBus`), `FileTraceStore` (per-session JSON persistence), `FileStateStore` / `InMemoryStateStore`, `UsageTracker` (token accounting), `SubprocessHookRunner` (exit-code contract: rc=2 → message injection), `PathSandbox` (path traversal guard), `TwoTierRouter` (LLM classifier routing), `SlidingWindowCompactor` (sliding window compaction), `SkillPipeline` (ordered tool execution), `DefaultErrorPolicy` / `SnapshotRollback` (transaction rollback), `GuardDefaults` (PathCheck / Regex / None three-line defense) |
+| | **Protocols** | 17 Protocol classes (`core/protocols/`) — defines `MemoryStore`, `MemoryWriter`, `HookRunner`, `GuardRunner`, `EventBus`, `LoopStrategy` and all other abstract interfaces |
+| **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and 14 components total |
+| | **HTTP Service** | FastAPI + Uvicorn + SSE streaming, 22 REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
+| | **CLI** | init / start / stop / chat / list / validate / clone / config |
+| | **Config & Data** | `agent.yaml` — agent behavior + routing strategy + memory strategy + compaction strategy, `models/deep.yaml` + `models/quick.yaml`, custom `tools/` (undo, file_*, web_*, python_exec …), custom `skills/` (code_review, debug, file_ops …), custom `hooks/self_evolve.py`, `session_archiver` (archive.json save/restore), DeepSeek API key management |
 
 <br/>
 
