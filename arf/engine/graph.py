@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 import logging
+logger = logging.getLogger("arf.engine")
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -752,11 +753,22 @@ class GraphEngine:
                     import_completed.add(tc.get("name", ""))
                 state["active_pipeline"]["completed"] = list(import_completed)
 
-            # Emit denied tool calls as errors
-            for name, reason in denied_calls:
-                self._emit("tool_call_end", {"tool_name": name, "turn": turn, "id": "",
-                           "success": False, "error": f"Blocked: {reason}"},
+            # Emit denied tool calls as errors and inject synthetic tool results
+            for tc in tool_calls:
+                name = tc.get("name", "")
+                matched = next((reason for dname, reason in denied_calls if dname == name), None)
+                if matched is None:
+                    continue
+                tc_id = tc.get("id", "")
+                self._emit("tool_call_end", {"tool_name": name, "turn": turn, "id": tc_id,
+                           "success": False, "error": f"Blocked: {matched}"},
                            session_id=session_id)
+                state["messages"].append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"[Blocked] {matched}",
+                })
+                logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
 
             # 7. Hooks + Transaction + execute
             if self.hook_runner:
@@ -1155,11 +1167,22 @@ class GraphEngine:
                     s_completed.add(tc.get("name", ""))
                 state["active_pipeline"]["completed"] = list(s_completed)
 
-            for name, reason in denied_calls:
+            for tc in tool_calls:
+                name = tc.get("name", "")
+                matched = next((reason for dname, reason in denied_calls if dname == name), None)
+                if matched is None:
+                    continue
+                tc_id = tc.get("id", "")
                 yield self._make_event(type="tool_call_end",
-                                 data={"tool_name": name, "turn": turn, "id": "",
-                                       "success": False, "error": f"Blocked: {reason}"},
+                                 data={"tool_name": name, "turn": turn, "id": tc_id,
+                                       "success": False, "error": f"Blocked: {matched}"},
                                  turn=turn, session_id=session_id)
+                state["messages"].append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"[Blocked] {matched}",
+                })
+                logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
 
             if self.hook_runner:
                 yield self._make_event(type="hook_start", data={"event": "pre_tool_exec", "turn": turn},

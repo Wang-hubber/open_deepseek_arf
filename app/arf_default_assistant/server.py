@@ -470,7 +470,7 @@ async def config_status():
         "model_type": "deep_thinking",
         "config_name": m.type if m else "",
         "agent_name": cfg.name,
-        "models": [x.name for x in cfg.models],
+        "models": [x.type for x in cfg.models],
         "tool_count": len(cfg.tools),
     })
 
