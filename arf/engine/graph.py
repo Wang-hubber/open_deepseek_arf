@@ -76,6 +76,9 @@ class GraphEngine:
         self._handoff_manager = handoff_manager
         self._handoff_checkpoint: dict | None = None
         self._active_agent: str = ""
+        # Per-agent checkpoint stacks (keyed by agent_name)
+        self._agent_checkpoints: dict[str, deque] = {}
+        self._agent_states: dict[str, AgentState] = {}
 
     @property
     def cancel_event(self) -> asyncio.Event | None:
@@ -215,10 +218,19 @@ class GraphEngine:
 
     async def _execute_handoff(self, state: AgentState, handoff_data: dict,
                                 current_model: str) -> AgentState:
-        """Execute forward handoff: checkpoint → resolve → build context → swap."""
+        """Execute forward handoff: save agent state → resolve → build context → swap."""
+        session_id = state.get("session_id", "default")
         from_agent = state.get("active_agent", "") or self._active_agent or ""
 
-        # 1. Checkpoint current state
+        # 1. Save current agent's state + checkpoints
+        self._agent_states[from_agent or "main"] = dict(state)
+        self._agent_checkpoints[from_agent or "main"] = self._checkpoints
+        await self.state_store.put(
+            f"{session_id}/{from_agent}" if from_agent else session_id,
+            state,
+        )
+
+        # Save handoff checkpoint for later restoration
         self._handoff_checkpoint = {
             "messages": list(state.get("messages", [])),
             "active_agent": from_agent,
@@ -237,49 +249,62 @@ class GraphEngine:
             state["handoff_error"] = f"No rule for {from_agent} → {to_agent}"
             return state
 
-        # 3. Build target context
-        target_cfg = self._sub_agent_configs.get(to_agent, {})
-        target_prompt = target_cfg.get("system_prompt", "")
-        new_messages = self._handoff_manager.build_target_context(
-            from_state=state,
-            rule=rule,
-            handoff_data=handoff_data,
-            target_system_prompt=target_prompt,
-        )
+        # 3. Try to load existing target agent state, or build fresh context
+        existing_target = await self.state_store.get(f"{session_id}/{to_agent}")
+        if existing_target:
+            # Resume: restore target agent's previous state
+            state.update(existing_target)
+            self._checkpoints = self._agent_checkpoints.get(
+                to_agent, deque(maxlen=3)
+            )
+        else:
+            # First time: build target context from handoff data
+            target_cfg = self._sub_agent_configs.get(to_agent, {})
+            target_prompt = target_cfg.get("system_prompt", "")
+            new_messages = self._handoff_manager.build_target_context(
+                from_state=state,
+                rule=rule,
+                handoff_data=handoff_data,
+                target_system_prompt=target_prompt,
+            )
 
-        # 4. Generate task summary (if configured)
-        if rule.context.task_summary and self._handoff_manager._system_model_call:
-            try:
-                summary = await self._handoff_manager._system_model_call(
-                    f"Summarize this handoff task in one sentence (Chinese):\n"
-                    f"Task: {handoff_data.get('task', '')}\n"
-                    f"Context: {handoff_data.get('context', '')}"
-                )
-                for i, m in enumerate(new_messages):
-                    if m.get("content") == "__TASK_SUMMARY_PLACEHOLDER__":
-                        new_messages[i] = {
-                            "role": "system",
-                            "content": f"[Task Summary] {summary.strip()}",
-                        }
-            except Exception:
+            # Generate task summary (if configured)
+            if rule.context.task_summary and self._handoff_manager._system_model_call:
+                try:
+                    summary = await self._handoff_manager._system_model_call(
+                        f"Summarize this handoff task in one sentence (Chinese):\n"
+                        f"Task: {handoff_data.get('task', '')}\n"
+                        f"Context: {handoff_data.get('context', '')}"
+                    )
+                    for i, m in enumerate(new_messages):
+                        if m.get("content") == "__TASK_SUMMARY_PLACEHOLDER__":
+                            new_messages[i] = {
+                                "role": "system",
+                                "content": f"[Task Summary] {summary.strip()}",
+                            }
+                except Exception:
+                    new_messages = [m for m in new_messages
+                                    if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
+            else:
                 new_messages = [m for m in new_messages
                                 if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
-        else:
-            new_messages = [m for m in new_messages
-                            if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
 
-        # 5. Swap state
-        state["messages"] = new_messages
+            state["messages"] = new_messages
+            state["current_turn"] = 0
+            state["tool_results"] = {}
+            self._checkpoints = deque(maxlen=3)
+            self._agent_checkpoints[to_agent] = self._checkpoints
+
+        # 4. Swap active agent
         state["active_agent"] = to_agent
-        state["current_turn"] = 0
         state["handoff_task"] = handoff_data.get("task", "")
 
-        # 6. Emit agent_switch
+        # 5. Emit agent_switch
         self._emit("agent_switch", {
             "from": from_agent,
             "to": to_agent,
             "task": handoff_data.get("task", ""),
-        }, session_id=state.get("session_id", ""), agent_name=to_agent)
+        }, session_id=session_id, agent_name=to_agent)
 
         logging.getLogger("arf.engine").info(
             "Handoff: %s → %s, task: %.80s", from_agent, to_agent,
@@ -293,6 +318,7 @@ class GraphEngine:
         if not self._handoff_checkpoint:
             return state
 
+        session_id = state.get("session_id", "default")
         cp = self._handoff_checkpoint
         result_content = ""
 
@@ -304,6 +330,13 @@ class GraphEngine:
 
         if not result_content:
             result_content = "(handoff completed, no response)"
+
+        # Save current agent's final state
+        current_agent = state.get("active_agent", "")
+        if current_agent:
+            self._agent_states[current_agent] = dict(state)
+            self._agent_checkpoints[current_agent] = self._checkpoints
+            await self.state_store.put(f"{session_id}/{current_agent}", state)
 
         # Restore checkpointed messages + inject tool call & result
         messages = cp["messages"]
@@ -329,19 +362,25 @@ class GraphEngine:
         })
 
         # Emit agent_switch back
-        from_agent = state.get("active_agent", "")
+        from_agent = current_agent
         to_agent = cp.get("active_agent", "")
         self._emit("agent_switch", {
             "from": from_agent,
             "to": to_agent,
             "task": "handoff complete",
-        }, session_id=state.get("session_id", ""), agent_name=to_agent)
+        }, session_id=session_id, agent_name=to_agent)
+
+        # Restore original agent's checkpoint stack
+        self._checkpoints = self._agent_checkpoints.get(
+            to_agent, deque(maxlen=3)
+        )
 
         # Swap state
         state["messages"] = messages
         state["active_agent"] = to_agent
         state["current_turn"] = cp.get("current_turn", 0)
         state["interaction_round"] = cp.get("interaction_round", 0)
+        state["tool_results"] = {}
         state.pop("handoff_task", None)
         self._handoff_checkpoint = None
 
