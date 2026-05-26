@@ -695,12 +695,47 @@ class GraphEngine:
                         self._emit("guard_block", {"tool_name": name, "guard": "permission",
                                    "reason": "denied by config"}, session_id=session_id)
                         continue
-                    if perm == "ask" and not self.approval_enabled:
-                        denied_calls.append((name, "requires approval (approval channel not enabled)"))
-                        self._emit("guard_block", {"tool_name": name, "guard": "approval",
-                                   "reason": "requires approval (channel not enabled)"},
-                                   session_id=session_id)
-                        continue
+                    if perm == "ask":
+                        needs_approval = self.approval_enabled and (
+                            not self._approval_allowlist or name in self._approval_allowlist
+                        )
+                        if needs_approval:
+                            decision_id = f"{session_id}_{name}_{id(tc)}"
+                            self._emit("approval_required", {
+                                "decision_id": decision_id, "tool_name": name, "params": params,
+                            }, session_id=session_id)
+                            approval_evt = asyncio.Event()
+                            self._pending_approvals[decision_id] = approval_evt
+                            try:
+                                await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
+                            except asyncio.TimeoutError:
+                                self._pending_approvals.pop(decision_id, None)
+                                self._approval_results.pop(decision_id, None)
+                                denied_calls.append((name, "approval timed out"))
+                                self._emit("approval_resolved", {
+                                    "decision_id": decision_id, "tool_name": name,
+                                    "approved": False, "reason": "timeout",
+                                }, session_id=session_id)
+                                continue
+                            approved = self._approval_results.pop(decision_id, False)
+                            if not approved:
+                                denied_calls.append((name, "denied by user"))
+                                self._emit("approval_resolved", {
+                                    "decision_id": decision_id, "tool_name": name,
+                                    "approved": False, "reason": "denied by user",
+                                }, session_id=session_id)
+                                continue
+                            self._emit("approval_resolved", {
+                                "decision_id": decision_id, "tool_name": name,
+                                "approved": True, "reason": "approved",
+                            }, session_id=session_id)
+                            # fall through to valid_calls
+                        else:
+                            denied_calls.append((name, "requires approval (channel not enabled)"))
+                            self._emit("guard_block", {"tool_name": name, "guard": "approval",
+                                       "reason": "requires approval (channel not enabled)"},
+                                       session_id=session_id)
+                            continue
                     self._emit("guard_pass", {"tool_name": name}, session_id=session_id)
                     valid_calls.append(tc)
             else:
