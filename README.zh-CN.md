@@ -79,9 +79,9 @@
 | | **资源系统** | `ResourceResolver`（统一解析入口）、`ToolProvider` / `SkillProvider` / `ModelProvider`、`ResourceCache`（kernel/dynamic 双缓存）、`FileWatcher`（inotify/polling 文件变更检测）、双源加载（文件系统 + `agent.yaml` override 合并） |
 | | **Agent 组装** | `BaseAgent` — DI 注入全部协议实现、`AgentConfig` — YAML 驱动配置、`ModelAdapter` — 自动注入 call/stream、`LoopStrategy` — ReAct 策略 |
 | | **基础设施** | `EventBus`（`InMemoryEventBus`）、`FileTraceStore`（session 级 JSON 持久化）、`FileStateStore` / `InMemoryStateStore`、`UsageTracker`（用量统计）、`SubprocessHookRunner`（退出码契约：rc=2 → 消息注入）、`PathSandbox`（路径沙箱）、`TwoTierRouter`（LLM 分类路由）、`SlidingWindowCompactor`（滑动窗口压缩）、`SkillPipeline`（技能流水线排序）、`DefaultErrorPolicy` / `SnapshotRollback`（事务回滚）、`GuardDefaults`（PathCheck / Regex / None 三道防线） |
-| | **协议层** | 17 个 Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
-| **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等 14 个组件 |
-| | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、22 个 REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
+| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
+| **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
+| | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / clone / config |
 | | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/`、DeepSeek API key 管理 |
 
