@@ -343,6 +343,7 @@ class BaseAgent:
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             approval_enabled=(adv.human_loop is not None and adv.human_loop.approval_points != "always_auto") if adv else False,
+            approval_allowlist=(adv.human_loop.allowlist if adv and adv.human_loop else None),
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions

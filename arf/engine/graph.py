@@ -39,9 +39,11 @@ class GraphEngine:
         system_prompt: str = "",
         max_turns: int = 50,
         approval_enabled: bool = False,
+        approval_allowlist: list[str] | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
+        self._approval_allowlist: set[str] = set(approval_allowlist or [])
         self._pending_approvals: dict[str, asyncio.Event] = {}  # decision_id → set on approve
         self._approval_results: dict[str, bool] = {}  # decision_id → True/False
         self.state_store = state_store
@@ -750,7 +752,10 @@ class GraphEngine:
                         )
                         continue
                     if perm == "ask":
-                        if self.approval_enabled:
+                        needs_approval = self.approval_enabled and (
+                            not self._approval_allowlist or name in self._approval_allowlist
+                        )
+                        if needs_approval:
                             decision_id = f"{session_id}_{name}_{id(tc)}"
                             yield self._make_event(
                                 type="approval_required",

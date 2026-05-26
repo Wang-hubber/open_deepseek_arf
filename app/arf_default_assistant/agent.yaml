@@ -121,12 +121,9 @@ advanced:
     permissions:
       allow:
         - file_reader
-        - file_writer
-        - file_deleter
         - web_search
         - web_fetch
         - web_fetch_playwright
-        - python_exec
         - memory_store
         - resource_loader
         - resource_registrar
@@ -135,6 +132,10 @@ advanced:
         - model_switch
         - handoff_to_sys
         - text_to_upper
+      ask:
+        - file_writer
+        - file_deleter
+        - python_exec
       deny: []
       deny_patterns:
         - "rm -rf"
