@@ -18,10 +18,21 @@ class HandoffManager:
     def detect(self, tool_results: dict) -> dict | None:
         """Scan tool results for {"handoff": True}. Return the first match.
 
-        Handles both ToolResult objects (via .data attribute) and plain dicts.
+        Handles:
+        - ToolResult objects (via .data attribute)
+        - Plain dicts with nested 'data' key (from state["tool_results"])
+        - Plain dicts without nested 'data' key (direct tool return dicts)
         """
         for tc_id, result in tool_results.items():
-            data = getattr(result, "data", None) if hasattr(result, "data") else result
+            # ToolResult object
+            if hasattr(result, "data") and not isinstance(result, dict):
+                data = getattr(result, "data", None)
+            # Dict with nested 'data' key (state["tool_results"] format)
+            elif isinstance(result, dict) and "data" in result:
+                data = result["data"]
+            # Plain dict (direct tool return)
+            else:
+                data = result
             if isinstance(data, dict) and data.get("handoff"):
                 return {"tool_call_id": tc_id, **data}
         return None
