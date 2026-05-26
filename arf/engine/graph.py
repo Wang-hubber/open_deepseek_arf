@@ -695,7 +695,8 @@ class GraphEngine:
             tx = None
             if self.transaction_ctx:
                 tx = await self.transaction_ctx.begin(session_id, turn)
-            results = await self.tool_executor.execute(valid_calls)
+            agent_mode = state.get("active_agent", "")
+            results = await self.tool_executor.execute(valid_calls, agent_mode=agent_mode)
             for tc in valid_calls:
                 r = results.get(tc.get("id", ""))
                 self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
@@ -1063,7 +1064,8 @@ class GraphEngine:
                                        "id": tc.get("id", ""),
                                        "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                  turn=turn, session_id=session_id)
-            results = await self.tool_executor.execute(valid_calls)
+            agent_mode = state.get("active_agent", "")
+            results = await self.tool_executor.execute(valid_calls, agent_mode=agent_mode)
             for tc in valid_calls:
                 r = results.get(tc.get("id", ""))
                 yield self._make_event(type="tool_call_end",
