@@ -28,9 +28,6 @@ data/
 # Tests
 tests/
 
-# Docs (local only)
-docs/
-
 # GitHub Actions
 .github/
 
@@ -40,6 +37,7 @@ docs/
 # Claude Code
 .claude/
 .superpowers/
+/superpowers
 
 # Legacy (has its own .git)
 arf_agent/
@@ -61,7 +59,6 @@ Thumbs.db
 
 # Project artifacts (not tracked)
 tests/
-docs/
 CLAUDE.md
 logs/
 app/web/dist/
