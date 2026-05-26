@@ -381,14 +381,19 @@ class GraphEngine:
 
     async def _resolve_tools_for_agent(self, state: AgentState, active: dict) -> list[dict]:
         """Get tool definitions for the active agent, falling back to resolver."""
-        # Use active agent's tools list if available, else resolve from filesystem
         active_tools = active.get("tools", [])
         if active_tools:
-            return [
-                {"name": t.name, "description": t.description,
-                 "parameters": t.parameters}
-                for t in active_tools
-            ]
+            result = []
+            for t in active_tools:
+                if hasattr(t, "name"):
+                    result.append({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    })
+                elif isinstance(t, dict):
+                    result.append(t)
+            return result
         if self.tool_resolver:
             return await self.tool_resolver.get_tool_definitions(
                 self._last_user_message(state), top_k=10
