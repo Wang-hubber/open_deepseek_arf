@@ -220,7 +220,12 @@ class GraphEngine:
                                 current_model: str) -> AgentState:
         """Execute forward handoff: save agent state → resolve → build context → swap."""
         session_id = state.get("session_id", "default")
-        from_agent = state.get("active_agent", "") or self._active_agent or ""
+        from_agent = (
+            state.get("active_agent", "")
+            or state.get("agent_name", "")
+            or self._active_agent
+            or ""
+        )
 
         # 1. Save current agent's state + checkpoints
         self._agent_states[from_agent or "main"] = dict(state)
