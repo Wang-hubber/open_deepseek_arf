@@ -65,7 +65,7 @@ agents:
         调用 resource_loader 激活新资源
 
     models:
-      - name: deep
+      - type: deep
         model: deepseek-v4-pro
         api_base: https://api.deepseek.com
         api_key_env: DEEPSEEK_API_KEY

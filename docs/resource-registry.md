@@ -203,7 +203,7 @@ agent.yaml 资源段现为可选——省略时完全由文件系统决定。声
 
 ```yaml
 # 文件系统定义（models/quick.yaml）—— 对标 .service 单元文件
-name: quick
+type: quick
 model: deepseek-v4-flash
 api_base: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
@@ -215,7 +215,7 @@ kwargs:
 
 # agent.yaml 覆盖（可选单字段微调）—— 对标 systemctl edit 的 drop-in 片段
 models:
-  - name: quick
+  - type: quick
     temperature: 0.3  # 仅覆盖此字段，其余保持文件系统值
 ```
 

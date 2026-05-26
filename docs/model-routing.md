@@ -174,10 +174,10 @@ KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓�
 
 ```yaml
 models:
-  - name: quick
+  - type: quick
     model: deepseek-v4-flash
     context_window: 800000
-  - name: deep
+  - type: deep
     model: deepseek-v4-pro
     context_window: 1000000
 

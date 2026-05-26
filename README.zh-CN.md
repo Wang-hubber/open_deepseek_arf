@@ -67,7 +67,7 @@
 | **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `PathCheckToolGuard` 递归扫描（..、symlink、深度/数量配额）。权限 deny→ask→allow。人工审批通道（SSE 推送 + 60s 超时）。 | 每次调用独立沙箱；MCP 协议 |
 | **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
-| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 15 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
+| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 17 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 
 ### 框架 vs. 应用
 
@@ -147,10 +147,10 @@ advanced:
 
 ```yaml
 models:
-  - name: quick
+  - type: quick
     model: deepseek-v4-flash
     context_window: 800000
-  - name: deep
+  - type: deep
     model: deepseek-v4-pro
     context_window: 1000000
 
@@ -201,7 +201,7 @@ Skill 可声明工具流水线与显式依赖。引擎强制执行顺序——�
 
 ### Trace——全链路可观测
 
-EventType Literal 定义 15 种，引擎 emit 13 种 → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
+EventType Literal 定义 17 种，引擎在 invoke + astream 双路径中全部 emit → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
 
 [设计文档 →](docs/trace.md)
 
@@ -254,6 +254,32 @@ cd app/web && npm install && npm run dev
 ```
 
 **核心技术栈：** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
+
+<br/>
+
+---
+
+## TODO
+
+### 已知代码问题 (2026-05-26 事实校验)
+
+| # | 问题 | 位置 | 严重程度 |
+|---|------|------|---------|
+| 1 | **agent.yaml 死引用** — `web_fetch_playwright` 和 `memory_store` 在 `guardrails.permissions.allow` 列表中，但 `tools/` 目录下无对应实现 | `app/arf_default_assistant/agent.yaml` | 低 — 权限检查时这些名称无害，但会造成困惑 |
+| 2 | **approval/guard 事件不在 invoke 路径 emit** — `invoke()` 不 emit `approval_required`、`approval_resolved`、`guard_block`、`guard_pass`、`thinking_delta`，仅 `astream()` 路径 emit | `arf/engine/graph.py` | 中 — invoke 模式下审批和 guard 状态不可观测 |
+| 3 | **astream 路径缺少 hook_start/hook_end 事件** — `astream()` 中 Hook 执行时不 emit `hook_start` 和 `hook_end` 事件，导致 streaming 模式下 Hook 生命周期不可追踪 | `arf/engine/graph.py` | 低 — Hook 仍正常执行，仅事件缺失 |
+| 4 | **双 Agent 调度器未完整接入** — `agent.yaml` 中的 `agents:` 和 `handover:` 段已被 `AgentConfig` 解析，但多 Agent 调度器尚未集成到 `GraphEngine` 主循环 | `arf/agent/base.py`, `arf/engine/graph.py` | 高 — 当前仅通过 app 层的 `handoff_to_sys` 工具实现基本分离 |
+
+### 演进方向
+
+参见各模块设计文档第三章：
+- [Memory](docs/memory-management.md#3-演进方向) — 语义单元检索、知识图谱索引、记忆衰减
+- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
+- [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
+- [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
+- [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离
+- [Interrupt](docs/interrupt.md#3-演进方向) — 暂停/重定向、空闲超时
+- [Trace](docs/trace.md#3-演进方向) — SQLite Trace DB、OpenTelemetry 导出
 
 <br/>
 

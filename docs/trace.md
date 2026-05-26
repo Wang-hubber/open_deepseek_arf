@@ -142,7 +142,7 @@ Round 0 (3 次内部迭代)
 
 ```python
 # FileTraceStore 在 server.py 启动时创建
-FileTraceStore(_agent.event_bus, dir="./memory/sessions")
+FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))  # ./memory/traces/
 
 # UsageTracker 由 BaseAgent 自动创建
 # archive.json 持久化 interaction_round，重启不丢失

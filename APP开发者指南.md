@@ -1009,7 +1009,7 @@ async def config_register_deepseek(req: dict):
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     _agent = create_agent(config=cfg, app_context=app_context)
     set_agent(_agent)
-    return JSONResponse({"ok": True, "models": [m.name for m in _agent.config.models]})
+    return JSONResponse({"ok": True, "models": [m.type for m in _agent.config.models]})
 ```
 
 **SPA fallback**：

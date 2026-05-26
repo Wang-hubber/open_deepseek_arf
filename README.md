@@ -67,7 +67,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `PathCheckToolGuard` recursive scan (.., symlink, depth/count quota). Permission deny→ask→allow. Human approval channel with SSE push + 60s timeout. | Per-invocation sandbox; MCP protocol |
 | **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential agent loop; parallel tool calls within a turn via `ConcurrentToolExecutor`. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook `asyncio.gather` concurrency. | Multi-agent DAG analysis; worktree isolation |
 | **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
-| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 15 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
+| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 17 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
 
@@ -147,10 +147,10 @@ advanced:
 
 ```yaml
 models:
-  - name: quick
+  - type: quick
     model: deepseek-v4-flash
     context_window: 800000
-  - name: deep
+  - type: deep
     model: deepseek-v4-pro
     context_window: 1000000
 
@@ -201,7 +201,7 @@ Skills can declare tool pipelines with explicit dependencies. The engine enforce
 
 ### Trace — Full Pipeline Visibility
 
-15 event types in EventType Literal, 13 emitted by engine → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
+17 event types in EventType Literal, all emitted by engine across invoke + astream dual paths → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
 
 [Design doc →](docs/trace.md)
 
@@ -254,6 +254,32 @@ cd app/web && npm install && npm run dev
 ```
 
 **Core stack:** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
+
+<br/>
+
+---
+
+## TODO
+
+### 已知代码问题 (2026-05-26 事实校验)
+
+| # | 问题 | 位置 | 严重程度 |
+|---|------|------|---------|
+| 1 | **agent.yaml 死引用** — `web_fetch_playwright` 和 `memory_store` 在 `guardrails.permissions.allow` 列表中，但 `tools/` 目录下无对应实现 | `app/arf_default_assistant/agent.yaml` | 低 — 权限检查时这些名称无害，但会造成困惑 |
+| 2 | **approval/guard 事件不在 invoke 路径 emit** — `invoke()` 不 emit `approval_required`、`approval_resolved`、`guard_block`、`guard_pass`、`thinking_delta`，仅 `astream()` 路径 emit | `arf/engine/graph.py` | 中 — invoke 模式下审批和 guard 状态不可观测 |
+| 3 | **astream 路径缺少 hook_start/hook_end 事件** — `astream()` 中 Hook 执行时不 emit `hook_start` 和 `hook_end` 事件，导致 streaming 模式下 Hook 生命周期不可追踪 | `arf/engine/graph.py` | 低 — Hook 仍正常执行，仅事件缺失 |
+| 4 | **双 Agent 调度器未完整接入** — `agent.yaml` 中的 `agents:` 和 `handover:` 段已被 `AgentConfig` 解析，但多 Agent 调度器尚未集成到 `GraphEngine` 主循环 | `arf/agent/base.py`, `arf/engine/graph.py` | 高 — 当前仅通过 app 层的 `handoff_to_sys` 工具实现基本分离 |
+
+### 演进方向
+
+参见各模块设计文档第三章：
+- [Memory](docs/memory-management.md#3-演进方向) — 语义单元检索、知识图谱索引、记忆衰减
+- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
+- [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
+- [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
+- [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离
+- [Interrupt](docs/interrupt.md#3-演进方向) — 暂停/重定向、空闲超时
+- [Trace](docs/trace.md#3-演进方向) — SQLite Trace DB、OpenTelemetry 导出
 
 <br/>
 

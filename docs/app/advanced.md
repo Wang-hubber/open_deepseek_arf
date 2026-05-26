@@ -17,9 +17,6 @@ advanced:
     writer: llm                 # llm | rule
     max_tokens: 2000            # 检索记忆的最大 token 数
     top_k: 5                    # 每次检索的记忆条数
-    model: quick                # 用哪个模型做记忆抽取/检索（推荐廉价的）
-    temperature: 0.3            # 记忆模型温度
-    thinking_enabled: false     # 记忆操作不需要深度推理
 ```
 
 - `retriever: llm` 用 LLM 判断哪些记忆与当前 query 相关
@@ -81,15 +78,18 @@ advanced:
 
 ```yaml
 advanced:
-  permissions:
-    deny: [python_exec, file_deleter]     # 硬阻断
-    ask: [file_writer]                    # 审批（当前自动放行，预留审批通道）
-    allow: [file_reader, web_search, web_fetch]  # 自动放行
+  guardrails:
+    permissions:
+      deny: [python_exec, file_deleter]     # 硬阻断
+      ask: [file_writer]                    # 审批（当前自动放行，预留审批通道）
+      allow: [file_reader, web_search, web_fetch]  # 自动放行
+      deny_patterns:                        # 可配置的危险命令模式
+        - "rm -rf"
+        - "sudo"
+        - "chmod 777"
 ```
 
 未命中任何列表的工具默认走 `ask`（安全默认）。`deny` 列表优先于 `ask`，`ask` 优先于 `allow`。
-
-内建危险模式（始终硬阻断）：`rm -rf /`、`sudo`、`chmod 777 /`、`> /dev/sda`、`curl | sh`、`wget | sh`。
 
 ---
 
@@ -131,9 +131,6 @@ advanced:
     store: file
     retriever: llm
     writer: llm
-    model: quick
-    temperature: 0.3
-    thinking_enabled: false
 
   routing:
     strategy: two_tier
@@ -145,15 +142,14 @@ advanced:
     strategy: sliding_window
     threshold: 0.75
 
-  permissions:
-    deny: []
-    ask: [file_writer]
-    allow: [file_reader, web_search, web_fetch]
-
   guardrails:
     input: none
     output: regex_clean
     tool_params: path_check
+    permissions:
+      deny: []
+      ask: [file_writer]
+      allow: [file_reader, web_search, web_fetch]
 
   reload:
     watch: true
