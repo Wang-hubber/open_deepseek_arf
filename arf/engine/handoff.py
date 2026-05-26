@@ -22,6 +22,7 @@ class HandoffManager:
         - ToolResult objects (via .data attribute)
         - Plain dicts with nested 'data' key (from state["tool_results"])
         - Plain dicts without nested 'data' key (direct tool return dicts)
+        - FunctionBackend wraps returns in {"result": ...}, check that too
         """
         for tc_id, result in tool_results.items():
             # ToolResult object
@@ -33,7 +34,16 @@ class HandoffManager:
             # Plain dict (direct tool return)
             else:
                 data = result
-            if isinstance(data, dict) and data.get("handoff"):
+
+            if not isinstance(data, dict):
+                continue
+
+            # FunctionBackend wraps return in {"result": ...}
+            if "handoff" not in data and "result" in data and isinstance(data["result"], dict):
+                inner = data["result"]
+                if inner.get("handoff"):
+                    return {"tool_call_id": tc_id, **inner}
+            elif data.get("handoff"):
                 return {"tool_call_id": tc_id, **data}
         return None
 
