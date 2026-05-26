@@ -52,16 +52,19 @@ GraphEngine
     │       SkillPipeline.can_execute() → 依赖未满足则阻断
     │
     ├─ [2] PathCheckToolGuard.check()（硬阻断，框架级）
-    │       路径穿越（..）/ 绝对路径（/）/ 工作区逃逸
+    │       路径穿越（..）/ 绝对路径（/）/ symlink / 工作区逃逸
     │
     ├─ [3] ToolPermissionChecker.check()（软阻断，框架级）
     │       模式匹配 → deny / ask / allow
-    │       deny → 阻断；ask → 放行（审批通道尚未实现）
+    │       deny → 阻断；ask → 审批通道（60s 超时自动拒绝）
     │
-    ├─ [4] tool_executor.execute()
+    ├─ [4] 审批通道（GraphEngine + SSE + 前端）
+    │       approval_required 事件 → 前端确认 → 恢复/拒绝执行
+    │
+    ├─ [5] tool_executor.execute()
     │       工具在 Agent 进程内执行
     │
-    └─ [5] RegexOutputGuard.check()（输出过滤，框架级）
+    └─ [6] RegexOutputGuard.check()（输出过滤，框架级）
             API key / 手机号替换为 [REDACTED]
 ```
 
@@ -72,7 +75,8 @@ GraphEngine
 | 防护栏 | 位置 | 类型 | 行为 |
 |--------|------|------|------|
 | `NoneInputGuard` | 输入 | — | 始终放行，预留 LLM 分类器扩展点 |
-| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 阻断 `..`、绝对路径、工作区逃逸 |
+| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 递归扫描所有参数：阻断 `..`、绝对路径、symlink、深度/数量配额、工作区逃逸 |
+| `ToolPermissionChecker` | 工具参数 | 软阻断 | deny → 阻断；ask → 审批通道；allow → 放行 |
 | `RegexOutputGuard` | 输出 | 过滤 | API key / 手机号替换为 `[REDACTED]` |
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
@@ -164,7 +168,17 @@ def check(self, tool_name: str, params: dict) -> str:
     # 5. 以上都不匹配 → "ask"（安全默认）
 ```
 
-检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py` 中处理：`"deny"` 直接阻断并 emit 错误事件；`"ask"` 当前直接放行——审批通道尚未实现。
+检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py` 中处理：
+
+- `"deny"` → 直接阻断，emit 错误事件
+- `"allow"` → 放行执行
+- `"ask"` → 若 `human_loop` 审批通道已开启，emit `approval_required` SSE 事件并暂停执行，等待用户在前端确认（60s 超时则自动拒绝）；若审批通道未配置，降级为 deny
+
+审批通道实现（`graph.py` + `server.py`）：
+1. 引擎生成 `decision_id`，yield `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
+2. SSE 流将事件推送到前端，前端显示审批栏（工具名 + 允许/拒绝按钮）
+3. 用户操作 → `POST /api/chat/approve` → `engine.approve(decision_id, approved)` → Event.set()
+4. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
 
 ### 2.6 Hook 退出码契约
 
@@ -186,14 +200,20 @@ advanced:
     input: none
     output: regex_clean
     tool_params: path_check
+    permissions:
+      deny: []
+      ask: [python_exec]
+      allow: [file_reader, file_writer, file_deleter, web_search, web_fetch, …]
+      deny_patterns: ["rm -rf", "sudo", "chmod 777"]
 
-  permissions:
-    deny: [python_exec, file_deleter]
-    ask: [file_writer]
-    allow: [file_reader, web_search, web_fetch]
+  human_loop:
+    approval_points: tool_name_allowlist   # always_auto | tool_name_allowlist
+    allowlist: [file_writer, file_deleter, python_exec]
+    channel: websocket
+    timeout: 60s
 ```
 
-**事实校验**：`SandboxConfig`（`allow_escape`、`writable_dirs`）已在配置模型中定义，但未接入任何 guard 或引擎逻辑。
+**事实校验**：`PermissionsConfig` 通过 `base.py` → `ToolPermissionChecker` 完整接入；`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）已在配置模型中定义，但未接入任何 guard 或引擎逻辑。
 
 ---
 
@@ -213,4 +233,4 @@ ARF 的工具解析器架构（`ToolResolver` + `ToolProvider`）支持多提供
 
 ### 3.3 探索性方向
 
-**审批通道**：`check_tool_permission()` 返回 `"ask"` 时，引擎 emit `approval_required` 事件暂停执行，等待用户在前端确认。
+**审批通道增强**：支持更丰富的审批策略（如按参数值审批、审批链），审批历史记录与回溯，审批超时策略定制。
