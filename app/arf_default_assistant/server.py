@@ -189,7 +189,7 @@ async def _sse_chat(message: str):
             if m.get("role") == "assistant":
                 last = m.get("content", "")
                 break
-        yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default', 'title': 'ARF Assistant'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default'}, ensure_ascii=False)}\n\n"
     except asyncio.CancelledError:
         # Client disconnected — cancel the agent
         cancel_evt.set()
@@ -652,7 +652,7 @@ def _session_defaults():
     """Shared defaults for the single-session model."""
     state_file = app_context.state_dir / "default.json"
     created_at = datetime.fromtimestamp(state_file.stat().st_mtime, tz=timezone.utc).isoformat() if state_file.exists() else datetime.now(timezone.utc).isoformat()
-    return {"id": "default", "session_id": "default", "title": "ARF Assistant", "created_at": created_at}
+    return {"id": "default", "session_id": "default", "created_at": created_at}
 
 @app.get("/trace-viewer")
 async def trace_viewer():

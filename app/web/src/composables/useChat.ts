@@ -1,24 +1,9 @@
 import { ref } from 'vue'
-import { useSessionStore } from '@/stores/sessions'
 import { useChatStore } from '@/stores/chat'
 import type { SSEEvent, ChatMessage } from '@/types'
 
-interface ActiveMessage {
-  appendReasoning(reasoning: string): void
-  appendText(chunk: string): void
-  addToolCard(name: string, args: string, id: string): ToolController | null
-  finalize(errorText?: string | null, newHistory?: ChatMessage[]): void
-  getToolController(id: string): ToolController | null
-}
-
-interface ToolController {
-  complete(result: string): void
-  fail(error: string): void
-}
-
 export function useChat() {
   const chatStore = useChatStore()
-  const sessionStore = useSessionStore()
 
   // Reactive streaming state for the active message
   const streamingText = ref('')
@@ -57,18 +42,6 @@ export function useChat() {
 
       abortController = new AbortController()
 
-      // Auto-resume: if viewing an archived session without an active session,
-      // resume it before sending the message so the conversation continues.
-      const archiveId = sessionStore.viewingArchiveId
-      if (archiveId && !sessionStore.activeSession && !sessionStore.isPendingNewSession()) {
-        try {
-          const resumed = await sessionStore.resumeSession(archiveId)
-          chatStore.renderFromHistory(resumed.messages || [])
-        } catch {
-          // Resume failed, proceed as new session
-        }
-      }
-
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers,
@@ -76,7 +49,6 @@ export function useChat() {
           message: text,
           history: chatStore.chatHistory,
           stream: true,
-          new_session: sessionStore.isPendingNewSession(),
         }),
         signal: abortController.signal,
       })
@@ -157,15 +129,7 @@ export function useChat() {
     } else if (evt.type === 'done') {
       isStreaming.value = false
       chatStore.setHistory(evt.history || [])
-      // Confirm lazy session creation — replace frontend placeholder with real session
-      if (sessionStore.isPendingNewSession() && evt.session_id) {
-        sessionStore.confirmNewSession(evt.session_id, evt.title || evt.session_id)
-      }
-      if (evt.title && sessionStore.activeSession) {
-        sessionStore.activeSession.title = evt.title
-      }
       if (onDone) onDone(evt.history)
-      sessionStore.loadSessions()
     } else if (evt.type === 'error') {
       isStreaming.value = false
       streamError.value = evt.detail || 'Unknown error'

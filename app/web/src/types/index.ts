@@ -62,7 +62,6 @@ export interface SlotInfo {
 
 export interface SessionInfo {
   id: string
-  title: string
   created_at: string
   updated_at?: string | null
   ended_at?: string | null
@@ -73,7 +72,6 @@ export interface SessionInfo {
 
 export interface ActiveSession {
   id: string
-  title: string
   created_at: string
   message_count: number
   fast_model_configured?: boolean
@@ -81,7 +79,6 @@ export interface ActiveSession {
 
 export interface ArchivedSession {
   id: string
-  title: string
   created_at: string
   ended_at: string
   message_count: number
@@ -125,7 +122,7 @@ export type SSEEvent =
   | { type: 'tool_call'; name?: string; tool?: string; arguments?: string; id: string }
   | { type: 'tool_result'; tool?: string; id: string; result: string }
   | { type: 'registration_required'; registration_id: string; template: Record<string, FormField>; resource_type: string; resource_name: string }
-  | { type: 'done'; response?: string; history?: ChatMessage[]; title?: string; session_id?: string }
+  | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
   | { type: 'error'; detail?: string }
 
 export interface DisplayMessage {

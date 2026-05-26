@@ -1,17 +1,11 @@
 {
-  "nav": {
-    "newSession": "+ 新会话",
-    "settings": "设置"
-  },
+
   "chat": {
     "placeholder": "描述你的需求...",
-    "viewingArchive": "查看历史会话中...",
     "send": "发送",
     "stop": "停止",
     "upload": "+",
     "uploadTitle": "上传文件",
-    "viewingBanner": "正在查看历史会话: {id}",
-    "returnToActive": "返回当前会话",
     "dragText": "拖拽文件到此处上传 (最大 15 MB)",
     "emptyGreeting": "你好，我是 ARF Agent，你的智能工作区助手。",
     "emptyFeature1": "创建和管理工具 — 描述需求，我来生成代码",
@@ -46,23 +40,7 @@
     "required": "必填",
     "configure": "配置"
   },
-  "session": {
-    "empty": "点击上方按钮开始新会话",
-    "loading": "加载会话列表失败",
-    "retry": "重试",
-    "deleteConfirm": "确定删除会话\"{title}\"吗？",
-    "deleteFailed": "删除失败",
-    "loadFailed": "加载失败: {msg}",
-    "sessionCreateFailed": "创建会话失败: {msg}",
-    "deleteTitle": "删除会话",
-    "messages": "{n} 条消息",
-    "turns": "{n} 轮",
-    "current": "当前",
-    "today": "今天",
-    "yesterday": "昨天",
-    "last7days": "7天内",
-    "last30days": "30天内"
-  },
+
   "login": {
     "title": "ARF",
     "subtitle": "Agent Resource Framework · 内测阶段",
@@ -163,8 +141,6 @@
     "saveFailed": "Save failed",
     "connecting": "Connecting to LLM...",
     "connectionOk": "<strong>Connection OK</strong><br>LLM: {response}",
-    "configuring": "正在配置",
-    "nextSlot": "保存并继续",
     "deepseekTab": "DeepSeek 官方接入",
     "otherTab": "其他模型接入",
     "oneClickRegister": "一键注册",

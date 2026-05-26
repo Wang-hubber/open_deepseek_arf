@@ -127,12 +127,6 @@ setCallbacks({
     currentToolCalls.value = []
     currentError.value = ''
     baseMessageCount.value = chatStore.displayMessages.length
-    // Auto-rename after first exchange (server-side auto-gen handles the common case;
-    // this client-side fallback catches edge cases like slow LLM or fast model unavailable)
-    const session = sessionStore.activeSession
-    if (session && session.title === '新会话' && chatStore.chatHistory.length >= 2) {
-      sessionStore.generateActiveTitle()
-    }
     appStore.refreshUsage()
   },
 })
@@ -445,18 +439,6 @@ function escapeHtml(s: string): string {
 }
 #chat-history { flex: 1; overflow-y: auto; padding: 24px 28px; scroll-behavior: smooth; }
 
-#viewing-banner {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  padding: 7px 20px; background: var(--warning-bg); color: var(--warning-text);
-  font-size: 12px; border-bottom: 1px solid var(--warning-border); flex-shrink: 0;
-  font-weight: 500;
-}
-.vb-close {
-  background: none; border: none; color: var(--warning-text); cursor: pointer;
-  font-size: 15px; font-weight: bold; padding: 2px 6px; border-radius: 4px;
-  transition: all var(--transition);
-}
-.vb-close:hover { background: rgba(245,158,11,0.15); }
 
 #chat-input-wrap {
   display: flex; align-items: flex-end;

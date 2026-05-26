@@ -1,17 +1,11 @@
 {
-  "nav": {
-    "newSession": "+ New Session",
-    "settings": "Settings"
-  },
+
   "chat": {
     "placeholder": "Describe what you need...",
-    "viewingArchive": "Viewing history...",
     "send": "Send",
     "stop": "Stop",
     "upload": "+",
     "uploadTitle": "Upload file",
-    "viewingBanner": "Viewing archived session: {id}",
-    "returnToActive": "Return to active session",
     "dragText": "Drop files to upload (max 15 MB)",
     "emptyGreeting": "Hi, I'm ARF Agent, your intelligent workspace assistant.",
     "emptyFeature1": "Create & manage tools — describe what you need, I'll write the code",
@@ -39,25 +33,14 @@
     "noSystemSkills": "Built-in system skills (read-only).",
     "loading": "Loading...",
     "error": "Failed to load",
-    "sys": "sys"
+    "sys": "sys",
+    "pendingTab": "Pending",
+    "unconfiguredTitle": "The following resources are not configured",
+    "allConfigured": "All resources configured",
+    "required": "Required",
+    "configure": "Configure"
   },
-  "session": {
-    "empty": "Click the button above to start a new session",
-    "loading": "Failed to load session list",
-    "retry": "Retry",
-    "deleteConfirm": "Delete session \"{title}\"?",
-    "deleteFailed": "Delete failed",
-    "loadFailed": "Load failed: {msg}",
-    "sessionCreateFailed": "Create session failed: {msg}",
-    "deleteTitle": "Delete session",
-    "messages": "{n} messages",
-    "turns": "{n} turns",
-    "current": "Active",
-    "today": "Today",
-    "yesterday": "Yesterday",
-    "last7days": "Last 7 days",
-    "last30days": "Last 30 days"
-  },
+
   "login": {
     "title": "ARF",
     "subtitle": "Agent Resource Framework · Beta",
@@ -157,7 +140,14 @@
     "saveAndContinue": "Save & Continue",
     "saveFailed": "Save failed",
     "connecting": "Connecting to LLM...",
-    "connectionOk": "<strong>Connection OK</strong><br>LLM: {response}"
+    "connectionOk": "<strong>Connection OK</strong><br>LLM: {response}",
+    "deepseekTab": "DeepSeek Official",
+    "otherTab": "Other Models",
+    "registering": "Registering...",
+    "oneClickRegister": "One-Click Register",
+    "registerSuccess": "3 models created successfully",
+    "enterSystem": "Enter System",
+    "otherProviderHint": "We recommend configuring a deep-thinking capable LLM for the best experience. This will be registered as a deep_thinking model."
   },
   "status": {
     "logout": "Logout",

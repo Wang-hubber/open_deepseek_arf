@@ -24,7 +24,7 @@ function toggleResources() {
 
 async function loadHistory() {
   if (!sessionStore.activeSession) {
-    sessionStore.activeSession = { id: 'default', title: 'ARF Assistant', created_at: new Date().toISOString(), message_count: 0 }
+    sessionStore.activeSession = { id: 'default', created_at: new Date().toISOString(), message_count: 0 }
   }
   try {
     const messages = await api.get<ChatMessage[]>('/api/sessions/active/messages')
