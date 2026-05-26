@@ -14,7 +14,18 @@ class FunctionBackend:
     async def execute_with_fn(self, tool_config: ToolConfig, fn, params: dict) -> ToolResult:
         start = time.time()
         try:
-            result = fn(**params) if params else fn()
+            if params:
+                # Strip _agent_mode if function doesn't accept it
+                import inspect
+                try:
+                    sig = inspect.signature(fn)
+                except (ValueError, TypeError):
+                    sig = None
+                if sig and "_agent_mode" not in sig.parameters:
+                    params.pop("_agent_mode", None)
+                result = fn(**params)
+            else:
+                result = fn()
             if hasattr(result, "__await__"):
                 result = await result
             return ToolResult(
