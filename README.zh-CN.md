@@ -83,7 +83,7 @@
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等 14 个组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、22 个 REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / clone / config |
-| | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/self_evolve.py`、`session_archiver`（archive.json 存档/恢复）、DeepSeek API key 管理 |
+| | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/`、DeepSeek API key 管理 |
 
 <br/>
 

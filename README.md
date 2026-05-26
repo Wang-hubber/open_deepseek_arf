@@ -83,7 +83,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and 14 components total |
 | | **HTTP Service** | FastAPI + Uvicorn + SSE streaming, 22 REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
 | | **CLI** | init / start / stop / chat / list / validate / clone / config |
-| | **Config & Data** | `agent.yaml` — agent behavior + routing strategy + memory strategy + compaction strategy, `models/deep.yaml` + `models/quick.yaml`, custom `tools/` (undo, file_*, web_*, python_exec …), custom `skills/` (code_review, debug, file_ops …), custom `hooks/self_evolve.py`, `session_archiver` (archive.json save/restore), DeepSeek API key management |
+| | **Config & Data** | `agent.yaml` — agent behavior + routing strategy + memory strategy + compaction strategy, `models/deep.yaml` + `models/quick.yaml`, custom `tools/` (undo, file_*, web_*, python_exec …), custom `skills/` (code_review, debug, file_ops …), custom `hooks/`, DeepSeek API key management |
 
 <br/>
 
