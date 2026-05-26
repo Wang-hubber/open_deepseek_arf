@@ -416,21 +416,23 @@ class BaseAgent:
             result = []
             for t in tools:
                 if isinstance(t, dict):
+                    params = t.get("parameters", {})
                     result.append({
                         "type": "function",
                         "function": {
                             "name": t.get("name", ""),
                             "description": t.get("description", ""),
-                            "parameters": t.get("parameters", {}),
+                            "parameters": params if params else {"type": "object", "properties": {}},
                         },
                     })
                 else:
+                    params = getattr(t, "parameters", {})
                     result.append({
                         "type": "function",
                         "function": {
                             "name": getattr(t, "name", ""),
                             "description": getattr(t, "description", ""),
-                            "parameters": getattr(t, "parameters", {}),
+                            "parameters": params if params else {"type": "object", "properties": {}},
                         },
                     })
             return result
