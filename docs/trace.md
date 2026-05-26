@@ -28,7 +28,7 @@ Google Dapper（2010）论文引发了分布式追踪浪潮。OpenTelemetry（20
 
 ### 1.3 对 ARF 的启发
 
-eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的 17 种事件类型。
+eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的 18 种事件类型。
 
 ---
 
@@ -61,7 +61,7 @@ EventBus.emit(AgentEvent)
 
 `AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
 
-**17 种事件类型定义**（`EventType` Literal）：
+**18 种事件类型定义**（`EventType` Literal）：
 
 | 事件 | 触发时机 | 关键 data 字段 |
 |------|----------|---------------|

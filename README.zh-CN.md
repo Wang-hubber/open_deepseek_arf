@@ -67,7 +67,7 @@
 | **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `PathCheckToolGuard` 递归扫描（..、symlink、深度/数量配额）。权限 deny→ask→allow。人工审批通道（SSE 推送 + 60s 超时）。 | 每次调用独立沙箱；MCP 协议 |
 | **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
-| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 17 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
+| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 18 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 
 ### 框架 vs. 应用
 
@@ -82,7 +82,7 @@
 | | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
-| | **CLI 工具** | init / start / stop / chat / list / validate / clone / config |
+| | **CLI 工具** | init / start / stop / chat / list / validate / config |
 | | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/`、DeepSeek API key 管理 |
 
 <br/>
@@ -201,7 +201,7 @@ Skill 可声明工具流水线与显式依赖。引擎强制执行顺序——�
 
 ### Trace——全链路可观测
 
-EventType Literal 定义 17 种，引擎在 invoke + astream 双路径中全部 emit → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
+EventType Literal 定义 18 种，引擎在 invoke + astream 双路径中全部 emit → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
 
 [设计文档 →](docs/trace.md)
 
@@ -263,15 +263,21 @@ cd app/web && npm install && npm run dev
 
 ### 已知代码问题 (2026-05-26 事实校验)
 
-| # | 问题 | 位置 | 严重程度 |
-|---|------|------|---------|
-> ~~**1. agent.yaml 死引用**~~ — **已于 2026-05-26 修复**。从 allow 列表中移除了 `web_fetch_playwright` 和 `memory_store`。
->
-> ~~**2. invoke() 缺少 approval/guard 事件**~~ — **已于 2026-05-26 修复**。invoke/astream 两路径事件平面已统一：guard_block、guard_pass、approval_required、approval_resolved 在两路径均 emit；hook_start/hook_end 覆盖所有 hook 执行点；invoke 路径支持人工审批等待（复用 /api/chat/approve）。
->
-> ~~**3. astream 路径缺少 hook 事件**~~ — 同上修复。
->
-> ~~**4. 双 Agent 调度器未完整接入**~~ — **已于 2026-05-26 修复**。`HandoffManager` 已集成到 `GraphEngine.invoke()/astream()` 主循环，支持 LLM 驱动的 handoff 工具触发 → 引擎检测 → 活跃 Agent 切换 → SysAgent 独立执行 → handoff 回传。详见 `arf/engine/handoff.py`。
+> ~~**1-4 均已修复**~~ — agent.yaml 死引用、invoke/astream 事件统一、双 Agent 调度器接入均已完成。
+
+### 设计 vs 代码不一致 (2026-05-26 事实校验)
+
+> 以下为设计文档与当前代码实现的不一致项，需团队决策后处理。
+
+- [ ] **System prompt 模板占位符 `{{MEMORY}}`/`{{WORKSPACE}}`/`{{LANGUAGE}}` 未实现** — 设计文档 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.template 示例中定义了这些占位符，但 `arf/agent/base.py` `_build_system_prompt()` 仅支持 `{{AGENT_NAME}}`、`{{AGENT_ROLE}}`、`{{AGENT_TASK}}`、`{{CRITICAL_RULES}}`、`{{INVENTORY}}`。记忆/压缩上下文通过 `context_summary` 注入 messages[0] 前缀而非模板替换。建议：框架层实现指定位置的摘要替换（初步默认实现为在系统提示词之后）。
+
+- [ ] **System prompt `pipeline` 分段组装未实现** — 设计文档定义了基于 priority 的分段组装管道（workspace → memory → critical_rules → inventory → language），但代码 `_build_system_prompt()` 使用简单字符串 replace + `{{INVENTORY}}` 拼接。`SystemPromptConfig` 中没有 `pipeline` 字段。涉及：设计 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.pipeline；代码 `arf/agent/base.py:26-74`。
+
+- [ ] **`StreamingConfig` / `SandboxConfig` 死代码** — 两个配置模型在 `arf/core/config_base.py` 中定义，但未包含在 `AgentConfig` 或 `AdvancedConfig` 中，运行时无法配置。涉及：代码 `arf/core/config_base.py:101-108`（StreamingConfig, SandboxConfig）；`arf/agent/config.py`（AdvancedConfig 缺少对应字段）。设计文档 `2026-05-24-arf-framework-design.md` AgentConfig 伪代码中列出了 `streaming` 和 `sandbox` 字段。
+
+- [ ] **`passive` activation 语义未实现** — `ModelConfig`/`SkillConfig`/`ToolConfig` 均定义了 `activation: "passive"` 字面量，但 Provider 代码（如 `arf/resources/providers/tool_provider.py:105-113`）将 `passive` 与 `discoverable` 同等处理（均进入 dynamic 缓存）。文档描述的"需显式激活"行为未实现。建议：实现 passive 差异逻辑，或从类型中移除。
+
+- [ ] **`AdvancedConfig` 缺少 `concurrency` 配置字段** — 工具并发度硬编码 `max_concurrency=5`（`arf/engine/tool_executor.py`），无配置入口。设计文档列出的 `AgentConfig` 字段也未包含 concurrency。建议：在 `AdvancedConfig` 增加 concurrency 配置段。
 
 ### 演进方向
 

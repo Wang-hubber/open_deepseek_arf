@@ -9,7 +9,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 ## 目录
 
 1. [快速开始](#1-快速开始) — 跑通参考应用
-2. [最小可运行 App](#2-最小可运行-app) — 两个文件即对话
+2. [最小可运行 App](#2-最小可运行-app) — 三个文件即对话
 3. [目录结构与 AppContext](#3-目录结构与-appcontext) — 框架约定的布局
 4. [配置 Agent — agent.yaml 深度解析](#4-配置-agent--agentyaml-深度解析) — 每一段都干什么
 5. [编写工具](#5-编写工具) — 四种模式的完整示例
@@ -159,7 +159,7 @@ app_context = AppContext(root=APP_ROOT)
 | `skills_dir` | `{root}/skills` | 技能目录 |
 | `models_dir` | `{root}/models` | 模型目录 |
 | `hooks_dir` | `{root}/hooks` | Hook 脚本目录 |
-| `workspace_dir` | `{root}/workspaces/default` | 文件操作根目录 |
+| `workspace_dir` | `{root}/memory` | Memory store 与状态持久化根目录 |
 | `state_dir` | `{root}/memory/state` | 会话状态持久化 |
 | `trace_dir` | `{root}/memory/traces` | Trace 事件存储 |
 | `logs_dir` | `{root}/logs` | 日志目录 |
@@ -1333,7 +1333,6 @@ def main():
 | `chat "hello"` | POST /api/chat，打印响应 |
 | `list tools` | 列出已注册工具（tools/skills/models） |
 | `validate` | 校验 agent.yaml 中声明的工具/技能/钩子是否存在于文件系统 |
-| `clone tool <name>` | 从框架系统资源克隆工具到用户 workspace |
 | `config generate` | 扫描 filesystem → 输出完整 agent.yaml |
 
 ### CLI 作为 HTTP 客户端
@@ -1392,11 +1391,7 @@ advanced:
 
 `cli.py config generate` 扫描 tools/skills/models 目录，通过 ResourceResolver 生成完整 agent.yaml。适合用来快速搭建新 App 的骨架配置——先从文件系统了解全部资源，再精简为实际需要的。
 
-### 12.3 系统工具克隆
-
-`cli.py clone tool <name>` 从 `arf/resources/system/` 复制系统工具到用户 workspace。用于把框架内置工具（如 memory_store）带到 App 自定义目录中，按需修改。
-
-### 12.4 框架模块概览
+### 12.3 框架模块概览
 
 了解框架模块有助于理解运行时行为，通常不需要修改：
 

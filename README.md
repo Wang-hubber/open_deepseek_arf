@@ -67,7 +67,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `PathCheckToolGuard` recursive scan (.., symlink, depth/count quota). Permission deny→ask→allow. Human approval channel with SSE push + 60s timeout. | Per-invocation sandbox; MCP protocol |
 | **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential agent loop; parallel tool calls within a turn via `ConcurrentToolExecutor`. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook `asyncio.gather` concurrency. | Multi-agent DAG analysis; worktree isolation |
 | **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
-| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 17 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
+| **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 18 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
 
@@ -82,7 +82,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | | **Protocols** | Protocol classes (`core/protocols/`) — defines `MemoryStore`, `MemoryWriter`, `HookRunner`, `GuardRunner`, `EventBus`, `LoopStrategy` and all other abstract interfaces |
 | **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and other components |
 | | **HTTP Service** | FastAPI + Uvicorn + SSE streaming, REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
-| | **CLI** | init / start / stop / chat / list / validate / clone / config |
+| | **CLI** | init / start / stop / chat / list / validate / config |
 | | **Config & Data** | `agent.yaml` — agent behavior + routing strategy + memory strategy + compaction strategy, `models/deep.yaml` + `models/quick.yaml`, custom `tools/` (undo, file_*, web_*, python_exec …), custom `skills/` (code_review, debug, file_ops …), custom `hooks/`, DeepSeek API key management |
 
 <br/>
@@ -201,7 +201,7 @@ Skills can declare tool pipelines with explicit dependencies. The engine enforce
 
 ### Trace — Full Pipeline Visibility
 
-17 event types in EventType Literal, all emitted by engine across invoke + astream dual paths → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
+18 event types in EventType Literal, all emitted by engine across invoke + astream dual paths → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
 
 [Design doc →](docs/trace.md)
 
@@ -263,15 +263,21 @@ cd app/web && npm install && npm run dev
 
 ### 已知代码问题 (2026-05-26 事实校验)
 
-| # | 问题 | 位置 | 严重程度 |
-|---|------|------|---------|
-> ~~**1. agent.yaml 死引用**~~ — **已于 2026-05-26 修复**。从 allow 列表中移除了 `web_fetch_playwright` 和 `memory_store`。
->
-> ~~**2. invoke() 缺少 approval/guard 事件**~~ — **已于 2026-05-26 修复**。invoke/astream 两路径事件平面已统一：guard_block、guard_pass、approval_required、approval_resolved 在两路径均 emit；hook_start/hook_end 覆盖所有 hook 执行点；invoke 路径支持人工审批等待（复用 /api/chat/approve）。
->
-> ~~**3. astream 路径缺少 hook 事件**~~ — 同上修复。
->
-> ~~**4. 双 Agent 调度器未完整接入**~~ — **已于 2026-05-26 修复**。`HandoffManager` 已集成到 `GraphEngine.invoke()/astream()` 主循环，支持 LLM 驱动的 handoff 工具触发 → 引擎检测 → 活跃 Agent 切换 → SysAgent 独立执行 → handoff 回传。详见 `arf/engine/handoff.py`。
+> ~~**1-4 均已修复**~~ — agent.yaml 死引用、invoke/astream 事件统一、双 Agent 调度器接入均已完成。
+
+### 设计 vs 代码不一致 (2026-05-26 事实校验)
+
+> 以下为设计文档与当前代码实现的不一致项，需团队决策后处理。
+
+- [ ] **System prompt 模板占位符 `{{MEMORY}}`/`{{WORKSPACE}}`/`{{LANGUAGE}}` 未实现** — 设计文档 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.template 示例中定义了这些占位符，但 `arf/agent/base.py` `_build_system_prompt()` 仅支持 `{{AGENT_NAME}}`、`{{AGENT_ROLE}}`、`{{AGENT_TASK}}`、`{{CRITICAL_RULES}}`、`{{INVENTORY}}`。记忆/压缩上下文通过 `context_summary` 注入 messages[0] 前缀而非模板替换。建议：框架层实现指定位置的摘要替换（初步默认实现为在系统提示词之后）。
+
+- [ ] **System prompt `pipeline` 分段组装未实现** — 设计文档定义了基于 priority 的分段组装管道（workspace → memory → critical_rules → inventory → language），但代码 `_build_system_prompt()` 使用简单字符串 replace + `{{INVENTORY}}` 拼接。`SystemPromptConfig` 中没有 `pipeline` 字段。涉及：设计 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.pipeline；代码 `arf/agent/base.py:26-74`。
+
+- [ ] **`StreamingConfig` / `SandboxConfig` 死代码** — 两个配置模型在 `arf/core/config_base.py` 中定义，但未包含在 `AgentConfig` 或 `AdvancedConfig` 中，运行时无法配置。涉及：代码 `arf/core/config_base.py:101-108`（StreamingConfig, SandboxConfig）；`arf/agent/config.py`（AdvancedConfig 缺少对应字段）。设计文档 `2026-05-24-arf-framework-design.md` AgentConfig 伪代码中列出了 `streaming` 和 `sandbox` 字段。
+
+- [ ] **`passive` activation 语义未实现** — `ModelConfig`/`SkillConfig`/`ToolConfig` 均定义了 `activation: "passive"` 字面量，但 Provider 代码（如 `arf/resources/providers/tool_provider.py:105-113`）将 `passive` 与 `discoverable` 同等处理（均进入 dynamic 缓存）。文档描述的"需显式激活"行为未实现。建议：实现 passive 差异逻辑，或从类型中移除。
+
+- [ ] **`AdvancedConfig` 缺少 `concurrency` 配置字段** — 工具并发度硬编码 `max_concurrency=5`（`arf/engine/tool_executor.py`），无配置入口。设计文档列出的 `AgentConfig` 字段也未包含 concurrency。建议：在 `AdvancedConfig` 增加 concurrency 配置段。
 
 ### 演进方向
 

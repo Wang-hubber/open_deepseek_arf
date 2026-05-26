@@ -227,40 +227,6 @@ def cmd_config_generate(args):
     print(yaml.dump(config, allow_unicode=True, default_flow_style=False))
 
 
-def cmd_clone(args):
-    """Clone a system tool/skill to the workspace."""
-    src_root = APP_DIR / ".." / ".." / "src" / "arf" / "resources" / "system"
-    type_plural = args.type + "s"
-
-    if args.type == "tool":
-        src = src_root / type_plural / args.name
-        dst = APP_DIR / "tools" / args.name
-    elif args.type == "skill":
-        src = src_root / type_plural / f"{args.name}.yaml"
-        dst = APP_DIR / "skills" / f"{args.name}.yaml"
-    else:
-        print(f"Unknown type: {args.type}")
-        return
-
-    if not src.exists():
-        print(f"Source not found: {src}")
-        return
-
-    if dst.exists():
-        print(f"Destination already exists: {dst}")
-        return
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-
-    if src.is_dir():
-        import shutil
-        shutil.copytree(src, dst)
-        print(f"Cloned {args.type} '{args.name}' to {dst}")
-    else:
-        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Cloned {args.type} '{args.name}' to {dst}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="ARF Default Assistant CLI")
     sub = parser.add_subparsers(dest="command", help="Available commands")
@@ -295,11 +261,6 @@ def main():
 
     p_validate = sub.add_parser("validate", help="Validate workspace resources")
     p_validate.set_defaults(func=cmd_validate)
-
-    p_clone = sub.add_parser("clone", help="Clone a system resource")
-    p_clone.add_argument("type", choices=["tool", "skill"])
-    p_clone.add_argument("name", help="Resource name")
-    p_clone.set_defaults(func=cmd_clone)
 
     # Config management
     p_config = sub.add_parser("config", help="Config management")
