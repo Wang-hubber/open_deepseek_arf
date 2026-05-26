@@ -731,11 +731,10 @@ class GraphEngine:
                 if handoff_signal:
                     state = await self._execute_handoff(state, handoff_signal, model)
                     if state.get("handoff_error"):
-                        state["messages"].append({
-                            "role": "tool",
-                            "tool_call_id": handoff_signal.get("tool_call_id", ""),
-                            "content": f"Handoff failed: {state['handoff_error']}",
-                        })
+                        # Replace last tool message content with error
+                        msgs = state["messages"]
+                        if msgs and msgs[-1].get("role") == "tool":
+                            msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
                         del state["handoff_error"]
                         await self.state_store.put(session_id, state)
                     continue
@@ -1090,11 +1089,9 @@ class GraphEngine:
                 if handoff_signal:
                     state = await self._execute_handoff(state, handoff_signal, model)
                     if state.get("handoff_error"):
-                        state["messages"].append({
-                            "role": "tool",
-                            "tool_call_id": handoff_signal.get("tool_call_id", ""),
-                            "content": f"Handoff failed: {state['handoff_error']}",
-                        })
+                        msgs = state["messages"]
+                        if msgs and msgs[-1].get("role") == "tool":
+                            msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
                         del state["handoff_error"]
                         yield self._make_event(type="error",
                                          data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
