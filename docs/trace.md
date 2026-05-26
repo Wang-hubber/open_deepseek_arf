@@ -53,7 +53,8 @@ EventBus.emit(AgentEvent)
     │   guard/approval 事件与 chunk、tool_call 一同实时推送
     │
     └─ 前端 TraceView → /traces 瀑布流
-        （按交互轮次分组，三级展开）
+        （按交互轮次分组，三级展开；
+         guard/approval 事件在 IterationCard 中渲染为状态行）
 ```
 
 ### 2.2 事件模型
@@ -127,7 +128,7 @@ Round 0 (3 次内部迭代)
 
 ### 2.7 独立 Trace Viewer
 
-`/trace-viewer` — 单文件 HTML，零外部依赖。支持折叠/展开、时间筛选、token 统计。通过 fetch 从 `/api/traces/sessions/default` 加载数据。
+`/trace-viewer` — 单文件 HTML，零外部依赖。支持折叠/展开、时间筛选、token 统计、guard/approval 事件渲染。通过 fetch 从 `/api/traces/sessions/default` 加载数据。
 
 ### 2.8 回放控制器
 
