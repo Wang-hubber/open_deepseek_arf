@@ -266,9 +266,11 @@ cd app/web && npm install && npm run dev
 | # | 问题 | 位置 | 严重程度 |
 |---|------|------|---------|
 | 1 | **agent.yaml 死引用** — `web_fetch_playwright` 和 `memory_store` 在 `guardrails.permissions.allow` 列表中，但 `tools/` 目录下无对应实现 | `app/arf_default_assistant/agent.yaml` | 低 — 权限检查时这些名称无害，但会造成困惑 |
-| 2 | **approval/guard 事件不在 invoke 路径 emit** — `invoke()` 不 emit `approval_required`、`approval_resolved`、`guard_block`、`guard_pass`、`thinking_delta`，仅 `astream()` 路径 emit | `arf/engine/graph.py` | 中 — invoke 模式下审批和 guard 状态不可观测 |
-| 3 | **astream 路径缺少 hook_start/hook_end 事件** — `astream()` 中 Hook 执行时不 emit `hook_start` 和 `hook_end` 事件，导致 streaming 模式下 Hook 生命周期不可追踪 | `arf/engine/graph.py` | 低 — Hook 仍正常执行，仅事件缺失 |
 
+> ~~**2. invoke() 缺少 approval/guard 事件**~~ — **已于 2026-05-26 修复**。invoke/astream 两路径事件平面已统一：guard_block、guard_pass、approval_required、approval_resolved 在两路径均 emit；hook_start/hook_end 覆盖所有 hook 执行点；invoke 路径支持人工审批等待（复用 /api/chat/approve）。
+>
+> ~~**3. astream 路径缺少 hook 事件**~~ — 同上修复。
+>
 > ~~**4. 双 Agent 调度器未完整接入**~~ — **已于 2026-05-26 修复**。`HandoffManager` 已集成到 `GraphEngine.invoke()/astream()` 主循环，支持 LLM 驱动的 handoff 工具触发 → 引擎检测 → 活跃 Agent 切换 → SysAgent 独立执行 → handoff 回传。详见 `arf/engine/handoff.py`。
 
 ### 演进方向
