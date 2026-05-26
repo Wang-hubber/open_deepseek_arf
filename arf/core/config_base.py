@@ -4,7 +4,7 @@ from typing import Literal
 
 
 class ModelConfig(BaseModel):
-    name: str
+    type: Literal["quick", "deep"]
     api_type: Literal["openai", "anthropic", "custom"] = "openai"
     model: str
     api_base: str = "https://api.deepseek.com"

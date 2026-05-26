@@ -61,7 +61,7 @@ class ResourceResolver:
             return []
         models = self._model_provider.list()
         overrides = self._overrides.get("models", [])
-        return self._merge_configs(models, overrides, ModelConfig)
+        return self._merge_configs(models, overrides, ModelConfig, key_field="type")
 
     # -- cache --
 
@@ -78,25 +78,27 @@ class ResourceResolver:
 
     def _merge_configs(
         self, fs_items: list, override_list: list[dict], config_cls,
+        key_field: str = "name",
     ) -> list:
         """Merge filesystem items with agent.yaml overrides.
 
-        Filesystem is base. Override dicts with matching 'name' are applied on top.
+        Filesystem is base. Override dicts with matching key_field are applied on top.
         Override-only entries (not in filesystem) are appended as new items.
         """
-        override_map = {o["name"]: o for o in override_list if "name" in o}
+        override_map = {o[key_field]: o for o in override_list if key_field in o}
         result = []
         seen = set()
         for item in fs_items:
-            if item.name in override_map:
-                merged = item.model_copy(update=override_map[item.name])
-                seen.add(item.name)
+            item_key = getattr(item, key_field)
+            if item_key in override_map:
+                merged = item.model_copy(update=override_map[item_key])
+                seen.add(item_key)
             else:
                 merged = item
             result.append(merged)
         # Append overrides without filesystem counterpart
-        for name, ov in override_map.items():
-            if name not in seen:
+        for key, ov in override_map.items():
+            if key not in seen:
                 result.append(config_cls(**ov))
         return result
 

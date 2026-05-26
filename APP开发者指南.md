@@ -46,20 +46,31 @@ python cli.py start     # 启动 server + 前端
 
 ## 2. 最小可运行 App
 
-只需要两个文件，就能拥有一个能对话的 Agent。
+只需要三个文件，就能拥有一个能对话的 Agent。
 
-**agent.yaml** — 声明一个模型：
+模型定义在 `models/` 目录（文件系统是真相源），`agent.yaml` 不内联模型配置。
+
+**models/quick.yaml** — 模型源定义：
+
+```yaml
+type: quick
+api_type: openai
+model: deepseek-v4-flash
+api_base: https://api.deepseek.com
+api_key_env: DEEPSEEK_API_KEY
+context_window: 800000
+activation: kernel
+```
+
+**agent.yaml** — 只写 Agent 自身信息，不写模型：
 
 ```yaml
 name: my_agent
 description: 我的第一个 ARF Agent
-
-models:
-  - name: default
-    model: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-    context_window: 800000
+system_prompt:
+  template: |
+    You are {{AGENT_NAME}}, a helpful assistant.
+    {{INVENTORY}}
 ```
 
 **server.py** — 最小 FastAPI 封装：
@@ -86,6 +97,15 @@ async def chat(req: dict):
 export DEEPSEEK_API_KEY=sk-xxx
 uvicorn server:app --host 127.0.0.1 --port 8000
 curl -X POST http://127.0.0.1:8000/api/chat -H 'Content-Type: application/json' -d '{"message":"你好"}'
+```
+
+**关键点**：`AgentConfig.from_yaml("agent.yaml")` 自动从 `models/` 目录加载模型定义，`agent.yaml` 无需内联模型配置。只有在需要覆盖特定字段（如 `temperature: 0.3`）时，才在 `agent.yaml` 中按 name 引用：
+
+```yaml
+# agent.yaml — 可选覆盖（不需要就不写）
+models:
+  - type: quick
+    temperature: 0.3   # 只写要覆盖的字段，其余从 models/quick.yaml 继承
 ```
 
 框架自动完成模型适配器注入、EventBus 创建、状态管理、上下文压缩——app 层不需要管这些。参考 app 在此基础上增加了 SSE streaming、undo、trace API、双 Agent 路由、权限审批等。
@@ -208,7 +228,7 @@ system_prompt:
 **models/deep.yaml** — 深度推理模型：
 
 ```yaml
-name: deep
+type: deep
 api_type: openai
 model: deepseek-v4-pro
 api_base: https://api.deepseek.com
@@ -222,7 +242,7 @@ kwargs:
 **models/quick.yaml** — 快速廉价模型：
 
 ```yaml
-name: quick
+type: quick
 api_type: openai
 model: deepseek-v4-flash
 api_base: https://api.deepseek.com
@@ -1181,7 +1201,7 @@ agents:
         调用 resource_loader 激活新资源
 
     models:
-      - name: deep
+      - type: deep
         model: deepseek-v4-pro
         api_base: https://api.deepseek.com
         api_key_env: DEEPSEEK_API_KEY

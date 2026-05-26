@@ -105,17 +105,17 @@ class BaseAgent:
         # This gives init-phase code (adapters, system model, router) the full
         # model list without depending on ResourceResolver's lazy merge-on-read.
         fs_models = model_provider.list()
-        agent_models = {m.name: m for m in (config.models or [])}
+        agent_models = {m.type: m for m in (config.models or [])}
         merged_models: list = []
         for fm in fs_models:
-            if fm.name in agent_models:
+            if fm.type in agent_models:
                 merged_models.append(
-                    fm.model_copy(update=agent_models[fm.name].model_dump(exclude_none=True))
+                    fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
                 )
             else:
                 merged_models.append(fm)
-        for name, am in agent_models.items():
-            if not any(m.name == name for m in merged_models):
+        for t, am in agent_models.items():
+            if not any(m.type == t for m in merged_models):
                 merged_models.append(am)
         config.models = merged_models
 
@@ -162,13 +162,13 @@ class BaseAgent:
         _system_model_call = None
         system_model_name = adv.system_model if adv else None
         if not system_model_name and config.models:
-            system_model_name = config.models[0].name
+            system_model_name = config.models[0].type
 
         if system_model_name:
             import os as _os2, asyncio as _aio2
             from arf.core.model_adapter import ModelAdapter as _SystemAdapter
             system_model_cfg = next(
-                (m for m in config.models if m.name == system_model_name),
+                (m for m in config.models if m.type == system_model_name),
                 None,
             )
             if system_model_cfg:
@@ -315,13 +315,13 @@ class BaseAgent:
                         return "medium"
                 model_router = TwoTierRouter(
                     config=adv.routing,
-                    models=[m.name for m in config.models],
+                    models=[m.type for m in config.models],
                     classifier_call=_classify,
                 )
             else:
                 model_router = TwoTierRouter(
                     config=adv.routing,
-                    models=[m.name for m in config.models],
+                    models=[m.type for m in config.models],
                 )
 
         self._engine = GraphEngine(
@@ -348,7 +348,7 @@ class BaseAgent:
         )
         # Pass model context windows to engine for compaction decisions
         self._engine.set_model_windows(
-            {m.name: m.context_window for m in config.models}
+            {m.type: m.context_window for m in config.models}
         )
         self._state_store = state_store
         self._event_bus = event_bus
@@ -369,13 +369,13 @@ class BaseAgent:
         adapters: dict[str, ModelAdapter] = {}
         for m in config.models:
             api_key = _os.environ.get(m.api_key_env, "")
-            adapters[m.name] = ModelAdapter({
+            adapters[m.type] = ModelAdapter({
                 "base_url": m.api_base,
                 "api_key": api_key,
                 "model_name": m.model,
                 **m.kwargs,
             })
-        default_name = config.models[0].name if config.models else ""
+        default_name = config.models[0].type if config.models else ""
 
         def _to_openai_tools(tools):
             """Convert framework ToolDefinition list to OpenAI tool format."""
@@ -482,7 +482,7 @@ class BaseAgent:
             "session_id": session_id,
             "agent_name": self.config.name,
             "messages": messages,
-            "current_model": self.config.models[0].name if self.config.models else "default",
+            "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
             "interaction_round": interaction,
             "context_summary": summary,
@@ -515,7 +515,7 @@ class BaseAgent:
             "session_id": session_id,
             "agent_name": self.config.name,
             "messages": messages,
-            "current_model": self.config.models[0].name if self.config.models else "default",
+            "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
             "interaction_round": interaction,
             "context_summary": summary,

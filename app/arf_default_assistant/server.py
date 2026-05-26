@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
                 "session_id": "default",
                 "agent_name": cfg.name,
                 "messages": archive.get("messages", []),
-                "current_model": cfg.models[0].name if cfg.models else "default",
+                "current_model": cfg.models[0].type if cfg.models else "default",
                 "current_turn": archive.get("current_turn", 0),
                 "context_summary": archive.get("context_summary", ""),
                 "tool_results": {},
@@ -428,8 +428,8 @@ async def config_register_deepseek(req: dict):
     return JSONResponse({
         "ok": True,
         "action": "register_deepseek",
-        "models_created": [m.name for m in _agent.config.models],
-        "models": [{"name": m.name, "model": m.model} for m in _agent.config.models],
+        "models_created": [m.type for m in _agent.config.models],
+        "models": [{"name": m.type, "model": m.model} for m in _agent.config.models],
     })
 
 
@@ -468,7 +468,7 @@ async def config_status():
         "configured": configured,
         "model_name": m.model if m else "",
         "model_type": "deep_thinking",
-        "config_name": m.name if m else "",
+        "config_name": m.type if m else "",
         "agent_name": cfg.name,
         "models": [x.name for x in cfg.models],
         "tool_count": len(cfg.tools),
@@ -528,7 +528,7 @@ async def resources_all():
                "readonly": True, "configured": True, "required": False,
                "depends_on": [], "activation": s.activation}
               for s in _agent.config.skills]
-    models = [{"name": m.name, "description": m.model, "source": "system",
+    models = [{"name": m.type, "description": m.model, "source": "system",
                "readonly": False, "configured": True, "required": True,
                "depends_on": [], "model_name": m.model,
                "config_page": "DeepSeekConfigForm"}
@@ -544,7 +544,7 @@ async def resources_unconfigured(required_only: bool = False):
 async def get_model_config(name: str):
     """Return config for a specific model (used by DeepSeekConfigForm)."""
     for m in _agent.config.models:
-        if m.name == name:
+        if m.type == name:
             raw = os.environ.get(m.api_key_env, "")
             masked = _mask_api_key(raw)
             return JSONResponse({"config": {
@@ -594,10 +594,10 @@ async def list_resources(res_type: str):
     elif res_type == "models":
         if resolver:
             models = resolver.get_model_definitions()
-            items = [{"name": m.name, "model": m.model, "api_base": m.api_base}
+            items = [{"name": m.type, "model": m.model, "api_base": m.api_base}
                      for m in models]
         else:
-            items = [{"name": m.name, "description": m.model, "source": "system",
+            items = [{"name": m.type, "description": m.model, "source": "system",
                       "readonly": False, "configured": True, "required": True,
                       "depends_on": [], "model_name": m.model, "config_page": "DeepSeekConfigForm"}
                      for m in _agent.config.models]

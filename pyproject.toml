@@ -4,9 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arf"
-version = "0.1.0"
-description = "ARF — Agent Resources & Runtime Framework"
+version = "0.8.0"
+description = "ARF — AI Resources & Runtime Framework"
 requires-python = ">=3.11"
+authors = [
+    {name = "WangXie", email = "997793170@qq.com"}
+]
+license = {text = "MIT"}
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",

@@ -8,7 +8,7 @@
 
 ```yaml
 models:
-  - name: default
+  - type: quick
     model: deepseek-v4-flash
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
@@ -17,7 +17,7 @@ models:
 
 | 字段 | 说明 | 必填 |
 |------|------|------|
-| `name` | 模型别名，后续 routing/skills 中引用 | 是 |
+| `type` | 模型类型：`quick`（快速廉价）或 `deep`（深度推理） | 是 |
 | `model` | API 中使用的模型名，如 `deepseek-v4-pro` | 是 |
 | `api_base` | OpenAI 兼容 API 地址 | 是 |
 | `api_key_env` | 从哪个环境变量读取 API key | 是 |
@@ -32,7 +32,7 @@ models:
 
 ```yaml
 models:
-  - name: quick
+  - type: quick
     model: deepseek-v4-flash
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
@@ -41,7 +41,7 @@ models:
       reasoning_effort: high
       temperature: 0.7
 
-  - name: deep
+  - type: deep
     model: deepseek-v4-pro
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
@@ -77,7 +77,7 @@ advanced:
 
 ```yaml
 # models/quick.yaml（源定义）
-name: quick
+type: quick
 model: deepseek-v4-flash
 api_base: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
@@ -90,7 +90,7 @@ kwargs:
 ```yaml
 # agent.yaml（仅覆盖 temperature）
 models:
-  - name: quick
+  - type: quick
     temperature: 0.3
 ```
 
@@ -113,14 +113,14 @@ models:
 在 `models/` 目录下新建一个 `.yaml` 文件即可。FileWatcher 自动检测，下一轮对话生效。无需重启服务。
 
 ```bash
-# 添加一个 vision 模型
-cat > models/vision.yaml << 'EOF'
-name: vision
-model: deepseek-v4-vision
-api_base: https://api.deepseek.com
-api_key_env: DEEPSEEK_API_KEY
-context_window: 500000
-activation: discoverable
+# 用 OpenRouter 的端点替换 deep 模型
+cat > models/deep-router.yaml << 'EOF'
+type: deep
+model: deepseek/deepseek-v4-pro
+api_base: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY
+context_window: 1000000
+activation: kernel
 EOF
-# 下一轮对话自动可用
+# 两个文件都定义 type: deep 时，后加载的优先（或通过 agent.yaml 精确控制）
 ```

@@ -83,17 +83,17 @@ class AgentConfig(BaseModel):
         if models_dir.exists():
             from arf.resources.providers.model_provider import ModelProvider
             fs_models = ModelProvider(models_dir).list()
-            agent_models = {m.name: m for m in config.models}
+            agent_models = {m.type: m for m in config.models}
             merged: list[ModelConfig] = []
             for fm in fs_models:
-                if fm.name in agent_models:
+                if fm.type in agent_models:
                     merged.append(
-                        fm.model_copy(update=agent_models[fm.name].model_dump(exclude_none=True))
+                        fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
                     )
                 else:
                     merged.append(fm)
-            for name, am in agent_models.items():
-                if not any(m.name == name for m in merged):
+            for t, am in agent_models.items():
+                if not any(m.type == t for m in merged):
                     merged.append(am)
             config.models = merged
         return config

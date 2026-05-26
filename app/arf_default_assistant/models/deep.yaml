@@ -1,4 +1,4 @@
-name: deep
+type: deep
 api_type: openai
 model: deepseek-v4-pro
 api_base: https://api.deepseek.com

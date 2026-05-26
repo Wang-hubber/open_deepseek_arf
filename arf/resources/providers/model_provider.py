@@ -45,14 +45,14 @@ class ModelProvider:
         for yaml_path in sorted(self._dir.glob("*.yaml")):
             try:
                 raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-                if not raw or "name" not in raw:
+                if not raw or "type" not in raw:
                     continue
                 cfg = ModelConfig(**raw)
                 if cfg.activation == "kernel":
-                    if not self._cache.has_kernel(cfg.name):
-                        self._cache.kernel[cfg.name] = cfg
+                    if not self._cache.has_kernel(cfg.type):
+                        self._cache.kernel[cfg.type] = cfg
                 else:
-                    self._cache.dynamic[cfg.name] = cfg
+                    self._cache.dynamic[cfg.type] = cfg
             except Exception as e:
                 logger.warning("Skipping %s: %s", yaml_path, e)
         self._loaded = True
