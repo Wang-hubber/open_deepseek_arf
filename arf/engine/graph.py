@@ -677,20 +677,31 @@ class GraphEngine:
                         sp = SkillPipeline(pipeline_data.get("steps", []))
                         if not sp.can_execute(name, import_completed):
                             denied_calls.append((name, sp.validation_error(name, import_completed)))
+                            self._emit("guard_block", {"tool_name": name, "guard": "pipeline",
+                                       "reason": sp.validation_error(name, import_completed)},
+                                       session_id=session_id)
                             continue
                     # Path sandbox check (hard block)
                     gr = await self.guard_runner.check_tool_params(name, params)
                     if not gr.allowed:
                         denied_calls.append((name, gr.reason))
+                        self._emit("guard_block", {"tool_name": name, "guard": "path_check",
+                                   "reason": gr.reason}, session_id=session_id)
                         continue
                     # Permission check (deny/ask/allow)
                     perm = self.guard_runner.check_tool_permission(name, params)
                     if perm == "deny":
                         denied_calls.append((name, "denied by permission config"))
+                        self._emit("guard_block", {"tool_name": name, "guard": "permission",
+                                   "reason": "denied by config"}, session_id=session_id)
                         continue
                     if perm == "ask" and not self.approval_enabled:
                         denied_calls.append((name, "requires approval (approval channel not enabled)"))
+                        self._emit("guard_block", {"tool_name": name, "guard": "approval",
+                                   "reason": "requires approval (channel not enabled)"},
+                                   session_id=session_id)
                         continue
+                    self._emit("guard_pass", {"tool_name": name}, session_id=session_id)
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls
@@ -709,7 +720,11 @@ class GraphEngine:
 
             # 7. Hooks + Transaction + execute
             if self.hook_runner:
+                self._emit("hook_start", {"event": "pre_tool_exec", "turn": turn}, session_id=session_id)
                 results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                self._emit("hook_end", {"event": "pre_tool_exec", "turn": turn,
+                           "count": len(results), "passed": sum(1 for r in results if r.exit_code == 0),
+                           "failed": sum(1 for r in results if r.exit_code != 0)}, session_id=session_id)
                 self._inject_hook_messages(results, state)
             for tc in valid_calls:
                 self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
@@ -736,7 +751,11 @@ class GraphEngine:
                     await self.transaction_ctx.rollback(tx, Exception("tool failure"))
 
             if self.hook_runner:
+                self._emit("hook_start", {"event": "post_tool_exec", "turn": turn}, session_id=session_id)
                 hook_results = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                self._emit("hook_end", {"event": "post_tool_exec", "turn": turn,
+                           "count": len(hook_results), "passed": sum(1 for r in hook_results if r.exit_code == 0),
+                           "failed": sum(1 for r in hook_results if r.exit_code != 0)}, session_id=session_id)
                 self._inject_hook_messages(hook_results, state)
 
             # 8. Add results to messages (with tool output summarization)
@@ -865,6 +884,16 @@ class GraphEngine:
                 msgs[0]["content"] += f"\n\n## Memory\n{summary}"
             msgs.extend(state.get("messages", []))
 
+            if self.hook_runner:
+                yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
+                                 turn=turn, session_id=session_id)
+                h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+                yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
+                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
+                                 turn=turn, session_id=session_id)
+                self._inject_hook_messages(h_results, state)
+
             yield self._make_event(type="model_call_start",
                              data={"model": model, "turn": turn},
                              turn=turn, session_id=session_id)
@@ -945,6 +974,16 @@ class GraphEngine:
                                    "content": resp.get("content", ""),
                                    "usage": stream_usage},
                              turn=turn, session_id=session_id)
+
+            if self.hook_runner:
+                yield self._make_event(type="hook_start", data={"event": "post_model_call", "turn": turn},
+                                 turn=turn, session_id=session_id)
+                h_results = await self.hook_runner.fire("post_model_call", {"response": resp})
+                yield self._make_event(type="hook_end", data={"event": "post_model_call", "turn": turn,
+                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
+                                 turn=turn, session_id=session_id)
+                self._inject_hook_messages(h_results, state)
 
             # Track token usage for next turn's compaction decision
             if stream_usage and stream_usage.get("total_tokens", 0) > 0:
@@ -1079,7 +1118,13 @@ class GraphEngine:
                                  turn=turn, session_id=session_id)
 
             if self.hook_runner:
+                yield self._make_event(type="hook_start", data={"event": "pre_tool_exec", "turn": turn},
+                                 turn=turn, session_id=session_id)
                 h_results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                yield self._make_event(type="hook_end", data={"event": "pre_tool_exec", "turn": turn,
+                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
+                                 turn=turn, session_id=session_id)
                 self._inject_hook_messages(h_results, state)
             for tc in valid_calls:
                 yield self._make_event(type="tool_call_start",
@@ -1107,7 +1152,13 @@ class GraphEngine:
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
                                               "content": content})
             if self.hook_runner:
+                yield self._make_event(type="hook_start", data={"event": "post_tool_exec", "turn": turn},
+                                 turn=turn, session_id=session_id)
                 hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                yield self._make_event(type="hook_end", data={"event": "post_tool_exec", "turn": turn,
+                                 "count": len(hr), "passed": sum(1 for r in hr if r.exit_code == 0),
+                                 "failed": sum(1 for r in hr if r.exit_code != 0)},
+                                 turn=turn, session_id=session_id)
                 self._inject_hook_messages(hr, state)
 
             state["tool_results"] = {
