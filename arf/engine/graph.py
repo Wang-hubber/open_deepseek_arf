@@ -42,6 +42,8 @@ class GraphEngine:
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
+        self._pending_approvals: dict[str, asyncio.Event] = {}  # decision_id → set on approve
+        self._approval_results: dict[str, bool] = {}  # decision_id → True/False
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.tool_resolver = tool_resolver
@@ -71,6 +73,15 @@ class GraphEngine:
     def set_cancel_event(self, event: asyncio.Event) -> None:
         """Late-binding: inject a cancellation token after construction."""
         self._cancel_event = event
+
+    def approve(self, decision_id: str, approved: bool) -> bool:
+        """Resolve a pending approval request. Returns True if the ID was found."""
+        self._approval_results[decision_id] = approved
+        evt = self._pending_approvals.pop(decision_id, None)
+        if evt:
+            evt.set()
+            return True
+        return False
 
     def push_checkpoint(self, state: AgentState, workspace_dir: str = "") -> None:
         """Save a deep copy of state and snapshot workspace files (max 5).
@@ -728,9 +739,31 @@ class GraphEngine:
                     if perm == "deny":
                         denied_calls.append((name, "denied by permission config"))
                         continue
-                    if perm == "ask" and not self.approval_enabled:
-                        denied_calls.append((name, "requires approval (approval channel not enabled)"))
-                        continue
+                    if perm == "ask":
+                        if self.approval_enabled:
+                            decision_id = f"{session_id}_{name}_{id(tc)}"
+                            yield self._make_event(
+                                type="approval_required",
+                                data={"decision_id": decision_id, "tool_name": name, "params": params},
+                                turn=turn, session_id=session_id,
+                            )
+                            # Wait for user decision
+                            approval_evt = asyncio.Event()
+                            self._pending_approvals[decision_id] = approval_evt
+                            try:
+                                await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
+                            except asyncio.TimeoutError:
+                                self._pending_approvals.pop(decision_id, None)
+                                denied_calls.append((name, "approval timed out"))
+                                continue
+                            approved = self._approval_results.pop(decision_id, False)
+                            if not approved:
+                                denied_calls.append((name, "denied by user"))
+                                continue
+                            # Approved — fall through to valid_calls
+                        else:
+                            denied_calls.append((name, "requires approval (approval channel not enabled)"))
+                            continue
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls

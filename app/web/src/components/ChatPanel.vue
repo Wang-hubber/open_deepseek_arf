@@ -24,8 +24,10 @@ const {
   toolCalls,
   isStreaming,
   streamError,
+  pendingApproval,
   sendMessage,
   abort,
+  approve,
   setCallbacks,
 } = useChat()
 
@@ -411,6 +413,19 @@ function escapeHtml(s: string): string {
       </div>
     </div>
 
+    <!-- Approval prompt -->
+    <div v-if="pendingApproval" id="approval-bar">
+      <div class="ap-info">
+        <span class="ap-icon">&#9888;</span>
+        <span class="ap-tool-name">{{ pendingApproval.tool_name }}</span>
+        <span class="ap-label">需要确认才能执行此工具调用</span>
+      </div>
+      <div class="ap-actions">
+        <button class="ap-btn ap-deny" @click="approve(pendingApproval.decision_id, false)">拒绝</button>
+        <button class="ap-btn ap-allow" @click="approve(pendingApproval.decision_id, true)">允许</button>
+      </div>
+    </div>
+
     <!-- Input area -->
     <div id="chat-input-wrap"
       @dragenter="onDragEnter" @dragleave="onDragLeave" @dragover="onDragOver" @drop="onDrop"
@@ -439,6 +454,42 @@ function escapeHtml(s: string): string {
 }
 #chat-history { flex: 1; overflow-y: auto; padding: 24px 28px; scroll-behavior: smooth; }
 
+
+#approval-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; gap: 12px;
+  background: var(--warning-bg, rgba(245,158,11,0.1));
+  border-top: 1px solid var(--warning-border, rgba(245,158,11,0.3));
+  border-bottom: 1px solid var(--warning-border, rgba(245,158,11,0.3));
+  flex-shrink: 0;
+}
+.ap-info {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--warning-text, #b45309);
+}
+.ap-icon { font-size: 16px; }
+.ap-tool-name {
+  font-weight: 700; font-family: monospace;
+  background: rgba(245,158,11,0.15); padding: 2px 8px; border-radius: 4px;
+}
+.ap-label { opacity: 0.8; }
+.ap-actions { display: flex; gap: 8px; }
+.ap-btn {
+  padding: 6px 18px; border-radius: var(--radius-lg, 8px);
+  font-size: 13px; font-weight: 600; cursor: pointer; border: none;
+  transition: all var(--transition, 0.2s);
+}
+.ap-deny {
+  background: rgba(239,68,68,0.12); color: var(--error-text, #dc2626);
+  border: 1px solid var(--error-border, rgba(239,68,68,0.3));
+}
+.ap-deny:hover { background: rgba(239,68,68,0.22); }
+.ap-allow {
+  background: var(--accent-gradient, linear-gradient(135deg, #6366f1, #8b5cf6));
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99,102,241,0.25);
+}
+.ap-allow:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,0.35); }
 
 #chat-input-wrap {
   display: flex; align-items: flex-end;

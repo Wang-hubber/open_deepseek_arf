@@ -170,6 +170,8 @@ async def _sse_chat(message: str):
             elif t == "tool_call_end":
                 success = event.data.get("success", False)
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"
+            elif t == "approval_required":
+                yield f"data: {json.dumps({'type': 'approval_required', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'params': event.data.get('params', {})}, ensure_ascii=False)}\n\n"
             elif t == "error":
                 detail = event.data.get("detail", "API error")
                 code = event.data.get("code", 0)
@@ -214,6 +216,20 @@ async def cancel_chat():
         logger.info("Chat cancelled via API")
         return JSONResponse({"status": "cancelled"})
     return JSONResponse({"status": "no_active_chat"})
+
+
+@app.post("/api/chat/approve")
+async def approve_tool_call(req: dict):
+    """Approve or deny a pending tool call approval request."""
+    decision_id = (req or {}).get("decision_id", "")
+    approved = (req or {}).get("approved", False)
+    if not decision_id:
+        return JSONResponse({"error": "decision_id required"}, status_code=400)
+    ok = _agent.engine.approve(decision_id, approved)
+    if not ok:
+        return JSONResponse({"error": f"unknown decision_id: {decision_id}"}, status_code=404)
+    logger.info(f"Approval {decision_id}: {'approved' if approved else 'denied'}")
+    return JSONResponse({"status": "ok", "decision_id": decision_id, "approved": approved})
 
 
 @app.post("/api/chat/undo")

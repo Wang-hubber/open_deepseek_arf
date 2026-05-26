@@ -11,6 +11,7 @@ export function useChat() {
   const toolCalls = ref<{ id: string; name: string; args: string; status: string; result?: string; error?: string }[]>([])
   const isStreaming = ref(false)
   const streamError = ref('')
+  const pendingApproval = ref<{ decision_id: string; tool_name: string; params: Record<string, unknown> } | null>(null)
   let abortController: AbortController | null = null
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
@@ -73,6 +74,15 @@ export function useChat() {
     }
   }
 
+  async function approve(decisionId: string, approved: boolean) {
+    pendingApproval.value = null
+    await fetch('/api/chat/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_id: decisionId, approved }),
+    })
+  }
+
   function abort() {
     abortController?.abort()
     streamReader?.cancel()
@@ -126,6 +136,12 @@ export function useChat() {
         }
       }
       if (onToolResult) onToolResult(id, (evt as any).content || evt.result, evt.tool || '')
+    } else if (evt.type === 'approval_required') {
+      pendingApproval.value = {
+        decision_id: evt.decision_id,
+        tool_name: evt.tool_name,
+        params: evt.params,
+      }
     } else if (evt.type === 'done') {
       isStreaming.value = false
       chatStore.setHistory(evt.history || [])
@@ -142,8 +158,10 @@ export function useChat() {
     toolCalls,
     isStreaming,
     streamError,
+    pendingApproval,
     sendMessage,
     abort,
+    approve,
     setCallbacks,
   }
 }

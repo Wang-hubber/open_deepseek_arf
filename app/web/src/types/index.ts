@@ -123,7 +123,9 @@ export type SSEEvent =
   | { type: 'tool_result'; tool?: string; id: string; result: string }
   | { type: 'registration_required'; registration_id: string; template: Record<string, FormField>; resource_type: string; resource_name: string }
   | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
+  | { type: 'approval_required'; decision_id: string; tool_name: string; params: Record<string, unknown> }
   | { type: 'error'; detail?: string }
+  | { type: 'cancelled' }
 
 export interface DisplayMessage {
   role: 'user' | 'assistant' | 'system'
