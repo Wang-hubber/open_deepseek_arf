@@ -375,6 +375,7 @@ class GraphEngine:
         state["tool_results"] = {}
         state.pop("handoff_task", None)
         self._handoff_checkpoint = None
+        state = self._close_tool_calls(state)
 
         return state
 
@@ -423,36 +424,62 @@ class GraphEngine:
             self.event_bus.emit(event)
         return event
 
-    def _repair_state(self, state: AgentState) -> AgentState:
-        """Strip incomplete tool_calls sequences that cause 400 errors.
+    def _close_tool_calls(self, state: AgentState) -> AgentState:
+        """Ensure every assistant tool_calls has matching tool messages.
 
-        If the last assistant message has tool_calls but no tool messages follow,
-        remove the incomplete assistant message (and any orphaned tool messages).
+        For any tool_call without a matching tool result, inject a synthetic
+        tool message with empty/skip content. This guarantees the message
+        sequence is always valid for the model API.
+
+        Called before every model call in both invoke() and astream().
         """
         msgs = state.get("messages", [])
         if not msgs:
             return state
-        # Find the last assistant message with tool_calls
-        last_tc_idx = -1
-        for i in range(len(msgs) - 1, -1, -1):
-            if msgs[i].get("role") == "assistant" and msgs[i].get("tool_calls"):
-                last_tc_idx = i
-                break
-        if last_tc_idx < 0:
+
+        # Collect all expected tool_call_ids
+        expected_ids: list[tuple[int, str]] = []  # (assistant_idx, tool_call_id)
+        for i, msg in enumerate(msgs):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        expected_ids.append((i, tc_id))
+
+        if not expected_ids:
             return state
-        # Check if any tool messages follow this assistant message
-        has_tool_responses = False
-        for i in range(last_tc_idx + 1, len(msgs)):
-            if msgs[i].get("role") == "tool":
-                has_tool_responses = True
-                break
-        if not has_tool_responses:
-            # Strip from the incomplete assistant message onward
-            import logging
-            logging.getLogger("arf.engine").warning(
-                "Repairing state: stripping incomplete tool_calls at index %d", last_tc_idx
-            )
-            state["messages"] = msgs[:last_tc_idx]
+
+        # Collect all existing tool message ids
+        seen_ids: set[str] = set()
+        for msg in msgs:
+            if msg.get("role") == "tool":
+                tc_id = msg.get("tool_call_id", "")
+                if tc_id:
+                    seen_ids.add(tc_id)
+
+        # Find unmatched ids and inject synthetic results
+        # Inject them right after the last tool message, or after the assistant
+        unmatched = [(idx, tid) for idx, tid in expected_ids if tid not in seen_ids]
+        if unmatched:
+            logger = logging.getLogger("arf.engine")
+            inject_point = -1
+            # Find the last tool message position
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "tool":
+                    inject_point = i + 1
+                    break
+            if inject_point < 0:
+                # No tool messages yet — inject after last assistant with tool_calls
+                inject_point = max(idx for idx, _ in unmatched) + 1
+
+            for _, tc_id in reversed(unmatched):
+                logger.warning("Closing open tool_call %s with empty result", tc_id)
+                msgs.insert(inject_point, {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": "(tool result unavailable)",
+                })
+
         return state
 
     def _last_user_message(self, state: AgentState) -> str:
@@ -485,7 +512,7 @@ class GraphEngine:
         return []
 
     async def invoke(self, state: AgentState) -> AgentState:
-        state = self._repair_state(state)
+        state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
@@ -763,7 +790,7 @@ class GraphEngine:
         """Streaming execution — yields AgentEvent at each step of the loop.
         Uses _stream_model for token-level streaming if available,
         falls back to _call_model otherwise."""
-        state = self._repair_state(state)
+        state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
         yield self._make_event(type="session_start", data={"session_id": session_id},
