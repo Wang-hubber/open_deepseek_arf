@@ -29,6 +29,17 @@ const iterDuration = computed(() => {
 })
 
 const toolCount = computed(() => props.iteration.toolCalls.length)
+
+function eventData(evt: any, key: string, fallback: any = ''): any {
+  // TraceEvent uses metadata (string), AgentEvent uses data (dict)
+  const d = evt?.data
+  if (d && typeof d === 'object') return d[key] ?? fallback
+  const m = evt?.metadata
+  if (m && typeof m === 'string') {
+    try { const p = JSON.parse(m); return p[key] ?? fallback } catch { return fallback }
+  }
+  return fallback
+}
 </script>
 
 <template>
@@ -53,6 +64,22 @@ const toolCount = computed(() => props.iteration.toolCalls.length)
         :hooks="iteration.preToolUseHooks"
         :title="t('trace.preToolHooks')"
       />
+      <div v-if="iteration.guardEvents.length" class="guard-events">
+        <div v-for="(ge, i) in iteration.guardEvents" :key="i" class="guard-line" :class="ge.type">
+          <span class="ge-icon">{{ ge.type === 'guard_block' ? '🛡️✗' : '🛡️✓' }}</span>
+          <span class="ge-tool">{{ eventData(ge, 'tool_name', '?') }}</span>
+          <span v-if="ge.type === 'guard_block'" class="ge-reason">{{ eventData(ge, 'guard') }}: {{ eventData(ge, 'reason') }}</span>
+          <span v-else class="ge-reason">passed</span>
+        </div>
+      </div>
+      <div v-if="iteration.approvalEvents.length" class="approval-events">
+        <div v-for="(ae, i) in iteration.approvalEvents" :key="i" class="approval-line" :class="ae.type">
+          <span class="ae-icon">{{ ae.type === 'approval_required' ? '⏳' : eventData(ae, 'approved') ? '✅' : '❌' }}</span>
+          <span class="ae-tool">{{ eventData(ae, 'tool_name', '?') }}</span>
+          <span v-if="ae.type === 'approval_required'" class="ae-reason">等待审批</span>
+          <span v-else class="ae-reason">{{ eventData(ae, 'reason') }}</span>
+        </div>
+      </div>
       <ToolCallCard
         v-for="(tc, i) in iteration.toolCalls"
         :key="i"
@@ -68,6 +95,23 @@ const toolCount = computed(() => props.iteration.toolCalls.length)
 </template>
 
 <style scoped>
+.guard-events, .approval-events {
+  margin: 4px 0 4px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.guard-line, .approval-line {
+  font-size: 12px; padding: 2px 8px; border-radius: 4px;
+  display: flex; align-items: center; gap: 6px;
+  opacity: 0.9;
+}
+.guard-line { background: rgba(99,102,241,0.08); }
+.guard-line.guard_block { background: rgba(239,68,68,0.08); }
+.approval-line { background: rgba(245,158,11,0.08); }
+.approval-line.approval_resolved { background: rgba(34,197,94,0.06); }
+.ge-icon, .ae-icon { font-size: 11px; flex-shrink: 0; }
+.ge-tool, .ae-tool { font-weight: 600; font-family: monospace; color: var(--text-primary); }
+.ge-reason, .ae-reason { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .ic-root {
   border-bottom: 1px solid var(--border-light);
   overflow: hidden;

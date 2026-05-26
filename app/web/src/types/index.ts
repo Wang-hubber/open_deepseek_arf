@@ -337,6 +337,8 @@ export interface Iteration {
   reasoning?: TraceEvent
   preToolUseHooks: TraceEvent[]
   toolCalls: ToolCallPair[]
+  guardEvents: any[]
+  approvalEvents: any[]
   afterToolHooks: TraceEvent[]
   isFinal: boolean
 }

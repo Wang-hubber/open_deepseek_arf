@@ -143,6 +143,7 @@ export function useTrace() {
       if (toolPairs.length === 0 && hooks.pre.length === 0 && hooks.post.length === 0) return []
       return [{
         index: 1, toolCalls: toolPairs,
+        guardEvents: [], approvalEvents: [],
         preToolUseHooks: hooks.pre, afterToolHooks: hooks.post, isFinal: true,
       }]
     }
@@ -167,6 +168,14 @@ export function useTrace() {
       const toolEvents = inRange.filter(e => e.type === 'tool_call_start' || e.type === 'tool_call_end')
       const toolPairs = pairToolCalls(toolEvents)
 
+      // Guard & approval events in range
+      const guardEvents = inRange.filter(e =>
+        e.type === 'guard_block' || e.type === 'guard_pass'
+      )
+      const approvalEvents = inRange.filter(e =>
+        e.type === 'approval_required' || e.type === 'approval_resolved'
+      )
+
       // Hooks in range
       const hooks = collectHooks(inRange)
 
@@ -187,6 +196,8 @@ export function useTrace() {
         reasoning: reasoningEvent || undefined,
         preToolUseHooks: hooks.pre as any,
         toolCalls: toolPairs,
+        guardEvents,
+        approvalEvents,
         afterToolHooks: hooks.post as any,
         isFinal: isLast && hasContent && !hasToolCalls,
       })

@@ -38,6 +38,8 @@ button:hover { background:#1f2937; }
 .tag-tool { background:#1a3c1a; color:var(--green); }
 .tag-hook { background:#2a1a3c; color:var(--purple); }
 .tag-error { background:#3c1a1a; color:var(--red); }
+.tag-ok { background:#1a3c1a; color:var(--green); }
+.tag-warn { background:#3c2a0a; color:var(--yellow); }
 .tag-compact { background:#3c2a0a; color:var(--yellow); }
 .tag-system { background:#3c1a2c; color:var(--pink); }
 .chip { display:inline-flex; align-items:center; gap:4px; margin:2px 3px; }
@@ -76,12 +78,17 @@ const TAG = { model_call_start:'tag-model',model_call_end:'tag-model',thinking_d
   hook_start:'tag-hook',hook_end:'tag-hook',
   compaction_start:'tag-compact',compaction_end:'tag-compact',
   session_start:'tag-system',session_end:'tag-system',user_input:'tag-system',
+  guard_block:'tag-error',guard_pass:'tag-ok',
+  approval_required:'tag-warn',approval_resolved:'tag-warn',
   error:'tag-error' };
 
 const ICON = { model_call_start:'🤖',model_call_end:'🤖',thinking_delta:'💭',
   tool_call_start:'🔧',tool_call_end:'🔧', hook_start:'🪝',hook_end:'🪝',
   compaction_start:'📦',compaction_end:'📦',
-  session_start:'▶',session_end:'⏹',user_input:'👤',error:'❌' };
+  session_start:'▶',session_end:'⏹',user_input:'👤',
+  guard_block:'🛡️✗',guard_pass:'🛡️✓',
+  approval_required:'⏳',approval_resolved:'👆',
+  error:'❌' };
 
 let allEvents = [], groupedRounds = [];
 
@@ -228,6 +235,14 @@ function renderTurnDetail(events) {
       body = `tool=${d.tool_name||'?'} args=${(d.arguments||'{}').slice(0,300)}`;
     } else if(e.type === 'error') {
       body = `${d.detail||d.message||JSON.stringify(d)}`;
+    } else if(e.type === 'guard_block') {
+      body = `tool=${d.tool_name||'?'} guard=${d.guard||'?'} reason=${d.reason||''}`;
+    } else if(e.type === 'guard_pass') {
+      body = `tool=${d.tool_name||'?'}`;
+    } else if(e.type === 'approval_required') {
+      body = `tool=${d.tool_name||'?'} decision_id=${(d.decision_id||'').slice(0,24)}`;
+    } else if(e.type === 'approval_resolved') {
+      body = `tool=${d.tool_name||'?'} approved=${d.approved} reason=${d.reason||''}`;
     } else if(e.type === 'thinking_delta') {
       body = (d.reasoning||d.content||'').slice(0,500);
     } else {
