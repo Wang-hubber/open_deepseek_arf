@@ -13,6 +13,7 @@ EventType = Literal[
     "compaction_start", "compaction_end",
     "approval_required",
     "approval_resolved",
+    "agent_switch",
     "guard_block",          # PathCheckToolGuard or ToolPermissionChecker blocked a tool
     "guard_pass",           # All guard checks passed for a tool
     "hook_start", "hook_end",

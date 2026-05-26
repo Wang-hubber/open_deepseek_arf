@@ -119,10 +119,21 @@ class ReloadConfig(BaseModel):
     signals: list[str] = Field(default_factory=lambda: ["SIGHUP"])
 
 
+class HandoverContextConfig(BaseModel):
+    """Context strategy for handoff between agents.
+
+    raw_turns: number of recent conversation turns to include (-1 = all, 0 = none)
+    task_summary: whether to generate an LLM task summary
+    """
+    raw_turns: int = Field(default=5, ge=-1)
+    task_summary: bool = True
+
+
 class HandoverRuleConfig(BaseModel):
     from_agent: str
     to_agent: str
     trigger: str
+    context: HandoverContextConfig = Field(default_factory=HandoverContextConfig)
 
 
 class HandoverConfig(BaseModel):
