@@ -146,12 +146,12 @@ if self.model_router:
 
 | 层级 | 触发条件 | 行为 |
 |------|----------|------|
-| LLM 分类器异常 | 模型调用失败 | 返回 `"medium"` → quick |
+| LLM 分类器异常 | `_classify()` 模型调用失败 | 返回 `"medium"` → quick |
 | classify 映射缺失 | 分类结果不在 `classify` dict 中 | 使用 `config.default` |
-| default 为空 | 未配置默认模型 | 回退到 state 初始 model |
-| fallback 映射 | `deep` 不可用 | `fallback_from()` 返回 `quick` |
+| default 为空 | 路由配置缺失 `default` | 回退到 `state["current_model"]`（引擎初始 model） |
+| fallback 映射 | 模型调用失败（5xx / 网络错误） | `error_policy.on_model_error()` → `model_router.fallback_from()` → 重试 |
 
-**事实校验**：`fallback_from()` 已在 `TwoTierRouter` 中实现，但当前 `GraphEngine` 在模型调用失败时尚未自动调用它。降级链的最后一级尚未接入引擎。
+降级链全部接入引擎：`_classify()` 内置 try/except → `classify.get(level, default)` 字典兜底 → `_resolve_fallback()` 串联 error_policy + model_router。
 
 ### 2.9 KV Cache — 框架有意不介入
 

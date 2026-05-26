@@ -143,6 +143,22 @@ class GraphEngine:
     def checkpoint_count(self) -> int:
         return len(self._checkpoints)
 
+    def _resolve_fallback(self, model_name: str, exc: Exception) -> str | None:
+        """Resolve fallback model via error_policy → model_router chain.
+
+        Returns fallback model name, or None if fallback is not
+        configured or unavailable.
+        """
+        if not self.error_policy or not self.model_router:
+            return None
+        try:
+            action = self.error_policy.on_model_error(exc, model_name, 0)
+        except Exception:
+            return None
+        if action.action != "fallback":
+            return None
+        return self.model_router.fallback_from(model_name)
+
     def _cancelled(self) -> bool:
         """Check if execution has been cancelled (non-blocking)."""
         return self._cancel_event is not None and self._cancel_event.is_set()
@@ -311,7 +327,20 @@ class GraphEngine:
                 break
 
             self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
-            response = await self._call_model(msgs, model, tools=tools)
+            response = None
+            try:
+                response = await self._call_model(msgs, model, tools=tools)
+            except Exception as exc:
+                # 降级链最后一级：模型调用失败 → error_policy → fallback 模型
+                fallback_model = self._resolve_fallback(model, exc)
+                if fallback_model:
+                    self._emit("model_call_start", {"model": fallback_model, "turn": turn,
+                               "fallback_from": model}, session_id=session_id)
+                    response = await self._call_model(msgs, fallback_model, tools=tools)
+                    model = fallback_model
+                    state["current_model"] = fallback_model
+                else:
+                    raise
             # Track token usage for next turn's compaction decision
             if isinstance(response, dict) and response.get("usage"):
                 state["last_token_usage"] = response["usage"].get("total_tokens", 0)
@@ -570,43 +599,69 @@ class GraphEngine:
                 full_reasoning = ""
                 stream_usage: dict = {}
                 stream_tool_calls: list[dict] = []
-                async for chunk in self._stream_model(msgs, model, tools=tools):
-                    if chunk.get("type") == "chunk":
-                        full_text += chunk.get("content", "")
-                        reasoning = chunk.get("reasoning", "")
-                        if reasoning:
-                            full_reasoning += reasoning
-                        yield self._make_event(type="thinking_delta",
-                                         data={"content": chunk.get("content", ""),
-                                               "reasoning": reasoning},
+                try:
+                    async for chunk in self._stream_model(msgs, model, tools=tools):
+                        if chunk.get("type") == "chunk":
+                            full_text += chunk.get("content", "")
+                            reasoning = chunk.get("reasoning", "")
+                            if reasoning:
+                                full_reasoning += reasoning
+                            yield self._make_event(type="thinking_delta",
+                                             data={"content": chunk.get("content", ""),
+                                                   "reasoning": reasoning},
+                                             turn=turn, session_id=session_id)
+                        elif chunk.get("type") == "tool_call":
+                            tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
+                                  "params": {}}
+                            try:
+                                tc["params"] = json.loads(chunk.get("arguments", "{}"))
+                            except Exception:
+                                tc["params"] = {"raw": chunk.get("arguments", "")}
+                            stream_tool_calls.append(tc)
+                        elif chunk.get("type") == "usage":
+                            stream_usage = {
+                                "prompt_tokens": chunk.get("prompt_tokens", 0),
+                                "completion_tokens": chunk.get("completion_tokens", 0),
+                                "total_tokens": chunk.get("total_tokens", 0),
+                            }
+                        elif chunk.get("type") == "error":
+                            yield self._make_event(type="error",
+                                             data={"code": chunk.get("code", 0),
+                                                   "detail": chunk.get("detail", "")},
+                                             turn=turn, session_id=session_id)
+                            resp = {"content": "", "tool_calls": []}
+                            break
+                    else:
+                        resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
+                except Exception as exc:
+                    # Streaming failed, try fallback with sync call
+                    fallback_model = self._resolve_fallback(model, exc)
+                    if fallback_model:
+                        yield self._make_event(type="model_call_start",
+                                         data={"model": fallback_model, "turn": turn,
+                                               "fallback_from": model},
                                          turn=turn, session_id=session_id)
-                    elif chunk.get("type") == "tool_call":
-                        tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
-                              "params": {}}
-                        try:
-                            tc["params"] = json.loads(chunk.get("arguments", "{}"))
-                        except Exception:
-                            tc["params"] = {"raw": chunk.get("arguments", "")}
-                        stream_tool_calls.append(tc)
-                        # Don't yield here — yield after _pars_tool_calls (avoid duplicate)
-                    elif chunk.get("type") == "usage":
-                        stream_usage = {
-                            "prompt_tokens": chunk.get("prompt_tokens", 0),
-                            "completion_tokens": chunk.get("completion_tokens", 0),
-                            "total_tokens": chunk.get("total_tokens", 0),
-                        }
-                    elif chunk.get("type") == "error":
-                        yield self._make_event(type="error",
-                                         data={"code": chunk.get("code", 0),
-                                               "detail": chunk.get("detail", "")},
-                                         turn=turn, session_id=session_id)
-                        resp = {"content": "", "tool_calls": []}
-                        break
-                else:
-                    resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
+                        resp = await self._call_model(msgs, fallback_model, tools=tools)
+                        model = fallback_model
+                        state["current_model"] = fallback_model
+                    else:
+                        raise
             else:
                 # Sync fallback
-                resp = await self._call_model(msgs, model, tools=tools)
+                try:
+                    resp = await self._call_model(msgs, model, tools=tools)
+                except Exception as exc:
+                    fallback_model = self._resolve_fallback(model, exc)
+                    if fallback_model:
+                        yield self._make_event(type="model_call_start",
+                                         data={"model": fallback_model, "turn": turn,
+                                               "fallback_from": model},
+                                         turn=turn, session_id=session_id)
+                        resp = await self._call_model(msgs, fallback_model, tools=tools)
+                        model = fallback_model
+                        state["current_model"] = fallback_model
+                    else:
+                        raise
                 stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
             yield self._make_event(type="model_call_end",
