@@ -51,7 +51,7 @@ async def execute(text: str) -> dict:
 | `name` | 工具名，LLM 通过此名调用 | 是 |
 | `description` | 一句话描述，LLM 据此判断何时使用 | 是 |
 | `parameters` | JSON Schema 格式的参数定义 | 否 |
-| `activation` | `kernel` / `discoverable` / `passive` | 否（默认 `discoverable`） |
+| `activation` | `kernel` / `discoverable` | 否（默认 `discoverable`） |
 | `execution.sandbox` | 沙箱模式，当前仅 `inherit` | 否 |
 | `execution.timeout` | 超时时间，如 `30s` | 否 |
 

@@ -5,7 +5,7 @@ prompt: |
 
   1. Clear, actionable prompt template
   2. Appropriate recommended tool list
-  3. Suitable activation mode (kernel/discoverable/passive)
+  3. Suitable activation mode (kernel/discoverable)
 
   Validate YAML format before writing.
   Target: skills/<skill_name>.yaml

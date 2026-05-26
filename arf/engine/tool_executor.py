@@ -5,16 +5,23 @@ from arf.core.results import ToolResult
 
 
 class ConcurrentToolExecutor:
-    def __init__(self, tool_resolver: ToolResolver) -> None:
+    def __init__(
+        self,
+        tool_resolver: ToolResolver,
+        strategy: str = "parallel",
+        max_concurrency: int = 5,
+    ) -> None:
         self._resolver = tool_resolver
+        self._strategy = strategy
+        self._max_concurrency = max_concurrency
 
     async def execute(
         self,
         tool_calls: list[dict],
-        strategy: str = "parallel",
-        max_concurrency: int = 5,
         agent_mode: str = "",
     ) -> dict[str, ToolResult]:
+        strategy = self._strategy
+        max_concurrency = self._max_concurrency
         if strategy == "sequential":
             results: dict[str, ToolResult] = {}
             for tc in tool_calls:

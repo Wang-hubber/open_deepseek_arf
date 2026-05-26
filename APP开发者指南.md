@@ -677,7 +677,7 @@ async def execute(steps: int = 1) -> dict:
 
 - 文件系统是真相源：放好文件，FileWatcher 自动检测，下一轮对话即可用
 - 错误返回推荐 `{"error": "..."}` 格式，非强制
-- `activation: kernel` = 始终可用；`discoverable` = 按需加载；`passive` = 需显式激活
+- `activation: kernel` = 始终可用；`discoverable` = 按需加载
 
 > 深入阅读：[`docs/app/tools.md`](docs/app/tools.md)
 

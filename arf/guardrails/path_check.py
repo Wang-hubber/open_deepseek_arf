@@ -53,13 +53,22 @@ class PathCheckToolGuard:
     6. Resolved path escapes workspace (PathSandbox containment)
     """
 
-    def __init__(self, workspace_root: str = ".", quota: ResourceQuota | None = None) -> None:
-        self._sandbox = PathSandbox(workspace_root)
+    def __init__(
+        self,
+        workspace_root: str = ".",
+        quota: ResourceQuota | None = None,
+        writable_dirs: list[str] | None = None,
+        allow_escape: bool = False,
+    ) -> None:
+        self._sandbox = PathSandbox(workspace_root, writable_dirs=writable_dirs)
         self._quota = quota
+        self._allow_escape = allow_escape
 
     # ── public API ──
 
     async def check(self, tool_name: str, params: dict) -> GuardResult:
+        if self._allow_escape:
+            return GuardResult(allowed=True)
         if self._quota:
             self._quota.reset()
 

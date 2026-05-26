@@ -6,7 +6,8 @@ import yaml
 from arf.core.config_base import (
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
-    GuardrailsConfig, ErrorConfig, HumanLoopConfig, ToolRetrievalConfig,
+    PipelineSection,
+    GuardrailsConfig, ErrorConfig, HumanLoopConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
 )
 
@@ -23,6 +24,8 @@ class AdvancedConfig(BaseModel):
     errors: ErrorConfig | None = None
     human_loop: HumanLoopConfig | None = None
     tool_retrieval: ToolRetrievalConfig | None = None
+    concurrency: ConcurrencyConfig | None = None
+    sandbox: SandboxConfig | None = None
     reload: ReloadConfig | None = None
 
     @classmethod
@@ -41,9 +44,12 @@ class AdvancedConfig(BaseModel):
 
 class SystemPromptConfig(BaseModel):
     """System prompt template with critical rules.
-    Supports {{PLACEHOLDERS}} filled by engine at runtime."""
+    Supports {{PLACEHOLDERS}} filled by engine at runtime.
+    When pipeline is configured, sections are assembled in priority order;
+    otherwise falls back to simple placeholder replacement."""
     template: str = ""
     critical_rules: str = ""
+    pipeline: list[PipelineSection] = Field(default_factory=list)
 
 
 class AgentConfig(BaseModel):

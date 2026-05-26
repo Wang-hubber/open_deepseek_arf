@@ -124,8 +124,11 @@ if not sp.can_execute(tool_name, completed):
 ### 2.5 配置
 
 ```yaml
-# 并行度
-# （当前无显式配置项，max_concurrency=5 硬编码在 ConcurrentToolExecutor 中）
+# 并行度（可通过 AdvancedConfig.concurrency 配置）
+advanced:
+  concurrency:
+    strategy: parallel         # parallel | sequential
+    max_concurrency: 5
 
 # Pipeline 在 Skill YAML 中声明
 skills:
@@ -141,7 +144,7 @@ skills:
 
 - **无跨 Agent 并发**：单 Agent 循环内，多 Agent 协作（DAG 分析/调度）尚未实现
 - **无 Worktree 隔离**：并发任务共享文件系统，存在竞态风险
-- **并发度不可配**：`max_concurrency=5` 硬编码
+- **并发度可配**：通过 `AdvancedConfig.concurrency`（`ConcurrencyConfig`）配置，详见 `advanced` 配置段
 - **SequentialScheduler**（`arf/concurrency/sequential.py`）已定义但未在任何地方使用
 
 ---

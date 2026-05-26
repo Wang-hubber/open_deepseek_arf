@@ -23,7 +23,7 @@ activation: kernel
 | `name` | 技能名 | 是 |
 | `description` | 一句话描述，LLM 据此判断何时加载 | 是 |
 | `tools` | 此技能包含的工具名列表 | 否 |
-| `activation` | `kernel` / `discoverable` / `passive` | 否（默认 `discoverable`） |
+| `activation` | `kernel` / `discoverable` | 否（默认 `discoverable`） |
 | `pipeline` | 工具执行依赖声明（见下文） | 否 |
 | `prompt` | 加载此技能时注入 system prompt 的提示词 | 否 |
 

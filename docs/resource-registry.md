@@ -39,7 +39,7 @@ ARF 将资源（工具/技能/模型）的注册与发现视为操作系统中�
 | `.service` 单元文件声明服务 | `tool.yaml` / `skill.yaml` / `model.yaml` 声明资源 |
 | `systemctl daemon-reload` 重新扫描 | `reload_dynamic()` 清空 dynamic 缓存 |
 | `systemctl list-units` 列出已加载服务 | `generate_config()` dump 全部资源 |
-| `systemctl enable/disable` 控制激活状态 | `activation: kernel / discoverable / passive` |
+| `systemctl enable/disable` 控制激活状态 | `activation: kernel / discoverable` |
 | Type=oneshot/simple/notify 控制启动行为 | `backend: function / subprocess` 控制执行方式 |
 
 **launchd**（macOS，2005）：与 systemd 同代诞生，同样使用声明式 plist 文件（`~/Library/LaunchAgents/`、`/Library/LaunchDaemons/`），同样支持按需启动（`KeepAlive`、`RunAtLoad`）、资源限制和依赖声明。
@@ -147,7 +147,7 @@ class _FrozenDict(dict):
     # __delitem__ / pop / popitem / clear 同受冻结约束
 ```
 
-冻结后的内核缓存拒绝任何修改。动态资源（`activation: discoverable` / `passive`）对标 systemd 的用户单元（`systemctl --user`），可随时刷新：
+冻结后的内核缓存拒绝任何修改。动态资源（`activation: discoverable`）对标 systemd 的用户单元（`systemctl --user`），可随时刷新：
 
 | 触发方式 | OS 对标 | 生效时机 |
 |----------|---------|---------|

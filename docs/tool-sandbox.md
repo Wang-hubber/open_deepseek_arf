@@ -213,7 +213,7 @@ advanced:
     timeout: 60s
 ```
 
-**事实校验**：`PermissionsConfig` 通过 `base.py` → `ToolPermissionChecker` 完整接入；`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）已在配置模型中定义，但未接入任何 guard 或引擎逻辑。
+**事实校验**：`PermissionsConfig` 通过 `base.py` → `ToolPermissionChecker` 完整接入；`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）通过 `AdvancedConfig.sandbox` → `PathCheckToolGuard` 完整接入。
 
 ---
 

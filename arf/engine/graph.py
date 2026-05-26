@@ -568,9 +568,14 @@ class GraphEngine:
             tools = await self._resolve_tools_for_agent(state, active)
 
             # 4. Build messages & call model
-            msgs = [{"role": "system", "content": active["system_prompt"]}]
-            if state.get("context_summary"):
-                msgs[0]["content"] += f"\n\n## Memory\n{state['context_summary']}"
+            system_prompt = active["system_prompt"]
+            summary = state.get("context_summary", "")
+            if summary:
+                if "{{MEMORY}}" in system_prompt:
+                    system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                else:
+                    system_prompt += f"\n\n## Memory\n{summary}"
+            msgs = [{"role": "system", "content": system_prompt}]
             msgs.extend(state.get("messages", []))
 
             if self.hook_runner:
@@ -913,10 +918,14 @@ class GraphEngine:
                 active = self._active_config(state)
                 tools = await self._resolve_tools_for_agent(state, active)
 
-            msgs = [{"role": "system", "content": active["system_prompt"]}]
+            system_prompt = active["system_prompt"]
             summary = state.get("context_summary", "")
             if summary:
-                msgs[0]["content"] += f"\n\n## Memory\n{summary}"
+                if "{{MEMORY}}" in system_prompt:
+                    system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                else:
+                    system_prompt += f"\n\n## Memory\n{summary}"
+            msgs = [{"role": "system", "content": system_prompt}]
             msgs.extend(state.get("messages", []))
 
             if self.hook_runner:

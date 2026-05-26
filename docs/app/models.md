@@ -24,7 +24,7 @@ models:
 | `api_type` | `openai` / `anthropic` / `custom`，默认 `openai` | 否 |
 | `context_window` | 模型上下文窗口 token 数上限，用于压缩阈值计算 | 是 |
 | `kwargs` | 传递给 API 的额外参数（temperature、reasoning_effort 等） | 否 |
-| `activation` | `kernel` / `discoverable` / `passive`，默认 `discoverable` | 否 |
+| `activation` | `kernel` / `discoverable`，默认 `discoverable` | 否 |
 
 ---
 
@@ -104,7 +104,6 @@ models:
 |----|------|
 | `kernel` | 框架内置模型，BaseAgent 初始化时加载，之后冻结不可变 |
 | `discoverable` | 用户配置的模型，FileWatcher 检测到文件变更后自动热重载 |
-| `passive` | 已注册但不主动提供给 LLM，需显式加载 |
 
 ---
 

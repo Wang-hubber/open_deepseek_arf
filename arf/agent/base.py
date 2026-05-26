@@ -26,18 +26,22 @@ from arf.errors.transaction import SnapshotRollback
 def _build_system_prompt(config: AgentConfig) -> str:
     """Build system prompt from AgentConfig.system_prompt template.
 
-    Supports placeholders filled by engine at runtime:
+    Supports placeholders filled at init or runtime:
       {{AGENT_NAME}}      → config.name
       {{AGENT_ROLE}}      → config.role
       {{AGENT_TASK}}      → config.task
       {{CRITICAL_RULES}}  → config.system_prompt.critical_rules
       {{INVENTORY}}       → kernel tools + skills (progressive disclosure)
-    Falls back to auto-generated prompt if no template provided.
+      {{MEMORY}}          → filled by engine at runtime (context_summary)
+      {{WORKSPACE}}       → filled by engine at runtime
+      {{LANGUAGE}}        → filled by engine at runtime
+
+    When system_prompt.pipeline is configured, sections are assembled in
+    priority order. Otherwise falls back to simple placeholder replacement.
     """
     sp = config.system_prompt
     template = sp.template.strip()
     if not template:
-        # Fallback for configs without explicit system_prompt
         lines = [f"You are {config.name}, an AI assistant."]
         if config.role:
             lines.append(f"Role: {config.role}")
@@ -47,10 +51,44 @@ def _build_system_prompt(config: AgentConfig) -> str:
             lines.append(f"\n## Capabilities\n{config.description}")
         template = "\n".join(lines) + "\n\n"
 
-    # Build inventory: kernel tools + discoverable skills (name + one-line desc)
+    # Build section contents
+    sections = _build_prompt_sections(config)
+
+    prompt = template
+    # Always replace agent identity (not pipeline-controlled)
+    prompt = prompt.replace("{{AGENT_NAME}}", config.name)
+    prompt = prompt.replace("{{AGENT_ROLE}}", config.role or "")
+    prompt = prompt.replace("{{AGENT_TASK}}", config.task or "")
+
+    # Static sections — always replace (even empty), avoid raw placeholders
+    _static_sections = {"critical_rules", "inventory", "language"}
+    pipeline = sp.pipeline
+    if pipeline:
+        # Pipeline mode: sort by priority, inject sections in order
+        for ps in sorted(pipeline, key=lambda s: s.priority):
+            content = sections.get(ps.section, "")
+            placeholder = "{{" + ps.section.upper() + "}}"
+            if content or ps.section in _static_sections:
+                prompt = prompt.replace(placeholder, content)
+    else:
+        # Legacy mode: simple replace (backward compatible)
+        prompt = prompt.replace("{{CRITICAL_RULES}}", sp.critical_rules or "")
+        prompt = prompt.replace("{{INVENTORY}}", sections.get("inventory", ""))
+
+    return prompt
+
+
+def _build_prompt_sections(config: AgentConfig) -> dict[str, str]:
+    """Build content for each prompt section.
+
+    Static sections are filled now; dynamic sections (memory, workspace,
+    language) return empty string — the engine fills them at runtime.
+    """
+    sp = config.system_prompt
+
+    # inventory: kernel tools + discoverable skills
     kernel_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "kernel"]
     skills = config.skills
-
     inv_lines = []
     if kernel_tools:
         inv_lines.append("## Available Tools\n")
@@ -61,17 +99,15 @@ def _build_system_prompt(config: AgentConfig) -> str:
         inv_lines.append("Skills are loaded on demand. Read a skill's full instructions via `file_reader`:\n")
         for s in skills:
             inv_lines.append(f"- `{s.name}`: {s.description or '(no description)'}  → read `skills/{s.name}.yaml`")
-
     inventory = "\n".join(inv_lines) if inv_lines else ""
 
-    prompt = template
-    prompt = prompt.replace("{{AGENT_NAME}}", config.name)
-    prompt = prompt.replace("{{AGENT_ROLE}}", config.role or "")
-    prompt = prompt.replace("{{AGENT_TASK}}", config.task or "")
-    prompt = prompt.replace("{{CRITICAL_RULES}}", sp.critical_rules or "")
-    prompt = prompt.replace("{{INVENTORY}}", inventory)
-
-    return prompt
+    return {
+        "critical_rules": sp.critical_rules or "",
+        "inventory": inventory,
+        "memory": "",       # filled by engine at runtime
+        "workspace": "",    # filled by engine at runtime
+        "language": "",     # filled by engine at runtime
+    }
 
 
 class BaseAgent:
@@ -258,7 +294,12 @@ class BaseAgent:
         if gr_cfg and gr_cfg.tool_params == "none":
             tool_guard = None
         else:
-            tool_guard = PathCheckToolGuard(workspace_root=_workspace_root)  # default, only implemented
+            sandbox_cfg = adv.sandbox if adv else None
+            tool_guard = PathCheckToolGuard(
+                workspace_root=_workspace_root,
+                writable_dirs=sandbox_cfg.writable_dirs if sandbox_cfg else None,
+                allow_escape=sandbox_cfg.allow_escape if sandbox_cfg else False,
+            )
         # Permissions config: deny → ask → allow pipeline
         perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else None
         permission_checker = ToolPermissionChecker(config=perm_cfg)
@@ -283,7 +324,12 @@ class BaseAgent:
         hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list))
 
         # 7. Tool executor
-        tool_executor = override_protocols.pop("tool_executor", ConcurrentToolExecutor(resource_resolver))
+        from arf.core.config_base import ConcurrencyConfig
+        cc_cfg = adv.concurrency if adv and adv.concurrency else ConcurrencyConfig()
+        tool_executor = override_protocols.pop(
+            "tool_executor",
+            ConcurrentToolExecutor(resource_resolver, strategy=cc_cfg.strategy, max_concurrency=cc_cfg.max_concurrency),
+        )
 
         # 8. Loop strategy
         ls_name = (adv.loop_strategy if adv else "react") if adv else "react"

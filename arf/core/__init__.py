@@ -6,10 +6,11 @@ from arf.core.results import (
     ErrorAction, RollbackResult,
 )
 from arf.core.config_base import (
+    PipelineSection,
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, HumanLoopConfig,
-    StreamingConfig, SandboxConfig, ToolRetrievalConfig,
+    SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverRuleConfig, HandoverConfig, SupervisorConfig,
 )
 
@@ -17,9 +18,10 @@ __all__ = [
     "AgentEvent", "EventType", "AgentState", "TurnContext",
     "GuardResult", "ToolResult", "HookResult",
     "ApprovalRequest", "ApprovalResponse", "ErrorAction", "RollbackResult",
+    "PipelineSection",
     "ModelConfig", "SkillConfig", "ToolConfig", "HookDefinition",
     "RoutingConfig", "CompactionConfig", "MemoryConfig",
     "GuardrailsConfig", "ErrorConfig", "HumanLoopConfig",
-    "StreamingConfig", "SandboxConfig", "ToolRetrievalConfig",
+    "SandboxConfig", "ToolRetrievalConfig",
     "ReloadConfig", "HandoverRuleConfig", "HandoverConfig", "SupervisorConfig",
 ]

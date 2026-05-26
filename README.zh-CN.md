@@ -265,20 +265,6 @@ cd app/web && npm install && npm run dev
 
 > ~~**1-4 均已修复**~~ — agent.yaml 死引用、invoke/astream 事件统一、双 Agent 调度器接入均已完成。
 
-### 设计 vs 代码不一致 (2026-05-26 事实校验)
-
-> 以下为设计文档与当前代码实现的不一致项，需团队决策后处理。
-
-- [ ] **System prompt 模板占位符 `{{MEMORY}}`/`{{WORKSPACE}}`/`{{LANGUAGE}}` 未实现** — 设计文档 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.template 示例中定义了这些占位符，但 `arf/agent/base.py` `_build_system_prompt()` 仅支持 `{{AGENT_NAME}}`、`{{AGENT_ROLE}}`、`{{AGENT_TASK}}`、`{{CRITICAL_RULES}}`、`{{INVENTORY}}`。记忆/压缩上下文通过 `context_summary` 注入 messages[0] 前缀而非模板替换。建议：框架层实现指定位置的摘要替换（初步默认实现为在系统提示词之后）。
-
-- [ ] **System prompt `pipeline` 分段组装未实现** — 设计文档定义了基于 priority 的分段组装管道（workspace → memory → critical_rules → inventory → language），但代码 `_build_system_prompt()` 使用简单字符串 replace + `{{INVENTORY}}` 拼接。`SystemPromptConfig` 中没有 `pipeline` 字段。涉及：设计 `docs/superpowers/specs/2026-05-24-arf-framework-design.md` system_prompt.pipeline；代码 `arf/agent/base.py:26-74`。
-
-- [ ] **`StreamingConfig` / `SandboxConfig` 死代码** — 两个配置模型在 `arf/core/config_base.py` 中定义，但未包含在 `AgentConfig` 或 `AdvancedConfig` 中，运行时无法配置。涉及：代码 `arf/core/config_base.py:101-108`（StreamingConfig, SandboxConfig）；`arf/agent/config.py`（AdvancedConfig 缺少对应字段）。设计文档 `2026-05-24-arf-framework-design.md` AgentConfig 伪代码中列出了 `streaming` 和 `sandbox` 字段。
-
-- [ ] **`passive` activation 语义未实现** — `ModelConfig`/`SkillConfig`/`ToolConfig` 均定义了 `activation: "passive"` 字面量，但 Provider 代码（如 `arf/resources/providers/tool_provider.py:105-113`）将 `passive` 与 `discoverable` 同等处理（均进入 dynamic 缓存）。文档描述的"需显式激活"行为未实现。建议：实现 passive 差异逻辑，或从类型中移除。
-
-- [ ] **`AdvancedConfig` 缺少 `concurrency` 配置字段** — 工具并发度硬编码 `max_concurrency=5`（`arf/engine/tool_executor.py`），无配置入口。设计文档列出的 `AgentConfig` 字段也未包含 concurrency。建议：在 `AdvancedConfig` 增加 concurrency 配置段。
-
 ### 演进方向
 
 参见各模块设计文档第三章：

@@ -3,6 +3,13 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 
+class PipelineSection(BaseModel):
+    """A named section in the system prompt pipeline, ordered by priority."""
+    priority: int
+    section: str  # workspace | memory | critical_rules | inventory | language
+    description: str = ""
+
+
 class ModelConfig(BaseModel):
     type: Literal["quick", "deep"]
     api_type: Literal["openai", "anthropic", "custom"] = "openai"
@@ -11,7 +18,7 @@ class ModelConfig(BaseModel):
     api_key_env: str = "DEEPSEEK_API_KEY"
     context_window: int = 131_072  # max tokens for this model
     kwargs: dict = Field(default_factory=dict)
-    activation: Literal["kernel", "discoverable", "passive"] = "discoverable"
+    activation: Literal["kernel", "discoverable"] = "discoverable"
 
 
 class PipelineStep(BaseModel):
@@ -24,7 +31,7 @@ class SkillConfig(BaseModel):
     description: str
     prompt: str = ""
     tools: list[str] = Field(default_factory=list)
-    activation: Literal["kernel", "discoverable", "passive"] = "discoverable"
+    activation: Literal["kernel", "discoverable"] = "discoverable"
     pipeline: list[PipelineStep] = Field(default_factory=list)
 
 
@@ -32,7 +39,7 @@ class ToolConfig(BaseModel):
     name: str
     description: str = ""          # optional for sub-agent tool references
     parameters: dict = Field(default_factory=dict)
-    activation: Literal["kernel", "discoverable", "passive"] = "kernel"
+    activation: Literal["kernel", "discoverable"] = "kernel"
 
 
 class HookDefinition(BaseModel):
@@ -98,11 +105,6 @@ class HumanLoopConfig(BaseModel):
     timeout: str = "3600s"
 
 
-class StreamingConfig(BaseModel):
-    transport: Literal["sse", "websocket", "callback"] = "sse"
-    event_types: list[str] = Field(default_factory=lambda: ["all"])
-
-
 class SandboxConfig(BaseModel):
     allow_escape: bool = False
     writable_dirs: list[str] = Field(default_factory=list)
@@ -111,6 +113,11 @@ class SandboxConfig(BaseModel):
 class ToolRetrievalConfig(BaseModel):
     enabled: bool = False
     top_k: int = 10
+
+
+class ConcurrencyConfig(BaseModel):
+    strategy: Literal["parallel", "sequential"] = "parallel"
+    max_concurrency: int = Field(default=5, ge=1)
 
 
 class ReloadConfig(BaseModel):

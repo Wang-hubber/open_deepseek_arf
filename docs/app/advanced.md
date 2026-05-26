@@ -106,6 +106,30 @@ advanced:
 - `tool_params: path_check` — 每次工具调用前阻断 `..` 路径穿越、绝对路径、工作区逃逸
 - `output: regex_clean` — 输出过滤，API key / 手机号替换为 `[REDACTED]`
 
+### 路径沙箱
+
+```yaml
+advanced:
+  sandbox:
+    allow_escape: false           # true = 跳过所有路径检查（调试用）
+    writable_dirs: []             # 工作区外的额外可写目录白名单
+```
+
+`PathCheckToolGuard` 根据此配置控制路径检查行为。`allow_escape: false` 为默认安全策略。
+
+---
+
+## 工具并发
+
+```yaml
+advanced:
+  concurrency:
+    strategy: parallel            # parallel | sequential
+    max_concurrency: 5            # 最大并发工具调用数
+```
+
+控制单轮内多工具调用的执行方式。`strategy: sequential` 时工具逐个执行；`max_concurrency` 限制并行上限。
+
 ---
 
 ## 资源热加载
@@ -150,6 +174,14 @@ advanced:
       deny: []
       ask: [file_writer]
       allow: [file_reader, web_search, web_fetch]
+
+  sandbox:
+    allow_escape: false
+    writable_dirs: []
+
+  concurrency:
+    strategy: parallel
+    max_concurrency: 5
 
   reload:
     watch: true
