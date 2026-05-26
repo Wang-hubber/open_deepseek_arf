@@ -48,6 +48,7 @@ class FileStateStore:
     async def put(self, session_id: str, state: AgentState) -> None:
         import copy
         path = self._path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         data = copy.deepcopy(dict(state))
         # Don't persist ephemeral tool_results across restarts
