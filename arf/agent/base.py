@@ -18,6 +18,7 @@ from arf.guardrails.runner import DefaultGuardRunner
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
+from arf.guardrails.permissions import ToolPermissionChecker
 from arf.errors.retry import DefaultErrorPolicy
 from arf.errors.transaction import SnapshotRollback
 
@@ -258,10 +259,14 @@ class BaseAgent:
             tool_guard = None
         else:
             tool_guard = PathCheckToolGuard(workspace_root=_workspace_root)  # default, only implemented
+        # Permissions config: deny → ask → allow pipeline
+        perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else None
+        permission_checker = ToolPermissionChecker(config=perm_cfg)
         guard_runner = override_protocols.pop("guard_runner", DefaultGuardRunner(
             input_guard=input_guard,
             output_guard=output_guard,
             tool_guard=tool_guard,
+            permission_checker=permission_checker,
         ))
 
         # 5. Error + Transaction
@@ -337,6 +342,7 @@ class BaseAgent:
             compaction=compaction,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
+            approval_enabled=(adv.human_loop is not None and adv.human_loop.approval_points != "always_auto") if adv else False,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions

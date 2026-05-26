@@ -68,10 +68,19 @@ class MemoryConfig(BaseModel):
     top_k: int = 5
 
 
+class PermissionsConfig(BaseModel):
+    """Tool permission lists — deny / ask / allow, plus custom deny patterns."""
+    deny: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
+    deny_patterns: list[str] = Field(default_factory=list)
+
+
 class GuardrailsConfig(BaseModel):
     input: Literal["none", "regex_block", "llm_classifier"] = "none"
     output: Literal["none", "regex_clean", "llm_classifier"] = "regex_clean"
     tool_params: Literal["none", "path_check", "command_check"] = "path_check"
+    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
 
 
 class ErrorConfig(BaseModel):

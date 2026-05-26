@@ -117,6 +117,29 @@ advanced:
   # 系统后台模型 — 记忆提取/检索、路由分类、上下文压缩共用
   # 应选廉价快速模型 (flash, thinking disabled, low temp)
   system_model: quick
+  guardrails:
+    permissions:
+      allow:
+        - file_reader
+        - file_writer
+        - file_deleter
+        - web_search
+        - web_fetch
+        - web_fetch_playwright
+        - python_exec
+        - memory_store
+        - resource_loader
+        - resource_registrar
+        - resource_scaffold
+        - undo
+        - model_switch
+        - handoff_to_sys
+        - text_to_upper
+      deny: []
+      deny_patterns:
+        - "rm -rf"
+        - "sudo"
+        - "chmod 777"
   memory:
     store: file
     workspace: ./memory

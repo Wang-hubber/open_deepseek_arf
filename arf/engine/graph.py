@@ -38,8 +38,10 @@ class GraphEngine:
         cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
+        approval_enabled: bool = False,
     ):
         self.loop_strategy = loop_strategy
+        self.approval_enabled = approval_enabled
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.tool_resolver = tool_resolver
@@ -428,7 +430,9 @@ class GraphEngine:
                     if perm == "deny":
                         denied_calls.append((name, "denied by permission config"))
                         continue
-                    # 'ask' → would yield to approval channel (future)
+                    if perm == "ask" and not self.approval_enabled:
+                        denied_calls.append((name, "requires approval (approval channel not enabled)"))
+                        continue
                     valid_calls.append(tc)
             else:
                 valid_calls = tool_calls
@@ -723,6 +727,9 @@ class GraphEngine:
                     perm = self.guard_runner.check_tool_permission(name, params)
                     if perm == "deny":
                         denied_calls.append((name, "denied by permission config"))
+                        continue
+                    if perm == "ask" and not self.approval_enabled:
+                        denied_calls.append((name, "requires approval (approval channel not enabled)"))
                         continue
                     valid_calls.append(tc)
             else:
