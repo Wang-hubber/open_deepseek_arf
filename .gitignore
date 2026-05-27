@@ -27,8 +27,7 @@ data/
 
 # Tests
 
-# GitHub Actions
-.github/
+# GitHub Actions (used for CI)
 
 # Vite cache
 .vite/
