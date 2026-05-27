@@ -1447,7 +1447,7 @@ arf/
 ├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
 ├── streaming/      # SseStream — Server-Sent Events 传输
 ├── communication/  # InMemoryAgentBus、PeerAgent — 多 Agent 通信
-├── errors/         # DefaultErrorPolicy、SnapshotRollback
+├── errors/         # DefaultErrorPolicy
 ├── concurrency/    # SequentialScheduler
 ├── evaluation/     # EvalRunner、Metrics
 ├── testing/        # InMemory* test doubles

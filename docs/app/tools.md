@@ -103,6 +103,29 @@ async def execute(path: str, content: str) -> dict:
 
 使用 `async def`。同步操作（文件 I/O、subprocess）直接写，异步操作（HTTP 请求、数据库）用 `await`。框架通过 `FunctionBackend` 自动检测 `__await__` 并处理。
 
+### Rollback — 数据修改工具的回滚
+
+涉及文件写入、资源创建等数据修改的工具，**应该**在 `function.py` 中同时导出 `rollback` 函数。`rollback` 签名与 `execute` 完全一致，框架在 `execute` 抛出异常后自动调用。
+
+```python
+async def execute(path: str, content: str) -> dict:
+    p = WORKSPACE / path
+    p.write_text(content, encoding="utf-8")
+    return {"ok": True, "path": str(p)}
+
+async def rollback(path: str, content: str) -> dict:
+    """撤销文件写入 — execute 失败时框架自动调用"""
+    p = WORKSPACE / path
+    p.unlink(missing_ok=True)
+    return {"ok": True, "action": "deleted", "path": str(p)}
+```
+
+**关键约定**：
+- `rollback` 与 `execute` 签名相同，接收相同的参数
+- 返回值 `{"ok": True, "action": "..."}` 或 `{"ok": False, "error": "..."}`
+- 是非强制规范 — 有则回滚，无则跳过
+- 只读工具（`file_reader`、`web_search` 等）无需提供
+
 ---
 
 ## 现有工具参考

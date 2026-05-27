@@ -52,7 +52,7 @@
 ### 待改进
 
 - **代码重复**：`engine/graph.py` 中 `invoke()` 和 `astream()` 约 700 行近乎重复 —— 当前最大工程质量问题
-- **部分模块是骨架**：SnapshotRollback 不真正恢复状态、EvalRunner 不收集 trace、PromptBasedPlanner 返回空计划
+- **部分模块是骨架**：EvalRunner 不收集 trace、PromptBasedPlanner 返回空计划（已修复：SnapshotRollback → FunctionBackend rollback）
 - **全局状态**：`registry.py` 模块级单例，`server.py` 直接引用全局 `_agent`
 
 ---

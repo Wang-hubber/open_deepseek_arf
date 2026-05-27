@@ -497,4 +497,4 @@ Turn N+2: LLM 重试 file_writer（更合适的参数）→ 审批通过 → 执
 
 **并发度动态调整**：根据 API 速率限制和系统负载动态调整 `max_concurrency`。类似 OS 的 CPU 频率调节（DVFS）——负载低时降低并发节省资源，负载高时提高并发。
 
-**事务性文件操作**：对标事务内存。工具调用的文件修改进入事务——写操作先在临时区进行，所有工具成功后原子提交（rename），任何失败则回滚。类似 `SnapshotRollback`（`arf/errors/transaction.py`）已实现但仅用于状态回滚，不涉及文件。
+**事务性文件操作**：对标事务内存。工具调用的文件修改进入事务——写操作先在临时区进行，所有工具成功后原子提交（rename），任何失败则回滚。`FunctionBackend` 在当前 turn 内已支持单 tool 失败时的 rollback 回调，但跨 tool 的原子事务尚未实现。

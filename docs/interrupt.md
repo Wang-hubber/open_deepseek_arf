@@ -31,6 +31,7 @@ OS 用检查点保存进程状态快照（CRIU、BLCR）。ARF 的 `RoundManager
 | 硬件中断 → 保存现场 → ISR → 恢复 | `cancel_event.set()` → break → `FileStateStore` 持久化 → 下次对话恢复 |
 | 信号（SIGINT） | `POST /api/chat/cancel`，`AbortController.abort()` |
 | 检查点（CRIU） | `RoundManager.begin_round()` → `undo(steps)` |
+| 守护进程 / 看门狗 | Tool `rollback()` — execute 失败时 Framework 自动调用 rollback 清理副作用 |
 
 ---
 
@@ -170,6 +171,51 @@ Round 2: hello.txt(v3)  ← 改坏了
 - API 端点返回 `{"status": "insufficient_checkpoints", "available": N, "requested": steps}`
 - 对话内 `undo` 工具返回 `{"ok": false, "error": "Only N checkpoints available"}`
 - 不会部分回滚，不会损坏现有状态
+
+### 3.5 Tool 级回滚 — FunctionBackend 内联回滚
+
+RoundManager 的 undo 是**跨轮次**的状态回退。ARF 也提供**单 Tool 执行失败时**的副作用清理机制。
+
+**机制**：涉及数据写入的 Tool 在 `function.py` 中可选导出 `rollback()` 函数。`FunctionBackend.execute_with_fn` 在 `execute()` 抛出异常后自动调用 `rollback()`，并将结果打包进 `ToolResult`。
+
+```python
+# tools/my_writer/function.py
+
+async def execute(path: str, content: str) -> dict:
+    p = WORKSPACE / path
+    p.write_text(content)
+    return {"ok": True, "path": str(p)}
+
+async def rollback(path: str, content: str) -> dict:
+    """execute 失败时自动调用，清理副作用"""
+    p = WORKSPACE / path
+    p.unlink(missing_ok=True)
+    return {"ok": True, "action": "deleted", "path": str(p)}
+```
+
+**执行流程**：
+```
+execute() 抛异常
+    │
+    ├─ ToolProvider 提供了 rollback_fn？
+    │   ├─ 是 → 调用 rollback_fn(**params)
+    │   │   ├─ 成功 → ToolResult(rolled_back=True, rollback_error=None)
+    │   │   └─ 失败 → ToolResult(rolled_back=True, rollback_error="...")
+    │   └─ 否 → ToolResult(success=False, rolled_back=False)
+    │
+    ▼
+emit rollback_executed trace 事件（如有回滚发生）
+```
+
+**与 RoundManager undo 的对比**：
+
+| | RoundManager undo | FunctionBackend rollback |
+|---|---|---|
+| 粒度 | 用户交互轮次（Round） | 单次 Tool 执行 |
+| 触发方式 | 用户主动调用 / API | execute() 异常时自动 |
+| 回滚内容 | 状态 + 工作区文件 | Tool 自身副作用 |
+| 提供方 | 框架内置 | Tool 开发者可选提供 |
+| 非强制 | 否（框架保证） | 是（约定规范） |
 
 ---
 
