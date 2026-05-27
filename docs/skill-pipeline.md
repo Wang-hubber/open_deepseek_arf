@@ -376,6 +376,109 @@ resolved_list = await asyncio.gather(*tasks, return_exceptions=True)
 └─ 否 → 使用默认值
 ```
 
+### 2.8 工具调用闭环（Tool Call Closure）
+
+#### 问题
+
+LLM 的一次响应可能包含多个 `tool_calls`。引擎在执行前需要经过多层检查——Pipeline 依赖、路径沙箱、权限配置、人工审批。任何一个环节拒绝某个工具调用时，`state["messages"]` 中已经追加了该 assistant 消息（含 `tool_calls`），但没有对应的 `role: "tool"` 结果消息。
+
+这导致两个问题：
+
+1. **API 格式非法**：模型 API 要求每个 `tool_calls` 都有配对的 `tool` 消息。缺少配对时，下一轮 API 请求返回 `400 invalid_request_error`。
+2. **LLM 认知断裂**：LLM 不知道它的工具调用被拒绝了——对话历史里缺少反馈，它可能重复尝试同一个被阻断的操作。
+
+#### 解决方案
+
+`GraphEngine` 在 `invoke()` 和 `astream()` 双路径中，对被拒绝的工具调用注入 synthetic（合成）tool result：
+
+```python
+# arf/engine/graph.py — invoke 路径
+for tc in tool_calls:
+    name = tc.get("name", "")
+    matched = next((reason for dname, reason in denied_calls if dname == name), None)
+    if matched is None:
+        continue  # valid call, handled by normal execution
+    tc_id = tc.get("id", "")
+    # 注入合成结果，闭环该 tool_call
+    state["messages"].append({
+        "role": "tool",
+        "tool_call_id": tc_id,
+        "content": f"[Blocked] {matched}",  # 拒绝原因对 LLM 可见
+    })
+```
+
+被拒绝的常见原因及其 `[Blocked]` 消息：
+
+| 拒绝来源 | 消息 | 含义 |
+|----------|------|------|
+| Pipeline 依赖未满足 | `[Blocked] tool 'X' depends on 'Y'` | 前序步骤未完成 |
+| PathCheckToolGuard | `[Blocked] Path traversal blocked` | 路径穿越/绝对路径 |
+| ToolPermissionChecker | `[Blocked] denied by permission config` | 工具在 `deny` 列表 |
+| 审批超时 | `[Blocked] approval timed out` | 60s 内无人审批 |
+| 审批拒绝 | `[Blocked] denied by user` | 用户点击拒绝 |
+
+此外，`_close_tool_calls()` 方法在每次模型调用前做兜底扫描——如果存在未被上述逻辑覆盖的孤立 `tool_calls`（如异常退出导致的状态不完整），同样注入 `(tool result unavailable)` 占位结果。
+
+#### 与 Pipeline 的配合
+
+闭环注入和 Pipeline 依赖追踪**不冲突**，各自维护不同的状态维度：
+
+```
+        ┌─────────────────────────────────────────────┐
+        │          tool_calls 处理流程                  │
+        │                                              │
+        │  LLM 输出 [file_writer, resource_loader]     │
+        │         │                                    │
+        │         ├─ guard/approval 检查               │
+        │         │     │                              │
+        │         │     ├─ valid_calls (放行)          │
+        │         │     └─ denied_calls (拒绝)         │
+        │         │                                    │
+        │         ▼                                    │
+        │  ┌──────────────────┬──────────────────┐     │
+        │  │   messages 层    │   pipeline 层     │     │
+        │  │ (API 格式合法性)  │ (执行正确性)      │     │
+        │  ├──────────────────┼──────────────────┤     │
+        │  │ valid: tool call │ valid: 加入       │     │
+        │  │ + tool result    │ completed 列表    │     │
+        │  ├──────────────────┼──────────────────┤     │
+        │  │ denied: tool call│ denied: 不加入    │     │
+        │  │ + [Blocked] 注入 │ completed 列表    │     │
+        │  └──────────────────┴──────────────────┘     │
+        │                                              │
+        │  效果：                                       │
+        │  • API 不报 400（messages 始终配对）         │
+        │  • LLM 知道哪个工具被拒（[Blocked] 可见）     │
+        │  • 依赖工具被拒 → completed 中无记录          │
+        │    → 后续依赖检查继续阻断，防止跳步执行       │
+        └─────────────────────────────────────────────┘
+```
+
+示例流程：
+
+```
+Turn N:   LLM 调用 file_writer → 审批超时 denied
+          → messages 追加 assistant(tool_calls=[file_writer])
+          → messages 追加 tool([Blocked] approval timed out)
+          → completed 不变（仍为 []）
+
+Turn N+1: LLM 看到 [Blocked] 消息，知道 file_writer 失败
+          可能尝试 resource_loader
+          → can_execute(resource_loader, completed=[])
+          → file_writer ∉ completed → BLOCKED
+          → messages 追加 [Blocked] tool 'resource_loader' depends on 'file_writer'
+          → LLM 理解：需要先成功执行 file_writer
+
+Turn N+2: LLM 重试 file_writer（更合适的参数）→ 审批通过 → 执行成功
+          → messages 追加 tool(result) 
+          → completed = ["file_writer"]
+          → resource_loader 现在可以执行了
+```
+
+#### 配置
+
+无需额外配置。闭环逻辑在 `GraphEngine.invoke()` 和 `astream()` 中自动运行，覆盖所有拒绝路径。
+
 ---
 
 ## 3. 演进方向
