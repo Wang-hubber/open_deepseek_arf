@@ -1,5 +1,8 @@
 """SseStream — Server-Sent Events transport adapter."""
+import asyncio
 import json
+from contextlib import asynccontextmanager
+
 from arf.core.events import AgentEvent
 
 
@@ -13,14 +16,39 @@ class SseStream:
         for cb in self._listeners:
             await cb(data)
 
+    @asynccontextmanager
     async def listen(self):
-        import asyncio
+        """Context manager that yields an async queue of SSE messages.
+
+        Usage::
+
+            async with stream.listen() as queue:
+                async for msg in queue:
+                    yield msg
+
+        The callback is registered on enter and removed on exit, regardless
+        of how the block exits (break, return, exception, normal completion).
+        """
         q: asyncio.Queue = asyncio.Queue()
+
         async def _cb(data):
             await q.put(data)
+
         self._listeners.append(_cb)
         try:
-            while True:
-                yield await q.get()
+            yield _iter_queue(q)
         finally:
-            self._listeners.remove(_cb)
+            try:
+                self._listeners.remove(_cb)
+            except ValueError:
+                pass  # already removed
+
+
+def _iter_queue(q: asyncio.Queue):
+    """Async generator wrapping an asyncio.Queue for async for iteration."""
+
+    async def _gen():
+        while True:
+            yield await q.get()
+
+    return _gen()
