@@ -170,8 +170,6 @@ resolved_list = await asyncio.gather(*tasks, return_exceptions=True)
 
 Hook 间无依赖关系——一个 Hook 的退出码不影响其他 Hook 的启动（仅退出码非 0 时中断**该 Hook 自身**的后续命令）。`asyncio.gather` 的 `return_exceptions=True` 确保单个 Hook 异常不影响其他。
 
-**事实校验**：README 中"Hook 线程池并行"的说法不准确——Hook 使用的是 `asyncio.create_subprocess_shell` + `asyncio.gather` 协程并发，不是线程池。
-
 ### 2.4 Skill Pipeline — 在并行中插入顺序约束
 
 `arf/skills/pipeline.py`。当 Skill 声明了 `pipeline` 字段时，框架强制执行工具调用的依赖顺序——这是一个**硬保证**，不是建议：
