@@ -338,20 +338,17 @@ class RoundTransaction:
 
 ## 6. 迁移计划
 
-### 阶段 1：RoundManager 实现（本次）
-1. 新增 `arf/engine/round_manager.py` — `RoundTransaction` + `RoundManager`
-2. 更新 `GraphEngine.__init__` — 用 `RoundManager` 替换 5 个分散变量
-3. 更新 `BaseAgent.chat/astream` — `push_checkpoint` → `rounds.begin_round`
-4. 更新 `_execute_handoff` — 移除 checkpoint 栈切换，调用 `rounds.record_handoff`
-5. 新增 `undo_executed` 事件，在 `undo()` 中 emit
-6. 移除 `_agent_checkpoints`、`_agent_states` 等变量（agent 状态持久化走 `state_store`）
+### 阶段 1：RoundManager 实现 ✅ 已完成
+1. ✅ 新增 `arf/engine/round_manager.py` — `RoundTransaction` + `RoundManager`
+2. ✅ 更新 `GraphEngine.__init__` — 用 `RoundManager` 替换 5 个分散变量
+3. ✅ 更新 `BaseAgent.chat/astream` — `push_checkpoint` → `rounds.begin_round`
+4. ✅ 更新 `_execute_handoff` — 移除 checkpoint 栈切换，调用 `rounds.record_handoff`
+5. ✅ 新增 `undo_executed` 事件，在 `undo()` 中 emit
+6. ✅ 移除 `_agent_checkpoints`、`_agent_states` 等变量
+7. ✅ `AdvancedConfig.max_undo_depth` 配置入口
+8. ✅ 完整状态快照持久化（`memory/checkpoints/{round_num}/state.json`），重启后 undo 可用
 
-### 阶段 2：持久化（后续）
-1. `RoundTransaction` 序列化到 `memory/checkpoints/rounds.json`
-2. `RoundManager.__init__` 启动时加载已有 rounds
-3. 重启后 undo 可用
-
-### 阶段 3：Team 模式扩展（后续）
+### 阶段 2：Team 模式扩展（后续）
 1. `agent_trace` → 支持 fork/join 结构
 2. `parallel_groups` 字段
 3. undo 时恢复所有并行 agent 的状态到 fork 点
