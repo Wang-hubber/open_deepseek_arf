@@ -1,3 +1,4 @@
+"""DefaultErrorPolicy — tool and model retry with exponential backoff."""
 from arf.core.state import TurnContext
 from arf.core.results import ErrorAction, GuardResult
 
