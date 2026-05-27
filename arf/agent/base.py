@@ -115,6 +115,9 @@ class BaseAgent:
         adv = config.effective_advanced()
         ctx = app_context
 
+        # Absorb removed protocol keys to prevent leakage into **override_protocols
+        override_protocols.pop("transaction_ctx", None)
+
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
         default_state_dir = str(ctx.state_dir) if ctx else "./memory/state"
@@ -136,23 +139,7 @@ class BaseAgent:
         skill_provider = SkillProvider(skills_dir)
         model_provider = ModelProvider(models_dir)
 
-        # Merge filesystem models with agent.yaml overrides (filesystem is base).
-        # This gives init-phase code (adapters, system model, router) the full
-        # model list without depending on ResourceResolver's lazy merge-on-read.
-        fs_models = model_provider.list()
-        agent_models = {m.type: m for m in (config.models or [])}
-        merged_models: list = []
-        for fm in fs_models:
-            if fm.type in agent_models:
-                merged_models.append(
-                    fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
-                )
-            else:
-                merged_models.append(fm)
-        for t, am in agent_models.items():
-            if not any(m.type == t for m in merged_models):
-                merged_models.append(am)
-        config.models = merged_models
+        self._merge_models(config, model_provider)
 
         # Build override dict from agent.yaml for merge-on-read
         overrides = {
@@ -436,6 +423,23 @@ class BaseAgent:
 
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
+
+    def _merge_models(self, config: AgentConfig, model_provider) -> None:
+        """Merge filesystem models with agent.yaml overrides into config.models."""
+        fs_models = model_provider.list()
+        agent_models = {m.type: m for m in (config.models or [])}
+        merged_models: list = []
+        for fm in fs_models:
+            if fm.type in agent_models:
+                merged_models.append(
+                    fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
+                )
+            else:
+                merged_models.append(fm)
+        for t, am in agent_models.items():
+            if not any(m.type == t for m in merged_models):
+                merged_models.append(am)
+        config.models = merged_models
 
     def _inject_model_calls(self, config) -> None:
         """Create ModelAdapter for each configured model and inject call_model into engine."""
