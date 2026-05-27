@@ -1,3 +1,4 @@
+"""NoneInputGuard — pass-through input guard (no filtering)."""
 from arf.core.results import GuardResult
 
 
