@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、回归测评
 
 ---
 
@@ -1445,6 +1445,7 @@ arf/
 ├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
 ├── skills/         # SkillPipeline — 工具依赖执行时序
 ├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
+├── evaluation/     # EvalRunner、BenchmarkBuilder、EvalComparator — 回归测评
 ├── streaming/      # SseStream — Server-Sent Events 传输
 ├── communication/  # InMemoryAgentBus、PeerAgent — 多 Agent 通信
 ├── errors/         # DefaultErrorPolicy
@@ -1453,6 +1454,30 @@ arf/
 ├── testing/        # InMemory* test doubles
 └── core/           # 协议定义、Pydantic 配置模型、事件类型、ModelAdapter
 ```
+
+### 12.4 回归测评
+
+ARF 内置会话回放与回归检测机制。从真实对话 trace 创建 benchmark，通过 EventBus 采集执行轨迹重放，跨配置/模型切换对比运行报告。
+
+```python
+from arf.evaluation import BenchmarkBuilder, EvalRunner, EvalComparator
+
+store = FileTraceStore(agent.event_bus, dir="./memory/traces")
+
+# 从真实对话创建 benchmark
+builder = BenchmarkBuilder(store)
+benchmark = builder.build(session_id="default", name="regression_v1")
+benchmark.to_json("benchmarks/regression_v1.json")
+
+# 重放并采集真实 trace
+runner = EvalRunner(agent, agent.event_bus)
+report = await runner.run(benchmark)
+report.to_json("reports/regression_v1_baseline.json")
+```
+
+4 个内置指标：成功率、工具准确率、轮次效率、输出关键词匹配。
+
+> 深入阅读：[`docs/eval-benchmark.md`](docs/eval-benchmark.md)
 
 ---
 
@@ -1472,3 +1497,4 @@ arf/
 | [资源注册](docs/resource-registry.md) | 文件系统真相源、Provider、FileWatcher |
 | [中断机制](docs/interrupt.md) | 取消、undo、Hook 消息注入 |
 | [Trace 可观测性](docs/trace.md) | 事件系统、FileTraceStore、TraceViewer |
+| [回归测评](docs/eval-benchmark.md) | 会话回放、Benchmark 创建、指标计算、回归对比 |
