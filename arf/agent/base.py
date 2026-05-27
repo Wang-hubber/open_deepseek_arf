@@ -1,5 +1,6 @@
 """BaseAgent — assembles all Protocol implementations into a running Agent."""
 from pathlib import Path
+from typing import Any
 from arf.agent.config import AgentConfig, AdvancedConfig
 from arf.agent.app_context import AppContext
 from arf.engine.graph import GraphEngine
@@ -133,7 +134,6 @@ class BaseAgent:
 
         from arf.resources.providers.skill_provider import SkillProvider
         from arf.resources.providers.model_provider import ModelProvider
-        from arf.resources.file_watcher import FileWatcher
 
         tool_provider = ToolProvider(tools_dir)
         skill_provider = SkillProvider(skills_dir)
@@ -141,35 +141,10 @@ class BaseAgent:
 
         self._merge_models(config, model_provider)
 
-        # Build override dict from agent.yaml for merge-on-read
-        overrides = {
-            "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
-            "skills": [s.model_dump(exclude_none=True) for s in (config.skills or [])],
-            "models": [m.model_dump(exclude_none=True) for m in (config.models or [])],
-        }
-
-        resource_resolver = override_protocols.pop("tool_resolver", ResourceResolver(
-            tool_provider=tool_provider,
-            skill_provider=skill_provider,
-            model_provider=model_provider,
-            agent_yaml_overrides=overrides,
-        ))
-
-        # FileWatcher
-        file_watcher = None
-        if watch_enabled:
-            poll_interval = float(reload_cfg.poll_interval) if reload_cfg else 5.0
-            file_watcher = FileWatcher(poll_interval=poll_interval)
-
-            async def _on_fs_change(changed_paths):
-                if hasattr(resource_resolver, "reload_dynamic"):
-                    await resource_resolver.reload_dynamic()
-
-            for d in [tools_dir, skills_dir, models_dir]:
-                path = Path(d)
-                if path.exists():
-                    file_watcher.add_watch(path, _on_fs_change)
-
+        resource_resolver, file_watcher = self._build_resource_resolver(
+            config, tool_provider, skill_provider, model_provider,
+            tools_dir, skills_dir, models_dir, watch_enabled, override_protocols,
+        )
         self._file_watcher = file_watcher
         self._resource_resolver = resource_resolver
 
@@ -423,6 +398,35 @@ class BaseAgent:
 
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
+
+    def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
+                                   model_provider, tools_dir, skills_dir, models_dir,
+                                   watch_enabled: bool, override_protocols: dict[str, Any]):
+        """Build ResourceResolver with override merge and optional FileWatcher."""
+        from arf.resources.file_watcher import FileWatcher
+        overrides = {
+            "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
+            "skills": [s.model_dump(exclude_none=True) for s in (config.skills or [])],
+            "models": [m.model_dump(exclude_none=True) for m in (config.models or [])],
+        }
+        resource_resolver = override_protocols.pop("tool_resolver", ResourceResolver(
+            tool_provider=tool_provider,
+            skill_provider=skill_provider,
+            model_provider=model_provider,
+            agent_yaml_overrides=overrides,
+        ))
+        file_watcher = None
+        if watch_enabled:
+            poll_interval = 5.0  # default
+            file_watcher = FileWatcher(poll_interval=poll_interval)
+            async def _on_fs_change(changed_paths):
+                if hasattr(resource_resolver, "reload_dynamic"):
+                    await resource_resolver.reload_dynamic()
+            for d in [tools_dir, skills_dir, models_dir]:
+                path = Path(d)
+                if path.exists():
+                    file_watcher.add_watch(path, _on_fs_change)
+        return resource_resolver, file_watcher
 
     def _merge_models(self, config: AgentConfig, model_provider) -> None:
         """Merge filesystem models with agent.yaml overrides into config.models."""
