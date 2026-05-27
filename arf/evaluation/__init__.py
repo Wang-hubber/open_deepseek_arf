@@ -1,3 +1,4 @@
+"""Evaluation — benchmark builder, runner, comparator, and metrics."""
 from arf.evaluation.runner import EvalRunner
 from arf.evaluation.builder import BenchmarkBuilder
 from arf.evaluation.comparator import EvalComparator
