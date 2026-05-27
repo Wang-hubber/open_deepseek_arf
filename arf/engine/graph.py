@@ -97,7 +97,8 @@ class GraphEngine:
             return True
         return False
 
-    def undo(self, steps: int = 1, workspace_dir: str = "") -> AgentState | None:
+    def undo(self, steps: int = 1, workspace_dir: str = "",
+             session_id: str = "") -> AgentState | None:
         """Pop N rounds and restore state from the target checkpoint.
 
         Emits undo_executed trace event so consumers can mark the
@@ -113,7 +114,7 @@ class GraphEngine:
                 "to_round": target_round,
                 "steps": steps,
                 "agent_trace": active_trace,
-            })
+            }, session_id=session_id or restored.get("session_id", "default"))
         return restored
 
     def checkpoint_count(self) -> int:

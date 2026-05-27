@@ -245,11 +245,9 @@ async def undo_chat(steps: int = 1):
         return JSONResponse({"error": "steps must be >= 1"}, status_code=400)
     engine = _agent.engine
     available = engine.checkpoint_count()
-    effective_steps = steps + 1  # +1 for the checkpoint just pushed for this round
-    if available < effective_steps:
-        return JSONResponse({"status": "insufficient_checkpoints", "available": available, "requested": steps, "need": effective_steps})
-    # steps+1: skip the checkpoint just pushed for this undo round itself
-    restored = engine.undo(steps + 1)
+    if available < steps:
+        return JSONResponse({"status": "insufficient_checkpoints", "available": available, "requested": steps})
+    restored = engine.undo(steps, session_id="default")
     if restored is None:
         return JSONResponse({"status": "no_checkpoints"})
     # Write restored state back to state store
