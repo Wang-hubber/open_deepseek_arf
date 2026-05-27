@@ -679,6 +679,42 @@ async def execute(steps: int = 1) -> dict:
 - 错误返回推荐 `{"error": "..."}` 格式，非强制
 - `activation: kernel` = 始终可用；`discoverable` = 按需加载
 
+### 5.6 数据修改工具的 Rollback 规范
+
+涉及数据写入的 Tool（如 `file_writer`、`file_deleter`、`resource_scaffold`）
+**应该**在 `function.py` 中同时导出 `rollback` 函数，与 `execute` 并列。
+
+框架在 `execute` 抛出异常后自动检查是否存在 `rollback` 函数：
+- 有 → 调用 `rollback(**params)`，`ToolResult.rolled_back = True`
+- rollback 成功 → 副作用被消除
+- rollback 失败 → 错误信息通过 `ToolResult.rollback_error` 携带
+- 无 → 不回滚，由模型根据错误信息自行处理
+
+```python
+# tools/my_writer/function.py
+
+async def execute(path: str, content: str) -> dict:
+    p = WORKSPACE / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return {"ok": True, "path": str(p), "bytes": len(content)}
+
+async def rollback(path: str, content: str) -> dict:
+    """撤销文件写入：删除创建的/覆盖的文件."""
+    p = WORKSPACE / path
+    try:
+        p.unlink(missing_ok=True)
+        return {"ok": True, "action": "deleted", "path": str(p)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+```
+
+**规范要点**：
+- `rollback` 签名与 `execute` 完全一致，接收相同的参数
+- 返回值 `{"ok": True, "action": "..."}` 或 `{"ok": False, "error": "..."}`
+- 是非强制约定 — 有则回滚，无则跳过
+- 只读工具（`file_reader`、`web_search`、`web_fetch`）无需提供 rollback
+
 > 深入阅读：[`docs/app/tools.md`](docs/app/tools.md)
 
 ---

@@ -1,4 +1,5 @@
 """Standard result types shared across Protocols."""
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -17,6 +18,9 @@ class ToolResult:
     data: dict = field(default_factory=dict)
     error: str | None = None
     duration_ms: float = 0.0
+    rollback: Callable | None = None
+    rolled_back: bool = False
+    rollback_error: str | None = None
 
 
 @dataclass
@@ -51,11 +55,3 @@ class ErrorAction:
     delay: float = 0.0
     fallback_model: str | None = None
     message: str = ""
-
-
-@dataclass
-class RollbackResult:
-    success: bool
-    rollbacks: list[dict] = field(default_factory=list)
-    unresolved: list[str] = field(default_factory=list)
-    restored_state: dict = field(default_factory=dict)

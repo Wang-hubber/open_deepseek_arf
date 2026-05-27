@@ -3,7 +3,7 @@ from arf.core.state import AgentState, TurnContext
 from arf.core.results import (
     GuardResult, ToolResult, HookResult,
     ApprovalRequest, ApprovalResponse,
-    ErrorAction, RollbackResult,
+    ErrorAction,
 )
 from arf.core.config_base import (
     PipelineSection,
@@ -17,7 +17,7 @@ from arf.core.config_base import (
 __all__ = [
     "AgentEvent", "EventType", "AgentState", "TurnContext",
     "GuardResult", "ToolResult", "HookResult",
-    "ApprovalRequest", "ApprovalResponse", "ErrorAction", "RollbackResult",
+    "ApprovalRequest", "ApprovalResponse", "ErrorAction",
     "PipelineSection",
     "ModelConfig", "SkillConfig", "ToolConfig", "HookDefinition",
     "RoutingConfig", "CompactionConfig", "MemoryConfig",

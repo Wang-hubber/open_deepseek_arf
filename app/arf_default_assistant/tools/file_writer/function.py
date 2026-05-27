@@ -35,3 +35,19 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+async def rollback(path: str, content: str = "", _agent_mode: str = "sys") -> dict:
+    """Undo file_writer: delete the file that was (possibly) created/overwritten."""
+    if _agent_mode == "user":
+        for prefix in USER_RESTRICTED_PREFIXES:
+            if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
+                return {"ok": False, "error": f"User Agent cannot rollback {path}"}
+    p = WORKSPACE / path
+    try:
+        if p.exists():
+            p.unlink()
+            return {"ok": True, "action": "deleted", "path": str(p)}
+        return {"ok": True, "action": "nothing", "path": str(p)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

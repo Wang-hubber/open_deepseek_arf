@@ -32,6 +32,12 @@ prompt: |
           return {"error": str(exc), "detail": type(exc).__name__}
   ```
 
+  **Rollback** — If the tool modifies data (writes files, creates directories,
+  deletes resources), you MUST also provide an `async def rollback(...) -> dict`
+  function that receives the same params as execute and undoes side effects.
+  Return `{"ok": True, "action": "..."}` or `{"ok": False, "error": "..."}`.
+  The framework calls rollback automatically when execute fails.
+
   ## If generating a SKILL:
 
   **skill.yaml** — use this exact structure:

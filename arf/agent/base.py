@@ -20,7 +20,6 @@ from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
 from arf.guardrails.permissions import ToolPermissionChecker
 from arf.errors.retry import DefaultErrorPolicy
-from arf.errors.transaction import SnapshotRollback
 
 
 def _build_system_prompt(config: AgentConfig) -> str:
@@ -317,7 +316,6 @@ class BaseAgent:
         error_policy = override_protocols.pop("error_policy", DefaultErrorPolicy(
             tool_retry=tool_retry, model_retry=model_retry,
         ))
-        transaction_ctx = override_protocols.pop("transaction_ctx", SnapshotRollback())
 
         # 6. Hooks
         hooks_list = override_protocols.pop("hooks", config.hooks)
@@ -405,7 +403,6 @@ class BaseAgent:
             state_store=state_store,
             tool_executor=tool_executor,
             tool_resolver=resource_resolver,
-            transaction_ctx=transaction_ctx,
             planner=planner,
             memory_store=memory_store,
             memory_retriever=memory_retriever,

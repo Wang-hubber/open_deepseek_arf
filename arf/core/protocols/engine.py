@@ -1,7 +1,7 @@
 """Protocols for engine domain."""
 from typing import Protocol
 from arf.core.state import AgentState, TurnContext
-from arf.core.results import ToolResult, ErrorAction, RollbackResult
+from arf.core.results import ToolResult, ErrorAction
 
 
 class LoopStrategy(Protocol):
@@ -25,13 +25,6 @@ class ToolExecutor(Protocol):
         strategy: str = "parallel",
         max_concurrency: int = 5,
     ) -> dict[str, ToolResult]: ...
-
-
-class TransactionContext(Protocol):
-    """Wrap a group of tool calls as an atomic transaction."""
-    async def begin(self, session_id: str, turn: int) -> dict: ...
-    async def commit(self, tx: dict) -> None: ...
-    async def rollback(self, tx: dict, error: Exception) -> RollbackResult: ...
 
 
 class Planner(Protocol):

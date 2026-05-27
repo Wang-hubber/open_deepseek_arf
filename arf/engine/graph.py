@@ -8,7 +8,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 from arf.core.protocols import (
-    LoopStrategy, StateStore, ToolExecutor, TransactionContext, Planner,
+    LoopStrategy, StateStore, ToolExecutor, Planner,
     ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
     GuardRunner, EventBus, ErrorPolicy, ModelRouter, CompactionStrategy,
 )
@@ -24,7 +24,6 @@ class GraphEngine:
         state_store: StateStore,
         tool_executor: ToolExecutor,
         tool_resolver: ToolResolver,
-        transaction_ctx: TransactionContext | None = None,
         planner: Planner | None = None,
         memory_store: MemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
@@ -55,7 +54,6 @@ class GraphEngine:
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.tool_resolver = tool_resolver
-        self.transaction_ctx = transaction_ctx
         self.planner = planner
         self.memory_store = memory_store
         self.memory_retriever = memory_retriever
@@ -709,9 +707,6 @@ class GraphEngine:
                            "id": tc.get("id", ""),
                            "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                            session_id=session_id)
-            tx = None
-            if self.transaction_ctx:
-                tx = await self.transaction_ctx.begin(session_id, turn)
             agent_mode = state.get("active_agent", "")
             results = await self.tool_executor.execute(valid_calls, agent_mode=agent_mode)
             for tc in valid_calls:
@@ -719,14 +714,21 @@ class GraphEngine:
                 self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
                           "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0,
                           "result": str(r.data)[:500] if r and r.success and r.data else "",
-                          "error": str(r.error)[:500] if r and r.error else ""},
+                          "error": str(r.error)[:500] if r and r.error else "",
+                          "rolled_back": r.rolled_back if r else False,
+                          "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
                           session_id=session_id)
-            if self.transaction_ctx and tx:
-                all_ok = all(r.success for r in results.values())
-                if all_ok:
-                    await self.transaction_ctx.commit(tx)
-                else:
-                    await self.transaction_ctx.rollback(tx, Exception("tool failure"))
+            # Emit consolidated rollback event if any tool was rolled back
+            rolled_back = [
+                {"name": r.tool_name, "rollback_error": r.rollback_error}
+                for r in results.values() if r.rolled_back
+            ]
+            if rolled_back:
+                self._emit("rollback_executed", {
+                    "turn": turn,
+                    "rolled_back": rolled_back,
+                    "success": all(rb["rollback_error"] is None for rb in rolled_back),
+                }, session_id=session_id)
 
             if self.hook_runner:
                 self._emit("hook_start", {"event": "post_tool_exec", "turn": turn}, session_id=session_id)
@@ -741,6 +743,9 @@ class GraphEngine:
                 r = results.get(tc.get("id", ""))
                 if r:
                     content = str(r.data) if r.success else f"Error: {r.error}"
+                    if r.rolled_back:
+                        rb_note = f" [rolled back: {r.rollback_error or 'ok'}]"
+                        content += rb_note
                     if r.success and self.compaction and content:
                         content = await self.compaction.summarize_tool_output(
                             tc.get("name", "unknown"), content, turn
@@ -750,7 +755,8 @@ class GraphEngine:
                         "content": content,
                     })
             state["tool_results"] = {
-                k: {"success": v.success, "data": v.data, "error": v.error}
+                k: {"success": v.success, "data": v.data, "error": v.error,
+                    "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
                 for k, v in results.items()
             }
 
@@ -1134,16 +1140,30 @@ class GraphEngine:
                                        "success": r.success if r else False,
                                        "duration_ms": r.duration_ms if r else 0,
                                        "result": str(r.data)[:500] if r and r.success and r.data else "",
-                                       "error": str(r.error)[:500] if r and r.error else ""},
+                                       "error": str(r.error)[:500] if r and r.error else "",
+                                       "rolled_back": r.rolled_back if r else False,
+                                       "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
                                  turn=turn, session_id=session_id)
                 if r:
                     content = str(r.data) if r.success else f"Error: {r.error}"
+                    if r.rolled_back:
+                        content += f" [rolled back: {r.rollback_error or 'ok'}]"
                     if r.success and self.compaction and content:
                         content = await self.compaction.summarize_tool_output(
                             tc.get("name", "unknown"), content, turn
                         )
                     state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
                                               "content": content})
+            # Emit consolidated rollback event if any tool was rolled back
+            rb_stream = [
+                {"name": r.tool_name, "rollback_error": r.rollback_error}
+                for r in results.values() if r.rolled_back
+            ]
+            if rb_stream:
+                yield self._make_event(type="rollback_executed",
+                                 data={"turn": turn, "rolled_back": rb_stream,
+                                       "success": all(rb["rollback_error"] is None for rb in rb_stream)},
+                                 turn=turn, session_id=session_id)
             if self.hook_runner:
                 yield self._make_event(type="hook_start", data={"event": "post_tool_exec", "turn": turn},
                                  turn=turn, session_id=session_id)
@@ -1155,7 +1175,8 @@ class GraphEngine:
                 self._inject_hook_messages(hr, state)
 
             state["tool_results"] = {
-                k: {"success": v.success, "data": v.data, "error": v.error}
+                k: {"success": v.success, "data": v.data, "error": v.error,
+                    "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
                 for k, v in results.items()
             }
 

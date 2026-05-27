@@ -58,3 +58,25 @@ async def execute(type: str, name: str, description: str = "") -> dict:
             return {"error": f"Unknown resource type: {type}"}
     except Exception as e:
         return {"error": str(e)}
+
+
+async def rollback(type: str, name: str, description: str = "") -> dict:
+    """Undo resource_scaffold: delete the created tool or skill directory."""
+    import shutil
+    try:
+        if type == "tool":
+            base = Path("tools") / name
+        elif type == "skill":
+            base = Path("skills") / f"{name}.yaml"
+        else:
+            return {"ok": False, "error": f"Unknown resource type: {type}"}
+
+        if base.exists():
+            if base.is_dir():
+                shutil.rmtree(base)
+            else:
+                base.unlink()
+            return {"ok": True, "action": "deleted", "path": str(base)}
+        return {"ok": True, "action": "nothing", "path": str(base)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

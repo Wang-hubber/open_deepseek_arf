@@ -21,6 +21,8 @@ class ToolProvider:
         self._tools: dict[str, ToolConfig] = {}  # backward-compat combined view
         self._functions: dict[str, callable] = {}  # backward-compat combined view
         self._kernel_functions: dict[str, callable] = {}
+        self._kernel_rollbacks: dict[str, callable] = {}
+        self._rollbacks: dict[str, callable] = {}
         self._backend = FunctionBackend()
         self._loaded = False
 
@@ -52,8 +54,9 @@ class ToolProvider:
         if cfg is None:
             return ToolResult(tool_name=name, success=False, error=f"Tool '{name}' not found")
         fn = self._functions.get(name) or self._kernel_functions.get(name)
+        rb_fn = self._rollbacks.get(name) or self._kernel_rollbacks.get(name)
         if fn:
-            return await self._backend.execute_with_fn(cfg, fn, params)
+            return await self._backend.execute_with_fn(cfg, fn, params, rollback_fn=rb_fn)
         return await self._backend.execute(cfg, params)
 
     # -- cache management --
@@ -68,6 +71,9 @@ class ToolProvider:
         for name in list(self._functions.keys()):
             if name not in kernel_only_names:
                 del self._functions[name]
+        for name in list(self._rollbacks.keys()):
+            if name not in kernel_only_names:
+                del self._rollbacks[name]
         self._loaded = False
 
     # -- internal --
@@ -92,6 +98,7 @@ class ToolProvider:
 
             func_path = tool_dir / "function.py"
             fn = None
+            rb_fn = None
             if func_path.exists():
                 spec = importlib.util.spec_from_file_location(
                     f"arf_tool_{name}", str(func_path),
@@ -101,18 +108,25 @@ class ToolProvider:
                     spec.loader.exec_module(mod)
                     if hasattr(mod, "execute"):
                         fn = mod.execute
+                    if hasattr(mod, "rollback"):
+                        rb_fn = mod.rollback
 
             if activation == "kernel":
                 if not self._cache.has_kernel(name):
                     self._cache.kernel[name] = cfg
                     if fn:
                         self._kernel_functions[name] = fn
+                    if rb_fn:
+                        self._kernel_rollbacks[name] = rb_fn
             else:
                 self._cache.dynamic[name] = cfg
                 if fn:
                     self._functions[name] = fn
+                if rb_fn:
+                    self._rollbacks[name] = rb_fn
 
         # Rebuild backward-compat combined view
         self._tools = {**self._cache.kernel, **self._cache.dynamic}
         # _functions already has dynamic functions populated above
         self._functions.update(self._kernel_functions)
+        self._rollbacks.update(self._kernel_rollbacks)
