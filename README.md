@@ -265,7 +265,25 @@ cd app/web && npm install && npm run dev
 
 ### 已知代码问题 (2026-05-26 事实校验)
 
-> ~~**1-4 均已修复**~~ — agent.yaml 死引用、invoke/astream 事件统一、双 Agent 调度器接入均已完成。
+### TODO — Improvement Items
+
+> Based on [Self Review](docs/SELF_REVIEW.md) with per-item code verification. ~~Strikethrough~~ = fixed.
+
+| # | Title | Code Path | Domain | Type | Details |
+|---|-------|-----------|--------|------|---------|
+| 1 | ~~Engine `invoke`/`astream` duplication~~ | `arf/engine/graph.py:446-1195` | Process Scheduling | Framework | `invoke()`(L446) and `astream()`(L791) share ~400 lines of identical Agent Loop logic, differing only in event emission (`self._emit` vs `yield`). **Risk**: Loop changes must be synchronized in two places; omission causes inconsistent behavior |
+| 2 | ~~`BaseAgent.__init__` oversized~~ | `arf/agent/base.py` (636 lines) | Process Creation | Framework | Constructor directly instantiates 20+ default implementations (EventBus, StateStore, Memory, Guardrails, Hooks, ToolExecutor, etc.) without factory methods. **Risk**: New protocol implementations require `__init__` changes; test injection relies on implicit `**override_protocols` |
+| 3 | ~~`server.py` monolithic~~ | `app/arf_default_assistant/server.py` (843 lines) | User Interface | App | REST routes, WebSocket, SSE streaming, CORS, file serving, state management, config APIs all in one file. `ChatReq` model mixed with route code. **Risk**: Adding endpoints risks touching existing logic; testing cannot isolate concerns |
+| 4 | ~~`SnapshotRollback` null state snapshot~~ | `arf/errors/transaction.py:10` | Fault Recovery | Framework | `begin()` always sets `"state_snapshot": None`, `rollback()` only marks unresolved tools without restoring state. The `TransactionContext` protocol defines commit/rollback semantics but the implementation is incomplete. **Risk**: No real rollback when tool calls fail mid-execution |
+| 5 | `EvalRunner` computes empty traces | `arf/evaluation/runner.py:17` | Quality Assurance | Framework | `run()` calls `agent.chat()` then hardcodes `trace = {"turns": []}`, never collecting real turn-by-turn execution traces from `EventBus` or `StateStore`. `ToolAccuracyMetric` / `TurnEfficiencyMetric` always compute on empty data. **Risk**: No automated regression detection for framework changes; the "60% coverage" goal has no supporting evaluation mechanism |
+| 6 | Global state `registry._agent` | `arf/agent/registry.py:6` | Process Isolation | Framework | `_agent: Any = None` module-level singleton, exposed via `set_agent()` / `get_agent()`. `server.py` imports it directly. **Risk**: Only one Agent instance per process; test order-dependent (global state leaks); contradicts the "framework" positioning — frameworks should not enforce singletons |
+| 7 | `PromptBasedPlanner` returns empty plans | `arf/engine/loop_strategies/planner.py:10,19` | Task Planning | Framework | `generate_plan()` always returns `{"steps": []}`, `detect_divergence()` always returns `{"diverged": False}`. Engine injects `_call_model` but the LLM is never called for plan generation. **Risk**: The `Planner` protocol is a key extension point for autonomous agents; callers receiving empty results may misinterpret as "no decomposition needed" |
+| 8 | SSE listener leak | `arf/streaming/adapters/sse.py:21,26` | Communication | Framework | `listen()` appends callback `_cb` to `self._listeners` (L21), only removed in generator `finally` block (L26). If the async generator is abandoned or exception-exited prematurely, the callback persists permanently. **Risk**: Long-running SSE services accumulate stale listeners, causing memory leaks and phantom callback invocations |
+| 9 | Inconsistent code conventions | 14 files missing module docstrings; `graph.py` 13 bare `dict`, `planner.py` 3 | Documentation | Framework | 14 `.py` files lack module-level docstrings; core files use bare `dict` in 18 function signatures instead of `TypedDict` or concrete types; mixed Chinese/English docstrings. **Risk**: Slower contributor onboarding; strict mypy mode fails; code appearance doesn't match architecture quality |
+| 10 | No rate limiting / circuit breaker | `arf/engine/graph.py` model call path | Process Scheduling | Framework | LLM API calls have no rate limiting or circuit breaker protection. `ModelAdapter` has retry logic but the framework layer provides no cross-call safeguards. **Risk**: High-frequency usage may trigger API rate limits; persistently failing models lack auto-circuit-break, wasting retry resources |
+| 11 | Missing open-source infrastructure | — | Distribution | Framework | No `CONTRIBUTING.md`, PR/Issue templates, `CHANGELOG.md`, or versioned release process. Documentation is rich but there's no guidance for external contributions. **Risk**: Potential contributors don't know submission standards; users can't assess upgrade impact without changelog |
+
+### Evolution
 
 ### 演进方向
 
