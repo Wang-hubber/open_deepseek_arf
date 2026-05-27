@@ -1,3 +1,4 @@
+"""Core types — events, state, results, and config base classes."""
 from arf.core.events import AgentEvent, EventType
 from arf.core.state import AgentState, TurnContext
 from arf.core.results import (
