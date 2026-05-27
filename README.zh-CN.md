@@ -271,14 +271,14 @@ cd app/web && npm install && npm run dev
 | # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
 |---|------|---------|--------|------|------|
 | 1 | Engine `invoke`/`astream` 代码重复 | `arf/engine/graph.py:446-1195` | 进程调度 | 框架 | `invoke()`(446行) 与 `astream()`(791行) 约 400 行结构完全相同的 Agent Loop 逻辑，仅事件发射方式不同（`self._emit` vs `yield`）。**风险**：修改 Loop 逻辑需同步两处，遗漏即产生不一致行为 |
-| 2 | `BaseAgent.__init__` 巨型构造 | `arf/agent/base.py` (636行) | 进程创建 | 框架 | 构造函数内直接实例化 20+ 个默认实现（EventBus、StateStore、Memory、Guardrails、Hooks、ToolExecutor 等），无工厂方法拆分。**风险**：新增协议实现需修改 `__init__`，测试注入依赖 `**override_protocols` 隐式传参 |
+| 2 | ~~`BaseAgent.__init__` 巨型构造~~ → **已修复** | `arf/agent/base.py` | 进程创建 | 框架 | ~~构造函数内直接实例化 20+ 个实现~~ → 提取了 `_merge_models()` 和 `_build_resource_resolver()` 工厂方法；吸收遗留的 `transaction_ctx` 覆盖。 |
 | 3 | `server.py` 单文件混杂 | `app/arf_default_assistant/server.py` (843行) | 用户界面 | App | REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。`ChatReq` Pydantic 模型混在路由文件中。**风险**：加新接口易触碰到已有逻辑，测试无法隔离 |
 | 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | ~~`begin()` 中 `"state_snapshot": None` 始终不存快照~~ → 改为 `FunctionBackend` 内联回滚：tool `function.py` 可选导出 `rollback()`，`execute()` 异常时自动调用。`TransactionContext` 协议和 `SnapshotRollback` 类已移除。 |
 | 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | ~~trace 硬编码为 `{"turns": []}`~~ → 重写：`EvalRunner` 通过 `EventBus.events_since()` 采集真实 trace，`events_to_trace()` 组装结构化 turn 数据，4 个 metric 在真实数据上计算。`BenchmarkBuilder` 从 `FileTraceStore` 会话创建 benchmark，`EvalComparator` 跨运行 diff 检测回归。 |
 | 6 | 全局状态 `registry._agent` | `arf/agent/registry.py:6` | 进程隔离 | 框架 | `_agent: Any = None` 模块级单例，`set_agent()` / `get_agent()` 全局读写。`server.py` 等上层代码直接 `import` 引用。**风险**：同一进程只能跑一个 Agent 实例；测试顺序敏感（全局状态泄漏）；与"框架"定位冲突——框架不应强制单例 |
 | 7 | `PromptBasedPlanner` 返回空计划 | `arf/engine/loop_strategies/planner.py:10,19` | 任务规划 | 框架 | `generate_plan()` 始终返回 `{"steps": []}`，`detect_divergence()` 始终返回 `{"diverged": False}`。Engine 注入了 `_call_model` 但从未调用 LLM 生成计划。**风险**：`Planner` 协议是自主 Agent 任务分解的核心扩展点，当前对外传达虚假能力——调用者获得空结果可能误认为"任务无需分解" |
 | 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | ~~回调移除依赖 async generator 的 `finally`，但 CPython 在 `break`/exception 时不调用。~~ → 改为 `@asynccontextmanager`：`async with stream.listen() as queue` — `__aexit__` 在所有退出路径上保证清理。 |
-| 9 | 代码规范不统一 | 14 个文件缺模块 docstring；`graph.py` 13 处裸 `dict`，`planner.py` 3 处 | 文档系统 | 框架 | 14 个 `.py` 文件无模块级 docstring；核心文件（`graph.py`、`base.py`、`planner.py`）共 18 处函数签名用裸 `dict` 而非 `TypedDict` 或具体类型；中英 docstring 混用。**风险**：贡献者上手速度降低；mypy 严格模式无法通过；代码观感与架构水平不匹配 |
+| 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | ~~14 文件缺模块 docstring；10 处裸 `dict` 类型~~ → 全部 13 个文件已加模块 docstring。核心签名用 `dict[str, Any]` 替代裸 `dict`。`test_code_style.py` 强制执行规范。 |
 | 10 | 无 Rate Limiting / Circuit Breaker | `arf/engine/graph.py` 模型调用路径 | 进程调度 | 框架 | LLM API 调用无速率限制、无断路器保护。`ModelAdapter` 有重试逻辑但框架层无跨调用的保护机制。**风险**：高频使用场景下可能触发 API 限流；持久故障模型无自动熔断，反复重试浪费资源 |
 | 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。文档丰富但缺乏外部贡献的流程指引。**风险**：潜在贡献者不知道提交标准；无 changelog 则用户无法评估升级影响 |
 
