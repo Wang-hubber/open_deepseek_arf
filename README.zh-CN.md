@@ -270,7 +270,7 @@ cd app/web && npm install && npm run dev
 
 | # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
 |---|------|---------|--------|------|------|
-| 1 | Engine `invoke`/`astream` 代码重复 | `arf/engine/graph.py:446-1195` | 进程调度 | 框架 | `invoke()`(446行) 与 `astream()`(791行) 约 400 行结构完全相同的 Agent Loop 逻辑，仅事件发射方式不同（`self._emit` vs `yield`）。**风险**：修改 Loop 逻辑需同步两处，遗漏即产生不一致行为 |
+| 1 | ~~Engine `invoke`/`astream` 代码重复~~ → **已修复** | `arf/engine/graph.py` | 进程调度 | 框架 | ~~~400 行几乎相同的 Agent Loop 逻辑在两处~~ → 提取了 `_step_classify_tool_calls()` — guard pipeline、沙箱、权限、审批逻辑由两个路径共享。 |
 | 2 | ~~`BaseAgent.__init__` 巨型构造~~ → **已修复** | `arf/agent/base.py` | 进程创建 | 框架 | ~~构造函数内直接实例化 20+ 个实现~~ → 提取了 `_merge_models()` 和 `_build_resource_resolver()` 工厂方法；吸收遗留的 `transaction_ctx` 覆盖。 |
 | 3 | `server.py` 单文件混杂 | `app/arf_default_assistant/server.py` (843行) | 用户界面 | App | REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。`ChatReq` Pydantic 模型混在路由文件中。**风险**：加新接口易触碰到已有逻辑，测试无法隔离 |
 | 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | ~~`begin()` 中 `"state_snapshot": None` 始终不存快照~~ → 改为 `FunctionBackend` 内联回滚：tool `function.py` 可选导出 `rollback()`，`execute()` 异常时自动调用。`TransactionContext` 协议和 `SnapshotRollback` 类已移除。 |

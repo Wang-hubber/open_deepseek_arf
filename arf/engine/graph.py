@@ -441,6 +441,101 @@ class GraphEngine:
                 pass
         return []
 
+    async def _step_classify_tool_calls(
+        self, state: AgentState, tool_calls: list[dict],
+        turn: int, session_id: str,
+    ) -> tuple[list[dict], list[tuple[str, str]], list[dict]]:
+        """Guard pipeline, sandbox, permissions, and approval for all tool calls.
+
+        Returns (valid_calls, denied_calls, events) where events is a list of
+        dicts for the caller to emit via its own mechanism (emit or yield).
+        """
+        events: list[dict] = []
+        valid_calls: list[dict] = []
+        denied_calls: list[tuple[str, str]] = []
+
+        pipeline_data = state.get("active_pipeline")
+        completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
+
+        if not self.guard_runner:
+            return tool_calls, [], []
+
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            params = tc.get("params", {})
+
+            if pipeline_data:
+                from arf.skills.pipeline import SkillPipeline
+                sp = SkillPipeline(pipeline_data.get("steps", []))
+                if not sp.can_execute(name, completed):
+                    reason = sp.validation_error(name, completed)
+                    denied_calls.append((name, reason))
+                    events.append({"type": "guard_block",
+                                   "data": {"tool_name": name, "guard": "pipeline", "reason": reason}})
+                    continue
+
+            gr = await self.guard_runner.check_tool_params(name, params)
+            if not gr.allowed:
+                denied_calls.append((name, gr.reason))
+                events.append({"type": "guard_block",
+                               "data": {"tool_name": name, "guard": "path_check", "reason": gr.reason}})
+                continue
+
+            perm = self.guard_runner.check_tool_permission(name, params)
+            if perm == "deny":
+                denied_calls.append((name, "denied by permission config"))
+                events.append({"type": "guard_block",
+                               "data": {"tool_name": name, "guard": "permission",
+                                        "reason": "denied by config"}})
+                continue
+
+            if perm == "ask":
+                needs_approval = self.approval_enabled and (
+                    not self._approval_allowlist or name in self._approval_allowlist
+                )
+                if needs_approval:
+                    decision_id = f"{session_id}_{name}_{id(tc)}"
+                    events.append({"type": "approval_required",
+                                   "data": {"decision_id": decision_id, "tool_name": name,
+                                            "params": params}})
+                    approval_evt = asyncio.Event()
+                    self._pending_approvals[decision_id] = approval_evt
+                    try:
+                        await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
+                    except asyncio.TimeoutError:
+                        self._pending_approvals.pop(decision_id, None)
+                        self._approval_results.pop(decision_id, None)
+                        denied_calls.append((name, "approval timed out"))
+                        events.append({"type": "approval_resolved",
+                                       "data": {"decision_id": decision_id, "tool_name": name,
+                                                "approved": False, "reason": "timeout"}})
+                        continue
+                    approved = self._approval_results.pop(decision_id, False)
+                    if not approved:
+                        denied_calls.append((name, "denied by user"))
+                        events.append({"type": "approval_resolved",
+                                       "data": {"decision_id": decision_id, "tool_name": name,
+                                                "approved": False, "reason": "denied by user"}})
+                        continue
+                    events.append({"type": "approval_resolved",
+                                   "data": {"decision_id": decision_id, "tool_name": name,
+                                            "approved": True, "reason": "approved"}})
+                else:
+                    denied_calls.append((name, "requires approval (channel not enabled)"))
+                    events.append({"type": "guard_block",
+                                   "data": {"tool_name": name, "guard": "approval",
+                                            "reason": "requires approval (channel not enabled)"}})
+                    continue
+
+            events.append({"type": "guard_pass", "data": {"tool_name": name}})
+            completed.add(name)
+            valid_calls.append(tc)
+
+        if pipeline_data:
+            state["active_pipeline"]["completed"] = list(completed)
+
+        return valid_calls, denied_calls, events
+
     async def invoke(self, state: AgentState) -> AgentState:
         state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
@@ -592,90 +687,11 @@ class GraphEngine:
             # Saving incomplete tool_calls sequence causes 400 on next request.
 
             # 6. Guard tool params + pipeline + permissions + execute
-            valid_calls = []
-            denied_calls = []
-            # Load active skill pipeline from state
-            pipeline_data = state.get("active_pipeline")
-            import_completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
-            if self.guard_runner:
-                for tc in tool_calls:
-                    name = tc.get("name", "")
-                    params = tc.get("params", {})
-                    # Pipeline order check (hard block — framework guarantee)
-                    if pipeline_data:
-                        from arf.skills.pipeline import SkillPipeline
-                        sp = SkillPipeline(pipeline_data.get("steps", []))
-                        if not sp.can_execute(name, import_completed):
-                            denied_calls.append((name, sp.validation_error(name, import_completed)))
-                            self._emit("guard_block", {"tool_name": name, "guard": "pipeline",
-                                       "reason": sp.validation_error(name, import_completed)},
-                                       session_id=session_id)
-                            continue
-                    # Path sandbox check (hard block)
-                    gr = await self.guard_runner.check_tool_params(name, params)
-                    if not gr.allowed:
-                        denied_calls.append((name, gr.reason))
-                        self._emit("guard_block", {"tool_name": name, "guard": "path_check",
-                                   "reason": gr.reason}, session_id=session_id)
-                        continue
-                    # Permission check (deny/ask/allow)
-                    perm = self.guard_runner.check_tool_permission(name, params)
-                    if perm == "deny":
-                        denied_calls.append((name, "denied by permission config"))
-                        self._emit("guard_block", {"tool_name": name, "guard": "permission",
-                                   "reason": "denied by config"}, session_id=session_id)
-                        continue
-                    if perm == "ask":
-                        needs_approval = self.approval_enabled and (
-                            not self._approval_allowlist or name in self._approval_allowlist
-                        )
-                        if needs_approval:
-                            decision_id = f"{session_id}_{name}_{id(tc)}"
-                            self._emit("approval_required", {
-                                "decision_id": decision_id, "tool_name": name, "params": params,
-                            }, session_id=session_id)
-                            approval_evt = asyncio.Event()
-                            self._pending_approvals[decision_id] = approval_evt
-                            try:
-                                await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
-                            except asyncio.TimeoutError:
-                                self._pending_approvals.pop(decision_id, None)
-                                self._approval_results.pop(decision_id, None)
-                                denied_calls.append((name, "approval timed out"))
-                                self._emit("approval_resolved", {
-                                    "decision_id": decision_id, "tool_name": name,
-                                    "approved": False, "reason": "timeout",
-                                }, session_id=session_id)
-                                continue
-                            approved = self._approval_results.pop(decision_id, False)
-                            if not approved:
-                                denied_calls.append((name, "denied by user"))
-                                self._emit("approval_resolved", {
-                                    "decision_id": decision_id, "tool_name": name,
-                                    "approved": False, "reason": "denied by user",
-                                }, session_id=session_id)
-                                continue
-                            self._emit("approval_resolved", {
-                                "decision_id": decision_id, "tool_name": name,
-                                "approved": True, "reason": "approved",
-                            }, session_id=session_id)
-                            # fall through to valid_calls
-                        else:
-                            denied_calls.append((name, "requires approval (channel not enabled)"))
-                            self._emit("guard_block", {"tool_name": name, "guard": "approval",
-                                       "reason": "requires approval (channel not enabled)"},
-                                       session_id=session_id)
-                            continue
-                    self._emit("guard_pass", {"tool_name": name}, session_id=session_id)
-                    valid_calls.append(tc)
-            else:
-                valid_calls = tool_calls
-
-            # Track completed pipeline steps
-            if pipeline_data:
-                for tc in valid_calls:
-                    import_completed.add(tc.get("name", ""))
-                state["active_pipeline"]["completed"] = list(import_completed)
+            valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
+                state, tool_calls, turn, session_id,
+            )
+            for evt in guard_events:
+                self._emit(evt["type"], evt["data"], session_id=session_id)
 
             # Emit denied tool calls as errors and inject synthetic tool results
             for tc in tool_calls:
@@ -1004,100 +1020,11 @@ class GraphEngine:
             await self.state_store.put(session_id, state)
 
             # Guard tool params + pipeline + permissions (streaming path)
-            valid_calls = []
-            denied_calls = []
-            pipeline_data = state.get("active_pipeline")
-            s_completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
-            if self.guard_runner:
-                for tc in tool_calls:
-                    name = tc.get("name", "")
-                    params = tc.get("params", {})
-                    # Pipeline order check (hard block)
-                    if pipeline_data:
-                        from arf.skills.pipeline import SkillPipeline
-                        sp = SkillPipeline(pipeline_data.get("steps", []))
-                        if not sp.can_execute(name, s_completed):
-                            denied_calls.append((name, sp.validation_error(name, s_completed)))
-                            continue
-                    gr = await self.guard_runner.check_tool_params(name, params)
-                    if not gr.allowed:
-                        denied_calls.append((name, gr.reason))
-                        yield self._make_event(
-                            type="guard_block",
-                            data={"tool_name": name, "guard": "path_check", "reason": gr.reason},
-                            turn=turn, session_id=session_id,
-                        )
-                        continue
-                    perm = self.guard_runner.check_tool_permission(name, params)
-                    if perm == "deny":
-                        denied_calls.append((name, "denied by permission config"))
-                        yield self._make_event(
-                            type="guard_block",
-                            data={"tool_name": name, "guard": "permission", "reason": "denied by config"},
-                            turn=turn, session_id=session_id,
-                        )
-                        continue
-                    if perm == "ask":
-                        needs_approval = self.approval_enabled and (
-                            not self._approval_allowlist or name in self._approval_allowlist
-                        )
-                        if needs_approval:
-                            decision_id = f"{session_id}_{name}_{id(tc)}"
-                            yield self._make_event(
-                                type="approval_required",
-                                data={"decision_id": decision_id, "tool_name": name, "params": params},
-                                turn=turn, session_id=session_id,
-                            )
-                            # Wait for user decision
-                            approval_evt = asyncio.Event()
-                            self._pending_approvals[decision_id] = approval_evt
-                            try:
-                                await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
-                            except asyncio.TimeoutError:
-                                self._pending_approvals.pop(decision_id, None)
-                                self._approval_results.pop(decision_id, None)
-                                denied_calls.append((name, "approval timed out"))
-                                yield self._make_event(
-                                    type="approval_resolved",
-                                    data={"decision_id": decision_id, "tool_name": name,
-                                          "approved": False, "reason": "timeout"},
-                                    turn=turn, session_id=session_id,
-                                )
-                                continue
-                            approved = self._approval_results.pop(decision_id, False)
-                            if not approved:
-                                denied_calls.append((name, "denied by user"))
-                                yield self._make_event(
-                                    type="approval_resolved",
-                                    data={"decision_id": decision_id, "tool_name": name,
-                                          "approved": False, "reason": "denied by user"},
-                                    turn=turn, session_id=session_id,
-                                )
-                                continue
-                            # Approved — fall through to valid_calls
-                            yield self._make_event(
-                                type="approval_resolved",
-                                data={"decision_id": decision_id, "tool_name": name,
-                                      "approved": True, "reason": "approved"},
-                                turn=turn, session_id=session_id,
-                            )
-                        else:
-                            denied_calls.append((name, "requires approval (approval channel not enabled)"))
-                            continue
-                    yield self._make_event(
-                        type="guard_pass",
-                        data={"tool_name": name},
-                        turn=turn, session_id=session_id,
-                    )
-                    valid_calls.append(tc)
-            else:
-                valid_calls = tool_calls
-
-            # Track completed pipeline steps
-            if pipeline_data:
-                for tc in valid_calls:
-                    s_completed.add(tc.get("name", ""))
-                state["active_pipeline"]["completed"] = list(s_completed)
+            valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
+                state, tool_calls, turn, session_id,
+            )
+            for evt in guard_events:
+                yield self._make_event(evt["type"], evt["data"], turn=turn, session_id=session_id)
 
             for tc in tool_calls:
                 name = tc.get("name", "")
