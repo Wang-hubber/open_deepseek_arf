@@ -109,10 +109,7 @@ if state:
     logger.info(f"Restored state: {len(state['messages'])} messages")
 ```
 
-**当前限制**：
-- 状态快照在内存中（deque），重启后从 `FileStateStore` 恢复完整状态
-- 文件快照持久化在 `memory/checkpoints/`，重启后可恢复
-- 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
+**当前限制**：多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
 
 ---
 
@@ -200,11 +197,7 @@ tools:
 - **暂停/恢复**：类似 SIGSTOP/SIGCONT。用户暂停 Agent 后，可在稍后恢复继续。需将完整 engine 状态序列化，支持跨进程恢复
 - **重定向**：类似信号 handler。用户不停止 Agent，而是注入新的指令，Agent 在当前 turn 结束后切换任务
 
-### 5.2 检查点持久化增强
-
-将 `RoundTransaction` 的完整状态快照序列化到 `memory/checkpoints/`，支持重启后 undo。当前仅持久化 round 元数据，完整快照仍在内存中。
-
-### 5.3 探索性方向
+### 5.2 探索性方向
 
 - **空闲超时**：Agent 长时间无交互时自动暂停，释放资源
 - **中断优先级**：区分"紧急中断"（强制停止）和"软中断"（LLM 自行决定是否采纳），紧急中断在循环边界立即响应

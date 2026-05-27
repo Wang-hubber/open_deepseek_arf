@@ -54,14 +54,17 @@ class RoundManager:
         """Snapshot *state* and workspace files.  Returns the new transaction."""
         self._current_round += 1
         agent = state.get("active_agent") or state.get("agent_name", "main")
+        snapshot = copy.deepcopy(dict(state))
         tx = RoundTransaction(
             round_id=f"{state.get('session_id', 'default')}/{self._current_round}",
             round_num=self._current_round,
-            state_snapshot=copy.deepcopy(dict(state)),
+            state_snapshot=snapshot,
             agent_trace=[agent],
         )
         ws = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
-        tx.workspace_snapshot_dir = self._snapshot_workspace(ws, self._current_round)
+        tx.workspace_snapshot_dir = self._snapshot_workspace(
+            ws, self._current_round, state_snapshot=snapshot
+        )
 
         self._rounds.append(tx)
         self._active = tx
@@ -118,21 +121,32 @@ class RoundManager:
 
     # -- internal --
 
-    def _snapshot_workspace(self, workspace: Path, round_num: int) -> str | None:
-        """Copy workspace files to memory/checkpoints/{round_num}/."""
-        if not workspace.exists():
-            return None
+    def _snapshot_workspace(self, workspace: Path, round_num: int,
+                            state_snapshot: dict | None = None) -> str | None:
+        """Copy workspace files to memory/checkpoints/{round_num}/.
+
+        If *state_snapshot* is provided, also writes state.json into the
+        checkpoint directory for crash-safe undo recovery.
+        """
         ckpt_dir = Path("memory/checkpoints") / str(round_num)
         if ckpt_dir.exists():
             shutil.rmtree(ckpt_dir)
         ckpt_dir.mkdir(parents=True, exist_ok=True)
-        for f in workspace.rglob("*"):
-            if f.is_file() and ".git" not in f.parts:
-                rel = f.relative_to(workspace)
-                dest = ckpt_dir / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(f, dest)
-        return str(ckpt_dir)
+
+        if workspace.exists():
+            for f in workspace.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    rel = f.relative_to(workspace)
+                    dest = ckpt_dir / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dest)
+
+        if state_snapshot is not None:
+            (ckpt_dir / "state.json").write_text(
+                json.dumps(state_snapshot, ensure_ascii=False), encoding="utf-8"
+            )
+
+        return str(ckpt_dir) if (workspace.exists() or state_snapshot is not None) else None
 
     def _restore_workspace_files(self, tx: RoundTransaction, workspace: Path) -> None:
         """Delete current workspace files and restore from *tx* snapshot."""
@@ -193,21 +207,50 @@ class RoundManager:
             logger.warning("Failed to persist rounds: %s", e)
 
     def _restore_from_disk(self) -> None:
-        """Load persisted round metadata on startup.
+        """Rebuild RoundTransaction deque from persisted checkpoint data.
 
-        Full state snapshots are in FileStateStore; this only restores
-        round numbers and metadata so undo knows how many rounds exist.
+        Each checkpoint dir contains state.json (full state snapshot) and
+        workspace files.  rounds.json indexes them.  On startup this
+        reconstructs the rolling window so undo works immediately.
         """
         pf = self._persist_file()
         if not pf.exists():
             return
         try:
-            data = json.loads(pf.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
+            index = json.loads(pf.read_text(encoding="utf-8"))
+            if not isinstance(index, list):
                 return
-            for entry in data[-self._max_depth:]:
-                self._current_round = max(self._current_round, entry.get("round_num", 0))
-            logger.info("Restored %d round(s) from disk (current_round=%d)",
-                        min(len(data), self._max_depth), self._current_round)
         except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to restore rounds from disk: %s", e)
+            logger.warning("Failed to read rounds index: %s", e)
+            return
+
+        restored = 0
+        for entry in index[-self._max_depth:]:
+            round_num = entry.get("round_num", 0)
+            ckpt_dir = Path("memory/checkpoints") / str(round_num)
+            state_file = ckpt_dir / "state.json"
+            if not state_file.exists():
+                continue
+            try:
+                state_snapshot = json.loads(state_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to restore round %d state: %s", round_num, e)
+                continue
+
+            tx = RoundTransaction(
+                round_id=entry.get("round_id", f"default/{round_num}"),
+                round_num=round_num,
+                state_snapshot=state_snapshot,
+                workspace_snapshot_dir=entry.get("workspace_snapshot_dir"),
+                created_at=entry.get("created_at", time.time()),
+                agent_trace=entry.get("agent_trace", []),
+                handoff_count=entry.get("handoff_count", 0),
+                closed=entry.get("closed", False),
+            )
+            self._rounds.append(tx)
+            self._current_round = max(self._current_round, round_num)
+            restored += 1
+
+        if restored:
+            logger.info("Restored %d round(s) from disk (current_round=%d, undo available)",
+                        restored, self._current_round)
