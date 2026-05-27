@@ -51,17 +51,6 @@ cancel_event.set()  ← asyncio.Event（非阻塞标志）
 GraphEngine 循环边界检查 _cancelled()
     ├─ True  → emit session_end(reason="cancelled") → break
     └─ False → 继续执行
-
-Hook 退出码 2
-    │
-    ▼
-HookResult.injected_message
-    │
-    ▼
-_inject_hook_messages() → state["messages"].append(role="system")
-    │
-    ▼
-LLM 下一轮可见注入消息
 ```
 
 ### 2.2 取消机制
@@ -109,23 +98,7 @@ async def cancel_chat():
 - 客户端断开（`AbortController.abort()`）：`asyncio.CancelledError` → SSE 生成器设置 `cancel_event` → 引擎退出
 - 取消后 SSE 推送 `{"type": "cancelled"}` 事件，前端据此更新 UI
 
-### 2.3 Hook 消息注入
-
-Hook 退出码 2 的消息被注入对话历史（`GraphEngine._inject_hook_messages()`）：
-
-```python
-def _inject_hook_messages(self, results, state):
-    for r in results:
-        if r.exit_code == 2 and r.injected_message:
-            state["messages"].append({
-                "role": "system",
-                "content": f"[Hook: {r.hook_name}] {r.injected_message}"
-            })
-```
-
-所有六个生命周期事件（`session_start`, `pre_model_call`, `post_model_call`, `pre_tool_exec`, `post_tool_exec`, `session_end`）均已接入注入逻辑。类似 MSI 中断——不打断主流程，而是在消息队列（对话历史）中插入信息。
-
-### 2.4 Undo — Round 级状态 + 文件双回滚
+### 2.3 Undo — Round 级状态 + 文件双回滚
 
 `RoundManager`（`arf/engine/round_manager.py`）维护 3 个 `RoundTransaction` 的滚动窗口。每个 round 代表一次用户交互，可跨多次 agent handoff：
 
@@ -170,7 +143,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 - 状态快照在内存中（deque），重启后从 state_store 恢复；文件快照持久化在 `memory/checkpoints/`
 - 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
 
-### 2.5 配置
+### 2.4 配置
 
 ```yaml
 advanced:
