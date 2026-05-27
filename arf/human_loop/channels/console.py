@@ -1,3 +1,4 @@
+"""ConsoleChannel — terminal-based approval UI."""
 import asyncio
 from arf.core.results import ApprovalRequest, ApprovalResponse
 
