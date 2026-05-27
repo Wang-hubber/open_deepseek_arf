@@ -70,8 +70,7 @@
 | **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。Round 级 undo（`RoundManager`）— 可配快照窗口（默认 3），状态+文件跨 handoff 回滚，round 元数据持久化落盘。`undo_executed` trace 事件。 | 暂停/重定向向量；空闲超时 |
 | **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 18 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
-
-### 框架 vs. 应用
+| **[回归测评 →](docs/eval-benchmark.md)**<br>回归检测 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集真实执行轨迹。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告检测回归。 | CLI 集成；HTML 可视化报告；语义相似度指标 |
 
 **边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
 
@@ -80,7 +79,7 @@
 | **框架** (`arf/`) | **执行引擎** | `GraphEngine`（invoke + astream 双模式）、状态修复、checkpoint/undo 机制、cancel 取消令牌、Memory 提取→检索→写入管道、Compaction 上下文压缩、Guardrails 三道防线、ModelRouter 路由调用、Tool 级回滚 |
 | | **资源系统** | `ResourceResolver`（统一解析入口）、`ToolProvider` / `SkillProvider` / `ModelProvider`、`ResourceCache`（kernel/dynamic 双缓存）、`FileWatcher`（inotify/polling 文件变更检测）、双源加载（文件系统 + `agent.yaml` override 合并） |
 | | **Agent 组装** | `BaseAgent` — DI 注入全部协议实现、`AgentConfig` — YAML 驱动配置、`ModelAdapter` — 自动注入 call/stream、`LoopStrategy` — ReAct 策略 |
-| | **基础设施** | `EventBus`（`InMemoryEventBus`）、`FileTraceStore`（session 级 JSON 持久化）、`FileStateStore` / `InMemoryStateStore`、`UsageTracker`（用量统计）、`SubprocessHookRunner`（退出码契约：rc=2 → 消息注入）、`PathSandbox`（路径沙箱）、`TwoTierRouter`（LLM 分类路由）、`SlidingWindowCompactor`（滑动窗口压缩）、`SkillPipeline`（技能流水线排序）、`DefaultErrorPolicy` / `FunctionBackend` 回滚、`GuardDefaults`（PathCheck / Regex / None 三道防线） |
+| | **基础设施** | `EventBus`（`InMemoryEventBus`）、`FileTraceStore`（session 级 JSON 持久化）、`FileStateStore` / `InMemoryStateStore`、`UsageTracker`（用量统计）、`SubprocessHookRunner`（退出码契约：rc=2 → 消息注入）、`PathSandbox`（路径沙箱）、`TwoTierRouter`（LLM 分类路由）、`SlidingWindowCompactor`（滑动窗口压缩）、`SkillPipeline`（技能流水线排序）、`DefaultErrorPolicy` / `FunctionBackend` 回滚、`EvalRunner` / `BenchmarkBuilder` / `EvalComparator`（会话回放与回归检测）、`GuardDefaults`（PathCheck / Regex / None 三道防线） |
 | | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
