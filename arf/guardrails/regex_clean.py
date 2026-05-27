@@ -1,3 +1,4 @@
+"""RegexOutputGuard — sanitize model output with regex patterns."""
 import re
 from arf.core.results import GuardResult
 
