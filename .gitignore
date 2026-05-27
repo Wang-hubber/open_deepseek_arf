@@ -26,7 +26,6 @@ data/**/models/
 data/
 
 # Tests
-tests/
 
 # GitHub Actions
 .github/
@@ -58,8 +57,10 @@ Thumbs.db
 .env
 
 # Project artifacts (not tracked)
-tests/
 CLAUDE.md
 logs/
 app/web/dist/
 docs/superpowers/
+
+tests/
+scripts/
