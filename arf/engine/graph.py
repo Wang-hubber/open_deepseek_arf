@@ -70,15 +70,14 @@ class GraphEngine:
         self._system_prompt = system_prompt
         self._max_turns = max_turns
         self._cancel_event = cancel_event
-        self._checkpoints: deque[dict] = deque(maxlen=3)  # rolling 3 snapshots
         self._interaction_round = 0
+        # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
+        from arf.engine.round_manager import RoundManager
+        self._rounds = RoundManager(max_undo_depth=3)
         # Multi-agent
         self._sub_agent_configs: dict = sub_agent_configs or {}
         self._handoff_manager = handoff_manager
-        self._handoff_checkpoint: dict | None = None
         self._active_agent: str = ""
-        # Per-agent checkpoint stacks (keyed by agent_name)
-        self._agent_checkpoints: dict[str, deque] = {}
         self._agent_states: dict[str, AgentState] = {}
 
     @property
@@ -98,78 +97,27 @@ class GraphEngine:
             return True
         return False
 
-    def push_checkpoint(self, state: AgentState, workspace_dir: str = "") -> None:
-        """Save a deep copy of state and snapshot workspace files (max 5).
-
-        Files are backed up to memory/checkpoints/{round}/.
-        On undo, files are restored from the matching checkpoint.
-        """
-        import shutil
-        round_num = state.get("interaction_round", 0)
-        snapshot = copy.deepcopy(dict(state))
-        self._checkpoints.append(snapshot)
-
-        # Snapshot workspace files
-        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
-        ckpt_dir = Path("memory/checkpoints") / str(round_num)
-        if ckpt_dir.exists():
-            shutil.rmtree(ckpt_dir)
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-        # Backup files modified in workspace (non-dir, non-git)
-        if wsp.exists():
-            for f in wsp.rglob("*"):
-                if f.is_file() and ".git" not in f.parts:
-                    rel = f.relative_to(wsp)
-                    dest = ckpt_dir / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(f, dest)
-
     def undo(self, steps: int = 1, workspace_dir: str = "") -> AgentState | None:
-        """Pop N checkpoints, restore state and workspace files, or None.
+        """Pop N rounds and restore state from the target checkpoint.
 
-        The POPPED checkpoint represents the state BEFORE the last N rounds,
-        so we restore from it (not from the remaining stack top).
+        Emits undo_executed trace event so consumers can mark the
+        rollback boundary without deleting historical events.
         """
-        import shutil
-        if steps < 1 or steps > len(self._checkpoints):
-            return None
-
-        # Pop N checkpoints — keep reference to the last popped (target to restore)
-        target = None
-        for _ in range(steps):
-            target = self._checkpoints.pop()
-
-        if target is None:
-            return None
-
-        target_round = target.get("interaction_round", 0)
-
-        # Restore workspace files from target checkpoint
-        wsp = Path(workspace_dir) if workspace_dir else Path("workspaces/default")
-        ckpt_dir = Path("memory/checkpoints") / str(target_round)
-
-        if ckpt_dir.exists() and wsp.exists():
-            # Remove current workspace files
-            for f in wsp.rglob("*"):
-                if f.is_file() and ".git" not in f.parts:
-                    f.unlink()
-            # Restore from checkpoint
-            for f in ckpt_dir.rglob("*"):
-                if f.is_file():
-                    rel = f.relative_to(ckpt_dir)
-                    dest = wsp / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(f, dest)
-            # Clean up restored checkpoint dir + all newer ones
-            for d in Path("memory/checkpoints").iterdir():
-                if d.is_dir() and int(d.name) >= target_round:
-                    shutil.rmtree(d)
-
-        return copy.deepcopy(target)
+        active_trace = list(self._rounds.active_round.agent_trace) if self._rounds.active_round else []
+        current_round = self._rounds.current_round_num
+        target_round = max(0, current_round - steps)
+        restored = self._rounds.undo(steps, workspace_dir)
+        if restored is not None:
+            self._emit("undo_executed", {
+                "from_round": current_round,
+                "to_round": target_round,
+                "steps": steps,
+                "agent_trace": active_trace,
+            })
+        return restored
 
     def checkpoint_count(self) -> int:
-        return len(self._checkpoints)
+        return self._rounds.count()
 
     def _resolve_fallback(self, model_name: str, exc: Exception) -> str | None:
         """Resolve fallback model via error_policy → model_router chain.
@@ -228,21 +176,11 @@ class GraphEngine:
             or ""
         )
 
-        # 1. Save current agent's state + checkpoints
-        self._agent_states[from_agent or "main"] = dict(state)
-        self._agent_checkpoints[from_agent or "main"] = self._checkpoints
+        # 1. Save current agent state (persist for later resume)
         await self.state_store.put(
             f"{session_id}/{from_agent}" if from_agent else session_id,
             state,
         )
-
-        # Save handoff checkpoint for later restoration
-        self._handoff_checkpoint = {
-            "messages": list(state.get("messages", [])),
-            "active_agent": from_agent,
-            "current_turn": state.get("current_turn", 0),
-            "interaction_round": state.get("interaction_round", 0),
-        }
 
         # 2. Resolve target
         to_agent = await self._handoff_manager.resolve(from_agent, handoff_data)
@@ -255,14 +193,14 @@ class GraphEngine:
             state["handoff_error"] = f"No rule for {from_agent} → {to_agent}"
             return state
 
-        # 3. Try to load existing target agent state, or build fresh context
+        # 3. Record agent switch in the current round (no new checkpoint)
+        self._rounds.record_handoff(from_agent or "main", to_agent)
+
+        # 4. Try to load existing target agent state, or build fresh context
         existing_target = await self.state_store.get(f"{session_id}/{to_agent}")
         if existing_target:
             # Resume: restore target agent's previous state
             state.update(existing_target)
-            self._checkpoints = self._agent_checkpoints.get(
-                to_agent, deque(maxlen=3)
-            )
         else:
             # First time: build target context from handoff data
             target_cfg = self._sub_agent_configs.get(to_agent, {})
@@ -298,14 +236,12 @@ class GraphEngine:
             state["messages"] = new_messages
             state["current_turn"] = 0
             state["tool_results"] = {}
-            self._checkpoints = deque(maxlen=3)
-            self._agent_checkpoints[to_agent] = self._checkpoints
 
-        # 4. Swap active agent
+        # 5. Swap active agent
         state["active_agent"] = to_agent
         state["handoff_task"] = handoff_data.get("task", "")
 
-        # 5. Emit agent_switch
+        # 6. Emit agent_switch
         self._emit("agent_switch", {
             "from": from_agent,
             "to": to_agent,
@@ -321,14 +257,12 @@ class GraphEngine:
     async def _restore_from_handoff(self, state: AgentState,
                                       handoff_data: dict) -> AgentState:
         """Restore original agent after sub-agent handoff back."""
-        if not self._handoff_checkpoint:
-            return state
-
         session_id = state.get("session_id", "default")
-        cp = self._handoff_checkpoint
-        result_content = ""
+        current_agent = state.get("active_agent", "")
+        target_agent = self._active_agent or state.get("agent_name", "main")
 
         # Get sub-agent's last assistant message as result
+        result_content = ""
         for m in reversed(state.get("messages", [])):
             if m.get("role") == "assistant":
                 result_content = m.get("content", "")
@@ -337,45 +271,35 @@ class GraphEngine:
         if not result_content:
             result_content = "(handoff completed, no response)"
 
-        # Save current agent's final state
-        current_agent = state.get("active_agent", "")
+        # Save sub-agent's final state
         if current_agent:
-            self._agent_states[current_agent] = dict(state)
-            self._agent_checkpoints[current_agent] = self._checkpoints
             await self.state_store.put(f"{session_id}/{current_agent}", state)
 
-        # Restore checkpointed messages + replace handoff tool_result
-        messages = cp["messages"]
-        task = state.get("handoff_task", "")
+        # Load main agent's state from store (saved by _execute_handoff)
+        from_state = await self.state_store.get(f"{session_id}/{target_agent}")
+        if from_state:
+            messages = from_state.get("messages", [])
+            # Replace the original handoff tool result with sub-agent's response
+            if messages and messages[-1].get("role") == "tool":
+                messages[-1]["content"] = result_content
+        else:
+            messages = state.get("messages", [])
 
-        # The checkpoint messages end with:
-        #   assistant(tool_calls=[handoff_to_sys, ...]) + tool(result={...})
-        # Replace the original handoff tool result with sub-agent's response.
-        if messages and messages[-1].get("role") == "tool":
-            messages[-1]["content"] = result_content
+        # Record the return switch in the current round
+        self._rounds.record_handoff(current_agent, target_agent)
 
         # Emit agent_switch back
-        from_agent = current_agent
-        to_agent = cp.get("active_agent", "")
         self._emit("agent_switch", {
-            "from": from_agent,
-            "to": to_agent,
+            "from": current_agent,
+            "to": target_agent,
             "task": "handoff complete",
-        }, session_id=session_id, agent_name=to_agent)
+        }, session_id=session_id, agent_name=target_agent)
 
-        # Restore original agent's checkpoint stack
-        self._checkpoints = self._agent_checkpoints.get(
-            to_agent, deque(maxlen=3)
-        )
-
-        # Swap state
+        # Swap state back to original agent
         state["messages"] = messages
-        state["active_agent"] = to_agent
-        state["current_turn"] = cp.get("current_turn", 0)
-        state["interaction_round"] = cp.get("interaction_round", 0)
+        state["active_agent"] = target_agent
         state["tool_results"] = {}
         state.pop("handoff_task", None)
-        self._handoff_checkpoint = None
         state = self._close_tool_calls(state)
 
         return state

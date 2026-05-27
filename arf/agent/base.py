@@ -585,8 +585,8 @@ class BaseAgent:
             "plan": None,
             "metadata": {},
         }
-        # Push checkpoint before engine execution (for undo)
-        self._engine.push_checkpoint(state)
+        # Begin round transaction (for undo)
+        self._engine._rounds.begin_round(state)
         result = await self._engine.invoke(state)
         for m in reversed(result.get("messages", [])):
             if m.get("role") == "assistant":
@@ -618,8 +618,8 @@ class BaseAgent:
             "plan": None,
             "metadata": {},
         }
-        # Push checkpoint before engine execution (for undo)
-        self._engine.push_checkpoint(state)
+        # Begin round transaction (for undo)
+        self._engine._rounds.begin_round(state)
         async for event in self._engine.astream(state):
             yield event
 
