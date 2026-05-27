@@ -1305,9 +1305,15 @@ handover:
     - from_agent: arf_assistant
       to_agent: sys_agent
       trigger: "创建或修改 resources(tools/skills/models) 目录下的资源文件"
+      context:
+        raw_turns: 5        # 携带最近 5 轮对话作为上下文
+        task_summary: true   # 用 system_model 生成任务摘要
     - from_agent: sys_agent
       to_agent: arf_assistant
       trigger: "资源操作完成或需要用户确认"
+      context:
+        raw_turns: 0        # 返回时不携带对话上下文
+        task_summary: true
 ```
 
 ### 10.4 `_agent_mode` 路径权限分离
@@ -1325,11 +1331,37 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
     # 正常写入逻辑...
 ```
 
-### 10.5 当前状态与注意事项
+### 10.5 Handoff 流程详解
 
-- `agent.yaml` 中的 `agents:` 和 `handover:` 段已被解析但**未被框架运行时完整接入**。当前参考 App 通过 `handoff_to_sys` 工具 + `_agent_mode` 参数实现了基本的双 Agent 分离，但多 Agent 调度器尚未集成到主循环
-- System Agent 每次被调用创建独立上下文，任务完成即释放——不污染 User Agent 对话历史
+**正向交接（User Agent → System Agent）**：
+
+1. User Agent 调用 `handoff_to_sys(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
+2. 引擎在每次工具执行后调用 `HandoffManager.detect()` 扫描 tool_results，发现 `{"handoff": True}` 信号
+3. 保存当前 User Agent 状态到 `state_store`（key: `{session_id}/{from_agent}`）
+4. `HandoffManager.resolve()` 根据 `handover.rules` 解析目标 Agent
+5. `HandoffManager.build_target_context()` 构建 System Agent 的初始消息：target system prompt + raw_turns 上下文 + task summary + handoff user message
+6. 设置 `state["active_agent"] = "sys_agent"`，后续工具调用自动携带 `_agent_mode` 参数
+7. 下一轮循环使用 System Agent 的独立配置（system_prompt、tools、skills、max_turns）
+
+**反向交接（System Agent → User Agent）**：
+
+System Agent 完成任务后再次调用 `handoff_to_sys`，引擎检测到 handoff 信号后解析回 `arf_assistant`，从 state_store 恢复正向交接时保存的 User Agent 状态。子 Agent 的最后一条 assistant 消息作为 handoff 结果注入原对话，用户感知不到切换。
+
+**`_agent_mode` 传递链路**：
+
+```
+graph.py:state["active_agent"] → tool_executor.execute(agent_mode=...)
+→ function.py:params["_agent_mode"] = agent_mode
+```
+
+`file_writer` / `file_deleter` 据此区分权限：`_agent_mode == "user"` 时禁止写入 `tools/`、`skills/`、`models/` 路径。
+
+**注意事项**：
+
+- System Agent 每次被调用创建独立上下文（build_target_context 构建全新 messages），不污染 User Agent 对话历史
+- User Agent 的状态在 handoff 前持久化，返回时完整恢复
 - System Agent 创建的资源（tools/skills/models）由 FileWatcher 自动检测，User Agent 无需重启即可使用
+- `trigger` 字段在当前单规则配置下不会被使用（`len(candidates) == 1` 直接返回），但框架已为多目标 handoff 预留了 LLM 匹配 + 关键词 fallback 能力（`HandoffManager.resolve()`）
 
 > 深入阅读：[`docs/app/dual-agent.md`](docs/app/dual-agent.md)
 

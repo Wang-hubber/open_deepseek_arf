@@ -108,10 +108,35 @@ activation: kernel
 ```
 
 交接流程：
+
 1. User Agent 判断任务需要系统权限，调用 `handoff_to_sys(task="创建新工具", context="...")`
-2. 框架将任务上下文传递给 System Agent
-3. System Agent 执行后通过 handoff 返回结果或待确认事项
+2. 函数返回 `{"handoff": True, ...}` → 引擎 `HandoffManager.detect()` 捕获信号 → 状态保存 → 目标解析 → 上下文构建 → Agent 切换
+3. System Agent 执行后再次调用 `handoff_to_sys` → 引擎反向解析 → 恢复 User Agent 状态
 4. 用户感知不到 Agent 切换
+
+详见下方 [Handoff 流程详解](#handoff-流程详解)。
+
+### 目标解析策略 (Target Resolution)
+
+`HandoffManager.resolve()` 采用三级递进解析，为多目标 handoff 场景预留了完整的扩展能力：
+
+```
+resolve(from_agent, handoff_data):
+  candidates = rules[from_agent]         # 按 from_agent 分组
+
+  Tier 1: len(candidates) == 1
+    → 直接返回 candidates[0].to_agent   # 当前配置走这里
+
+  Tier 2: len(candidates) > 1 && system_model 可用
+    → LLM 语义匹配: 将 trigger 描述与 task 内容对比
+    → 返回最佳匹配的 to_agent
+
+  Tier 3: len(candidates) > 1 && system_model 不可用
+    → 关键词 fallback: trigger 文本分词后与 task 做交集
+    → 首个命中即返回；无命中则返回 candidates[0]
+```
+
+当前 `agent.yaml` 中每个 `from_agent` 只有一条规则，所以 `trigger` 字段和 Tier 2/3 逻辑尚未触发——但框架已完整实现，只需在 `handover.rules` 中为同一 `from_agent` 添加多条规则即可启用多目标调度。
 
 ---
 
@@ -142,8 +167,40 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
 
 ---
 
-## 注意事项
+## Handoff 流程详解
 
-- **当前实现状态**：`agent.yaml` 中的 `agents:` 和 `handover:` 段已被解析但**未被框架运行时完整接入**。参考 app 中通过 `handoff_to_sys` 工具 + `_agent_mode` 参数实现了基本的双 Agent 分离，但多 Agent 调度器（Dispatcher）尚未集成到主循环中
-- **System Agent 的上下文成本**：System Agent 每次被调用都创建独立的上下文，任务完成后释放——不会污染 User Agent 的对话历史
-- **FileWatcher**：System Agent 创建资源后，FileWatcher 自动检测新文件，User Agent 无需重启即可使用新工具
+### 正向交接（User Agent → System Agent）
+
+1. User Agent 调用 `handoff_to_sys(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
+2. 引擎在每次工具执行后调用 `HandoffManager.detect()` 扫描 tool_results，发现 `{"handoff": True}` 信号
+3. 保存当前 User Agent 状态到 `state_store`（key: `{session_id}/{from_agent}`）
+4. `HandoffManager.resolve()` 根据 handover rules 解析目标 Agent（支持多候选时 LLM 匹配 trigger）
+5. `HandoffManager.build_target_context()` 构建 System Agent 的初始消息：target system prompt + raw_turns 上下文 + task summary + handoff user message
+6. 设置 `state["active_agent"] = "sys_agent"`，后续工具调用自动携带 `_agent_mode` 参数
+7. 下一轮循环时，引擎使用 System Agent 的配置（system_prompt、tools、skills、max_turns）
+
+### 反向交接（System Agent → User Agent）
+
+System Agent 完成任务后再次调用 `handoff_to_sys`，引擎检测到 handoff 信号后：
+1. 解析目标为 `arf_assistant`（handover rules 第二条）
+2. `_execute_handoff` 发现 `state_store` 中已有目标 Agent 的状态（正向交接时保存的），直接恢复
+3. 子 Agent 的最后一条 assistant 消息作为 handoff 工具的结果注入原对话
+4. User Agent 继续处理，用户感知不到切换
+
+### `_agent_mode` 传递
+
+引擎在每次工具执行前从 `state["active_agent"]` 读取 agent_mode 并注入工具参数：
+
+```
+graph.py:726 → tool_executor.execute(valid_calls, agent_mode=agent_mode)
+→ function.py:30 → params["_agent_mode"] = agent_mode
+```
+
+`file_writer` / `file_deleter` 据此区分权限：`_agent_mode == "user"` 时禁止写入 `tools/`、`skills/`、`models/` 路径。
+
+### 注意事项
+
+- System Agent 每次被调用创建独立上下文（build_target_context 构建全新 messages），任务完成后释放——不会污染 User Agent 的对话历史
+- User Agent 的状态在 handoff 前持久化，返回时完整恢复
+- System Agent 创建的资源（tools/skills/models）由 FileWatcher 自动检测，User Agent 无需重启即可使用
+- `trigger` 字段在当前单规则配置下不会被使用（`len(candidates) == 1` 直接返回），但框架已为多目标 handoff 预留了 LLM 匹配 + 关键词 fallback 能力（`HandoffManager.resolve()`）
