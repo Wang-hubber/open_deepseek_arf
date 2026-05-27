@@ -80,7 +80,7 @@ const TAG = { model_call_start:'tag-model',model_call_end:'tag-model',thinking_d
   session_start:'tag-system',session_end:'tag-system',user_input:'tag-system',
   guard_block:'tag-error',guard_pass:'tag-ok',
   approval_required:'tag-warn',approval_resolved:'tag-warn',
-  error:'tag-error' };
+  error:'tag-error', rollback_executed:'tag-warn', undo_executed:'tag-warn' };
 
 const ICON = { model_call_start:'🤖',model_call_end:'🤖',thinking_delta:'💭',
   tool_call_start:'🔧',tool_call_end:'🔧', hook_start:'🪝',hook_end:'🪝',
@@ -88,7 +88,7 @@ const ICON = { model_call_start:'🤖',model_call_end:'🤖',thinking_delta:'�
   session_start:'▶',session_end:'⏹',user_input:'👤',
   guard_block:'🛡️✗',guard_pass:'🛡️✓',
   approval_required:'⏳',approval_resolved:'👆',
-  error:'❌' };
+  error:'❌', rollback_executed:'↩', undo_executed:'↩' };
 
 let allEvents = [], groupedRounds = [];
 
@@ -231,6 +231,7 @@ function renderTurnDetail(events) {
       body = `model=${d.model||'?'} tokens=${JSON.stringify(d.usage||{})} content=${(d.content||'').slice(0,300)}`;
     } else if(e.type === 'tool_call_end') {
       body = `success=${d.success} duration=${d.duration_ms||0}ms result=${(d.result||'').slice(0,600)} error=${d.error||''}`;
+      if(d.rolled_back) body += ` ⚠ ROLLED_BACK rollback_error=${d.rollback_error||'ok'}`;
     } else if(e.type === 'tool_call_start') {
       body = `tool=${d.tool_name||'?'} args=${(d.arguments||'{}').slice(0,300)}`;
     } else if(e.type === 'error') {
@@ -245,6 +246,11 @@ function renderTurnDetail(events) {
       body = `tool=${d.tool_name||'?'} approved=${d.approved} reason=${d.reason||''}`;
     } else if(e.type === 'thinking_delta') {
       body = (d.reasoning||d.content||'').slice(0,500);
+    } else if(e.type === 'rollback_executed') {
+      const rb = d.rolled_back || [];
+      body = `success=${d.success} turn=${d.turn} rolled_back=[${rb.map(r => r.name + (r.rollback_error ? '(FAIL:' + r.rollback_error + ')' : '(ok)')).join(', ')}]`;
+    } else if(e.type === 'undo_executed') {
+      body = `from_round=${d.from_round} → to_round=${d.to_round} steps=${d.steps}`;
     } else {
       body = JSON.stringify(d).slice(0,400);
     }

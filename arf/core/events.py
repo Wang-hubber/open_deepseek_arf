@@ -18,6 +18,7 @@ EventType = Literal[
     "guard_pass",           # All guard checks passed for a tool
     "hook_start", "hook_end",
     "undo_executed",        # undo boundary marker — trace never deletes, only marks
+    "rollback_executed",    # tool rollback completed (with rolled_back list)
     "error",
 ]
 
