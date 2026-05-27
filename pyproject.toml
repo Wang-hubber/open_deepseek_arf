@@ -40,3 +40,20 @@ arf-assistant = "app.arf_default_assistant.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["arf", "arf.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = ["-v", "--strict-markers", "--tb=short"]
+markers = [
+    "slow: slow tests (deselect with '-m \"not slow\"')",
+    "integration: integration tests that need services",
+]
+
+[tool.coverage.run]
+source = ["arf"]
+omit = ["arf/testing/*"]
+
+[tool.coverage.report]
+fail_under = 60
