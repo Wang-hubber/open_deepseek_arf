@@ -165,7 +165,7 @@ class GraphEngine:
             "adapters": {},
         }
 
-    async def _execute_handoff(self, state: AgentState, handoff_data: dict,
+    async def _execute_handoff(self, state: AgentState, handoff_data: dict[str, object],
                                 current_model: str) -> AgentState:
         """Execute forward handoff: save agent state → resolve → build context → swap."""
         session_id = state.get("session_id", "default")
@@ -255,7 +255,7 @@ class GraphEngine:
         return state
 
     async def _restore_from_handoff(self, state: AgentState,
-                                      handoff_data: dict) -> AgentState:
+                                      handoff_data: dict[str, object]) -> AgentState:
         """Restore original agent after sub-agent handoff back."""
         session_id = state.get("session_id", "default")
         current_agent = state.get("active_agent", "")
@@ -304,7 +304,7 @@ class GraphEngine:
 
         return state
 
-    async def _resolve_tools_for_agent(self, state: AgentState, active: dict) -> list[dict]:
+    async def _resolve_tools_for_agent(self, state: AgentState, active: dict[str, object]) -> list[dict[str, object]]:
         """Get tool definitions for the active agent, falling back to resolver."""
         active_tools = active.get("tools", [])
         if active_tools:
@@ -337,7 +337,7 @@ class GraphEngine:
         """Store model_name → context_window mapping for compaction decisions."""
         self._model_windows = windows
 
-    def _emit(self, event_type: str, data: dict, session_id: str = "", agent_name: str = "") -> None:
+    def _emit(self, event_type: str, data: dict[str, object], session_id: str = "", agent_name: str = "") -> None:
         if self.event_bus:
             data["round"] = self._interaction_round
             self.event_bus.emit(AgentEvent(
@@ -346,7 +346,7 @@ class GraphEngine:
                 agent_name=agent_name or data.get("agent_name", ""),
             ))
 
-    def _make_event(self, type: str, data: dict, turn: int = 0, session_id: str = "") -> AgentEvent:
+    def _make_event(self, type: str, data: dict[str, object], turn: int = 0, session_id: str = "") -> AgentEvent:
         """Create an AgentEvent and publish to EventBus (if set)."""
         data["round"] = self._interaction_round
         event = AgentEvent(type=type, data=data, turn=turn, session_id=session_id)
