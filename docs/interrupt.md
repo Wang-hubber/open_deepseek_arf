@@ -1,48 +1,55 @@
-# External Interrupt & User Intervention
+# Interrupt & Rollback
 
-ARF 参照 OS 硬件中断模型：用户可随时中止流式响应，Hook 可注入消息到对话流，undo 支持状态+文件双回滚。
+ARF 提供两种保障对话连续性的机制：**中断/恢复**（遭遇异常后快速继续对话）和**回滚**（撤销操作回到安全状态）。
 
 ---
 
 ## 1. OS 方案演进
 
-> 本章描述 OS 如何处理外部中断与进程间通信，作为 ARF 设计思路的参考。非严格技术对标。
+> 本章描述 OS 如何处理中断与检查点，作为 ARF 设计思路的参考。非严格技术对标。
 
 ### 1.1 硬件中断的演进
 
-**问题**：CPU 如何响应外部设备的异步事件（键盘按下、网络包到达、定时器到期）而不轮询浪费 CPU？
+**问题**：CPU 如何响应外部设备的异步事件而不轮询浪费 CPU？
 
-**8259 PIC（可编程中断控制器）** — IBM PC/AT 引入。两片级联支持 15 个中断源（IRQ 0-15）。中断到达时，PIC 向 CPU 发送 INT 信号，CPU 保存现场（EFLAGS、CS、EIP 压栈），通过中断向量表（IDT）跳转到对应的中断服务例程（ISR）。ISR 执行完用 IRET 恢复现场。
+**8259 PIC** — 中断到达时向 CPU 发送 INT 信号，CPU 保存现场（EFLAGS、CS、EIP 压栈），通过中断向量表（IDT）跳转到中断服务例程（ISR），执行完用 IRET 恢复现场。
 
-**APIC（高级可编程中断控制器）** — Pentium Pro 引入。支持多核环境下的中断路由。Local APIC（每核一个）处理本地中断和 IPI（核间中断）。IO APIC 替代 8259 管理外部设备中断。支持中断优先级和向量重定向。
+**APIC** — 多核环境下的中断路由，支持中断优先级和向量重定向。
 
-**MSI/MSI-X（消息信号中断）** — PCIe 引入。设备不通过物理中断引脚，而是写特定内存地址（MSI address register）来发送中断。消除了 IRQ 共享冲突，支持更多向量（最多 2048 个）。类比 ARF 的 Hook 退出码 2：不阻断流程，而是写入一条消息（中断信号）供接收方（LLM）在下一轮处理。
+**信号（Signal）** — Unix 的"软件中断"。SIGINT（Ctrl+C）、SIGTERM、SIGKILL。进程收到信号后执行注册的 handler 或默认动作。类比 ARF：`cancel_event.set()` 类似 SIGINT — 用户按下"停止"按钮。
 
-### 1.2 信号 — 用户态"软件中断"
+### 1.2 进程检查点与恢复
 
-Unix 信号（SIGINT、SIGTERM、SIGKILL 等）是用户态的异步通知机制。进程收到信号后执行注册的 handler（ISR 的用户态等价），或执行默认动作（终止/忽略/core dump）。Ctrl+C 是 SIGINT——用户在终端按下的"停止"按钮。
+长时间运行的进程如何在崩溃后恢复而不丢失中间结果？
 
-### 1.3 进程检查点与恢复
+OS 用检查点保存进程状态快照（CRIU、BLCR）。ARF 的 `RoundManager` 直接对应检查点+恢复模型：每个用户交互轮次推入检查点，undo 时恢复到目标检查点，文件和状态双回滚。
 
-**问题**：长时间运行的进程如何在崩溃或中断后恢复，而不丢失所有中间结果？
+### 1.3 对 ARF 的启发
 
-OS 用检查点保存进程状态快照——内存页、文件描述符、寄存器。恢复时重建全部状态继续执行。典型实现有 CRIU（Checkpoint/Restore In Userspace）和 BLCR。ARF 的 undo 机制直接对应检查点+恢复模型，但以对话轮次为粒度。
-
-### 1.4 对 ARF 的启发
-
-硬件中断的"保存现场→ISR→恢复"对应了 cancel 的"捕获取消信号→break 清理→下轮正常"。信号的异步通知对应了 Hook 退出码 2 的消息注入——不打断流程但插入信息。检查点模型直接影响了 undo 机制的设计。
+| OS 概念 | ARF 对应 |
+|---------|----------|
+| 硬件中断 → 保存现场 → ISR → 恢复 | `cancel_event.set()` → break → `FileStateStore` 持久化 → 下次对话恢复 |
+| 信号（SIGINT） | `POST /api/chat/cancel`，`AbortController.abort()` |
+| 检查点（CRIU） | `RoundManager.begin_round()` → `undo(steps)` |
 
 ---
 
-## 2. ARF 当前实现
+## 2. 中断与恢复
 
-### 2.1 架构总览
+当对话被中断（用户主动停止、网络断开、服务异常），ARF 通过 `FileStateStore` 将状态持久化到磁盘。下次启动时自动恢复，用户无感知。
+
+### 2.1 中断场景
+
+| 场景 | 触发方式 | 引擎行为 |
+|------|---------|---------|
+| **用户主动中断** | `POST /api/chat/cancel`，前端 Stop 按钮 | `cancel_event.set()` → 循环边界检测 → break → 状态落盘 |
+| **网络异常/超时** | 客户端 `AbortController.abort()`，SSE 断开 | `asyncio.CancelledError` → `cancel_event.set()` → break → 状态落盘 |
+| **服务异常** | 进程崩溃、OOM、kill | 最后一次 `state_store.put()` 的状态可用（每 turn 结束时写入） |
+
+### 2.2 取消信号传递
 
 ```
 用户点击 Stop / 客户端断开
-    │
-    ▼
-POST /api/chat/cancel 或 asyncio.CancelledError
     │
     ▼
 cancel_event.set()  ← asyncio.Event（非阻塞标志）
@@ -53,8 +60,6 @@ GraphEngine 循环边界检查 _cancelled()
     └─ False → 继续执行
 ```
 
-### 2.2 取消机制
-
 **引擎侧**（`GraphEngine`）：
 
 ```python
@@ -62,45 +67,67 @@ def _cancelled(self) -> bool:
     return self._cancel_event is not None and self._cancel_event.is_set()
 ```
 
-在 `invoke()` 和 `astream()` 的 while 循环开始处检查。`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在下一个循环边界响应，类似硬件中断在当前指令边界响应。
+`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在当前循环边界响应，类似硬件中断在当前指令边界响应。
 
-**应用服务端（App FastAPI）**：
-
-框架提供 `set_cancel_event()` / `_cancelled()` 原语，App 负责将其接入 HTTP 传输层。参考 App（`app/arf_default_assistant/server.py`）的集成模式：
+**应用服务端**（App FastAPI）集成模式：
 
 ```python
-# 1. SSE 流启动时注入 cancel_event
+# SSE 流启动时注入 cancel_event
 async def _sse_chat(message: str):
     cancel_evt = asyncio.Event()
     _active_cancel_events["default"] = cancel_evt
-    _agent.engine.set_cancel_event(cancel_evt)  # ← 注入引擎
+    _agent.engine.set_cancel_event(cancel_evt)  # 注入引擎
+
     try:
         async for event in _agent.astream(message):
             ...
             if event.type == "session_end" and event.data.get("reason") == "cancelled":
                 yield '{"type": "cancelled"}'  # 通知前端
                 return
-    except asyncio.CancelledError:
-        cancel_evt.set()  # 客户端断开也触发取消
+    except asyncio.CancelledError:  # 客户端断开
+        cancel_evt.set()
 
-# 2. 取消 API 端点
+# 取消 API 端点
 @app.post("/api/chat/cancel")
 async def cancel_chat():
     evt = _active_cancel_events.get("default")
     if evt:
-        evt.set()  # 引擎下一轮循环边界检测到并退出
+        evt.set()
     return {"status": "cancelled"}
 ```
 
-**取消路径**：
+### 2.3 状态持久化与恢复
 
-- `POST /api/chat/cancel`：用户主动取消 → `cancel_event.set()` → 引擎循环边界检测 → break
-- 客户端断开（`AbortController.abort()`）：`asyncio.CancelledError` → SSE 生成器设置 `cancel_event` → 引擎退出
-- 取消后 SSE 推送 `{"type": "cancelled"}` 事件，前端据此更新 UI
+**引擎侧**：`FileStateStore` 在每个 turn 结束、工具执行前后、`human_loop` 暂停前自动调用 `put()`。状态以 JSON 格式写入 `memory/state/{session_id}.json`。
 
-### 2.3 Undo — Round 级状态 + 文件双回滚
+**服务端**：启动时从 `FileStateStore` 加载状态，存在则恢复对话历史、当前模型、上下文摘要等。`api/chat` 和 `astream` 入口读取 `state_store.get("default")` 拿到已有状态后追加新消息。
 
-`RoundManager`（`arf/engine/round_manager.py`）维护 3 个 `RoundTransaction` 的滚动窗口。每个 round 代表一次用户交互，可跨多次 agent handoff：
+```python
+# server.py lifespan — startup
+state = await _agent.state_store.get("default")
+if state:
+    logger.info(f"Restored state: {len(state['messages'])} messages")
+```
+
+**当前限制**：
+- 状态快照在内存中（deque），重启后从 `FileStateStore` 恢复完整状态
+- 文件快照持久化在 `memory/checkpoints/`，重启后可恢复
+- 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
+
+---
+
+## 3. 回滚
+
+### 3.1 回滚场景
+
+| 场景 | 触发方式 | 行为 |
+|------|---------|------|
+| **用户主动撤销** | `POST /api/chat/undo?steps=N`，对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
+| **检查点损坏/不可用** | `undo()` 返回 `None`，或 `checkpoint_count()` < steps | 拒绝回滚，返回错误信息 |
+
+### 3.2 RoundManager 检查点
+
+`RoundManager`（`arf/engine/round_manager.py`）维护可配数量的 `RoundTransaction` 滚动窗口。每个 round 代表一次用户交互，可跨多次 agent handoff：
 
 ```python
 class RoundManager:
@@ -109,12 +136,14 @@ class RoundManager:
 ```
 
 **检查点创建**：`BaseAgent.chat/astream` 入口调用 `rounds.begin_round(state)`，同时保存：
+
 1. 对话状态深拷贝（messages、current_model、context_summary）
 2. 工作区文件快照（复制到 `memory/checkpoints/{round_num}/`，排除 `.git`）
+3. Round 元数据持久化到 `memory/checkpoints/rounds.json`
 
 **Handoff 与检查点**：Agent 切换时 `rounds.record_handoff(from, to)` 仅记录参与顺序，**不创建新检查点**。一个 round 内无论多少次 handoff，undo 都回退整个 round。
 
-**Undo 过程**：
+### 3.3 Undo 过程
 
 ```
 Round 0: hello.txt(v1) → begin_round → memory/checkpoints/0/hello.txt
@@ -131,19 +160,23 @@ Round 2: hello.txt(v3)  ← 改坏了
     └─ 清理 >= round 2 的检查点目录
 ```
 
-**Trace 集成**：undo 时不删除已有 trace 事件（审计日志不可篡改），而是追加 `undo_executed` 事件。前端可根据 `from_round` / `to_round` 折叠或灰度显示被撤销的轮次。
-
 **对话内 Undo 工具**：框架提供 `undo` 工具（kernel 级别激活），LLM 可在对话中直接调用。用户说"撤回"即可触发，无需 API。
 
-**文件回滚范围**：`RoundManager` 是整个项目空间的检查点管理器。所有 agent 共享同一个 `workspace` 目录，文件快照覆盖 workspace 内全部文件（排除 `.git`），任何 agent 在 workspace 内的文件变更都可以被回滚。
+**文件回滚范围**：所有 agent 共享同一个 `workspace` 目录，`RoundManager` 快照覆盖 workspace 内全部文件（排除 `.git`），任何 agent 在 workspace 内的文件变更都可以被回滚。
 
-**当前限制**：
-- 快照上限可配置（默认 3），用户只能 undo 最近 N 步
-- 重启后仅保留 round 元数据（`memory/checkpoints/rounds.json`），完整状态快照仍依赖 `FileStateStore`；重启后的 undo 需从 state_store 恢复状态 + 从快照恢复文件
-- 状态快照在内存中（deque），重启后从 state_store 恢复；文件快照持久化在 `memory/checkpoints/`
-- 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
+**Trace 集成**：undo 时不删除已有 trace 事件（审计日志不可篡改），而是追加 `undo_executed` 事件。前端可根据 `from_round` / `to_round` 折叠或灰度显示被撤销的轮次。
 
-### 2.4 配置
+### 3.4 检查点不可用时的行为
+
+当 `checkpoint_count() < steps` 或检查点数据损坏时：
+
+- API 端点返回 `{"status": "insufficient_checkpoints", "available": N, "requested": steps}`
+- 对话内 `undo` 工具返回 `{"ok": false, "error": "Only N checkpoints available"}`
+- 不会部分回滚，不会损坏现有状态
+
+---
+
+## 4. 配置
 
 ```yaml
 advanced:
@@ -158,21 +191,20 @@ tools:
 
 ---
 
-## 3. 演进方向
+## 5. 演进方向
 
-### 3.1 对标 OS 最佳实践：暂停/重定向向量
+### 5.1 暂停/恢复
 
-当前取消是"终止型"的——一旦取消，整个 Agent 循环退出。对标 OS 的信号处理（可注册 handler 而非只有 default kill），可以支持更细粒度的干预：
+当前取消是"终止型"的——一旦取消，整个 Agent 循环退出。可以支持更细粒度的干预：
 
-- **暂停/恢复**：类似 SIGSTOP/SIGCONT。用户暂停 Agent 后，可在稍后恢复继续。需要将完整 engine 状态序列化，支持跨进程恢复
-- **重定向**：类似信号 handler。用户不停止 Agent，而是注入新的指令（"别管那个了，先做这个"），Agent 在当前 turn 结束后切换任务
+- **暂停/恢复**：类似 SIGSTOP/SIGCONT。用户暂停 Agent 后，可在稍后恢复继续。需将完整 engine 状态序列化，支持跨进程恢复
+- **重定向**：类似信号 handler。用户不停止 Agent，而是注入新的指令，Agent 在当前 turn 结束后切换任务
 
-### 3.2 持久化检查点
+### 5.2 检查点持久化增强
 
-对标 CRIU 的进程检查点机制：将检查点从内存 deque 移到持久化存储（`memory/checkpoints/`），支持重启后 undo。结合 `archive.json`（已实现会话持久化），实现完整的"会话可恢复性"。
+将 `RoundTransaction` 的完整状态快照序列化到 `memory/checkpoints/`，支持重启后 undo。当前仅持久化 round 元数据，完整快照仍在内存中。
 
-### 3.3 探索性方向
+### 5.3 探索性方向
 
-**空闲超时**：Agent 长时间等待用户输入或工具响应时自动暂停，释放资源。类似 OS 将进程换出到 swap 等待唤醒。
-
-**中断优先级**：区分"紧急中断"（用户强制停止）和"软中断"（Hook 注入的消息建议 LLM 调整方向但不强制终止）。紧急中断在引擎循环边界立即响应；软中断由 LLM 在自己的判断中决定是否采纳。
+- **空闲超时**：Agent 长时间无交互时自动暂停，释放资源
+- **中断优先级**：区分"紧急中断"（强制停止）和"软中断"（LLM 自行决定是否采纳），紧急中断在循环边界立即响应
