@@ -1,3 +1,4 @@
+"""Human loop — approval points and channels for human intervention."""
 from arf.human_loop.approval_points import AlwaysAutoApprove, ToolNameAllowlist
 from arf.human_loop.channels.console import ConsoleChannel
 
