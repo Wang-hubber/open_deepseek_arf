@@ -32,9 +32,96 @@ ARF 的并发模型是：Agent 循环顺序执行，但单轮内的工具调用�
 
 **事务内存**（IBM Blue Gene/Q, 2011；Intel TSX, 2013）：程序员标记代码块为事务，硬件跟踪读集/写集。事务提交时检查冲突——无冲突则原子提交，有冲突则回滚重试。核心思想：**乐观并发**——假设冲突少，先执行再说，提交时发现冲突再回滚。
 
-### 1.4 对 ARF 的启发
+### 1.5 并发基础概念
 
-超标量启示了单轮内工具调用的并行执行——无依赖的工具可以同时跑。依赖图启示了 Skill Pipeline 的声明式依赖——显式描述执行顺序约束而非硬编码顺序。事务内存启示了文件操作的快照回滚——检查点 + undo。
+> 线程、进程、协程是操作系统和编程语言中三种核心的并发模型。理解它们的本质区别，有助于理解 ARF 为何在不同场景选择不同机制。
+
+**进程（Process）**
+
+进程是 OS 资源分配的基本单位。`fork()` 创建一个新进程时，OS 复制完整的地址空间（代码、数据、堆、栈），新进程拥有独立的虚拟内存页表。进程间天然隔离——一个进程崩溃不会影响另一个，但通信需要 IPC（管道、socket、共享内存），开销较大。
+
+```
+进程 A                         进程 B (fork 自 A)
+┌─────────────────┐            ┌─────────────────┐
+│ 代码段 (只读)    │            │ 代码段 (COW 共享) │
+│ 数据段           │            │ 数据段 (写时拷贝) │
+│ 堆               │            │ 堆 (独立)        │
+│ 栈               │            │ 栈 (独立)        │
+│ 文件描述符       │            │ 文件描述符 (独立) │
+│ GIL (一个)       │            │ GIL (另一个)     │
+└─────────────────┘            └─────────────────┘
+        ↕  IPC (管道/socket/共享内存)
+```
+
+**线程（Thread）**
+
+线程是 CPU 调度的基本单位。同一进程内的多个线程共享地址空间（代码段、数据段、堆），各自拥有独立的栈和寄存器上下文。共享内存使通信极快，但也带来竞态条件——两个线程同时写一个变量，结果不确定。
+
+CPython 的 GIL（Global Interpreter Lock）是一个互斥锁，保证同一时刻只有一个线程执行 Python 字节码。这意味着 Python 多线程**无法实现 CPU 并行**——即使有 8 个核，8 个线程也只能交替执行。但 IO 操作（文件读写、网络请求、subprocess 等待）会释放 GIL，让其他线程有机会执行。
+
+```
+进程 (一个 Python 解释器)
+├─ 线程 1 ─── GIL ─── [Python 代码] ── [IO: 释放 GIL] ── [Python 代码] ──
+├─ 线程 2 ─────────── [等待 GIL] ───── [获得 GIL] ── [Python 代码] ── [释放]
+└─ 线程 3 ─────────── [等待 GIL] ─────────────────────────── [获得 GIL] ──...
+
+多线程适合：IO 密集任务（网络请求、文件读写）
+多线程不适合：CPU 密集任务（计算、正则、编解码）→ 考虑多进程
+```
+
+**协程（Coroutine）**
+
+协程是用户态协作式调度的"轻量线程"。与线程不同，协程的切换由程序显式控制（`await`），不依赖 OS 抢占式调度，不需要上下文切换到内核态。一个线程内可以运行成千上万个协程，因为协程只是一个函数调用帧，不是 OS 线程。
+
+`asyncio` 的 event loop 在单线程中轮询所有就绪协程：协程 A 遇到 `await` 时主动让出控制权，event loop 调度协程 B 执行，B 再 `await` 时让出……如此循环。由于所有协程在同一线程中，不需要锁——同一时刻只有一个协程在执行。
+
+```
+单线程 event loop
+│
+├─ 协程 A: 执行...await IO ────[等待 IO]──────── 恢复执行...await ──
+├─ 协程 B: 等待.................执行...await IO ────[等待]── 恢复...
+├─ 协程 C: 等待................................执行...返回结果
+└─ 协程 D: 等待................................................执行...
+
+协程适合：高并发 IO（成千上万个连接）
+协程不适合：CPU 密集任务（阻塞 event loop，其他协程饿死）
+```
+
+**三者的本质差异**：
+
+| 维度 | 多进程 | 多线程 | 协程 (asyncio) |
+|------|--------|--------|---------------|
+| 调度者 | OS 抢占式 | OS 抢占式 | 用户态协作式 |
+| 切换开销 | 大（页表、TLB flush） | 中（寄存器、栈切换） | 小（函数调用帧） |
+| 地址空间 | 隔离 | 共享 | 共享 |
+| 通信方式 | IPC | 共享内存（需锁） | 直接变量访问（无需锁） |
+| GIL 影响 | 无（各自独立 GIL） | **有**（同一时刻一个线程） | 无（单线程内） |
+| 内存开销 | 大（每个进程独立地址空间） | 中（每个线程独立栈 ~8MB） | 小（每个协程 ~KB） |
+| 崩溃影响 | 隔离 | 可能影响整个进程 | 可能影响整个 event loop |
+| 适合任务 | CPU 密集 / 隔离需求 | IO 密集（线程池） | 高并发 IO（大量连接） |
+
+### 1.6 ARF 的选型逻辑
+
+ARF 选择协程作为主力并发模型，原因是：
+
+1. **Agent 的瓶颈是 IO，不是 CPU**。99% 的等待时间花在模型 API 调用（网络 IO）和工具执行（文件 IO、HTTP 请求）上，而非 Python 代码运算。协程在 IO 密集场景下效率最高，且无锁开销。
+
+2. **单线程模型天然安全**。Agent 的状态（`AgentState`、`memory.json`、工具执行顺序）是共享可变状态。多线程需要加锁保护每一个读写点——这是 bug 的温床。协程的单线程模型保证了"同一时刻只有一件事在执行"，天然避免竞态。
+
+3. **需要隔离时才用进程**。Hook 是外部脚本，不受信，且可能崩溃、超时。`create_subprocess_shell` 提供了 OS 级别的隔离——Hook 死了不影响 Agent，超时了就用 SIGKILL 杀掉。这正是"需要隔离时用进程"的策略。
+
+4. **不用线程**。ARF 没有 CPU 密集任务需要多核并行，IO 并发已经由协程覆盖。引入线程池只会增加 GIL 竞争和锁的复杂度，没有实际收益。
+
+```
+ARF 并发选型决策树:
+
+任务类型 ── 受信（框架内工具）── IO 密集 ── asyncio 协程 (ConcurrentToolExecutor)
+          │                    └─ CPU 密集 ── 未来考虑 asyncio.to_thread()
+          │
+          └─ 不受信（外部脚本）─────────── OS 子进程 (SubprocessHookRunner)
+          
+协程之间需要顺序约束？── SkillPipeline.depends_on (DAG 拓扑序)
+```
 
 ---
 
@@ -146,6 +233,150 @@ skills:
 - **无 Worktree 隔离**：并发任务共享文件系统，存在竞态风险
 - **并发度可配**：通过 `AdvancedConfig.concurrency`（`ConcurrencyConfig`）配置，详见 `advanced` 配置段
 - **SequentialScheduler**（`arf/concurrency/sequential.py`）已定义但未在任何地方使用
+
+### 2.7 并发策略考量
+
+ARF 内部两处并发使用了不同机制——工具执行用协程，Hook 执行用子进程。本节分析两者的差异、适用边界，以及 Python 版本演进（GIL）对此的影响。
+
+#### 2.7.1 工具并发：`ConcurrentToolExecutor`
+
+```
+LLM 返回 N 个 tool_calls
+    │
+    ├─ tc_1 ──┐
+    ├─ tc_2 ──┤  asyncio.gather
+    ├─ tc_3 ──┤      │
+    └─ tc_4 ──┘  asyncio.Semaphore(max_concurrency=5)
+                     │
+                     ▼
+              ResourceResolver.execute(name, params)
+                     │
+                     ▼
+              FunctionBackend.execute_with_fn(fn, params)
+                     │
+                     ▼
+              fn(**params)   ← 工具函数在同一进程/event loop 中执行
+```
+
+关键代码路径：
+
+```python
+# tool_executor.py — 并发入口
+sem = asyncio.Semaphore(max_concurrency)
+async def _run(tc):
+    async with sem:
+        return tc["id"], await self._resolver.execute(tc["name"], params)
+tasks = [_run(tc) for tc in tool_calls]
+resolved = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+```python
+# function.py — 工具实际执行
+result = fn(**params)              # 调用工具函数
+if hasattr(result, "__await__"):   # 如果是 async def
+    result = await result           # await 协程
+```
+
+**并发模型**：协程并发（`asyncio.gather` + `asyncio.Semaphore`），所有工具共享同一个 event loop。
+
+**对 GIL 的依赖**：工具函数（`file_reader`、`web_search`、`python_exec` 等）绝大多数是 IO 密集——读文件、HTTP 请求、子进程调用。IO 操作在 CPython 中会释放 GIL，因此即使多个工具"同时"执行，实际 IO 等待是真正并行的。但如果工具函数包含 CPU 密集的同步代码（如大文件解析、正则扫描），则会阻塞 event loop，其他协程无法被调度。
+
+**`async def` 的实际语义**：ARF 的工具函数约定为 `async def`，但内部通常使用同步 stdlib（`Path.read_text()`、`urllib.request.urlopen()`）。这意味着：
+- `await fn()` 将协程加入 event loop
+- 协程体内调用同步 IO → GIL 在 IO 时释放 → event loop 可调度其他协程
+- 协程体内有 CPU 密集计算 → GIL 持有 → event loop 阻塞 → 其他工具等待
+
+**`max_concurrency` 的作用**：`asyncio.Semaphore(5)` 限制同时"执行中"的协程数量。对于纯 IO 的工具，限制并发的意义不大（event loop 本就可以管理大量协程）。但对于有资源约束的场景——如 API rate limit、文件句柄限制——Semaphore 是有意义的限流手段。
+
+#### 2.7.2 Hook 并发：`SubprocessHookRunner`
+
+```
+Hook 触发事件
+    │
+    ├─ hook_1 ──┐
+    ├─ hook_2 ──┤  asyncio.gather
+    └─ hook_3 ──┘      │
+                        ▼
+              asyncio.create_subprocess_shell(cmd)
+                        │
+                        ▼
+              OS fork() → 独立进程，独立地址空间
+                        │
+                        ▼
+              await proc.communicate() → 非阻塞等待
+```
+
+关键代码路径：
+
+```python
+# runner.py — 并发启动子进程
+proc = await asyncio.create_subprocess_shell(cmd, ...)
+stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=tout)
+```
+
+```python
+# 多 Hook 并发
+tasks = [_run_hook(h) for h in hooks]
+resolved_list = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+**并发模型**：进程级并发。每个 Hook 通过 `fork()` 创建独立 OS 进程，asyncio event loop 通过 `await proc.communicate()` 非阻塞等待进程退出。这不是线程池——没有线程创建开销，也没有 GIL 竞争。
+
+**与工具并发的根本差异**：
+
+| 维度 | `ConcurrentToolExecutor` | `SubprocessHookRunner` |
+|------|--------------------------|------------------------|
+| 执行单元 | Python 协程（同一进程） | OS 子进程（独立进程） |
+| 地址空间 | 共享 | 隔离 |
+| GIL 影响 | CPU 密集时阻塞 event loop | 无影响 |
+| 隔离性 | 无（工具可访问 Agent 内存） | 强（子进程看不到 Agent 内存） |
+| 通信方式 | 函数返回值 | stdout/stderr + 退出码 |
+| 超时处理 | 无内置超时 | `asyncio.wait_for` + SIGKILL |
+| 失败隔离 | `return_exceptions=True` 吞异常 | 单进程崩溃不影响其他 |
+| 适用场景 | 框架内工具（受信、需共享状态） | 外部脚本（不受信、无需共享状态） |
+
+#### 2.7.3 Python GIL 与版本差异
+
+**Python 3.11（ARF 最低要求）**：
+- GIL 始终启用。同一时刻仅一个线程执行 Python 字节码。
+- IO 操作（文件读写、socket、subprocess）在系统调用层面释放 GIL。
+- `asyncio` 协程在单线程中基于 event loop 协作调度，不涉及多线程。
+
+**Python 3.13+ 的 free-threaded 模式（PEP 703）**：
+- 通过 `--disable-gil` 编译标志开启，默认构建仍带 GIL。
+- 移除 GIL 后，`ThreadPoolExecutor` 可实现真正的 CPU 并行。
+- 对协程模型影响极小——asyncio 仍运行在单线程 event loop 中。
+
+**对 ARF 的影响评估**：
+
+| ARF 组件 | 机制 | 受 GIL 影响？ | free-threaded 下有变化？ |
+|----------|------|-------------|----------------------|
+| `ConcurrentToolExecutor` | asyncio 协程 | IO 操作无影响；CPU 密集代码阻塞 event loop | 不变——除非改用线程池执行工具 |
+| `SubprocessHookRunner` | OS 子进程 | 无影响 | 不变 |
+| `GraphEngine` 主循环 | 单协程 | 无影响 | 不变 |
+| Model API 调用 | HTTP（httpx/openai） | IO 释放 GIL | 不变 |
+
+结论：ARF 的并发策略在 Python 3.11 到 3.14 各版本下行为一致，GIL 的存在与否不影响当前架构。如果未来需要 CPU 密集的工具并行（如图像处理、大规模计算），可引入 `asyncio.to_thread()` 或将工具改为 subprocess 执行。
+
+#### 2.7.4 并发策略选型指南
+
+```
+需要并发执行多个任务，应该用什么机制？
+
+任务是否受信（框架内工具）？
+├─ 是 → 任务是否 IO 密集？
+│       ├─ 是 → ConcurrentToolExecutor (asyncio.gather + Semaphore)
+│       └─ 否（CPU 密集）→ 考虑 asyncio.to_thread() 或改为 subprocess
+└─ 否（外部脚本/不受信代码）→ SubprocessHookRunner (create_subprocess_shell)
+
+是否需要在任务间保证执行顺序？
+├─ 是 → SkillPipeline 声明 depends_on 依赖链
+└─ 否 → 自由并发
+
+是否需要限制并发数量？
+├─ 是 → ConcurrencyConfig.max_concurrency（工具）/ Hook 无限制
+└─ 否 → 使用默认值
+```
 
 ---
 
