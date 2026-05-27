@@ -1,3 +1,4 @@
+"""ApprovalPoint implementations for human-in-the-loop workflows."""
 from arf.core.state import TurnContext
 from arf.core.results import ApprovalRequest
 
