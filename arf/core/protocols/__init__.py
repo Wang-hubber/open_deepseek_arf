@@ -1,3 +1,4 @@
+"""Protocol definitions — abstract interfaces for all framework domains."""
 from arf.core.protocols.engine import (
     LoopStrategy, StateStore, ToolExecutor, Planner,
 )
