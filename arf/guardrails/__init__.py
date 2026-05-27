@@ -1,3 +1,4 @@
+"""Guardrails — input/output/tool guards and permission checker."""
 from arf.guardrails.runner import DefaultGuardRunner
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
