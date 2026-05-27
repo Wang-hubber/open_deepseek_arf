@@ -267,14 +267,14 @@ cd app/web && npm install && npm run dev
 
 ### TODO — 待改进项
 
-> 基于 [自评报告](docs/SELF_REVIEW.md) 逐项代码验证。~~删除线~~ = 已修复。
+> 基于 [自评报告](docs/SELF_REVIEW.md) 逐项代码验证。
 
 | # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
 |---|------|---------|--------|------|------|
-| 1 | ~~Engine `invoke`/`astream` 代码重复~~ | `arf/engine/graph.py:446-1195` | 进程调度 | 框架 | `invoke()`(446行) 与 `astream()`(791行) 约 400 行结构完全相同的 Agent Loop 逻辑，仅事件发射方式不同（`self._emit` vs `yield`）。**风险**：修改 Loop 逻辑需同步两处，遗漏即产生不一致行为 |
-| 2 | ~~`BaseAgent.__init__` 巨型构造~~ | `arf/agent/base.py` (636行) | 进程创建 | 框架 | 构造函数内直接实例化 20+ 个默认实现（EventBus、StateStore、Memory、Guardrails、Hooks、ToolExecutor 等），无工厂方法拆分。**风险**：新增协议实现需修改 `__init__`，测试注入依赖 `**override_protocols` 隐式传参 |
-| 3 | ~~`server.py` 单文件混杂~~ | `app/arf_default_assistant/server.py` (843行) | 用户界面 | App | REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。`ChatReq` Pydantic 模型混在路由文件中。**风险**：加新接口易触碰到已有逻辑，测试无法隔离 |
-| 4 | ~~`SnapshotRollback` 状态快照为空~~ | `arf/errors/transaction.py:10` | 故障恢复 | 框架 | `begin()` 中 `"state_snapshot": None` 始终不存快照，`rollback()` 只标记未决工具，不恢复任何状态。`TransactionContext` 协议定义了 commit/rollback 语义但实现不完整。**风险**：工具调用中途失败时无真实回滚能力 |
+| 1 | Engine `invoke`/`astream` 代码重复 | `arf/engine/graph.py:446-1195` | 进程调度 | 框架 | `invoke()`(446行) 与 `astream()`(791行) 约 400 行结构完全相同的 Agent Loop 逻辑，仅事件发射方式不同（`self._emit` vs `yield`）。**风险**：修改 Loop 逻辑需同步两处，遗漏即产生不一致行为 |
+| 2 | `BaseAgent.__init__` 巨型构造 | `arf/agent/base.py` (636行) | 进程创建 | 框架 | 构造函数内直接实例化 20+ 个默认实现（EventBus、StateStore、Memory、Guardrails、Hooks、ToolExecutor 等），无工厂方法拆分。**风险**：新增协议实现需修改 `__init__`，测试注入依赖 `**override_protocols` 隐式传参 |
+| 3 | `server.py` 单文件混杂 | `app/arf_default_assistant/server.py` (843行) | 用户界面 | App | REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。`ChatReq` Pydantic 模型混在路由文件中。**风险**：加新接口易触碰到已有逻辑，测试无法隔离 |
+| 4 | `SnapshotRollback` 状态快照为空 | `arf/errors/transaction.py:10` | 故障恢复 | 框架 | `begin()` 中 `"state_snapshot": None` 始终不存快照，`rollback()` 只标记未决工具，不恢复任何状态。`TransactionContext` 协议定义了 commit/rollback 语义但实现不完整。**风险**：工具调用中途失败时无真实回滚能力 |
 | 5 | `EvalRunner` 指标空转 | `arf/evaluation/runner.py:17` | 质量保证 | 框架 | `run()` 调用 `agent.chat()` 拿到回复后，`trace` 字段硬编码为 `{"turns": []}`，未通过 `EventBus` 或 `StateStore` 收集真实的 turn-by-turn 执行轨迹。`ToolAccuracyMetric` / `TurnEfficiencyMetric` 始终计算空数据。**风险**：框架迭代无自动化回归检测，重构无法证明行为未退化。"覆盖率 60%"目标无评估手段支撑 |
 | 6 | 全局状态 `registry._agent` | `arf/agent/registry.py:6` | 进程隔离 | 框架 | `_agent: Any = None` 模块级单例，`set_agent()` / `get_agent()` 全局读写。`server.py` 等上层代码直接 `import` 引用。**风险**：同一进程只能跑一个 Agent 实例；测试顺序敏感（全局状态泄漏）；与"框架"定位冲突——框架不应强制单例 |
 | 7 | `PromptBasedPlanner` 返回空计划 | `arf/engine/loop_strategies/planner.py:10,19` | 任务规划 | 框架 | `generate_plan()` 始终返回 `{"steps": []}`，`detect_divergence()` 始终返回 `{"diverged": False}`。Engine 注入了 `_call_model` 但从未调用 LLM 生成计划。**风险**：`Planner` 协议是自主 Agent 任务分解的核心扩展点，当前对外传达虚假能力——调用者获得空结果可能误认为"任务无需分解" |
