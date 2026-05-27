@@ -1,5 +1,7 @@
 from typing import get_args
 
+import pytest
+
 from arf.core.events import AgentEvent, EventType
 
 
@@ -38,3 +40,92 @@ class TestEventType:
         types = get_args(EventType)
         assert "guard_block" in types
         assert "guard_pass" in types
+
+    def test_contains_rollback_events(self):
+        types = get_args(EventType)
+        assert "rollback_executed" in types
+        assert "undo_executed" in types
+
+    def test_event_type_count(self):
+        """Break-glass: if new event types are added, trace_viewer must be updated."""
+        types = get_args(EventType)
+        assert len(types) == 20
+
+
+class TestRollbackEventShape:
+    """Trace viewer and downstream consumers expect this data shape."""
+
+    def test_rollback_executed_event(self):
+        event = AgentEvent(
+            type="rollback_executed",
+            data={
+                "turn": 3,
+                "rolled_back": [
+                    {"name": "file_writer", "rollback_error": None},
+                    {"name": "resource_scaffold", "rollback_error": "cannot undo"},
+                ],
+                "success": False,
+            },
+        )
+        assert event.type == "rollback_executed"
+        assert event.data["turn"] == 3
+        assert len(event.data["rolled_back"]) == 2
+        assert event.data["rolled_back"][0]["name"] == "file_writer"
+        assert event.data["rolled_back"][0]["rollback_error"] is None
+        assert event.data["rolled_back"][1]["rollback_error"] == "cannot undo"
+        assert event.data["success"] is False
+
+    def test_rollback_executed_empty_list(self):
+        """Rollback event may have empty rolled_back if all rollbacks failed quickly."""
+        event = AgentEvent(
+            type="rollback_executed",
+            data={"turn": 1, "rolled_back": [], "success": True},
+        )
+        assert event.data["rolled_back"] == []
+
+    def test_undo_executed_event(self):
+        event = AgentEvent(
+            type="undo_executed",
+            data={
+                "from_round": 2,
+                "to_round": 1,
+                "steps": 1,
+                "agent_trace": ["main", "sys_agent"],
+            },
+        )
+        assert event.type == "undo_executed"
+        assert event.data["from_round"] == 2
+        assert event.data["to_round"] == 1
+        assert event.data["steps"] == 1
+
+    def test_tool_call_end_carries_rollback_fields(self):
+        """tool_call_end must carry rolled_back and rollback_error for viewer rendering."""
+        # Simulate the data dict that GraphEngine._emit passes
+        data = {
+            "tool_name": "file_writer",
+            "success": False,
+            "duration_ms": 42,
+            "result": "",
+            "error": "disk full",
+            "rolled_back": True,
+            "rollback_error": "cleanup failed",
+        }
+        event = AgentEvent(type="tool_call_end", data=data)
+        assert event.data["rolled_back"] is True
+        assert event.data["rollback_error"] == "cleanup failed"
+        assert event.data["success"] is False
+
+    def test_tool_call_end_no_rollback(self):
+        """Normal successful tool call has no rollback fields set."""
+        data = {
+            "tool_name": "file_reader",
+            "success": True,
+            "duration_ms": 12,
+            "result": '{"content": "hello"}',
+            "error": "",
+            "rolled_back": False,
+            "rollback_error": None,
+        }
+        event = AgentEvent(type="tool_call_end", data=data)
+        assert event.data["rolled_back"] is False
+        assert event.data["rollback_error"] is None
