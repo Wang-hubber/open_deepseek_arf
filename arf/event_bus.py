@@ -32,6 +32,12 @@ class InMemoryEventBus:
             return [e for e in self._events if e.type == event_type]
         return list(self._events)
 
+    def event_count(self) -> int:
+        return len(self._events)
+
+    def events_since(self, index: int) -> list[AgentEvent]:
+        return self._events[index:]
+
     def reset(self) -> None:
         self._events.clear()
         self._queues.clear()
