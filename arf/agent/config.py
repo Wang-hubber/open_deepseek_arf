@@ -16,6 +16,7 @@ class AdvancedConfig(BaseModel):
     """All internal framework mechanisms with production-grade defaults."""
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
     max_turns: int = 50
+    max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
     system_model: str | None = None  # model name for background tasks (memory, routing, compaction)
     routing: RoutingConfig | None = None
     compaction: CompactionConfig | None = None

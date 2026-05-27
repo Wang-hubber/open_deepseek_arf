@@ -418,6 +418,7 @@ class BaseAgent:
             compaction=compaction,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
+            max_undo_depth=(adv.max_undo_depth if adv else 3),
             approval_enabled=(adv.human_loop is not None and adv.human_loop.approval_points != "always_auto") if adv else False,
             approval_allowlist=(adv.human_loop.allowlist if adv and adv.human_loop else None),
             sub_agent_configs=self._sub_agent_configs,

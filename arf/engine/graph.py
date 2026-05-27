@@ -40,6 +40,7 @@ class GraphEngine:
         cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
+        max_undo_depth: int = 3,
         approval_enabled: bool = False,
         approval_allowlist: list[str] | None = None,
         # Multi-agent support
@@ -73,7 +74,7 @@ class GraphEngine:
         self._interaction_round = 0
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
-        self._rounds = RoundManager(max_undo_depth=3)
+        self._rounds = RoundManager(max_undo_depth=max_undo_depth)
         # Multi-agent
         self._sub_agent_configs: dict = sub_agent_configs or {}
         self._handoff_manager = handoff_manager

@@ -162,17 +162,20 @@ Round 2: hello.txt(v3)  ← 改坏了
 
 **对话内 Undo 工具**：框架提供 `undo` 工具（kernel 级别激活），LLM 可在对话中直接调用。用户说"撤回"即可触发，无需 API。
 
+**文件回滚范围**：`RoundManager` 是整个项目空间的检查点管理器。所有 agent 共享同一个 `workspace` 目录，文件快照覆盖 workspace 内全部文件（排除 `.git`），任何 agent 在 workspace 内的文件变更都可以被回滚。
+
 **当前限制**：
-- 快照上限 3 个（deque maxlen=3），用户只能 undo 最近 1-3 步
-- 检查点在内存中（deque），重启丢失
-- 文件快照仅覆盖 `workspace_dir`（默认 `workspaces/default`），不覆盖其他目录
+- 快照上限可配置（默认 3），用户只能 undo 最近 N 步
+- 重启后仅保留 round 元数据（`memory/checkpoints/rounds.json`），完整状态快照仍依赖 `FileStateStore`；重启后的 undo 需从 state_store 恢复状态 + 从快照恢复文件
+- 状态快照在内存中（deque），重启后从 state_store 恢复；文件快照持久化在 `memory/checkpoints/`
 - 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
 
 ### 2.5 配置
 
 ```yaml
-# 无显式配置项。取消通过 API / SSE 生命周期自动管理
-# undo 通过工具声明启用（框架内置）
+advanced:
+  max_undo_depth: 3             # 最大 undo 步数（RoundManager 滚动窗口大小）
+
 tools:
   - name: undo
     description: 撤销最近的对话轮次（支持跨 handoff 回退）

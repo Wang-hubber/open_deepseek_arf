@@ -1,5 +1,7 @@
 """RoundManager — round-level checkpoint and undo for multi-agent scenarios."""
 import copy
+import json
+import logging
 import shutil
 import time
 from collections import deque
@@ -7,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from arf.core.state import AgentState
+
+logger = logging.getLogger("arf.engine.rounds")
 
 
 @dataclass
@@ -35,10 +39,14 @@ class RoundManager:
     do NOT create new checkpoints.  undo(N) restores to round-N ago.
     """
 
+    _PERSIST_FILE = Path("memory/checkpoints/rounds.json")
+
     def __init__(self, max_undo_depth: int = 3) -> None:
+        self._max_depth = max_undo_depth
         self._rounds: deque[RoundTransaction] = deque(maxlen=max_undo_depth)
         self._active: RoundTransaction | None = None
         self._current_round: int = 0
+        self._restore_from_disk()
 
     # -- public API --
 
@@ -57,6 +65,7 @@ class RoundManager:
 
         self._rounds.append(tx)
         self._active = tx
+        self._save_rounds()
         return tx
 
     def record_handoff(self, from_agent: str, to_agent: str) -> None:
@@ -66,10 +75,11 @@ class RoundManager:
             self._active.handoff_count += 1
 
     def close_round(self) -> None:
-        """Mark the active round as complete (hook for future persistence)."""
+        """Mark the active round as complete."""
         if self._active:
             self._active.closed = True
             self._active = None
+            self._save_rounds()
 
     def undo(self, steps: int, workspace_dir: str = "") -> AgentState | None:
         """Pop N rounds and restore state from the oldest popped.
@@ -91,6 +101,7 @@ class RoundManager:
         self._restore_workspace_files(target, ws)
         self._cleanup_checkpoint_dirs(target.round_num, ws)
         self._active = None
+        self._save_rounds()
 
         return copy.deepcopy(target.state_snapshot)
 
@@ -154,3 +165,49 @@ class RoundManager:
                         shutil.rmtree(d)
                 except (ValueError, OSError):
                     pass
+
+    # -- persistence --
+
+    def _persist_file(self) -> Path:
+        return self._PERSIST_FILE
+
+    def _save_rounds(self) -> None:
+        """Persist round metadata (not full state snapshots) to disk."""
+        try:
+            self._persist_file().parent.mkdir(parents=True, exist_ok=True)
+            data = []
+            for tx in self._rounds:
+                data.append({
+                    "round_id": tx.round_id,
+                    "round_num": tx.round_num,
+                    "agent_trace": tx.agent_trace,
+                    "handoff_count": tx.handoff_count,
+                    "created_at": tx.created_at,
+                    "workspace_snapshot_dir": tx.workspace_snapshot_dir,
+                    "closed": tx.closed,
+                })
+            self._persist_file().write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            logger.warning("Failed to persist rounds: %s", e)
+
+    def _restore_from_disk(self) -> None:
+        """Load persisted round metadata on startup.
+
+        Full state snapshots are in FileStateStore; this only restores
+        round numbers and metadata so undo knows how many rounds exist.
+        """
+        pf = self._persist_file()
+        if not pf.exists():
+            return
+        try:
+            data = json.loads(pf.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return
+            for entry in data[-self._max_depth:]:
+                self._current_round = max(self._current_round, entry.get("round_num", 0))
+            logger.info("Restored %d round(s) from disk (current_round=%d)",
+                        min(len(data), self._max_depth), self._current_round)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to restore rounds from disk: %s", e)
