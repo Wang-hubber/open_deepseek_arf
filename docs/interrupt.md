@@ -66,24 +66,52 @@ LLM 下一轮可见注入消息
 
 ### 2.2 取消机制
 
-**引擎侧**（`graph.py`）：
+**引擎侧**（`GraphEngine`）：
 
 ```python
 def _cancelled(self) -> bool:
     return self._cancel_event is not None and self._cancel_event.is_set()
 ```
 
-在 `invoke()` 和 `astream()` 的 while 循环开始处检查（`graph.py`, `501-505`）。`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在下一个循环边界响应，类似硬件中断在当前指令边界响应。
+在 `invoke()` 和 `astream()` 的 while 循环开始处检查。`asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在下一个循环边界响应，类似硬件中断在当前指令边界响应。
 
-**服务端**（`server.py`）：
+**应用服务端（App FastAPI）**：
 
-- `POST /api/chat/cancel`：设置 `cancel_event`，引擎在下一轮检测到并退出
-- 客户端断开：`asyncio.CancelledError` 被 SSE 生成器捕获 → 设置 `cancel_event` → 引擎退出
-- 取消后 SSE 推送 `{"type": "cancelled"}` 事件，前端可据此更新 UI
+框架提供 `set_cancel_event()` / `_cancelled()` 原语，App 负责将其接入 HTTP 传输层。参考 App（`app/arf_default_assistant/server.py`）的集成模式：
+
+```python
+# 1. SSE 流启动时注入 cancel_event
+async def _sse_chat(message: str):
+    cancel_evt = asyncio.Event()
+    _active_cancel_events["default"] = cancel_evt
+    _agent.engine.set_cancel_event(cancel_evt)  # ← 注入引擎
+    try:
+        async for event in _agent.astream(message):
+            ...
+            if event.type == "session_end" and event.data.get("reason") == "cancelled":
+                yield '{"type": "cancelled"}'  # 通知前端
+                return
+    except asyncio.CancelledError:
+        cancel_evt.set()  # 客户端断开也触发取消
+
+# 2. 取消 API 端点
+@app.post("/api/chat/cancel")
+async def cancel_chat():
+    evt = _active_cancel_events.get("default")
+    if evt:
+        evt.set()  # 引擎下一轮循环边界检测到并退出
+    return {"status": "cancelled"}
+```
+
+**取消路径**：
+
+- `POST /api/chat/cancel`：用户主动取消 → `cancel_event.set()` → 引擎循环边界检测 → break
+- 客户端断开（`AbortController.abort()`）：`asyncio.CancelledError` → SSE 生成器设置 `cancel_event` → 引擎退出
+- 取消后 SSE 推送 `{"type": "cancelled"}` 事件，前端据此更新 UI
 
 ### 2.3 Hook 消息注入
 
-Hook 退出码 2 的消息被注入对话历史（`graph.py`）：
+Hook 退出码 2 的消息被注入对话历史（`GraphEngine._inject_hook_messages()`）：
 
 ```python
 def _inject_hook_messages(self, results, state):
@@ -97,32 +125,40 @@ def _inject_hook_messages(self, results, state):
 
 所有六个生命周期事件（`session_start`, `pre_model_call`, `post_model_call`, `pre_tool_exec`, `post_tool_exec`, `session_end`）均已接入注入逻辑。类似 MSI 中断——不打断主流程，而是在消息队列（对话历史）中插入信息。
 
-### 2.4 Undo — 状态 + 文件双回滚
+### 2.4 Undo — Round 级状态 + 文件双回滚
 
-`GraphEngine` 维护 3 个检查点的滚动窗口（`graph.py`）：
+`RoundManager`（`arf/engine/round_manager.py`）维护 3 个 `RoundTransaction` 的滚动窗口。每个 round 代表一次用户交互，可跨多次 agent handoff：
 
 ```python
-self._checkpoints: deque[dict] = deque(maxlen=3)
+class RoundManager:
+    def __init__(self, max_undo_depth: int = 3):
+        self._rounds: deque[RoundTransaction] = deque(maxlen=max_undo_depth)
 ```
 
-**检查点创建**（`graph.py`）：每轮用户交互前（`base.py:369,402`），`push_checkpoint()` 同时保存：
+**检查点创建**：`BaseAgent.chat/astream` 入口调用 `rounds.begin_round(state)`，同时保存：
 1. 对话状态深拷贝（messages、current_model、context_summary）
-2. 工作区文件快照（复制到 `memory/checkpoints/{round}/`，排除 `.git`）
+2. 工作区文件快照（复制到 `memory/checkpoints/{round_num}/`，排除 `.git`）
 
-**Undo 过程**（`graph.py`）：
+**Handoff 与检查点**：Agent 切换时 `rounds.record_handoff(from, to)` 仅记录参与顺序，**不创建新检查点**。一个 round 内无论多少次 handoff，undo 都回退整个 round。
+
+**Undo 过程**：
 
 ```
-Round 0: hello.txt(v1) → push_checkpoint → memory/checkpoints/0/hello.txt
-Round 1: hello.txt(v2) → push_checkpoint → memory/checkpoints/1/hello.txt
+Round 0: hello.txt(v1) → begin_round → memory/checkpoints/0/hello.txt
+Round 1: hello.txt(v2) → begin_round → memory/checkpoints/1/hello.txt
+  └─ handoff → sys_agent (record_handoff, no new checkpoint)
 Round 2: hello.txt(v3)  ← 改坏了
     │
     ▼ undo(steps=1)
     │
-    ├─ 恢复对话状态到 Round 1
+    ├─ 恢复对话状态到 Round 1 开始前
     ├─ 删除当前工作区文件
     ├─ 从 memory/checkpoints/1/ 恢复文件 → hello.txt(v2)
-    └─ 清理 Round 1 及之后的检查点目录
+    ├─ emit undo_executed(from=2, to=1) → Trace 可标记回滚边界
+    └─ 清理 >= round 2 的检查点目录
 ```
+
+**Trace 集成**：undo 时不删除已有 trace 事件（审计日志不可篡改），而是追加 `undo_executed` 事件。前端可根据 `from_round` / `to_round` 折叠或灰度显示被撤销的轮次。
 
 **对话内 Undo 工具**：框架提供 `undo` 工具（kernel 级别激活），LLM 可在对话中直接调用。用户说"撤回"即可触发，无需 API。
 
@@ -130,6 +166,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 - 快照上限 3 个（deque maxlen=3），用户只能 undo 最近 1-3 步
 - 检查点在内存中（deque），重启丢失
 - 文件快照仅覆盖 `workspace_dir`（默认 `workspaces/default`），不覆盖其他目录
+- 多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
 
 ### 2.5 配置
 
@@ -138,7 +175,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 # undo 通过工具声明启用（框架内置）
 tools:
   - name: undo
-    description: 撤销最近的对话轮次
+    description: 撤销最近的对话轮次（支持跨 handoff 回退）
     parameters: {type: object, properties: {steps: {type: integer, default: 1}}}
     activation: kernel
 ```

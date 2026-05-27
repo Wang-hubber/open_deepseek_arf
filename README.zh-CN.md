@@ -66,7 +66,7 @@
 | **[资源注册与发现 →](docs/resource-registry.md)**<br>注册与生命周期 | 注册表 + 服务管理器（systemd/udev/launchd） | 约定优于配置：每工具 `tool.yaml`+`function.py`，`skills/*.yaml`，`models/*.yaml`。内核/动态分离 + 冻结只读。FileWatcher inotify+轮询双轨自动热加载。ResourceResolver 覆盖合并 + `generate_config()` dump。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `PathCheckToolGuard` 递归扫描（..、symlink、深度/数量配额）。权限 deny→ask→allow。人工审批通道（SSE 推送 + 60s 超时）。 | 每次调用独立沙箱；MCP 协议 |
 | **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
-| **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。3 快照 undo（状态+文件双回滚），支持 API 和对话内 `undo` 工具。Hook 退出码 2 消息注入。 | 暂停/重定向向量；空闲超时 |
+| **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。Round 级 undo（`RoundManager`）— 3 快照滚动窗口，状态+文件跨 handoff 回滚。Hook 退出码 2 消息注入。`undo_executed` trace 事件。 | 暂停/重定向向量；空闲超时 |
 | **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 18 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 
 ### 框架 vs. 应用
@@ -180,7 +180,7 @@ advanced:
 
 ### 中断——取消与撤销
 
-引擎每轮检查 `asyncio.Event` 取消令牌。`POST /api/chat/cancel` 或客户端断开即可停止 Agent。三轮滚动快照支持状态+文件双回滚，通过 API 或对话内 `undo` 工具触发。Hook 退出码 2 的消息注入对话流。
+引擎每轮检查 `asyncio.Event` 取消令牌。`POST /api/chat/cancel` 或客户端断开即可停止 Agent。`RoundManager` 维护 3 个 Round 级滚动快照——undo 恢复到任意最近轮次开始时的状态+文件，跨 agent handoff 边界也生效。`undo_executed` trace 事件标记回滚边界但不删除历史。Hook 退出码 2 的消息注入对话流。
 
 [设计文档 →](docs/interrupt.md)
 

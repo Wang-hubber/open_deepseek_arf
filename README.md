@@ -66,7 +66,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | **[Resource Discovery →](docs/resource-registry.md)**<br>Registration & lifecycle | Registry + service manager (systemd/udev/launchd) | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. Kernel/dynamic split with freeze-once semantics. FileWatcher inotify+polling dual-track hot reload. ResourceResolver override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
 | **[Tool Sandbox →](docs/tool-sandbox.md)**<br>Security boundaries | System calls + protection rings (Ring 0–3) + ACL | `PathCheckToolGuard` recursive scan (.., symlink, depth/count quota). Permission deny→ask→allow. Human approval channel with SSE push + 60s timeout. | Per-invocation sandbox; MCP protocol |
 | **[Concurrency →](docs/skill-pipeline.md)**<br>Deadlock prevention | Superscalar execution + dependency graph | Sequential agent loop; parallel tool calls within a turn via `ConcurrentToolExecutor`. Skills declare tool pipelines with explicit dependencies — engine enforces order. Hook `asyncio.gather` concurrency. | Multi-agent DAG analysis; worktree isolation |
-| **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. 3-snapshot undo (state + files) via API or in-conversation `undo` tool. Hook exit-code-2 message injection. | Pause/redirect vectors; idle timeout |
+| **[Interrupt →](docs/interrupt.md)**<br>User intervention | Hardware interrupt: save state → ISR → restore | `asyncio.Event` cancellation. Round-level undo via `RoundManager` — 3-snapshot rolling window, state + file rollback across handoff boundaries. Hook exit-code-2 message injection. `undo_executed` trace event. | Pause/redirect vectors; idle timeout |
 | **[Trace →](docs/trace.md)**<br>Observability | System monitoring + structured event log | 18 event types in EventType Literal → `FileTraceStore` (JSON) + `UsageTracker`. Frontend waterfall grouped by interaction round. Standalone viewer. | SQLite trace DB; OpenTelemetry export |
 
 ### Framework vs. Application
@@ -180,7 +180,7 @@ advanced:
 
 ### Interrupt — Cancel & Undo
 
-The engine checks an `asyncio.Event` cancellation token each turn. `POST /api/chat/cancel` or client disconnect stops the agent. Three rolling snapshots per interaction round enable state + file undo via API or the in-conversation `undo` tool. Hook exit-code-2 messages are injected into the conversation.
+The engine checks an `asyncio.Event` cancellation token each turn. `POST /api/chat/cancel` or client disconnect stops the agent. `RoundManager` maintains 3 rolling round-level snapshots — undo restores state + files to the beginning of any recent round, even across agent handoff boundaries. The `undo_executed` trace event marks rollback boundaries without deleting history. Hook exit-code-2 messages are injected into the conversation.
 
 [Design doc →](docs/interrupt.md)
 
