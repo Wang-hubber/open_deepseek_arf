@@ -1,0 +1,16 @@
+name: memory_extract
+description: Extract long-term memories from the current conversation session and save to memory.md
+activation: kernel
+parameters:
+  type: object
+  properties:
+    session_id:
+      type: string
+      default: "default"
+    memory_dir:
+      type: string
+      default: "./memory"
+    force:
+      type: boolean
+      default: false
+      description: Force extraction regardless of round interval

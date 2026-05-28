@@ -295,3 +295,38 @@ class TestMemoryWriterRemoved:
         asyncio.run(engine.invoke(state))
 
         memory_writer.extract_and_write.assert_not_called()
+
+
+class TestAtomicWrite:
+    """Atomic file write with backup safety."""
+
+    def test_writes_new_file(self, tmp_path):
+        """Creates target file when it doesn't exist."""
+        from arf.plugins.memory.tools.memory_extract.extractor import atomic_write
+
+        target = tmp_path / "memory.md"
+        result = atomic_write("# Test content", target)
+
+        assert result is True
+        assert target.exists()
+        assert target.read_text() == "# Test content"
+
+    def test_no_tmp_or_bak_left_behind(self, tmp_path):
+        """Cleanup removes .tmp and .bak after success."""
+        from arf.plugins.memory.tools.memory_extract.extractor import atomic_write
+
+        target = tmp_path / "memory.md"
+        atomic_write("# Test", target)
+
+        assert not (tmp_path / "memory.md.tmp").exists()
+        assert not (tmp_path / "memory.md.bak").exists()
+
+    def test_overwrites_existing_file(self, tmp_path):
+        """Replaces existing file atomically with backup."""
+        from arf.plugins.memory.tools.memory_extract.extractor import atomic_write
+
+        target = tmp_path / "memory.md"
+        target.write_text("old content")
+        atomic_write("new content", target)
+
+        assert target.read_text() == "new content"
