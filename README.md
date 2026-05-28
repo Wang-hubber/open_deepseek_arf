@@ -288,10 +288,10 @@ cd app/web && npm install && npm run dev
 
 | # | Plugin | Status | Description |
 |---|--------|--------|-------------|
-| P-1 | `planner` | P0 | Task decomposition via system_model, replaces empty PromptBasedPlanner |
-| P-2 | `todo` | P0 | Task list management (add/check/list/clear), reads/writes `todo.md` |
-| P-3 | `undo` migration | P0 | Move from `app/tools/` → `arf/plugins/undo/` |
-| P-4 | `plugin_provider` | P0 | PluginProvider scans plugin dirs, `agent.yaml` `plugins:` field |
+| P-1 | ✅ `planner` | DONE | Task decomposition via system_model, replaces empty PromptBasedPlanner |
+| P-2 | ✅ `todo` | DONE | Task list management (add/check/list/clear), reads/writes `todo.md` |
+| P-3 | ✅ `undo` migration | DONE | Move from `app/tools/` → `arf/plugins/undo/` |
+| P-4 | ✅ `plugin_provider` | DONE | PluginProvider scans plugin dirs, `agent.yaml` `plugins:` field |
 | P-5 | `bash` | P1 | Shell executor, community-audited injection safety |
 | P-6 | `code_interpreter` | P1 | Python sandbox, replaces `app/tools/python_exec` |
 | P-7 | `file_ops` | P1 | Read/write/list/delete consolidated from app tools |

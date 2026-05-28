@@ -137,6 +137,23 @@ my_app/
     └── default/        # 文件操作根目录
 ```
 
+### 3.1b 框架 Plugins
+
+`arf/plugins/` 提供框架内置的能力包，通过 `agent.yaml` 的 `plugins:` 字段激活：
+
+```yaml
+plugins:
+  - planner    # 任务规划
+  - todo       # 任务追踪
+  - undo       # 对话回退
+```
+
+Plugin 内部结构与 App 层工具/技能约定一致（`tools/` + `skills/` 子目录）。
+框架启动时 `PluginProvider` 扫描激活的 plugin 目录，`ResourceResolver` 自动合并到工具/技能列表。
+App 层同名工具覆盖 plugin 版本（app > plugin）。
+
+社区贡献的 plugin 放在 `arf/plugins/` 目录下即可被框架发现。
+
 ### 3.2 AppContext — 单一路径源
 
 `agent_main.py` 声明 App 根目录，框架由此推导所有标准路径。`server.py` 和 `cli.py` 共用此模块，避免散落路径字符串。

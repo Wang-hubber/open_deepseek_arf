@@ -286,10 +286,10 @@ cd app/web && npm install && npm run dev
 
 | # | Plugin | 状态 | 描述 |
 |---|--------|------|------|
-| P-1 | `planner` | P0 | 通过 system_model 做任务分解，替代空的 PromptBasedPlanner |
-| P-2 | `todo` | P0 | 任务列表管理（添加/勾选/列表/清除），读写 `todo.md` |
-| P-3 | `undo` 迁移 | P0 | 从 `app/tools/` → `arf/plugins/undo/` |
-| P-4 | `plugin_provider` | P0 | PluginProvider 扫描插件目录，`agent.yaml` `plugins:` 字段 |
+| P-1 | ✅ `planner` | DONE | 通过 system_model 做任务分解，替代空的 PromptBasedPlanner |
+| P-2 | ✅ `todo` | DONE | 任务列表管理（添加/勾选/列表/清除），读写 `todo.md` |
+| P-3 | ✅ `undo` 迁移 | DONE | 从 `app/tools/` → `arf/plugins/undo/` |
+| P-4 | ✅ `plugin_provider` | DONE | PluginProvider 扫描插件目录，`agent.yaml` `plugins:` 字段 |
 | P-5 | `bash` | P1 | Shell 执行器，社区审计注入安全 |
 | P-6 | `code_interpreter` | P1 | Python 沙箱，替代 `app/tools/python_exec` |
 | P-7 | `file_ops` | P1 | 读/写/列/删，从 app 工具合并到插件 |
