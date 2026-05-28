@@ -42,52 +42,91 @@ Unix 提供多种 IPC 机制：管道（pipe，无名字节流，亲缘进程间
 
 Agent 执行体系分为三层：**引擎层**（循环控制 + 工具编排）、**装配层**（DI 组装全部协议实现）、**多 Agent 层**（Handoff 切换 + 状态隔离）。
 
-### 2.1 架构总览
+### 2.1 执行边界：Session / Round / Turn
+
+ARF 将 Agent 执行周期分为三个嵌套层级，每层有独立的计数器、hook 事件和断路器：
+
+| 层级 | 定义 | 生命周期 | Hook 事件 | 计数器 | 断路器 |
+|------|------|---------|-----------|--------|--------|
+| **Session** | 客户端的一次完整连接，可跨越多轮对话 | `BaseAgent.__init__` → `stop()` 或异常 kill | `session_start` / `session_end` | `session_id` (str) | — |
+| **Round** | 一次用户输入 → Agent 的完整响应（含 0~N 个 turn） | `BaseAgent.chat()` 调用边界 | `round_start` / `round_end` | `interaction_round` (int) | — |
+| **Turn** | 模型思考 → 工具执行 → 模型再思考 的一次循环迭代 | `while loop_strategy.should_continue()` 每次迭代 | —（`pre/post_model_call`、`pre/post_tool_exec` 为 turn 内子事件） | `current_turn` (int) | `max_turns` |
+
+**时序关系**：一个 Session 包含多个 Round，一个 Round 包含多个 Turn。正常情况下：
 
 ```
-会话首次激活
-    │
-    ▼
-BaseAgent.__init__()
-    │  加载 memory/memory.md → 注入 {{MEMORY}}（一次性）
-    │
-    ▼
-BaseAgent.chat() / astream()
-    │  加载已有 State
-    │  crash recovery? → [Hook] session_end(recovery)
-    │  新会话/存档恢复? → [Hook] session_start
-    │  begin_round → [Hook] round_start
-    ▼
-GraphEngine.invoke() / astream()
-    │
-    ├─ while LoopStrategy.should_continue(state):
-    │   │                              ← turn 级迭代
-    │   ├─ [取消检查] _cancelled() → break
-    │   ├─ [模型路由] ModelRouter → current_model
-    │   ├─ [压缩判断] Compaction.should_compact()
-    │   ├─ [Hook] pre_model_call
-    │   ├─ [模型调用] _call_model / _stream_model
-    │   ├─ [Hook] post_model_call
-    │   ├─ [输出检查] GuardRunner.check_output
-    │   ├─ [工具解析] _pars_tool_calls
-    │   │   ├─ 无工具调用 → append assistant msg → break
-    │   │   └─ 有工具调用 → 继续
-    │   ├─ [工具守卫] Guard + Pipeline + Permissions + Approval
-    │   ├─ [Hook] pre_tool_exec
-    │   ├─ [工具执行] ToolExecutor.execute()
-    │   ├─ [Hook] post_tool_exec
-    │   ├─ [Handoff 检测] HandoffManager.detect()
-    │   └─ [检查点] StateStore.put()
-    │
-    └─ [Hook] round_end → 返回最终 State
+Session  ──────────────────────────────────────────────────────►
+         │                                          │
+         ├─ Round 0 ──────────────►                  │
+         │  │                       │                │
+         │  ├─ Turn 0 ──►           │                │
+         │  ├─ Turn 1 ──►           │                │
+         │  └─ Turn 2 ──► [end]     │                │
+         │                          │                │
+         ├─ Round 1 ──────────────► │                │
+         │  └─ Turn 3 ──► [end]     │                │
+         │                          │                │
+         └─ Round 2 ...             └─ stop() ───────┤
+                                                      ▼
+                                                   CLOSED
+```
 
-    ═══════ 会话关闭 ═══════
+**Crash recovery**：进程被 kill 后，state 中残留 `session_active = True`。下次 `chat()` 加载时检测到，自动补发 `session_end(recovery)` → 发射新 `session_start`。
 
-BaseAgent.stop()
-    └─ [Hook] session_end(shutdown)
-        state["session_active"] = False
+### 2.2 执行流程
 
-### 2.2 双模主循环：invoke / astream
+```
+╔══════════════════ SESSION: 会话首次激活 ═══════════════════
+║
+║  BaseAgent.__init__()
+║      │  加载 memory/memory.md → 注入 {{MEMORY}}
+║      │  装配全部 Protocol → 构造 GraphEngine
+║
+║  ═══════════ ROUND: 用户交互轮次（每次 chat() 为一边界）═════
+║
+║  BaseAgent.chat()
+║      │  state_store.get(session_id)
+║      │  crash recovery? → [Hook] session_end(recovery)
+║      │  new/restored?   → [Hook] session_start
+║      │  begin_round(检查点)
+║      ├─ [Hook] round_start ────────────────── Round 开始
+║      │
+║      ▼
+║  GraphEngine.invoke() / astream()
+║      │
+║      ├─ while LoopStrategy.should_continue(state):
+║      │   │  ╔══ TURN: 模型循环迭代 ══╗
+║      │   │  │                         │
+║      │   ├──│ [取消检查] _cancelled()  │
+║      │   ├──│ [模型路由] ModelRouter   │
+║      │   ├──│ [压缩判断] Compaction    │
+║      │   ├──│ [Hook] pre_model_call    │
+║      │   ├──│ [模型调用] _call_model   │
+║      │   ├──│ [Hook] post_model_call   │
+║      │   ├──│ [输出检查] GuardRunner   │
+║      │   ├──│ [工具解析]               │
+║      │   │  │   ├─ 无 → break          │
+║      │   │  │   └─ 有 → 继续           │
+║      │   ├──│ [工具守卫] Guard+Pipeline │
+║      │   ├──│ [Hook] pre_tool_exec     │
+║      │   ├──│ [工具执行] ToolExecutor  │
+║      │   ├──│ [Hook] post_tool_exec    │
+║      │   ├──│ [Handoff] HandoffManager │
+║      │   └──│ [检查点] StateStore      │
+║      │   │  ╚══════════════════════════╝
+║      │   └─ turn >= max_turns → break
+║      │
+║      └─ [Hook] round_end ──────────────────── Round 结束
+║
+║  ══════════════════════════ [重复] ══════════════════════════
+║
+║  BaseAgent.stop()
+║      └─ [Hook] session_end(shutdown)
+║         state["session_active"] = False
+║
+╚════════════════════════════════════════════════════════════
+
+### 2.3 双模主循环：invoke / astream
 
 `GraphEngine`（`arf/engine/graph.py`）提供两条执行路径，共享完全相同的 Agent Loop 逻辑：
 
@@ -98,9 +137,9 @@ BaseAgent.stop()
 
 两条路径的唯一差异在模型调用层：`astream` 使用 `_stream_model` 产出 token 级 `thinking_delta` 事件，`invoke` 使用 `_call_model` 一次性获取完整响应。`ModelAdapter.chat_stream_full()` 统一产出 `chunk` / `tool_call` / `usage` / `error` 四种流事件，引擎负责组装。
 
-工具守卫流水线（Guard + Pipeline + Permissions + Approval）由共享方法 `_step_classify_tool_calls()` 实现，两条路径复用同一逻辑。同样共享的还有：`_close_tool_calls()`（消息序列完整性保证）、handoff 检测与执行、记忆检索/写入、压缩判断。
+工具守卫流水线（Guard + Pipeline + Permissions + Approval）由共享方法 `_step_classify_tool_calls()` 实现，两条路径复用同一逻辑。同样共享的还有：`_close_tool_calls()`（消息序列完整性保证）、handoff 检测与执行、压缩判断。
 
-### 2.3 循环策略
+### 2.4 循环策略
 
 `LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义循环的继续条件：
 
@@ -130,7 +169,7 @@ ReAct 模式：模型思考（产出 tool_calls 或最终回复）→ 工具执�
 2. `turn >= max_turns` → 会话断路器触发
 3. `cancel_event.is_set()` → 用户主动中断
 
-### 2.4 取消机制
+### 2.5 取消机制
 
 `asyncio.Event` 作为取消信号，非阻塞检测：
 
@@ -141,7 +180,7 @@ def _cancelled(self) -> bool:
 
 每次 while 循环迭代开始前检查。取消信号由 `POST /api/chat/cancel` 或 SSE 客户端断连触发，类似硬件中断在当前指令边界响应——当前 turn 的执行不会被中途打断，而是在循环边界安全退出。
 
-### 2.5 会话断路器：max_turns
+### 2.6 会话断路器：max_turns
 
 `max_turns` 是每条 Agent 会话的硬限制，防止模型陷入"工具调用→失败→重试→失败"的失控循环。默认 50 轮，在 `agent.yaml` 中配置：
 
@@ -152,7 +191,7 @@ advanced:
 
 对多 Agent 场景，每个子 Agent 可有独立的 `max_turns`（通过 `AgentConfig.advanced.max_turns`），引擎在执行时使用 `_active_config(state)["max_turns"]` 动态获取当前活跃 Agent 的限制。子 Agent 的 turn 从 0 重新计数（`_execute_handoff()` 中 `state["current_turn"] = 0`），handoff 回主 Agent 后恢复主 Agent 的 turn 计数。
 
-### 2.6 工具执行
+### 2.7 工具执行
 
 `ConcurrentToolExecutor`（`arf/engine/tool_executor.py`）接收 `_step_classify_tool_calls` 过滤后的合法工具调用，按配置策略执行：
 
@@ -172,7 +211,7 @@ advanced:
 
 工具执行结果统一封装为 `ToolResult`（success/data/error/duration_ms），引擎将其注入消息历史并 emit trace 事件。
 
-### 2.7 BaseAgent — DI 装配
+### 2.8 BaseAgent — DI 装配
 
 `BaseAgent`（`arf/agent/base.py`）负责将所有 Protocol 实现组装为可运行的 Agent。构造函数按固定顺序初始化 10 个子系统：
 
@@ -197,7 +236,7 @@ advanced:
 - **子 Agent 创建**：遍历 `config.agents` 为每个子 Agent 创建独立的 system prompt 和模型适配器
 - **HandoffManager 创建**：从 `config.handover.rules` 构建 handoff 规则表
 
-### 2.8 多 Agent Handoff
+### 2.9 多 Agent Handoff
 
 `HandoffManager`（`arf/engine/handoff.py`）实现会话内的 Agent 切换：
 
@@ -214,7 +253,7 @@ advanced:
 
 **返回流程**（`_restore_from_handoff()`）：子 Agent 产出 handoff 信号后，引擎提取子 Agent 最后一条 assistant 消息作为结果，替换主 Agent 的原始 handoff 工具结果，恢复主 Agent 的消息历史和 turn 计数。
 
-### 2.9 检查点与回滚
+### 2.10 检查点与回滚
 
 `RoundManager`（`arf/engine/round_manager.py`）维护滚动窗口的 `RoundTransaction`，每个 round 代表一次用户交互：
 
@@ -224,7 +263,7 @@ advanced:
 
 默认保留 3 个检查点（`max_undo_depth: 3`）。
 
-### 2.10 配置
+### 2.11 配置
 
 ```yaml
 # agent.yaml
