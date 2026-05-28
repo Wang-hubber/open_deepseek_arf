@@ -67,6 +67,7 @@ class AgentConfig(BaseModel):
     models: list[ModelConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
     skills: list[SkillConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
     tools: list[ToolConfig] = Field(default_factory=list)    # optional — filesystem is source of truth
+    plugins: list[str] = Field(default_factory=list)  # plugin names to activate from arf/plugins/
     hooks: list[HookDefinition] = Field(default_factory=list)
     advanced: AdvancedConfig | None = None
     agents: list["AgentConfig"] | None = None

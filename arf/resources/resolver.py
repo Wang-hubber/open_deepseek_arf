@@ -28,13 +28,20 @@ class ResourceResolver:
         self._skill_provider = skill_provider
         self._model_provider = model_provider
         self._overrides = agent_yaml_overrides or {}
+        self._plugin_provider = None
+
+    def set_plugin_provider(self, plugin_provider) -> None:
+        """Register a PluginProvider to merge its tools/skills into resolution."""
+        self._plugin_provider = plugin_provider
 
     # -- tools (backward-compat with DefaultToolResolver) --
 
     async def get_tool_definitions(
         self, query_context: str = "", top_k: int = 10,
     ) -> list[ToolDefinition]:
-        tools = await self._tool_provider.list_tools()
+        tools = list(await self._tool_provider.list_tools())
+        if self._plugin_provider:
+            tools.extend(self._plugin_provider.list_tools())
         overrides = self._overrides.get("tools", [])
         merged = self._merge_configs(tools, overrides, ToolConfig)
         return [
@@ -43,14 +50,21 @@ class ResourceResolver:
         ]
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
-        return await self._tool_provider.execute(tool_name, params)
+        result = await self._tool_provider.execute(tool_name, params)
+        if not result.success and self._plugin_provider:
+            plugin_result = await self._plugin_provider.execute(tool_name, params)
+            if plugin_result is not None:
+                return plugin_result
+        return result
 
     # -- skills --
 
     def get_skill_definitions(self) -> list[SkillConfig]:
         if self._skill_provider is None:
             return []
-        skills = self._skill_provider.list()
+        skills = list(self._skill_provider.list())
+        if self._plugin_provider:
+            skills.extend(self._plugin_provider.list_skills())
         overrides = self._overrides.get("skills", [])
         return self._merge_configs(skills, overrides, SkillConfig)
 

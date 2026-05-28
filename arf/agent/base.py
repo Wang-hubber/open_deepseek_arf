@@ -148,6 +148,16 @@ class BaseAgent:
         self._file_watcher = file_watcher
         self._resource_resolver = resource_resolver
 
+        # Plugin system
+        self._plugin_provider = None
+        if config.plugins:
+            from arf.resources.providers.plugin_provider import PluginProvider
+            plugins_dir = Path(override_protocols.pop("plugins_dir", "arf/plugins"))
+            if not plugins_dir.is_absolute():
+                plugins_dir = Path.cwd() / plugins_dir
+            self._plugin_provider = PluginProvider(plugins_dir, config.plugins)
+            resource_resolver.set_plugin_provider(self._plugin_provider)
+
         # 3. Memory — LLM-driven by default, falls back to rule-based
         mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
         default_workspace = str(ctx.workspace_dir) if ctx else "./memory"
