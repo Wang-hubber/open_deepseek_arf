@@ -49,7 +49,47 @@ class TestEventType:
     def test_event_type_count(self):
         """Break-glass: if new event types are added, trace_viewer must be updated."""
         types = get_args(EventType)
-        assert len(types) == 20
+        assert len(types) == 25
+
+    def test_contains_protection_events(self):
+        types = get_args(EventType)
+        for event in ("rate_limited", "circuit_opened", "circuit_half_open",
+                       "circuit_closed", "breaker_blocked"):
+            assert event in types, f"Missing {event}"
+
+
+class TestProtectionEventShapes:
+    def test_rate_limited_event_shape(self):
+        event = AgentEvent(
+            type="rate_limited",
+            data={"model": "deep", "api_base": "https://api.deepseek.com"},
+        )
+        assert event.data["model"] == "deep"
+
+    def test_circuit_opened_event_shape(self):
+        event = AgentEvent(
+            type="circuit_opened",
+            data={"model": "deep", "failure_count": 3, "fail_reason": "500 error"},
+        )
+        assert event.data["failure_count"] == 3
+
+    def test_circuit_half_open_event_shape(self):
+        event = AgentEvent(
+            type="circuit_half_open",
+            data={"model": "deep", "open_duration_ms": 10000},
+        )
+        assert event.data["open_duration_ms"] == 10000
+
+    def test_circuit_closed_event_shape(self):
+        event = AgentEvent(type="circuit_closed", data={"model": "deep"})
+        assert event.data["model"] == "deep"
+
+    def test_breaker_blocked_event_shape(self):
+        event = AgentEvent(
+            type="breaker_blocked",
+            data={"model": "deep", "circuit_state": "open"},
+        )
+        assert event.data["circuit_state"] == "open"
 
 
 class TestRollbackEventShape:
