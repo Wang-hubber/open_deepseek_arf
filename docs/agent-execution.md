@@ -175,35 +175,44 @@ Turn 流转：    should_continue? → turn++ → route → compact → pre_mode
 
 ### 2.5 循环策略
 
-`LoopStrategy` 协议（`arf/core/protocols/engine.py:7-10`）：
+`LoopStrategy` 协议（`arf/core/protocols/engine.py:7-14`）定义两个门控方法：
 
 ```python
 class LoopStrategy(Protocol):
     def should_continue(self, state: AgentState) -> bool: ...
-    def next_step(self, state: AgentState) -> str: ...
+    def should_break(self, state: AgentState) -> bool: ...
 ```
+
+- `should_continue`：**入口门**——`False` 时跳过循环体，不进入下一 turn
+- `should_break`：**出口门**——`True` 时退出循环，本轮是最后一 turn
+
+两个方法使用 `self.max_turns`。引擎在每 turn 从 `_active_config()` 获取当前活跃 Agent 的 `max_turns` 并同步到 `self.loop_strategy.max_turns`——单 Agent 和多 Agent 场景统一了取值路径。Handoff 切换 Agent 后立即刷新。
 
 当前唯一实现是 `ReActStrategy`（`arf/engine/loop_strategies/react.py`）：
 
 ```python
 class ReActStrategy:
+    def __init__(self, max_turns: int = 50) -> None:
+        self.max_turns = max_turns
+
     def should_continue(self, state: AgentState) -> bool:
         return state.get("current_turn", 0) < self.max_turns
 
+    def should_break(self, state: AgentState) -> bool:
+        return state.get("current_turn", 0) >= self.max_turns
+
     def next_step(self, state: AgentState) -> str:
+        # 预留，引擎当前未调用
         last = state["messages"][-1]
-        if last.get("role") == "tool":
-            return "call_model"
-        return "execute_tools"
+        return "call_model" if last.get("role") == "tool" else "execute_tools"
 ```
 
-**注意**：`should_continue()` 中的 `self.max_turns` 是 ReActStrategy 构造时从**主 Agent** 的 `advanced.max_turns` 固化（`arf/agent/base.py:326`）。引擎在循环末尾的断路器检测（`arf/engine/graph.py:780`）使用的是 `active["max_turns"]`，由 `_active_config()` 动态解析**当前活跃 Agent**（可能是子 Agent）的配置。单 Agent 场景下两者同源；多 Agent 场景下来自各自 Agent 的 `agent.yaml`，值可能不同。
+循环终止条件（四个独立路径）：
 
-循环终止条件（三个独立路径）：
-
-1. 模型返回纯文本，`break`（正常完成）
-2. `turn >= active["max_turns"]`，`break`（断路器触发）
-3. `_cancelled()` 为 `True`，`break`（用户中断）
+1. `should_continue()` 返回 `False`（入口阻断）
+2. 模型返回纯文本，`break`（正常完成）
+3. `should_break()` 返回 `True`（出口断路器触发）
+4. `_cancelled()` 为 `True`，`break`（用户中断）
 
 ### 2.6 取消机制
 

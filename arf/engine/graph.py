@@ -573,6 +573,7 @@ class GraphEngine:
 
             # 3. Get tool definitions — use active agent's tools
             active = self._active_config(state)
+            self.loop_strategy.max_turns = active["max_turns"]
             tools = await self._resolve_tools_for_agent(state, active)
 
             # 4. Build messages & call model
@@ -771,12 +772,15 @@ class GraphEngine:
                             msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
                         del state["handoff_error"]
                         await self.state_store.put(session_id, state)
+                    else:
+                        # Handoff succeeded — sync strategy to new agent's max_turns
+                        self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
                     continue
 
             # 10. Checkpoint
             await self.state_store.put(session_id, state)
 
-            if turn >= active["max_turns"]:
+            if self.loop_strategy.should_break(state):
                 break
 
         if self.hook_runner:
@@ -838,6 +842,7 @@ class GraphEngine:
             tools: list[dict] = []
             if self.tool_resolver:
                 active = self._active_config(state)
+                self.loop_strategy.max_turns = active["max_turns"]
                 tools = await self._resolve_tools_for_agent(state, active)
 
             system_prompt = active["system_prompt"]
@@ -1078,12 +1083,14 @@ class GraphEngine:
                         yield self._make_event(type="error",
                                          data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
                                          turn=turn, session_id=session_id)
+                    else:
+                        self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
                     await self.state_store.put(session_id, state)
                     continue
 
             await self.state_store.put(session_id, state)
 
-            if turn >= active["max_turns"]:
+            if self.loop_strategy.should_break(state):
                 break
 
         if self.hook_runner:
