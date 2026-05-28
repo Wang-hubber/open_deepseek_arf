@@ -105,7 +105,7 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
     下一轮 Engine 调用 get_tool_definitions()
            │
            ▼
-    Provider._load_all() 惰性重新扫描文件系统
+    Provider._load() 惰性重新扫描文件系统
            │
            ├─ kernel（永不重扫，冻结只读）
            └─ dynamic（重新加载，应用 agent.yaml 覆盖）
@@ -130,7 +130,9 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 
 **ModelProvider**（`arf/resources/providers/model_provider.py`）扫描 `models/*.yaml`。每个文件一个 ModelConfig。`activation` 字段用于内核/动态分离。
 
-三者并行启动，互不依赖。所有 Provider 接受 `fs_root` 参数，默认 `./`，可在测试中覆盖。
+三者并行启动，互不依赖。各 Provider 接受各自目录参数（`tools_dir`/`skills_dir`/`models_dir`），可在测试中覆盖。
+
+此外，**PluginProvider**（`arf/resources/providers/plugin_provider.py`）扩展了上述架构，支持从插件目录加载工具和技能。每个插件是 `plugins/{name}/` 子目录，内部结构与应用层一致：`tools/{name}/tool.yaml + function.py` 和 `skills/*.yaml`。BaseAgent 在检测到 `agent.yaml` 配置了 `plugins` 字段时自动装配 PluginProvider——这是多源 Provider 架构的第一个实际案例，证明文件系统扫描契约可以无侵入地扩展到第三方来源。
 
 ### 2.3 内核/动态分离
 
@@ -139,7 +141,7 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 ```python
 # arf/resources/cache.py
 class _FrozenDict(dict):
-    """对标 systemd 的静态单元缓存——init 时加载，之后不可变。"""
+    """A dict that rejects modifications after freeze()."""
     def __setitem__(self, key, value):
         if self._frozen:
             raise RuntimeError("kernel cache is frozen — cannot modify after init")
@@ -153,7 +155,7 @@ class _FrozenDict(dict):
 |----------|---------|---------|
 | 直接编辑文件 | udev 检测设备热插拔 | 下一轮引擎调用 |
 | `resource_scaffold` 创建 | 包管理器安装 .deb → `dpkg --install` | 下一轮引擎调用 |
-| `POST /api/resources/reload` | `systemctl daemon-reload` | 即时清缓，下一轮使用新数据 |
+| `POST /api/reload` | `systemctl daemon-reload` | 即时清缓，下一轮使用新数据 |
 
 ### 2.4 ResourceResolver — 覆盖合并与配置生成
 
@@ -184,7 +186,7 @@ class ResourceResolver:
         """对标 regedit /export 或 dpkg -l。扫描文件系统 dump 完整 agent.yaml。"""
 ```
 
-向后兼容：`DefaultToolResolver = ResourceResolver` 别名保留旧接口。
+向后兼容：`DefaultToolResolver` 是向后兼容的包装类，内部委托给 `ResourceResolver`。
 
 ### 2.5 FileWatcher — 跨平台自动重载
 

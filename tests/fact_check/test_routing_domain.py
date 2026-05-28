@@ -346,10 +346,13 @@ class TestModelAdapter:
 
     def test_empty_api_key_uses_placeholder(self):
         """Doc: api_key 为空时使用 'sk-placeholder'."""
-        with patch("openai.OpenAI"):
+        with patch("arf.core.model_adapter.OpenAI") as mock_cls:
             from arf.core.model_adapter import ModelAdapter
-            adapter = ModelAdapter({"api_key": "", "base_url": "http://x", "model_name": "x"})
-            assert adapter.client.api_key == "sk-placeholder"
+            ModelAdapter({"api_key": "", "base_url": "http://x", "model_name": "x"})
+            mock_cls.assert_called_once_with(
+                base_url="http://x",
+                api_key="sk-placeholder",
+            )
 
     def test_thinking_enabled_in_provider_keys(self):
         """Doc: thinking_enabled 翻译为 DeepSeek thinking 格式."""

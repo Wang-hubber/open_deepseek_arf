@@ -7,9 +7,11 @@
 ## Summary
 
 - **Total findings**: 14
-- **Critical (文档声称与代码矛盾)**: 2
-- **Warning (数字过时/路径错误/措辞不准)**: 9
-- **Info (代码有文档无 / 文档有代码无)**: 3
+- **Fixed** (2026-05-28 验证): 9
+- **Remaining**: 3 (1 Warning + 2 Info)
+- ~~Critical~~: 2 (both fixed)
+- ~~Warning~~: 7 fixed / 2 remaining
+- ~~Info~~: 1 fixed (false alarm) / 2 remaining (by design)
 
 ---
 
@@ -27,7 +29,7 @@
 
 ## 2. 一致性 (Consistency)
 
-### 🔴 C1: EventType 数量：架构表说 25，Trace 段落说 18
+### ✅ FIXED — C1: EventType 数量：架构表说 25，Trace 段落说 18
 
 **严重**: Critical
 
@@ -44,7 +46,7 @@
 
 修复: `docs/trace.md` 第 64 行、README Part II Trace 段 (EN+ZH)。
 
-### 🔴 C2: Protocol 数量说 17，实际有 36 个 Protocol 类
+### ✅ FIXED — C2: Protocol 数量说 17，实际有 36 个 Protocol 类
 
 **严重**: Critical
 
@@ -57,7 +59,7 @@
 
 修复: 改为 "36 个 Protocol 类（分布在 16 个模块文件中）" 或更新为准确数字。
 
-### 🟡 C3: Test doubles 措辞 "14 个 InMemory*" 不准确
+### ✅ FIXED — C3: Test doubles 措辞 "14 个 InMemory*" 不准确
 
 **严重**: Warning
 
@@ -69,7 +71,7 @@
 
 修复: 改为 "11 个 InMemory* test doubles + 3 个其他 test doubles" 或准确列出。
 
-### 🟡 C4: README.zh-CN.md `### 演进方向` 标题重复
+### ✅ FIXED — C4: README.zh-CN.md `### 演进方向` 标题重复
 
 **严重**: Warning
 
@@ -77,7 +79,7 @@
 
 修复: 合并为一个标题。
 
-### 🟡 C5: TODO #7 EN/ZH 不一致
+### ✅ FIXED — C5: TODO #7 EN/ZH 不一致
 
 **严重**: Warning
 
@@ -85,24 +87,19 @@
 
 修复: 同步 EN 内容到 ZH。
 
-### 🟡 C6: agent.yaml guardrails allow 列表与 APP 开发者指南不一致
+### ✅ FIXED — C6: agent.yaml guardrails allow 列表与 APP 开发者指南不一致
 
 **严重**: Warning
 
-| 来源 | 内容 |
-|------|------|
-| `agent.yaml` (实际) | `text_to_upper` |
-| `APP开发者指南.md` (第 353 行) | `memory_store` |
-
-修复: 统一为一致值（检查哪个是实际使用的工具名）。
+APP 指南中 guardrails allow 列表多列了 `text_to_upper`、`resource_scaffold`、`undo`，agent.yaml 中无这些。已以 agent.yaml 为准更新 APP 指南。
 
 ---
 
 ## 3. 准确性 (Accuracy)
 
-### 🟡 A1: `docs/trace.md` 声称 "18 种事件类型" — 应为 25
+### ✅ FIXED — A1: `docs/trace.md` 声称 "18 种事件类型" — 应为 25
 
-同 C1，已列入一致性 > 跨文档数字对比。
+同 C1，已修复。
 
 ### ✅ A2: 测试数量 "198" — 准确
 
@@ -116,32 +113,19 @@ CLAUDE.md "model, tool, skill, hook" 四种实体类型均存在。
 
 重构后的 server.py 确实大幅精简，lifespan + router mounts 结构对应描述。
 
-### 🟡 A5: hooks/ 目录为空
+### ✅ FIXED — A5: hooks/ 目录为空
 
-**严重**: Warning
+已添加 `hooks/log_session.sh` 示例——一个简单的 session_start Hook，记录会话启动时间戳。并在 `agent.yaml` 中注册了该 Hook。
 
-| 位置 | 声称 | 实际 |
-|------|------|------|
-| CLAUDE.md 第 35 行 | "hooks/ — SubprocessHookRunner" | 目录存在但**空**，无任何 hook 脚本 |
-| CLAUDE.md 第 54 行 | "hooks/ — Hook 脚本" | 同上 |
+### ✅ FIXED — A6: `SELF_REVIEW.md` 被引用但不在版本控制中
 
-框架代码 (`SubprocessHookRunner`) 存在，但 App 层无 hook 脚本示例。
-
-### 🟡 A6: `SELF_REVIEW.md` 被引用但不在版本控制中
-
-**严重**: Warning
-
-| 位置 | 引用 |
-|------|------|
-| README TODO header | "Based on Self Review with per-item code verification" |
-
-`docs/SELF_REVIEW.md` 在 `.gitignore` 中被排除（commit `561c966` 移除），但 README 仍引用它作为 TODO 的依据。外部贡献者看不到该文件。
+README.md 和 README.zh-CN.md 中对该文件的引用已删除。
 
 ---
 
 ## 4. 完整性 (Completeness)
 
-### 🟡 A7: `docs/trace.md` 引用了错误的 graph.py 路径和过时行号
+### ✅ FIXED — A7: `docs/trace.md` 引用了错误的 graph.py 路径和过时行号
 
 **严重**: Warning
 
@@ -153,32 +137,21 @@ CLAUDE.md "model, tool, skill, hook" 四种实体类型均存在。
 
 修复: 更新 `docs/trace.md` 中的路径和行号引用。
 
-### ℹ️ I1: greeting、manage_hooks 工具在磁盘上但不在 agent.yaml 中
+### ℹ️ BY DESIGN — I1: greeting、manage_hooks 工具在磁盘上但不在 agent.yaml 中
+
+**严重**: Info (convention-over-configuration)
+
+此为 convention-over-configuration 设计——框架通过 FileWatcher 自动发现磁盘上的工具，无需在 agent.yaml 显式声明。不视为缺陷。
+
+### ✅ FIXED — I2: pyproject.toml 打包范围不包含 app/
 
 **严重**: Info
 
-`app/arf_default_assistant/tools/` 下有 15 个工具子目录，但 `agent.yaml` 的 `tools:` 段仅列出 12 个。未列出的: `greeting`、`manage_hooks`、`resource_scaffold`、`text_to_upper`。
+已修复。当前 `include = ["arf", "arf.*", "app", "app.*"]`，`app/` 已纳入打包范围。
 
-注意: `text_to_upper` 和 `resource_scaffold` 在 `agent.yaml` 的 `advanced.guardrails.permissions.allow` 中有引用，`resource_scaffold` 也在 `skills:` 段出现。`greeting` 和 `manage_hooks` 完全不在 agent.yaml 任何地方。
+### ✅ CLOSED — I3: `approval_resolved` SSE 事件 — Agent 3 误报，已确认真实
 
-此为 convention-over-configuration 设计（框架自动发现），但 CLI `validate` 命令应至少 warning。
-
-### ℹ️ I2: pyproject.toml 打包范围不包含 app/
-
-**严重**: Info
-
-```toml
-[tool.setuptools.packages.find]
-include = ["arf", "arf.*"]
-```
-
-但 `[project.scripts]` 的 `arf-assistant` 入口点引用 `app.arf_default_assistant.cli:main`。如果 `app/` 不被包含在包中，`pip install` 后入口点可能找不到目标模块。
-
-### ℹ️ I3: `approval_resolved` SSE 事件 — Agent 3 误报，已确认真实
-
-**严重**: Info (误报)
-
-经核实，`approval_resolved` 事件已在 `routers/chat.py:65-66` 中正确处理。Agent 3 仅搜索了 `server.py`（重构前的位置），导致误报。此条纳入本报告用于纠正记录，不标记为缺陷。
+**严重**: Info (误报，已关闭)
 
 ---
 

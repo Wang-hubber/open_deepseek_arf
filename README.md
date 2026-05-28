@@ -271,8 +271,6 @@ cd app/web && npm install && npm run dev
 
 ### TODO — Improvement Items
 
-> Based on [Self Review](docs/SELF_REVIEW.md) with per-item code verification.
-
 | # | Title | Code Path | Domain | Type | Details |
 |---|-------|-----------|--------|------|---------|
 | 1 | ~~Engine `invoke`/`astream` duplication~~ → **FIXED** | `arf/engine/graph.py` | Process Scheduling | Framework | ~~~400 lines of identical Agent Loop logic in two methods.~~ → Extracted `_step_classify_tool_calls()` — guard pipeline, sandbox, permissions, and approval logic shared by both paths. |

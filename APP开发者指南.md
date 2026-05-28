@@ -355,11 +355,8 @@ advanced:
         - file_reader
         - web_search
         - web_fetch
-        - text_to_upper
         - resource_loader
         - resource_registrar
-        - resource_scaffold
-        - undo
         - model_switch
         - handoff_to_sys
       ask:

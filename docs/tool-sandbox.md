@@ -65,7 +65,7 @@ GraphEngine
     │       工具在 Agent 进程内执行
     │
     └─ [6] RegexOutputGuard.check()（输出过滤，框架级）
-            API key / 手机号替换为 [REDACTED]
+            API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]`
 ```
 
 ### 2.2 防护栏 — 框架级强制
@@ -77,7 +77,7 @@ GraphEngine
 | `NoneInputGuard` | 输入 | — | 始终放行，预留 LLM 分类器扩展点 |
 | `PathCheckToolGuard` | 工具参数 | 硬阻断 | 递归扫描所有参数：阻断 `..`、绝对路径、symlink、深度/数量配额、工作区逃逸 |
 | `ToolPermissionChecker` | 工具参数 | 软阻断 | deny → 阻断；ask → 审批通道；allow → 放行 |
-| `RegexOutputGuard` | 输出 | 过滤 | API key / 手机号替换为 `[REDACTED]` |
+| `RegexOutputGuard` | 输出 | 过滤 | API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]` |
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
 
@@ -112,7 +112,7 @@ class PathCheckToolGuard:
 
     @staticmethod
     def _walk_strings(obj) -> Iterator[str]:
-        """递归遍历嵌套 dict/list 中所有字符串值"""
+        """递归遍历嵌套 dict/list/tuple/set 中所有字符串值"""
         if isinstance(obj, str):
             yield obj
         elif isinstance(obj, dict):
@@ -124,6 +124,14 @@ class PathCheckToolGuard:
 ```
 
 `PathSandbox.has_symlink()`（`arf/sandbox/path_sandbox.py`）从根目录向下逐段检查原始路径的每个组件是否为符号链接——在 `resolve()` 之前检测，防止 symlink 劫持逃逸。
+
+`PathSandbox` 还提供以下实用方法：
+
+| 方法 | 说明 |
+|------|------|
+| `validate_command(command)` | 检查命令字符串是否包含危险 shell 模式（`;`、`&&`、`|`、`$(`、`` ` `` 等） |
+| `resolve_path(path_str)` | 将路径字符串相对于工作区根目录解析为绝对 `Path` 对象 |
+| `allowed_dirs()` | 返回可写目录列表（构造时传入的 `writable_dirs`） |
 
 `ResourceQuota` 支持三个可选限制：
 
@@ -168,11 +176,18 @@ def check(self, tool_name: str, params: dict) -> str:
     # 5. 以上都不匹配 → "ask"（安全默认）
 ```
 
+`ToolPermissionChecker` 内置两组默认规则：
+
+- `_DEFAULT_ALLOW_TOOLS`：默认允许工具列表，包含 `["file_reader", "web_search", "web_fetch", "memory_store", "resource_loader", "resource_registrar", "resource_scaffold"]`
+- `_BUILTIN_DENY_PATTERNS`：内置危险模式列表，包含 `["rm -rf /", "sudo ", "chmod 777 /", "> /dev/sda", "curl.*|.*sh", "wget.*|.*sh"]`
+
+当 `agent.yaml` 中 `permissions.allow` 未配置时，`_DEFAULT_ALLOW_TOOLS` 作为默认值；`_BUILTIN_DENY_PATTERNS` 始终与配置的 `deny_patterns` 合并生效。
+
 检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py` 中处理：
 
 - `"deny"` → 直接阻断，emit 错误事件
 - `"allow"` → 放行执行
-- `"ask"` → 若 `human_loop` 审批通道已开启，emit `approval_required` SSE 事件并暂停执行，等待用户在前端确认（60s 超时则自动拒绝）；若审批通道未配置，降级为 deny
+- `"ask"` → 若 `human_loop` 审批通道已开启（`approval_enabled=True`），emit `approval_required` SSE 事件并暂停执行，等待用户在前端确认（60s 超时则自动拒绝）；若审批通道未开启（`approval_enabled=False`，即 YOLO 模式），跳过权限控制直接放行
 
 审批通道实现（`graph.py` + `server.py`）：
 1. 引擎生成 `decision_id`，yield `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
