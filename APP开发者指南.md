@@ -355,7 +355,7 @@ advanced:
         - file_reader
         - web_search
         - web_fetch
-        - memory_store
+        - text_to_upper
         - resource_loader
         - resource_registrar
         - resource_scaffold

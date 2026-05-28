@@ -28,7 +28,7 @@ Google Dapper（2010）论文引发了分布式追踪浪潮。OpenTelemetry（20
 
 ### 1.3 对 ARF 的启发
 
-eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的 18 种事件类型。
+eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscribe 解耦。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn → tool_call）。Windows Event Log 的结构化事件（类型码 + 数据字典）直接映射为 ARF 的事件类型体系。
 
 ---
 
@@ -61,7 +61,7 @@ EventBus.emit(AgentEvent)
 
 `AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
 
-**18 种事件类型定义**（`EventType` Literal）：
+**事件类型定义**（`EventType` Literal）：
 
 | 事件 | 触发时机 | 关键 data 字段 |
 |------|----------|---------------|
@@ -93,7 +93,7 @@ EventBus.emit(AgentEvent)
 
 ### 2.5 交互轮次分组
 
-`round` 字段由引擎自动注入到每条事件（`graph.py:164,174`）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。前端 `/traces` 页面的瀑布流按 round 分组：
+`round` 字段由引擎自动注入到每条事件（`arf/engine/graph.py`）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。前端 `/traces` 页面的瀑布流按 round 分组：
 
 ```
 Round 0 (3 次内部迭代)

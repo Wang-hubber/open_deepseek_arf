@@ -39,7 +39,7 @@ arf-assistant = "app.arf_default_assistant.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["arf", "arf.*"]
+include = ["arf", "arf.*", "app", "app.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

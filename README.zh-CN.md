@@ -68,7 +68,7 @@
 | 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于 invoke/astream 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
 | 6 | **[资源系统 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + udev + systemd | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | 7 | **[安全与沙箱 →](docs/tool-sandbox.md)**<br>访问控制 + 路径安全 | 保护环 (Ring 0-3) + ACL | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ToolPermissionChecker` deny→ask→allow 三级执行。`HumanLoop` SSE 推送审批 + 60s 超时。`GuardDefaults` 三道防线（PathCheck/Regex/None）。 | 逐次调用沙箱；MCP 协议；OAuth 范围权限 |
-| 8 | **[可观测性 →](docs/trace.md)**<br>事件追踪 + 指标 | syslog / dtrace / perf | `EventType` Literal 25 种事件类型。`InMemoryEventBus` → `FileTraceStore`（每会话 JSON）。`UsageTracker` token 统计。独立 HTML trace viewer。Vue SPA 瀑布流按交互轮次分组。`SseStream` 实时事件。 | SQLite trace 数据库；OpenTelemetry 导出；Prometheus 指标 |
+| 8 | **[可观测性 →](docs/trace.md)**<br>事件追踪 + 指标 | syslog / dtrace / perf | `EventType` Literal 覆盖完整生命周期。`InMemoryEventBus` → `FileTraceStore`（每会话 JSON）。`UsageTracker` token 统计。独立 HTML trace viewer。Vue SPA 瀑布流按交互轮次分组。`SseStream` 实时事件。 | SQLite trace 数据库；OpenTelemetry 导出；Prometheus 指标 |
 | 9 | **[内置工具 →](docs/api-protection.md)**<br>插件系统 | OS 内置软件 (coreutils, Notepad) | `arf/plugins/` 目录 — `agent.yaml` 的 `plugins:` 字段按名激活。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并到工具/技能列表。P0 插件：`planner`（system_model 任务分解）、`todo`（工作区任务列表）、`undo`（轮次检查点回滚）。App 层可覆盖插件工具（app > plugin）。 | P1：bash、code_interpreter、file_ops；P2：web_search、web_fetch、memory_tools；社区插件仓库 |
 | 10 | **[质量保证 →](docs/eval-benchmark.md)**<br>回归测试 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告。198 个单元/功能测试。 | CLI 集成；HTML 可视化报告；语义相似度指标；CI 流水线 |
 
@@ -81,7 +81,7 @@
 | | **记忆与上下文** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`LLMMemoryWriter`/`LLMMemoryRetriever`（提取/检索管道）、`FileMemoryStore`（memory.json） |
 | | **资源系统** | `ResourceResolver`（统一解析）、`ToolProvider`/`SkillProvider`/`ModelProvider`、`PluginProvider`（扫描 `arf/plugins/`）、`ResourceCache`（kernel/dynamic）、`FileWatcher`（inotify/轮询热加载） |
 | | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`ToolPermissionChecker` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线 |
-| | **可观测性** | `InMemoryEventBus`（25 种事件类型）、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
+| | **可观测性** | `InMemoryEventBus`、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
 | | **基础设施** | `SubprocessHookRunner`（退出码契约）、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`EvalRunner`/`BenchmarkBuilder`/`EvalComparator`（会话回放与回归） |
 | | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`LoopStrategy` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
@@ -205,7 +205,7 @@ Skill 可声明工具流水线与显式依赖。引擎强制执行顺序——�
 
 ### Trace——全链路可观测
 
-EventType Literal 定义 18 种，引擎在 invoke + astream 双路径中全部 emit → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
+引擎在 invoke + astream 双路径中 emit 全部事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
 
 [设计文档 →](docs/trace.md)
 
@@ -279,7 +279,7 @@ cd app/web && npm install && npm run dev
 | 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | ~~`begin()` 中 `"state_snapshot": None` 始终不存快照~~ → 改为 `FunctionBackend` 内联回滚：tool `function.py` 可选导出 `rollback()`，`execute()` 异常时自动调用。`TransactionContext` 协议和 `SnapshotRollback` 类已移除。 |
 | 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | ~~trace 硬编码为 `{"turns": []}`~~ → 重写：`EvalRunner` 通过 `EventBus.events_since()` 采集真实 trace，`events_to_trace()` 组装结构化 turn 数据，4 个 metric 在真实数据上计算。`BenchmarkBuilder` 从 `FileTraceStore` 会话创建 benchmark，`EvalComparator` 跨运行 diff 检测回归。 |
 | 6 | ~~全局状态 `registry._agent`~~ → **已修复** | `arf/agent/registry.py` 已删除 | 进程隔离 | 框架 | ~~`_agent: Any = None` 模块级单例~~ → 已删除。`_engine` 和 `_state_store` 现通过工具执行器参数注入（与 `_agent_mode` 同模式）。`undo` 工具通过函数签名接收。`server.py` 不再调用 `set_agent()`。 |
-| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | ~~`generate_plan()` 始终返回 `{"steps": []}`~~ → 由插件系统取代。`arf/plugins/` 提供框架插件（planner、todo、undo...）。App 在 `agent.yaml` 中声明 `plugins: [planner, todo]`。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并插件 tools/skills 与 App 资源。 |
+| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | ~~`generate_plan()` 始终返回 `{"steps": []}`~~ → 由插件系统取代。`arf/plugins/` 提供框架插件（planner、todo、undo...）。App 在 `agent.yaml` 中声明 `plugins: [planner, todo]`。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并插件 tools/skills 与 App 资源。**遗留问题**：`generate_plan()` 仍返回 `{"steps": []}`，`detect_divergence()` 仍返回 `{"diverged": False}`，`_call_model` 已注入但 LLM 从未被调用执行规划。`Planner` 协议是自主 Agent 的关键扩展点，调用方收到空结果可能误认为"无需分解"。 |
 | 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | ~~回调移除依赖 async generator 的 `finally`，但 CPython 在 `break`/exception 时不调用。~~ → 改为 `@asynccontextmanager`：`async with stream.listen() as queue` — `__aexit__` 在所有退出路径上保证清理。 |
 | 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | ~~14 文件缺模块 docstring；10 处裸 `dict` 类型~~ → 全部 13 个文件已加模块 docstring。核心签名用 `dict[str, Any]` 替代裸 `dict`。`test_code_style.py` 强制执行规范。 |
 | 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | ~~LLM API 调用无速率限制、无断路器保护。~~ → `ModelCallProtector` 组合 `TokenBucket`（按 api_base）+ `CircuitBreaker`（按模型，指数冷却）。在 `BaseAgent._inject_model_calls()` 中以 decorator 模式包装 `_call_model`/`_stream_model`。5 种事件通过 EventBus → trace viewer 可观测。移除了 `DefaultErrorPolicy` 中的 engine 级重试。GraphEngine/ModelAdapter 零侵入。参见 [`docs/api-protection.md`](docs/api-protection.md)。 |
@@ -300,8 +300,6 @@ cd app/web && npm install && npm run dev
 | P-9 | `web_fetch` | P2 | HTTP 抓取，从 app 迁移到插件 |
 | P-10 | `resource_loader` | P2 | 热加载资源，从 app 迁移到插件 |
 | P-11 | `memory_tools` | P2 | LLM 可控的记忆读写/遗忘接口 |
-
-### 演进方向
 
 ### 演进方向
 
