@@ -63,7 +63,7 @@
 |---|------|--------|----------|----------|
 | 1 | **[Agent 执行 →](docs/agent-execution.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` invoke/astream 双模主循环。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
 | 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 自适应阈值（基于历史错误率动态调整 failure_threshold）；优先级队列（系统 vs 用户请求）；分布式限流（多 Agent 共享配额） |
-| 3 | **[记忆与上下文 →](docs/memory-management.md)**<br>上下文窗口 + 长期记忆 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。`LLMMemoryWriter` 每轮提取事实/偏好/决策。`LLMMemoryRetriever` 语义检索。`FileMemoryStore` → `memory.json`。 | 语义单元检索；知识图谱索引；记忆衰减评分 |
+| 3 | **[上下文管理 →](docs/memory-management.md)**<br>上下文窗口压缩 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。长工具输出摘要写入磁盘。 | 语义单元压缩；自适应阈值；跨会话摘要复用 |
 | 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
 | 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于 invoke/astream 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
 | 6 | **[资源系统 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + udev + systemd | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
@@ -78,7 +78,7 @@
 |------|------|------|
 | **框架** (`arf/`) | **Agent 执行** | `GraphEngine`（invoke + astream 双模式）、`BaseAgent` DI 组装、`LoopStrategy` ReAct、`RoundManager` checkpoint/undo、`HandoffManager` 多 Agent 切换、`ConcurrentToolExecutor` 并行执行、`SkillPipeline` 依赖排序 |
 | | **LLM 调度** | `TwoTierRouter` 快/慢分发、`ModelAdapter` 指数退避重试、`TokenBucket` 按端点限流、`CircuitBreaker` 按模型故障隔离、`ModelCallProtector` 装饰器模式注入 |
-| | **记忆与上下文** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`LLMMemoryWriter`/`LLMMemoryRetriever`（提取/检索管道）、`FileMemoryStore`（memory.json） |
+| | **上下文管理** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`_load_resident_memory()`（启动时加载 `memory.md`，注入 `{{MEMORY}}` 占位符） |
 | | **资源系统** | `ResourceResolver`（统一解析）、`ToolProvider`/`SkillProvider`/`ModelProvider`、`PluginProvider`（扫描 `arf/plugins/`）、`ResourceCache`（kernel/dynamic）、`FileWatcher`（inotify/轮询热加载） |
 | | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`ToolPermissionChecker` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线 |
 | | **可观测性** | `InMemoryEventBus`、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
@@ -299,12 +299,13 @@ cd app/web && npm install && npm run dev
 | P-8 | `web_search` | P2 | DuckDuckGo 搜索，从 app 迁移到插件 |
 | P-9 | `web_fetch` | P2 | HTTP 抓取，从 app 迁移到插件 |
 | P-10 | `resource_loader` | P2 | 热加载资源，从 app 迁移到插件 |
-| P-11 | `memory_tools` | P2 | LLM 可控的记忆读写/遗忘接口 |
+| P-11 | ✅ `memory` | DONE | **[长期记忆提取 →](docs/plugins/memory.md)** — 基于 subprocess 的非阻塞提取，通过 sysmodel 驱动。按轮次间隔触发（默认 10 轮）。原子写入 `memory.md`（≤300KB），会话启动时加载。双触发路径：`round_end` hook + `memory_extract` 工具 |
 
 ### 演进方向
 
 参见各模块设计文档第三章：
-- [Memory](docs/memory-management.md#3-演进方向) — 语义单元检索、知识图谱索引、记忆衰减
+- [上下文管理](docs/memory-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用
+- [Memory 插件](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
 - [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
 - [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
 - [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议

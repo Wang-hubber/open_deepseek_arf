@@ -63,7 +63,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 |---|---------|------------|---------|-----------|
 | 1 | **[Agent Execution →](docs/agent-execution.md)**<br>Lifecycle + loop control | Process management (fork/exec/scheduler) | `GraphEngine` dual-mode invoke/astream main loop. `BaseAgent` DI assembly of all protocols. `LoopStrategy` ReAct pattern. `max_turns` per-session circuit breaker. | Multi-agent DAG orchestration; pause/resume/checkpoint; plan-execute loop strategy |
 | 2 | **[LLM Scheduling →](docs/model-routing.md)**<br>Model dispatch + API protection | CPU scheduling (big.LITTLE/CFS) + process supervision | `TwoTierRouter` — LLM classifier dispatches simple→flash, complex→pro. `system_model` for background tasks. `TokenBucket` per-endpoint rate limiting (configurable rps + burst). `CircuitBreaker` per-model with exponential cooldown — trips after consecutive failures, probes via HALF_OPEN, auto-recovers. `ModelAdapter` exponential backoff retry. | Adaptive thresholds (history-based failure_threshold); priority queuing (system vs user requests); distributed rate limiting (multi-agent quota sharing) |
-| 3 | **[Memory & Context →](docs/memory-management.md)**<br>Context window + long-term memory | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. `LLMMemoryWriter` extracts facts/preferences/decisions after each turn. `LLMMemoryRetriever` semantic retrieval. `FileMemoryStore` → `memory.json`. | Semantic-unit retrieval; knowledge graph index; memory decay scoring |
+| 3 | **[Context Management →](docs/memory-management.md)**<br>Context window compaction | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. Long tool outputs summarized to disk. | Semantic-unit compaction; adaptive threshold; cross-session summary reuse |
 | 4 | **[Interrupt & Recovery →](docs/interrupt.md)**<br>Cancel + undo + rollback | Hardware interrupt (ISR) + signals | `asyncio.Event` cancellation token checked each turn. `RoundManager` — configurable snapshot window (default 3), state + file rollback across handoff boundaries. `FunctionBackend` rollback — tools export optional `rollback()` called on `execute()` exception. `SubprocessHookRunner` exit-code 2 → message injection. | Pause/redirect vectors; idle timeout; interrupt priority levels |
 | 5 | **[A2A Communication →](docs/a2a-communication.md)**<br>Agent-to-agent interaction | IPC (pipe/signal/shared memory/message queue) | `HandoffManager` signal-based agent switching in invoke/astream loop. `InMemoryAgentBus` — asyncio.Queue message routing (broadcast, targeted, capability discovery). `PeerAgent` — P2P negotiate/handoff/discover. `DictWorkspace` shared memory. `InMemoryLock` synchronisation. `MajorityVoteConsensus`. Protocol layer for AgentBus/Supervisor/Consensus. `SkillPipeline` — tool execution order with explicit dependencies. `ConcurrentToolExecutor` parallel execution. | Network A2A (gRPC); pub/sub agent discovery; DAG multi-agent scheduling |
 | 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
@@ -80,7 +80,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 |-------|-------|-------------|
 | **Framework** (`arf/`) | **Agent Execution** | `GraphEngine` (invoke + astream dual mode), `BaseAgent` DI assembly, `LoopStrategy` ReAct, `RoundManager` checkpoint/undo, `HandoffManager` multi-agent switching, `ConcurrentToolExecutor` parallel execution, `SkillPipeline` dependency ordering |
 | | **LLM Scheduling** | `TwoTierRouter` fast/slow dispatch, `ModelAdapter` exponential backoff retry, `TokenBucket` per-endpoint rate limiting, `CircuitBreaker` per-model fault isolation, `ModelCallProtector` decorator-pattern injection |
-| | **Memory & Context** | `SlidingWindowCompactor` (75% threshold + LLM summary), `LLMMemoryWriter`/`LLMMemoryRetriever` (extract/retrieve pipeline), `FileMemoryStore` (memory.json) |
+| | **Context Management** | `SlidingWindowCompactor` (75% threshold + LLM summary), `_load_resident_memory()` (loads `memory.md` at startup, injects into `{{MEMORY}}` placeholder) |
 | | **Resource System** | `ResourceResolver` (unified resolution), `ToolProvider`/`SkillProvider`/`ModelProvider`, `PluginProvider` (scans `arf/plugins/`), `ResourceCache` (kernel/dynamic), `FileWatcher` (inotify/polling hot reload) |
 | | **Security** | `PathCheckToolGuard` (.., symlink, depth/count), `ToolPermissionChecker` deny→ask→allow, `HumanLoop` SSE approval + 60s timeout, `GuardDefaults` three-line defense |
 | | **Observability** | `InMemoryEventBus`, `FileTraceStore` (per-session JSON), `UsageTracker` (token accounting), standalone HTML trace viewer, Vue SPA waterfall |
@@ -299,14 +299,15 @@ cd app/web && npm install && npm run dev
 | P-8 | `web_search` | P2 | DuckDuckGo search, move from app to plugin |
 | P-9 | `web_fetch` | P2 | HTTP fetch, move from app to plugin |
 | P-10 | `resource_loader` | P2 | Hot-reload resources, move from app to plugin |
-| P-11 | `memory_tools` | P2 | LLM-controllable memory read/write/forget |
+| P-11 | ✅ `memory` | DONE | **[Long-term memory extraction →](docs/plugins/memory.md)** — subprocess-based extraction via sysmodel. Round-interval trigger (default 10). Atomic write to `memory.md` (≤300KB), loaded at session startup. Two trigger paths: `round_end` hook + `memory_extract` tool |
 
 ### Evolution
 
 ### 演进方向
 
 参见各模块设计文档第三章：
-- [Memory](docs/memory-management.md#3-演进方向) — 语义单元检索、知识图谱索引、记忆衰减
+- [Context Management](docs/memory-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用
+- [Memory Plugin](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
 - [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
 - [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
 - [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
