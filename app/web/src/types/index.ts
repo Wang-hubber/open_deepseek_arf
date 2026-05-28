@@ -339,6 +339,7 @@ export interface Iteration {
   toolCalls: ToolCallPair[]
   guardEvents: any[]
   approvalEvents: any[]
+  protectionEvents: any[]
   afterToolHooks: TraceEvent[]
   isFinal: boolean
 }

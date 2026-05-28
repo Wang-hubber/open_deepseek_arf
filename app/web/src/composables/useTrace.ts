@@ -176,6 +176,13 @@ export function useTrace() {
         e.type === 'approval_required' || e.type === 'approval_resolved'
       )
 
+      // Protection events (rate limiter + circuit breaker)
+      const protectionEvents = inRange.filter(e =>
+        e.type === 'rate_limited' || e.type === 'circuit_opened' ||
+        e.type === 'circuit_half_open' || e.type === 'circuit_closed' ||
+        e.type === 'breaker_blocked'
+      )
+
       // Hooks in range
       const hooks = collectHooks(inRange)
 
@@ -198,6 +205,7 @@ export function useTrace() {
         toolCalls: toolPairs,
         guardEvents,
         approvalEvents,
+        protectionEvents,
         afterToolHooks: hooks.post as any,
         isFinal: isLast && hasContent && !hasToolCalls,
       })

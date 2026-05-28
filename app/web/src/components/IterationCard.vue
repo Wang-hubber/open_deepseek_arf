@@ -30,6 +30,40 @@ const iterDuration = computed(() => {
 
 const toolCount = computed(() => props.iteration.toolCalls.length)
 
+function protectionBadgeClass(type: string): string {
+  switch (type) {
+    case 'circuit_opened': return 'error'
+    case 'breaker_blocked': return 'error'
+    case 'circuit_half_open': return 'warn'
+    case 'rate_limited': return 'warn'
+    case 'circuit_closed': return 'ok'
+    default: return ''
+  }
+}
+
+function protectionIcon(type: string): string {
+  switch (type) {
+    case 'rate_limited': return '🚦'
+    case 'circuit_opened': return '🔴'
+    case 'circuit_half_open': return '🟡'
+    case 'circuit_closed': return '🟢'
+    case 'breaker_blocked': return '⛔'
+    default: return '🛡️'
+  }
+}
+
+function protectionDetail(evt: any): string {
+  const d = eventData(evt, '') || evt?.data || {}
+  switch (evt.type) {
+    case 'rate_limited': return `${eventData(evt, 'model')} at ${eventData(evt, 'api_base')}`
+    case 'circuit_opened': return `${eventData(evt, 'model')}: ${eventData(evt, 'failure_count', 0)} failures — ${eventData(evt, 'fail_reason')}`
+    case 'circuit_half_open': return `${eventData(evt, 'model')}: probing after ${eventData(evt, 'open_duration_ms', 0)}ms`
+    case 'circuit_closed': return `${eventData(evt, 'model')}: recovered`
+    case 'breaker_blocked': return `${eventData(evt, 'model')}: circuit ${eventData(evt, 'circuit_state', 'open')}`
+    default: return ''
+  }
+}
+
 function eventData(evt: any, key: string, fallback: any = ''): any {
   // TraceEvent uses metadata (string), AgentEvent uses data (dict)
   const d = evt?.data
@@ -80,6 +114,13 @@ function eventData(evt: any, key: string, fallback: any = ''): any {
           <span v-else class="ae-reason">{{ eventData(ae, 'reason') }}</span>
         </div>
       </div>
+      <div v-if="iteration.protectionEvents?.length" class="protection-events">
+        <div v-for="(pe, i) in iteration.protectionEvents" :key="i" class="protection-line" :class="pe.type">
+          <span class="pe-icon">{{ protectionIcon(pe.type) }}</span>
+          <span class="pe-type">{{ pe.type }}</span>
+          <span class="pe-detail">{{ protectionDetail(pe) }}</span>
+        </div>
+      </div>
       <ToolCallCard
         v-for="(tc, i) in iteration.toolCalls"
         :key="i"
@@ -95,11 +136,11 @@ function eventData(evt: any, key: string, fallback: any = ''): any {
 </template>
 
 <style scoped>
-.guard-events, .approval-events {
+.guard-events, .approval-events, .protection-events {
   margin: 4px 0 4px 8px;
   display: flex; flex-direction: column; gap: 2px;
 }
-.guard-line, .approval-line {
+.guard-line, .approval-line, .protection-line {
   font-size: 12px; padding: 2px 8px; border-radius: 4px;
   display: flex; align-items: center; gap: 6px;
   opacity: 0.9;
@@ -108,9 +149,13 @@ function eventData(evt: any, key: string, fallback: any = ''): any {
 .guard-line.guard_block { background: rgba(239,68,68,0.08); }
 .approval-line { background: rgba(245,158,11,0.08); }
 .approval-line.approval_resolved { background: rgba(34,197,94,0.06); }
-.ge-icon, .ae-icon { font-size: 11px; flex-shrink: 0; }
-.ge-tool, .ae-tool { font-weight: 600; font-family: monospace; color: var(--text-primary); }
-.ge-reason, .ae-reason { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.protection-line { background: rgba(239,68,68,0.06); }
+.protection-line.circuit_closed { background: rgba(34,197,94,0.06); }
+.protection-line.circuit_half_open { background: rgba(245,158,11,0.06); }
+.protection-line.rate_limited { background: rgba(245,158,11,0.06); }
+.ge-icon, .ae-icon, .pe-icon { font-size: 11px; flex-shrink: 0; }
+.ge-tool, .ae-tool, .pe-type { font-weight: 600; font-family: monospace; color: var(--text-primary); }
+.ge-reason, .ae-reason, .pe-detail { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ic-root {
   border-bottom: 1px solid var(--border-light);
