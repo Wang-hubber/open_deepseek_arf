@@ -279,7 +279,7 @@ cd app/web && npm install && npm run dev
 | 7 | `PromptBasedPlanner` 返回空计划 | `arf/engine/loop_strategies/planner.py:10,19` | 任务规划 | 框架 | `generate_plan()` 始终返回 `{"steps": []}`，`detect_divergence()` 始终返回 `{"diverged": False}`。Engine 注入了 `_call_model` 但从未调用 LLM 生成计划。**风险**：`Planner` 协议是自主 Agent 任务分解的核心扩展点，当前对外传达虚假能力——调用者获得空结果可能误认为"任务无需分解" |
 | 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | ~~回调移除依赖 async generator 的 `finally`，但 CPython 在 `break`/exception 时不调用。~~ → 改为 `@asynccontextmanager`：`async with stream.listen() as queue` — `__aexit__` 在所有退出路径上保证清理。 |
 | 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | ~~14 文件缺模块 docstring；10 处裸 `dict` 类型~~ → 全部 13 个文件已加模块 docstring。核心签名用 `dict[str, Any]` 替代裸 `dict`。`test_code_style.py` 强制执行规范。 |
-| 10 | 无 Rate Limiting / Circuit Breaker | `arf/engine/graph.py` 模型调用路径 | 进程调度 | 框架 | LLM API 调用无速率限制、无断路器保护。`ModelAdapter` 有重试逻辑但框架层无跨调用的保护机制。**风险**：高频使用场景下可能触发 API 限流；持久故障模型无自动熔断，反复重试浪费资源 |
+| 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | ~~LLM API 调用无速率限制、无断路器保护。~~ → `ModelCallProtector` 组合 `TokenBucket`（按 api_base）+ `CircuitBreaker`（按模型，指数冷却）。在 `BaseAgent._inject_model_calls()` 中以 decorator 模式包装 `_call_model`/`_stream_model`。5 种事件通过 EventBus → trace viewer 可观测。移除了 `DefaultErrorPolicy` 中的 engine 级重试。GraphEngine/ModelAdapter 零侵入。参见 [`docs/api-protection.md`](docs/api-protection.md)。 |
 | 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。文档丰富但缺乏外部贡献的流程指引。**风险**：潜在贡献者不知道提交标准；无 changelog 则用户无法评估升级影响 |
 
 ### 演进方向
