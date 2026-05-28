@@ -150,3 +150,25 @@ class HandoverConfig(BaseModel):
 class SupervisorConfig(BaseModel):
     type: Literal["round_robin", "llm_router", "custom"] = "round_robin"
     llm_model: str | None = None
+
+
+class ProtectionRateLimitConfig(BaseModel):
+    """Token bucket rate limiter per api_base."""
+    requests_per_second: float = 5.0
+    max_burst: int = 10
+
+
+class ProtectionCircuitBreakerConfig(BaseModel):
+    """Exponential cooldown circuit breaker per model."""
+    failure_threshold: int = 3
+    base_cooldown: str = "10s"
+    cooldown_multiplier: float = 2.0
+    max_cooldown: str = "300s"
+    half_open_max_requests: int = 1
+
+
+class ProtectionConfig(BaseModel):
+    """API protection: rate limiting + circuit breaker."""
+    enabled: bool = True
+    rate_limit: ProtectionRateLimitConfig = Field(default_factory=ProtectionRateLimitConfig)
+    circuit_breaker: ProtectionCircuitBreakerConfig = Field(default_factory=ProtectionCircuitBreakerConfig)
