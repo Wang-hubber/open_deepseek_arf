@@ -197,7 +197,7 @@ class ReActStrategy:
         return "execute_tools"
 ```
 
-**注意**：`should_continue()` 中的 `self.max_turns` 是 ReActStrategy 构造时注入的值，但引擎在循环末尾的断路器检测（`arf/engine/graph.py:780`）使用的是 `active["max_turns"]`，来自 `_active_config()` 动态解析——多 Agent 场景下子 Agent 可有独立的 `max_turns`。两者使用同一个值（均从 `agent.yaml` 的 `advanced.max_turns` 传递），但路径不同。
+**注意**：`should_continue()` 中的 `self.max_turns` 是 ReActStrategy 构造时从**主 Agent** 的 `advanced.max_turns` 固化（`arf/agent/base.py:326`）。引擎在循环末尾的断路器检测（`arf/engine/graph.py:780`）使用的是 `active["max_turns"]`，由 `_active_config()` 动态解析**当前活跃 Agent**（可能是子 Agent）的配置。单 Agent 场景下两者同源；多 Agent 场景下来自各自 Agent 的 `agent.yaml`，值可能不同。
 
 循环终止条件（三个独立路径）：
 
