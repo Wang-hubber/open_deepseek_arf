@@ -1,16 +1,13 @@
 """undo -- roll back N interaction rounds (state + files)."""
-from arf.agent.registry import get_agent
 
 
-async def execute(steps: int = 1) -> dict:
+async def execute(steps: int = 1, _engine=None, _state_store=None) -> dict:
     """Call the engine's undo mechanism and return status."""
     try:
-        agent = get_agent()
-        if agent is None:
-            return {"ok": False, "error": "Agent not initialized yet"}
+        if _engine is None:
+            return {"ok": False, "error": "Engine not available"}
 
-        engine = agent._engine
-        available = engine.checkpoint_count()
+        available = _engine.checkpoint_count()
         if available < steps:
             return {
                 "ok": False,
@@ -18,14 +15,14 @@ async def execute(steps: int = 1) -> dict:
                 "available": available,
             }
 
-        restored = engine.undo(steps, session_id="default")
+        restored = _engine.undo(steps, session_id="default")
         if restored is None:
             return {"ok": False, "error": "No checkpoints available"}
 
-        # Write restored state back to state store
-        await agent.state_store.put("default", restored)
+        if _state_store:
+            await _state_store.put("default", restored)
         msg_count = len(restored.get("messages", []))
-        remaining = engine.checkpoint_count()
+        remaining = _engine.checkpoint_count()
 
         return {
             "ok": True,
