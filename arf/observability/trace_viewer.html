@@ -42,6 +42,7 @@ button:hover { background:#1f2937; }
 .tag-warn { background:#3c2a0a; color:var(--yellow); }
 .tag-compact { background:#3c2a0a; color:var(--yellow); }
 .tag-system { background:#3c1a2c; color:var(--pink); }
+.tag-protection { background:#3c1a1a; color:var(--red); }
 .chip { display:inline-flex; align-items:center; gap:4px; margin:2px 3px; }
 .panel { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:8px 12px; margin:4px 0; font-family:'SF Mono',monospace; font-size:12px; max-height:240px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
 .empty { text-align:center; padding:60px; color:var(--muted); }
@@ -80,7 +81,9 @@ const TAG = { model_call_start:'tag-model',model_call_end:'tag-model',thinking_d
   session_start:'tag-system',session_end:'tag-system',user_input:'tag-system',
   guard_block:'tag-error',guard_pass:'tag-ok',
   approval_required:'tag-warn',approval_resolved:'tag-warn',
-  error:'tag-error', rollback_executed:'tag-warn', undo_executed:'tag-warn' };
+  error:'tag-error', rollback_executed:'tag-warn', undo_executed:'tag-warn',
+  rate_limited:'tag-warn', circuit_opened:'tag-error', circuit_half_open:'tag-warn',
+  circuit_closed:'tag-ok', breaker_blocked:'tag-error' };
 
 const ICON = { model_call_start:'🤖',model_call_end:'🤖',thinking_delta:'💭',
   tool_call_start:'🔧',tool_call_end:'🔧', hook_start:'🪝',hook_end:'🪝',
@@ -88,7 +91,9 @@ const ICON = { model_call_start:'🤖',model_call_end:'🤖',thinking_delta:'�
   session_start:'▶',session_end:'⏹',user_input:'👤',
   guard_block:'🛡️✗',guard_pass:'🛡️✓',
   approval_required:'⏳',approval_resolved:'👆',
-  error:'❌', rollback_executed:'↩', undo_executed:'↩' };
+  error:'❌', rollback_executed:'↩', undo_executed:'↩',
+  rate_limited:'🚦', circuit_opened:'🔴', circuit_half_open:'🟡',
+  circuit_closed:'🟢', breaker_blocked:'⛔' };
 
 let allEvents = [], groupedRounds = [];
 
@@ -146,7 +151,7 @@ function groupByRound(events) {
 
 function renderStats(events) {
   const models = {}, tools = {};
-  let tokens = 0, errors = 0;
+  let tokens = 0, errors = 0, rate_limits = 0;
   for(const e of events) {
     if(e.type === 'model_call_end') {
       const m = e.data?.model || '?';
@@ -155,8 +160,10 @@ function renderStats(events) {
     }
     if(e.type === 'tool_call_start') tools[e.data?.tool_name||'?'] = (tools[e.data?.tool_name||'?']||0) + 1;
     if(e.type === 'error') errors++;
+    if(e.type === 'rate_limited') rate_limits++;
+    if(e.type === 'circuit_opened') errors++;
   }
-  return { models, tools, tokens, errors, total: events.length };
+  return { models, tools, tokens, errors, rate_limits, total: events.length };
 }
 
 function render() {
@@ -172,6 +179,7 @@ function render() {
     <div class="stat"><div class="v">${Object.keys(groupByRound(events)).length}</div><div class="l">Rounds</div></div>
     <div class="stat"><div class="v">${(s.tokens/1000).toFixed(1)}k</div><div class="l">Tokens</div></div>
     <div class="stat"><div class="v">${s.errors}</div><div class="l">Errors</div></div>
+    <div class="stat"><div class="v">${s.rate_limits}</div><div class="l">Rate limits</div></div>
     ${Object.entries(s.models).map(([m,c]) => `<div class="stat"><div class="v">${c}</div><div class="l">${m}</div></div>`).join('')}
     ${Object.entries(s.tools).slice(0,6).map(([t,c]) => `<div class="stat"><div class="v">${c}</div><div class="l">${t}</div></div>`).join('')}
   `;
@@ -251,6 +259,16 @@ function renderTurnDetail(events) {
       body = `success=${d.success} turn=${d.turn} rolled_back=[${rb.map(r => r.name + (r.rollback_error ? '(FAIL:' + r.rollback_error + ')' : '(ok)')).join(', ')}]`;
     } else if(e.type === 'undo_executed') {
       body = `from_round=${d.from_round} → to_round=${d.to_round} steps=${d.steps}`;
+    } else if(e.type === 'rate_limited') {
+      body = `model=${d.model||'?'} api_base=${d.api_base||'?'}`;
+    } else if(e.type === 'circuit_opened') {
+      body = `model=${d.model||'?'} failures=${d.failure_count||0} reason=${(d.fail_reason||'').slice(0,200)}`;
+    } else if(e.type === 'circuit_half_open') {
+      body = `model=${d.model||'?'} open_duration_ms=${d.open_duration_ms||0}`;
+    } else if(e.type === 'circuit_closed') {
+      body = `model=${d.model||'?'}`;
+    } else if(e.type === 'breaker_blocked') {
+      body = `model=${d.model||'?'} circuit_state=${d.circuit_state||'?'}`;
     } else {
       body = JSON.stringify(d).slice(0,400);
     }
