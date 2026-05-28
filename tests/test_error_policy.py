@@ -10,8 +10,7 @@ from arf.errors.retry import DefaultErrorPolicy
 class TestOnModelError:
     @pytest.fixture
     def policy(self):
-        return DefaultErrorPolicy(tool_retry=2, model_retry=3,
-                                   model_5xx_action="fallback")
+        return DefaultErrorPolicy(tool_retry=2, model_5xx_action="fallback")
 
     def test_fallback_on_500(self, policy):
         """5xx errors should trigger fallback action when model_5xx_action='fallback'."""
@@ -45,8 +44,8 @@ class TestOnModelError:
         )
         assert action.action == "abort"
 
-    def test_abort_after_exhausting_model_retry(self, policy):
-        """Engine-level abort regardless of attempt count."""
+    def test_non_5xx_aborts_regardless_of_attempt(self, policy):
+        """Non-5xx errors abort immediately — protection layer handles retry."""
         action = policy.on_model_error(
             Exception("timeout"), "deep", attempt=3
         )
@@ -55,7 +54,7 @@ class TestOnModelError:
 
     def test_5xx_with_retry_action_aborts(self):
         """With action='retry', engine no longer retries — protection layer handles 5xx."""
-        policy = DefaultErrorPolicy(model_5xx_action="retry", model_retry=3)
+        policy = DefaultErrorPolicy(model_5xx_action="retry")
         action = policy.on_model_error(
             Exception("HTTP 500 error"), "deep", attempt=0
         )
@@ -63,7 +62,7 @@ class TestOnModelError:
 
     def test_5xx_with_abort_action_aborts(self):
         """model_5xx_action='abort' aborts immediately on 5xx."""
-        policy = DefaultErrorPolicy(model_5xx_action="abort", model_retry=3)
+        policy = DefaultErrorPolicy(model_5xx_action="abort")
         action = policy.on_model_error(
             Exception("HTTP 503 error"), "deep", attempt=0
         )

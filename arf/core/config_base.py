@@ -93,7 +93,6 @@ class GuardrailsConfig(BaseModel):
 class ErrorConfig(BaseModel):
     tool_retry: int = 2
     tool_backoff: Literal["exponential", "linear", "none"] = "exponential"
-    model_retry: int = 3
     model_5xx_action: Literal["fallback", "retry", "abort"] = "fallback"
     guardrail_block_action: Literal["abort", "ask_user"] = "abort"
 

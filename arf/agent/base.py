@@ -284,9 +284,9 @@ class BaseAgent:
         # 5. Error + Transaction
         err_cfg = (adv.errors or AdvancedConfig.default().errors) if adv else None
         tool_retry = err_cfg.tool_retry if err_cfg else 2
-        model_retry = err_cfg.model_retry if err_cfg else 3
         error_policy = override_protocols.pop("error_policy", DefaultErrorPolicy(
-            tool_retry=tool_retry, model_retry=model_retry,
+            tool_retry=tool_retry,
+            model_5xx_action=(err_cfg.model_5xx_action if err_cfg else "fallback"),
         ))
 
         # 6. Hooks

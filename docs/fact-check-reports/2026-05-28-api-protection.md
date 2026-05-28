@@ -15,13 +15,13 @@
 
 ## Findings
 
-### Info
+### Info (FIXED)
 
-**F1. `model_retry=3` dead parameter** (`xfail`)
+**F1. `model_retry=3` dead parameter**
 
-Doc 2.6: engine-level retry removed from `DefaultErrorPolicy`. Behavior is correct — `on_model_error()` does NOT retry. But `__init__` (line 7) still accepts and stores `model_retry: int = 3`. The parameter and `self._model_retry` are dead code — never referenced in `on_model_error()`.
+Doc 2.6: engine-level retry removed from `DefaultErrorPolicy`. Behavior was correct — `on_model_error()` never retried. But `__init__`, `ErrorConfig`, and `base.py` still carried `model_retry=3` as dead code.
 
-Fix: remove `model_retry` parameter from `DefaultErrorPolicy.__init__`.
+**Fix**: Removed `model_retry` from `DefaultErrorPolicy.__init__`, `ErrorConfig`, `base.py`, and all test callers. Engine-level model retry is now completely gone. (2026-05-28)
 
 ## Verified Claims (39 passing)
 

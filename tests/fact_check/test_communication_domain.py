@@ -380,22 +380,18 @@ class TestFileExistence:
 # ---------------------------------------------------------------------------
 
 class TestAgentMessageDocCompleteness:
-    """Doc 2.3 table lists 5 AgentMessage fields. Code has 6."""
+    """Doc 2.3 table now lists all 6 AgentMessage fields."""
 
-    @pytest.mark.xfail(reason="FINDING: doc table omits 'reply_to' field. "
-                       "Code has 6 fields, doc lists 5.",
-                       strict=True)
     def test_doc_lists_all_agent_message_fields(self):
-        """Doc AgentMessage table: sender, receiver, type, payload, correlation_id.
-        Should also include reply_to."""
+        """Doc table: sender, receiver, type, payload, correlation_id, reply_to."""
         from arf.core.protocols.communication import AgentMessage
         actual = set(AgentMessage.__dataclass_fields__.keys())
-        doc_claimed = {"sender", "receiver", "type", "payload", "correlation_id"}
+        doc_claimed = {"sender", "receiver", "type", "payload",
+                       "correlation_id", "reply_to"}
         missing = actual - doc_claimed
-        assert not missing, (
-            f"Doc AgentMessage table is missing fields: {missing}. "
-            f"Actual fields: {sorted(actual)}"
-        )
+        extra = doc_claimed - actual
+        assert not missing, f"Code has fields not in doc: {missing}"
+        assert not extra, f"Doc claims fields not in code: {extra}"
 
 
 class TestHandoffManagerCoverage:

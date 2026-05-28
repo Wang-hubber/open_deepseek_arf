@@ -15,13 +15,13 @@
 
 ## Findings
 
-### Warning
+### Warning (FIXED)
 
-**F1. Doc AgentMessage table missing `reply_to` field** (`xfail`)
+**F1. Doc AgentMessage table missing `reply_to` field**
 
-Doc 2.3 table lists 5 fields: `sender`, `receiver`, `type`, `payload`, `correlation_id`. The actual `AgentMessage` dataclass has 6 fields — `reply_to` is not documented.
+Doc 2.3 table listed 5 fields, code has 6. `reply_to: str | None = None` was missing.
 
-Fix: add `reply_to: str | None = None` to the doc table.
+**Fix**: Added `reply_to` row to the doc table. (2026-05-28)
 
 ### Info
 
@@ -31,11 +31,13 @@ Doc section 2.2 (the largest section in the doc) covers `HandoffManager` in `arf
 
 Added retroactively: HandoffManager existence, method checks, and behavior verification.
 
-### Info
+### Info (FIXED)
 
 **F3. Stale line numbers for HandoffManager engine integration**
 
-Doc references `graph.py:779-791` and `graph.py:1110-1124`. File is now 1155 lines, handoff code has moved. Recommend removing line numbers.
+Doc referenced `graph.py:779-791` and `graph.py:1110-1124`. File is now 1155 lines, handoff code has moved.
+
+**Fix**: Replaced with descriptive method reference (`_execute_handoff`). (2026-05-28)
 
 ## Verified Claims (31 passing)
 

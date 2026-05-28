@@ -4,10 +4,9 @@ from arf.core.results import ErrorAction, GuardResult
 
 
 class DefaultErrorPolicy:
-    def __init__(self, tool_retry: int = 2, model_retry: int = 3,
+    def __init__(self, tool_retry: int = 2,
                  model_5xx_action: str = "fallback", guardrail_block_action: str = "abort") -> None:
         self._tool_retry = tool_retry
-        self._model_retry = model_retry
         self._model_5xx_action = model_5xx_action
         self._guardrail_block_action = guardrail_block_action
 

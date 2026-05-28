@@ -141,7 +141,7 @@ Tier 3: len(candidates) > 1 && system_model 不可用
 - 目标 Agent 的 system_prompt 前置
 - handoff 消息作为 user role 放入
 
-**引擎集成**（`graph.py:779-791` 和 `graph.py:1110-1124`）：
+**引擎集成**（`arf/engine/graph.py` — `_execute_handoff` 方法，在 invoke/astream 两条路径中调用）：
 
 ```
 invoke() / astream() 主循环:
@@ -195,6 +195,7 @@ class InMemoryAgentBus:
 | `type` | `Literal["task_delegate", "info", "query", "handoff"]` | 消息类型 |
 | `payload` | `dict` | 消息体 |
 | `correlation_id` | `str` | 请求-响应匹配 ID |
+| `reply_to` | `str \| None` | 回复目标 Agent 名 |
 
 **背压机制**：`asyncio.Queue(maxsize=100)` 限制队列深度。队列满时 `put()` 阻塞，自然施加背压——对标 OS 管道的数据流控制。
 
