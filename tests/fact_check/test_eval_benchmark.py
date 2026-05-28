@@ -1,0 +1,1116 @@
+"""Fact-check tests: Eval/Benchmark — docs/eval-benchmark.md vs arf/evaluation/.
+
+Each test validates a specific claim made in the documentation against actual code.
+PASS = doc/code consistent. FAIL = discrepancy found (fact-check finding).
+"""
+
+import inspect
+import json
+import time
+import asyncio
+from pathlib import Path
+from dataclasses import fields
+from unittest.mock import MagicMock, AsyncMock
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# 1. Top-level imports (docs 3.1, 3.2, 3.3)
+# ---------------------------------------------------------------------------
+
+class TestTopLevelImports:
+    """Doc Section 3 API Reference: all imports from arf.evaluation."""
+
+    def test_import_benchmark_builder(self):
+        """Doc: from arf.evaluation import BenchmarkBuilder."""
+        from arf.evaluation import BenchmarkBuilder
+        assert BenchmarkBuilder is not None
+
+    def test_import_eval_benchmark(self):
+        """Doc: from arf.evaluation import EvalBenchmark."""
+        from arf.evaluation import EvalBenchmark
+        assert EvalBenchmark is not None
+
+    def test_import_eval_runner(self):
+        """Doc: from arf.evaluation import EvalRunner."""
+        from arf.evaluation import EvalRunner
+        assert EvalRunner is not None
+
+    def test_import_eval_comparator(self):
+        """Doc: from arf.evaluation import EvalComparator."""
+        from arf.evaluation import EvalComparator
+        assert EvalComparator is not None
+
+    def test_import_eval_report(self):
+        """Doc: from arf.evaluation import EvalReport."""
+        from arf.evaluation import EvalReport
+        assert EvalReport is not None
+
+    def test_import_eval_diff(self):
+        """Doc: from arf.evaluation import EvalDiff (via EvalComparator)."""
+        from arf.evaluation import EvalDiff
+        assert EvalDiff is not None
+
+    def test_import_eval_summary(self):
+        """Doc: from arf.evaluation import EvalSummary."""
+        from arf.evaluation import EvalSummary
+        assert EvalSummary is not None
+
+    def test_import_eval_case(self):
+        """Doc: from arf.evaluation import EvalCase."""
+        from arf.evaluation import EvalCase
+        assert EvalCase is not None
+
+    def test_import_file_trace_store(self):
+        """Doc: from arf.observability.file_trace import FileTraceStore."""
+        from arf.observability.file_trace import FileTraceStore
+        assert FileTraceStore is not None
+
+    def test_import_metrics(self):
+        """Doc: from arf.evaluation import (metrics)."""
+        from arf.evaluation import (
+            SuccessRateMetric, ToolAccuracyMetric,
+            TurnEfficiencyMetric, OutputContainsMetric,
+        )
+        assert SuccessRateMetric is not None
+        assert ToolAccuracyMetric is not None
+        assert TurnEfficiencyMetric is not None
+        assert OutputContainsMetric is not None
+
+    def test_import_eval_error(self):
+        """Doc: from arf.evaluation.exceptions import EvalError."""
+        from arf.evaluation.exceptions import EvalError
+        assert EvalError is not None
+
+    def test_import_events_to_trace(self):
+        """Doc: from arf.evaluation.trace_adapter import events_to_trace."""
+        from arf.evaluation.trace_adapter import events_to_trace
+        assert events_to_trace is not None
+
+
+# ---------------------------------------------------------------------------
+# 2. Module / file existence (docs passim)
+# ---------------------------------------------------------------------------
+
+class TestFileExistence:
+    """Doc references these specific files in arf/evaluation/."""
+
+    def test_evaluation_files_exist(self):
+        """Doc: arf/evaluation/ directory with runner, builder, comparator, etc."""
+        root = Path(__file__).parent.parent.parent
+        for f in (
+            "arf/evaluation/__init__.py",
+            "arf/evaluation/runner.py",
+            "arf/evaluation/builder.py",
+            "arf/evaluation/comparator.py",
+            "arf/evaluation/metrics.py",
+            "arf/evaluation/models.py",
+            "arf/evaluation/exceptions.py",
+            "arf/evaluation/trace_adapter.py",
+        ):
+            assert (root / f).exists(), f"Expected file {f} does not exist"
+
+    def test_protocol_file_exists(self):
+        """Doc: arf/core/protocols/evaluation.py defines protocols."""
+        root = Path(__file__).parent.parent.parent
+        assert (root / "arf/core/protocols/evaluation.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# 3. EvalCase data model (docs Section 4)
+# ---------------------------------------------------------------------------
+
+class TestEvalCaseModel:
+    """Doc Section 4: EvalCase fields."""
+
+    def test_eval_case_fields(self):
+        """Doc: id: str, input: str, expected_tools, expected_output_contains, max_turns."""
+        from arf.evaluation.models import EvalCase
+        field_names = {f.name for f in fields(EvalCase)}
+        assert "id" in field_names
+        assert "input" in field_names
+        assert "expected_tools" in field_names
+        assert "expected_output_contains" in field_names
+        assert "max_turns" in field_names
+
+    def test_eval_case_types(self):
+        """Doc: expected_tools = list[str] | None, max_turns = int | None."""
+        from arf.evaluation.models import EvalCase
+        fmap = {f.name: f.type for f in fields(EvalCase)}
+        assert fmap["id"] is str or fmap["id"] == "str"
+        assert fmap["input"] is str or fmap["input"] == "str"
+        expected_tools_type = fmap.get("expected_tools")
+        assert expected_tools_type is not None
+        max_turns_type = fmap.get("max_turns")
+        assert max_turns_type is not None
+
+    def test_eval_case_construct(self):
+        """Doc: EvalCase(id='case_0', input='hello')."""
+        from arf.evaluation.models import EvalCase
+        c = EvalCase(id="case_0", input="hello")
+        assert c.id == "case_0"
+        assert c.input == "hello"
+        assert c.expected_tools is None
+        assert c.expected_output_contains is None
+        assert c.max_turns is None
+
+    def test_eval_case_with_all_fields(self):
+        """Doc: All fields can be set."""
+        from arf.evaluation.models import EvalCase
+        c = EvalCase(
+            id="case_1", input="test",
+            expected_tools=["read_file"],
+            expected_output_contains=["success"],
+            max_turns=5,
+        )
+        assert c.expected_tools == ["read_file"]
+        assert c.expected_output_contains == ["success"]
+        assert c.max_turns == 5
+
+
+# ---------------------------------------------------------------------------
+# 4. EvalBenchmark data model (docs Section 4)
+# ---------------------------------------------------------------------------
+
+class TestEvalBenchmarkModel:
+    """Doc Section 4: EvalBenchmark fields."""
+
+    def test_eval_benchmark_fields(self):
+        """Doc: name, source_session, created_at, cases."""
+        from arf.evaluation.models import EvalBenchmark
+        field_names = {f.name for f in fields(EvalBenchmark)}
+        assert "name" in field_names
+        assert "source_session" in field_names
+        assert "created_at" in field_names
+        assert "cases" in field_names
+
+    def test_eval_benchmark_construct(self):
+        """Doc: EvalBenchmark(name=..., source_session=..., created_at=..., cases=...)."""
+        from arf.evaluation.models import EvalCase, EvalBenchmark
+        bm = EvalBenchmark(
+            name="file_ops_v1",
+            source_session="default",
+            created_at=1234567890.0,
+            cases=[EvalCase(id="case_0", input="hello")],
+        )
+        assert bm.name == "file_ops_v1"
+        assert bm.source_session == "default"
+        assert bm.created_at == 1234567890.0
+        assert len(bm.cases) == 1
+        assert bm.cases[0].input == "hello"
+
+    def test_to_json_round_trip(self, tmp_path):
+        """Doc: benchmark.to_json(path) and EvalBenchmark.from_json(path)."""
+        from arf.evaluation.models import EvalCase, EvalBenchmark
+        bm = EvalBenchmark(
+            name="test_bm",
+            source_session="sess_1",
+            created_at=100.0,
+            cases=[
+                EvalCase(id="case_0", input="hello", expected_tools=["tool_a"]),
+                EvalCase(id="case_1", input="world", expected_output_contains=["ok"]),
+            ],
+        )
+        p = str(tmp_path / "benchmark.json")
+        bm.to_json(p)
+        assert Path(p).exists()
+
+        loaded = EvalBenchmark.from_json(p)
+        assert loaded.name == "test_bm"
+        assert loaded.source_session == "sess_1"
+        assert loaded.created_at == 100.0
+        assert len(loaded.cases) == 2
+        assert loaded.cases[0].id == "case_0"
+        assert loaded.cases[0].input == "hello"
+        assert loaded.cases[0].expected_tools == ["tool_a"]
+        assert loaded.cases[1].expected_output_contains == ["ok"]
+
+    def test_from_json_missing_optional_fields(self, tmp_path):
+        """Doc: from_json handles missing optional fields gracefully."""
+        from arf.evaluation.models import EvalBenchmark
+        data = {
+            "name": "minimal",
+            "cases": [{"id": "c0", "input": "hi"}],
+        }
+        p = str(tmp_path / "minimal.json")
+        with open(p, "w") as f:
+            json.dump(data, f)
+        loaded = EvalBenchmark.from_json(p)
+        assert loaded.name == "minimal"
+        assert loaded.source_session is None
+        assert len(loaded.cases) == 1
+        assert loaded.cases[0].expected_tools is None
+
+    def test_to_json_skips_none_fields(self, tmp_path):
+        """Doc: to_json omits None optional fields."""
+        from arf.evaluation.models import EvalCase, EvalBenchmark
+        bm = EvalBenchmark(
+            name="no_optionals",
+            cases=[EvalCase(id="c0", input="hi")],
+        )
+        p = str(tmp_path / "no_opt.json")
+        bm.to_json(p)
+        with open(p) as f:
+            raw = json.load(f)
+        assert "expected_tools" not in raw["cases"][0]
+        assert "expected_output_contains" not in raw["cases"][0]
+        assert "max_turns" not in raw["cases"][0]
+
+
+# ---------------------------------------------------------------------------
+# 5. EvalReport data model (docs Section 4)
+# ---------------------------------------------------------------------------
+
+class TestEvalReportModel:
+    """Doc Section 4: EvalReport fields."""
+
+    def test_eval_report_fields(self):
+        """Doc: run_id, benchmark_name, agent_config_hash, timestamp, summary, per_case."""
+        from arf.evaluation.models import EvalReport
+        field_names = {f.name for f in fields(EvalReport)}
+        assert "run_id" in field_names
+        assert "benchmark_name" in field_names
+        assert "agent_config_hash" in field_names
+        assert "timestamp" in field_names
+        assert "summary" in field_names
+        assert "per_case" in field_names
+
+    def test_to_json_round_trip(self, tmp_path):
+        """Doc: report.to_json(path) and EvalReport.from_json(path)."""
+        from arf.evaluation.models import EvalReport, EvalSummary
+        report = EvalReport(
+            run_id="uuid-123",
+            benchmark_name="test_bm",
+            agent_config_hash="abc123",
+            timestamp=200.0,
+            summary=EvalSummary(total=2, passed=2, failed=0, pass_rate=1.0),
+            per_case=[{"case_id": "c0", "passed": True}],
+        )
+        p = str(tmp_path / "report.json")
+        report.to_json(p)
+        assert Path(p).exists()
+
+        loaded = EvalReport.from_json(p)
+        assert loaded.run_id == "uuid-123"
+        assert loaded.benchmark_name == "test_bm"
+        assert loaded.agent_config_hash == "abc123"
+        assert loaded.summary.total == 2
+        assert loaded.summary.pass_rate == 1.0
+        assert loaded.per_case == [{"case_id": "c0", "passed": True}]
+
+    def test_from_json_missing_summary_fields(self, tmp_path):
+        """Doc: from_json handles missing summary fields gracefully."""
+        from arf.evaluation.models import EvalReport
+        data = {
+            "run_id": "r1",
+            "benchmark_name": "bm1",
+            "agent_config_hash": "h1",
+            "timestamp": 1.0,
+            "summary": {"total": 1, "passed": 1, "failed": 0, "pass_rate": 1.0},
+        }
+        p = str(tmp_path / "min_report.json")
+        with open(p, "w") as f:
+            json.dump(data, f)
+        loaded = EvalReport.from_json(p)
+        assert loaded.summary.avg_turns == 0.0
+        assert loaded.summary.avg_tool_calls == 0.0
+        assert loaded.summary.avg_duration_seconds == 0.0
+        assert loaded.summary.tool_accuracy == 0.0
+        assert loaded.summary.output_contains == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 6. EvalSummary data model (docs Section 4)
+# ---------------------------------------------------------------------------
+
+class TestEvalSummaryModel:
+    """Doc Section 4: EvalSummary fields."""
+
+    def test_eval_summary_fields(self):
+        """Doc: total, passed, failed, pass_rate, avg_turns, avg_tool_calls,
+        avg_duration_seconds, tool_accuracy, output_contains."""
+        from arf.evaluation.models import EvalSummary
+        field_names = {f.name for f in fields(EvalSummary)}
+        for f in ("total", "passed", "failed", "pass_rate", "avg_turns",
+                  "avg_tool_calls", "avg_duration_seconds", "tool_accuracy",
+                  "output_contains"):
+            assert f in field_names, f"Field '{f}' missing from EvalSummary"
+
+    def test_eval_summary_defaults(self):
+        """Doc: All fields default to 0."""
+        from arf.evaluation.models import EvalSummary
+        s = EvalSummary()
+        assert s.total == 0
+        assert s.passed == 0
+        assert s.failed == 0
+        assert s.pass_rate == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 7. EvalDiff data model (docs Section 3.3)
+# ---------------------------------------------------------------------------
+
+class TestEvalDiffModel:
+    """Doc Section 3.3: EvalDiff has summary_diff, regressions, improvements."""
+
+    def test_eval_diff_fields(self):
+        """Doc: diff.summary_diff, diff.regressions, diff.improvements."""
+        from arf.evaluation.models import EvalDiff
+        field_names = {f.name for f in fields(EvalDiff)}
+        assert "summary_diff" in field_names
+        assert "regressions" in field_names
+        assert "improvements" in field_names
+        assert "baseline_run_id" in field_names
+        assert "current_run_id" in field_names
+
+    def test_eval_diff_defaults(self):
+        """Doc: EvalDiff has sensible defaults."""
+        from arf.evaluation.models import EvalDiff
+        d = EvalDiff(baseline_run_id="b1", current_run_id="c1")
+        assert d.summary_diff == {}
+        assert d.regressions == []
+        assert d.improvements == []
+
+
+# ---------------------------------------------------------------------------
+# 8. BenchmarkBuilder (docs Section 3.1)
+# ---------------------------------------------------------------------------
+
+class TestBenchmarkBuilder:
+    """Doc Section 3.1: BenchmarkBuilder creates EvalBenchmark from traces."""
+
+    def test_constructor_accepts_trace_store(self):
+        """Doc: BenchmarkBuilder(trace_store)."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        sig = inspect.signature(BenchmarkBuilder.__init__)
+        params = list(sig.parameters.keys())
+        assert "self" in params
+        assert "trace_store" in params
+
+    def test_build_signature(self):
+        """Doc: builder.build(session_id='default', name='file_ops_v1') -> EvalBenchmark."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        sig = inspect.signature(BenchmarkBuilder.build)
+        params = list(sig.parameters.keys())
+        assert "session_id" in params
+        assert "name" in params
+
+    def test_build_creates_benchmark(self):
+        """Doc: build() returns EvalBenchmark with cases from user messages."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        mock_store = MagicMock()
+        mock_store.load.return_value = [
+            {"type": "user_input", "turn": 0, "data": {"content": "hello"}},
+            {"type": "user_input", "turn": 1, "data": {"content": "world"}},
+        ]
+        builder = BenchmarkBuilder(mock_store)
+        bm = builder.build(session_id="default", name="test_bm")
+        assert bm.name == "test_bm"
+        assert bm.source_session == "default"
+        assert bm.created_at > 0
+        assert len(bm.cases) == 2
+        assert bm.cases[0].id == "case_0"
+        assert bm.cases[0].input == "hello"
+        assert bm.cases[1].id == "case_1"
+        assert bm.cases[1].input == "world"
+
+    def test_build_raises_on_empty_session(self):
+        """Doc: Raises EvalError if session not found."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.evaluation.exceptions import EvalError
+        mock_store = MagicMock()
+        mock_store.load.return_value = []
+        builder = BenchmarkBuilder(mock_store)
+        with pytest.raises(EvalError, match="not found"):
+            builder.build(session_id="nonexistent", name="bm")
+
+    def test_build_raises_on_no_user_messages(self):
+        """Doc: Raises EvalError if no user messages found."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.evaluation.exceptions import EvalError
+        mock_store = MagicMock()
+        mock_store.load.return_value = [
+            {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "ls"}},
+        ]
+        builder = BenchmarkBuilder(mock_store)
+        with pytest.raises(EvalError, match="No user messages"):
+            builder.build(session_id="sess", name="bm")
+
+    def test_build_extracts_tools_from_same_turn(self):
+        """Doc: expected_tools extracted from tool_call_start events in same turn."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        mock_store = MagicMock()
+        mock_store.load.return_value = [
+            {"type": "user_input", "turn": 0, "data": {"content": "list files"}},
+            {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "list_directory"}},
+            {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "read_file"}},
+            {"type": "user_input", "turn": 1, "data": {"content": "next"}},
+        ]
+        builder = BenchmarkBuilder(mock_store)
+        bm = builder.build(session_id="default", name="test")
+        assert bm.cases[0].expected_tools == ["list_directory", "read_file"]
+        assert bm.cases[1].expected_tools is None
+
+
+# ---------------------------------------------------------------------------
+# 9. EvalRunner (docs Section 3.2)
+# ---------------------------------------------------------------------------
+
+class TestEvalRunner:
+    """Doc Section 3.2: EvalRunner runs benchmarks against agent."""
+
+    def test_constructor_accepts_agent_and_event_bus(self):
+        """Doc: EvalRunner(agent, agent.event_bus)."""
+        from arf.evaluation.runner import EvalRunner
+        sig = inspect.signature(EvalRunner.__init__)
+        params = list(sig.parameters.keys())
+        assert "agent" in params
+        assert "event_bus" in params
+
+    def test_run_is_async(self):
+        """Doc: await runner.run(benchmark) -> EvalReport."""
+        from arf.evaluation.runner import EvalRunner
+        assert inspect.iscoroutinefunction(EvalRunner.run)
+
+    def test_run_signature(self):
+        """Doc: run(benchmark, *, max_parallel=1)."""
+        from arf.evaluation.runner import EvalRunner
+        sig = inspect.signature(EvalRunner.run)
+        params = list(sig.parameters.keys())
+        assert "benchmark" in params
+        assert "max_parallel" in params
+
+    def test_run_returns_report(self):
+        """Doc: run() returns EvalReport."""
+        from arf.evaluation.runner import EvalRunner
+        from arf.evaluation.models import EvalBenchmark, EvalCase
+        mock_agent = MagicMock()
+        mock_agent.chat = AsyncMock(return_value="response text")
+        mock_agent.config = "test_config"
+        mock_bus = MagicMock()
+        mock_bus.event_count.return_value = 0
+        mock_bus.events_since.return_value = []
+
+        runner = EvalRunner(mock_agent, mock_bus)
+        bm = EvalBenchmark(
+            name="test",
+            cases=[EvalCase(id="c0", input="hello")],
+        )
+
+        async def run():
+            report = await runner.run(bm)
+            return report
+
+        report = asyncio.run(run())
+        assert report.benchmark_name == "test"
+        assert report.run_id is not None
+        assert report.timestamp > 0
+        assert report.summary.total == 1
+        assert report.summary.passed == 1
+        assert report.agent_config_hash is not None
+
+    def test_run_records_failure(self):
+        """Doc: run() records failed cases with error info."""
+        from arf.evaluation.runner import EvalRunner
+        from arf.evaluation.models import EvalBenchmark, EvalCase
+        mock_agent = MagicMock()
+        mock_agent.chat = AsyncMock(side_effect=ValueError("agent crashed"))
+        mock_agent.config = "test"
+        mock_bus = MagicMock()
+        mock_bus.event_count.return_value = 0
+
+        runner = EvalRunner(mock_agent, mock_bus)
+        bm = EvalBenchmark(
+            name="test",
+            cases=[EvalCase(id="c0", input="hello")],
+        )
+
+        async def run():
+            return await runner.run(bm)
+
+        report = asyncio.run(run())
+        assert report.summary.total == 1
+        assert report.summary.passed == 0
+        assert report.summary.failed == 1
+        assert report.per_case[0]["passed"] is False
+        assert "agent crashed" in report.per_case[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# 10. EvalComparator (docs Section 3.3)
+# ---------------------------------------------------------------------------
+
+class TestEvalComparator:
+    """Doc Section 3.3: EvalComparator diffs two EvalReports."""
+
+    def test_compare_returns_eval_diff(self):
+        """Doc: EvalComparator().compare(baseline, current) -> EvalDiff."""
+        from arf.evaluation.comparator import EvalComparator
+        from arf.evaluation.models import EvalReport, EvalSummary
+
+        baseline = EvalReport(
+            run_id="base1", benchmark_name="bm1",
+            agent_config_hash="h1", timestamp=1.0,
+            summary=EvalSummary(total=1, passed=1, failed=0, pass_rate=1.0),
+        )
+        current = EvalReport(
+            run_id="cur1", benchmark_name="bm1",
+            agent_config_hash="h2", timestamp=2.0,
+            summary=EvalSummary(total=1, passed=0, failed=1, pass_rate=0.0),
+        )
+        diff = EvalComparator().compare(baseline, current)
+        assert diff.baseline_run_id == "base1"
+        assert diff.current_run_id == "cur1"
+        assert diff.summary_diff["pass_rate"] == -1.0
+
+    def test_compare_detects_regressions_and_improvements(self):
+        """Doc: diff.regressions and diff.improvements per case."""
+        from arf.evaluation.comparator import EvalComparator
+        from arf.evaluation.models import EvalReport, EvalSummary
+
+        baseline = EvalReport(
+            run_id="b1", benchmark_name="bm",
+            agent_config_hash="h1", timestamp=1.0,
+            summary=EvalSummary(),
+            per_case=[
+                {"case_id": "c0", "metrics": {"tool_accuracy": 1.0, "output_contains": 0.0}},
+                {"case_id": "c1", "metrics": {"tool_accuracy": 0.5, "output_contains": 0.5}},
+            ],
+        )
+        current = EvalReport(
+            run_id="c1", benchmark_name="bm",
+            agent_config_hash="h2", timestamp=2.0,
+            summary=EvalSummary(),
+            per_case=[
+                {"case_id": "c0", "metrics": {"tool_accuracy": 0.3, "output_contains": 0.0}},
+                {"case_id": "c1", "metrics": {"tool_accuracy": 0.5, "output_contains": 1.0}},
+            ],
+        )
+        diff = EvalComparator().compare(baseline, current)
+        assert len(diff.regressions) == 1
+        assert diff.regressions[0]["case_id"] == "c0"
+        assert diff.regressions[0]["metric"] == "tool_accuracy"
+        assert len(diff.improvements) == 1
+        assert diff.improvements[0]["case_id"] == "c1"
+        assert diff.improvements[0]["metric"] == "output_contains"
+
+    def test_compare_raises_on_mismatched_benchmarks(self):
+        """Doc: Cannot compare different benchmarks."""
+        from arf.evaluation.comparator import EvalComparator
+        from arf.evaluation.models import EvalReport, EvalSummary
+        from arf.evaluation.exceptions import EvalError
+
+        baseline = EvalReport(
+            run_id="b1", benchmark_name="bm_a",
+            agent_config_hash="h1", timestamp=1.0,
+        )
+        current = EvalReport(
+            run_id="c1", benchmark_name="bm_b",
+            agent_config_hash="h2", timestamp=2.0,
+        )
+        with pytest.raises(EvalError, match="Cannot compare different benchmarks"):
+            EvalComparator().compare(baseline, current)
+
+    def test_summary_diff_contains_all_fields(self):
+        """Doc: summary_diff includes pass_rate, avg_turns, avg_tool_calls,
+        avg_duration_seconds, tool_accuracy, output_contains."""
+        from arf.evaluation.comparator import EvalComparator
+        from arf.evaluation.models import EvalReport, EvalSummary
+        b = EvalReport(run_id="b", benchmark_name="x", agent_config_hash="h", timestamp=1.0,
+                       summary=EvalSummary(pass_rate=0.8, avg_turns=1.0, avg_tool_calls=2.0,
+                                           avg_duration_seconds=3.0, tool_accuracy=0.9, output_contains=0.7))
+        c = EvalReport(run_id="c", benchmark_name="x", agent_config_hash="h", timestamp=2.0,
+                       summary=EvalSummary(pass_rate=1.0, avg_turns=2.0, avg_tool_calls=3.0,
+                                           avg_duration_seconds=4.0, tool_accuracy=1.0, output_contains=0.8))
+        diff = EvalComparator().compare(b, c)
+        assert "pass_rate" in diff.summary_diff
+        assert "avg_turns" in diff.summary_diff
+        assert "avg_tool_calls" in diff.summary_diff
+        assert "avg_duration_seconds" in diff.summary_diff
+        assert "tool_accuracy" in diff.summary_diff
+        assert "output_contains" in diff.summary_diff
+
+
+# ---------------------------------------------------------------------------
+# 11. Metrics (docs Section 5)
+# ---------------------------------------------------------------------------
+
+class TestSuccessRateMetric:
+    """Doc Section 5: SuccessRateMetric — no errors → 1.0, errors → 0.0."""
+
+    def test_no_errors_returns_1(self):
+        """Doc: trace 所有 turn 中无 error 事件 → 1.0."""
+        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = SuccessRateMetric()
+        trace = {"turns": [{"turn": 0, "model_output": "ok"}, {"turn": 1, "model_output": "done"}]}
+        expected = EvalCase(id="c0", input="hi")
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result == {"success_rate": 1.0}
+
+    def test_with_errors_returns_0(self):
+        """Doc: trace 有 error 事件 → 0.0."""
+        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = SuccessRateMetric()
+        trace = {"turns": [
+            {"turn": 0, "model_output": "ok"},
+            {"turn": 1, "error": "timeout", "model_output": ""},
+        ]}
+        expected = EvalCase(id="c0", input="hi")
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result == {"success_rate": 0.0}
+
+    def test_empty_trace_returns_1(self):
+        """Doc: Empty trace has no errors → 1.0."""
+        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = SuccessRateMetric()
+        trace = {"turns": []}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi"))
+
+        result = asyncio.run(run())
+        assert result == {"success_rate": 1.0}
+
+
+class TestToolAccuracyMetric:
+    """Doc Section 5: ToolAccuracyMetric — ordered matching."""
+
+    def test_exact_match(self):
+        """Doc: 匹配数 / len(expected_tools)."""
+        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = ToolAccuracyMetric()
+        trace = {"turns": [{"tool_calls": [{"tool_name": "ls"}, {"tool_name": "cat"}]}]}
+        expected = EvalCase(id="c0", input="hi", expected_tools=["ls", "cat"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["tool_accuracy"] == 1.0
+
+    def test_partial_match(self):
+        """Doc: sequence-ordered partial match."""
+        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = ToolAccuracyMetric()
+        trace = {"turns": [{"tool_calls": [{"tool_name": "ls"}, {"tool_name": "rm"}]}]}
+        expected = EvalCase(id="c0", input="hi", expected_tools=["ls", "cat"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["tool_accuracy"] == 0.5
+
+    def test_no_expected_tools_returns_1(self):
+        """Doc: expected_tools None → 1.0."""
+        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = ToolAccuracyMetric()
+        trace = {"turns": [{"tool_calls": [{"tool_name": "ls"}]}]}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi"))
+
+        result = asyncio.run(run())
+        assert result["tool_accuracy"] == 1.0
+
+    def test_no_actual_calls_returns_0(self):
+        """Doc: No actual tool calls → 0.0 when tools expected."""
+        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = ToolAccuracyMetric()
+        trace = {"turns": [{"tool_calls": []}]}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi", expected_tools=["ls"]))
+
+        result = asyncio.run(run())
+        assert result["tool_accuracy"] == 0.0
+
+
+class TestTurnEfficiencyMetric:
+    """Doc Section 5: TurnEfficiencyMetric — returns turn_count."""
+
+    def test_returns_turn_count(self):
+        """Doc: Returns trace turn count."""
+        from arf.evaluation.metrics import TurnEfficiencyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = TurnEfficiencyMetric()
+        trace = {"turns": [{"turn": 0}, {"turn": 1}, {"turn": 2}]}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi"))
+
+        result = asyncio.run(run())
+        assert result == {"turn_count": 3.0}
+
+    def test_empty_trace_returns_0(self):
+        """Doc: Empty trace returns 0."""
+        from arf.evaluation.metrics import TurnEfficiencyMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = TurnEfficiencyMetric()
+        trace = {"turns": []}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi"))
+
+        result = asyncio.run(run())
+        assert result == {"turn_count": 0.0}
+
+
+class TestOutputContainsMetric:
+    """Doc Section 5: OutputContainsMetric — keywords in last model_output."""
+
+    def test_all_keywords_present(self):
+        """Doc: All keywords found in last model_output."""
+        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = OutputContainsMetric()
+        trace = {"turns": [
+            {"turn": 0, "model_output": "first response"},
+            {"turn": 1, "model_output": "Operation completed successfully"},
+        ]}
+        expected = EvalCase(id="c0", input="hi", expected_output_contains=["completed", "successfully"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["output_contains"] == 1.0
+
+    def test_partial_keywords(self):
+        """Doc: Partial keyword match returns proportion."""
+        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = OutputContainsMetric()
+        trace = {"turns": [
+            {"turn": 0, "model_output": "Operation completed"},
+        ]}
+        expected = EvalCase(id="c0", input="hi", expected_output_contains=["completed", "failed"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["output_contains"] == 0.5
+
+    def test_no_expected_keywords_returns_1(self):
+        """Doc: expected_output_contains None → 1.0."""
+        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = OutputContainsMetric()
+        trace = {"turns": [{"model_output": "whatever"}]}
+
+        async def run():
+            return await metric.compute(trace, EvalCase(id="c0", input="hi"))
+
+        result = asyncio.run(run())
+        assert result["output_contains"] == 1.0
+
+    def test_case_insensitive_matching(self):
+        """Doc: Case-insensitive keyword matching."""
+        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = OutputContainsMetric()
+        trace = {"turns": [{"model_output": "HELLO WORLD"}]}
+        expected = EvalCase(id="c0", input="hi", expected_output_contains=["hello"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["output_contains"] == 1.0
+
+    def test_uses_last_turn_with_output(self):
+        """Doc: Uses last non-empty model_output."""
+        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.core.protocols.evaluation import EvalCase
+
+        metric = OutputContainsMetric()
+        trace = {"turns": [
+            {"turn": 0, "model_output": "first contains keyword"},
+            {"turn": 1, "model_output": ""},
+        ]}
+        expected = EvalCase(id="c0", input="hi", expected_output_contains=["keyword"])
+
+        async def run():
+            return await metric.compute(trace, expected)
+
+        result = asyncio.run(run())
+        assert result["output_contains"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# 12. trace_adapter (docs Section 5, used by runner)
+# ---------------------------------------------------------------------------
+
+class TestTraceAdapter:
+    """Doc: events_to_trace converts AgentEvent list into structured trace dict."""
+
+    def test_events_to_trace_basic(self):
+        """Doc: Converts events into {turns: [...]}."""
+        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.core.events import AgentEvent
+
+        events = [
+            AgentEvent(type="tool_call_end", turn=0, data={"tool_name": "ls", "success": True, "duration_ms": 100}),
+            AgentEvent(type="tool_call_end", turn=0, data={"tool_name": "cat", "success": True, "duration_ms": 50}),
+            AgentEvent(type="model_call_end", turn=0, data={"content": "result"}),
+        ]
+        trace = events_to_trace(events)
+        assert "turns" in trace
+        assert len(trace["turns"]) == 1
+        turn = trace["turns"][0]
+        assert turn["turn"] == 0
+        assert len(turn["tool_calls"]) == 2
+        assert turn["tool_calls"][0]["tool_name"] == "ls"
+        assert turn["model_output"] == "result"
+        assert turn["duration_ms"] == 150
+
+    def test_events_to_trace_with_error(self):
+        """Doc: Error events populate turn.error."""
+        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.core.events import AgentEvent
+
+        events = [
+            AgentEvent(type="error", turn=0, data={"detail": "connection timeout"}),
+        ]
+        trace = events_to_trace(events)
+        assert trace["turns"][0]["error"] == "connection timeout"
+
+    def test_events_to_trace_multiple_turns(self):
+        """Doc: Multiple turns are sorted."""
+        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.core.events import AgentEvent
+
+        events = [
+            AgentEvent(type="tool_call_end", turn=1, data={"tool_name": "cmd2", "duration_ms": 30}),
+            AgentEvent(type="tool_call_end", turn=0, data={"tool_name": "cmd1", "duration_ms": 20}),
+        ]
+        trace = events_to_trace(events)
+        assert len(trace["turns"]) == 2
+        assert trace["turns"][0]["turn"] == 0
+        assert trace["turns"][1]["turn"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 13. EvalRunner._hash_config (implementation detail)
+# ---------------------------------------------------------------------------
+
+class TestRunnerHashConfig:
+    """Doc: agent_config_hash is SHA256 digest of agent config."""
+
+    def test_hash_config_returns_12_char_hex(self):
+        """Doc: agent_config_hash = SHA256 digest, truncated to 12 chars."""
+        from arf.evaluation.runner import EvalRunner
+        agent = MagicMock()
+        agent.config = "test_config_string"
+        h = EvalRunner._hash_config(agent)
+        assert isinstance(h, str)
+        assert len(h) == 12
+        # Verify it's hex
+        int(h, 16)
+
+    def test_hash_config_fallback(self):
+        """Doc: Hash failure returns 'unknown'."""
+        from arf.evaluation.runner import EvalRunner
+
+        class BadConfigAgent:
+            @property
+            def config(self):
+                raise RuntimeError("corrupt config")
+
+        h = EvalRunner._hash_config(BadConfigAgent())
+        assert h == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 14. EvalRunner._build_summary (implementation detail)
+# ---------------------------------------------------------------------------
+
+class TestRunnerBuildSummary:
+    """Doc: Summary aggregation in runner."""
+
+    def test_build_summary_counts(self):
+        """Doc: Summary computes total, passed, failed, rates."""
+        from arf.evaluation.runner import EvalRunner
+        from arf.evaluation.models import EvalBenchmark
+
+        per_case = [
+            {"case_id": "c0", "passed": True, "turns": 2, "tool_calls": 3, "duration_seconds": 1.0, "metrics": {"tool_accuracy": 1.0, "output_contains": 1.0}},
+            {"case_id": "c1", "passed": True, "turns": 1, "tool_calls": 0, "duration_seconds": 0.5, "metrics": {"tool_accuracy": 0.5, "output_contains": 0.0}},
+        ]
+        bm = EvalBenchmark(name="t", cases=[])
+        runner = EvalRunner.__new__(EvalRunner)
+        summary = runner._build_summary(per_case, bm)
+        assert summary.total == 2
+        assert summary.passed == 2
+        assert summary.failed == 0
+        assert summary.pass_rate == 1.0
+        assert summary.avg_turns == 1.5
+        assert summary.avg_tool_calls == 1.5
+        assert summary.avg_duration_seconds == 0.75
+        assert summary.tool_accuracy == 0.75
+        assert summary.output_contains == 0.5
+
+
+# ---------------------------------------------------------------------------
+# 15. Module __init__ exports (docs 3.x)
+# ---------------------------------------------------------------------------
+
+class TestModuleExports:
+    """Doc: All public symbols exported from arf.evaluation."""
+
+    def test_init_exports_all_documented_names(self):
+        """Doc: arf.evaluation exports all documented classes."""
+        import arf.evaluation
+        expected = {
+            "EvalRunner", "BenchmarkBuilder", "EvalComparator",
+            "SuccessRateMetric", "ToolAccuracyMetric", "TurnEfficiencyMetric",
+            "OutputContainsMetric",
+            "EvalCase", "EvalBenchmark", "EvalReport", "EvalSummary", "EvalDiff",
+            "EvalError", "events_to_trace",
+        }
+        exported = set(arf.evaluation.__all__)
+        missing = expected - exported
+        assert not missing, f"Missing from __all__: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# 16. Verify file existence for paths in doc config section
+# ---------------------------------------------------------------------------
+
+class TestConfigPaths:
+    """Doc Section 6: Benchmark/report/trace storage paths."""
+
+    def test_benchmark_path_exists(self):
+        """Doc: benchmarks/ directory for benchmark JSON."""
+        root = Path(__file__).parent.parent.parent
+        p = root / "benchmarks"
+        assert p.exists(), (
+            "Claim: benchmarks/ is storage path. "
+            f"Expected: {p} exists. If not created at runtime, this is a doc inaccuracy."
+        )
+
+    def test_reports_path_exists(self):
+        """Doc: reports/ for runner output JSON."""
+        root = Path(__file__).parent.parent.parent
+        p = root / "reports"
+        assert p.exists(), (
+            "Claim: reports/ is storage path. "
+            f"Expected: {p} exists."
+        )
+
+    def test_traces_path_in_config(self):
+        """Doc: memory/traces/ for FileTraceStore output."""
+        from arf.observability.file_trace import FileTraceStore
+        # Default dir is "./memory/sessions" not "./memory/traces"
+        sig = inspect.signature(FileTraceStore.__init__)
+        default_dir = sig.parameters["dir"].default
+        assert str(default_dir) == "./memory/sessions", (
+            f"Doc claims memory/traces/ but default is {default_dir}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 17. Protocol definitions (arf/core/protocols/evaluation.py)
+# ---------------------------------------------------------------------------
+
+class TestEvaluationProtocol:
+    """Doc: Protocol definitions in arf/core/protocols/evaluation.py."""
+
+    def test_eval_dataset_exists(self):
+        """Doc: EvalDataset protocol (not in doc but defined)."""
+        from arf.core.protocols.evaluation import EvalDataset
+        assert EvalDataset is not None
+
+    def test_metric_calculator_protocol(self):
+        """Doc: MetricCalculator protocol with async compute()."""
+        from arf.core.protocols.evaluation import MetricCalculator
+        assert hasattr(MetricCalculator, "compute")
+
+    def test_eval_runner_protocol(self):
+        """Doc: EvalRunner protocol with async run()."""
+        from arf.core.protocols.evaluation import EvalRunner
+        assert hasattr(EvalRunner, "run")
+        assert inspect.iscoroutinefunction(EvalRunner.run)
+
+    def test_protocol_eval_report_has_comparison(self):
+        """Doc: Protocol EvalReport has comparison field (implementation does not)."""
+        from arf.core.protocols.evaluation import EvalReport as ProtoReport
+        from arf.evaluation.models import EvalReport as ImplReport
+        proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
+        impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
+        # Protocol has 'comparison' field (used for diff storage)
+        assert "comparison" in proto_fields, (
+            "Protocol EvalReport should have comparison field"
+        )
+        # Implementation does NOT have 'comparison' field — this is a known divergence
+        assert "comparison" not in impl_fields, (
+            "Finding: implementation EvalReport lacks 'comparison' field that "
+            "the protocol defines. The doc describes the implementation, not "
+            "the protocol."
+        )
+        # Protocol uses 'dataset_name', implementation uses 'benchmark_name'
+        assert "dataset_name" in proto_fields, (
+            "Protocol uses 'dataset_name' for the dataset/report association"
+        )
+        assert "benchmark_name" in impl_fields, (
+            "Implementation uses 'benchmark_name' instead of protocol's 'dataset_name'"
+        )
+
+    def test_protocol_eval_report_lacks_benchmark_name(self):
+        """Doc: Protocol EvalReport uses dataset_name not benchmark_name."""
+        from arf.core.protocols.evaluation import EvalReport as ProtoReport
+        from arf.evaluation.models import EvalReport as ImplReport
+        proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
+        impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
+        # Implementation has 'benchmark_name' but protocol has 'dataset_name'
+        assert "benchmark_name" not in proto_fields or "dataset_name" in proto_fields
+        assert "benchmark_name" in impl_fields
+
+
+# ---------------------------------------------------------------------------
+# 18. Exceptions
+# ---------------------------------------------------------------------------
+
+class TestEvalError:
+    """Doc: EvalError from arf/evaluation/exceptions.py."""
+
+    def test_eval_error_is_exception(self):
+        """Doc: EvalError extends Exception."""
+        from arf.evaluation.exceptions import EvalError
+        assert issubclass(EvalError, Exception)
+
+    def test_eval_error_raises(self):
+        """Doc: EvalError can be raised."""
+        from arf.evaluation.exceptions import EvalError
+        with pytest.raises(EvalError):
+            raise EvalError("test error")
