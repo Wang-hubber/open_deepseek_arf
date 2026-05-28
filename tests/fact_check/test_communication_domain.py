@@ -373,3 +373,62 @@ class TestFileExistence:
         ]
         for f in files:
             assert (root / f).exists(), f"File '{f}' not found"
+
+
+# ---------------------------------------------------------------------------
+# Deep Findings — missed by initial fact-check
+# ---------------------------------------------------------------------------
+
+class TestAgentMessageDocCompleteness:
+    """Doc 2.3 table lists 5 AgentMessage fields. Code has 6."""
+
+    @pytest.mark.xfail(reason="FINDING: doc table omits 'reply_to' field. "
+                       "Code has 6 fields, doc lists 5.",
+                       strict=True)
+    def test_doc_lists_all_agent_message_fields(self):
+        """Doc AgentMessage table: sender, receiver, type, payload, correlation_id.
+        Should also include reply_to."""
+        from arf.core.protocols.communication import AgentMessage
+        actual = set(AgentMessage.__dataclass_fields__.keys())
+        doc_claimed = {"sender", "receiver", "type", "payload", "correlation_id"}
+        missing = actual - doc_claimed
+        assert not missing, (
+            f"Doc AgentMessage table is missing fields: {missing}. "
+            f"Actual fields: {sorted(actual)}"
+        )
+
+
+class TestHandoffManagerCoverage:
+    """Doc 2.2 devotes substantial content to HandoffManager.
+    Verify it exists and is importable."""
+
+    def test_handoff_manager_exists(self):
+        """Doc: HandoffManager in arf/engine/handoff.py."""
+        from arf.engine.handoff import HandoffManager
+        assert HandoffManager is not None
+
+    def test_handoff_manager_has_detect_resolve_build(self):
+        """Doc describes detect(), resolve(), build_target_context()."""
+        from arf.engine.handoff import HandoffManager
+        for m in ("detect", "resolve", "build_target_context"):
+            assert hasattr(HandoffManager, m), f"HandoffManager missing {m}()"
+
+    def test_handoff_manager_detect_scans_for_handoff_true(self):
+        """Doc: detect(tool_results) scans for {"handoff": True}."""
+        from arf.engine.handoff import HandoffManager
+
+        hm = HandoffManager(rules=[])
+        # Simulate a tool result with handoff signal
+        result = hm.detect({"tool1": {"handoff": True, "task": "create file"}})
+        assert result is not None
+        assert result.get("handoff") is True
+
+
+class TestHandoffStaleLineNumbers:
+    """Doc 2.2 engine integration references graph.py:779-791 and graph.py:1110-1124."""
+
+    def test_handoff_code_in_graph_engine(self):
+        """Doc: HandoffManager integrated in invoke/astream loops."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine)
+        assert "handoff" in src or "HandoffManager" in src or "_execute_handoff" in src

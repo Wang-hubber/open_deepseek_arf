@@ -488,3 +488,32 @@ class TestCrossDocConsistency:
         assert ModelCallProtector is not None
         assert RateLimitError is not None
         assert CircuitOpenError is not None
+
+
+# ---------------------------------------------------------------------------
+# Deep Findings — missed by initial fact-check
+# ---------------------------------------------------------------------------
+
+class TestDeadModelRetryParam:
+    """Doc 2.6: DefaultErrorPolicy removed engine-level retry.
+    But model_retry=3 parameter still exists as dead code."""
+
+    @pytest.mark.xfail(reason="FINDING: DefaultErrorPolicy.__init__ accepts "
+                       "model_retry=3 (line 7) but on_model_error() never uses "
+                       "self._model_retry. Parameter stored in __init__, never "
+                       "referenced in on_model_error. Dead code.",
+                       strict=True)
+    def test_model_retry_actually_used_or_removed(self):
+        """Doc: engine retry was removed. model_retry should be removed
+        from __init__ too, or actually used."""
+        from arf.errors.retry import DefaultErrorPolicy
+        init_src = inspect.getsource(DefaultErrorPolicy.__init__)
+        error_src = inspect.getsource(DefaultErrorPolicy.on_model_error)
+        has_param_in_init = "model_retry" in init_src
+        used_in_error = "_model_retry" in error_src
+        # If retry is truly removed, param should not exist in init,
+        # or if it exists, it should be used in on_model_error
+        assert not has_param_in_init or used_in_error, (
+            "model_retry param in __init__ but never used in on_model_error. "
+            "Dead parameter should be removed."
+        )

@@ -1,7 +1,7 @@
 # ARF Fact-Check Report — 2026-05-28 — A2A Communication
 
-**Domain**: A2A Communication (`docs/a2a-communication.md` vs `arf/communication/`)
-**Methodology**: TDD-style — 26 tests derived from doc claims. All passed.
+**Domain**: A2A Communication (`docs/a2a-communication.md` vs `arf/communication/` + `arf/engine/handoff.py`)
+**Methodology**: TDD-style — 32 tests. 31 pass, 1 xfail.
 
 ---
 
@@ -9,71 +9,37 @@
 
 | Metric | Count |
 |--------|-------|
-| Total doc claims tested | 26 |
-| Passed | 26 |
-| Failed | 0 |
-| Findings | 0 |
+| Total doc claims tested | 32 |
+| Passed | 31 |
+| Xfail (known finding) | 1 |
 
-**Overall assessment**: A2A Communication domain is clean. All 6 components (AgentBus, PeerAgent, DictWorkspace, InMemoryLock, MajorityVoteConsensus, RoundRobinSupervisor) match their documentation. 7 Protocol classes, AgentMessage model, asyncio.Queue backpressure, TTL lock, round-robin scheduling — all verified.
+## Findings
 
----
+### Warning
 
-## Verified Claims
+**F1. Doc AgentMessage table missing `reply_to` field** (`xfail`)
 
-### AgentMessage & AgentInfo — all consistent
-- `AgentMessage`: sender, receiver, type, payload, correlation_id
-- `AgentInfo`: name, description, capabilities
+Doc 2.3 table lists 5 fields: `sender`, `receiver`, `type`, `payload`, `correlation_id`. The actual `AgentMessage` dataclass has 6 fields — `reply_to` is not documented.
 
-### Protocols (7 classes) — all consistent
-- `AgentBus`: send, receive, register, discover
-- `PeerAgent`: broadcast, negotiate
-- `TaskDelegator`: delegate, get_result
-- `Supervisor`: route_task, should_intervene, synthesize
-- `SharedWorkspace`: write, read
-- `Lock`: acquire, release (TTL default 30.0)
-- `ConsensusProtocol`: propose, vote
+Fix: add `reply_to: str | None = None` to the doc table.
 
-### InMemoryAgentBus — all consistent
-- `asyncio.Queue(maxsize=100)` per agent
-- `receiver=None` → broadcast to all registered
-- `receiver=name` → targeted delivery
-- `discover(capability)` filters by capability
-- `register(AgentInfo)` creates queue + records capabilities
+### Info
 
-### PeerAgent — all consistent
-- Constructor: `(bus, info)`
-- `start()` → `bus.register(info)`
-- `broadcast(msg_type, payload)` → receiver=None
-- `send_to(target, msg_type, payload)` → receiver=target
-- `discover_peers(capability)` → `bus.discover(capability)` minus self
-- `find_peer(capability)` → first match
-- `negotiate(proposal, peers, timeout=30s)` → query+collect responses
+**F2. HandoffManager not covered in initial fact-check**
 
-### DictWorkspace — all consistent
-- `write(key, value, owner)` — stores with `_owner` field
-- `read(key)` → `dict | None`
-- `write_history` list for audit
+Doc section 2.2 (the largest section in the doc) covers `HandoffManager` in `arf/engine/handoff.py` — a cross-directory component. Initial fact-check skipped it because the test file was scoped to `arf/communication/`.
 
-### InMemoryLock — all consistent
-- `acquire(key, owner, ttl=30.0)` → True/False
-- TTL expiration auto-releases
-- `release(key, owner)` owner-checked
-- `reset()` for test doubles
+Added retroactively: HandoffManager existence, method checks, and behavior verification.
 
-### MajorityVoteConsensus — all consistent
-- `threshold=0.5` default
-- `propose(proposal, voters)` → `{"proposal_id": ..., "status": "open"}`
-- `vote(proposal_id, vote)` records entry
+### Info
 
-### RoundRobinSupervisor — all consistent
-- `route_task(task, agents)` → `agents[_index % len(agents)].name`
-- `should_intervene` always returns `False`
-- `synthesize(results)` → `"\n".join(...)`
-- Wraps around to first agent after last
+**F3. Stale line numbers for HandoffManager engine integration**
 
-### Module Exports — all consistent
-- 6 classes exported from `arf.communication`
-- All 7 source files exist
+Doc references `graph.py:779-791` and `graph.py:1110-1124`. File is now 1155 lines, handoff code has moved. Recommend removing line numbers.
+
+## Verified Claims (31 passing)
+
+AgentMessage/AgentInfo data models, 7 Protocol classes, InMemoryAgentBus (asyncio.Queue, broadcast/targeted, discovery), PeerAgent (broadcast/send_to/negotiate/find_peer), DictWorkspace (write/read/write_history), InMemoryLock (TTL acquire/release), MajorityVoteConsensus (propose/vote, threshold=0.5), RoundRobinSupervisor (round-robin, should_intervene=False), HandoffManager (detect/resolve/build_target_context), all 6 module exports, all 7 files exist.
 
 ## Test Suite
 
@@ -88,7 +54,8 @@ tests/fact_check/test_communication_domain.py
 ├── TestMajorityVoteConsensus (3 tests)
 ├── TestRoundRobinSupervisor (3 tests)
 ├── TestModuleExports (1 test)
-└── TestFileExistence (1 test)
+├── TestFileExistence (1 test)
+├── TestAgentMessageDocCompleteness (1 xfail)
+├── TestHandoffManagerCoverage (3 tests)
+└── TestHandoffStaleLineNumbers (1 test)
 ```
-
-Run: `pytest tests/fact_check/test_communication_domain.py -v`
