@@ -61,7 +61,7 @@
 
 | # | 问题 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
-| 1 | **[Agent 执行 →](docs/memory-management.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` invoke/astream 双模主循环。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
+| 1 | **[Agent 执行 →](docs/agent-execution.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` invoke/astream 双模主循环。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
 | 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 自适应阈值（基于历史错误率动态调整 failure_threshold）；优先级队列（系统 vs 用户请求）；分布式限流（多 Agent 共享配额） |
 | 3 | **[记忆与上下文 →](docs/memory-management.md)**<br>上下文窗口 + 长期记忆 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。`LLMMemoryWriter` 每轮提取事实/偏好/决策。`LLMMemoryRetriever` 语义检索。`FileMemoryStore` → `memory.json`。 | 语义单元检索；知识图谱索引；记忆衰减评分 |
 | 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
