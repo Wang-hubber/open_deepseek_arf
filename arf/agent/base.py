@@ -461,6 +461,31 @@ class BaseAgent:
             })
         default_name = config.models[0].type if config.models else ""
 
+        # --- Protection layer (TODO #10) ---
+        adv = config.effective_advanced()
+        protector = None
+        if adv and adv.protection and adv.protection.enabled:
+            from arf.protection.protector import ModelCallProtector
+            pc = adv.protection
+            protector = ModelCallProtector(
+                event_bus=self._event_bus,
+                model_map={
+                    m.type: {"base_url": m.api_base, "model_name": m.model}
+                    for m in config.models
+                },
+                rate_limit_config={
+                    "requests_per_second": pc.rate_limit.requests_per_second,
+                    "max_burst": pc.rate_limit.max_burst,
+                },
+                breaker_config={
+                    "failure_threshold": pc.circuit_breaker.failure_threshold,
+                    "base_cooldown": pc.circuit_breaker.base_cooldown,
+                    "cooldown_multiplier": pc.circuit_breaker.cooldown_multiplier,
+                    "max_cooldown": pc.circuit_breaker.max_cooldown,
+                    "half_open_max_requests": pc.circuit_breaker.half_open_max_requests,
+                },
+            )
+
         def _to_openai_tools(tools):
             """Convert framework ToolDefinition list to OpenAI tool format."""
             if not tools:
@@ -516,8 +541,27 @@ class BaseAgent:
                 yield chunk
                 await _asyncio_stream.sleep(0)  # yield to event loop so ASGI can flush
 
-        self._engine.set_call_model(_call_model)
-        self._engine.set_stream_model(_stream_model)
+        # --- Apply protection wrapper ---
+        if protector:
+            raw_call = _call_model
+            raw_stream = _stream_model
+
+            async def _protected_call(messages, model_name="", tools=None):
+                return await protector.call_with_protection(
+                    raw_call, messages, model_name, tools=tools,
+                )
+
+            async def _protected_stream(messages, model_name="", tools=None):
+                async for chunk in protector.stream_with_protection(
+                    raw_stream, messages, model_name, tools=tools,
+                ):
+                    yield chunk
+
+            self._engine.set_call_model(_protected_call)
+            self._engine.set_stream_model(_protected_stream)
+        else:
+            self._engine.set_call_model(_call_model)
+            self._engine.set_stream_model(_stream_model)
 
     @property
     def state_store(self):
