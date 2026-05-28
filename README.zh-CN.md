@@ -59,32 +59,35 @@
 
 *点击第一列的问题名称可查看深度设计文档。*
 
-| 问题 | OS 方案 | 当前实现 | 演进方向 |
-|------|--------|----------|----------|
-| **[内存管理 →](docs/memory-management.md)**<br>OOM + 持久化 | 虚拟内存 + 文件系统 | Token 感知滑动窗口压缩（75% 阈值），LLM 摘要换出轮次。事实/偏好/决策自动抽取去重，语义检索注入。长工具输出落盘。 | 语义单元检索；知识图谱索引 |
-| **[多模型调度 →](docs/model-routing.md)**<br>KV cache | 多级缓存 + big.LITTLE 调度 | 二级 LLM 分类器（中等→quick，复杂→deep）。专用模型（v4-flash with no thinking）处理框架后台任务。KV cache 由推理侧处理，框架有意不介入。 | 模型硬件化；LLM as hardware |
-| **[资源注册与发现 →](docs/resource-registry.md)**<br>注册与生命周期 | 注册表 + 服务管理器（systemd/udev/launchd） | 约定优于配置：每工具 `tool.yaml`+`function.py`，`skills/*.yaml`，`models/*.yaml`。内核/动态分离 + 冻结只读。FileWatcher inotify+轮询双轨自动热加载。ResourceResolver 覆盖合并 + `generate_config()` dump。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
-| **[工具沙箱 →](docs/tool-sandbox.md)**<br>安全边界 | 系统调用 + 保护环（Ring 0–3）+ ACL | `PathCheckToolGuard` 递归扫描（..、symlink、深度/数量配额）。权限 deny→ask→allow。人工审批通道（SSE 推送 + 60s 超时）。 | 每次调用独立沙箱；MCP 协议 |
-| **[并发与死锁 →](docs/skill-pipeline.md)**<br>Skill Pipeline | 超标量执行 + 依赖图 | Agent 循环顺序执行，单轮内工具调用通过 `ConcurrentToolExecutor` 并行。Skill 声明工具流水线与显式依赖——引擎强制执行顺序。Hook `asyncio.gather` 并发。 | 多 Agent DAG 分析；Worktree 隔离 |
-| **[进程间通讯 →](docs/a2a-communication.md)**<br>A2A 通讯 | 管道、信号、共享内存、消息队列 | `HandoffManager` 信号式 Agent 切换已集成到 `invoke`/`astream` 主循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向发送、能力发现）。`PeerAgent` — 去中心化 P2P 通讯（协商、handoff、peer 发现）。`DictWorkspace` 共享内存、`InMemoryLock` 同步锁、`MajorityVoteConsensus` 多数投票。完整 Protocol 层定义 AgentBus / Supervisor / Consensus 抽象。 | 网络 A2A（gRPC）、发布/订阅事件总线支持动态 Agent 发现、DAG 多 Agent 调度 |
-| **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。Round 级 undo（`RoundManager`）— 可配快照窗口（默认 3），状态+文件跨 handoff 回滚，round 元数据持久化落盘。`undo_executed` trace 事件。 | 暂停/重定向向量；空闲超时 |
-| **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 18 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
-| **[回归测评 →](docs/eval-benchmark.md)**<br>回归检测 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集真实执行轨迹。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告检测回归。 | CLI 集成；HTML 可视化报告；语义相似度指标 |
-| **[API 保护 →](docs/api-protection.md)**<br>速率限制 + 故障隔离 | I/O 限流 + 设备隔离 (cgroup blkio) | Token bucket 按 API 端点限流（可配置 rps + burst）。指数冷却断路器按模型隔离（CLOSED→OPEN→HALF_OPEN），连续失败 `failure_threshold` 次熔断。事件通过 EventBus → FileTraceStore 可观测。装饰器模式注入 `_call_model`，GraphEngine/ModelAdapter 零侵入。 | 分布式限流（多 Agent 共享配额）、自适应阈值（基于历史错误率动态调整 failure_threshold）、优先级队列（系统调用 vs 用户请求） |
+| # | 问题 | OS 类比 | 当前实现 | 演进方向 |
+|---|------|--------|----------|----------|
+| 1 | **[Agent 执行 →](docs/memory-management.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` invoke/astream 双模主循环。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
+| 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 自适应阈值（基于历史错误率动态调整 failure_threshold）；优先级队列（系统 vs 用户请求）；分布式限流（多 Agent 共享配额） |
+| 3 | **[记忆与上下文 →](docs/memory-management.md)**<br>上下文窗口 + 长期记忆 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。`LLMMemoryWriter` 每轮提取事实/偏好/决策。`LLMMemoryRetriever` 语义检索。`FileMemoryStore` → `memory.json`。 | 语义单元检索；知识图谱索引；记忆衰减评分 |
+| 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
+| 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于 invoke/astream 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
+| 6 | **[资源系统 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + udev + systemd | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
+| 7 | **[安全与沙箱 →](docs/tool-sandbox.md)**<br>访问控制 + 路径安全 | 保护环 (Ring 0-3) + ACL | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ToolPermissionChecker` deny→ask→allow 三级执行。`HumanLoop` SSE 推送审批 + 60s 超时。`GuardDefaults` 三道防线（PathCheck/Regex/None）。 | 逐次调用沙箱；MCP 协议；OAuth 范围权限 |
+| 8 | **[可观测性 →](docs/trace.md)**<br>事件追踪 + 指标 | syslog / dtrace / perf | `EventType` Literal 25 种事件类型。`InMemoryEventBus` → `FileTraceStore`（每会话 JSON）。`UsageTracker` token 统计。独立 HTML trace viewer。Vue SPA 瀑布流按交互轮次分组。`SseStream` 实时事件。 | SQLite trace 数据库；OpenTelemetry 导出；Prometheus 指标 |
+| 9 | **[内置工具 →](docs/api-protection.md)**<br>插件系统 | OS 内置软件 (coreutils, Notepad) | `arf/plugins/` 目录 — `agent.yaml` 的 `plugins:` 字段按名激活。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并到工具/技能列表。P0 插件：`planner`（system_model 任务分解）、`todo`（工作区任务列表）、`undo`（轮次检查点回滚）。App 层可覆盖插件工具（app > plugin）。 | P1：bash、code_interpreter、file_ops；P2：web_search、web_fetch、memory_tools；社区插件仓库 |
+| 10 | **[质量保证 →](docs/eval-benchmark.md)**<br>回归测试 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告。198 个单元/功能测试。 | CLI 集成；HTML 可视化报告；语义相似度指标；CI 流水线 |
 
 **边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
 
 | 层级 | 范畴 | 能力 |
 |------|------|------|
-| **框架** (`arf/`) | **执行引擎** | `GraphEngine`（invoke + astream 双模式）、状态修复、checkpoint/undo 机制、cancel 取消令牌、Memory 提取→检索→写入管道、Compaction 上下文压缩、Guardrails 三道防线、ModelRouter 路由调用、Tool 级回滚 |
-| | **资源系统** | `ResourceResolver`（统一解析入口）、`ToolProvider` / `SkillProvider` / `ModelProvider`、`ResourceCache`（kernel/dynamic 双缓存）、`FileWatcher`（inotify/polling 文件变更检测）、双源加载（文件系统 + `agent.yaml` override 合并） |
-| | **Agent 组装** | `BaseAgent` — DI 注入全部协议实现、`AgentConfig` — YAML 驱动配置、`ModelAdapter` — 自动注入 call/stream、`LoopStrategy` — ReAct 策略 |
-| | **基础设施** | `EventBus`（`InMemoryEventBus`）、`FileTraceStore`（session 级 JSON 持久化）、`FileStateStore` / `InMemoryStateStore`、`UsageTracker`（用量统计）、`SubprocessHookRunner`（退出码契约：rc=2 → 消息注入）、`PathSandbox`（路径沙箱）、`TwoTierRouter`（LLM 分类路由）、`SlidingWindowCompactor`（滑动窗口压缩）、`SkillPipeline`（技能流水线排序）、`DefaultErrorPolicy` / `FunctionBackend` 回滚、`EvalRunner` / `BenchmarkBuilder` / `EvalComparator`（会话回放与回归检测）、`GuardDefaults`（PathCheck / Regex / None 三道防线） |
-| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`LoopStrategy` 等全部抽象接口 |
+| **框架** (`arf/`) | **Agent 执行** | `GraphEngine`（invoke + astream 双模式）、`BaseAgent` DI 组装、`LoopStrategy` ReAct、`RoundManager` checkpoint/undo、`HandoffManager` 多 Agent 切换、`ConcurrentToolExecutor` 并行执行、`SkillPipeline` 依赖排序 |
+| | **LLM 调度** | `TwoTierRouter` 快/慢分发、`ModelAdapter` 指数退避重试、`TokenBucket` 按端点限流、`CircuitBreaker` 按模型故障隔离、`ModelCallProtector` 装饰器模式注入 |
+| | **记忆与上下文** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`LLMMemoryWriter`/`LLMMemoryRetriever`（提取/检索管道）、`FileMemoryStore`（memory.json） |
+| | **资源系统** | `ResourceResolver`（统一解析）、`ToolProvider`/`SkillProvider`/`ModelProvider`、`PluginProvider`（扫描 `arf/plugins/`）、`ResourceCache`（kernel/dynamic）、`FileWatcher`（inotify/轮询热加载） |
+| | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`ToolPermissionChecker` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线 |
+| | **可观测性** | `InMemoryEventBus`（25 种事件类型）、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
+| | **基础设施** | `SubprocessHookRunner`（退出码契约）、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`EvalRunner`/`BenchmarkBuilder`/`EvalComparator`（会话回放与回归） |
+| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`LoopStrategy` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / config |
-| | **配置与数据** | `agent.yaml` — agent 行为 + 路由策略 + 记忆策略 + 压缩策略、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（undo, file_*, web_*, python_exec …）、自定义 `skills/`（code_review, debug, file_ops …）、自定义 `hooks/`、DeepSeek API key 管理 |
+| | **配置与数据** | `agent.yaml` — agent 行为 + `plugins:` 激活 + 路由 + 记忆 + 压缩、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（file_*, web_*, python_exec …）、自定义 `skills/`、自定义 `hooks/`、DeepSeek API key 管理 |
 
 <br/>
 
