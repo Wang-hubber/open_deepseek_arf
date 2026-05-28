@@ -558,21 +558,6 @@ class GraphEngine:
             user_msg = self._last_user_message(state)
             self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
 
-            # 1. Memory retrieval
-            if self.memory_retriever and self.memory_writer and self.memory_store:
-                query = self._last_user_message(state)
-                entries = await self.memory_retriever.retrieve(
-                    store=self.memory_store,
-                    query_context=query,
-                    session_id=session_id,
-                    max_tokens=self._memory_max_tokens,
-                    top_k=self._memory_top_k,
-                )
-                if entries:
-                    state["context_summary"] = "\n".join(
-                        f"- {e.content}" for e in entries if e.relevance_score > 0
-                    )
-
             # 2. Route to best model for this turn (before compaction — need model's window size)
             model = state["current_model"]
             if self.model_router:
@@ -668,13 +653,6 @@ class GraphEngine:
             tool_calls = self._pars_tool_calls(response)
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": response_text})
-                if self.memory_writer and self.memory_store:
-                    existing = await self.memory_store.load(session_id)
-                    await self.memory_writer.extract_and_write(
-                        store=self.memory_store,
-                        turn_messages=state["messages"][-4:],
-                        existing_entries=existing,
-                    )
                 await self.state_store.put(session_id, state)
                 break
 
@@ -798,15 +776,6 @@ class GraphEngine:
                         await self.state_store.put(session_id, state)
                     continue
 
-            # 9. Memory write — after turn
-            if self.memory_writer and self.memory_store:
-                existing = await self.memory_store.load(session_id)
-                await self.memory_writer.extract_and_write(
-                    store=self.memory_store,
-                    turn_messages=state["messages"][-4:],
-                    existing_entries=existing,
-                )
-
             # 10. Checkpoint
             await self.state_store.put(session_id, state)
 
@@ -848,20 +817,6 @@ class GraphEngine:
             yield self._make_event(type="user_input",
                              data={"content": user_msg, "turn": turn},
                              turn=turn, session_id=session_id)
-
-            # Memory retrieval before this turn
-            if self.memory_retriever and self.memory_writer and self.memory_store:
-                entries = await self.memory_retriever.retrieve(
-                    store=self.memory_store,
-                    query_context=user_msg,
-                    session_id=session_id,
-                    max_tokens=self._memory_max_tokens,
-                    top_k=self._memory_top_k,
-                )
-                if entries:
-                    state["context_summary"] = "\n".join(
-                        f"- {e.content}" for e in entries if e.relevance_score > 0
-                    )
 
             if not self._call_model:
                 break
@@ -1011,13 +966,6 @@ class GraphEngine:
             if not tool_calls:
                 state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
                 await self.state_store.put(session_id, state)
-                if self.memory_writer and self.memory_store:
-                    existing = await self.memory_store.load(session_id)
-                    await self.memory_writer.extract_and_write(
-                        store=self.memory_store,
-                        turn_messages=state["messages"][-4:],
-                        existing_entries=existing,
-                    )
                 break
 
             # Append assistant message with tool_calls BEFORE executing tools
@@ -1141,15 +1089,6 @@ class GraphEngine:
                     continue
 
             await self.state_store.put(session_id, state)
-
-            # Memory extraction after tool execution turn
-            if self.memory_writer and self.memory_store:
-                existing = await self.memory_store.load(session_id)
-                await self.memory_writer.extract_and_write(
-                    store=self.memory_store,
-                    turn_messages=state["messages"][-4:],
-                    existing_entries=existing,
-                )
 
             if turn >= active["max_turns"]:
                 break

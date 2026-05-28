@@ -597,18 +597,17 @@ class TestEngineIntegration:
     """Doc: memory system integration points in GraphEngine."""
 
     def test_retrieval_happens_before_routing(self):
-        """Doc: [1] 记忆检索 before [2] 模型路由."""
+        """Doc: Memory retrieval was per-turn; now resident memory loaded at session start.
+        Engine no longer calls memory_retriever.retrieve — round_end hook dispatches plugin."""
         import inspect
         from arf.engine.graph import GraphEngine
 
-        # Read source to verify order in invoke()
         src = inspect.getsource(GraphEngine.invoke)
-        retr_pos = src.find("memory_retriever.retrieve")
         route_pos = src.find("self.model_router.route")
-        assert retr_pos > 0, "retrieve call not found in invoke"
         assert route_pos > 0, "route call not found in invoke"
-        assert retr_pos < route_pos, (
-            f"Retrieval (pos {retr_pos}) must come before routing (pos {route_pos})"
+        # Memory retrieval is no longer embedded in the engine loop
+        assert "memory_retriever.retrieve" not in src, (
+            "memory_retriever.retrieve should have been removed from engine"
         )
 
     def test_compaction_after_routing_before_model_call(self):
@@ -626,35 +625,32 @@ class TestEngineIntegration:
         )
 
     def test_memory_write_uses_last_4_messages(self):
-        """Doc: LLMMemoryWriter input: 最近 4 条消息.
-        Engine passes state['messages'][-4:]."""
+        """Doc: Memory extraction moved to arf/plugins/memory/extractor.py.
+        Engine no longer passes messages to any memory writer."""
         import inspect
         from arf.engine.graph import GraphEngine
         src = inspect.getsource(GraphEngine.invoke)
-        assert 'messages"][-4:]' in src or "messages'][-4:]" in src, (
-            "Engine should pass last 4 messages to memory writer"
+        assert "extract_and_write" not in src, (
+            "Engine should NOT call memory_writer.extract_and_write — moved to plugin"
         )
 
     def test_memory_write_preceded_by_load(self):
-        """Doc: 写入前必先 store.load(session_id) 获取最新条目."""
+        """Doc: Memory extraction is plugin-side; engine no longer calls load before write."""
         import inspect
         from arf.engine.graph import GraphEngine
         src = inspect.getsource(GraphEngine.invoke)
-        # There should be a load before extract_and_write
-        load_pos = src.find("memory_store.load")
-        extract_pos = src.find("memory_writer.extract_and_write")
-        assert load_pos > 0
-        assert extract_pos > 0
+        assert "memory_writer.extract_and_write" not in src, (
+            "Engine should NOT call memory_writer — extraction is in plugin subprocess"
+        )
 
     def test_memory_write_on_text_response_path(self):
-        """Doc: 文本响应路径也覆盖 memory write."""
+        """Doc: Memory extraction is round-interval triggered by plugin, not per-turn.
+        Engine's text response path no longer calls extract_and_write."""
         import inspect
         from arf.engine.graph import GraphEngine
         src = inspect.getsource(GraphEngine.invoke)
-        # Count extract_and_write calls — should be at least 2 (text + tool)
-        count = src.count("extract_and_write")
-        assert count >= 2, (
-            f"Expected at least 2 extract_and_write calls (text + tool paths), got {count}"
+        assert "extract_and_write" not in src, (
+            "Engine should NOT call extract_and_write — moved to plugin subprocess"
         )
 
     def test_tool_output_summarize_after_tool_success(self):

@@ -223,17 +223,10 @@ class BaseAgent:
                     )
                     return msg.content or ""
 
-        if mem_cfg and mem_cfg.writer == "llm" and _system_model_call:
-            from arf.memory.llm_writer import LLMMemoryWriter
-            memory_writer = override_protocols.pop("memory_writer", LLMMemoryWriter(_system_model_call))
-        else:
-            memory_writer = override_protocols.pop("memory_writer", RuleBasedMemoryWriter())
-
-        if mem_cfg and mem_cfg.retriever == "llm" and _system_model_call:
-            from arf.memory.llm_retriever import LLMMemoryRetriever
-            memory_retriever = override_protocols.pop("memory_retriever", LLMMemoryRetriever(_system_model_call))
-        else:
-            memory_retriever = override_protocols.pop("memory_retriever", RecentFirstRetriever())
+        # Memory extraction moved to arf/plugins/memory/ plugin.
+        # Framework no longer constructs or holds a writer/retriever.
+        memory_writer = override_protocols.pop("memory_writer", None)
+        memory_retriever = override_protocols.pop("memory_retriever", None)
 
         # 3.5 Compaction — sliding window when context exceeds threshold
         compaction = override_protocols.pop("compaction", None)

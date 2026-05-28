@@ -241,3 +241,57 @@ class TestLoadResidentMemory:
         assert "line one" in result
         assert "line two" in result
         assert "line three" not in result
+
+
+class TestMemoryWriterRemoved:
+    """Verify memory_writer is no longer called by engine."""
+
+    def test_engine_does_not_call_memory_writer(self):
+        from arf.engine.graph import GraphEngine
+        from arf.engine.loop_strategies.react import ReActStrategy
+
+        memory_writer = MagicMock()
+        memory_writer.extract_and_write = AsyncMock()
+        memory_store = MagicMock()
+        memory_store.load = AsyncMock(return_value=[])
+
+        loop_strategy = MagicMock()
+        loop_strategy.should_continue.side_effect = [True, False]
+
+        state_store = MagicMock()
+        state_store.get = AsyncMock(return_value=None)
+        state_store.put = AsyncMock()
+
+        tool_resolver = MagicMock()
+        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
+
+        engine = GraphEngine(
+            loop_strategy=loop_strategy,
+            state_store=state_store,
+            tool_executor=MagicMock(),
+            tool_resolver=tool_resolver,
+            memory_store=memory_store,
+            memory_writer=memory_writer,
+            system_prompt="test",
+            max_turns=1,
+        )
+        engine._call_model = AsyncMock(return_value={
+            "content": "hello", "tool_calls": [], "usage": {"total_tokens": 10},
+        })
+
+        state = {
+            "session_id": "test",
+            "agent_name": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "current_model": "test",
+            "current_turn": 0,
+            "interaction_round": 0,
+            "context_summary": "",
+            "tool_results": {},
+            "plan": None,
+            "metadata": {},
+        }
+
+        asyncio.run(engine.invoke(state))
+
+        memory_writer.extract_and_write.assert_not_called()
