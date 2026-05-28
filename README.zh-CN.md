@@ -276,11 +276,27 @@ cd app/web && npm install && npm run dev
 | 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | ~~`begin()` 中 `"state_snapshot": None` 始终不存快照~~ → 改为 `FunctionBackend` 内联回滚：tool `function.py` 可选导出 `rollback()`，`execute()` 异常时自动调用。`TransactionContext` 协议和 `SnapshotRollback` 类已移除。 |
 | 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | ~~trace 硬编码为 `{"turns": []}`~~ → 重写：`EvalRunner` 通过 `EventBus.events_since()` 采集真实 trace，`events_to_trace()` 组装结构化 turn 数据，4 个 metric 在真实数据上计算。`BenchmarkBuilder` 从 `FileTraceStore` 会话创建 benchmark，`EvalComparator` 跨运行 diff 检测回归。 |
 | 6 | ~~全局状态 `registry._agent`~~ → **已修复** | `arf/agent/registry.py` 已删除 | 进程隔离 | 框架 | ~~`_agent: Any = None` 模块级单例~~ → 已删除。`_engine` 和 `_state_store` 现通过工具执行器参数注入（与 `_agent_mode` 同模式）。`undo` 工具通过函数签名接收。`server.py` 不再调用 `set_agent()`。 |
-| 7 | `PromptBasedPlanner` 返回空计划 | `arf/engine/loop_strategies/planner.py:10,19` | 任务规划 | 框架 | `generate_plan()` 始终返回 `{"steps": []}`，`detect_divergence()` 始终返回 `{"diverged": False}`。Engine 注入了 `_call_model` 但从未调用 LLM 生成计划。**风险**：`Planner` 协议是自主 Agent 任务分解的核心扩展点，当前对外传达虚假能力——调用者获得空结果可能误认为"任务无需分解" |
+| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | ~~`generate_plan()` 始终返回 `{"steps": []}`~~ → 由插件系统取代。`arf/plugins/` 提供框架插件（planner、todo、undo...）。App 在 `agent.yaml` 中声明 `plugins: [planner, todo]`。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并插件 tools/skills 与 App 资源。 |
 | 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | ~~回调移除依赖 async generator 的 `finally`，但 CPython 在 `break`/exception 时不调用。~~ → 改为 `@asynccontextmanager`：`async with stream.listen() as queue` — `__aexit__` 在所有退出路径上保证清理。 |
 | 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | ~~14 文件缺模块 docstring；10 处裸 `dict` 类型~~ → 全部 13 个文件已加模块 docstring。核心签名用 `dict[str, Any]` 替代裸 `dict`。`test_code_style.py` 强制执行规范。 |
 | 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | ~~LLM API 调用无速率限制、无断路器保护。~~ → `ModelCallProtector` 组合 `TokenBucket`（按 api_base）+ `CircuitBreaker`（按模型，指数冷却）。在 `BaseAgent._inject_model_calls()` 中以 decorator 模式包装 `_call_model`/`_stream_model`。5 种事件通过 EventBus → trace viewer 可观测。移除了 `DefaultErrorPolicy` 中的 engine 级重试。GraphEngine/ModelAdapter 零侵入。参见 [`docs/api-protection.md`](docs/api-protection.md)。 |
 | 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。文档丰富但缺乏外部贡献的流程指引。**风险**：潜在贡献者不知道提交标准；无 changelog 则用户无法评估升级影响 |
+
+**Plugins** — 框架能力包，通过 `agent.yaml` 的 `plugins:` 字段激活。`PluginProvider` 扫描 `arf/plugins/{name}/`。社区可贡献。
+
+| # | Plugin | 状态 | 描述 |
+|---|--------|------|------|
+| P-1 | `planner` | P0 | 通过 system_model 做任务分解，替代空的 PromptBasedPlanner |
+| P-2 | `todo` | P0 | 任务列表管理（添加/勾选/列表/清除），读写 `todo.md` |
+| P-3 | `undo` 迁移 | P0 | 从 `app/tools/` → `arf/plugins/undo/` |
+| P-4 | `plugin_provider` | P0 | PluginProvider 扫描插件目录，`agent.yaml` `plugins:` 字段 |
+| P-5 | `bash` | P1 | Shell 执行器，社区审计注入安全 |
+| P-6 | `code_interpreter` | P1 | Python 沙箱，替代 `app/tools/python_exec` |
+| P-7 | `file_ops` | P1 | 读/写/列/删，从 app 工具合并到插件 |
+| P-8 | `web_search` | P2 | DuckDuckGo 搜索，从 app 迁移到插件 |
+| P-9 | `web_fetch` | P2 | HTTP 抓取，从 app 迁移到插件 |
+| P-10 | `resource_loader` | P2 | 热加载资源，从 app 迁移到插件 |
+| P-11 | `memory_tools` | P2 | LLM 可控的记忆读写/遗忘接口 |
 
 ### 演进方向
 

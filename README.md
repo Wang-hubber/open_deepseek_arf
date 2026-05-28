@@ -278,11 +278,27 @@ cd app/web && npm install && npm run dev
 | 4 | ~~`SnapshotRollback` null state snapshot~~ → **FIXED** | `arf/resources/backends/function.py` | Fault Recovery | Framework | ~~`begin()` always sets `"state_snapshot": None`~~ → Replaced with `FunctionBackend` inline rollback: tool `function.py` optionally exports `rollback()`, called automatically on `execute()` exception. `TransactionContext` protocol and `SnapshotRollback` class removed. |
 | 5 | ~~`EvalRunner` computes empty traces~~ → **FIXED** | `arf/evaluation/runner.py` | Quality Assurance | Framework | ~~trace hardcoded as `{"turns": []}`~~ → Rewritten: `EvalRunner` captures real traces via `EventBus.events_since()`, `events_to_trace()` assembles structured turn data, all 4 metrics compute on real traces. `BenchmarkBuilder` creates benchmarks from `FileTraceStore` sessions, `EvalComparator` diffs cross-run reports for regression detection. |
 | 6 | ~~Global state `registry._agent`~~ → **FIXED** | `arf/agent/registry.py` removed | Process Isolation | Framework | ~~`_agent: Any = None` module-level singleton~~ → Deleted. `_engine` and `_state_store` now injected via tool executor params (same pattern as `_agent_mode`). `undo` tool receives them through function signature. `server.py` no longer calls `set_agent()`. |
-| 7 | `PromptBasedPlanner` returns empty plans | `arf/engine/loop_strategies/planner.py:10,19` | Task Planning | Framework | `generate_plan()` always returns `{"steps": []}`, `detect_divergence()` always returns `{"diverged": False}`. Engine injects `_call_model` but the LLM is never called for plan generation. **Risk**: The `Planner` protocol is a key extension point for autonomous agents; callers receiving empty results may misinterpret as "no decomposition needed" |
+| 7 | ~~`PromptBasedPlanner` returns empty plans~~ → **FIXED** | `arf/plugins/planner/` | Task Planning | Framework | ~~`generate_plan()` always returned `{"steps": []}`~~ → Replaced by plugin system. `arf/plugins/` provides framework plugins (planner, todo, undo, ...). App declares `plugins: [planner, todo]` in `agent.yaml`. `PluginProvider` scans plugin directories, `ResourceResolver` merges plugin tools/skills with app resources. | `generate_plan()` always returns `{"steps": []}`, `detect_divergence()` always returns `{"diverged": False}`. Engine injects `_call_model` but the LLM is never called for plan generation. **Risk**: The `Planner` protocol is a key extension point for autonomous agents; callers receiving empty results may misinterpret as "no decomposition needed" |
 | 8 | ~~SSE listener leak~~ → **FIXED** | `arf/streaming/adapters/sse.py` | Communication | Framework | ~~Callback removal relied on async generator `finally` which CPython doesn't run on `break`/exception.~~ → Replaced with `@asynccontextmanager`: `async with stream.listen() as queue` — `__aexit__` guarantees cleanup on all exit paths. |
 | 9 | ~~Inconsistent code conventions~~ → **FIXED** | 13 files + `graph.py` + `planner.py` | Documentation | Framework | ~~14 files missing module docstrings; 10 bare `dict` annotations in signatures.~~ → All 13 files now have module docstrings. Core signatures use `dict[str, Any]` instead of bare `dict`. `test_code_style.py` enforces consistency. |
 | 10 | ~~No rate limiting / circuit breaker~~ → **FIXED** | `arf/protection/` | Process Scheduling | Framework | ~~LLM API calls had no rate limiting or circuit breaker protection.~~ → `ModelCallProtector` with `TokenBucket` (per api_base) + `CircuitBreaker` (per model, exponential cooldown). Wraps `_call_model`/`_stream_model` closures in `BaseAgent._inject_model_calls()`. Five event types emitted via EventBus → trace viewers. Engine-level retry removed from `DefaultErrorPolicy`. Zero changes to GraphEngine/ModelAdapter. See [`docs/api-protection.md`](docs/api-protection.md). |
 | 11 | Missing open-source infrastructure | — | Distribution | Framework | No `CONTRIBUTING.md`, PR/Issue templates, `CHANGELOG.md`, or versioned release process. Documentation is rich but there's no guidance for external contributions. **Risk**: Potential contributors don't know submission standards; users can't assess upgrade impact without changelog |
+
+**Plugins** — Framework-capability bundles, activated by `agent.yaml` `plugins:` field. `PluginProvider` scans `arf/plugins/{name}/`. Community-contributable.
+
+| # | Plugin | Status | Description |
+|---|--------|--------|-------------|
+| P-1 | `planner` | P0 | Task decomposition via system_model, replaces empty PromptBasedPlanner |
+| P-2 | `todo` | P0 | Task list management (add/check/list/clear), reads/writes `todo.md` |
+| P-3 | `undo` migration | P0 | Move from `app/tools/` → `arf/plugins/undo/` |
+| P-4 | `plugin_provider` | P0 | PluginProvider scans plugin dirs, `agent.yaml` `plugins:` field |
+| P-5 | `bash` | P1 | Shell executor, community-audited injection safety |
+| P-6 | `code_interpreter` | P1 | Python sandbox, replaces `app/tools/python_exec` |
+| P-7 | `file_ops` | P1 | Read/write/list/delete consolidated from app tools |
+| P-8 | `web_search` | P2 | DuckDuckGo search, move from app to plugin |
+| P-9 | `web_fetch` | P2 | HTTP fetch, move from app to plugin |
+| P-10 | `resource_loader` | P2 | Hot-reload resources, move from app to plugin |
+| P-11 | `memory_tools` | P2 | LLM-controllable memory read/write/forget |
 
 ### Evolution
 
