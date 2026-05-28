@@ -193,3 +193,51 @@ class TestMemoryConfig:
         from arf.core.config_base import MemoryConfig
         cfg = MemoryConfig(max_size_kb=500)
         assert cfg.max_size_kb == 500
+
+
+class TestLoadResidentMemory:
+    """_load_resident_memory function tests."""
+
+    def test_loads_memory_file(self, tmp_path):
+        """Reads memory.md and returns content."""
+        memory_file = tmp_path / "memory.md"
+        memory_file.write_text("## User Identity\n- Developer", encoding="utf-8")
+
+        from arf.agent.base import _load_resident_memory
+        result = _load_resident_memory(str(tmp_path))
+
+        assert "## User Identity" in result
+        assert "- Developer" in result
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        """Missing file returns empty string, no error."""
+        from arf.agent.base import _load_resident_memory
+        result = _load_resident_memory(str(tmp_path))
+        assert result == ""
+
+    def test_truncates_when_over_limit(self, tmp_path):
+        """Content over max_size_bytes is truncated."""
+        from arf.agent.base import _load_resident_memory
+
+        memory_file = tmp_path / "memory.md"
+        content = "x" * 2000
+        memory_file.write_text(content, encoding="utf-8")
+
+        result = _load_resident_memory(str(tmp_path), max_size_bytes=500)
+        result_bytes = len(result.encode("utf-8"))
+        assert result_bytes <= 700  # allow extra for truncation warning
+        assert "truncated" in result.lower()
+
+    def test_strips_trailing_incomplete_line(self, tmp_path):
+        """Truncation keeps complete lines only."""
+        from arf.agent.base import _load_resident_memory
+
+        memory_file = tmp_path / "memory.md"
+        # 3 lines, ~20 bytes each → 60 bytes total. Limit to 40 → keep 2 full lines.
+        lines = "line one data here\nline two data here\nline three here\n"
+        memory_file.write_text(lines, encoding="utf-8")
+
+        result = _load_resident_memory(str(tmp_path), max_size_bytes=40)
+        assert "line one" in result
+        assert "line two" in result
+        assert "line three" not in result

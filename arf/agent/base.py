@@ -23,6 +23,31 @@ from arf.guardrails.permissions import ToolPermissionChecker
 from arf.errors.retry import DefaultErrorPolicy
 
 
+def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
+                          max_size_bytes: int = 300 * 1024) -> str:
+    """Load resident memory from a single Markdown file.
+
+    Called once per session startup. Returns empty string if file absent.
+    Truncates content exceeding max_size_bytes, keeping complete lines.
+    """
+    memory_path = Path(memory_dir) / resident_file
+    if not memory_path.exists():
+        return ""
+
+    content_bytes = memory_path.read_bytes()
+    if len(content_bytes) <= max_size_bytes:
+        return content_bytes.decode("utf-8")
+
+    truncated = content_bytes[:max_size_bytes]
+    text = truncated.decode("utf-8", errors="replace")
+    last_newline = text.rfind("\n")
+    if last_newline > 0:
+        text = text[:last_newline]
+    text += "\n\n<!-- WARNING: resident memory truncated at "
+    text += f"{max_size_bytes // 1024}KB -->\n"
+    return text
+
+
 def _build_system_prompt(config: AgentConfig) -> str:
     """Build system prompt from AgentConfig.system_prompt template.
 
@@ -342,6 +367,17 @@ class BaseAgent:
 
         # 10. Build engine
         system_prompt = _build_system_prompt(config)
+
+        # Load resident memory — injected into {{MEMORY}} once at session start
+        from arf.core.config_base import MemoryConfig
+        _mem_cfg = (adv.memory or MemoryConfig()) if adv else MemoryConfig()
+        resident_memory = _load_resident_memory(
+            _mem_cfg.workspace,
+            resident_file=_mem_cfg.resident_file,
+            max_size_bytes=_mem_cfg.max_size_kb * 1024,
+        )
+        if "{{MEMORY}}" in system_prompt:
+            system_prompt = system_prompt.replace("{{MEMORY}}", resident_memory)
 
         # Auto-create model router if routing config is set (LLM classifier by default)
         model_router = None
