@@ -1,19 +1,18 @@
-"""ARF Default Assistant -- FastAPI server with lazy persistence."""
-import asyncio
-import json
+"""ARF Default Assistant — FastAPI server with lazy persistence.
+
+Routes are split by concern into routers/:
+  chat.py, trace.py, config.py, resources.py, misc.py
+"""
 import logging
 import os
-import signal
 import sys
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Query, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from agent_main import app_context
 
@@ -33,14 +32,11 @@ sys.path.insert(0, str(app_context.root))
 
 from arf.agent.factory import create_agent
 from arf.agent.config import AgentConfig
-from arf.core.state import AgentState
 
-_agent = None
-_active_cancel_events: dict[str, asyncio.Event] = {}  # session_id → cancel event
+from routers import state
 
 
 def _load_dotenv() -> None:
-    """Load .env file into os.environ (simple parser, no python-dotenv needed)."""
     env_path = app_context.root / ".env"
     if not env_path.exists():
         return
@@ -57,25 +53,20 @@ def _load_dotenv() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown lifecycle."""
-    global _agent
-
     # ---- STARTUP ----
     _load_dotenv()
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
-    _agent = create_agent(config=cfg, app_context=app_context)
+    state._agent = create_agent(config=cfg, app_context=app_context)
 
-
-
-    # Restore state from FileStateStore (primary persistence), fall back to archive.json
-    state = await _agent.state_store.get("default")
-    if state:
-        logger.info(f"Restored state: {len(state.get('messages', []))} messages, turn {state.get('current_turn', 0)}")
+    # Restore state
+    s = await state._agent.state_store.get("default")
+    if s:
+        logger.info(f"Restored state: {len(s.get('messages', []))} messages, turn {s.get('current_turn', 0)}")
     else:
         from lazy_persistence import load_archive
         archive = load_archive(str(app_context.workspace_dir))
         if archive:
-            state = {
+            s = {
                 "session_id": "default",
                 "agent_name": cfg.name,
                 "messages": archive.get("messages", []),
@@ -86,753 +77,54 @@ async def lifespan(app: FastAPI):
                 "plan": None,
                 "metadata": archive.get("metadata", {}),
             }
-            await _agent.state_store.put("default", state)
-            logger.info(f"Restored state from archive: {len(state['messages'])} messages")
+            await state._agent.state_store.put("default", s)
+            logger.info(f"Restored state from archive: {len(s['messages'])} messages")
 
     from arf.observability import FileTraceStore
-    FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
+    FileTraceStore(state._agent.event_bus, dir=str(app_context.trace_dir))
 
     logger.info(f"Agent '{cfg.name}' ready")
-    await _agent.start()
+    await state._agent.start()
     yield
     # ---- SHUTDOWN ----
-    if _agent:
-        await _agent.stop()
-    logger.info("Shutting down...")
+    if state._agent:
+        await state._agent.stop()
     logger.info("Goodbye")
 
 
+# ---- App ----
 app = FastAPI(title="ARF Assistant", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:8000",
         "http://127.0.0.1:8000",
-        "http://localhost:5173",   # Vite dev server
+        "http://localhost:5173",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Shutdown handled by FastAPI lifespan (cross-platform, no signal tricks)
-
-
-class ChatReq(BaseModel):
-    message: str
-    stream: bool = False
-    history: list[dict] | None = None
-    new_session: bool = False
-
-
-@app.post("/api/chat")
-async def chat(req: ChatReq):
-    if req.stream:
-        return StreamingResponse(
-            _sse_chat(req.message),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    try:
-        result = await _agent.chat(req.message)
-        return JSONResponse({"content": result})
-    except Exception as e:
-        return JSONResponse({"content": "", "error": str(e)}, status_code=500)
-
-
-async def _sse_chat(message: str):
-    """Stream chat via framework agent.astream(), translate events to frontend format.
-
-    Creates a cancel event and injects it into the engine so that
-    POST /api/chat/cancel or client disconnect can stop the agent.
-    """
-    cancel_evt = asyncio.Event()
-    _active_cancel_events["default"] = cancel_evt
-    _agent.engine.set_cancel_event(cancel_evt)
-
-    # Padding to defeat browser fetch buffering (Chrome buffers ~2KB before
-    # surfacing data to ReadableStream reader).
-    yield ":" + " " * 2048 + "\n\n"
-
-    try:
-        async for event in _agent.astream(message):
-            t = event.type
-            if t == "thinking_delta":
-                chunk = {"type": "chunk", "content": event.data.get("content", "")}
-                if event.data.get("reasoning"):
-                    chunk["reasoning"] = event.data["reasoning"]
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0)
-            elif t == "tool_call_start":
-                yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
-            elif t == "tool_call_end":
-                success = event.data.get("success", False)
-                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"
-            elif t == "approval_required":
-                yield f"data: {json.dumps({'type': 'approval_required', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'params': event.data.get('params', {})}, ensure_ascii=False)}\n\n"
-            elif t == "approval_resolved":
-                yield f"data: {json.dumps({'type': 'approval_resolved', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'approved': event.data.get('approved', False), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
-            elif t == "guard_block":
-                yield f"data: {json.dumps({'type': 'guard_block', 'tool_name': event.data.get('tool_name', ''), 'guard': event.data.get('guard', ''), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
-            elif t == "guard_pass":
-                yield f"data: {json.dumps({'type': 'guard_pass', 'tool_name': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
-            elif t == "error":
-                detail = event.data.get("detail", "API error")
-                code = event.data.get("code", 0)
-                yield f"data: {json.dumps({'type': 'error', 'detail': f'[{code}] {detail}'}, ensure_ascii=False)}\n\n"
-                return
-            elif t == "session_end":
-                reason = event.data.get("reason", "")
-                if reason == "cancelled":
-                    yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                    return
-
-        # Send done with FULL history for frontend renderFromHistory
-        state = await _agent.state_store.get("default")
-        history = state.get("messages", []) if state else []
-        last = ""
-        for m in reversed(history):
-            if m.get("role") == "assistant":
-                last = m.get("content", "")
-                break
-        yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default'}, ensure_ascii=False)}\n\n"
-    except asyncio.CancelledError:
-        # Client disconnected — cancel the agent
-        cancel_evt.set()
-        logger.info("SSE client disconnected, cancelling agent")
-    except Exception as e:
-        import traceback
-        logger.error(f"SSE chat error: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
-    finally:
-        _active_cancel_events.pop("default", None)
-        # Reset cancel event so next request starts fresh
-        _agent.engine.set_cancel_event(None)
-        cancel_evt.clear()
-
-
-@app.post("/api/chat/cancel")
-async def cancel_chat():
-    """Cancel the in-flight streaming chat for the default session."""
-    evt = _active_cancel_events.get("default")
-    if evt and not evt.is_set():
-        evt.set()
-        logger.info("Chat cancelled via API")
-        return JSONResponse({"status": "cancelled"})
-    return JSONResponse({"status": "no_active_chat"})
-
-
-@app.post("/api/chat/approve")
-async def approve_tool_call(req: dict):
-    """Approve or deny a pending tool call approval request."""
-    decision_id = (req or {}).get("decision_id", "")
-    approved = (req or {}).get("approved", False)
-    if not decision_id:
-        return JSONResponse({"error": "decision_id required"}, status_code=400)
-    ok = _agent.engine.approve(decision_id, approved)
-    if not ok:
-        return JSONResponse({"error": f"unknown decision_id: {decision_id}"}, status_code=404)
-    logger.info(f"Approval {decision_id}: {'approved' if approved else 'denied'}")
-    return JSONResponse({"status": "ok", "decision_id": decision_id, "approved": approved})
-
-
-@app.post("/api/chat/undo")
-async def undo_chat(steps: int = 1):
-    """Undo N user-interaction rounds. Restores checkpointed state."""
-    if steps < 1:
-        return JSONResponse({"error": "steps must be >= 1"}, status_code=400)
-    engine = _agent.engine
-    available = engine.checkpoint_count()
-    if available < steps:
-        return JSONResponse({"status": "insufficient_checkpoints", "available": available, "requested": steps})
-    restored = engine.undo(steps, session_id="default")
-    if restored is None:
-        return JSONResponse({"status": "no_checkpoints"})
-    # Write restored state back to state store
-    await _agent.state_store.put("default", restored)
-    msg_count = len(restored.get("messages", []))
-    remaining = engine.checkpoint_count()
-    logger.info(f"Undo {steps} round(s): restored to {msg_count} messages, {remaining} checkpoints remain")
-    return JSONResponse({"status": "undone", "steps": steps, "messages": msg_count, "remaining_checkpoints": remaining})
-
-
-@app.get("/api/chat/undo/status")
-async def undo_status():
-    """Return how many undo checkpoints are available."""
-    engine = _agent.engine
-    return JSONResponse({"available": engine.checkpoint_count(), "max": 3})
-
-
-@app.get("/api/chat/stream")
-async def chat_stream(message: str = Query(...)):
-    import asyncio as _aio
-
-    async def gen():
-        bus = _agent.event_bus
-        queue: _aio.Queue = _aio.Queue()
-        async def _collect():
-            async for event in bus.subscribe():
-                await queue.put(event)
-        collector = _aio.create_task(_collect())
-        chat_task = _aio.create_task(_agent.chat(message))
-        try:
-            while not chat_task.done():
-                try:
-                    event = await _aio.wait_for(queue.get(), timeout=0.1)
-                    yield f"data: {json.dumps({'type': event.type, 'data': event.data, 'timestamp': event.timestamp, 'turn': event.turn}, ensure_ascii=False)}\n\n"
-                except _aio.TimeoutError:
-                    pass
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps({'type': event.type, 'data': event.data, 'timestamp': event.timestamp, 'turn': event.turn}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
-        finally:
-            collector.cancel()
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-@app.get("/api/trace")
-async def get_trace():
-    events = []
-    if app_context.trace_dir.exists():
-        for p in sorted(app_context.trace_dir.glob("*.json")):
-            try:
-                events.extend(json.loads(p.read_text(encoding="utf-8")))
-            except Exception:
-                pass
-    return JSONResponse({"events": events})
-
-@app.get("/api/traces/sessions")
-async def traces_sessions(limit: int = 20):
-    """List sessions with trace data (for TraceView dropdown)."""
-    sessions = []
-    if app_context.trace_dir.exists():
-        for p in sorted(app_context.trace_dir.glob("*.json"), reverse=True)[:limit]:
-            sid = p.stem
-            if not sid or sid == ".json":  # skip corrupted files
-                continue
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                sessions.append({
-                    "session_id": sid,
-                    "event_count": len(data) if isinstance(data, list) else 0,
-                })
-            except Exception:
-                pass
-    if not sessions:
-        sessions.append({"session_id": "default", "event_count": 0})
-    return JSONResponse({"sessions": sessions})
-
-@app.get("/api/traces/sessions/{session_id}")
-async def traces_session_detail(session_id: str):
-    """Get detailed trace events for a specific session."""
-    path = app_context.trace_dir / f"{session_id}.json"
-    if not path.exists():
-        return JSONResponse({"turns": [], "events": []})
-    try:
-        events = json.loads(path.read_text(encoding="utf-8"))
-        return JSONResponse({"turns": _group_turns(events), "events": events})
-    except Exception:
-        return JSONResponse({"turns": [], "events": []})
-
-def _group_turns(events: list) -> list:
-    """Group trace events by turn number."""
-    turns = {}
-    for e in events:
-        t = e.get("turn", 0)
-        if t not in turns:
-            turns[t] = {"turn": t, "events": []}
-        turns[t]["events"].append(e)
-    return sorted(turns.values(), key=lambda x: x["turn"])
-
-@app.get("/api/traces/summary")
-async def traces_summary():
-    """Summary for TraceView stats bar — computed from actual trace data."""
-    total_events = 0
-    sessions_count = 0
-    total_tokens = 0
-    total_turns = 0
-    all_turns: set[int] = set()
-    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                total_events += len(data)
-                for e in data:
-                    all_turns.add(e.get("turn", 0))
-                    usage = e.get("data", {}).get("usage", {})
-                    if isinstance(usage, dict):
-                        total_tokens += usage.get("total_tokens", 0)
-            sessions_count += 1
-        except Exception:
-            pass
-    if sessions_count == 0:
-        sessions_count = 1
-    total_turns = len(all_turns)
-    return JSONResponse({
-        "total_sessions": sessions_count,
-        "total_events": total_events,
-        "total_tokens": total_tokens,
-        "total_turns": total_turns,
-        "thumbs_up": 0,
-        "thumbs_down": 0,
-        "total": sessions_count,
-    })
-
-
-@app.get("/api/trace/stream")
-async def trace_stream():
-    async def gen():
-        try:
-            async for event in _agent.event_bus.subscribe():
-                yield (
-                    f"data: {json.dumps({'type': event.type, 'data': event.data, 'turn': event.turn}, ensure_ascii=False)}\n\n"
-                )
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-@app.post("/api/config/register-deepseek")
-async def config_register_deepseek(req: dict):
-    """Accept DeepSeek API key, persist to .env and in-process env."""
-    api_key = (req or {}).get("api_key", "").strip()
-    if not api_key:
-        return JSONResponse({"error": "API key required"}, status_code=400)
-
-    global _agent
-
-    # Persist to .env file for restart survival
-    _save_api_key(api_key)
-    # Set for current process
-    os.environ["DEEPSEEK_API_KEY"] = api_key
-    # Invalidate config cache so next status check re-verifies with new key
-    _api_key_cache["checked_at"] = 0
-
-    # Recreate agent so ModelAdapter picks up the new key from os.environ
-    cfg = AgentConfig.from_yaml(str(app_context.config_path))
-    _agent = create_agent(config=cfg, app_context=app_context)
-
-
-    # Re-attach FileTraceStore to new agent's event bus
-    from arf.observability import FileTraceStore
-    FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
-
-    return JSONResponse({
-        "ok": True,
-        "action": "register_deepseek",
-        "models_created": [m.type for m in _agent.config.models],
-        "models": [{"name": m.type, "model": m.model} for m in _agent.config.models],
-    })
-
-
-def _save_api_key(key: str) -> None:
-    """Write or update DEEPSEEK_API_KEY in .env file."""
-    env_path = app_context.root / ".env"
-    lines: list[str] = []
-    found = False
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("DEEPSEEK_API_KEY="):
-            lines[i] = f"DEEPSEEK_API_KEY={key}"
-            found = True
-            break
-    if not found:
-        lines.append(f"DEEPSEEK_API_KEY={key}")
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _mask_api_key(key: str) -> str:
-    """Mask an API key for safe display — show only last 4 characters."""
-    if not key:
-        return ""
-    if len(key) <= 4:
-        return "****"
-    return key[:3] + "****" + key[-4:]
-
-
-@app.get("/api/config/status")
-async def config_status():
-    cfg = _agent.config
-    m = cfg.models[0] if cfg.models else None
-    configured = await _verify_api_key(cfg)
-    return JSONResponse({
-        "configured": configured,
-        "model_name": m.model if m else "",
-        "model_type": "deep_thinking",
-        "config_name": m.type if m else "",
-        "agent_name": cfg.name,
-        "models": [x.type for x in cfg.models],
-        "tool_count": len(cfg.tools),
-    })
-
-
-_api_key_cache: dict[str, bool | float] = {"valid": False, "checked_at": 0}
-
-async def _verify_api_key(cfg) -> bool:
-    """Quick API call (max_tokens=1) to verify the key. Cached for 60s."""
-    now = time.time()
-    if now - _api_key_cache["checked_at"] < 60:
-        return _api_key_cache["valid"]
-    if not cfg or not cfg.models:
-        _api_key_cache.update(valid=False, checked_at=now)
-        return False
-    m = cfg.models[0]
-    key = os.environ.get(m.api_key_env, "")
-    if not key.strip():
-        _api_key_cache.update(valid=False, checked_at=now)
-        return False
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.post(
-                f"{m.api_base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={
-                    "model": m.model,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1,
-                },
-            )
-        valid = resp.status_code == 200
-        _api_key_cache.update(valid=valid, checked_at=now)
-        return valid
-    except Exception:
-        _api_key_cache.update(valid=False, checked_at=now)
-        return False
-
-
-@app.get("/api/resources")
-async def resources_all():
-    """List all resources — matches old frontend ResourcePanel format."""
-    system_tools = [{"name": t.name, "description": t.description, "source": "system",
-                      "active": t.activation == "kernel", "activation": t.activation}
-                    for t in _agent.config.tools]
-    system_skills = [{"name": s.name, "description": s.description, "source": "system",
-                       "active": s.activation == "kernel", "activation": s.activation}
-                     for s in _agent.config.skills]
-    # Match old ResourceRegistry.list_all() format
-    tools = [{"name": t.name, "description": t.description, "source": "system",
-              "readonly": True, "configured": True, "required": False,
-              "depends_on": [], "activation": t.activation}
-             for t in _agent.config.tools]
-    skills = [{"name": s.name, "description": s.description, "source": "system",
-               "readonly": True, "configured": True, "required": False,
-               "depends_on": [], "activation": s.activation}
-              for s in _agent.config.skills]
-    models = [{"name": m.type, "description": m.model, "source": "system",
-               "readonly": False, "configured": True, "required": True,
-               "depends_on": [], "model_name": m.model,
-               "config_page": "DeepSeekConfigForm"}
-              for m in _agent.config.models]
-    return JSONResponse({"tools": tools, "skills": skills, "models": models})
-
-@app.get("/api/resources/unconfigured")
-async def resources_unconfigured(required_only: bool = False):
-    """List unconfigured resources (stub — all tools are pre-configured)."""
-    return JSONResponse([])
-
-@app.get("/api/resources/models/{name}")
-async def get_model_config(name: str):
-    """Return config for a specific model (used by DeepSeekConfigForm)."""
-    for m in _agent.config.models:
-        if m.type == name:
-            raw = os.environ.get(m.api_key_env, "")
-            masked = _mask_api_key(raw)
-            return JSONResponse({"config": {
-                "model_name": m.model,
-                "base_url": m.api_base,
-                "api_key": masked,
-                "api_key_configured": bool(raw),
-            }})
-    return JSONResponse({"error": "not found"}, status_code=404)
-
-@app.post("/api/resources/model/{name}/configure")
-async def configure_model(name: str, req: dict):
-    """Save model config (placeholder — models are pre-configured in agent.yaml)."""
-    return JSONResponse({"ok": True})
-
-@app.get("/api/resources/generate-config")
-async def resources_generate_config():
-    """Scan filesystem and return complete agent.yaml text."""
-    if not hasattr(_agent, '_resource_resolver'):
-        return JSONResponse({"error": "resource resolver not available"}, status_code=500)
-    import yaml
-    config_data = await _agent.resource_resolver.generate_config()
-    config_data["name"] = _agent.config.name
-    config_data["description"] = _agent.config.description or ""
-    yaml_text = yaml.dump(config_data, allow_unicode=True, default_flow_style=False)
-    return JSONResponse({"yaml": yaml_text, "config": config_data})
-
-
-@app.get("/api/resources/{res_type}")
-async def list_resources(res_type: str):
-    resolver = getattr(_agent, '_resource_resolver', None)
-    if res_type == "tools":
-        if resolver:
-            tools = await resolver.get_tool_definitions()
-            items = [{"name": t.name, "description": t.description} for t in tools]
-        else:
-            items = [{"name": t.name, "description": t.description, "activation": t.activation}
-                     for t in _agent.config.tools]
-    elif res_type == "skills":
-        if resolver:
-            skills = resolver.get_skill_definitions()
-            items = [{"name": s.name, "description": s.description, "tools": s.tools}
-                     for s in skills]
-        else:
-            items = [{"name": s.name, "description": s.description, "tools": s.tools}
-                     for s in _agent.config.skills]
-    elif res_type == "models":
-        if resolver:
-            models = resolver.get_model_definitions()
-            items = [{"name": m.type, "model": m.model, "api_base": m.api_base}
-                     for m in models]
-        else:
-            items = [{"name": m.type, "description": m.model, "source": "system",
-                      "readonly": False, "configured": True, "required": True,
-                      "depends_on": [], "model_name": m.model, "config_page": "DeepSeekConfigForm"}
-                     for m in _agent.config.models]
-    else:
-        return JSONResponse({"error": f"unknown type: {res_type}"}, status_code=400)
-    return JSONResponse({"type": res_type, "items": items, "count": len(items)})
-
-
-
-@app.post("/api/reload")
-async def reload_config():
-    """Reload agent config and reinitialize the agent."""
-    global _agent
-    cfg = AgentConfig.from_yaml(str(app_context.config_path))
-    _agent = create_agent(config=cfg, app_context=app_context)
-
-
-    return JSONResponse({"status": "reloaded", "name": cfg.name})
-
-
-class FeedbackReq(BaseModel):
-    rating: int = 0
-    comment: str = ""
-
-
-@app.post("/api/feedback")
-async def feedback(req: FeedbackReq):
-    log = app_context.workspace_dir / "feedback.jsonl"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with open(log, "a") as f:
-        f.write(json.dumps({"timestamp": time.time(), **req.model_dump()}, ensure_ascii=False) + "\n")
-    return JSONResponse({"status": "recorded"})
-
-@app.get("/api/feedback/{session_id}")
-async def feedback_get(session_id: str):
-    """Get feedback for a session (stub)."""
-    return JSONResponse([])
-
-
-@app.get("/api/preferences")
-async def preferences():
-    """User preferences stub."""
-    return JSONResponse({"language": "zh-CN", "theme": "auto"})
-
-@app.get("/api/usage/summary")
-async def usage_summary(period: str = "month"):
-    """Usage stats from framework UsageTracker."""
-    return JSONResponse({
-        **_agent.usage_tracker.summary(),
-        "sessions": 1,
-        "period": period,
-    })
-
-@app.get("/api/usage/detail")
-async def usage_detail(from_date: str, to_date: str, model: str = ""):
-    """Usage detail stub — aggregated data, no per-day breakdown yet."""
-    return JSONResponse([])
-
-@app.get("/api/health")
-async def health():
-    return JSONResponse({
-        "status": "ok",
-        "agent": _agent.config.name if _agent else "not initialized",
-    })
-
-@app.get("/api/debug/state")
-async def debug_state():
-    state = await _agent.state_store.get("default")
-    return JSONResponse({"has_state": state is not None, "messages": len(state.get("messages",[])) if state else 0})
-
-# ---- Session stubs (single infinite session — no session management) ----
-from datetime import datetime, timezone
-
-def _session_defaults():
-    """Shared defaults for the single-session model."""
-    state_file = app_context.state_dir / "default.json"
-    created_at = datetime.fromtimestamp(state_file.stat().st_mtime, tz=timezone.utc).isoformat() if state_file.exists() else datetime.now(timezone.utc).isoformat()
-    return {"id": "default", "session_id": "default", "created_at": created_at}
-
-@app.get("/trace-viewer")
-async def trace_viewer():
-    """Serve the standalone trace viewer HTML (framework default debugging tool)."""
-    import arf.observability
-    viewer_path = Path(arf.observability.__file__).parent / "trace_viewer.html"
-    return FileResponse(viewer_path, media_type="text/html")
-
-
-@app.get("/api/sessions")
-async def sessions_list():
-    return JSONResponse([])
-
-@app.post("/api/sessions")
-async def sessions_create():
-    state = await _agent.state_store.get("default")
-    messages = state.get("messages", []) if state else []
-    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
-
-@app.get("/api/sessions/active")
-async def sessions_active():
-    state = await _agent.state_store.get("default")
-    messages = state.get("messages", []) if state else []
-    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
-
-@app.get("/api/sessions/active/messages")
-async def sessions_active_messages():
-    state = await _agent.state_store.get("default")
-    messages = state.get("messages", []) if state else []
-    return JSONResponse(messages)
-
-# ---- WebSocket stub (single session — no real-time sync needed) ----
-from fastapi import WebSocket
-@app.websocket("/ws")
-async def ws_stub(ws: WebSocket):
-    await ws.accept()
-    await ws.close()
-
-# ---- Resource stats (from trace data) ----
-@app.get("/api/traces/resource-stats")
-async def traces_resource_stats(period: str = "all"):
-    """Compute per-tool and per-model usage stats from trace data."""
-    resources: dict[str, dict] = {}
-    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                continue
-            for e in data:
-                d = e.get("data", {})
-                if e.get("type") == "tool_call_end":
-                    tn = d.get("tool_name", "unknown")
-                    if tn not in resources:
-                        resources[tn] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0, "type": "tool", "tokens": 0}
-                    r = resources[tn]
-                    r["call_count"] += 1
-                    if d.get("success"):
-                        r["success_count"] += 1
-                    else:
-                        r["failure_count"] += 1
-                    r["total_duration_ms"] += d.get("duration_ms", 0)
-                if e.get("type") == "model_call_end":
-                    mn = d.get("model", "unknown")
-                    if mn not in resources:
-                        resources[mn] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0, "type": "model", "tokens": 0}
-                    r = resources[mn]
-                    r["call_count"] += 1
-                    r["success_count"] += 1  # model calls that return are successful
-                    r["tokens"] += d.get("usage", {}).get("total_tokens", 0)
-        except Exception:
-            pass
-    result = []
-    for name, r in sorted(resources.items(), key=lambda x: -x[1]["call_count"]):
-        avg_ms = round(r["total_duration_ms"] / r["call_count"], 1) if r["call_count"] > 0 else 0
-        result.append({
-            "name": name,
-            "type": r["type"],
-            "call_count": r["call_count"],
-            "success_count": r["success_count"],
-            "failure_count": r["failure_count"],
-            "avg_duration_ms": avg_ms,
-            "tokens": r["tokens"],
-        })
-    return JSONResponse({"resources": result, "period": period})
-
-
-@app.get("/api/traces/resource-stats/{name}")
-async def traces_resource_stats_detail(name: str, from_date: str = "", to_date: str = ""):
-    """Per-resource daily stats from trace."""
-    daily: dict[str, dict] = {}
-    for p in app_context.trace_dir.glob("*.json") if app_context.trace_dir.exists() else []:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                continue
-            for e in data:
-                d = e.get("data", {})
-                if d.get("tool_name") == name or d.get("model") == name:
-                    ts = e.get("timestamp", 0)
-                    day = __import__("datetime").datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-                    if day not in daily:
-                        daily[day] = {"call_count": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0}
-                    r = daily[day]
-                    r["call_count"] += 1
-                    if e.get("type") == "tool_call_end":
-                        if d.get("success"):
-                            r["success_count"] += 1
-                        else:
-                            r["failure_count"] += 1
-                        r["total_duration_ms"] += d.get("duration_ms", 0)
-                    elif e.get("type") == "model_call_end":
-                        r["success_count"] += 1
-        except Exception:
-            pass
-    return JSONResponse({
-        "name": name,
-        "daily": [{
-            "day": k,
-            "call_count": v["call_count"],
-            "success_count": v["success_count"],
-            "failure_count": v["failure_count"],
-            "avg_duration_ms": round(v["total_duration_ms"] / v["call_count"], 1) if v["call_count"] > 0 else None,
-        } for k, v in sorted(daily.items())],
-        "from_date": from_date, "to_date": to_date,
-    })
-
-# ---- Trace export stub ----
-@app.get("/api/traces/export")
-async def traces_export(session_id: str):
-    p = app_context.trace_dir / f"{session_id}.json"
-    if p.exists():
-        return FileResponse(p, media_type="application/json")
-    return JSONResponse({"error": "not found"}, status_code=404)
-
-# ---- File upload stub ----
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = None):
-    return JSONResponse({"ok": True, "path": "", "filename": "", "size": 0, "content_type": "", "preview": ""})
-
-# ---- Config test stub ----
-@app.post("/api/config/test")
-async def config_test(req: dict):
-    return JSONResponse({"ok": True, "response": "Connection OK"})
-
-# ---- Usage models pricing stub ----
-@app.get("/api/usage/models/pricing")
-async def usage_models_pricing():
-    return JSONResponse([])
-
-# Static files (frontend) + SPA fallback
+# ---- Routers ----
+from routers.chat import router as chat_router
+from routers.trace import router as trace_router
+from routers.config import router as config_router
+from routers.resources import router as resources_router
+from routers.misc import router as misc_router
+
+app.include_router(chat_router)
+app.include_router(trace_router)
+app.include_router(config_router)
+app.include_router(resources_router)
+app.include_router(misc_router)
+
+# ---- Static files + SPA fallback ----
 frontend_dir = app_context.root.parent / "web" / "dist"
 if frontend_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
 
-    from fastapi.responses import FileResponse
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
-        """SPA fallback: all non-/api/ requests → index.html (Vue Router handles the rest)."""
         return FileResponse(frontend_dir / "index.html")
 
 
