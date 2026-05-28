@@ -22,9 +22,7 @@ class DefaultErrorPolicy:
         is_5xx = any(str(code) in msg for code in [500, 502, 503, 504])
         if is_5xx and self._model_5xx_action == "fallback":
             return ErrorAction(action="fallback")
-        if attempt < self._model_retry:
-            delay = 2 ** attempt * 0.5
-            return ErrorAction(action="retry", delay=delay)
+        # No engine-level retry — protection layer handles transient retry and fault isolation
         return ErrorAction(action="abort", message=str(error))
 
     def on_guardrail_block(self, result: GuardResult, context: TurnContext) -> ErrorAction:
