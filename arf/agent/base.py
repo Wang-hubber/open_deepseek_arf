@@ -385,6 +385,8 @@ class BaseAgent:
             error_policy=error_policy,
             model_router=model_router,
             compaction=compaction,
+            memory_max_tokens=mem_cfg.max_tokens if mem_cfg else 2000,
+            memory_top_k=mem_cfg.top_k if mem_cfg else 5,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             max_undo_depth=(adv.max_undo_depth if adv else 3),

@@ -138,7 +138,7 @@ def should_compact(self, state, threshold=0.75, window_size=None):
 1. **检索** — 每 turn 循环开始时，在路由之前：`memory_retriever.retrieve()` → 注入 `state["context_summary"]`
 2. **压缩** — 路由之后、模型调用之前：`compaction.should_compact()` → `compaction.compact()`
 3. **工具输出摘要** — 工具执行成功后：`compaction.summarize_tool_output()`
-4. **记忆写入** — 两条路径均覆盖：文本响应路径（invoke:352-358, astream:628-632）和工具执行路径（invoke:469-475, astream:721-727）。写入前必先 `store.load(session_id)` 获取最新条目，避免并发写入导致陈旧覆盖
+4. **记忆写入** — 两条路径均覆盖：文本响应路径（无工具调用时，response 处理后 break 之前）和工具执行路径（ToolExecutor 执行完毕后，下一轮循环前）。写入前必先 `store.load(session_id)` 获取最新条目，避免并发写入导致陈旧覆盖
 
 ### 2.5 配置
 

@@ -40,6 +40,8 @@ class GraphEngine:
         system_prompt: str = "",
         max_turns: int = 50,
         max_undo_depth: int = 3,
+        memory_max_tokens: int = 2000,
+        memory_top_k: int = 5,
         approval_enabled: bool = False,
         approval_allowlist: list[str] | None = None,
         # Multi-agent support
@@ -68,6 +70,8 @@ class GraphEngine:
         self._stream_model = stream_model
         self._system_prompt = system_prompt
         self._max_turns = max_turns
+        self._memory_max_tokens = memory_max_tokens
+        self._memory_top_k = memory_top_k
         self._cancel_event = cancel_event
         self._interaction_round = 0
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
@@ -561,8 +565,8 @@ class GraphEngine:
                     store=self.memory_store,
                     query_context=query,
                     session_id=session_id,
-                    max_tokens=2000,
-                    top_k=5,
+                    max_tokens=self._memory_max_tokens,
+                    top_k=self._memory_top_k,
                 )
                 if entries:
                     state["context_summary"] = "\n".join(
@@ -845,8 +849,8 @@ class GraphEngine:
                     store=self.memory_store,
                     query_context=user_msg,
                     session_id=session_id,
-                    max_tokens=2000,
-                    top_k=5,
+                    max_tokens=self._memory_max_tokens,
+                    top_k=self._memory_top_k,
                 )
                 if entries:
                     state["context_summary"] = "\n".join(
