@@ -436,12 +436,11 @@ handover:
 
 ### 3.4 暂停/恢复/检查点
 
-**状态**：未实现。当前取消是"终止型"的——不可恢复。
+**状态**：目前是round级别的检查点。当前round过程中某个turn的取消是"终止型"的——只能从最近的round检查点开始重新会话，本round内已执行的操作会被回滚（丢失，但是保证了round级别的事务一致性）。
 
-目标：在当前循环边界安全停止，完整序列化 engine 状态（含 pending approvals、active pipelines、handoff 中间态），支持跨进程恢复。
+可能方向：在当前循环边界安全停止，完整序列化 engine 状态（含 pending approvals、active pipelines、handoff 中间态），支持turn级别的更细粒度恢复。需要这么细节的回滚吗？空间换时间需要找到平衡点
 
-### 3.6 循环控制抽象：should_continue / should_break
+### 3.6 循环控制抽象的更多默认实现：should_continue / should_break
 
-**状态**：未实现。当前循环控制有两处分散的判断——`LoopStrategy.should_continue()`（循环入口）和 `turn >= active["max_turns"]`（循环末尾硬编码），且两者在多 Agent 场景下来自不同配置源（见 2.5 节注释）。
-
-目标：抽象为 `should_continue(state) → bool`（入口）和 `should_break(state) → bool`（末尾）两个协议方法，统一由 `LoopStrategy` 实现，从当前活跃 Agent 的配置动态取值。当前仅监控 turn 计数，协议化后可为每个 Agent 扩展更多断路器维度——token 预算、时间预算、工具调用次数上限等。
+**状态**：`should_continue(state) → bool`（入口）和 `should_break(state) → bool`（末尾）两个协议方法，统一由 `LoopStrategy` 实现，从当前活跃 Agent 的配置动态取值，当前仅监控 turn 计数。
+目标：扩展更多循环控制的默认实现——token 预算、时间预算、工具调用次数上限等。
