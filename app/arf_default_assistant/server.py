@@ -33,7 +33,6 @@ sys.path.insert(0, str(app_context.root))
 
 from arf.agent.factory import create_agent
 from arf.agent.config import AgentConfig
-from arf.agent.registry import set_agent
 from arf.core.state import AgentState
 
 _agent = None
@@ -65,7 +64,8 @@ async def lifespan(app: FastAPI):
     _load_dotenv()
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     _agent = create_agent(config=cfg, app_context=app_context)
-    set_agent(_agent)
+
+
 
     # Restore state from FileStateStore (primary persistence), fall back to archive.json
     state = await _agent.state_store.get("default")
@@ -418,7 +418,8 @@ async def config_register_deepseek(req: dict):
     # Recreate agent so ModelAdapter picks up the new key from os.environ
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     _agent = create_agent(config=cfg, app_context=app_context)
-    set_agent(_agent)
+
+
     # Re-attach FileTraceStore to new agent's event bus
     from arf.observability import FileTraceStore
     FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
@@ -611,7 +612,8 @@ async def reload_config():
     global _agent
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     _agent = create_agent(config=cfg, app_context=app_context)
-    set_agent(_agent)
+
+
     return JSONResponse({"status": "reloaded", "name": cfg.name})
 
 
