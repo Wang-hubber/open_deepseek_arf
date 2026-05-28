@@ -6,6 +6,11 @@ description: >
   可自我演进的 AI 助手。擅长代码编写、文件管理、网络搜索、资源创建。
   作为主 Agent 与用户交互，资源创建等系统操作移交给 SysAgent。
 
+plugins:
+  - planner
+  - todo
+  - undo
+
 system_prompt:
   template: |
     You are {{AGENT_NAME}}, an AI assistant.

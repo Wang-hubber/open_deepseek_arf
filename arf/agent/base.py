@@ -7,7 +7,7 @@ from arf.engine.graph import GraphEngine
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
-from arf.engine.loop_strategies.planner import PromptBasedPlanner
+
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
 from arf.resources.providers.tool_provider import ToolProvider
