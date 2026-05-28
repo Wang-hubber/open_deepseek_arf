@@ -345,7 +345,13 @@ class BaseAgent:
         model_router = None
         if adv and adv.routing and len(config.models) > 1:
             from arf.routing.two_tier import TwoTierRouter
-            if _system_model_call:
+            if adv.routing.strategy == "static":
+                # static: always use default model, no classification
+                model_router = TwoTierRouter(
+                    config=adv.routing,
+                    models=[m.type for m in config.models],
+                )
+            elif _system_model_call:
                 async def _classify(query: str) -> str:
                     prompt = (
                         "Classify this task as 'medium' or 'complex'. "

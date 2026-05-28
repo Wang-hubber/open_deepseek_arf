@@ -576,7 +576,8 @@ class GraphEngine:
             # 2. Route to best model for this turn (before compaction — need model's window size)
             model = state["current_model"]
             if self.model_router:
-                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                model = routed or model  # fallback to current if route() returns empty
                 state["current_model"] = model
 
             # 2.5 Compaction — after routing (uses selected model's window), before model call
@@ -863,7 +864,8 @@ class GraphEngine:
             # Route to best model for this turn (before compaction — need model's window)
             model = state["current_model"]
             if self.model_router:
-                model = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                model = routed or model  # fallback to current if route() returns empty
                 state["current_model"] = model
 
             # Compaction — after routing (uses selected model's window), before model call
