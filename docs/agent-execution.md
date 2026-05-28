@@ -54,6 +54,8 @@ BaseAgent.chat() / astream()
     ▼
 GraphEngine.invoke() / astream()
     │
+    ├─ [Hook] session_start
+    │
     ├─ while LoopStrategy.should_continue(state):
     │   │
     │   ├─ [取消检查] _cancelled() → break
@@ -75,7 +77,7 @@ GraphEngine.invoke() / astream()
     │   ├─ [记忆写入] MemoryWriter.extract_and_write()
     │   └─ [检查点] StateStore.put()
     │
-    └─ Hook: session_end → 返回最终 State
+    └─ [Hook] session_end → 返回最终 State
 ```
 
 ### 2.2 双模主循环：invoke / astream
