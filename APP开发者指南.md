@@ -1453,7 +1453,21 @@ advanced:
   reload:
     watch: true             # 启用 FileWatcher（默认 true）
     poll_interval: 5        # 轮询间隔（非 Linux 平台）
+
+  protection:
+    enabled: true
+    rate_limit:
+      requests_per_second: 5       # 每 API 端点每秒请求数
+      max_burst: 10                 # 桶容量（允许瞬时突发）
+    circuit_breaker:
+      failure_threshold: 3          # 连续失败 N 次 → 熔断
+      base_cooldown: 10s            # 首次熔断冷却时间
+      cooldown_multiplier: 2        # 每次重开后冷却翻倍
+      max_cooldown: 300s            # 冷却时间上限
+      half_open_max_requests: 1     # 半开状态探测请求数
 ```
+
+> 深入阅读：[`docs/api-protection.md`](docs/api-protection.md)
 
 ### 12.2 动态配置生成
 

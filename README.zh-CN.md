@@ -70,6 +70,7 @@
 | **[外部中断 →](docs/interrupt.md)**<br>用户干预 | 硬件中断：保存现场 → ISR → 恢复 | `asyncio.Event` 异步取消。Round 级 undo（`RoundManager`）— 可配快照窗口（默认 3），状态+文件跨 handoff 回滚，round 元数据持久化落盘。`undo_executed` trace 事件。 | 暂停/重定向向量；空闲超时 |
 | **[Trace →](docs/trace.md)**<br>可观测性 | 系统监控 + 结构化事件日志 | EventType Literal 18 种事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`。前端瀑布流按交互轮次分组。独立查看器。 | SQLite Trace 数据库；OpenTelemetry 导出 |
 | **[回归测评 →](docs/eval-benchmark.md)**<br>回归检测 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集真实执行轨迹。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告检测回归。 | CLI 集成；HTML 可视化报告；语义相似度指标 |
+| **[API 保护 →](docs/api-protection.md)**<br>速率限制 + 故障隔离 | I/O 限流 + 设备隔离 (cgroup blkio) | Token bucket 按 API 端点限流（可配置 rps + burst）。指数冷却断路器按模型隔离（CLOSED→OPEN→HALF_OPEN），连续失败 `failure_threshold` 次熔断。事件通过 EventBus → FileTraceStore 可观测。装饰器模式注入 `_call_model`，GraphEngine/ModelAdapter 零侵入。 | 分布式限流（多 Agent 共享配额）、自适应阈值（基于历史错误率动态调整 failure_threshold）、优先级队列（系统调用 vs 用户请求） |
 
 **边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
 
