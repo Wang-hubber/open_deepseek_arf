@@ -45,27 +45,23 @@ Agent 执行体系分为三层：**引擎层**（循环控制 + 工具编排）�
 ### 2.1 架构总览
 
 ```
-会话启动
+会话首次激活
     │
     ▼
 BaseAgent.__init__()
     │  加载 memory/memory.md → 注入 {{MEMORY}}（一次性）
     │
     ▼
-用户消息进入
-    │
-    ▼
 BaseAgent.chat() / astream()
-    │  加载已有 State（恢复对话历史、context_summary）
-    │  创建 AgentState → begin_round（检查点）
-    │  [Hook] round_start
+    │  加载已有 State
+    │  crash recovery? → [Hook] session_end(recovery)
+    │  新会话/存档恢复? → [Hook] session_start
+    │  begin_round → [Hook] round_start
     ▼
 GraphEngine.invoke() / astream()
     │
-    ├─ [Hook] session_start
-    │
     ├─ while LoopStrategy.should_continue(state):
-    │   │
+    │   │                              ← turn 级迭代
     │   ├─ [取消检查] _cancelled() → break
     │   ├─ [模型路由] ModelRouter → current_model
     │   ├─ [压缩判断] Compaction.should_compact()
@@ -83,9 +79,13 @@ GraphEngine.invoke() / astream()
     │   ├─ [Handoff 检测] HandoffManager.detect()
     │   └─ [检查点] StateStore.put()
     │
-    ├─ [Hook] round_end
-    └─ [Hook] session_end → 返回最终 State
-```
+    └─ [Hook] round_end → 返回最终 State
+
+    ═══════ 会话关闭 ═══════
+
+BaseAgent.stop()
+    └─ [Hook] session_end(shutdown)
+        state["session_active"] = False
 
 ### 2.2 双模主循环：invoke / astream
 
