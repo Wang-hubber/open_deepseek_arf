@@ -19,6 +19,8 @@ class ConcurrentToolExecutor:
         self,
         tool_calls: list[dict],
         agent_mode: str = "",
+        engine=None,
+        state_store=None,
     ) -> dict[str, ToolResult]:
         strategy = self._strategy
         max_concurrency = self._max_concurrency
@@ -28,6 +30,10 @@ class ConcurrentToolExecutor:
                 params = dict(tc.get("params", {}))
                 if agent_mode:
                     params["_agent_mode"] = agent_mode
+                if engine is not None:
+                    params["_engine"] = engine
+                if state_store is not None:
+                    params["_state_store"] = state_store
                 results[tc["id"]] = await self._resolver.execute(
                     tc["name"], params
                 )
@@ -38,6 +44,10 @@ class ConcurrentToolExecutor:
                 params = dict(tc.get("params", {}))
                 if agent_mode:
                     params["_agent_mode"] = agent_mode
+                if engine is not None:
+                    params["_engine"] = engine
+                if state_store is not None:
+                    params["_state_store"] = state_store
                 async with sem:
                     return tc["id"], await self._resolver.execute(
                         tc["name"], params
