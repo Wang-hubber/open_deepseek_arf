@@ -10,8 +10,6 @@
   <a href="https://gitee.com/dalaydata/open_deepseek_arf">Gitee</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/Wang-hubber/open_deepseek_arf">GitHub</a>
-  &nbsp;·&nbsp;
-  <a href="./docs/SELF_REVIEW.md">自评报告</a>
 </p>
 
 <p align="center">

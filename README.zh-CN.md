@@ -10,8 +10,6 @@
   <a href="https://gitee.com/dalaydata/open_deepseek_arf">Gitee</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/Wang-hubber/open_deepseek_arf">GitHub</a>
-  &nbsp;·&nbsp;
-  <a href="./docs/SELF_REVIEW.md">自评报告</a>
 </p>
 
 <p align="center">
@@ -267,7 +265,7 @@ cd app/web && npm install && npm run dev
 
 ### TODO — 待改进项
 
-> 基于 [自评报告](docs/SELF_REVIEW.md) 逐项代码验证。
+> 基于代码逐项验证。
 
 | # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
 |---|------|---------|--------|------|------|
