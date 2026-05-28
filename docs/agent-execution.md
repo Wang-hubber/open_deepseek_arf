@@ -45,12 +45,20 @@ Agent 执行体系分为三层：**引擎层**（循环控制 + 工具编排）�
 ### 2.1 架构总览
 
 ```
+会话启动
+    │
+    ▼
+BaseAgent.__init__()
+    │  加载 memory/memory.md → 注入 {{MEMORY}}（一次性）
+    │
+    ▼
 用户消息进入
     │
     ▼
 BaseAgent.chat() / astream()
     │  加载已有 State（恢复对话历史、context_summary）
     │  创建 AgentState → begin_round（检查点）
+    │  [Hook] round_start
     ▼
 GraphEngine.invoke() / astream()
     │
@@ -59,7 +67,6 @@ GraphEngine.invoke() / astream()
     ├─ while LoopStrategy.should_continue(state):
     │   │
     │   ├─ [取消检查] _cancelled() → break
-    │   ├─ [记忆检索] MemoryRetriever → context_summary
     │   ├─ [模型路由] ModelRouter → current_model
     │   ├─ [压缩判断] Compaction.should_compact()
     │   ├─ [Hook] pre_model_call
@@ -74,9 +81,9 @@ GraphEngine.invoke() / astream()
     │   ├─ [工具执行] ToolExecutor.execute()
     │   ├─ [Hook] post_tool_exec
     │   ├─ [Handoff 检测] HandoffManager.detect()
-    │   ├─ [记忆写入] MemoryWriter.extract_and_write()
     │   └─ [检查点] StateStore.put()
     │
+    ├─ [Hook] round_end
     └─ [Hook] session_end → 返回最终 State
 ```
 
