@@ -437,8 +437,8 @@ handover:
 
 目标：在当前循环边界安全停止，完整序列化 engine 状态（含 pending approvals、active pipelines、handoff 中间态），支持跨进程恢复。
 
-### 3.5 子 Agent 资源配额
+### 3.6 循环控制抽象：should_continue / should_break
 
-**状态**：未实现。当前子 Agent 仅支持独立的 `max_turns`。
+**状态**：未实现。当前循环控制有两处分散的判断——`LoopStrategy.should_continue()`（循环入口）和 `turn >= active["max_turns"]`（循环末尾硬编码），且两者在多 Agent 场景下来自不同配置源（见 2.5 节注释）。
 
-目标：类似 cgroup 层级资源控制——每个子 Agent 有独立的 token 预算、工具调用次数上限；父 Agent 配额自动分配给子 Agent，超限时父 Agent 决定是否追加。
+目标：抽象为 `should_continue(state) → bool`（入口）和 `should_break(state) → bool`（末尾）两个协议方法，统一由 `LoopStrategy` 实现，从当前活跃 Agent 的配置动态取值。当前仅监控 turn 计数，协议化后可为每个 Agent 扩展更多断路器维度——token 预算、时间预算、工具调用次数上限等。
