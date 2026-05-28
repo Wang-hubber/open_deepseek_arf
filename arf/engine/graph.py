@@ -814,6 +814,11 @@ class GraphEngine:
                 break
 
         if self.hook_runner:
+            await self.hook_runner.fire("round_end", {
+                "session_id": session_id,
+                "round": self._interaction_round,
+            })
+        if self.hook_runner:
             await self.hook_runner.fire("session_end", {"session_id": session_id})
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
         return state
@@ -1149,6 +1154,11 @@ class GraphEngine:
             if turn >= active["max_turns"]:
                 break
 
+        if self.hook_runner:
+            await self.hook_runner.fire("round_end", {
+                "session_id": session_id,
+                "round": self._interaction_round,
+            })
         if self.hook_runner:
             await self.hook_runner.fire("session_end", {"session_id": session_id})
         yield self._make_event(type="session_end", data={"session_id": session_id},

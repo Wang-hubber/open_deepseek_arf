@@ -655,6 +655,11 @@ class BaseAgent:
         }
         # Begin round transaction (for undo)
         self._engine._rounds.begin_round(state)
+        if self._engine.hook_runner:
+            await self._engine.hook_runner.fire("round_start", {
+                "session_id": session_id,
+                "round": interaction,
+            })
         result = await self._engine.invoke(state)
         for m in reversed(result.get("messages", [])):
             if m.get("role") == "assistant":
@@ -688,6 +693,11 @@ class BaseAgent:
         }
         # Begin round transaction (for undo)
         self._engine._rounds.begin_round(state)
+        if self._engine.hook_runner:
+            await self._engine.hook_runner.fire("round_start", {
+                "session_id": session_id,
+                "round": interaction,
+            })
         async for event in self._engine.astream(state):
             yield event
 
