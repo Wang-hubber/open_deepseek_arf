@@ -391,20 +391,20 @@ class GraphEngine:
                 if tc_id:
                     seen_ids.add(tc_id)
 
-        # Find unmatched ids and inject synthetic results
-        # Inject them right after the last tool message, or after the assistant
+        # Find unmatched ids and inject synthetic results.
+        # Inject after the later of: last tool message, or the unmatched assistant.
         unmatched = [(idx, tid) for idx, tid in expected_ids if tid not in seen_ids]
         if unmatched:
             logger = logging.getLogger("arf.engine")
-            inject_point = -1
             # Find the last tool message position
+            last_tool_idx = -1
             for i in range(len(msgs) - 1, -1, -1):
                 if msgs[i].get("role") == "tool":
-                    inject_point = i + 1
+                    last_tool_idx = i
                     break
-            if inject_point < 0:
-                # No tool messages yet — inject after last assistant with tool_calls
-                inject_point = max(idx for idx, _ in unmatched) + 1
+            # Inject after whichever is later: last tool result or unmatched assistant
+            max_unmatched_idx = max(idx for idx, _ in unmatched)
+            inject_point = max(last_tool_idx + 1, max_unmatched_idx + 1)
 
             for _, tc_id in reversed(unmatched):
                 logger.warning("Closing open tool_call %s with empty result", tc_id)
@@ -550,238 +550,255 @@ class GraphEngine:
             if self._cancelled():
                 self._emit("session_end", {"session_id": session_id, "reason": "cancelled"}, session_id=session_id)
                 break
-            turn = state.get("current_turn", 0) + 1
-            state["current_turn"] = turn
 
-            user_msg = self._last_user_message(state)
-            self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
+            step = self.loop_strategy.next_step(state)
 
-            # 2. Route to best model for this turn (before compaction — need model's window size)
-            model = state["current_model"]
-            if self.model_router:
-                routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
-                model = routed or model  # fallback to current if route() returns empty
-                state["current_model"] = model
+            # Normalize: unknown/mock steps default to call_model
+            if step != "execute_tools" or not state.get("_pending_tool_calls"):
+                step = "call_model"
 
-            # 2.5 Compaction — after routing (uses selected model's window), before model call
-            if self.compaction:
-                window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
-                if self.compaction.should_compact(state, window_size=window):
-                    self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
-                    state = await self.compaction.compact(state)
-                    self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
+            # ---- call_model ----
+            if step == "call_model":
+                turn = state.get("current_turn", 0) + 1
+                state["current_turn"] = turn
 
-            # 3. Get tool definitions — use active agent's tools
-            active = self._active_config(state)
-            self.loop_strategy.max_turns = active["max_turns"]
-            tools = await self._resolve_tools_for_agent(state, active)
+                user_msg = self._last_user_message(state)
+                self._emit("user_input", {"content": user_msg, "turn": turn}, session_id=session_id)
 
-            # 4. Build messages & call model
-            system_prompt = active["system_prompt"]
-            summary = state.get("context_summary", "")
-            if summary:
-                if "{{MEMORY}}" in system_prompt:
-                    system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
-                else:
-                    system_prompt += f"\n\n## Memory\n{summary}"
-            msgs = [{"role": "system", "content": system_prompt}]
-            msgs.extend(state.get("messages", []))
+                # Route to best model for this turn
+                model = state["current_model"]
+                if self.model_router:
+                    routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                    model = routed or model
+                    state["current_model"] = model
 
-            if self.hook_runner:
-                self._emit("hook_start", {"event": "pre_model_call", "turn": turn}, session_id=session_id)
-                results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
-                self._emit("hook_end", {"event": "pre_model_call", "turn": turn,
-                           "count": len(results),
-                           "passed": sum(1 for r in results if r.exit_code == 0),
-                           "failed": sum(1 for r in results if r.exit_code != 0)},
-                           session_id=session_id)
-                self._inject_hook_messages(results, state)
+                # Compaction — after routing, before model call
+                if self.compaction:
+                    window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                    if self.compaction.should_compact(state, window_size=window):
+                        self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
+                        state = await self.compaction.compact(state)
+                        self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
 
-            if not self._call_model:
-                break
+                # Get tool definitions — use active agent's tools
+                active = self._active_config(state)
+                self.loop_strategy.max_turns = active["max_turns"]
+                tools = await self._resolve_tools_for_agent(state, active)
 
-            self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
-            response = None
-            try:
-                response = await self._call_model(msgs, model, tools=tools)
-            except Exception as exc:
-                # 降级链最后一级：模型调用失败 → error_policy → fallback 模型
-                fallback_model = self._resolve_fallback(model, exc)
-                if fallback_model:
-                    self._emit("model_call_start", {"model": fallback_model, "turn": turn,
-                               "fallback_from": model}, session_id=session_id)
-                    response = await self._call_model(msgs, fallback_model, tools=tools)
-                    model = fallback_model
-                    state["current_model"] = fallback_model
-                else:
-                    raise
-            # Track token usage for next turn's compaction decision
-            if isinstance(response, dict) and response.get("usage"):
-                state["last_token_usage"] = response["usage"].get("total_tokens", 0)
-            self._emit("model_call_end", {"model": model, "turn": turn,
-                       "usage": response.get("usage", {}) if isinstance(response, dict) else {},
-                       "content": response.get("content", "") if isinstance(response, dict) else ""},
-                       session_id=session_id)
-
-            if self.hook_runner:
-                self._emit("hook_start", {"event": "post_model_call", "turn": turn}, session_id=session_id)
-                results = await self.hook_runner.fire("post_model_call", {"response": response})
-                self._emit("hook_end", {"event": "post_model_call", "turn": turn,
-                           "count": len(results),
-                           "passed": sum(1 for r in results if r.exit_code == 0),
-                           "failed": sum(1 for r in results if r.exit_code != 0)},
-                           session_id=session_id)
-                self._inject_hook_messages(results, state)
-
-            # 4. Guard output
-            response_text = response if isinstance(response, str) else response.get("content", "")
-            if self.guard_runner and response_text:
-                gr = await self.guard_runner.check_output(response_text, {})
-                if not gr.allowed:
-                    if self.error_policy:
-                        ctx = TurnContext(session_id=session_id, agent_name=state.get("agent_name", ""),
-                                          turn=turn, current_model=state.get("current_model", ""),
-                                          available_models=[], last_user_message=self._last_user_message(state))
-                        action = self.error_policy.on_guardrail_block(gr, ctx)
-                        if action.action == "abort":
-                            break
-                elif gr.modified_message:
-                    response_text = gr.modified_message
-
-            # 5. Parse tool calls
-            tool_calls = self._pars_tool_calls(response)
-            if not tool_calls:
-                state["messages"].append({"role": "assistant", "content": response_text})
-                await self.state_store.put(session_id, state)
-                break
-
-            # Append assistant message with tool_calls before execution
-            assistant_tool_calls = [
-                {"id": tc.get("id", ""), "type": "function",
-                 "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
-                for tc in tool_calls
-            ]
-            assistant_msg = {"role": "assistant", "content": response_text, "tool_calls": assistant_tool_calls}
-            if isinstance(response, dict) and response.get("reasoning"):
-                assistant_msg["reasoning_content"] = response["reasoning"]
-            state["messages"].append(assistant_msg)
-            await self.state_store.put(session_id, state)
-
-            # 6. Guard tool params + pipeline + permissions + execute
-            valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
-                state, tool_calls, turn, session_id,
-            )
-            for evt in guard_events:
-                self._emit(evt["type"], evt["data"], session_id=session_id)
-
-            # Emit denied tool calls as errors and inject synthetic tool results
-            for tc in tool_calls:
-                name = tc.get("name", "")
-                matched = next((reason for dname, reason in denied_calls if dname == name), None)
-                if matched is None:
-                    continue
-                tc_id = tc.get("id", "")
-                self._emit("tool_call_end", {"tool_name": name, "turn": turn, "id": tc_id,
-                           "success": False, "error": f"Blocked: {matched}"},
-                           session_id=session_id)
-                state["messages"].append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": f"[Blocked] {matched}",
-                })
-                logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
-
-            # 7. Hooks + Transaction + execute
-            if self.hook_runner:
-                self._emit("hook_start", {"event": "pre_tool_exec", "turn": turn}, session_id=session_id)
-                results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
-                self._emit("hook_end", {"event": "pre_tool_exec", "turn": turn,
-                           "count": len(results), "passed": sum(1 for r in results if r.exit_code == 0),
-                           "failed": sum(1 for r in results if r.exit_code != 0)}, session_id=session_id)
-                self._inject_hook_messages(results, state)
-            for tc in valid_calls:
-                self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
-                           "id": tc.get("id", ""),
-                           "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
-                           session_id=session_id)
-            agent_mode = state.get("active_agent", "")
-            results = await self.tool_executor.execute(
-            valid_calls, agent_mode=agent_mode,
-            engine=self, state_store=self.state_store,
-        )
-            for tc in valid_calls:
-                r = results.get(tc.get("id", ""))
-                self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
-                          "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0,
-                          "result": str(r.data)[:500] if r and r.success and r.data else "",
-                          "error": str(r.error)[:500] if r and r.error else "",
-                          "rolled_back": r.rolled_back if r else False,
-                          "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
-                          session_id=session_id)
-            # Emit consolidated rollback event if any tool was rolled back
-            rolled_back = [
-                {"name": r.tool_name, "rollback_error": r.rollback_error}
-                for r in results.values() if r.rolled_back
-            ]
-            if rolled_back:
-                self._emit("rollback_executed", {
-                    "turn": turn,
-                    "rolled_back": rolled_back,
-                    "success": all(rb["rollback_error"] is None for rb in rolled_back),
-                }, session_id=session_id)
-
-            if self.hook_runner:
-                self._emit("hook_start", {"event": "post_tool_exec", "turn": turn}, session_id=session_id)
-                hook_results = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
-                self._emit("hook_end", {"event": "post_tool_exec", "turn": turn,
-                           "count": len(hook_results), "passed": sum(1 for r in hook_results if r.exit_code == 0),
-                           "failed": sum(1 for r in hook_results if r.exit_code != 0)}, session_id=session_id)
-                self._inject_hook_messages(hook_results, state)
-
-            # 8. Add results to messages (with tool output summarization)
-            for tc in valid_calls:
-                r = results.get(tc.get("id", ""))
-                if r:
-                    content = str(r.data) if r.success else f"Error: {r.error}"
-                    if r.rolled_back:
-                        rb_note = f" [rolled back: {r.rollback_error or 'ok'}]"
-                        content += rb_note
-                    if r.success and self.compaction and content:
-                        content = await self.compaction.summarize_tool_output(
-                            tc.get("name", "unknown"), content, turn
-                        )
-                    state["messages"].append({
-                        "role": "tool", "tool_call_id": tc["id"],
-                        "content": content,
-                    })
-            state["tool_results"] = {
-                k: {"success": v.success, "data": v.data, "error": v.error,
-                    "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
-                for k, v in results.items()
-            }
-
-            # --- Handoff detection (invoke) ---
-            if self._handoff_manager and self._handoff_manager.has_rules:
-                handoff_signal = self._handoff_manager.detect(state["tool_results"])
-                if handoff_signal:
-                    state = await self._execute_handoff(state, handoff_signal, model)
-                    if state.get("handoff_error"):
-                        # Replace last tool message content with error
-                        msgs = state["messages"]
-                        if msgs and msgs[-1].get("role") == "tool":
-                            msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
-                        del state["handoff_error"]
-                        await self.state_store.put(session_id, state)
+                # Build messages & call model
+                system_prompt = active["system_prompt"]
+                summary = state.get("context_summary", "")
+                if summary:
+                    if "{{MEMORY}}" in system_prompt:
+                        system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
                     else:
-                        # Handoff succeeded — sync strategy to new agent's max_turns
-                        self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                        system_prompt += f"\n\n## Memory\n{summary}"
+                msgs = [{"role": "system", "content": system_prompt}]
+                msgs.extend(state.get("messages", []))
+
+                if self.hook_runner:
+                    self._emit("hook_start", {"event": "pre_model_call", "turn": turn}, session_id=session_id)
+                    results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+                    self._emit("hook_end", {"event": "pre_model_call", "turn": turn,
+                               "count": len(results),
+                               "passed": sum(1 for r in results if r.exit_code == 0),
+                               "failed": sum(1 for r in results if r.exit_code != 0)},
+                               session_id=session_id)
+                    self._inject_hook_messages(results, state)
+
+                if not self._call_model:
+                    break
+
+                self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
+                response = None
+                try:
+                    response = await self._call_model(msgs, model, tools=tools)
+                except Exception as exc:
+                    fallback_model = self._resolve_fallback(model, exc)
+                    if fallback_model:
+                        self._emit("model_call_start", {"model": fallback_model, "turn": turn,
+                                   "fallback_from": model}, session_id=session_id)
+                        response = await self._call_model(msgs, fallback_model, tools=tools)
+                        model = fallback_model
+                        state["current_model"] = fallback_model
+                    else:
+                        raise
+                if isinstance(response, dict) and response.get("usage"):
+                    state["last_token_usage"] = response["usage"].get("total_tokens", 0)
+                self._emit("model_call_end", {"model": model, "turn": turn,
+                           "usage": response.get("usage", {}) if isinstance(response, dict) else {},
+                           "content": response.get("content", "") if isinstance(response, dict) else ""},
+                           session_id=session_id)
+
+                if self.hook_runner:
+                    self._emit("hook_start", {"event": "post_model_call", "turn": turn}, session_id=session_id)
+                    results = await self.hook_runner.fire("post_model_call", {"response": response})
+                    self._emit("hook_end", {"event": "post_model_call", "turn": turn,
+                               "count": len(results),
+                               "passed": sum(1 for r in results if r.exit_code == 0),
+                               "failed": sum(1 for r in results if r.exit_code != 0)},
+                               session_id=session_id)
+                    self._inject_hook_messages(results, state)
+
+                # Guard output
+                response_text = response if isinstance(response, str) else response.get("content", "")
+                if self.guard_runner and response_text:
+                    gr = await self.guard_runner.check_output(response_text, {})
+                    if not gr.allowed:
+                        if self.error_policy:
+                            ctx = TurnContext(session_id=session_id, agent_name=state.get("agent_name", ""),
+                                              turn=turn, current_model=state.get("current_model", ""),
+                                              available_models=[], last_user_message=self._last_user_message(state))
+                            action = self.error_policy.on_guardrail_block(gr, ctx)
+                            if action.action == "abort":
+                                break
+                    elif gr.modified_message:
+                        response_text = gr.modified_message
+
+                # Parse tool calls
+                tool_calls = self._pars_tool_calls(response)
+                if not tool_calls:
+                    state["messages"].append({"role": "assistant", "content": response_text})
+                    await self.state_store.put(session_id, state)
+                    break
+
+                # Append assistant message with tool_calls
+                assistant_tool_calls = [
+                    {"id": tc.get("id", ""), "type": "function",
+                     "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
+                    for tc in tool_calls
+                ]
+                assistant_msg = {"role": "assistant", "content": response_text, "tool_calls": assistant_tool_calls}
+                if isinstance(response, dict) and response.get("reasoning"):
+                    assistant_msg["reasoning_content"] = response["reasoning"]
+                state["messages"].append(assistant_msg)
+                await self.state_store.put(session_id, state)
+
+                # Carry parsed tool_calls to next phase
+                state["_pending_tool_calls"] = tool_calls
+
+            # ---- execute_tools ----
+            elif step == "execute_tools":
+                tool_calls = state.pop("_pending_tool_calls", [])
+                turn = state.get("current_turn", 0)
+                if not tool_calls:
                     continue
 
-            # 10. Checkpoint
-            await self.state_store.put(session_id, state)
+                # Guard tool params + pipeline + permissions
+                valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
+                    state, tool_calls, turn, session_id,
+                )
+                for evt in guard_events:
+                    self._emit(evt["type"], evt["data"], session_id=session_id)
 
-            if self.loop_strategy.should_break(state):
-                break
+                # Emit denied tool calls and inject synthetic tool results
+                for tc in tool_calls:
+                    name = tc.get("name", "")
+                    matched = next((reason for dname, reason in denied_calls if dname == name), None)
+                    if matched is None:
+                        continue
+                    tc_id = tc.get("id", "")
+                    self._emit("tool_call_end", {"tool_name": name, "turn": turn, "id": tc_id,
+                               "success": False, "error": f"Blocked: {matched}"},
+                               session_id=session_id)
+                    state["messages"].append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": f"[Blocked] {matched}",
+                    })
+                    logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
+
+                # Hooks + execute
+                if self.hook_runner:
+                    self._emit("hook_start", {"event": "pre_tool_exec", "turn": turn}, session_id=session_id)
+                    results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                    self._emit("hook_end", {"event": "pre_tool_exec", "turn": turn,
+                               "count": len(results), "passed": sum(1 for r in results if r.exit_code == 0),
+                               "failed": sum(1 for r in results if r.exit_code != 0)}, session_id=session_id)
+                    self._inject_hook_messages(results, state)
+                for tc in valid_calls:
+                    self._emit("tool_call_start", {"tool_name": tc.get("name", ""), "turn": turn,
+                               "id": tc.get("id", ""),
+                               "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
+                               session_id=session_id)
+                agent_mode = state.get("active_agent", "")
+                results = await self.tool_executor.execute(
+                valid_calls, agent_mode=agent_mode,
+                engine=self, state_store=self.state_store,
+            )
+                for tc in valid_calls:
+                    r = results.get(tc.get("id", ""))
+                    self._emit("tool_call_end", {"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
+                              "success": r.success if r else False, "duration_ms": r.duration_ms if r else 0,
+                              "result": str(r.data)[:500] if r and r.success and r.data else "",
+                              "error": str(r.error)[:500] if r and r.error else "",
+                              "rolled_back": r.rolled_back if r else False,
+                              "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
+                              session_id=session_id)
+                # Emit consolidated rollback event
+                rolled_back = [
+                    {"name": r.tool_name, "rollback_error": r.rollback_error}
+                    for r in results.values() if r.rolled_back
+                ]
+                if rolled_back:
+                    self._emit("rollback_executed", {
+                        "turn": turn,
+                        "rolled_back": rolled_back,
+                        "success": all(rb["rollback_error"] is None for rb in rolled_back),
+                    }, session_id=session_id)
+
+                if self.hook_runner:
+                    self._emit("hook_start", {"event": "post_tool_exec", "turn": turn}, session_id=session_id)
+                    hook_results = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                    self._emit("hook_end", {"event": "post_tool_exec", "turn": turn,
+                               "count": len(hook_results), "passed": sum(1 for r in hook_results if r.exit_code == 0),
+                               "failed": sum(1 for r in hook_results if r.exit_code != 0)}, session_id=session_id)
+                    self._inject_hook_messages(hook_results, state)
+
+                # Add results to messages (with tool output summarization)
+                for tc in valid_calls:
+                    r = results.get(tc.get("id", ""))
+                    if r:
+                        content = str(r.data) if r.success else f"Error: {r.error}"
+                        if r.rolled_back:
+                            content += f" [rolled back: {r.rollback_error or 'ok'}]"
+                        if r.success and self.compaction and content:
+                            content = await self.compaction.summarize_tool_output(
+                                tc.get("name", "unknown"), content, turn
+                            )
+                        state["messages"].append({
+                            "role": "tool", "tool_call_id": tc["id"],
+                            "content": content,
+                        })
+                state["tool_results"] = {
+                    k: {"success": v.success, "data": v.data, "error": v.error,
+                        "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
+                    for k, v in results.items()
+                }
+                # Ensure message sequence is valid before next_step re-evaluates
+                state = self._close_tool_calls(state)
+
+                # Handoff detection (invoke)
+                if self._handoff_manager and self._handoff_manager.has_rules:
+                    handoff_signal = self._handoff_manager.detect(state["tool_results"])
+                    if handoff_signal:
+                        state = await self._execute_handoff(state, handoff_signal, state["current_model"])
+                        if state.get("handoff_error"):
+                            msgs = state["messages"]
+                            if msgs and msgs[-1].get("role") == "tool":
+                                msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
+                            del state["handoff_error"]
+                            await self.state_store.put(session_id, state)
+                        else:
+                            self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                        continue
+
+                # Checkpoint
+                await self.state_store.put(session_id, state)
+
+                if self.loop_strategy.should_break(state):
+                    break
+
 
         if self.hook_runner:
             await self.hook_runner.fire("round_end", {
@@ -793,8 +810,8 @@ class GraphEngine:
 
     async def astream(self, state: AgentState):
         """Streaming execution — yields AgentEvent at each step of the loop.
-        Uses _stream_model for token-level streaming if available,
-        falls back to _call_model otherwise."""
+        Dispatch driven by loop_strategy.next_step() so control modes are
+        pluggable without changing the engine."""
         state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
@@ -807,291 +824,303 @@ class GraphEngine:
                                  data={"session_id": session_id, "reason": "cancelled"},
                                  session_id=session_id)
                 break
-            turn = state.get("current_turn", 0) + 1
-            state["current_turn"] = turn
 
-            user_msg = self._last_user_message(state)
-            yield self._make_event(type="user_input",
-                             data={"content": user_msg, "turn": turn},
-                             turn=turn, session_id=session_id)
+            step = self.loop_strategy.next_step(state)
 
-            if not self._call_model:
-                break
+            # Normalize: unknown/mock steps default to call_model
+            if step != "execute_tools" or not state.get("_pending_tool_calls"):
+                step = "call_model"
 
-            # Route to best model for this turn (before compaction — need model's window)
-            model = state["current_model"]
-            if self.model_router:
-                routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
-                model = routed or model  # fallback to current if route() returns empty
-                state["current_model"] = model
+            # ---- call_model ----
+            if step == "call_model":
+                turn = state.get("current_turn", 0) + 1
+                state["current_turn"] = turn
 
-            # Compaction — after routing (uses selected model's window), before model call
-            if self.compaction:
-                window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
-                if self.compaction.should_compact(state, window_size=window):
-                    yield self._make_event(type="compaction_start",
-                                     data={"turn": turn, "model": model, "msg_count": len(state.get("messages", []))},
+                user_msg = self._last_user_message(state)
+                yield self._make_event(type="user_input",
+                                 data={"content": user_msg, "turn": turn},
+                                 turn=turn, session_id=session_id)
+
+                if not self._call_model:
+                    break
+
+                # Route to best model for this turn
+                model = state["current_model"]
+                if self.model_router:
+                    routed = await self.model_router.route(self._last_user_message(state), state.get("messages", []))
+                    model = routed or model
+                    state["current_model"] = model
+
+                # Compaction
+                if self.compaction:
+                    window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                    if self.compaction.should_compact(state, window_size=window):
+                        yield self._make_event(type="compaction_start",
+                                         data={"turn": turn, "model": model, "msg_count": len(state.get("messages", []))},
+                                         turn=turn, session_id=session_id)
+                        state = await self.compaction.compact(state)
+                        yield self._make_event(type="compaction_end",
+                                         data={"turn": turn, "msg_count": len(state.get("messages", [])),
+                                               "summary_len": len(state.get("context_summary", ""))},
+                                         turn=turn, session_id=session_id)
+
+                # Get tool definitions
+                tools: list[dict] = []
+                if self.tool_resolver:
+                    active = self._active_config(state)
+                    self.loop_strategy.max_turns = active["max_turns"]
+                    tools = await self._resolve_tools_for_agent(state, active)
+
+                system_prompt = active["system_prompt"]
+                summary = state.get("context_summary", "")
+                if summary:
+                    if "{{MEMORY}}" in system_prompt:
+                        system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                    else:
+                        system_prompt += f"\n\n## Memory\n{summary}"
+                msgs = [{"role": "system", "content": system_prompt}]
+                msgs.extend(state.get("messages", []))
+
+                if self.hook_runner:
+                    yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
                                      turn=turn, session_id=session_id)
-                    state = await self.compaction.compact(state)
-                    yield self._make_event(type="compaction_end",
-                                     data={"turn": turn, "msg_count": len(state.get("messages", [])),
-                                           "summary_len": len(state.get("context_summary", ""))},
+                    h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+                    yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
+                                     "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                     "failed": sum(1 for r in h_results if r.exit_code != 0)},
                                      turn=turn, session_id=session_id)
+                    self._inject_hook_messages(h_results, state)
 
-            # Get tool definitions for this turn
-            tools: list[dict] = []
-            if self.tool_resolver:
-                active = self._active_config(state)
-                self.loop_strategy.max_turns = active["max_turns"]
-                tools = await self._resolve_tools_for_agent(state, active)
+                yield self._make_event(type="model_call_start",
+                                 data={"model": model, "turn": turn},
+                                 turn=turn, session_id=session_id)
 
-            system_prompt = active["system_prompt"]
-            summary = state.get("context_summary", "")
-            if summary:
-                if "{{MEMORY}}" in system_prompt:
-                    system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                if self._stream_model:
+                    full_text = ""
+                    full_reasoning = ""
+                    stream_usage: dict = {}
+                    stream_tool_calls: list[dict] = []
+                    try:
+                        async for chunk in self._stream_model(msgs, model, tools=tools):
+                            if chunk.get("type") == "chunk":
+                                full_text += chunk.get("content", "")
+                                reasoning = chunk.get("reasoning", "")
+                                if reasoning:
+                                    full_reasoning += reasoning
+                                yield self._make_event(type="thinking_delta",
+                                                 data={"content": chunk.get("content", ""),
+                                                       "reasoning": reasoning},
+                                                 turn=turn, session_id=session_id)
+                            elif chunk.get("type") == "tool_call":
+                                tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
+                                      "params": {}}
+                                try:
+                                    tc["params"] = json.loads(chunk.get("arguments", "{}"))
+                                except Exception:
+                                    tc["params"] = {"raw": chunk.get("arguments", "")}
+                                stream_tool_calls.append(tc)
+                            elif chunk.get("type") == "usage":
+                                stream_usage = {
+                                    "prompt_tokens": chunk.get("prompt_tokens", 0),
+                                    "completion_tokens": chunk.get("completion_tokens", 0),
+                                    "total_tokens": chunk.get("total_tokens", 0),
+                                }
+                            elif chunk.get("type") == "error":
+                                yield self._make_event(type="error",
+                                                 data={"code": chunk.get("code", 0),
+                                                       "detail": chunk.get("detail", "")},
+                                                 turn=turn, session_id=session_id)
+                                resp = {"content": "", "tool_calls": []}
+                                break
+                        else:
+                            resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
+                    except Exception as exc:
+                        fallback_model = self._resolve_fallback(model, exc)
+                        if fallback_model:
+                            yield self._make_event(type="model_call_start",
+                                             data={"model": fallback_model, "turn": turn,
+                                                   "fallback_from": model},
+                                             turn=turn, session_id=session_id)
+                            resp = await self._call_model(msgs, fallback_model, tools=tools)
+                            model = fallback_model
+                            state["current_model"] = fallback_model
+                        else:
+                            raise
                 else:
-                    system_prompt += f"\n\n## Memory\n{summary}"
-            msgs = [{"role": "system", "content": system_prompt}]
-            msgs.extend(state.get("messages", []))
-
-            if self.hook_runner:
-                yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
-                                 turn=turn, session_id=session_id)
-                h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
-                yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
-                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
-                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
-                                 turn=turn, session_id=session_id)
-                self._inject_hook_messages(h_results, state)
-
-            yield self._make_event(type="model_call_start",
-                             data={"model": model, "turn": turn},
-                             turn=turn, session_id=session_id)
-
-            if self._stream_model:
-                # Token-level streaming
-                full_text = ""
-                full_reasoning = ""
-                stream_usage: dict = {}
-                stream_tool_calls: list[dict] = []
-                try:
-                    async for chunk in self._stream_model(msgs, model, tools=tools):
-                        if chunk.get("type") == "chunk":
-                            full_text += chunk.get("content", "")
-                            reasoning = chunk.get("reasoning", "")
-                            if reasoning:
-                                full_reasoning += reasoning
-                            yield self._make_event(type="thinking_delta",
-                                             data={"content": chunk.get("content", ""),
-                                                   "reasoning": reasoning},
+                    try:
+                        resp = await self._call_model(msgs, model, tools=tools)
+                    except Exception as exc:
+                        fallback_model = self._resolve_fallback(model, exc)
+                        if fallback_model:
+                            yield self._make_event(type="model_call_start",
+                                             data={"model": fallback_model, "turn": turn,
+                                                   "fallback_from": model},
                                              turn=turn, session_id=session_id)
-                        elif chunk.get("type") == "tool_call":
-                            tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
-                                  "params": {}}
-                            try:
-                                tc["params"] = json.loads(chunk.get("arguments", "{}"))
-                            except Exception:
-                                tc["params"] = {"raw": chunk.get("arguments", "")}
-                            stream_tool_calls.append(tc)
-                        elif chunk.get("type") == "usage":
-                            stream_usage = {
-                                "prompt_tokens": chunk.get("prompt_tokens", 0),
-                                "completion_tokens": chunk.get("completion_tokens", 0),
-                                "total_tokens": chunk.get("total_tokens", 0),
-                            }
-                        elif chunk.get("type") == "error":
-                            yield self._make_event(type="error",
-                                             data={"code": chunk.get("code", 0),
-                                                   "detail": chunk.get("detail", "")},
-                                             turn=turn, session_id=session_id)
-                            resp = {"content": "", "tool_calls": []}
-                            break
-                    else:
-                        resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
-                except Exception as exc:
-                    # Streaming failed, try fallback with sync call
-                    fallback_model = self._resolve_fallback(model, exc)
-                    if fallback_model:
-                        yield self._make_event(type="model_call_start",
-                                         data={"model": fallback_model, "turn": turn,
-                                               "fallback_from": model},
-                                         turn=turn, session_id=session_id)
-                        resp = await self._call_model(msgs, fallback_model, tools=tools)
-                        model = fallback_model
-                        state["current_model"] = fallback_model
-                    else:
-                        raise
-            else:
-                # Sync fallback
-                try:
-                    resp = await self._call_model(msgs, model, tools=tools)
-                except Exception as exc:
-                    fallback_model = self._resolve_fallback(model, exc)
-                    if fallback_model:
-                        yield self._make_event(type="model_call_start",
-                                         data={"model": fallback_model, "turn": turn,
-                                               "fallback_from": model},
-                                         turn=turn, session_id=session_id)
-                        resp = await self._call_model(msgs, fallback_model, tools=tools)
-                        model = fallback_model
-                        state["current_model"] = fallback_model
-                    else:
-                        raise
-                stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
+                            resp = await self._call_model(msgs, fallback_model, tools=tools)
+                            model = fallback_model
+                            state["current_model"] = fallback_model
+                        else:
+                            raise
+                    stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
-            yield self._make_event(type="model_call_end",
-                             data={"model": model, "turn": turn,
-                                   "content": resp.get("content", ""),
-                                   "usage": stream_usage},
-                             turn=turn, session_id=session_id)
+                yield self._make_event(type="model_call_end",
+                                 data={"model": model, "turn": turn,
+                                       "content": resp.get("content", ""),
+                                       "usage": stream_usage},
+                                 turn=turn, session_id=session_id)
 
-            if self.hook_runner:
-                yield self._make_event(type="hook_start", data={"event": "post_model_call", "turn": turn},
-                                 turn=turn, session_id=session_id)
-                h_results = await self.hook_runner.fire("post_model_call", {"response": resp})
-                yield self._make_event(type="hook_end", data={"event": "post_model_call", "turn": turn,
-                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
-                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
-                                 turn=turn, session_id=session_id)
-                self._inject_hook_messages(h_results, state)
+                if self.hook_runner:
+                    yield self._make_event(type="hook_start", data={"event": "post_model_call", "turn": turn},
+                                     turn=turn, session_id=session_id)
+                    h_results = await self.hook_runner.fire("post_model_call", {"response": resp})
+                    yield self._make_event(type="hook_end", data={"event": "post_model_call", "turn": turn,
+                                     "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                     "failed": sum(1 for r in h_results if r.exit_code != 0)},
+                                     turn=turn, session_id=session_id)
+                    self._inject_hook_messages(h_results, state)
 
-            # Track token usage for next turn's compaction decision
-            if stream_usage and stream_usage.get("total_tokens", 0) > 0:
-                state["last_token_usage"] = stream_usage["total_tokens"]
+                if stream_usage and stream_usage.get("total_tokens", 0) > 0:
+                    state["last_token_usage"] = stream_usage["total_tokens"]
 
-            tool_calls = self._pars_tool_calls(resp)
-            if not tool_calls:
-                state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
-                await self.state_store.put(session_id, state)
-                break
-
-            # Append assistant message with tool_calls BEFORE executing tools
-            assistant_tool_calls = [
-                {"id": tc.get("id", ""), "type": "function",
-                 "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
-                for tc in tool_calls
-            ]
-            assistant_msg: dict = {"role": "assistant", "content": resp.get("content") or "", "tool_calls": assistant_tool_calls}
-            # DeepSeek requires reasoning_content to be passed back in thinking mode
-            if resp.get("reasoning"):
-                assistant_msg["reasoning_content"] = resp["reasoning"]
-            state["messages"].append(assistant_msg)
-            await self.state_store.put(session_id, state)
-
-            # Guard tool params + pipeline + permissions (streaming path)
-            valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
-                state, tool_calls, turn, session_id,
-            )
-            for evt in guard_events:
-                yield self._make_event(evt["type"], evt["data"], turn=turn, session_id=session_id)
-
-            for tc in tool_calls:
-                name = tc.get("name", "")
-                matched = next((reason for dname, reason in denied_calls if dname == name), None)
-                if matched is None:
-                    continue
-                tc_id = tc.get("id", "")
-                yield self._make_event(type="tool_call_end",
-                                 data={"tool_name": name, "turn": turn, "id": tc_id,
-                                       "success": False, "error": f"Blocked: {matched}"},
-                                 turn=turn, session_id=session_id)
-                state["messages"].append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": f"[Blocked] {matched}",
-                })
-                logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
-
-            if self.hook_runner:
-                yield self._make_event(type="hook_start", data={"event": "pre_tool_exec", "turn": turn},
-                                 turn=turn, session_id=session_id)
-                h_results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
-                yield self._make_event(type="hook_end", data={"event": "pre_tool_exec", "turn": turn,
-                                 "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
-                                 "failed": sum(1 for r in h_results if r.exit_code != 0)},
-                                 turn=turn, session_id=session_id)
-                self._inject_hook_messages(h_results, state)
-            for tc in valid_calls:
-                yield self._make_event(type="tool_call_start",
-                                 data={"tool_name": tc.get("name", ""), "turn": turn,
-                                       "id": tc.get("id", ""),
-                                       "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
-                                 turn=turn, session_id=session_id)
-            agent_mode = state.get("active_agent", "")
-            results = await self.tool_executor.execute(
-            valid_calls, agent_mode=agent_mode,
-            engine=self, state_store=self.state_store,
-        )
-            for tc in valid_calls:
-                r = results.get(tc.get("id", ""))
-                yield self._make_event(type="tool_call_end",
-                                 data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
-                                       "success": r.success if r else False,
-                                       "duration_ms": r.duration_ms if r else 0,
-                                       "result": str(r.data)[:500] if r and r.success and r.data else "",
-                                       "error": str(r.error)[:500] if r and r.error else "",
-                                       "rolled_back": r.rolled_back if r else False,
-                                       "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
-                                 turn=turn, session_id=session_id)
-                if r:
-                    content = str(r.data) if r.success else f"Error: {r.error}"
-                    if r.rolled_back:
-                        content += f" [rolled back: {r.rollback_error or 'ok'}]"
-                    if r.success and self.compaction and content:
-                        content = await self.compaction.summarize_tool_output(
-                            tc.get("name", "unknown"), content, turn
-                        )
-                    state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
-                                              "content": content})
-            # Emit consolidated rollback event if any tool was rolled back
-            rb_stream = [
-                {"name": r.tool_name, "rollback_error": r.rollback_error}
-                for r in results.values() if r.rolled_back
-            ]
-            if rb_stream:
-                yield self._make_event(type="rollback_executed",
-                                 data={"turn": turn, "rolled_back": rb_stream,
-                                       "success": all(rb["rollback_error"] is None for rb in rb_stream)},
-                                 turn=turn, session_id=session_id)
-            if self.hook_runner:
-                yield self._make_event(type="hook_start", data={"event": "post_tool_exec", "turn": turn},
-                                 turn=turn, session_id=session_id)
-                hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
-                yield self._make_event(type="hook_end", data={"event": "post_tool_exec", "turn": turn,
-                                 "count": len(hr), "passed": sum(1 for r in hr if r.exit_code == 0),
-                                 "failed": sum(1 for r in hr if r.exit_code != 0)},
-                                 turn=turn, session_id=session_id)
-                self._inject_hook_messages(hr, state)
-
-            state["tool_results"] = {
-                k: {"success": v.success, "data": v.data, "error": v.error,
-                    "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
-                for k, v in results.items()
-            }
-
-            # --- Handoff detection (astream) ---
-            if self._handoff_manager and self._handoff_manager.has_rules:
-                handoff_signal = self._handoff_manager.detect(state["tool_results"])
-                if handoff_signal:
-                    state = await self._execute_handoff(state, handoff_signal, model)
-                    if state.get("handoff_error"):
-                        msgs = state["messages"]
-                        if msgs and msgs[-1].get("role") == "tool":
-                            msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
-                        del state["handoff_error"]
-                        yield self._make_event(type="error",
-                                         data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
-                                         turn=turn, session_id=session_id)
-                    else:
-                        self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                tool_calls = self._pars_tool_calls(resp)
+                if not tool_calls:
+                    state["messages"].append({"role": "assistant", "content": resp.get("content", "")})
                     await self.state_store.put(session_id, state)
+                    break
+
+                # Append assistant message with tool_calls
+                assistant_tool_calls = [
+                    {"id": tc.get("id", ""), "type": "function",
+                     "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
+                    for tc in tool_calls
+                ]
+                assistant_msg: dict = {"role": "assistant", "content": resp.get("content") or "", "tool_calls": assistant_tool_calls}
+                if resp.get("reasoning"):
+                    assistant_msg["reasoning_content"] = resp["reasoning"]
+                state["messages"].append(assistant_msg)
+                await self.state_store.put(session_id, state)
+
+                state["_pending_tool_calls"] = tool_calls
+
+            # ---- execute_tools ----
+            elif step == "execute_tools":
+                tool_calls = state.pop("_pending_tool_calls", [])
+                turn = state.get("current_turn", 0)
+                if not tool_calls:
                     continue
 
-            await self.state_store.put(session_id, state)
+                valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(
+                    state, tool_calls, turn, session_id,
+                )
+                for evt in guard_events:
+                    yield self._make_event(evt["type"], evt["data"], turn=turn, session_id=session_id)
 
-            if self.loop_strategy.should_break(state):
-                break
+                for tc in tool_calls:
+                    name = tc.get("name", "")
+                    matched = next((reason for dname, reason in denied_calls if dname == name), None)
+                    if matched is None:
+                        continue
+                    tc_id = tc.get("id", "")
+                    yield self._make_event(type="tool_call_end",
+                                     data={"tool_name": name, "turn": turn, "id": tc_id,
+                                           "success": False, "error": f"Blocked: {matched}"},
+                                     turn=turn, session_id=session_id)
+                    state["messages"].append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": f"[Blocked] {matched}",
+                    })
+                    logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
+
+                if self.hook_runner:
+                    yield self._make_event(type="hook_start", data={"event": "pre_tool_exec", "turn": turn},
+                                     turn=turn, session_id=session_id)
+                    h_results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
+                    yield self._make_event(type="hook_end", data={"event": "pre_tool_exec", "turn": turn,
+                                     "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
+                                     "failed": sum(1 for r in h_results if r.exit_code != 0)},
+                                     turn=turn, session_id=session_id)
+                    self._inject_hook_messages(h_results, state)
+                for tc in valid_calls:
+                    yield self._make_event(type="tool_call_start",
+                                     data={"tool_name": tc.get("name", ""), "turn": turn,
+                                           "id": tc.get("id", ""),
+                                           "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
+                                     turn=turn, session_id=session_id)
+                agent_mode = state.get("active_agent", "")
+                results = await self.tool_executor.execute(
+                valid_calls, agent_mode=agent_mode,
+                engine=self, state_store=self.state_store,
+            )
+                for tc in valid_calls:
+                    r = results.get(tc.get("id", ""))
+                    yield self._make_event(type="tool_call_end",
+                                     data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
+                                           "success": r.success if r else False,
+                                           "duration_ms": r.duration_ms if r else 0,
+                                           "result": str(r.data)[:500] if r and r.success and r.data else "",
+                                           "error": str(r.error)[:500] if r and r.error else "",
+                                           "rolled_back": r.rolled_back if r else False,
+                                           "rollback_error": str(r.rollback_error)[:500] if r and r.rollback_error else ""},
+                                     turn=turn, session_id=session_id)
+                    if r:
+                        content = str(r.data) if r.success else f"Error: {r.error}"
+                        if r.rolled_back:
+                            content += f" [rolled back: {r.rollback_error or 'ok'}]"
+                        if r.success and self.compaction and content:
+                            content = await self.compaction.summarize_tool_output(
+                                tc.get("name", "unknown"), content, turn
+                            )
+                        state["messages"].append({"role": "tool", "tool_call_id": tc["id"],
+                                                  "content": content})
+                rb_stream = [
+                    {"name": r.tool_name, "rollback_error": r.rollback_error}
+                    for r in results.values() if r.rolled_back
+                ]
+                if rb_stream:
+                    yield self._make_event(type="rollback_executed",
+                                     data={"turn": turn, "rolled_back": rb_stream,
+                                           "success": all(rb["rollback_error"] is None for rb in rb_stream)},
+                                     turn=turn, session_id=session_id)
+                if self.hook_runner:
+                    yield self._make_event(type="hook_start", data={"event": "post_tool_exec", "turn": turn},
+                                     turn=turn, session_id=session_id)
+                    hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
+                    yield self._make_event(type="hook_end", data={"event": "post_tool_exec", "turn": turn,
+                                     "count": len(hr), "passed": sum(1 for r in hr if r.exit_code == 0),
+                                     "failed": sum(1 for r in hr if r.exit_code != 0)},
+                                     turn=turn, session_id=session_id)
+                    self._inject_hook_messages(hr, state)
+
+                state["tool_results"] = {
+                    k: {"success": v.success, "data": v.data, "error": v.error,
+                        "rolled_back": v.rolled_back, "rollback_error": v.rollback_error}
+                    for k, v in results.items()
+                }
+                state = self._close_tool_calls(state)
+
+                if self._handoff_manager and self._handoff_manager.has_rules:
+                    handoff_signal = self._handoff_manager.detect(state["tool_results"])
+                    if handoff_signal:
+                        state = await self._execute_handoff(state, handoff_signal, state["current_model"])
+                        if state.get("handoff_error"):
+                            msgs = state["messages"]
+                            if msgs and msgs[-1].get("role") == "tool":
+                                msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
+                            del state["handoff_error"]
+                            yield self._make_event(type="error",
+                                             data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
+                                             turn=turn, session_id=session_id)
+                        else:
+                            self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                        await self.state_store.put(session_id, state)
+                        continue
+
+                await self.state_store.put(session_id, state)
+
+                if self.loop_strategy.should_break(state):
+                    break
+
 
         if self.hook_runner:
             await self.hook_runner.fire("round_end", {

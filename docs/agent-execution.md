@@ -93,43 +93,36 @@ GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
 │
 ├─ _close_tool_calls(state)                            # 保证消息序列完整性
 │
-├─ while LoopStrategy.should_continue(state):          # current_turn < max_turns
+├─ while LoopStrategy.should_continue(state):          # 入口门
 │   │
-│   ├─ turn = current_turn + 1                         # turn 从 0 起步
-│   ├─ [取消检查] _cancelled()                           # 非阻塞检测 asyncio.Event
-│   ├─ [EventBus] "user_input"
+│   ├─ step = LoopStrategy.next_step(state)            # 策略驱动分派
+│   │   │                                             # ReAct: "call_model" / "execute_tools"
 │   │
-│   ├─ [模型路由] ModelRouter.route()                   # 可选，快/慢模型选择
-│   ├─ [压缩判断] Compaction.should_compact()            # 可选，token 窗口感知
-│   │
-│   ├─ [Hook] pre_model_call                            # 注入消息到 state
-│   ├─ [模型调用] _call_model / _stream_model           # 含 fallback chain
-│   ├─ [Hook] post_model_call
-│   │
-│   ├─ [输出检查] GuardRunner.check_output()            # 输出 guard + 修改
-│   │
-│   ├─ [工具解析] _pars_tool_calls()
-│   │   ├─ 无 tool_calls → state_store.put() → break    # 纯文本响应，写检查点退出
-│   │   └─ 有 tool_calls → 继续
-│   │
-│   ├─ [检查点] state_store.put()                        # 持久化 assistant+tool_calls
-│   │                                                   # _close_tool_calls() 在下次入口修复孤儿调用
-│   │
-│   ├─ [工具守卫] _step_classify_tool_calls()            # Pipeline + Path + Permission + Approval
+│   │   ├─── call_model ───────────────────────────────────
+│   │   │
+│   │   ├─ turn = current_turn + 1                     # turn 从 0 起步
+│   │   ├─ [取消检查] / [EventBus] "user_input"
+│   │   ├─ [模型路由] / [压缩判断] / [Hook] pre_model_call
+│   │   ├─ [模型调用] _call_model / _stream_model       # 含 fallback chain
+│   │   ├─ [Hook] post_model_call / [输出检查]
+│   │   ├─ [工具解析] _pars_tool_calls()
+│   │   │   ├─ 无 tool_calls → state_store.put() → break
+│   │   │   └─ 有 tool_calls → 持久化 assistant+tool_calls
+│   │   │                     暂存 _pending_tool_calls
+│   │   │
+│   │   ├─── execute_tools ────────────────────────────────
+│   │   │
+│   │   ├─ [工具守卫] _step_classify_tool_calls()
 │   │   ├─ 被拒工具 → 注入 "[Blocked]" tool 消息
-│   │   └─ 合法工具 → 继续
-│   │
-│   ├─ [Hook] pre_tool_exec
-│   ├─ [工具执行] ConcurrentToolExecutor.execute()      # parallel/sequential
-│   ├─ [工具输出摘要] Compaction.summarize_tool_output() # 可选，截断长输出
-│   ├─ [Hook] post_tool_exec
-│   │
-│   ├─ [Handoff 检测] HandoffManager.detect()            # 可选，扫描 tool_results
-│   │   └─ 触发 → _execute_handoff() → continue
-│   │
-│   ├─ [检查点] state_store.put()                        # 持久化完整结果（tool results 已追加）
-│   │
-│   └─ turn >= active["max_turns"] → break              # 每 round 断路器
+│   │   ├─ [Hook] pre_tool_exec
+│   │   ├─ [工具执行] ConcurrentToolExecutor.execute()
+│   │   ├─ [工具输出摘要] / [Hook] post_tool_exec
+│   │   ├─ _close_tool_calls(state)                     # 兜底：孤儿 tool_calls 注入合成结果
+│   │   ├─ [Handoff 检测] → _execute_handoff() → continue
+│   │   ├─ [检查点] state_store.put()
+│   │   └─ LoopStrategy.should_break(state)? → break
+│   │   │
+│   │   └─── 未知 step → 默认 fallback 到 call_model ────
 │
 ├─ [Hook] round_end                                     # GraphEngine 触发
 └─ [EventBus] "session_end"                             # GraphEngine emit 事件
@@ -146,9 +139,10 @@ Session 状态：  [INACTIVE] ──chat()──► [ACTIVE] ──stop()──�
 
 Round 流转：   begin_round() → [round_start hook] → Engine Loop → [round_end hook] → close_round()
 
-Turn 流转：    should_continue? → turn++ → route → compact → pre_model → model_call
-               → post_model → guard → parse tools → (text? break) → guard tools
-               → pre_tool → execute → post_tool → handoff? → checkpoint → (max_turns? break)
+Turn 流转：    should_continue? → next_step() → dispatch
+               call_model: turn++ → route → compact → pre_model → model_call
+               → post_model → guard → parse → (text? break) → save assistant+tool_calls
+               execute_tools: guard → execute → close_tool_calls → handoff? → checkpoint → should_break?
 ```
 
 ### 2.4 双模主循环：invoke / astream

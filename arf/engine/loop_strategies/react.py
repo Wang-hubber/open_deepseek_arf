@@ -3,8 +3,9 @@
 Both gates read self.max_turns, which the engine mutates from
 _active_config() so multi-agent scenarios use the correct per-agent limit.
 
-next_step() is reserved for plan_execute / multi-phase loop patterns;
-the current engine hardcodes the ReAct ordering and does not call it.
+next_step() drives the main loop dispatch. The engine calls it at the
+top of each iteration; different strategies return different step names
+so the framework can switch control modes without changing the engine.
 """
 from arf.core.protocols import LoopStrategy
 from arf.core.state import AgentState
@@ -27,13 +28,24 @@ class ReActStrategy:
         return state.get("current_turn", 0) >= self.max_turns
 
     def next_step(self, state: AgentState) -> str:
-        """Return the next phase: 'call_model' or 'execute_tools'.
+        """Return the next phase for the engine to execute.
 
-        Reserved for plan_execute / multi-phase loop patterns.
-        Not currently called by GraphEngine — the engine hardcodes
-        the ReAct ordering (model → tools → model).
+        ReAct cycle:
+          user message  → call_model   (think)
+          model returns tool_calls → execute_tools (act)
+          tool results  → call_model   (observe → think)
+          model returns text → call_model → parse → break (no dispatch needed)
+
+        PlanExecuteStrategy would return "plan" / "execute" / "replan".
         """
-        last = state["messages"][-1]
-        if last.get("role") == "tool":
+        msgs = state.get("messages", [])
+        if not msgs:
             return "call_model"
-        return "execute_tools"
+        last = msgs[-1]
+        role = last.get("role", "")
+        if role in ("user", "system"):
+            return "call_model"
+        if role == "assistant" and last.get("tool_calls"):
+            return "execute_tools"
+        # tool result → think
+        return "call_model"
