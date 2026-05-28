@@ -45,7 +45,8 @@ class ToolConfig(BaseModel):
 class HookDefinition(BaseModel):
     name: str
     type: Literal[
-        "session_start", "pre_tool_exec", "post_tool_exec",
+        "session_start", "round_start", "round_end",
+        "pre_tool_exec", "post_tool_exec",
         "pre_model_call", "post_model_call", "session_end",
     ]
     run: list[str]

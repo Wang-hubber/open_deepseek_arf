@@ -1,18 +1,20 @@
-"""PluginProvider — scan arf/plugins/{name}/ for tools/ and skills/."""
+"""PluginProvider — scan arf/plugins/{name}/ for tools/, skills/, and hooks/."""
+import json
 from pathlib import Path
 
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.resources.providers.skill_provider import SkillProvider
-from arf.core.config_base import ToolConfig, SkillConfig
+from arf.core.config_base import ToolConfig, SkillConfig, HookDefinition
 from arf.core.results import ToolResult
 
 
 class PluginProvider:
-    """Scans plugin directories for tools and skills.
+    """Scans plugin directories for tools, skills, and hooks.
 
     Each plugin is a subdirectory under plugins_dir with:
       tools/   — tool.yaml + function.py pairs (same structure as app tools)
       skills/  — *.yaml skill definitions (same structure as app skills)
+      hooks/   — *.py hook scripts (new — registered with plugin config)
     """
 
     def __init__(self, plugins_dir: str | Path, enabled: list[str] | None = None):
@@ -22,6 +24,7 @@ class PluginProvider:
         self._skill_providers: dict[str, SkillProvider] = {}
         self._scanned_tools: list[ToolConfig] = []
         self._scanned_skills: list[SkillConfig] = []
+        self._scanned_hooks: list[HookDefinition] = []
         self._loaded = False
 
     def _load(self) -> None:
@@ -30,6 +33,7 @@ class PluginProvider:
         self._skill_providers.clear()
         self._scanned_tools.clear()
         self._scanned_skills.clear()
+        self._scanned_hooks.clear()
 
         if not self._root.exists():
             return
@@ -52,6 +56,23 @@ class PluginProvider:
                 sp._load()
                 self._skill_providers[plugin_dir.name] = sp
 
+            hooks_dir = plugin_dir / "hooks"
+            if hooks_dir.exists() and hooks_dir.is_dir():
+                for hook_file in sorted(hooks_dir.iterdir()):
+                    if not hook_file.suffix == ".py":
+                        continue
+                    hook_name = f"{plugin_dir.name}__{hook_file.stem}"
+                    self._scanned_hooks.append(HookDefinition(
+                        name=hook_name,
+                        type=hook_file.stem,
+                        run=[f"python {hook_file}"],
+                        env={
+                            "ARF_PLUGIN_CONFIG": json.dumps(
+                                {"plugin_name": plugin_dir.name}
+                            ),
+                        },
+                    ))
+
         # Collect tools from all enabled plugin tool providers
         for tp in self._tool_providers.values():
             self._scanned_tools.extend(tp.list_kernel())
@@ -71,6 +92,12 @@ class PluginProvider:
         if not self._loaded:
             self._load()
         return list(self._scanned_skills)
+
+    def list_hooks(self) -> list[HookDefinition]:
+        """Return HookDefinitions for all scanned plugin hooks."""
+        if not self._loaded:
+            self._load()
+        return list(self._scanned_hooks)
 
     async def execute(self, name: str, params: dict) -> ToolResult | None:
         """Try to execute a plugin tool. Returns None if not found."""

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 
 def _build_engine(**overrides):
@@ -103,3 +104,73 @@ class TestRoundHooks:
         assert re_idx < se_idx, (
             f"round_end (idx={re_idx}) must fire before session_end (idx={se_idx})"
         )
+
+
+class TestPluginProviderHooks:
+    """PluginProvider hooks/ scanning."""
+
+    @pytest.fixture
+    def plugins_root(self, tmp_path):
+        """Create temp plugins dir with a memory plugin that has hooks/."""
+        root = tmp_path / "plugins"
+        root.mkdir()
+
+        # memory plugin with hooks
+        memory = root / "memory" / "hooks"
+        memory.mkdir(parents=True)
+        (memory / "round_end.py").write_text(
+            "import os, sys\nsys.exit(0)\n", encoding="utf-8"
+        )
+
+        # memory plugin also has tools/
+        mem_tool = root / "memory" / "tools" / "memory_extract"
+        mem_tool.mkdir(parents=True)
+        (mem_tool / "tool.yaml").write_text(yaml.dump({
+            "name": "memory_extract",
+            "description": "Extract memories",
+            "parameters": {"type": "object", "properties": {}},
+        }), encoding="utf-8")
+
+        return root
+
+    def test_scans_hooks_directory(self, plugins_root):
+        """PluginProvider scans hooks/ and generates HookDefinitions."""
+        from arf.resources.providers.plugin_provider import PluginProvider
+
+        provider = PluginProvider(plugins_root, enabled=["memory"])
+        hooks = provider.list_hooks()
+
+        assert len(hooks) >= 1, f"Expected at least 1 hook, got {len(hooks)}"
+        round_end_hooks = [h for h in hooks if h.type == "round_end"]
+        assert len(round_end_hooks) == 1
+        assert round_end_hooks[0].name == "memory__round_end"
+
+    def test_plugin_config_passed_as_env(self, plugins_root):
+        """Plugin config is serialized into hook env as ARF_PLUGIN_CONFIG."""
+        from arf.resources.providers.plugin_provider import PluginProvider
+
+        provider = PluginProvider(plugins_root, enabled=["memory"])
+        hooks = provider.list_hooks()
+
+        round_end_hook = [h for h in hooks if h.type == "round_end"][0]
+        assert round_end_hook.env is not None
+        assert "ARF_PLUGIN_CONFIG" in round_end_hook.env
+        config = json.loads(round_end_hook.env["ARF_PLUGIN_CONFIG"])
+        assert config["plugin_name"] == "memory"
+
+    def test_no_hooks_dir_no_error(self, plugins_root):
+        """Plugin without hooks/ directory should not error."""
+        from arf.resources.providers.plugin_provider import PluginProvider
+
+        # Add a plugin without hooks
+        other = plugins_root / "other" / "tools" / "other_tool"
+        other.mkdir(parents=True)
+        (other / "tool.yaml").write_text(yaml.dump({
+            "name": "other_tool",
+            "description": "test",
+            "parameters": {"type": "object", "properties": {}},
+        }), encoding="utf-8")
+
+        provider = PluginProvider(plugins_root, enabled=["other"])
+        hooks = provider.list_hooks()
+        assert hooks == []
