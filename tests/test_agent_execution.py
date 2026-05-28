@@ -922,7 +922,8 @@ class TestEngineCheckpointBehavior:
         )
 
     def test_checkpoint_saved_per_turn_with_tools(self):
-        """Each turn that calls tools saves a checkpoint."""
+        """Each turn has at least one checkpoint. Turns with tool calls have two:
+        one after append assistant+tool_calls (crash recovery), one after tool exec."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
         state_store = MagicMock()
@@ -959,7 +960,83 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        # 3 model calls, each produces a checkpoint
-        assert state_store.put.call_count == 3, (
-            f"Expected 3 checkpoints (one per turn), got {state_store.put.call_count}"
+        # Turns 1-2: 2 checkpoints each (before tool exec + after). Turn 3 text: 1.
+        assert state_store.put.call_count == 5, (
+            f"Expected 5 checkpoints (2 per tool turn + 1 text), got {state_store.put.call_count}"
         )
+
+    def test_invoke_saves_checkpoint_before_tool_exec(self):
+        """invoke() saves checkpoint after appending assistant+tool_calls,
+        before tool execution — matching astream behavior."""
+        from arf.engine.loop_strategies.react import ReActStrategy
+
+        put_states = []
+
+        async def capture_put(sid, state):
+            put_states.append((sid, list(state.get("messages", []))))
+
+        state_store = MagicMock()
+        state_store.put = capture_put
+        tool_resolver = MagicMock()
+        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
+
+        async def call_model(msgs, model, tools=None):
+            return {
+                "content": "let me help",
+                "tool_calls": [{"id": "t1", "name": "mock", "params": {}}],
+                "usage": {},
+            }
+
+        engine = _build_engine(
+            loop_strategy=ReActStrategy(max_turns=50),
+            state_store=state_store,
+            tool_resolver=tool_resolver,
+        )
+        engine._call_model = call_model
+        engine.tool_executor.execute = AsyncMock(return_value={
+            "t1": type("R", (), {"success": True, "data": "result", "error": None,
+                                  "duration_ms": 10, "rolled_back": False, "rollback_error": None})(),
+        })
+
+        state = {
+            "session_id": "test", "agent_name": "test",
+            "messages": [{"role": "user", "content": "help"}],
+            "current_model": "test", "current_turn": 0,
+            "interaction_round": 0, "context_summary": "",
+            "tool_results": {}, "plan": None, "metadata": {},
+        }
+
+        asyncio.run(engine.invoke(state))
+        assert len(put_states) >= 1
+
+        # The first checkpoint should contain assistant with tool_calls
+        first_put = put_states[0][1]
+        last_assistant = first_put[-1]
+        assert last_assistant["role"] == "assistant"
+        assert "tool_calls" in last_assistant, (
+            "First checkpoint must persist assistant+tool_calls for crash recovery"
+        )
+
+    def test_invoke_and_astream_checkpoint_consistent(self):
+        """invoke and astream both save checkpoint after appending tool_calls,
+        before executing tools — no asymmetry."""
+        import inspect
+        from arf.engine.graph import GraphEngine
+
+        invoke_src = inspect.getsource(GraphEngine.invoke)
+        astream_src = inspect.getsource(GraphEngine.astream)
+
+        # Both must NOT have the old NOTE about skipping put
+        for name, src in [("invoke", invoke_src), ("astream", astream_src)]:
+            assert "do NOT state_store.put() here" not in src, (
+                f"Outdated NOTE should be removed from {name}()"
+            )
+
+        # Both paths have the pattern: append assistant_msg → put
+        for name, src in [("invoke", invoke_src), ("astream", astream_src)]:
+            lines = src.split("\n")
+            append_line = next(i for i, l in enumerate(lines) if 'append(assistant_msg)' in l)
+            put_found = any("state_store.put" in l for l in lines[append_line:append_line + 5])
+            assert put_found, (
+                f"{name}() must call state_store.put() after appending assistant_msg"
+            )

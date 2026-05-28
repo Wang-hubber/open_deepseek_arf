@@ -664,8 +664,7 @@ class GraphEngine:
             if isinstance(response, dict) and response.get("reasoning"):
                 assistant_msg["reasoning_content"] = response["reasoning"]
             state["messages"].append(assistant_msg)
-            # NOTE: do NOT state_store.put() here — tool results not yet appended.
-            # Saving incomplete tool_calls sequence causes 400 on next request.
+            await self.state_store.put(session_id, state)
 
             # 6. Guard tool params + pipeline + permissions + execute
             valid_calls, denied_calls, guard_events = await self._step_classify_tool_calls(

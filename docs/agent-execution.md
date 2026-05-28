@@ -112,6 +112,9 @@ GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
 │   │   ├─ 无 tool_calls → state_store.put() → break    # 纯文本响应，写检查点退出
 │   │   └─ 有 tool_calls → 继续
 │   │
+│   ├─ [检查点] state_store.put()                        # 持久化 assistant+tool_calls
+│   │                                                   # _close_tool_calls() 在下次入口修复孤儿调用
+│   │
 │   ├─ [工具守卫] _step_classify_tool_calls()            # Pipeline + Path + Permission + Approval
 │   │   ├─ 被拒工具 → 注入 "[Blocked]" tool 消息
 │   │   └─ 合法工具 → 继续
@@ -124,7 +127,7 @@ GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
 │   ├─ [Handoff 检测] HandoffManager.detect()            # 可选，扫描 tool_results
 │   │   └─ 触发 → _execute_handoff() → continue
 │   │
-│   ├─ [检查点] state_store.put()                        # FileStateStore 原子写入
+│   ├─ [检查点] state_store.put()                        # 持久化完整结果（tool results 已追加）
 │   │
 │   └─ turn >= active["max_turns"] → break              # 每 round 断路器
 │
@@ -167,8 +170,8 @@ Turn 流转：    should_continue? → turn++ → route → compact → pre_mode
 - `_resolve_fallback()`（模型降级链）
 
 **差异**：
-- 模型调用层：`astream` 使用 `_stream_model` 逐 token 产出 `thinking_delta` 事件；`invoke` 使用 `_call_model` 一次性获取
-- 检查点写入时机：`invoke` 在工具执行前**不写**检查点（`arf/engine/graph.py:667-668`，防止不完整的 tool_calls 序列被持久化）；`astream` 在工具执行前**写**检查点（`arf/engine/graph.py:976`，为长工具调用提供崩溃恢复）
+- 模型调用层：`astream` 使用 `_stream_model` 逐 token 产出 `thinking_delta` 事件；`invoke` 使用 `_call_model` 一次性获取。
+- 两条路径在检查点行为上已对齐：均在 appending assistant+tool_calls 后立即保存（崩溃恢复），工具执行+handoff 后再次保存。`_close_tool_calls()` 在下次入口处理孤儿 tool_calls。
 
 ### 2.5 循环策略
 
@@ -306,13 +309,7 @@ def _cancelled(self) -> bool:
 
 `GraphEngine.undo()`（`arf/engine/graph.py:103-121`）封装 RoundManager.undo，额外 emit `undo_executed` 事件（不删除 trace 事件，只标记回滚边界）。
 
-**检查点在引擎中的行为**：
-
-| 时刻 | invoke() | astream() |
-|------|----------|-----------|
-| 无 tool_calls（text-only） | 写入检查点 → break | 写入检查点 → break |
-| 有 tool_calls，执行前 | **不写入**（防止不完整序列） | **写入**（为长工具调用提供崩溃恢复） |
-| 工具执行 + handoff 后 | 写入检查点 | 写入检查点 |
+**检查点在引擎中的行为**：两条路径行为一致——每个 turn 至少一次检查点；有工具执行的 turn 两次（执行前 + 执行后）。'_close_tool_calls()' 在入口处保证消息序列完整性。
 
 ### 2.12 Hook 系统
 
