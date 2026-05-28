@@ -448,6 +448,9 @@ class BaseAgent:
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
 
+        # ---- Active session tracking ----
+        self._active_sessions: set[str] = set()
+
     def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
                                    model_provider, tools_dir, skills_dir, models_dir,
                                    watch_enabled: bool, override_protocols: dict[str, Any]):
@@ -654,24 +657,55 @@ class BaseAgent:
             asyncio.create_task(self._file_watcher.start())
 
     async def stop(self) -> None:
-        """Stop the FileWatcher (called on shutdown)."""
+        """Stop the FileWatcher and close all active sessions."""
         if self._file_watcher:
             await self._file_watcher.stop()
 
+        for sid in list(self._active_sessions):
+            try:
+                state = await self._state_store.get(sid)
+                if state:
+                    state["session_active"] = False
+                    await self._state_store.put(sid, state)
+                if self._engine.hook_runner:
+                    await self._engine.hook_runner.fire("session_end", {
+                        "session_id": sid,
+                        "reason": "shutdown",
+                    })
+            except Exception:
+                pass
+        self._active_sessions.clear()
+
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
-        # Load existing state to preserve conversation history
         existing = await self._state_store.get(session_id)
+
+        # Determine new session and crash recovery
+        if session_id in self._active_sessions:
+            # Already started, just continuing
+            is_new_session = False
+        elif existing and existing.get("session_active"):
+            # Found active state on disk but this agent hasn't tracked it — crash recovery
+            is_new_session = True
+            if self._engine.hook_runner:
+                await self._engine.hook_runner.fire("session_end", {
+                    "session_id": session_id,
+                    "reason": "recovery",
+                })
+        else:
+            # New session (no state, or state without active flag)
+            is_new_session = True
+
+        turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:
-            messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
-            turn = existing.get("current_turn", 0)
+            messages = existing["messages"] + [{"role": "user", "content": user_message}]
             summary = existing.get("context_summary", "")
             interaction = existing.get("interaction_round", 0) + 1
         else:
             messages = [{"role": "user", "content": user_message}]
-            turn = 0
             summary = ""
             interaction = 0
+
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
@@ -683,14 +717,23 @@ class BaseAgent:
             "tool_results": {},
             "plan": None,
             "metadata": {},
+            "session_active": True,
         }
-        # Begin round transaction (for undo)
+
         self._engine._rounds.begin_round(state)
+        self._active_sessions.add(session_id)
+
+        if is_new_session and self._engine.hook_runner:
+            await self._engine.hook_runner.fire("session_start", {
+                "session_id": session_id,
+            })
+
         if self._engine.hook_runner:
             await self._engine.hook_runner.fire("round_start", {
                 "session_id": session_id,
                 "round": interaction,
             })
+
         result = await self._engine.invoke(state)
         for m in reversed(result.get("messages", [])):
             if m.get("role") == "assistant":
@@ -700,16 +743,33 @@ class BaseAgent:
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
         existing = await self._state_store.get(session_id)
+
+        # Determine new session and crash recovery
+        if session_id in self._active_sessions:
+            # Already started, just continuing
+            is_new_session = False
+        elif existing and existing.get("session_active"):
+            # Found active state on disk but this agent hasn't tracked it — crash recovery
+            is_new_session = True
+            if self._engine.hook_runner:
+                await self._engine.hook_runner.fire("session_end", {
+                    "session_id": session_id,
+                    "reason": "recovery",
+                })
+        else:
+            # New session (no state, or state without active flag)
+            is_new_session = True
+
+        turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:
-            messages = existing.get("messages", []) + [{"role": "user", "content": user_message}]
-            turn = existing.get("current_turn", 0)
+            messages = existing["messages"] + [{"role": "user", "content": user_message}]
             summary = existing.get("context_summary", "")
             interaction = existing.get("interaction_round", 0) + 1
         else:
             messages = [{"role": "user", "content": user_message}]
-            turn = 0
             summary = ""
             interaction = 0
+
         state: AgentState = {
             "session_id": session_id,
             "agent_name": self.config.name,
@@ -721,14 +781,23 @@ class BaseAgent:
             "tool_results": {},
             "plan": None,
             "metadata": {},
+            "session_active": True,
         }
-        # Begin round transaction (for undo)
+
         self._engine._rounds.begin_round(state)
+        self._active_sessions.add(session_id)
+
+        if is_new_session and self._engine.hook_runner:
+            await self._engine.hook_runner.fire("session_start", {
+                "session_id": session_id,
+            })
+
         if self._engine.hook_runner:
             await self._engine.hook_runner.fire("round_start", {
                 "session_id": session_id,
                 "round": interaction,
             })
+
         async for event in self._engine.astream(state):
             yield event
 
