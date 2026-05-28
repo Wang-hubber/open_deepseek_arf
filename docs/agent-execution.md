@@ -1,58 +1,56 @@
-# Agent Execution — Lifecycle, Loop Control & Multi-Agent Orchestration
+# Agent Execution — Session / Round / Turn 生命周期
 
-ARF 将 OS 进程管理的三个核心机制——进程创建（fork/exec）、进程调度（scheduler）和 IPC（进程间通讯）——适配到 Agent 运行时。Agent 是进程，会话是地址空间，工具调用是系统调用，Handoff 是 IPC。
+ARF 将 OS 进程管理的三个核心机制——fork/exec（进程创建）、scheduler（调度）、IPC（进程间通讯）——适配到 Agent 运行时：Agent 是进程，Session 是地址空间，Tool Call 是系统调用，Handoff 是 IPC。
+
+本文档描述当前实现的全部行为。所有引用标注了源文件位置。
 
 ---
 
 ## 1. OS 方案演进
 
-> 本章描述 OS 如何处理进程生命周期与调度，作为 ARF 设计思路的参考。非严格技术对标。
+> 本章描述 OS 如何处理进程生命周期与调度，帮助理解 ARF 设计动机。非技术实现对标。
 
 ### 1.1 进程创建：fork + exec
 
-Unix 的进程创建分为两步：`fork()` 复制当前进程（包括文件描述符、地址空间、信号处理），`exec()` 用新程序镜像替换当前地址空间。这个分离设计的核心价值在于 **fork-exec 间隙**——子进程可以在 exec 之前修改环境（重定向 stdin/stdout、关闭文件描述符、设置资源限制），这些修改对新程序透明。
-
-Windows 的 `CreateProcess()` 则将创建和加载合并为一次系统调用，通过 `STARTUPINFO` 结构体传递环境修改。两种设计代表了配置注入的两种范式：继承+覆写 vs 显式传参。
+`fork()` 复制当前进程（文件描述符、地址空间、信号处理），`exec()` 用新程序镜像替换地址空间。核心价值在 **fork-exec 间隙**——子进程可在 exec 前修改环境（重定向 fd、设置 rlimit），修改对新程序透明。
 
 ### 1.2 进程调度
 
-**CFS（Completely Fair Scheduler）** — Linux 2.6.23 引入，替代 O(1) 调度器。核心数据结构是红黑树，key 为 `vruntime`（虚拟运行时间，实际运行时间按 nice 值加权）。每次调度选择 vruntime 最小的进程——保证 CPU 时间在公平意义上的均等分配。
+**CFS**（Linux 2.6.23）：红黑树，key 为 `vruntime`。每次调度选 vruntime 最小进程。时钟中断触发 `scheduler_tick()`，若当前进程 vruntime 超阈值则置 `TIF_NEED_RESCHED`，返回用户态前检查并调度。
 
-**抢占** — 时钟中断触发 scheduler_tick()，若当前进程的 vruntime 超过最小 vruntime + 阈值（通常 6ms），设置 `TIF_NEED_RESCHED` 标志。返回用户态前夕检查该标志，若置位则调用 schedule() 切换。
+**cgroup**：层级树组织进程，CPU 子系统按权重分配时间片——调度器的配置抽象层。
 
-**cgroup** — 控制组将进程组织为层级树，CPU 子系统按权重分配时间片。本质是对调度器的配置抽象——不改变调度算法，而是在其之上叠加配额管理。
+### 1.3 IPC
 
-### 1.3 IPC 与进程间通讯
+管道（pipe，字节流，亲缘进程）、信号（signal，异步，SIGKILL 不可捕获）、共享内存（mmap MAP_SHARED，最快但需同步）、消息队列（POSIX mq，优先级出队）。每种机制在延迟/吞吐/耦合上的取舍对应 ARF 中 Agent 间通讯的多种模式。
 
-Unix 提供多种 IPC 机制：管道（pipe，无名字节流，亲缘进程间传递）、信号（signal，异步通知，SIGKILL/SIGSTOP 不可捕获）、共享内存（mmap MAP_SHARED，最快但需同步）、消息队列（POSIX mq，按优先级出队）。每种机制的取舍——延迟 vs 吞吐 vs 耦合——直接对应 ARF 中 Agent 间通讯的多种模式。
+### 1.4 对 ARF 的映射
 
-### 1.4 对 ARF 的启发
-
-| OS 概念 | ARF 对应 |
-|---------|----------|
-| fork + exec 间隙 | `BaseAgent.__init__` DI 组装 — 创建引擎 → 注入全部协议实现 → 启动 |
-| CFS vruntime | `LoopStrategy` — 每 turn 判断是否继续，等价于调度器的 `should_continue` |
-| cgroup 配额 | `max_turns` — 会话断路器，防止失控循环消耗资源 |
-| 抢占标志 | `cancel_event` — 异步信号，在循环边界检测并响应 |
-| IPC 管道/信号/共享内存 | HandoffManager/AgentBus/PeerAgent/DictWorkspace |
+| OS 概念 | ARF 对应 | 实现位置 |
+|---------|----------|---------|
+| fork + exec 间隙 | `BaseAgent.__init__` DI 组装——创建引擎→注入全部 Protocol→启动 | `arf/agent/base.py` |
+| CFS vruntime | `LoopStrategy.should_continue()`——每 turn 判断是否继续 | `arf/engine/graph.py:549` |
+| cgroup 配额 | `max_turns`——每轮断路器 | `arf/engine/graph.py:780` |
+| 抢占标志 | `cancel_event` (asyncio.Event)——循环边界非阻塞检测 | `arf/engine/graph.py:144` |
+| IPC 管道/信号/共享内存 | HandoffManager / AgentBus / PeerAgent / DictWorkspace | `arf/engine/handoff.py` |
 
 ---
 
-## 2. ARF 当前实现
+## 2. 当前实现
 
-Agent 执行体系分为三层：**引擎层**（循环控制 + 工具编排）、**装配层**（DI 组装全部协议实现）、**多 Agent 层**（Handoff 切换 + 状态隔离）。
+Agent 执行体系分三层：**引擎层**（GraphEngine，循环控制 + 工具编排）、**装配层**（BaseAgent，DI 组装全部 Protocol）、**多 Agent 层**（HandoffManager，Agent 切换 + 状态隔离）。
 
 ### 2.1 执行边界：Session / Round / Turn
 
-ARF 将 Agent 执行周期分为三个嵌套层级，每层有独立的计数器、hook 事件和断路器：
+三个嵌套层级，各有独立的计数器、hook 事件和边界语义：
 
-| 层级 | 定义 | 生命周期 | Hook 事件 | 计数器 | 断路器 |
+| 层级 | 定义 | 创建位置 | Hook 事件 | 计数器 | 断路器 |
 |------|------|---------|-----------|--------|--------|
-| **Session** | 客户端的一次完整连接，可跨越多轮对话 | `BaseAgent.__init__` → `stop()` 或异常 kill | `session_start` / `session_end` | `session_id` (str) | — |
-| **Round** | 一次用户输入 → Agent 的完整响应（含 0~N 个 turn） | `BaseAgent.chat()` 调用边界 | `round_start` / `round_end` | `interaction_round` (int) | — |
-| **Turn** | 模型思考 → 工具执行 → 模型再思考 的一次循环迭代 | `while loop_strategy.should_continue()` 每次迭代 | —（`pre/post_model_call`、`pre/post_tool_exec` 为 turn 内子事件） | `current_turn` (int) | `max_turns` |
+| **Session** | 客户端一次完整连接，可跨多轮对话 | `BaseAgent.__init__`（首次 `chat()` 时激活） | `session_start`（BaseAgent 触发 hook + GraphEngine emit EventBus 事件）、`session_end`（`stop()` 或 crash recovery） | `session_id: str` | — |
+| **Round** | 一次 `chat()`/`astream()` 调用边界 | `BaseAgent.chat()` / `astream()` 入口 | `round_start`（BaseAgent 触发）、`round_end`（GraphEngine 循环退出后触发） | `interaction_round: int`（单调递增） | — |
+| **Turn** | 模型调用→工具执行→模型再调用的单次迭代 | `while loop_strategy.should_continue()` 体内 | `pre/post_model_call`、`pre/post_tool_exec`（turn 内子事件，GraphEngine 触发） | `current_turn: int`（每 round 复位） | `max_turns`（每 round 断路器） |
 
-**时序关系**：一个 Session 包含多个 Round，一个 Round 包含多个 Turn。正常情况下：
+**时序关系**：
 
 ```
 Session  ──────────────────────────────────────────────────────►
@@ -73,78 +71,108 @@ Session  ───────────────────────�
                                                    CLOSED
 ```
 
-**Crash recovery**：进程被 kill 后，state 中残留 `session_active = True`。下次 `chat()` 加载时检测到，自动补发 `session_end(recovery)` → 发射新 `session_start`。
+**Crash recovery**：`BaseAgent.chat()` 入口处检测（`arf/agent/base.py:684-698`）：
+
+1. `session_id` 已在 `_active_sessions` → 续用已有 session，不触发任何 session 级 hook
+2. `session_id` 不在 `_active_sessions` 但磁盘 state 中 `session_active == True` → 进程被 kill，触发 `session_end(reason="recovery")` hook，然后作为新 session 触发 `session_start`
+3. 磁盘无 state 或 `session_active` 不存在 → 全新 session，触发 `session_start`
 
 ### 2.2 执行流程
 
 ```
-╔══════════════════ SESSION: 会话首次激活 ═══════════════════
-║
-║  BaseAgent.__init__()
-║      │  加载 memory/memory.md → 注入 {{MEMORY}}
-║      │  装配全部 Protocol → 构造 GraphEngine
-║
-║  ═══════════ ROUND: 用户交互轮次（每次 chat() 为一边界）═════
-║
-║  BaseAgent.chat()
-║      │  state_store.get(session_id)
-║      │  crash recovery? → [Hook] session_end(recovery)
-║      │  new/restored?   → [Hook] session_start
-║      │  begin_round(检查点)
-║      ├─ [Hook] round_start ────────────────── Round 开始
-║      │
-║      ▼
-║  GraphEngine.invoke() / astream()
-║      │
-║      ├─ while LoopStrategy.should_continue(state):
-║      │   │  ╔══ TURN: 模型循环迭代 ══╗
-║      │   │  │                         │
-║      │   ├──│ [取消检查] _cancelled()  │
-║      │   ├──│ [模型路由] ModelRouter   │
-║      │   ├──│ [压缩判断] Compaction    │
-║      │   ├──│ [Hook] pre_model_call    │
-║      │   ├──│ [模型调用] _call_model   │
-║      │   ├──│ [Hook] post_model_call   │
-║      │   ├──│ [输出检查] GuardRunner   │
-║      │   ├──│ [工具解析]               │
-║      │   │  │   ├─ 无 → break          │
-║      │   │  │   └─ 有 → 继续           │
-║      │   ├──│ [工具守卫] Guard+Pipeline │
-║      │   ├──│ [Hook] pre_tool_exec     │
-║      │   ├──│ [工具执行] ToolExecutor  │
-║      │   ├──│ [Hook] post_tool_exec    │
-║      │   ├──│ [Handoff] HandoffManager │
-║      │   └──│ [检查点] StateStore      │
-║      │   │  ╚══════════════════════════╝
-║      │   └─ turn >= max_turns → break
-║      │
-║      └─ [Hook] round_end ──────────────────── Round 结束
-║
-║  ══════════════════════════ [重复] ══════════════════════════
-║
-║  BaseAgent.stop()
-║      └─ [Hook] session_end(shutdown)
-║         state["session_active"] = False
-║
-╚════════════════════════════════════════════════════════════
+BaseAgent.chat() / astream()                      arf/agent/base.py:679
+│
+├─ state_store.get(session_id)                         # 加载或判定新 session
+├─ crash recovery 判定 → [Hook] session_end(recovery)  # 仅在恢复场景
+├─ new session? → [Hook] session_start                 # BaseAgent 触发 hook
+├─ begin_round(检查点深拷贝)                             # RoundManager
+├─ [Hook] round_start                                  # BaseAgent 触发
+│
+▼
+GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
+│
+├─ _close_tool_calls(state)                            # 保证消息序列完整性
+│
+├─ while LoopStrategy.should_continue(state):          # current_turn < max_turns
+│   │
+│   ├─ turn = current_turn + 1                         # turn 从 0 起步
+│   ├─ [取消检查] _cancelled()                           # 非阻塞检测 asyncio.Event
+│   ├─ [EventBus] "user_input"
+│   │
+│   ├─ [模型路由] ModelRouter.route()                   # 可选，快/慢模型选择
+│   ├─ [压缩判断] Compaction.should_compact()            # 可选，token 窗口感知
+│   │
+│   ├─ [Hook] pre_model_call                            # 注入消息到 state
+│   ├─ [模型调用] _call_model / _stream_model           # 含 fallback chain
+│   ├─ [Hook] post_model_call
+│   │
+│   ├─ [输出检查] GuardRunner.check_output()            # 输出 guard + 修改
+│   │
+│   ├─ [工具解析] _pars_tool_calls()
+│   │   ├─ 无 tool_calls → state_store.put() → break    # 纯文本响应，写检查点退出
+│   │   └─ 有 tool_calls → 继续
+│   │
+│   ├─ [工具守卫] _step_classify_tool_calls()            # Pipeline + Path + Permission + Approval
+│   │   ├─ 被拒工具 → 注入 "[Blocked]" tool 消息
+│   │   └─ 合法工具 → 继续
+│   │
+│   ├─ [Hook] pre_tool_exec
+│   ├─ [工具执行] ConcurrentToolExecutor.execute()      # parallel/sequential
+│   ├─ [工具输出摘要] Compaction.summarize_tool_output() # 可选，截断长输出
+│   ├─ [Hook] post_tool_exec
+│   │
+│   ├─ [Handoff 检测] HandoffManager.detect()            # 可选，扫描 tool_results
+│   │   └─ 触发 → _execute_handoff() → continue
+│   │
+│   ├─ [检查点] state_store.put()                        # FileStateStore 原子写入
+│   │
+│   └─ turn >= active["max_turns"] → break              # 每 round 断路器
+│
+├─ [Hook] round_end                                     # GraphEngine 触发
+└─ [EventBus] "session_end"                             # GraphEngine emit 事件
 ```
 
-### 2.3 双模主循环：invoke / astream
+### 2.3 状态机：Session → Round → Turn
 
-`GraphEngine`（`arf/engine/graph.py`）提供两条执行路径，共享完全相同的 Agent Loop 逻辑：
+每个层级有明确的状态转移。当前 Turn 受三层约束：
 
-| 方法 | 返回方式 | 适用场景 |
-|------|---------|----------|
-| `invoke()` | 同步返回最终 `AgentState` | CLI 对话、评测回放、后台任务 |
-| `astream()` | `AsyncGenerator[AgentEvent]` | SSE 流式响应、实时 UI 更新 |
+```
+Session 状态：  [INACTIVE] ──chat()──► [ACTIVE] ──stop()──► [CLOSED]
+                     ▲                      │
+                     └── crash recovery ────┘ (session_end(recovery) → session_start)
 
-两条路径的唯一差异在模型调用层：`astream` 使用 `_stream_model` 产出 token 级 `thinking_delta` 事件，`invoke` 使用 `_call_model` 一次性获取完整响应。`ModelAdapter.chat_stream_full()` 统一产出 `chunk` / `tool_call` / `usage` / `error` 四种流事件，引擎负责组装。
+Round 流转：   begin_round() → [round_start hook] → Engine Loop → [round_end hook] → close_round()
 
-工具守卫流水线（Guard + Pipeline + Permissions + Approval）由共享方法 `_step_classify_tool_calls()` 实现，两条路径复用同一逻辑。同样共享的还有：`_close_tool_calls()`（消息序列完整性保证）、handoff 检测与执行、压缩判断。
+Turn 流转：    should_continue? → turn++ → route → compact → pre_model → model_call
+               → post_model → guard → parse tools → (text? break) → guard tools
+               → pre_tool → execute → post_tool → handoff? → checkpoint → (max_turns? break)
+```
 
-### 2.4 循环策略
+### 2.4 双模主循环：invoke / astream
 
-`LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义循环的继续条件：
+`GraphEngine` 提供两条执行路径（`arf/engine/graph.py:543-1097`），共享同一个 Agent Loop 逻辑骨架：
+
+| 方法 | 返回 | 适用场景 |
+|------|------|---------|
+| `invoke()` | `AgentState`（同步返回） | CLI、评测回放、后台任务 |
+| `astream()` | `AsyncGenerator[AgentEvent]` | SSE 流式、实时 UI |
+
+**共享的核心方法**：
+- `_close_tool_calls()`（消息序列完整性保证，在进入循环前调用）
+- `_active_config()`（多 Agent 配置解析）
+- `_resolve_tools_for_agent()`（工具定义获取）
+- `_step_classify_tool_calls()`（Guard + Pipeline + Permission + Approval）
+- `_execute_handoff()` / `_restore_from_handoff()`
+- `_inject_hook_messages()`（退出码 2 消息注入）
+- `_resolve_fallback()`（模型降级链）
+
+**差异**：
+- 模型调用层：`astream` 使用 `_stream_model` 逐 token 产出 `thinking_delta` 事件；`invoke` 使用 `_call_model` 一次性获取
+- 检查点写入时机：`invoke` 在工具执行前**不写**检查点（`arf/engine/graph.py:667-668`，防止不完整的 tool_calls 序列被持久化）；`astream` 在工具执行前**写**检查点（`arf/engine/graph.py:976`，为长工具调用提供崩溃恢复）
+
+### 2.5 循环策略
+
+`LoopStrategy` 协议（`arf/core/protocols/engine.py:7-10`）：
 
 ```python
 class LoopStrategy(Protocol):
@@ -162,119 +190,185 @@ class ReActStrategy:
     def next_step(self, state: AgentState) -> str:
         last = state["messages"][-1]
         if last.get("role") == "tool":
-            return "call_model"      # 工具结果返回 → 模型继续思考
-        return "execute_tools"       # 模型产出了 tool_calls → 执行工具
+            return "call_model"
+        return "execute_tools"
 ```
 
-ReAct 模式：模型思考（产出 tool_calls 或最终回复）→ 工具执行（产出结果）→ 模型再思考。循环在以下条件终止：
+**注意**：`should_continue()` 中的 `self.max_turns` 是 ReActStrategy 构造时注入的值，但引擎在循环末尾的断路器检测（`arf/engine/graph.py:780`）使用的是 `active["max_turns"]`，来自 `_active_config()` 动态解析——多 Agent 场景下子 Agent 可有独立的 `max_turns`。两者使用同一个值（均从 `agent.yaml` 的 `advanced.max_turns` 传递），但路径不同。
 
-1. 模型返回纯文本（无 tool_calls）→ 用户得到最终回复
-2. `turn >= max_turns` → 会话断路器触发
-3. `cancel_event.is_set()` → 用户主动中断
+循环终止条件（三个独立路径）：
 
-### 2.5 取消机制
+1. 模型返回纯文本，`break`（正常完成）
+2. `turn >= active["max_turns"]`，`break`（断路器触发）
+3. `_cancelled()` 为 `True`，`break`（用户中断）
 
-`asyncio.Event` 作为取消信号，非阻塞检测：
+### 2.6 取消机制
+
+`asyncio.Event` 作为取消信号（`arf/engine/graph.py:144`）：
 
 ```python
 def _cancelled(self) -> bool:
     return self._cancel_event is not None and self._cancel_event.is_set()
 ```
 
-每次 while 循环迭代开始前检查。取消信号由 `POST /api/chat/cancel` 或 SSE 客户端断连触发，类似硬件中断在当前指令边界响应——当前 turn 的执行不会被中途打断，而是在循环边界安全退出。
+每次 `while` 循环迭代开始前检测。`cancel_event` 通过 `set_cancel_event()` 注入（支持延迟绑定）。取消在循环边界安全退出——当前 turn 的模型调用和工具执行不会被中途打断。
 
-### 2.6 会话断路器：max_turns
+### 2.7 会话断路器
 
-`max_turns` 是每轮交互的硬限制（`current_turn` 每 round 复位到 0），防止模型陷入"工具调用→失败→重试→失败"的失控循环。默认 50，在 `agent.yaml` 中配置：
+`max_turns` 是每轮的硬限制。默认 50（`GraphEngine.__init__: max_turns: int = 50`）。`current_turn` 每 round 在 `BaseAgent.chat()/astream()` 中复位到 0（`arf/agent/base.py:699/763`）。
 
-```yaml
-advanced:
-  max_turns: 50
-```
+多 Agent 场景：`_active_config()` 返回子 Agent 的 `max_turns`（通过 `cfg.effective_advanced().max_turns`），引擎在 turn 边界使用该值判定。子 Agent 的 turn 在 `_execute_handoff()` 中 reset 为 0（`arf/engine/graph.py:241`）。返回主 Agent 时，从 StateStore 恢复主 Agent 的消息历史（`_restore_from_handoff()`），turn 计数随之恢复。
 
-对多 Agent 场景，每个子 Agent 可有独立的 `max_turns`（通过 `AgentConfig.advanced.max_turns`），引擎在执行时使用 `_active_config(state)["max_turns"]` 动态获取当前活跃 Agent 的限制。子 Agent 的 turn 从 0 重新计数（`_execute_handoff()` 中 `state["current_turn"] = 0`），handoff 回主 Agent 后恢复主 Agent 的 turn 计数。
+### 2.8 工具执行
 
-### 2.7 工具执行
+`ConcurrentToolExecutor`（`arf/engine/tool_executor.py`）：
 
-`ConcurrentToolExecutor`（`arf/engine/tool_executor.py`）接收 `_step_classify_tool_calls` 过滤后的合法工具调用，按配置策略执行：
-
-| 策略 | 行为 |
+| 策略 | 实现 |
 |------|------|
-| `parallel` | 所有工具并发执行（`asyncio.gather`），适合无依赖的独立工具 |
-| `sequential` | 按顺序逐个执行，适合有数据依赖的工具链 |
+| `parallel` | `asyncio.gather` + `Semaphore(max_concurrency)` |
+| `sequential` | `for` 循环逐个 `await` |
 
-配置在 `agent.yaml` 中：
+工具 params 中自动注入 `_agent_mode`（当前 active_agent 名称）、`_engine`（GraphEngine 引用）、`_state_store`（StateStore 引用）。工具可通过这些引用访问引擎能力。
 
-```yaml
-advanced:
-  concurrency:
-    strategy: parallel      # parallel | sequential
-    max_concurrency: 5
-```
+工具执行结果（`ToolResult`）含 `success/data/error/duration_ms/rolled_back/rollback_error`。引擎在注入消息历史前，若配置了 compaction，会调用 `compaction.summarize_tool_output()` 截断超长输出。
 
-工具执行结果统一封装为 `ToolResult`（success/data/error/duration_ms），引擎将其注入消息历史并 emit trace 事件。
+`_step_classify_tool_calls()` 的工具守卫流水线（`arf/engine/graph.py:448-541`）：
+1. **Pipeline**：检查 `SkillPipeline.can_execute()`，确保工具依赖顺序
+2. **PathCheckToolGuard**：检查路径参数合法性（拒绝 `..` 穿越和绝对路径）
+3. **ToolPermissionChecker**：deny → ask → allow 三级判定
+4. **Approval**：`perm == "ask"` 且 `approval_enabled` 时，等待用户审批（60s 超时自动拒）
 
-### 2.8 BaseAgent — DI 装配
+被拒工具注入 `"[Blocked] reason"` 作为 tool 消息，引擎继续循环（不会因单个工具被拒而中止）。
 
-`BaseAgent`（`arf/agent/base.py`）负责将所有 Protocol 实现组装为可运行的 Agent。构造函数按固定顺序初始化 10 个子系统：
+### 2.9 BaseAgent 装配
 
-| 步骤 | 子系统 | 默认实现 | 可注入替代 |
-|------|--------|----------|-----------|
-| 1 | EventBus | `InMemoryEventBus` | `event_bus=` |
-| 2 | StateStore | `FileStateStore` | `state_store=` |
-| 3 | Resources | `ToolProvider` + `SkillProvider` + `ModelProvider` → `ResourceResolver` | `tool_resolver=` |
-| 4 | Memory | `FileMemoryStore` + `LLMMemoryWriter`/`LLMMemoryRetriever` | `memory_store/writer/retriever=` |
-| 5 | Compaction | `SlidingWindowCompactor` | `compaction=` |
-| 6 | Guardrails | `DefaultGuardRunner` | `guard_runner=` |
-| 7 | Error Policy | `DefaultErrorPolicy` | `error_policy=` |
-| 8 | Hooks | `SubprocessHookRunner` | `hook_runner=` |
-| 9 | Tool Executor | `ConcurrentToolExecutor` | `tool_executor=` |
-| 10 | Loop Strategy | `ReActStrategy` | `loop_strategy=` |
+`BaseAgent.__init__()`（`arf/agent/base.py:139-435`）按固定顺序初始化子系统：
 
-所有 Protocol 实现通过 `**override_protocols` 参数可替换，支持测试注入 InMemory* doubles 或生产环境替换自定义实现。
+| 步骤 | 子系统 | 默认实现 | Protocol |
+|------|--------|----------|----------|
+| 1 | EventBus | `InMemoryEventBus` | `EventBus` |
+| 2 | StateStore | `FileStateStore`（JSON 文件，原子写入） | `StateStore` |
+| 3 | Resources | `ToolProvider` + `SkillProvider` + `ModelProvider` → `ResourceResolver` | `ToolResolver` |
+| 4 | Memory | `FileMemoryStore`（writer/retriever 移至 plugins） | `MemoryStore` |
+| 5 | Compaction | `SlidingWindowCompactor`（token 感知窗口压缩，`threshold=0.75`） | `CompactionStrategy` |
+| 6 | Guardrails | `DefaultGuardRunner`（PathCheck + Permission + RegexOutput） | `GuardRunner` |
+| 7 | Error Policy | `DefaultErrorPolicy`（tool_retry=2, model_5xx=fallback） | `ErrorPolicy` |
+| 8 | Hooks | `SubprocessHookRunner`（子进程并行执行） | `HookRunner` |
+| 9 | Tool Executor | `ConcurrentToolExecutor`（parallel/sequential） | `ToolExecutor` |
+| 10 | Loop Strategy | `ReActStrategy`（max_turns=50） | `LoopStrategy` |
 
-`BaseAgent` 还负责：
-- **系统提示词构建**：`_build_system_prompt()` 按 pipeline 优先级（若配置）组装 prompt 分区，填充 `{{AGENT_NAME}}`、`{{INVENTORY}}` 等占位符
-- **模型适配器创建**：`_inject_model_calls()` 为每个模型配置创建 `ModelAdapter`，注入 `_call_model` / `_stream_model` 闭包，可选包裹 `ModelCallProtector`（rate limit + circuit breaker）
-- **子 Agent 创建**：遍历 `config.agents` 为每个子 Agent 创建独立的 system prompt 和模型适配器
-- **HandoffManager 创建**：从 `config.handover.rules` 构建 handoff 规则表
+额外装配：
+- **Planner**（可选）：协议已定义（`arf/core/protocols/engine.py:30-35`），但引擎侧尚未集成——`plan_execute` 循环策略未实现
+- **Sub-agents**：遍历 `config.agents`，为每个子 Agent 创建独立 system prompt 和 ModelAdapter
+- **HandoffManager**：从 `config.handover.rules` 构建规则表
+- **ModelAdapter**：`_inject_model_calls()` 为每个模型配置创建适配器，注入 `_call_model` / `_stream_model` 闭包；可选包裹 `ModelCallProtector`（rate limit + circuit breaker）
+- **ModelRouter**：`TwoTierRouter`（LLM 分类器或 static），在每 turn 选择模型
+- **UsageTracker**：监听 EventBus，累计 token 用量
 
-### 2.9 多 Agent Handoff
+所有 Protocol 通过 `**override_protocols` 可替换，支持测试注入 `InMemory*` doubles。
 
-`HandoffManager`（`arf/engine/handoff.py`）实现会话内的 Agent 切换：
+### 2.10 Handoff（多 Agent 切换）
 
-**检测**：每 turn 工具执行完毕后，`detect()` 扫描 `tool_results`，查找 `{"handoff": true}` 信号。支持多种返回格式：`ToolResult` 对象、嵌套 `{"data": {...}}` 字典、`FunctionBackend` 的 `{"result": {...}}` 包装。
+`HandoffManager`（`arf/engine/handoff.py`）实现会话内 Agent 切换。
 
-**切换流程**（`GraphEngine._execute_handoff()`）：
+**检测**（`detect()`）：扫描 `state["tool_results"]`，查找 `{"handoff": true}` 信号。支持格式：`ToolResult.data` 嵌套、`FunctionBackend` 的 `{"result": {...}}` 包装、扁平 dict。
+
+**Forward 流程**（`GraphEngine._execute_handoff()`，`arf/engine/graph.py:172-259`）：
 1. 保存当前 Agent 状态到 `StateStore`（key: `{session_id}/{from_agent}`）
-2. 通过 HandoffManager 解析目标 Agent（单规则直接匹配，多规则 LLM 选择）
-3. `RoundManager.record_handoff()` 记录切换（不创建新检查点）
-4. 加载目标 Agent 的持久化状态（存在则恢复，否则构建初始上下文）
-5. 构造目标上下文：截取最近 N 轮对话 + 可选的任务摘要（由 system model 生成）
-6. 重置 `current_turn = 0`，清除 `tool_results`，切换 `active_agent`
-7. Emit `agent_switch` trace 事件
+2. `HandoffManager.resolve()` 解析目标——单规则直接匹配，多规则 LLM 分类（fallback: 关键词匹配）
+3. `RoundManager.record_handoff()` 记录切换（不创建新 checkpoint）
+4. 加载目标 Agent 持久化状态（存在则恢复），否则 `HandoffManager.build_target_context()` 构建初始上下文
+5. 上下文构建：截取最近 N 轮对话（`raw_turns: 4`，过滤掉 tool_calls 和 tool 消息，只保留 user + 纯 assistant 消息）+ 可选 task_summary（system model 生成）
+6. 重置 `current_turn = 0`，清除 `tool_results`，设置 `active_agent`
+7. Emit `AgentEvent(type="agent_switch")` + log
 
-**返回流程**（`_restore_from_handoff()`）：子 Agent 产出 handoff 信号后，引擎提取子 Agent 最后一条 assistant 消息作为结果，替换主 Agent 的原始 handoff 工具结果，恢复主 Agent 的消息历史和 turn 计数。
+**Return 流程**（`_restore_from_handoff()`，`arf/engine/graph.py:261-309`）：
+1. 提取子 Agent 最后一条 assistant 消息作为结果
+2. 保存子 Agent 最终状态
+3. 从 StateStore 恢复主 Agent 消息历史
+4. 替换原始 handoff 工具结果（role: "tool"）为子 Agent 的响应文本
+5. 清除 `handoff_task` 字段，调用 `_close_tool_calls()` 保证消息完整性
 
-### 2.10 检查点与回滚
+### 2.11 检查点与回滚
 
-`RoundManager`（`arf/engine/round_manager.py`）维护滚动窗口的 `RoundTransaction`，每个 round 代表一次用户交互：
+**StateStore**（`arf/engine/checkpoint.py`）：
 
-- **begin_round()**：在 `BaseAgent.chat()/astream()` 入口调用，深拷贝对话状态 + 工作区文件快照
-- **record_handoff()**：记录 Agent 切换但不创建新检查点——一个 round 内无论多少次 handoff，undo 都回退整个 round
-- **undo(steps)**：恢复到目标 round 的检查点，文件和状态双回滚，emit `undo_executed` trace 事件
+- `FileStateStore`：写入 `<state_dir>/<session_id>.json`，原子写入（tmp 文件 + rename）。**`tool_results` 不持久化**——每次 `put()` 调用 `data.pop("tool_results", None)`，因为工具结果是瞬态的。
+- `InMemoryStateStore`：dict + deepcopy，用于测试。`snapshots` 列表记录每次 `put()` 调用。
 
-默认保留 3 个检查点（`max_undo_depth: 3`）。
+**RoundManager**（`arf/engine/round_manager.py`）：
 
-### 2.11 配置
+- `begin_round()`：深拷贝 AgentState + 快照 workspace 文件到 `memory/checkpoints/{round_num}/`
+- `record_handoff()`：记录切换不创建新 checkpoint——同一 round 内多次 handoff，undo 一次回退整个 round
+- `undo(steps)`：pop N 个 round，返回 oldest popped 的 state_snapshot，恢复 workspace 文件
+- 持久化：`rounds.json` 索引 + 每个 checkpoint 的 `state.json`。`_restore_from_disk()` 在 RoundManager 构造时重放，**支持跨进程重启后 undo**
+- `max_undo_depth`：默认 3，deque 自动淘汰最旧 round
+
+`GraphEngine.undo()`（`arf/engine/graph.py:103-121`）封装 RoundManager.undo，额外 emit `undo_executed` 事件（不删除 trace 事件，只标记回滚边界）。
+
+**检查点在引擎中的行为**：
+
+| 时刻 | invoke() | astream() |
+|------|----------|-----------|
+| 无 tool_calls（text-only） | 写入检查点 → break | 写入检查点 → break |
+| 有 tool_calls，执行前 | **不写入**（防止不完整序列） | **写入**（为长工具调用提供崩溃恢复） |
+| 工具执行 + handoff 后 | 写入检查点 | 写入检查点 |
+
+### 2.12 Hook 系统
+
+`SubprocessHookRunner`（`arf/hooks/runner.py`）执行生命周期钩子。8 种事件类型（`arf/core/config_base.py:47-54`）：
+
+| Hook 事件 | 触发位置 | Payload |
+|-----------|---------|---------|
+| `session_start` | `BaseAgent.chat()/astream()` | `{"session_id": ...}` |
+| `round_start` | `BaseAgent.chat()/astream()` | `{"session_id": ..., "round": ...}` |
+| `pre_model_call` | `GraphEngine.invoke()/astream()` | `{"messages": ...}` |
+| `post_model_call` | `GraphEngine.invoke()/astream()` | `{"response": ...}` |
+| `pre_tool_exec` | `GraphEngine.invoke()/astream()` | `{"tool_calls": ..., "turn": ...}` |
+| `post_tool_exec` | `GraphEngine.invoke()/astream()` | `{"tool_calls": ..., "results": ..., "turn": ...}` |
+| `round_end` | `GraphEngine.invoke()/astream()`（循环退出后） | `{"session_id": ..., "round": ...}` |
+| `session_end` | `BaseAgent.stop()` 或 crash recovery 路径 | `{"session_id": ..., "reason": ...}` |
+
+Hook 行为：
+- 同事件类型的 hook **并行执行**（`asyncio.gather`）
+- 超时杀死子进程，返回 `exit_code=-1`
+- 退出码 2 + stdout 内容 → `injected_message`，引擎调用 `_inject_hook_messages()` 将 `[Hook: name] msg` 作为 system 消息注入 state
+- 单 hook 失败不影响其他 hook
+- `set_order()` 控制同事件类型的执行顺序
+- Env var 模板：`$ARF_{CONTEXT_KEY}` 自动替换
+
+### 2.13 EventBus 事件目录
+
+引擎在执行过程中 emit 以下 `AgentEvent`（定义在 `arf/core/events.py`）：
+
+| 事件 | 含义 | Emit 时机 |
+|------|------|----------|
+| `session_start` | Session 进入循环（EventBus 层面） | invoke/astream 入口 |
+| `session_end` | Session 循环退出 | invoke/astream 出口 / cancel |
+| `user_input` | 本 turn 的用户消息 | 每 turn 开始 |
+| `model_call_start` | 模型调用开始 | 调用前（含 fallback_from 字段） |
+| `model_call_end` | 模型调用结束 | 调用后（含 usage/content） |
+| `thinking_delta` | 流式 token | astream 每个 chunk |
+| `tool_call_start` | 工具执行开始 | pre_tool_exec hook 后 |
+| `tool_call_end` | 工具执行完成 | 含 success/duration/result/rolled_back |
+| `compaction_start/end` | 压缩执行 | 压缩前后 |
+| `approval_required` | 需要用户审批 | 工具 perm=="ask" 时 |
+| `approval_resolved` | 审批完成 | approved/denied/timeout |
+| `agent_switch` | Agent 切换 | handoff 执行 |
+| `guard_block` | 工具被守卫阻止 | pipeline/path/permission/approval |
+| `guard_pass` | 工具通过守卫 | 所有检查通过 |
+| `hook_start/end` | Hook 执行 | 每个 hook 事件类型前后 |
+| `undo_executed` | Undo 完成 | `GraphEngine.undo()` |
+| `rollback_executed` | 工具回滚完成 | 工具执行后（如有回滚） |
+| `error` | 错误 | streaming 错误、handoff 失败 |
+| `rate_limited` | 限流触发 | `ModelCallProtector` |
+| `circuit_opened/half_open/closed` | 断路器状态转移 | `ModelCallProtector` |
+| `breaker_blocked` | 断路器拦截请求 | `ModelCallProtector` |
+
+### 2.14 配置
 
 ```yaml
-# agent.yaml
-agent:
-  name: main
-  role: 用户助理
-  task: 帮助用户完成日常任务
-
+# agent.yaml — Agent 执行相关字段
 models:
   - type: quick
     model: deepseek-v4-flash
@@ -284,11 +378,11 @@ models:
     context_window: 1000000
 
 advanced:
-  loop_strategy: react        # react | plan_execute
-  max_turns: 50               # 会话断路器
+  loop_strategy: react        # 仅 "react" 实现（plan_execute 未实现）
+  max_turns: 50               # 每轮断路器
   max_undo_depth: 3           # undo 检查点窗口大小
   concurrency:
-    strategy: parallel
+    strategy: parallel         # parallel | sequential
     max_concurrency: 5
 
 # 多 Agent 配置（可选）
@@ -296,9 +390,6 @@ agents:
   - name: sys_agent
     role: 系统工程师
     task: 资源创建、模型配置、工具/技能生成
-    routing:
-      strategy: static
-      default: deep
 
 handover:
   rules:
@@ -320,42 +411,37 @@ handover:
 
 ## 3. 演进方向
 
-### 3.1 多 Agent DAG 编排
+以下为已识别但**尚未实现**的方向。按优先级排列，部分已有协议定义或插件骨架但未集成到引擎主循环。
 
-当前的多 Agent 模式是链式的——主 Agent ↔ 子 Agent 的 request-response。复杂任务可能需要多个 Agent 并发执行不同子任务，最后汇总结果。
+### 3.1 plan-execute 循环策略
 
-参考 OS 的 `fork + waitpid` 模式：
-1. 主 Agent 分解任务后，同时 handoff 到多个子 Agent（fork）
-2. 子 Agent 并行执行各自子任务
-3. 主 Agent 收集所有子 Agent 结果（waitpid），合并后继续
+**状态**：`Planner` 协议已定义（`arf/core/protocols/engine.py:30-35`），`arf/plugins/planner/` 目录存在但只含 `skills/` 和 `tools/` 骨架，无 Python 代码。`PlanExecuteStrategy` 未实现，`agent.yaml` 中 `loop_strategy: plan_execute` 选项不存在。
 
 实现要点：
-- DAG 依赖声明：子任务间的依赖关系图（任务 B 依赖 A 的输出）
-- 并发调度：无依赖的子任务并发执行，有依赖的等待前驱完成
-- 结果合并策略：concatenate / vote / summarize 多种合并模式
+- Plan 阶段：system model 生成步骤化执行计划
+- Execute 阶段：按计划推进，每步检查偏离（divergence detection）
+- Replan 阈值：偏离超阈值时重新 plan
 
-### 3.2 暂停/恢复/检查点
+### 3.2 多 Agent DAG 编排
 
-当前取消是"终止型"的——一旦取消，Agent 循环退出且不可恢复。完整的暂停/恢复机制可以类比 SIGSTOP/SIGCONT：
+**状态**：未实现。当前 handoff 是链式的（主 Agent ↔ 子 Agent）。
 
-- **暂停**：在当前循环边界安全停止，完整序列化 engine 状态（包括 pending approvals、active pipelines、handoff 中间状态）
-- **恢复**：从序列化状态重建 engine 上下文，继续执行
-- **跨进程恢复**：状态可迁移到另一进程/机器，支持负载均衡和故障转移
+目标：主 Agent 分解任务后同时 handoff 到多个子 Agent（fork），子 Agent 并行执行，主 Agent 收集结果（waitpid），合并后继续。
 
-### 3.3 plan-execute 循环策略
+### 3.3 抢占式中断
 
-当前 `ReActStrategy` 是思考-行动-观察的单一循环，模型每步自行判断是否继续。对于需要多步规划的任务，可引入 plan-execute 模式：
+**状态**：未实现。当前取消在循环边界响应（`_cancelled()` 在 while 循环开始处检测）。若模型调用耗时长，用户需等待当前 turn 完成。
 
-- **Plan 阶段**：收到用户任务后，先用 system model 生成步骤化的执行计划
-- **Execute 阶段**：按计划顺序推进，每完成一步检查是否偏离计划（divergence detection）
-- **Replan 阈值**：偏离超过阈值时重新触发 plan 阶段，生成修正计划
+目标：收到取消信号后立即中止 HTTP 请求（`httpx` / `openai` 支持 `cancel()`），不等完整响应。
 
-`Planner` 协议已在 `arf/core/protocols/engine.py` 中定义，当前由 `arf/plugins/planner/` 插件提供框架级实现。引擎侧的 `LoopStrategy` 需新增 `PlanExecuteStrategy` 实现以支持此模式。
+### 3.4 暂停/恢复/检查点
 
-### 3.4 探索性方向
+**状态**：未实现。当前取消是"终止型"的——不可恢复。
 
-**抢占式中断**：当前取消在循环边界响应，若模型调用耗时较长（长推理），用户需等待当前 turn 完成。可引入 LLM 调用的流式中断——收到取消信号后立即中止 HTTP 请求，而非等待完整响应。
+目标：在当前循环边界安全停止，完整序列化 engine 状态（含 pending approvals、active pipelines、handoff 中间态），支持跨进程恢复。
 
-**会话迁移**：将完整的 Agent 会话状态（消息历史、记忆、检查点、usage 统计）打包为可迁移的归档，支持跨设备/跨用户迁移。类似 CRIU 的进程 checkpoint/restore。
+### 3.5 子 Agent 资源配额
 
-**子 Agent 资源配额**：类似 cgroup 的层级资源控制——每个子 Agent 有独立的 `max_turns`、token 预算、工具调用次数上限。父 Agent 的配额自动分配给子 Agent，子 Agent 超限时由父 Agent 决定是否追加配额。
+**状态**：未实现。当前子 Agent 仅支持独立的 `max_turns`。
+
+目标：类似 cgroup 层级资源控制——每个子 Agent 有独立的 token 预算、工具调用次数上限；父 Agent 配额自动分配给子 Agent，超限时父 Agent 决定是否追加。
