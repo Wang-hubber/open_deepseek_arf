@@ -290,7 +290,9 @@ class BaseAgent:
         ))
 
         # 6. Hooks
-        hooks_list = override_protocols.pop("hooks", config.hooks)
+        hooks_list = list(override_protocols.pop("hooks", list(config.hooks)))
+        if self._plugin_provider and self._plugin_provider.list_hooks():
+            hooks_list.extend(self._plugin_provider.list_hooks())
         hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list))
 
         # 7. Tool executor

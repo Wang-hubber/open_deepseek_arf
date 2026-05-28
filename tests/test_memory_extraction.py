@@ -174,3 +174,22 @@ class TestPluginProviderHooks:
         provider = PluginProvider(plugins_root, enabled=["other"])
         hooks = provider.list_hooks()
         assert hooks == []
+
+
+class TestMemoryConfig:
+    """Resident memory config fields."""
+
+    def test_default_resident_file(self):
+        from arf.core.config_base import MemoryConfig
+        cfg = MemoryConfig()
+        assert cfg.resident_file == "memory.md"
+
+    def test_default_max_size_kb(self):
+        from arf.core.config_base import MemoryConfig
+        cfg = MemoryConfig()
+        assert cfg.max_size_kb == 300
+
+    def test_override_max_size_kb(self):
+        from arf.core.config_base import MemoryConfig
+        cfg = MemoryConfig(max_size_kb=500)
+        assert cfg.max_size_kb == 500
