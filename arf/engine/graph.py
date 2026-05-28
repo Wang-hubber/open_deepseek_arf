@@ -545,8 +545,6 @@ class GraphEngine:
         session_id = state.get("session_id", "default")
         self._interaction_round = state.get("interaction_round", 0)
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
-        if self.hook_runner:
-            await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
             if self._cancelled():
@@ -787,8 +785,6 @@ class GraphEngine:
                 "session_id": session_id,
                 "round": self._interaction_round,
             })
-        if self.hook_runner:
-            await self.hook_runner.fire("session_end", {"session_id": session_id})
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
         return state
 
@@ -801,8 +797,6 @@ class GraphEngine:
         self._interaction_round = state.get("interaction_round", 0)
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
-        if self.hook_runner:
-            await self.hook_runner.fire("session_start", {"session_id": session_id})
 
         while self.loop_strategy.should_continue(state):
             if self._cancelled():
@@ -1098,7 +1092,5 @@ class GraphEngine:
                 "session_id": session_id,
                 "round": self._interaction_round,
             })
-        if self.hook_runner:
-            await self.hook_runner.fire("session_end", {"session_id": session_id})
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)
