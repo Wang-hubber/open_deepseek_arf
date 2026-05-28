@@ -1,0 +1,15 @@
+name: todo_mgmt
+description: Task list management — track and update progress on multi-step tasks
+prompt: |
+  # Task Management
+
+  Use the `todo` tool to track tasks:
+  - **Before starting** a task: `todo` with action="list" to see current items
+  - **After completing** a step: `todo` with action="check" to mark it done
+  - **When scope expands**: `todo` with action="add" to add new items
+  - **When plan is finished**: `todo` with action="clear" to clean up
+
+  Always keep the todo list honest — it reflects what was actually done, not just the plan.
+tools:
+  - todo
+activation: kernel

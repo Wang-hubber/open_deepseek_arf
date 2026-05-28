@@ -1,0 +1,20 @@
+name: todo
+description: Manage a structured task list. Use to track progress on multi-step plans.
+parameters:
+  type: object
+  properties:
+    action:
+      type: string
+      enum: [list, add, check, clear]
+      description: "list (show all), add (append items), check (mark done), clear (remove all)"
+    items:
+      type: array
+      items:
+        type: string
+      description: "Items to add (required for 'add' action)"
+  required:
+    - action
+execution:
+  sandbox: inherit
+  timeout: 10s
+activation: kernel

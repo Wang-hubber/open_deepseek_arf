@@ -1,0 +1,21 @@
+name: plan_execute
+description: Task planning and execution — decomposes goals into steps and tracks progress
+prompt: |
+  # Plan & Execute
+
+  When facing a multi-step task, use the `planner` tool first to decompose the goal.
+  Then execute each step in order, calling `todo` to mark items complete.
+
+  ## When to Plan
+  - User asks for something with multiple distinct sub-tasks
+  - You're unsure about the right approach
+  - The task involves creating/modifying multiple resources
+
+  ## After Planning
+  1. List the plan steps to the user for confirmation
+  2. Execute steps in order
+  3. Call `todo` to track progress
+tools:
+  - planner
+  - todo
+activation: kernel

@@ -1,0 +1,16 @@
+name: undo
+description: Roll back the conversation and files to a previous state
+prompt: |
+  # Undo
+
+  When the user asks to undo, redo, or go back:
+  1. Call `undo` with the appropriate number of steps
+  2. Report the result (messages restored, remaining checkpoints)
+  3. Continue the conversation from the restored state
+
+  ## Limitations
+  - Undo is irreversible — the rolled-back turns are lost
+  - Max undo depth is configured by `max_undo_depth` (default: 3)
+tools:
+  - undo
+activation: discoverable

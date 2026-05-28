@@ -1,0 +1,14 @@
+name: planner
+description: Decompose a complex task into an ordered sequence of actionable steps. Use before starting work on multi-step tasks.
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: The task to decompose into steps
+  required:
+    - task
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel
