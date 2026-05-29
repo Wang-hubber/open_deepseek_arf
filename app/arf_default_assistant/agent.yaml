@@ -58,63 +58,36 @@ system_prompt:
 
 tools:
   - name: file_reader
-    description: 读取文件内容或列出目录
-    parameters: {type: object, properties: {path: {type: string, description: 文件路径}, operation: {type: string, enum: [read, list], default: read}}, required: [path]}
     activation: kernel
 
   - name: file_writer
-    description: 写入文件（创建或覆盖）
-    parameters: {type: object, properties: {path: {type: string}, content: {type: string}}, required: [path, content]}
     activation: kernel
 
   - name: file_deleter
-    description: 软删除文件（重命名为 .deleted 后缀）
-    parameters: {type: object, properties: {path: {type: string}}, required: [path]}
     activation: kernel
 
   - name: file_download
-    description: 生成工作区文件的下载链接
-    parameters: {type: object, properties: {path: {type: string}}, required: [path]}
     activation: discoverable
 
   - name: web_search
-    description: 搜索互联网（DuckDuckGo）
-    parameters: {type: object, properties: {query: {type: string}}, required: [query]}
     activation: kernel
 
   - name: web_fetch
-    description: 获取网页内容（HTTP GET）
-    parameters: {type: object, properties: {url: {type: string}}, required: [url]}
     activation: kernel
 
   - name: python_exec
-    description: 执行 Python 代码片段
-    parameters: {type: object, properties: {code: {type: string}}, required: [code]}
     activation: discoverable
 
   - name: handoff_to_sys
-    description: 将资源创建/修改操作移交给 SysAgent
-    parameters: {type: object, properties: {task: {type: string, description: 任务描述}, context: {type: string, description: 任务上下文}}, required: [task]}
     activation: kernel
 
   - name: resource_loader
-    description: 动态加载/激活工具或技能
-    parameters: {type: object, properties: {name: {type: string}, type: {type: string, enum: [tool, skill]}}, required: [name, type]}
     activation: discoverable
 
   - name: resource_registrar
-    description: 查询已注册资源的配置状态和依赖关系
-    parameters: {type: object}
     activation: discoverable
 
-  - name: undo
-    description: 撤销最近的对话轮次（状态 + 文件双回滚）
-    parameters: {type: object, properties: {steps: {type: integer, default: 1}}}
-    activation: kernel
-
   - name: model_switch
-    description: 切换当前对话使用的模型
-    parameters: {type: object, properties: {model: {type: string}}, required: [model]}
     activation: discoverable
 
 hooks:
@@ -140,7 +113,6 @@ advanced:
         - undo
         - model_switch
         - handoff_to_sys
-        - text_to_upper
       ask:
         - file_writer
         - file_deleter
@@ -225,15 +197,7 @@ agents:
         activation: kernel
       - name: file_writer
         activation: kernel
-      - name: file_deleter
-        activation: kernel
       - name: resource_loader
-        activation: kernel
-      - name: resource_scaffold
-        activation: kernel
-      - name: resource_registrar
-        activation: kernel
-      - name: web_fetch
         activation: kernel
       - name: handoff_to_sys
         activation: kernel
@@ -246,10 +210,6 @@ agents:
       - name: tool_generator
         description: Generate complete tool implementations (tool.yaml + function.py)
         tools: [file_writer, resource_scaffold]
-        activation: discoverable
-      - name: skill_generator
-        description: Generate skill definitions (skill.yaml)
-        tools: [file_writer]
         activation: discoverable
       - name: validate_tool
         description: Validate tool completeness (schema + interface match)
