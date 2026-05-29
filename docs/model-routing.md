@@ -37,6 +37,13 @@ CPU 遇到分支指令时，**分支预测器**根据历史模式猜测方向，
 
 缓存层次启示了任务分级：不是所有请求都需要最强模型。big.LITTLE 启示了异构调度：后台任务跑专用廉价模型，用户任务按复杂度路由。分支预测启示了分类器：快速猜测任务复杂度并路由，猜错的代价（降级到廉价模型）远小于每次都上最强模型的浪费。
 
+**OS → ARF 概念映射**：
+
+| OS 概念 | ARF 映射 | 说明 |
+|---------|----------|------|
+| L1/L2/L3 Cache | KV Cache | OS 权衡时间成本（~1ns vs ~100ns），Agent 权衡推理成本 |
+| big.LITTLE (HMP) | quick/deep 双模型 + TwoTierRouter | 动态调度，按任务复杂度分配计算资源 |
+
 ---
 
 ## 2. ARF 当前实现
@@ -59,7 +66,7 @@ TwoTierRouter.classify(query)
     └─ complex → deep   (deepseek-v4-pro)
                    多步推理、代码生成、规划任务
 
-框架后台任务（记忆抽取/检索、上下文压缩、任务分类）
+框架后台任务（上下文压缩、任务分类、Agent 间调度）
     │  不走 TwoTierRouter
     │  直接使用 system model（配置为 quick）
     │  thinking_enabled: false, temperature: 0.3
@@ -72,7 +79,7 @@ TwoTierRouter.classify(query)
 | 调度层 | 负责内容 | 模型选择方式 | 配置位置 |
 |--------|----------|-------------|----------|
 | **用户任务路由** | 每 turn 根据 query 复杂度选模型 | `TwoTierRouter` + LLM 分类器 | `advanced.routing` |
-| **框架任务分配** | 记忆、压缩、分类等后台操作 | 固定 system model | `advanced.system_model` |
+| **框架任务分配** | 压缩、分类、handoff 等后台操作 | 固定 system model | `advanced.system_model` |
 
 ### 2.3 协议
 
@@ -91,6 +98,10 @@ class ModelRouter(Protocol):
 
 ```python
 class TwoTierRouter:
+    def __init__(self, config: RoutingConfig, models: list[str],
+                 classifier_call: Callable | None = None) -> None:
+        ...
+
     async def route(self, query: str, history: list[dict]) -> str:
         level = await self.classify(query)          # "medium" | "complex"
         return self._cfg.classify.get(level, self._cfg.default)
@@ -103,6 +114,8 @@ class TwoTierRouter:
     def fallback_from(self, model_name: str) -> str | None:
         return self._cfg.fallback.get(model_name)
 ```
+
+`classifier_call` 为 `None` 时，`classify()` 始终返回 `"medium"`，等价于 static 策略——全部走默认模型。该参数由 BaseAgent 根据 `advanced.routing.strategy` 决定是否注入 LLM 分类器。
 
 ### 2.5 LLM 分类器
 
@@ -138,20 +151,31 @@ if self.model_router:
 
 路由在压缩之前执行（`graph.py`），确保压缩使用正确模型的窗口大小。每次 turn 之间可无缝切换模型。
 
+Engine 层通过 `model = routed or model` 提供降级链的最后一层兜底：当 Router 的 `config.default` 为空导致 `route()` 返回空字符串时，Engine 保持 `state["current_model"]` 不变，确保始终有一个有效模型可用。
+
 ### 2.7 自动推导
 
-`AdvancedConfig.auto_derive()`（`config.py`）：当 agent 配置了多个模型但未显式指定 routing 时，自动启用 two_tier 策略。
+`AdvancedConfig.auto_derive()`（`arf/agent/config.py`）在满足以下条件时自动启用 two_tier 策略：
+
+- `len(config.models) > 1` — 至少配置了两个模型
+- `agent.yaml` 中未显式声明 `advanced` 块 — 显式 `AdvancedConfig` 会跳过 auto_derive
+
+触发入口是 `AgentConfig.effective_advanced()`：该方法在 `advanced` 为 `None` 时调用 `auto_derive()`，否则直接返回用户配置。这意味着一旦用户在 `agent.yaml` 中显式写了 `advanced:`（哪怕是空块），auto_derive 不再介入，用户需手动配置 `routing`。
 
 ### 2.8 降级链
 
-| 层级 | 触发条件 | 行为 |
-|------|----------|------|
-| LLM 分类器异常 | `_classify()` 模型调用失败 | 返回 `"medium"` → quick |
-| classify 映射缺失 | 分类结果不在 `classify` dict 中 | 使用 `config.default` |
-| default 为空 | 路由配置缺失 `default` | 回退到 `state["current_model"]`（引擎初始 model） |
-| fallback 映射 | 模型调用失败（5xx / 网络错误） | `error_policy.on_model_error()` → `model_router.fallback_from()` → 重试 |
+降级链跨 Router 和 Engine 两层协作完成，每层负责不同的安全兜底：
 
-降级链全部接入引擎：`_classify()` 内置 try/except → `classify.get(level, default)` 字典兜底 → `_resolve_fallback()` 串联 error_policy + model_router。
+| 层级 | 触发条件 | 行为 | 负责层 |
+|------|----------|------|--------|
+| LLM 分类器异常 | `_classify()` 模型调用失败 | 返回 `"medium"` → quick | **Router** — classifier closure 内置 try/except |
+| classify 映射缺失 | 分类结果不在 `classify` dict 中 | 使用 `config.default` | **Router** — `dict.get(level, default)` 字典兜底 |
+| default 为空 | 路由配置缺失 `default` | 回退到 `state["current_model"]` | **Engine** — `model = routed or model` |
+| fallback 映射 | 模型调用失败（5xx / 网络错误） | `error_policy.on_model_error()` → `model_router.fallback_from()` → 重试 | **Engine** — `_resolve_fallback()` |
+
+**Router 层**（前两层）：TwoTierRouter 内部处理。分类失败或结果异常时，Router 自身消化，不向上抛异常。策略是安全降级——宁可走廉价模型，也不阻塞用户。
+
+**Engine 层**（后两层）：GraphEngine 在 Router 返回后做最终兜底。`routed or model` 保证 Router 即使返回空字符串也有模型可用；`_resolve_fallback()` 串联 error_policy 和 model_router，在模型调用真正失败时切换到 fallback 模型重试。
 
 ### 2.9 KV Cache — 框架有意不介入
 
@@ -167,7 +191,15 @@ KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓�
 `arf/core/model_adapter.py`。统一的 OpenAI 兼容端点封装：
 - **指数退避重试**：429/5xx 等瞬时错误自动重试（默认 3 次，退避基数 1.5x）
 - **DeepSeek thinking 翻译**：`thinking_enabled` → `extra_body["thinking"]` 的 enabled/disabled 格式
-- **流式支持**：`chat_stream_full()` 产出 `chunk`、`tool_call`、`usage`、`error` 四种事件
+- **流式支持**：`chat_stream_full()` 产出以下四种事件：
+
+| 事件类型 | 字段 | 说明 |
+|----------|------|------|
+| `chunk` | `type`, `content`, `reasoning?` | 文本增量（DeepSeek deep-thinking 时附带 reasoning） |
+| `tool_call` | `type`, `name`, `arguments`, `id` | 累积完成的工具调用（finish_reason="tool_calls" 时产出） |
+| `usage` | `type`, `prompt_tokens`, `completion_tokens`, `total_tokens` | 流结束时统计用量（通常出现在最后一个 chunk 上） |
+| `error` | `type`, `code`, `detail` | API 调用失败时产出（status_code + message） |
+
 - **空 key 保护**：`api_key` 为空时使用 `"sk-placeholder"` 防止 OpenAI SDK 拒绝 falsy 值
 
 ### 2.11 配置
@@ -190,20 +222,25 @@ advanced:
       complex: deep
     fallback:
       deep: quick
+    # background: null      # 预留字段 — 未来用于更细粒度的后台任务模型配置
 
   system_model: quick      # 系统后台模型，框架任务共用
 ```
 
 ### 2.12 策略对比
 
-| 策略 | 行为 | 适用场景 |
-|------|------|----------|
-| `two_tier` | LLM 分类器动态判断，每次 turn 可切换模型 | 主 Agent，面向用户任务 |
-| `static` | 始终使用 `default`，不分类 | SysAgent，所有任务都是确定性系统操作 |
+| 策略 | 行为 | 实现 | 适用场景 |
+|------|------|------|----------|
+| `two_tier` | LLM 分类器动态判断，每次 turn 可切换模型 | `TwoTierRouter(classifier_call=_classify)` | 主 Agent，面向用户任务 |
+| `static` | 始终使用 `default`，不分类 | `TwoTierRouter(classifier_call=None)` — `classify()` 始终返回 `"medium"` | SysAgent，所有任务都是确定性系统操作 |
+
+static 策略下 Router 实例仍然存在（不是 None），只是不注入 LLM 分类器。`classify()` 固定返回 `"medium"`，`route()` 将其映射到 `classify` dict 或 `default`，结果始终是一致的模型。
 
 ### 2.13 System Model — 框架后台任务的专用模型
 
-框架运行时会触发一系列后台操作——记忆抽取、记忆检索、上下文压缩、路由分类。这些操作对质量要求不高（分类错了只是多用一次 deep，摘要差点也能继续对话），但对延迟和成本敏感（每次 turn 都要跑）。如果走用户模型通道，这些隐形消耗会大幅推高 token 用量。
+框架运行时会触发一系列后台操作——上下文压缩、路由分类、Agent 间调度（handoff）。这些操作对质量要求不高（分类错了只是多用一次 deep，摘要差点也能继续对话），但对延迟和成本敏感（每次 turn 都要跑）。如果走用户模型通道，这些隐形消耗会大幅推高 token 用量。
+
+> **注意**：记忆抽取/检索原为 system model 消费者，现已迁移到 `arf/plugins/memory/` 插件架构。插件以 subprocess 方式运行，内部自行构造 ModelAdapter（不共享 Agent 的 `_system_model_call`）。详见 `arf/plugins/memory/tools/memory_extract/extractor.py`。
 
 ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**，称为 system model。它与用户任务模型共享同一个适配器池，不额外增加 API 连接。
 
@@ -223,14 +260,13 @@ advanced.system_model: quick → lookup by name → quick → _system_model_call
 - 用低温度（0.3）、关闭 thinking、`max_tokens=1024` 创建适配器
 - 最终产物是一个 `_system_model_call(prompt: str) -> str` 闭包——输入简短 prompt，返回纯文本
 
-**四个消费者及其退化行为**：
+**三个活跃消费者及其退化行为**：
 
 | 功能 | 有 system_model | 无 system_model（退化） |
 |------|----------------|----------------------|
-| **记忆写入** | `LLMMemoryWriter` — LLM 从最近 4 条消息抽取事实/偏好/决策，去重后写入 `memory.json` | `RuleBasedMemoryWriter` — 中文/英文关键词 → category 映射，按 content 字符串去重 |
-| **记忆检索** | `LLMMemoryRetriever` — LLM 从记忆索引中筛选 top_k 条相关记忆注入 system prompt | `RecentFirstRetriever` — 按时间倒序返回最近记忆，不做语义匹配 |
 | **压缩摘要** | `_summarize` — LLM 将旧轮次压缩为结构化摘要（7 个维度），追加到 `context_summary` | `_summarizer = None` — 旧消息直接丢弃，不生成摘要 |
 | **路由分类** | `_classify` — LLM 判断 query 复杂度（medium / complex） | `classify()` 始终返回 `"medium"` — 全部走 quick 模型 |
+| **Handoff 分类** | `HandoffManager` — LLM 判断 handoff 目标 Agent | handoff 规则仍基于 `trigger` 字段匹配生效，但无 LLM 辅助判断 |
 
 所有退化都是静默的——不报错、不阻塞主流程。框架通过 `if _system_model_call:` 模式检查是否存在，不存在时回退到确定性规则方案。
 
