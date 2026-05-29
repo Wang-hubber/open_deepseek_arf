@@ -9,15 +9,25 @@ class InMemoryAgentBus:
         self._agents: dict[str, AgentInfo] = {}
         self.sent_messages: list[AgentMessage] = []
 
-    async def send(self, message: AgentMessage) -> None:
+    async def send(self, message: AgentMessage, timeout: float | None = None) -> None:
         self.sent_messages.append(message)
         targets = [message.receiver] if message.receiver else list(self._queues.keys())
         for name in targets:
-            if name in self._queues:
+            # Auto-create queue for receivers that haven't registered yet —
+            # avoids race where receive()'s async generator hasn't started.
+            if name not in self._queues:
+                self._queues[name] = asyncio.Queue(maxsize=100)
+            if timeout is not None:
+                await asyncio.wait_for(
+                    self._queues[name].put(message), timeout=timeout
+                )
+            else:
                 await self._queues[name].put(message)
 
     async def receive(self, agent_name: str):
-        q = self._queues.setdefault(agent_name, asyncio.Queue(maxsize=100))
+        if agent_name not in self._queues:
+            self._queues[agent_name] = asyncio.Queue(maxsize=100)
+        q = self._queues[agent_name]
         while True:
             yield await q.get()
 

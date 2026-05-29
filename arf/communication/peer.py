@@ -154,8 +154,9 @@ class PeerAgent:
             "context": context,
         })
 
+        deadline = asyncio.get_event_loop().time() + timeout
         async for msg in self._bus.receive(self.name):
             if msg.sender == peer.name and msg.type == "handoff":
                 return msg.payload
-
-        return None
+            if asyncio.get_event_loop().time() >= deadline:
+                return None

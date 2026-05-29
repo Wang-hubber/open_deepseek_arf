@@ -18,6 +18,23 @@ class MajorityVoteConsensus:
         if proposal_id in self._votes:
             self._votes[proposal_id][vote] = vote
 
+    async def verdict(self, proposal_id: str) -> dict:
+        """Return tally and whether consensus was reached (> threshold)."""
+        if proposal_id not in self._proposals:
+            return {"proposal_id": proposal_id, "status": "not_found"}
+        voters = self._proposals[proposal_id]["voters"]
+        votes = self._votes.get(proposal_id, {})
+        yes_count = sum(1 for v in votes.values() if v == "yes")
+        ratio = yes_count / len(voters) if voters else 0.0
+        return {
+            "proposal_id": proposal_id,
+            "status": "passed" if ratio > self._threshold else "failed",
+            "yes": yes_count,
+            "total": len(voters),
+            "ratio": ratio,
+            "threshold": self._threshold,
+        }
+
     def reset(self) -> None:
         self._proposals.clear()
         self._votes.clear()

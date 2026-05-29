@@ -360,7 +360,146 @@ class TestConsensusProtocolSignature:
 
 
 # ---------------------------------------------------------------------------
-# 7. get_rule() (Doc 2.2)
+# 7. InMemoryAgentBus dual-agent scenario (Doc 2.3)
+# ---------------------------------------------------------------------------
+
+
+async def _receive_one(bus, agent_name):
+    """Receive exactly one message and close the async generator.
+    Must aclose() to prevent the while-True generator from blocking
+    event loop finalization."""
+    gen = bus.receive(agent_name)
+    try:
+        return await gen.__anext__()
+    finally:
+        await gen.aclose()
+
+
+class TestInMemoryAgentBusDualAgent:
+    """Doc 2.3: InMemoryAgentBus in dual-agent message routing."""
+
+    def test_agent_a_sends_targeted_to_agent_b(self):
+        """Agent A → targeted send → Agent B receives the exact message."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("agent_a", "user-facing agent", ["chat"]))
+            await bus.register(AgentInfo("agent_b", "system agent", ["tool_create"]))
+
+            msg = AgentMessage(
+                sender="agent_a", receiver="agent_b", type="task_delegate",
+                payload={"task": "create a tool", "name": "file_reader"},
+                correlation_id="corr-001",
+            )
+            await bus.send(msg)
+            received = await _receive_one(bus, "agent_b")
+            assert received.sender == "agent_a"
+            assert received.type == "task_delegate"
+            assert received.payload["task"] == "create a tool"
+
+        asyncio.run(run())
+
+    def test_broadcast_delivers_to_all_registered_agents(self):
+        """receiver=None → message delivered to all registered agents."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("agent_a", "a", ["chat"]))
+            await bus.register(AgentInfo("agent_b", "b", ["code"]))
+            await bus.register(AgentInfo("agent_c", "c", ["review"]))
+
+            await bus.send(AgentMessage(
+                sender="agent_a", receiver=None, type="info",
+                payload={"msg": "hello everyone"},
+            ))
+            for name in ("agent_a", "agent_b", "agent_c"):
+                msg = await _receive_one(bus, name)
+                assert msg.payload["msg"] == "hello everyone"
+                assert msg.receiver is None
+
+        asyncio.run(run())
+
+    def test_send_auto_creates_queue_for_unknown_receiver(self):
+        """After fix: send() auto-creates queue for unregistered receivers,
+        so messages aren't silently dropped."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage
+
+        async def run():
+            bus = InMemoryAgentBus()
+            # Send to an agent that never registered
+            await bus.send(AgentMessage(
+                sender="someone", receiver="late_agent",
+                type="info", payload={"msg": "hello"},
+            ))
+            # Queue was auto-created by send()
+            assert "late_agent" in bus._queues
+            # Message is waiting in the queue
+            assert not bus._queues["late_agent"].empty()
+            # Receive it (with cleanup)
+            received = await _receive_one(bus, "late_agent")
+            assert received.sender == "someone"
+            assert received.payload["msg"] == "hello"
+
+        asyncio.run(run())
+
+    def test_agent_b_only_receives_own_messages(self):
+        """Agent B should NOT receive messages targeted to Agent C."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("agent_b", "b", []))
+            await bus.register(AgentInfo("agent_c", "c", []))
+
+            await bus.send(AgentMessage(
+                sender="agent_a", receiver="agent_c", type="query",
+                payload={"q": "secret"}, correlation_id="x",
+            ))
+            assert len(bus.sent_messages) == 1
+            assert bus.sent_messages[0].receiver == "agent_c"
+
+        asyncio.run(run())
+
+    def test_full_roundtrip_ab_ba(self):
+        """A sends to B, B receives and replies back to A."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("agent_a", "a", ["chat"]))
+            await bus.register(AgentInfo("agent_b", "b", ["code"]))
+
+            # A → B
+            await bus.send(AgentMessage(
+                sender="agent_a", receiver="agent_b", type="task_delegate",
+                payload={"task": "write function"}, correlation_id="req-1",
+            ))
+            req = await _receive_one(bus, "agent_b")
+            assert req.sender == "agent_a"
+
+            # B → A
+            await bus.send(AgentMessage(
+                sender="agent_b", receiver="agent_a", type="info",
+                payload={"result": "function created", "path": "/tools/foo.py"},
+                correlation_id="req-1", reply_to="agent_b",
+            ))
+            reply = await _receive_one(bus, "agent_a")
+            assert reply.sender == "agent_b"
+            assert reply.payload["result"] == "function created"
+            assert reply.correlation_id == "req-1"
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 8. get_rule() (Doc 2.2)
 # ---------------------------------------------------------------------------
 
 class TestGetRule:
