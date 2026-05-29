@@ -1,21 +1,23 @@
 """round_end hook — check trigger interval and dispatch memory extraction."""
-import os
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 def main():
-    config_json = os.environ.get("ARF_PLUGIN_CONFIG", "{}")
-    config = json.loads(config_json)
+    runtime_raw = os.environ.get("ARF_RUNTIME", "{}")
+    runtime = json.loads(runtime_raw)
 
-    interval = config.get("interval", 10)
-    current_round = int(os.environ.get("ARF_ROUND", 0))
-    memory_dir = os.environ.get(
-        "ARF_MEMORY_DIR", config.get("memory_dir", "./memory")
-    )
-    session_id = os.environ.get("ARF_SESSION_ID", "default")
+    plugin_config_raw = os.environ.get("ARF_PLUGIN_CONFIG", "{}")
+    plugin_config = json.loads(plugin_config_raw)
+
+    interval = plugin_config.get("interval", 10)
+    current_round = runtime.get("interaction_round", 0)
+    memory_dir = runtime.get("memory_dir", "./memory")
+    session_id = runtime.get("session_id", "default")
+    python_exe = runtime.get("python_executable", sys.executable)
 
     # Check trigger: fire every N rounds
     if current_round <= 0 or current_round % interval != 0:
@@ -41,7 +43,7 @@ def main():
         / "tools" / "memory_extract" / "extractor.py"
     )
     result = subprocess.run(
-        [sys.executable, str(extractor),
+        [python_exe, str(extractor),
          "--session-file", str(tmp_file),
          "--memory-dir", str(memory_dir),
          "--session-id", session_id],
@@ -50,7 +52,6 @@ def main():
     if result.returncode != 0:
         print(f"Extractor failed: {result.stderr}", file=sys.stderr)
         sys.exit(1)
-    sys.exit(0)
 
 
 if __name__ == "__main__":

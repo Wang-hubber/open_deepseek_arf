@@ -56,6 +56,12 @@ class PluginProvider:
                 sp._load()
                 self._skill_providers[plugin_dir.name] = sp
 
+            config_yaml = plugin_dir / "config.yaml"
+            plugin_config = {}
+            if config_yaml.exists():
+                import yaml
+                plugin_config = yaml.safe_load(config_yaml.read_text())
+
             hooks_dir = plugin_dir / "hooks"
             if hooks_dir.exists() and hooks_dir.is_dir():
                 for hook_file in sorted(hooks_dir.iterdir()):
@@ -70,12 +76,7 @@ class PluginProvider:
                         type=hook_file.stem,
                         run=[f"{_sys.executable} {hook_file}"],
                         env={
-                            "ARF_PLUGIN_CONFIG": json.dumps(
-                                {"plugin_name": plugin_dir.name, "interval": 1}
-                            ),
-                            "ARF_ROUND": "$ARF_ROUND",
-                            "ARF_SESSION_ID": "$ARF_SESSION_ID",
-                            "ARF_MEMORY_DIR": "$ARF_MEMORY_DIR",
+                            "ARF_PLUGIN_CONFIG": json.dumps(plugin_config),
                         },
                     ))
 

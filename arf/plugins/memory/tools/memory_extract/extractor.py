@@ -39,10 +39,12 @@ def call_sysmodel(prompt: str) -> str:
     """Call system model (deepseek-v4-flash, thinking=false, temp=0.3)."""
     from arf.core.model_adapter import ModelAdapter
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    api_base = os.environ.get(
-        "DEEPSEEK_API_BASE", "https://api.deepseek.com"
-    )
+    runtime_raw = os.environ.get("ARF_RUNTIME", "{}")
+    runtime = json.loads(runtime_raw) if runtime_raw else {}
+    env_vars = runtime.get("env_vars", os.environ)
+
+    api_key = env_vars.get("DEEPSEEK_API_KEY", "")
+    api_base = env_vars.get("DEEPSEEK_API_BASE", "https://api.deepseek.com")
 
     adapter = ModelAdapter({
         "base_url": api_base,

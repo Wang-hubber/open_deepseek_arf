@@ -25,6 +25,12 @@ class TestPluginProviderHooks:
             "import os, sys\nsys.exit(0)\n", encoding="utf-8"
         )
 
+        # memory plugin config.yaml
+        (root / "memory" / "config.yaml").write_text(yaml.dump({
+            "interval": 10,
+            "max_memory_size": 300,
+        }), encoding="utf-8")
+
         # memory plugin also has tools/
         mem_tool = root / "memory" / "tools" / "memory_extract"
         mem_tool.mkdir(parents=True)
@@ -59,7 +65,8 @@ class TestPluginProviderHooks:
         assert round_end_hook.env is not None
         assert "ARF_PLUGIN_CONFIG" in round_end_hook.env
         config = json.loads(round_end_hook.env["ARF_PLUGIN_CONFIG"])
-        assert config["plugin_name"] == "memory"
+        assert config["interval"] == 10
+        assert config["max_memory_size"] == 300
 
     def test_no_hooks_dir_no_error(self, plugins_root):
         """Plugin without hooks/ directory should not error."""
