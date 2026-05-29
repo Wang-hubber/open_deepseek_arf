@@ -1062,39 +1062,19 @@ class TestEvaluationProtocol:
         assert hasattr(EvalRunner, "run")
         assert inspect.iscoroutinefunction(EvalRunner.run)
 
-    def test_protocol_eval_report_has_comparison(self):
-        """Doc: Protocol EvalReport has comparison field (implementation does not)."""
+    def test_protocol_eval_report_aligned_with_impl(self):
+        """Protocol and implementation EvalReport now use the same field names (fixed 2026-05-29)."""
         from arf.core.protocols.evaluation import EvalReport as ProtoReport
         from arf.evaluation.models import EvalReport as ImplReport
         proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
         impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
-        # Protocol has 'comparison' field (used for diff storage)
-        assert "comparison" in proto_fields, (
-            "Protocol EvalReport should have comparison field"
-        )
-        # Implementation does NOT have 'comparison' field — this is a known divergence
-        assert "comparison" not in impl_fields, (
-            "Finding: implementation EvalReport lacks 'comparison' field that "
-            "the protocol defines. The doc describes the implementation, not "
-            "the protocol."
-        )
-        # Protocol uses 'dataset_name', implementation uses 'benchmark_name'
-        assert "dataset_name" in proto_fields, (
-            "Protocol uses 'dataset_name' for the dataset/report association"
-        )
-        assert "benchmark_name" in impl_fields, (
-            "Implementation uses 'benchmark_name' instead of protocol's 'dataset_name'"
-        )
-
-    def test_protocol_eval_report_lacks_benchmark_name(self):
-        """Doc: Protocol EvalReport uses dataset_name not benchmark_name."""
-        from arf.core.protocols.evaluation import EvalReport as ProtoReport
-        from arf.evaluation.models import EvalReport as ImplReport
-        proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
-        impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
-        # Implementation has 'benchmark_name' but protocol has 'dataset_name'
-        assert "benchmark_name" not in proto_fields or "dataset_name" in proto_fields
+        # Both use benchmark_name now
+        assert "benchmark_name" in proto_fields
         assert "benchmark_name" in impl_fields
+        # comparison field removed from protocol to match impl
+        assert "comparison" not in proto_fields
+        # dataset_name replaced by benchmark_name
+        assert "dataset_name" not in proto_fields
 
 
 # ---------------------------------------------------------------------------
@@ -1114,3 +1094,134 @@ class TestEvalError:
         from arf.evaluation.exceptions import EvalError
         with pytest.raises(EvalError):
             raise EvalError("test error")
+
+
+# ---------------------------------------------------------------------------
+# 19. CRITICAL: DefaultEvalRunner does not exist (found 2026-05-29)
+# ---------------------------------------------------------------------------
+
+class TestDefaultEvalRunnerFixed:
+    """base.py now uses EvalRunner (not non-existent DefaultEvalRunner). Fixed 2026-05-29."""
+
+    def test_eval_runner_imports(self):
+        """EvalRunner is the canonical runner class."""
+        from arf.evaluation.runner import EvalRunner
+        assert EvalRunner is not None
+
+    def test_default_eval_runner_does_not_exist(self):
+        """DefaultEvalRunner was removed — only EvalRunner exists."""
+        import arf.evaluation.runner as mod
+        names = [n for n in dir(mod) if "Eval" in n or "Runner" in n]
+        assert "DefaultEvalRunner" not in names
+
+
+# ---------------------------------------------------------------------------
+# 20. BaseAgent.evaluate() is now async and uses EvalRunner (fixed 2026-05-29)
+# ---------------------------------------------------------------------------
+
+class TestBaseAgentEvaluate:
+    """base.py evaluate() is async, uses EvalRunner with benchmark + event_bus."""
+
+    def test_evaluate_is_async(self):
+        from arf.agent.base import BaseAgent
+        import inspect
+        assert inspect.iscoroutinefunction(BaseAgent.evaluate), (
+            "evaluate() must be async to await runner.run()"
+        )
+
+    def test_evaluate_uses_eval_runner(self):
+        from arf.agent.base import BaseAgent
+        import inspect
+        src = inspect.getsource(BaseAgent.evaluate)
+        assert "EvalRunner" in src
+        assert "DefaultEvalRunner" not in src
+
+    def test_evaluate_accepts_benchmark_and_max_parallel(self):
+        from arf.agent.base import BaseAgent
+        import inspect
+        sig = inspect.signature(BaseAgent.evaluate)
+        params = list(sig.parameters.keys())
+        assert "benchmark" in params
+        assert "max_parallel" in params
+
+
+# ---------------------------------------------------------------------------
+# 21. Protocol EvalSummary now includes output_contains (fixed 2026-05-29)
+# ---------------------------------------------------------------------------
+
+class TestProtocolEvalSummaryAligned:
+    """Protocol EvalSummary now matches implementation with output_contains."""
+
+    def test_protocol_has_output_contains(self):
+        from arf.core.protocols.evaluation import EvalSummary as ProtoSummary
+        from arf.evaluation.models import EvalSummary as ImplSummary
+        impl_fields = {f.name for f in ImplSummary.__dataclass_fields__.values()}
+        proto_fields = {f.name for f in ProtoSummary.__dataclass_fields__.values()}
+        assert "output_contains" in impl_fields
+        assert "output_contains" in proto_fields, (
+            "Protocol EvalSummary must include output_contains to match implementation"
+        )
+
+    def test_protocol_and_impl_eval_summary_aligned(self):
+        from arf.core.protocols.evaluation import EvalSummary as ProtoSummary
+        from arf.evaluation.models import EvalSummary as ImplSummary
+        impl_fields = {f.name for f in ImplSummary.__dataclass_fields__.values()}
+        proto_fields = {f.name for f in ProtoSummary.__dataclass_fields__.values()}
+        # All implementation fields should be in protocol (protocol may have extras)
+        missing_from_proto = impl_fields - proto_fields
+        assert not missing_from_proto, (
+            f"Implementation EvalSummary has fields not in protocol: {missing_from_proto}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 22. Protocol now exports EvalDiff, EvalBenchmark, BenchmarkBuilder, EvalComparator (fixed 2026-05-29)
+# ---------------------------------------------------------------------------
+
+class TestProtocolNewExports:
+    """Protocol evaluation.py now exports all types matching implementation."""
+
+    def test_protocol_has_eval_diff(self):
+        from arf.core.protocols.evaluation import EvalDiff
+        assert EvalDiff is not None
+
+    def test_protocol_has_eval_benchmark(self):
+        from arf.core.protocols.evaluation import EvalBenchmark
+        assert EvalBenchmark is not None
+
+    def test_protocol_has_benchmark_builder(self):
+        from arf.core.protocols.evaluation import BenchmarkBuilder
+        assert BenchmarkBuilder is not None
+
+    def test_protocol_has_eval_comparator(self):
+        from arf.core.protocols.evaluation import EvalComparator
+        assert EvalComparator is not None
+
+    def test_eval_dataset_is_backward_compat(self):
+        """EvalDataset remains as backward-compat alias for EvalBenchmark."""
+        from arf.core.protocols.evaluation import EvalDataset, EvalBenchmark
+        assert EvalDataset is EvalBenchmark
+
+    def test_protocol_eval_report_uses_benchmark_name(self):
+        """Protocol EvalReport now uses benchmark_name (matching impl)."""
+        from arf.core.protocols.evaluation import EvalReport as ProtoReport
+        from arf.evaluation.models import EvalReport as ImplReport
+        proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
+        impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
+        assert "benchmark_name" in proto_fields
+        assert "benchmark_name" in impl_fields
+
+    def test_protocol_eval_runner_matches_impl(self):
+        """Protocol EvalRunner.run matches implementation signature."""
+        from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
+        from arf.evaluation.runner import EvalRunner as ImplRunner
+        import inspect
+        proto_sig = inspect.signature(ProtoRunner.run)
+        impl_sig = inspect.signature(ImplRunner.run)
+        proto_params = list(proto_sig.parameters.keys())
+        impl_params = list(impl_sig.parameters.keys())
+        assert "benchmark" in proto_params
+        assert "max_parallel" in proto_params
+        assert proto_params == impl_params, (
+            f"Protocol EvalRunner.run params {proto_params} != impl {impl_params}"
+        )

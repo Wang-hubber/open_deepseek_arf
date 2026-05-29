@@ -168,7 +168,7 @@ class BaseAgent:
 
         resource_resolver, file_watcher = self._build_resource_resolver(
             config, tool_provider, skill_provider, model_provider,
-            tools_dir, skills_dir, models_dir, watch_enabled, override_protocols,
+            tools_dir, skills_dir, models_dir, watch_enabled, reload_cfg, override_protocols,
         )
         self._file_watcher = file_watcher
         self._resource_resolver = resource_resolver
@@ -209,7 +209,7 @@ class BaseAgent:
                     "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
                     "model_name": system_model_cfg.model,
                     "temperature": 0.3,
-                    "thinking_enabled": "false",
+                    "thinking_enabled": False,
                     "max_tokens": 1024,
                 })
 
@@ -456,7 +456,7 @@ class BaseAgent:
 
     def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
                                    model_provider, tools_dir, skills_dir, models_dir,
-                                   watch_enabled: bool, override_protocols: dict[str, Any]):
+                                   watch_enabled: bool, reload_cfg, override_protocols: dict[str, Any]):
         """Build ResourceResolver with override merge and optional FileWatcher."""
         from arf.resources.file_watcher import FileWatcher
         overrides = {
@@ -472,7 +472,7 @@ class BaseAgent:
         ))
         file_watcher = None
         if watch_enabled:
-            poll_interval = 5.0  # default
+            poll_interval = reload_cfg.poll_interval if reload_cfg else 5.0
             file_watcher = FileWatcher(poll_interval=poll_interval)
             async def _on_fs_change(changed_paths):
                 if hasattr(resource_resolver, "reload_dynamic"):
@@ -810,7 +810,7 @@ class BaseAgent:
             new_data["advanced"] = overrides["advanced"]
             self.config = AgentConfig(**new_data)
 
-    def evaluate(self, dataset, metrics):
-        from arf.evaluation.runner import DefaultEvalRunner
-        runner = DefaultEvalRunner()
-        return runner.run(self, dataset, metrics)
+    async def evaluate(self, benchmark, *, max_parallel: int = 1):
+        from arf.evaluation.runner import EvalRunner
+        runner = EvalRunner(self, self._event_bus)
+        return await runner.run(benchmark, max_parallel=max_parallel)

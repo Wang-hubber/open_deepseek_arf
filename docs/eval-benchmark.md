@@ -37,7 +37,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 ## 2. 架构
 
 ```
-真实对话 → FileTraceStore → memory/traces/{session}.json
+真实对话 → FileTraceStore → memory/sessions/{session}.json
                                     │
                            BenchmarkBuilder.build(session_id, name)
                                     │
@@ -67,7 +67,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 from arf.evaluation import BenchmarkBuilder
 from arf.observability.file_trace import FileTraceStore
 
-store = FileTraceStore(agent.event_bus, dir="./memory/traces")
+store = FileTraceStore(agent.event_bus, dir="./memory/sessions")
 builder = BenchmarkBuilder(store)
 
 # 从真实对话会话创建 benchmark
@@ -178,7 +178,7 @@ trace 所有 turn 中无 error 事件 → 1.0，有 → 0.0
 # Benchmark 和 report 的存储路径：
 #   benchmarks/ → 用户创建和编辑的 benchmark JSON
 #   reports/    → runner 输出的 report JSON
-#   memory/traces/ → FileTraceStore 写入的真实对话 trace
+#   memory/sessions/ → FileTraceStore 写入的真实对话 trace
 ```
 
 ---

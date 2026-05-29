@@ -24,8 +24,8 @@ from arf.core.protocols.event_bus import EventBus, EventStream
 from arf.core.protocols.tracer import Tracer
 from arf.core.protocols.replay import ReplayController, ReplayTrace, TurnRecord
 from arf.core.protocols.evaluation import (
-    EvalRunner, MetricCalculator, EvalCase, EvalDataset,
-    EvalSummary, EvalReport,
+    EvalRunner, MetricCalculator, EvalCase, EvalDataset, EvalBenchmark,
+    EvalSummary, EvalReport, EvalDiff, BenchmarkBuilder, EvalComparator,
 )
 from arf.core.protocols.errors import ErrorPolicy
 
@@ -46,7 +46,7 @@ __all__ = [
     "EventBus", "EventStream",
     "Tracer",
     "ReplayController", "ReplayTrace", "TurnRecord",
-    "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset",
-    "EvalSummary", "EvalReport",
+    "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset", "EvalBenchmark",
+    "EvalSummary", "EvalReport", "EvalDiff", "BenchmarkBuilder", "EvalComparator",
     "ErrorPolicy",
 ]

@@ -13,9 +13,15 @@ class EvalCase:
 
 
 @dataclass
-class EvalDataset:
+class EvalBenchmark:
     name: str
+    source_session: str | None = None
+    created_at: float = 0.0
     cases: list[EvalCase] = field(default_factory=list)
+
+
+# Backward-compat alias
+EvalDataset = EvalBenchmark
 
 
 @dataclass
@@ -28,25 +34,41 @@ class EvalSummary:
     avg_tool_calls: float = 0.0
     avg_duration_seconds: float = 0.0
     tool_accuracy: float = 0.0
+    output_contains: float = 0.0
 
 
 @dataclass
 class EvalReport:
     run_id: str
-    dataset_name: str
+    benchmark_name: str
     agent_config_hash: str
     timestamp: float
     summary: EvalSummary = field(default_factory=EvalSummary)
     per_case: list[dict] = field(default_factory=list)
-    comparison: dict | None = None
+
+
+@dataclass
+class EvalDiff:
+    baseline_run_id: str
+    current_run_id: str
+    summary_diff: dict = field(default_factory=dict)
+    regressions: list[dict] = field(default_factory=list)
+    improvements: list[dict] = field(default_factory=list)
 
 
 class MetricCalculator(Protocol):
     async def compute(self, trace: dict, expected: EvalCase) -> dict[str, float]: ...
 
 
+class BenchmarkBuilder(Protocol):
+    def build(self, session_id: str, name: str) -> EvalBenchmark: ...
+
+
 class EvalRunner(Protocol):
     async def run(
-        self, agent, dataset: EvalDataset, metrics: list[MetricCalculator],
-        *, baseline: EvalReport | None = None, max_parallel: int = 1,
+        self, benchmark: EvalBenchmark, *, max_parallel: int = 1,
     ) -> EvalReport: ...
+
+
+class EvalComparator(Protocol):
+    def compare(self, baseline: EvalReport, current: EvalReport) -> EvalDiff: ...
