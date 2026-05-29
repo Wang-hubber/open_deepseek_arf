@@ -386,95 +386,133 @@ class GraphEngine:
         return self._repair_messages(state)
 
     def _repair_messages(self, state: AgentState) -> AgentState:
-        """Repair message sequence integrity before model calls.
+        """Rebuild message list to conform to the OpenAI chat API contract.
 
-        Two repairs:
-        1. Missing tool results: assistant has tool_calls but no matching
-           tool message in scope → inject synthetic result.
-        2. Orphaned tool messages: tool message without a preceding
-           assistant that has matching tool_calls in its scope → remove.
+        Contract:
+          - Messages must alternate: user, assistant, user, assistant, ...
+          - System messages belong only in the top-level system prompt.
+          - Every tool message must follow an assistant with matching tool_calls.
+          - Every assistant with tool_calls must have matching tool results.
+          - The sequence must start with a user message.
+
+        Strategy: walk the list, keep only messages with valid roles, close
+        open tool_calls, and discard orphaned tool messages.
         """
-        msgs: list = state.get("messages", [])
-        if not msgs:
+        raw: list = state.get("messages", [])
+        if not raw:
             return state
 
         logger = logging.getLogger("arf.engine")
 
-        # --- Repair 1: inject missing tool results ---
-        assistant_indices = [
-            i for i, m in enumerate(msgs)
-            if isinstance(m, dict) and m.get("role") == "assistant"
-        ]
+        # Phase 1: collect assistant → tool_calls map (by index in filtered result)
+        # First pass: filter to valid roles and record positions
+        keep: list[dict] = []
+        assistant_tc_map: dict[int, list[dict]] = {}  # filtered_idx → tool_calls
 
-        for ai, idx in enumerate(assistant_indices):
-            msg = msgs[idx]
-            tool_calls = msg.get("tool_calls")
-            if not tool_calls:
+        for m in raw:
+            if not isinstance(m, dict):
                 continue
+            role = m.get("role", "")
+            if role == "system":
+                continue  # system prompt is prepended separately
+            if role not in ("user", "assistant", "tool"):
+                continue
+            idx = len(keep)
+            keep.append(dict(m))  # shallow copy to avoid mutating original refs
+            if role == "assistant" and m.get("tool_calls"):
+                assistant_tc_map[idx] = list(m["tool_calls"])
 
-            next_assistant = (
-                assistant_indices[ai + 1]
-                if ai + 1 < len(assistant_indices)
-                else len(msgs)
-            )
+        if not keep:
+            return state
 
-            covered: set[str] = set()
-            for j in range(idx + 1, next_assistant):
-                if isinstance(msgs[j], dict) and msgs[j].get("role") == "tool":
-                    tc_id = msgs[j].get("tool_call_id", "")
+        # Ensure starts with user
+        while keep and keep[0].get("role") != "user":
+            removed = keep.pop(0)
+            logger.warning("Repair: removed leading %s message (sequence must start with user)",
+                           removed.get("role"))
+
+        # Phase 2: for each assistant with tool_calls, ensure matching tool messages
+        # exist immediately after it (before next user or assistant)
+        to_remove: set[int] = set()
+        for a_idx, tcs in sorted(assistant_tc_map.items()):
+            # Find scope: from a_idx+1 to next assistant or user
+            scope_end = len(keep)
+            for j in range(a_idx + 1, len(keep)):
+                if keep[j].get("role") in ("user", "assistant"):
+                    scope_end = j
+                    break
+
+            # Collect existing tool coverage in scope
+            covered: dict[str, int] = {}  # tc_id → position
+            for j in range(a_idx + 1, scope_end):
+                if keep[j].get("role") == "tool":
+                    tc_id = keep[j].get("tool_call_id", "")
                     if tc_id:
-                        covered.add(tc_id)
+                        covered[tc_id] = j
 
-            missing = []
-            for tc in tool_calls:
+            # Remove duplicate tool messages for same tc_id
+            seen: set[str] = set()
+            for j in sorted(covered.values()):
+                tc_id = keep[j].get("tool_call_id", "")
+                if tc_id in seen:
+                    to_remove.add(j)
+                else:
+                    seen.add(tc_id)
+
+            # Inject missing tool results
+            for tc in tcs:
                 tc_id = tc.get("id", "")
-                if tc_id and tc_id not in covered:
-                    missing.append(tc_id)
-
-            if missing:
-                inject_at = idx + 1
-                for j in range(idx + 1, next_assistant):
-                    if isinstance(msgs[j], dict) and msgs[j].get("role") == "tool":
-                        inject_at = j + 1
-
-                for tc_id in reversed(missing):
-                    logger.warning("Repair: injecting missing tool result for %s (assistant idx %d)", tc_id, idx)
-                    msgs.insert(inject_at, {
+                if tc_id and tc_id not in seen:
+                    logger.warning("Repair: injecting missing tool result for %s", tc_id)
+                    # Insert right after the last tool message in scope, or after assistant
+                    insert_at = scope_end
+                    for j in range(a_idx + 1, scope_end):
+                        if keep[j].get("role") == "tool":
+                            insert_at = j + 1
+                    keep.insert(insert_at, {
                         "role": "tool",
                         "tool_call_id": tc_id,
                         "content": "(tool result unavailable)",
                     })
+                    # Shift indices
+                    new_rm = {i + 1 if i >= insert_at else i for i in to_remove}
+                    to_remove = new_rm
+                    for k in list(assistant_tc_map.keys()):
+                        if k >= insert_at:
+                            assistant_tc_map[k + 1] = assistant_tc_map.pop(k)
 
-        # --- Repair 2: remove orphaned tool messages ---
-        orphan_indices = []
-        for i, m in enumerate(msgs):
-            if not isinstance(m, dict) or m.get("role") != "tool":
+        # Phase 3: remove orphaned tool messages (no matching assistant before them,
+        # scoped to preceding assistant or user boundary)
+        assistant_set = set(assistant_tc_map.keys())
+        for i, m in enumerate(keep):
+            if i in to_remove:
+                continue
+            if m.get("role") != "tool":
                 continue
             tc_id = m.get("tool_call_id", "")
             if not tc_id:
-                orphan_indices.append(i)
+                to_remove.add(i)
                 continue
+            # Search backward for matching assistant, stop at user boundary
             found = False
             for j in range(i - 1, -1, -1):
-                prev = msgs[j]
-                if isinstance(prev, dict) and prev.get("role") == "assistant":
-                    for tc in prev.get("tool_calls", []):
+                prev_role = keep[j].get("role", "")
+                if prev_role == "assistant":
+                    for tc in keep[j].get("tool_calls", []):
                         if tc.get("id") == tc_id:
                             found = True
                             break
-                    if found:
-                        break
-                if isinstance(prev, dict) and prev.get("role") == "user":
+                    break  # first assistant backward is the matching scope
+                if prev_role == "user":
                     break
             if not found:
-                orphan_indices.append(i)
+                to_remove.add(i)
 
-        for i in reversed(orphan_indices):
-            orphan = msgs[i]
-            logger.warning("Repair: removing orphaned tool message at idx %d (tool_call_id=%s)",
-                           i, orphan.get("tool_call_id", "?"))
-            del msgs[i]
+        for i in sorted(to_remove, reverse=True):
+            logger.warning("Repair: removing invalid message at idx %d (role=%s)", i, keep[i].get("role"))
+            del keep[i]
 
+        state["messages"] = keep
         return state
 
     def _last_user_message(self, state: AgentState) -> str:
@@ -1046,8 +1084,13 @@ class GraphEngine:
                                     "total_tokens": chunk.get("total_tokens", 0),
                                 }
                             elif chunk.get("type") == "error":
+                                code = chunk.get("code", 0)
+                                if code == 400:
+                                    self._repair_messages(state)
+                                    if self.state_store:
+                                        await self.state_store.put(session_id, state)
                                 yield self._make_event(type="error",
-                                                 data={"code": chunk.get("code", 0),
+                                                 data={"code": code,
                                                        "detail": chunk.get("detail", "")},
                                                  turn=turn, session_id=session_id)
                                 resp = {"content": "", "tool_calls": []}
