@@ -45,12 +45,14 @@ class GraphEngine:
         memory_top_k: int = 5,
         approval_enabled: bool = False,
         approval_allowlist: list[str] | None = None,
+        approval_timeout: float = 60.0,
         # Multi-agent support
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
+        self.approval_timeout = approval_timeout
         self._approval_allowlist: set[str] = set(approval_allowlist or [])
         self._pending_approvals: dict[str, asyncio.Event] = {}  # decision_id → set on approve
         self._approval_results: dict[str, bool] = {}  # decision_id → True/False
@@ -540,7 +542,7 @@ class GraphEngine:
                         approval_evt = asyncio.Event()
                         self._pending_approvals[decision_id] = approval_evt
                         try:
-                            await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
+                            await asyncio.wait_for(approval_evt.wait(), timeout=self.approval_timeout)
                         except asyncio.TimeoutError:
                             self._pending_approvals.pop(decision_id, None)
                             self._approval_results.pop(decision_id, None)
@@ -587,7 +589,7 @@ class GraphEngine:
             approval_evt = asyncio.Event()
             self._pending_approvals[decision_id] = approval_evt
             try:
-                await asyncio.wait_for(approval_evt.wait(), timeout=60.0)
+                await asyncio.wait_for(approval_evt.wait(), timeout=self.approval_timeout)
             except asyncio.TimeoutError:
                 self._pending_approvals.pop(decision_id, None)
                 self._approval_results.pop(decision_id, None)

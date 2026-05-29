@@ -23,6 +23,18 @@ from arf.guardrails.permissions import ToolPermissionChecker
 from arf.errors.retry import DefaultErrorPolicy
 
 
+def _parse_duration(s: str) -> float:
+    """Parse a duration string like '60s', '5m', '1h' into float seconds."""
+    s = s.strip()
+    if s.endswith("s"):
+        return float(s[:-1])
+    if s.endswith("m"):
+        return float(s[:-1]) * 60
+    if s.endswith("h"):
+        return float(s[:-1]) * 3600
+    raise ValueError(f"Unsupported duration unit: {s}")
+
+
 def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
                           max_size_bytes: int = 300 * 1024) -> str:
     """Load resident memory from a single Markdown file.
@@ -449,6 +461,7 @@ class BaseAgent:
             max_undo_depth=(adv.max_undo_depth if adv else 3),
             approval_enabled=(adv.human_loop is not None and adv.human_loop.approval_points != "always_auto") if adv else False,
             approval_allowlist=(adv.human_loop.allowlist if adv and adv.human_loop else None),
+            approval_timeout=_parse_duration(adv.human_loop.timeout if adv and adv.human_loop else "60s"),
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
             **override_protocols,

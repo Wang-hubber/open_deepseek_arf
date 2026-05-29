@@ -426,12 +426,12 @@ class TestToolExecution:
         assert "engine" in sig.parameters
         assert "state_store" in sig.parameters
 
-    def test_approval_timeout_60s(self):
-        """Doc: Approval 超时 60s."""
+    def test_approval_timeout_configurable(self):
+        """Doc: Approval timeout is configurable via agent.yaml (human_loop.timeout)."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
         source = _inspect.getsource(GraphEngine._step_classify_tool_calls)
-        assert "timeout=60" in source
+        assert "self.approval_timeout" in source
 
     def test_blocked_tool_injects_blocked_reason(self):
         """Doc: 被拒工具注入 [Blocked] reason."""
