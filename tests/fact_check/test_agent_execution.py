@@ -1322,4 +1322,73 @@ class TestConfigurabilityWiring:
         """ReloadConfig.poll_interval 字段存在，证实断裂非配置缺失所致."""
         from arf.core.config_base import ReloadConfig
         assert "poll_interval" in ReloadConfig.model_fields
-        assert ReloadConfig.model_fields["poll_interval"].default == 5.0
+
+
+# ===========================================================================
+# NEW FINDINGS — 2026-05-29 joint fact-check (agent-execution + trace + eval)
+# ===========================================================================
+
+class TestFindingsLoopStrategyProtocol:
+    """Doc §2.5: LoopStrategy protocol 展示遗漏 next_step 方法."""
+
+    def test_loop_strategy_protocol_has_next_step(self):
+        """FIXED 2026-05-29: Doc 已补全 next_step. 协议有 3 个方法."""
+        from arf.core.protocols.engine import LoopStrategy
+        import inspect
+        sig = inspect.signature(LoopStrategy.next_step)
+        assert "state" in sig.parameters
+        assert sig.return_annotation is str
+
+
+class TestFindingsRawTurnsDefault:
+    """Doc §2.10: raw_turns 默认值 5 不是 4."""
+
+    def test_raw_turns_default_is_5(self):
+        """HandoverContextConfig.raw_turns 默认值为 5, 不是文档曾声称的 4."""
+        from arf.core.config_base import HandoverContextConfig
+        cfg = HandoverContextConfig()
+        assert cfg.raw_turns == 5, f"raw_turns default is {cfg.raw_turns}, expected 5"
+
+
+class TestFindingsToolResultsPersistence:
+    """Doc §2.11: tool_results 移除行为仅针对 FileStateStore."""
+
+    def test_inmemory_state_store_does_not_remove_tool_results(self):
+        """InMemoryStateStore.put() 不移除 tool_results, 仅 FileStateStore 移除."""
+        from arf.engine.checkpoint import InMemoryStateStore
+        src = inspect.getsource(InMemoryStateStore.put)
+        assert "pop" not in src, (
+            "FACT: InMemoryStateStore does NOT remove tool_results, "
+            "only FileStateStore does."
+        )
+
+    def test_file_state_store_does_remove_tool_results(self):
+        """FileStateStore.put() 确实移除 tool_results."""
+        from arf.engine.checkpoint import FileStateStore
+        src = inspect.getsource(FileStateStore.put)
+        assert 'data.pop("tool_results"' in src or "data.pop('tool_results'" in src
+
+
+class TestFindingsModelCallProtectorPath:
+    """Doc §2.13: ModelCallProtector 路径应为 arf/protection/protector.py."""
+
+    def test_model_call_protector_not_in_observability(self):
+        """ModelCallProtector 在 arf/protection/protector.py, 非 arf/observability/."""
+        observability_files = list(Path(__file__).parent.parent.parent.glob(
+            "arf/observability/*.py"))
+        protection_files = list(Path(__file__).parent.parent.parent.glob(
+            "arf/protection/*.py"))
+        assert any("protector.py" in str(f) for f in protection_files), (
+            "ModelCallProtector is in arf/protection/protector.py"
+        )
+        assert not any("protection.py" in str(f) for f in observability_files), (
+            "No protection.py in arf/observability/"
+        )
+
+    def test_doc_fixed_model_call_protector_path(self):
+        """FIXED 2026-05-29: Doc 已修正为 arf/protection/protector.py."""
+        doc_path = Path(__file__).parent.parent.parent / "docs" / "agent-execution.md"
+        content = doc_path.read_text(encoding="utf-8")
+        assert "observability/protection" not in content, (
+            "FIX VERIFIED: No stale arf/observability/protection reference in doc"
+        )

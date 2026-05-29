@@ -234,3 +234,29 @@ handover:
 # ⚠ 文档未提及. 通过 ARF_TUI 环境变量控制. 未接入 EventBus.
 #   tui:
 #     enabled: false                     # 通过 ARF_TUI=1 环境变量启用 (默认 false)
+
+# ============================================================================
+# § Eval Benchmark (docs/eval-benchmark.md)
+# 审计日期: 2026-05-29 | 测试: 89 existing + 5 new = 94 total
+# ============================================================================
+
+# Eval 模块无需 agent.yaml 配置，在 arf/evaluation/ 下自动可用。
+# Benchmark 和 report 的存储路径由 App 层决定：
+#   benchmarks/{name}.json  → 用户创建和编辑的 benchmark JSON
+#   reports/{name}.json     → runner 输出的 report JSON
+#   memory/traces/          → FileTraceStore 写入的真实对话 trace 数据源
+
+# --- 注意事项 ---
+# BenchmarkBuilder.build() 只自动提取 expected_tools，不填充 expected_output_contains。
+# 输出关键词需用户在生成的 JSON 中手动补充。
+# max_parallel 参数已定义但当前未实现并行执行（已知缺陷）。
+
+# ============================================================================
+# § Agent Execution 补充 (docs/agent-execution.md) — 审计更新 2026-05-29
+# ============================================================================
+
+# 以下字段在之前审计中已录入，本轮发现并修正：
+#   - HandoverContextConfig.raw_turns: 默认 5（文档曾误写为 4, 已修正）
+#   - ModelCallProtector: 路径 arf/protection/protector.py（非 arf/observability/）
+#   - LoopStrategy 协议含 3 个方法（should_continue, should_break, next_step）
+#   - FileStateStore.put() 移除 tool_results, InMemoryStateStore 不移除

@@ -169,16 +169,18 @@ Turn 流转：    should_continue? → next_step() → dispatch
 
 ### 2.5 循环策略
 
-`LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义两个门控方法：
+`LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义三个门控方法：
 
 ```python
 class LoopStrategy(Protocol):
     def should_continue(self, state: AgentState) -> bool: ...
     def should_break(self, state: AgentState) -> bool: ...
+    def next_step(self, state: AgentState) -> str: ...
 ```
 
 - `should_continue`：**入口门**——`False` 时跳过循环体，不进入下一 turn
 - `should_break`：**出口门**——`True` 时退出循环，本轮是最后一 turn
+- `next_step`：**分派门**——返回当前应执行的操作（`"call_model"` 或 `"execute_tools"`）
 
 两个方法使用 `self.max_turns`。引擎在每 turn 从 `_active_config()` 获取当前活跃 Agent 的 `max_turns` 并同步到 `self.loop_strategy.max_turns`——单 Agent 和多 Agent 场景统一了取值路径。Handoff 切换 Agent 后立即刷新。
 
@@ -276,7 +278,7 @@ def _cancelled(self) -> bool:
 - **Planner**（可选）：协议已定义（`arf/core/protocols/engine.py`），但引擎侧尚未集成——`plan_execute` 循环策略未实现
 - **Sub-agents**：遍历 `config.agents`，为每个子 Agent 创建独立 system prompt 和 ModelAdapter
 - **HandoffManager**：从 `config.handover.rules` 构建规则表
-- **ModelAdapter**：`_inject_model_calls()` 为每个模型配置创建适配器，注入 `_call_model` / `_stream_model` 闭包；可选包裹 `ModelCallProtector`（rate limit + circuit breaker）
+- **ModelAdapter**：`_inject_model_calls()` 为每个模型配置创建适配器，注入 `_call_model` / `_stream_model` 闭包；可选包裹 `ModelCallProtector`（`arf/protection/protector.py`，rate limit + circuit breaker）
 - **ModelRouter**：`TwoTierRouter`（LLM 分类器或 static），在每 turn 选择模型
 - **UsageTracker**：监听 EventBus，累计 token 用量
 
@@ -293,7 +295,7 @@ def _cancelled(self) -> bool:
 2. `HandoffManager.resolve()` 解析目标——单规则直接匹配，多规则 LLM 分类（fallback: 关键词匹配）
 3. `RoundManager.record_handoff()` 记录切换（不创建新 checkpoint）
 4. 加载目标 Agent 持久化状态（存在则恢复），否则 `HandoffManager.build_target_context()` 构建初始上下文
-5. 上下文构建：截取最近 N 轮对话（`raw_turns: 4`，过滤掉 tool_calls 和 tool 消息，只保留 user + 纯 assistant 消息）+ 可选 task_summary（system model 生成）
+5. 上下文构建：截取最近 N 轮对话（默认 `raw_turns: 5`，可配置；过滤掉 tool_calls 和 tool 消息，只保留 user + 纯 assistant 消息）+ 可选 task_summary（system model 生成）
 6. 重置 `current_turn = 0`，清除 `tool_results`，设置 `active_agent`
 7. Emit `AgentEvent(type="agent_switch")` + log
 
@@ -312,7 +314,7 @@ ARF 有两套独立的持久化机制：Round检查点（undo 回滚）和 State
 
 `arf/engine/checkpoint.py`，在引擎循环内多处调用 `put()`：
 
-- `FileStateStore`：写入 `<state_dir>/<session_id>.json`，原子写入（tmp 文件 + rename）。**`tool_results` 不持久化**——每次 `put()` 调用 `data.pop("tool_results", None)`，因为工具结果是瞬态的。
+- `FileStateStore`：写入 `<state_dir>/<session_id>.json`，原子写入（tmp 文件 + rename）。**`tool_results` 不持久化**——`FileStateStore.put()` 调用 `data.pop("tool_results", None)`，因为工具结果是瞬态的。注意 `InMemoryStateStore` 不执行此过滤（测试 double，保留完整状态）。
 - `InMemoryStateStore`：dict + deepcopy，用于测试。`snapshots` 列表记录每次 `put()` 调用。
 - 用途：进程重启后从磁盘恢复会话状态。`_close_tool_calls()` 在 `invoke()/astream()` 入口保证消息序列完整性。
 - 频率：每个 turn 至少一次（text-only）；有工具执行的 turn 两次（装配 assistant+tool_calls 后 + 工具执行完毕后）。

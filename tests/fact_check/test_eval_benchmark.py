@@ -1222,3 +1222,63 @@ class TestProtocolNewExports:
         assert proto_params == impl_params, (
             f"Protocol EvalRunner.run params {proto_params} != impl {impl_params}"
         )
+
+
+# ===========================================================================
+# NEW FINDINGS — 2026-05-29 joint fact-check
+# ===========================================================================
+
+class TestFindingsBenchmarkBuilder:
+    """BenchmarkBuilder 不自动推断 expected_output_contains."""
+
+    def test_builder_does_not_populate_expected_output_contains(self):
+        """BenchmarkBuilder.build() 只推断 expected_tools, 不填充 expected_output_contains."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        src = inspect.getsource(BenchmarkBuilder.build)
+        assert "expected_output_contains" not in src, (
+            "CONFIRMED: BenchmarkBuilder never sets expected_output_contains. "
+            "Users must manually edit the JSON to add output keywords."
+        )
+
+    def test_builder_does_infer_expected_tools(self):
+        """BenchmarkBuilder 确实从 tool_call_start 事件推断 expected_tools."""
+        from arf.evaluation.builder import BenchmarkBuilder
+        src = inspect.getsource(BenchmarkBuilder.build)
+        assert "expected_tools" in src
+        assert "tool_call_start" in src
+
+    def test_eval_doc_no_longer_claims_auto_infer_output_keywords(self):
+        """FIXED 2026-05-29: Doc 不再声称自动推断输出关键词."""
+        doc_path = Path(__file__).parent.parent.parent / "docs" / "eval-benchmark.md"
+        content = doc_path.read_text(encoding="utf-8")
+        assert "自动推断预期工具调用和输出关键词" not in content
+
+
+class TestFindingsEvalPathFixes:
+    """eval-benchmark.md 残留旧路径 memory/sessions/."""
+
+    def test_eval_doc_all_paths_use_memory_traces(self):
+        """FIXED 2026-05-29: 所有路径已修正为 memory/traces/."""
+        doc_path = Path(__file__).parent.parent.parent / "docs" / "eval-benchmark.md"
+        content = doc_path.read_text(encoding="utf-8")
+        assert ("./memory/sessions" not in content
+                and "memory/sessions/" not in content), (
+            "FIX VERIFIED: No stale memory/sessions paths in eval-benchmark.md"
+        )
+
+
+class TestFindingsMaxParallelDeadCode:
+    """max_parallel 参数被接受但从未使用 — 行为缺陷."""
+
+    def test_max_parallel_accepted_but_unused(self):
+        """EvalRunner.run() 接受 max_parallel 但循环不使用它.
+        这是行为缺陷: 传入 max_parallel=4 仍然串行执行."""
+        from arf.evaluation.runner import EvalRunner
+        src = inspect.getsource(EvalRunner.run)
+        assert "max_parallel" in src
+        # Check that the loop body doesn't use it
+        lines = [l.strip() for l in src.split("\n")]
+        loop_lines = [l for l in lines if "for case" in l or "gather" in l or "Semaphore" in l]
+        assert not any("gather" in l or "Semaphore" in l for l in loop_lines), (
+            "CONFIRMED: max_parallel parameter is dead code — no parallel dispatch"
+        )

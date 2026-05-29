@@ -18,7 +18,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 
 **问题**：Agent 的"正确行为"很难用静态断言描述。如何从真实用户对话中提取高质量的测试用例？
 
-**方案**：会话回放。`BenchmarkBuilder` 从 `FileTraceStore` 中的真实对话 trace 提取用户消息序列，自动推断预期工具调用和输出关键词，生成可编辑的 benchmark JSON。
+**方案**：会话回放。`BenchmarkBuilder` 从 `FileTraceStore` 中的真实对话 trace 提取用户消息序列，自动推断预期工具调用，生成可编辑的 benchmark JSON。输出关键词（`expected_output_contains`）需用户手动补充。
 
 ### 1.3 对 ARF 的启示
 
@@ -37,7 +37,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 ## 2. 架构
 
 ```
-真实对话 → FileTraceStore → memory/sessions/{session}.json
+真实对话 → FileTraceStore → memory/traces/{session}.json
                                     │
                            BenchmarkBuilder.build(session_id, name)
                                     │
@@ -67,7 +67,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 from arf.evaluation import BenchmarkBuilder
 from arf.observability.file_trace import FileTraceStore
 
-store = FileTraceStore(agent.event_bus, dir="./memory/sessions")
+store = FileTraceStore(agent.event_bus, dir="./memory/traces")
 builder = BenchmarkBuilder(store)
 
 # 从真实对话会话创建 benchmark
@@ -178,7 +178,7 @@ trace 所有 turn 中无 error 事件 → 1.0，有 → 0.0
 # Benchmark 和 report 的存储路径由 App 层决定，API 接受任意相对/绝对路径：
 #   benchmarks/{name}.json → 用户创建和编辑的 benchmark JSON
 #   reports/{name}.json    → runner 输出的 report JSON
-#   memory/sessions/       → FileTraceStore 写入的真实对话 trace
+#   memory/traces/          → FileTraceStore 写入的真实对话 trace
 ```
 
 ---
