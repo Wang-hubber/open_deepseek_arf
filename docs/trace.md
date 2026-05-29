@@ -43,7 +43,7 @@ GraphEngine._emit() / _make_event()
 EventBus.emit(AgentEvent)
     │
     ├─ FileTraceStore → memory/traces/{session_id}.json
-    │   （跳过 session_start, session_end, thinking_delta；
+    │   （跳过 session_start, session_end, thinking_delta, tool_call_chunk；
     │    guard_block, guard_pass, approval_required, approval_resolved 落盘）
     │
     ├─ UsageTracker → memory/usage.json
@@ -67,7 +67,8 @@ EventBus.emit(AgentEvent)
 | `user_input` | 用户发送消息 | content, turn |
 | `model_call_start` | 模型调用开始 | model, turn |
 | `model_call_end` | 模型调用结束 | model, usage, content |
-| `thinking_delta` | 流式思考增量 | content, reasoning *(仅 SSE，不入磁盘)* |
+| `thinking_delta` | 流式文本增量 | content, reasoning *(仅 SSE，不入磁盘)* |
+| `tool_call_chunk` | 流式工具调用增量 | name, arguments, delta *(仅 SSE，不入磁盘)* |
 | `tool_call_start` | 工具调用开始 | tool_name, arguments |
 | `tool_call_end` | 工具调用结束 | tool_name, success, result, error, duration_ms |
 | `tool_call_result` | 回放时工具结果产出 | tool_name, result *(仅 ReplayController 使用)* |
@@ -88,7 +89,7 @@ EventBus.emit(AgentEvent)
 
 ### 2.3 FileTraceStore
 
-`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`（默认 `dir=./memory/traces`，可通过 `ObservabilityConfig.trace_dir` 配置）。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%。
+`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`（默认 `dir=./memory/traces`，可通过 `ObservabilityConfig.trace_dir` 配置）。过滤规则：`session_start`、`session_end`、`thinking_delta`、`tool_call_chunk` 不入磁盘——`model_call_end` 已包含完整响应，流式中间片段（文本增量、工具调用增量）仅通过 SSE 推送。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%（实测 4000+ → 7 条核心事件）。
 
 `BaseAgent` 在构造时自动创建 `FileTraceStore` 并订阅 `EventBus`。App 层可通过 `agent.trace_store` 属性访问实例，通过 `ObservabilityConfig.trace_dir` 配置存储路径（或通过 `AppContext.trace_dir` 自动推导）。
 
