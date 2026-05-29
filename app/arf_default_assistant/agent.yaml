@@ -10,6 +10,7 @@ plugins:
   - planner
   - todo
   - undo
+  - memory
 
 system_prompt:
   template: |

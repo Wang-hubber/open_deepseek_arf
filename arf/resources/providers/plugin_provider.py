@@ -70,6 +70,8 @@ class PluginProvider:
                             "ARF_PLUGIN_CONFIG": json.dumps(
                                 {"plugin_name": plugin_dir.name}
                             ),
+                            "ARF_ROUND": "$ARF_ROUND",
+                            "ARF_SESSION_ID": "$ARF_SESSION_ID",
                         },
                     ))
 
