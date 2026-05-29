@@ -5,24 +5,103 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
-def _build_engine(**overrides):
-    """Build a minimal GraphEngine with mock dependencies."""
+def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
+                       model_provider=None, tmp_path=None, **overrides):
+    """Build a GraphEngine with real component defaults (no MagicMock)."""
+    from arf.engine.loop_strategies.react import ReActStrategy
+    from arf.engine.tool_executor import ConcurrentToolExecutor
     from arf.engine.graph import GraphEngine
+    from arf.resources.resolver import ResourceResolver
+    from arf.errors.retry import DefaultErrorPolicy
+    from arf.event_bus import InMemoryEventBus
+    from arf.engine.checkpoint import InMemoryStateStore
+
+    APP_DIR = Path(__file__).parent.parent / "app" / "arf_default_assistant"
+
+    if tool_provider is None:
+        from arf.resources.providers.tool_provider import ToolProvider
+        tool_provider = ToolProvider(APP_DIR / "tools")
+    if skill_provider is None:
+        from arf.resources.providers.skill_provider import SkillProvider
+        skill_provider = SkillProvider(APP_DIR / "skills")
+    if model_provider is None:
+        from arf.resources.providers.model_provider import ModelProvider
+        model_provider = ModelProvider(APP_DIR / "models")
+    if fake_model is None:
+        fake_model = FakeModelAdapter(default=FakeResponse(content="hello"))
+
+    resolver = ResourceResolver(tool_provider, skill_provider, model_provider)
+    state_store = overrides.pop("state_store", None) or InMemoryStateStore()
 
     defaults = {
-        "loop_strategy": MagicMock(),
-        "state_store": MagicMock(),
-        "tool_executor": MagicMock(),
-        "tool_resolver": MagicMock(),
-        "error_policy": None,
-        "model_router": None,
-        "event_bus": None,
-        "system_prompt": "",
+        "loop_strategy": ReActStrategy(max_turns=10),
+        "state_store": state_store,
+        "tool_executor": ConcurrentToolExecutor(resolver),
+        "tool_resolver": resolver,
+        "event_bus": InMemoryEventBus(),
+        "error_policy": DefaultErrorPolicy(tool_retry=0),
+        "approval_enabled": False,
     }
     defaults.update(overrides)
+
+    # Only set _call_model if not already provided via overrides
+    if "call_model" not in overrides:
+
+        async def _wrap_call(messages, model_name="", tools=None):
+            result = fake_model.chat_complete(messages, tools=tools)
+            return {
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+                "usage": result.usage,
+            }
+
+        defaults["call_model"] = _wrap_call
+
+    if "stream_model" not in overrides:
+
+        async def _wrap_stream(messages, model_name="", tools=None):
+            for chunk in fake_model.chat_stream_full(messages, tools=tools):
+                yield chunk
+
+        defaults["stream_model"] = _wrap_stream
+
     return GraphEngine(**defaults)
+
+
+class CountingStateStore:
+    """InMemoryStateStore wrapper that tracks put/get call counts for test assertions."""
+
+    def __init__(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        self._inner = InMemoryStateStore()
+        self.put_call_count = 0
+        self.get_call_count = 0
+        self.put_states = []
+        self.get_keys = []
+
+    async def put(self, key, state):
+        import copy
+        self.put_call_count += 1
+        self.put_states.append({"key": key, "state": copy.deepcopy(state) if isinstance(state, dict) else state})
+        return await self._inner.put(key, state)
+
+    async def get(self, key):
+        self.get_call_count += 1
+        self.get_keys.append(key)
+        return await self._inner.get(key)
+
+    async def delete(self, key):
+        return await self._inner.delete(key)
+
+    def reset(self):
+        self._inner.reset()
+        self.put_call_count = 0
+        self.get_call_count = 0
+        self.put_states = []
+        self.get_keys = []
 
 
 class TestRoundHooks:
@@ -47,26 +126,16 @@ class TestRoundHooks:
         }
 
     def _make_engine(self, hook_runner):
-        """Build engine with mocks that survive the full invoke() cycle."""
+        """Build engine with real components for the full invoke() cycle."""
         loop_strategy = MagicMock()
         loop_strategy.should_continue.side_effect = [True, False]
 
-        state_store = MagicMock()
-        state_store.get = AsyncMock(return_value=None)
-        state_store.put = AsyncMock()
-
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
-        engine = _build_engine(
+        fake = FakeModelAdapter(default=FakeResponse(content="hello"))
+        engine = _build_real_engine(
+            fake_model=fake,
             loop_strategy=loop_strategy,
-            state_store=state_store,
             hook_runner=hook_runner,
-            tool_resolver=tool_resolver,
         )
-        engine._call_model = AsyncMock(return_value={
-            "content": "hello", "tool_calls": [], "usage": {"total_tokens": 10},
-        })
         return engine
 
     def test_round_end_hook_fired_in_engine(self):
@@ -313,25 +382,11 @@ class TestTurnReset:
         """Engine receives current_turn=0 at the start of every round."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
-        state_store = MagicMock()
-        state_store.get = AsyncMock(return_value={
-            "session_id": "default",
-            "messages": [],
-            "current_turn": 15,
-            "session_active": True,
-            "interaction_round": 5,
-        })
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
         async def call_model(msgs, model, tools=None):
             return {"content": "hi back", "tool_calls": [], "usage": {}}
 
-        engine = _build_engine(
+        engine = _build_real_engine(
             loop_strategy=ReActStrategy(max_turns=50),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
         )
         engine._call_model = call_model
 
@@ -358,10 +413,6 @@ class TestTurnReset:
         from arf.engine.loop_strategies.react import ReActStrategy
 
         loop_strategy = ReActStrategy(max_turns=3)
-        state_store = MagicMock()
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
 
         call_count = 0
 
@@ -374,10 +425,8 @@ class TestTurnReset:
                 ], "usage": {}}
             return {"content": "done", "tool_calls": [], "usage": {}}
 
-        engine = _build_engine(
+        engine = _build_real_engine(
             loop_strategy=loop_strategy,
-            state_store=state_store,
-            tool_resolver=tool_resolver,
         )
         engine._call_model = call_model
         engine.tool_executor.execute = AsyncMock(return_value={})
@@ -402,19 +451,12 @@ class TestTurnReset:
         """Round 2 starts fresh even after Round 1 hit max_turns."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
-        state_store = MagicMock()
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
         async def call_model(msgs, model, tools=None):
             return {"content": "done", "tool_calls": [], "usage": {}}
 
         # Round 1: max_turns=1
-        engine_r1 = _build_engine(
+        engine_r1 = _build_real_engine(
             loop_strategy=ReActStrategy(max_turns=1),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
         )
         engine_r1._call_model = call_model
 
@@ -428,10 +470,8 @@ class TestTurnReset:
         assert r1["current_turn"] == 1
 
         # Round 2: fresh state, turn=0, max_turns=1 should allow 1 more call
-        engine_r2 = _build_engine(
+        engine_r2 = _build_real_engine(
             loop_strategy=ReActStrategy(max_turns=1),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
         )
         engine_r2._call_model = call_model
 
@@ -464,20 +504,12 @@ class TestTurnReset:
         loop_strategy = MagicMock()
         loop_strategy.should_continue = should_continue
 
-        state_store = MagicMock()
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
-        engine = _build_engine(
+        fake = FakeModelAdapter(default=FakeResponse(content="ok"))
+        engine = _build_real_engine(
+            fake_model=fake,
             loop_strategy=loop_strategy,
-            state_store=state_store,
-            tool_resolver=tool_resolver,
             hook_runner=hook_runner,
         )
-        engine._call_model = AsyncMock(return_value={
-            "content": "ok", "tool_calls": [], "usage": {},
-        })
 
         state = {
             "session_id": "test", "agent_name": "test",
@@ -892,21 +924,16 @@ class TestEngineCheckpointBehavior:
         """state_store.put() is called even for text-only (no tool) responses."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
-        state_store = MagicMock()
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
-        engine = _build_engine(
+        store = CountingStateStore()
+        fake = FakeModelAdapter(default=FakeResponse(
+            content="hello, no tools needed",
+            usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        ))
+        engine = _build_real_engine(
+            fake_model=fake,
             loop_strategy=ReActStrategy(max_turns=50),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
+            state_store=store,
         )
-        engine._call_model = AsyncMock(return_value={
-            "content": "hello, no tools needed",
-            "tool_calls": [],
-            "usage": {"total_tokens": 10},
-        })
 
         state = {
             "session_id": "test", "agent_name": "test",
@@ -917,7 +944,7 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        assert state_store.put.called, (
+        assert store.put_call_count >= 1, (
             "state_store.put() must be called even for text-only responses"
         )
 
@@ -926,10 +953,7 @@ class TestEngineCheckpointBehavior:
         one after append assistant+tool_calls (crash recovery), one after tool exec."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
-        state_store = MagicMock()
-        state_store.put = AsyncMock()
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
+        store = CountingStateStore()
 
         call_count = [0]
 
@@ -943,10 +967,9 @@ class TestEngineCheckpointBehavior:
                 }
             return {"content": "done", "tool_calls": [], "usage": {}}
 
-        engine = _build_engine(
+        engine = _build_real_engine(
             loop_strategy=ReActStrategy(max_turns=50),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
+            state_store=store,
         )
         engine._call_model = call_model
         engine.tool_executor.execute = AsyncMock(return_value={})
@@ -961,8 +984,8 @@ class TestEngineCheckpointBehavior:
 
         asyncio.run(engine.invoke(state))
         # Turns 1-2: 2 checkpoints each (before tool exec + after). Turn 3 text: 1.
-        assert state_store.put.call_count == 5, (
-            f"Expected 5 checkpoints (2 per tool turn + 1 text), got {state_store.put.call_count}"
+        assert store.put_call_count == 5, (
+            f"Expected 5 checkpoints (2 per tool turn + 1 text), got {store.put_call_count}"
         )
 
     def test_invoke_saves_checkpoint_before_tool_exec(self):
@@ -970,15 +993,7 @@ class TestEngineCheckpointBehavior:
         before tool execution — matching astream behavior."""
         from arf.engine.loop_strategies.react import ReActStrategy
 
-        put_states = []
-
-        async def capture_put(sid, state):
-            put_states.append((sid, list(state.get("messages", []))))
-
-        state_store = MagicMock()
-        state_store.put = capture_put
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
+        store = CountingStateStore()
 
         async def call_model(msgs, model, tools=None):
             return {
@@ -987,10 +1002,9 @@ class TestEngineCheckpointBehavior:
                 "usage": {},
             }
 
-        engine = _build_engine(
+        engine = _build_real_engine(
             loop_strategy=ReActStrategy(max_turns=50),
-            state_store=state_store,
-            tool_resolver=tool_resolver,
+            state_store=store,
         )
         engine._call_model = call_model
         engine.tool_executor.execute = AsyncMock(return_value={
@@ -1007,11 +1021,12 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        assert len(put_states) >= 1
+        assert len(store.put_states) >= 1
 
         # The first checkpoint should contain assistant with tool_calls
-        first_put = put_states[0][1]
-        last_assistant = first_put[-1]
+        first_put = store.put_states[0]["state"]
+        messages = first_put.get("messages", [])
+        last_assistant = messages[-1]
         assert last_assistant["role"] == "assistant"
         assert "tool_calls" in last_assistant, (
             "First checkpoint must persist assistant+tool_calls for crash recovery"
@@ -1290,14 +1305,14 @@ class TestCloseToolCalls:
 
     def test_no_messages_returns_unchanged(self):
         from arf.engine.graph import GraphEngine
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": []}
         result = engine._close_tool_calls(state)
         assert result["messages"] == []
 
     def test_no_tool_calls_returns_unchanged(self):
         from arf.engine.graph import GraphEngine
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
@@ -1307,7 +1322,7 @@ class TestCloseToolCalls:
 
     def test_unmatched_tool_call_gets_synthetic_result(self):
         from arf.engine.graph import GraphEngine
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": [
             {"role": "user", "content": "do it"},
             {"role": "assistant", "content": "ok", "tool_calls": [
@@ -1323,7 +1338,7 @@ class TestCloseToolCalls:
 
     def test_matched_tool_call_not_touched(self):
         from arf.engine.graph import GraphEngine
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": [
             {"role": "user", "content": "do"},
             {"role": "assistant", "content": "", "tool_calls": [
@@ -1343,7 +1358,7 @@ class TestActiveConfig:
     """Doc 2.7: _active_config() returns per-agent or default config."""
 
     def test_returns_default_when_no_active_agent(self):
-        engine = _build_engine(system_prompt="default_prompt", max_turns=20)
+        engine = _build_real_engine(system_prompt="default_prompt", max_turns=20)
         cfg = engine._active_config({"active_agent": ""})
         assert cfg["system_prompt"] == "default_prompt"
         assert cfg["max_turns"] == 20
@@ -1360,7 +1375,7 @@ class TestActiveConfig:
                 api_key_env="KEY", context_window=128000,
             )],
         )
-        engine = _build_engine(
+        engine = _build_real_engine(
             system_prompt="main_prompt",
             max_turns=10,
             sub_agent_configs={
@@ -1384,24 +1399,24 @@ class TestCancelled:
     """Doc 2.6: _cancelled() checks cancel_event non-blocking."""
 
     def test_cancelled_false_without_event(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         assert engine._cancelled() is False
 
     def test_cancelled_false_when_event_not_set(self):
         import asyncio
-        engine = _build_engine(cancel_event=asyncio.Event())
+        engine = _build_real_engine(cancel_event=asyncio.Event())
         assert engine._cancelled() is False
 
     def test_cancelled_true_when_event_set(self):
         import asyncio
         evt = asyncio.Event()
         evt.set()
-        engine = _build_engine(cancel_event=evt)
+        engine = _build_real_engine(cancel_event=evt)
         assert engine._cancelled() is True
 
     def test_set_cancel_event_late_binding(self):
         import asyncio
-        engine = _build_engine()
+        engine = _build_real_engine()
         assert engine._cancelled() is False
         evt = asyncio.Event()
         engine.set_cancel_event(evt)
@@ -1417,12 +1432,12 @@ class TestApprove:
     """Doc 2.8: approve(decision_id, approved) resolves pending approvals."""
 
     def test_approve_returns_false_for_unknown_id(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         assert engine.approve("unknown", True) is False
 
     def test_approve_sets_event_and_returns_true(self):
         import asyncio
-        engine = _build_engine()
+        engine = _build_real_engine()
         evt = asyncio.Event()
         engine._pending_approvals["d1"] = evt
         assert engine.approve("d1", True) is True
@@ -1430,7 +1445,7 @@ class TestApprove:
 
     def test_approve_denied_sets_false(self):
         import asyncio
-        engine = _build_engine()
+        engine = _build_real_engine()
         evt = asyncio.Event()
         engine._pending_approvals["d1"] = evt
         assert engine.approve("d1", False) is True
@@ -1445,7 +1460,7 @@ class TestParsToolCalls:
     """Doc 2.2: _pars_tool_calls handles dict and string model responses."""
 
     def test_dict_with_tool_calls(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         resp = {"content": "", "tool_calls": [
             {"id": "1", "name": "read", "params": {"file": "x"}}
         ]}
@@ -1454,14 +1469,14 @@ class TestParsToolCalls:
         assert result[0]["name"] == "read"
 
     def test_dict_without_tool_calls(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         resp = {"content": "hello", "tool_calls": []}
         result = engine._pars_tool_calls(resp)
         assert result == []
 
     def test_string_json_with_tool_calls(self):
         import json
-        engine = _build_engine()
+        engine = _build_real_engine()
         resp_str = json.dumps({"content": "", "tool_calls": [
             {"id": "1", "name": "write", "params": {"text": "hi"}}
         ]})
@@ -1470,7 +1485,7 @@ class TestParsToolCalls:
         assert result[0]["name"] == "write"
 
     def test_invalid_string_returns_empty(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         result = engine._pars_tool_calls("not json")
         assert result == []
 
@@ -1490,7 +1505,7 @@ class TestInjectHookMessages:
             hook_name: str = "test_hook"
             injected_message: str = ""
 
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": []}
         results = [HookResult(exit_code=2, injected_message="injected content")]
         engine._inject_hook_messages(results, state)
@@ -1505,14 +1520,14 @@ class TestInjectHookMessages:
             hook_name: str = "test_hook"
             injected_message: str = ""
 
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": []}
         results = [HookResult(exit_code=0, injected_message="should not appear")]
         engine._inject_hook_messages(results, state)
         assert state["messages"] == []
 
     def test_none_results_does_nothing(self):
-        engine = _build_engine()
+        engine = _build_real_engine()
         state = {"messages": []}
         engine._inject_hook_messages(None, state)
         assert state["messages"] == []
