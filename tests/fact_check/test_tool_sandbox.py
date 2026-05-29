@@ -73,8 +73,7 @@ class TestRegexOutputGuard:
         assert result.allowed is True
 
     def test_redact_labels_are_specific(self):
-        """Doc says [REDACTED] but code uses [REDACTED_API_KEY] and [REDACTED_PHONE].
-        This test documents the DOC BUG."""
+        """Doc §2.1: API key → [REDACTED_API_KEY], phone → [REDACTED_PHONE]."""
         from arf.guardrails.regex_clean import RegexOutputGuard
         patterns = RegexOutputGuard.PATTERNS
         replacements = [p[1] for p in patterns]
