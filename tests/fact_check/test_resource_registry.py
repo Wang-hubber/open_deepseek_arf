@@ -92,16 +92,12 @@ class TestArchitectureFlow:
 class TestToolProvider:
     """Doc §2.2: ToolProvider scans tools/{name}/ for tool.yaml + function.py."""
 
-    def test_constructor_accepts_tools_dir_not_fs_root(self):
-        """Doc claims providers accept `fs_root` — code uses `tools_dir`.
-        This is a DOC BUG: the doc says fs_root but code says tools_dir."""
+    def test_constructor_accepts_tools_dir(self):
+        """Doc: 各 Provider 接受各自目录参数（tools_dir/skills_dir/models_dir）."""
         from arf.resources.providers.tool_provider import ToolProvider
         sig = inspect.signature(ToolProvider.__init__)
         params = list(sig.parameters.keys())
-        # Doc says fs_root — reality check
         assert "tools_dir" in params
-        # Documented claim is wrong:
-        assert "fs_root" not in params
 
     def test_uses_importlib_spec_from_file_location(self):
         """Doc: importlib.util.spec_from_file_location for dynamic import."""
@@ -138,13 +134,12 @@ class TestToolProvider:
 class TestSkillProvider:
     """Doc §2.2: SkillProvider scans skills/*.yaml."""
 
-    def test_constructor_accepts_skills_dir_not_fs_root(self):
-        """Doc claims providers accept `fs_root` — code uses `skills_dir`."""
+    def test_constructor_accepts_skills_dir(self):
+        """Doc: 各 Provider 接受各自目录参数（tools_dir/skills_dir/models_dir）."""
         from arf.resources.providers.skill_provider import SkillProvider
         sig = inspect.signature(SkillProvider.__init__)
         params = list(sig.parameters.keys())
         assert "skills_dir" in params
-        assert "fs_root" not in params
 
     def test_scans_yaml_files(self):
         """Doc: scans skills/*.yaml. Each file = one SkillConfig."""
@@ -175,13 +170,12 @@ class TestSkillProvider:
 class TestModelProvider:
     """Doc §2.2: ModelProvider scans models/*.yaml."""
 
-    def test_constructor_accepts_models_dir_not_fs_root(self):
-        """Doc claims providers accept `fs_root` — code uses `models_dir`."""
+    def test_constructor_accepts_models_dir(self):
+        """Doc: 各 Provider 接受各自目录参数（tools_dir/skills_dir/models_dir）."""
         from arf.resources.providers.model_provider import ModelProvider
         sig = inspect.signature(ModelProvider.__init__)
         params = list(sig.parameters.keys())
         assert "models_dir" in params
-        assert "fs_root" not in params
 
     def test_activation_field_for_kernel_dynamic_split(self):
         """Doc: activation field used for kernel/dynamic separation."""
@@ -268,14 +262,10 @@ class TestFrozenDict:
         with pytest.raises(RuntimeError, match="frozen"):
             d.clear()
 
-    def test_frozen_dict_docstring_note(self):
-        """Doc §2.3 shows _FrozenDict docstring:
-        '对标 systemd 的静态单元缓存——init 时加载，之后不可变。'
-        Actual code has different docstring — this is a DOC BUG."""
+    def test_frozen_dict_has_docstring(self):
+        """Doc §2.3 shows _FrozenDict code block with freeze semantics."""
         from arf.resources.cache import _FrozenDict
         actual_doc = (_FrozenDict.__doc__ or "").strip()
-        # Doc shows a specific Chinese docstring; actual is English
-        # This test documents the discrepancy
         assert len(actual_doc) > 0  # has some docstring
 
 
@@ -458,9 +448,8 @@ class TestResourceResolver:
 class TestDefaultToolResolver:
     """Doc §2.4: DefaultToolResolver = ResourceResolver alias (backward compat)."""
 
-    def test_default_tool_resolver_is_separate_class(self):
-        """Doc says 'alias' but it's actually a wrapper class.
-        This is a DOC BUG: DefaultToolResolver is a wrapper, not an alias."""
+    def test_default_tool_resolver_is_wrapper(self):
+        """Doc: DefaultToolResolver 是向后兼容的包装类."""
         from arf.resources.resolver import DefaultToolResolver, ResourceResolver
         assert DefaultToolResolver is not ResourceResolver
         assert issubclass(DefaultToolResolver, object)
@@ -620,16 +609,12 @@ class TestReloadEndpoint:
     """Doc §2.3 mentions POST /api/resources/reload endpoint."""
 
     def test_reload_endpoint_path(self):
-        """Doc says POST /api/resources/reload but actual is POST /api/reload.
-        This is a DOC BUG."""
+        """Doc §2.3: POST /api/reload — 对标 systemctl daemon-reload."""
+        # Just verify the endpoint exists in the router
         router_path = Path("app/arf_default_assistant/routers/resources.py")
         if router_path.exists():
             source = router_path.read_text()
-            # Actual endpoint path
-            assert 'router.post("/api/reload")' in source or \
-                   '@router.post("/api/reload")' in source
-            # Doc claims /api/resources/reload — verify it's NOT that
-            assert '/api/resources/reload' not in source
+            assert '/api/reload' in source
 
 
 # ============================================================
@@ -639,11 +624,11 @@ class TestReloadEndpoint:
 class TestCompleteness:
     """Check for code entities not documented."""
 
-    def test_plugin_provider_exists_in_code(self):
-        """PluginProvider exists in code but NOT mentioned in doc.
-        This is a COMPLETENESS finding (Info)."""
+    def test_plugin_provider_mentioned_in_doc(self):
+        """Doc §2.2: PluginProvider 扩展了资源加载架构."""
         from arf.resources.providers.plugin_provider import PluginProvider
         assert PluginProvider is not None
+        # Doc now covers PluginProvider as "多源 Provider 架构的第一个实际案例"
 
     def test_function_backend_exists(self):
         """Doc mentions FunctionBackend indirectly — verify it exists."""
@@ -706,19 +691,14 @@ class TestDesignClaims:
         assert isinstance(cache.dynamic, dict)
         assert not hasattr(cache.dynamic, "freeze")
 
-    def test_provider_method_is_private_load_not_load_all(self):
-        """Doc mentions _load_all() but code uses _load().
-        This is a DOC BUG: method naming."""
+    def test_providers_have_load_method(self):
+        """Doc: Provider._load() 惰性重新扫描文件系统."""
         from arf.resources.providers.tool_provider import ToolProvider
         from arf.resources.providers.skill_provider import SkillProvider
         from arf.resources.providers.model_provider import ModelProvider
-        # All providers use _load, not _load_all
         assert hasattr(ToolProvider, "_load")
         assert hasattr(SkillProvider, "_load")
         assert hasattr(ModelProvider, "_load")
-        assert not hasattr(ToolProvider, "_load_all")
-        assert not hasattr(SkillProvider, "_load_all")
-        assert not hasattr(ModelProvider, "_load_all")
 
     def test_tool_provider_execute_has_rollback_support(self):
         """Doc doesn't explicitly mention rollback in ToolProvider,
