@@ -1,4 +1,6 @@
+# ============================================================================
 # Python
+# ============================================================================
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -9,62 +11,88 @@ build/
 # Virtual environment
 .venv/
 
-# IDE
+# ============================================================================
+# IDE / OS
+# ============================================================================
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
+Thumbs.db
 
-# Vite
-frontend/.vite/
-
-# Sensitive config (contains API keys) — only workspace models, not system definitions
-**/default_workspace/models/
-data/**/models/
-
-# Multi-user data directory (contains DB, user workspaces, SMTP config)
-data/
-
-# Tests
-
-# GitHub Actions (used for CI)
-
-# Vite cache
-.vite/
+# ============================================================================
+# 项目开发中间态文档 (设计方案 / plan / Claude 相关 / 测试报告等)
+# ============================================================================
 
 # Claude Code
 .claude/
 .superpowers/
 /superpowers
 
-# Legacy (has its own .git)
-arf_agent/
+# Project instructions (auto-generated, not tracked)
+CLAUDE.md
+
+# Design docs & plans (intermediate artifacts)
+docs/superpowers/
+docs/SELF_REVIEW.md
+
+# Personal notes
+zhihu_article*.md
+
+# ============================================================================
+# App 使用数据 (trace / session / memory / workspace 等运行时生成)
+# ============================================================================
+
+# Runtime logs
+logs/
+
+# Memory & traces (framework-generated at runtime)
+memory/
+traces/
+
+# App-specific runtime data
+app/arf_default_assistant/memory/
+app/arf_default_assistant/node_modules/
+app/arf_default_assistant/package-lock.json
+
+# Session trace files (numeric .md filenames in app dir)
+app/arf_default_assistant/*[0-9]*.md
 
 # Workspace directories
 default/
 default_workspace/
 
-# Personal notes
-zhihu_article*.md
-
-# OS
-.DS_Store
-Thumbs.db
-.hooks.json
+# ============================================================================
+# Sensitive data
+# ============================================================================
 
 # API keys
 .env
 
-# Project artifacts (not tracked)
-CLAUDE.md
-logs/
-app/web/dist/
-docs/superpowers/
-docs/SELF_REVIEW.md
+# Sensitive config (contains API keys)
+**/default_workspace/models/
+data/**/models/
 
-# App runtime data (framework-generated)
-app/arf_default_assistant/memory/
-app/arf_default_assistant/node_modules/
-app/arf_default_assistant/package-lock.json
+# Multi-user data directory (DB, user workspaces, SMTP config)
+data/
+
+# ============================================================================
+# Legacy & build artifacts
+# ============================================================================
+
+# Legacy (has its own .git)
+arf_agent/
+
+# Vite
+.vite/
+frontend/.vite/
+app/web/dist/
+
+# Screenshots
 *.png
 
+# ============================================================================
+# Misc
+# ============================================================================
+.hooks.json
