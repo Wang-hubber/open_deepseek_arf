@@ -82,10 +82,10 @@ Session  ───────────────────────�
 ```
 BaseAgent.chat() / astream()                      arf/agent/base.py:679
 │
-├─ state_store.get(session_id)                         # StateStore 加载会话状态（崩溃恢复）
+├─ state_store.get(session_id)                         # StateStore 加载 State快照（崩溃恢复）
 ├─ crash recovery 判定 → [Hook] session_end(recovery)  # 仅在恢复场景
 ├─ new session? → [Hook] session_start                 # BaseAgent 触发 hook
-├─ begin_round(深拷贝 + 工作区快照)                     # RoundManager 检查点（undo 回滚）
+├─ begin_round(深拷贝 + 工作区快照)                     # RoundManager Round检查点（undo 回滚）
 ├─ [Hook] round_start                                  # BaseAgent 触发
 │
 ▼
@@ -106,8 +106,8 @@ GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
 │   │   ├─ [模型调用] _call_model / _stream_model       # 含 fallback chain
 │   │   ├─ [Hook] post_model_call / [输出检查]
 │   │   ├─ [工具解析] _pars_tool_calls()
-│   │   │   ├─ 无 tool_calls → [落盘] state_store.put() → break
-│   │   │   └─ 有 tool_calls → [落盘] assistant+tool_calls（崩溃恢复）
+│   │   │   ├─ 无 tool_calls → [State快照] state_store.put() → break
+│   │   │   └─ 有 tool_calls → [State快照] assistant+tool_calls（崩溃恢复）
 │   │   │                     暂存 _pending_tool_calls
 │   │   │
 │   │   ├─── execute_tools ────────────────────────────────
@@ -119,7 +119,7 @@ GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
 │   │   ├─ [工具输出摘要] / [Hook] post_tool_exec
 │   │   ├─ _close_tool_calls(state)                     # 兜底：孤儿 tool_calls 注入合成结果
 │   │   ├─ [Handoff 检测] → _execute_handoff() → continue
-│   │   ├─ [落盘] state_store.put()
+│   │   ├─ [State快照] state_store.put()
 │   │   └─ LoopStrategy.should_break(state)? → break
 │   │   │
 │   │   └─── 未知 step → 默认 fallback 到 call_model ────
@@ -141,8 +141,8 @@ Round 流转：   begin_round() → [round_start hook] → Engine Loop → [roun
 
 Turn 流转：    should_continue? → next_step() → dispatch
                call_model: turn++ → route → compact → pre_model → model_call
-               → post_model → guard → parse → (text? break) → 落盘 assistant+tool_calls
-               execute_tools: guard → execute → close_tool_calls → handoff? → 落盘 → should_break?
+               → post_model → guard → parse → (text? break) → State快照 assistant+tool_calls
+               execute_tools: guard → execute → close_tool_calls → handoff? → State快照 → should_break?
 ```
 
 ### 2.4 双模主循环：invoke / astream
@@ -165,7 +165,7 @@ Turn 流转：    should_continue? → next_step() → dispatch
 
 **差异**：
 - 模型调用层：`astream` 使用 `_stream_model` 逐 token 产出 `thinking_delta` 事件；`invoke` 使用 `_call_model` 一次性获取。
-- 两条路径的 StateStore 落盘行为一致：均在 appending assistant+tool_calls 后立即落盘（崩溃恢复——若进程在工具执行期间被 kill，下次启动从该状态继续），工具执行+handoff 后再次落盘。
+- 两条路径的 StateStore State快照行为一致：均在 appending assistant+tool_calls 后立即State快照（崩溃恢复——若进程在工具执行期间被 kill，下次启动从该状态继续），工具执行+handoff 后再次写 State快照。
 
 ### 2.5 循环策略
 
@@ -297,9 +297,9 @@ def _cancelled(self) -> bool:
 
 ### 2.11 持久化与回滚
 
-ARF 有两套独立的持久化机制，服务不同目的：
+ARF 有两套独立的持久化机制：Round检查点（undo 回滚）和 State快照（崩溃恢复），服务不同目的：
 
-#### StateStore — 会话状态落盘（崩溃恢复）
+#### StateStore — State快照（崩溃恢复）
 
 `arf/engine/checkpoint.py`，在引擎循环内多处调用 `put()`：
 
@@ -308,12 +308,12 @@ ARF 有两套独立的持久化机制，服务不同目的：
 - 用途：进程重启后从磁盘恢复会话状态。`_close_tool_calls()` 在 `invoke()/astream()` 入口保证消息序列完整性。
 - 频率：每个 turn 至少一次（text-only）；有工具执行的 turn 两次（装配 assistant+tool_calls 后 + 工具执行完毕后）。
 
-#### RoundManager — Round 级别检查点（undo 回滚）
+#### RoundManager — Round检查点（undo 回滚）
 
 `arf/engine/round_manager.py`，在 `BaseAgent.chat()/astream()` 入口调用 `begin_round()`：
 
 - `begin_round()`：深拷贝 AgentState + 快照 workspace 文件到 `memory/checkpoints/{round_num}/`。**每 round 一次**。
-- `record_handoff()`：记录切换不创建新检查点——同一 round 内多次 handoff，undo 一次回退整个 round
+- `record_handoff()`：记录切换不创建新Round检查点——同一 round 内多次 handoff，undo 一次回退整个 round
 - `undo(steps)`：pop N 个 round，返回 oldest popped 的 state_snapshot，恢复 workspace 文件
 - 持久化：`rounds.json` 索引 + 每个检查点的 `state.json`。`_restore_from_disk()` 在 RoundManager 构造时重放，**支持跨进程重启后 undo**
 - `max_undo_depth`：默认 3，deque 自动淘汰最旧 round
@@ -322,7 +322,7 @@ ARF 有两套独立的持久化机制，服务不同目的：
 
 #### 两者关系
 
-| | StateStore（落盘） | RoundManager（检查点） |
+| | StateStore（State快照） | RoundManager（Round检查点） |
 |------|---------|------|
 | 触发时机 | 引擎循环内多处 | 每个 `chat()/astream()` 入口 |
 | 粒度 | 每 turn 多次 | **每 round 一次** |
