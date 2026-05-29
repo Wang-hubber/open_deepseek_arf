@@ -154,6 +154,9 @@ class TestMemoryWriterRemoved:
         from arf.engine.loop_strategies.react import ReActStrategy
         from arf.memory.file_store import FileMemoryStore
 
+        from tests.test_agent_execution import _build_real_engine
+        from arf.engine.checkpoint import InMemoryStateStore
+
         memory_writer = MagicMock()
         memory_writer.extract_and_write = AsyncMock()
         memory_store = FileMemoryStore(workspace=str(tmp_path))
@@ -163,34 +166,11 @@ class TestMemoryWriterRemoved:
             usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
         ))
 
-        async def wrap_call(messages, model="", tools=None):
-            result = fake.chat_complete(messages, tools=tools)
-            return {
-                "content": result.content,
-                "tool_calls": result.tool_calls,
-                "usage": result.usage,
-            }
-
-        loop_strategy = MagicMock()
-        loop_strategy.should_continue.side_effect = [True, False]
-
-        state_store = MagicMock()
-        state_store.get = AsyncMock(return_value=None)
-        state_store.put = AsyncMock()
-
-        tool_resolver = MagicMock()
-        tool_resolver.get_tool_definitions = AsyncMock(return_value=[])
-
-        engine = GraphEngine(
-            loop_strategy=loop_strategy,
-            state_store=state_store,
-            tool_executor=MagicMock(),
-            tool_resolver=tool_resolver,
-            memory_store=memory_store,
+        engine = _build_real_engine(
+            fake_model=fake,
+            state_store=InMemoryStateStore(),
             memory_writer=memory_writer,
-            system_prompt="test",
             max_turns=1,
-            call_model=wrap_call,
         )
 
         state: dict = {
