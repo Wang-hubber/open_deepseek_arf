@@ -821,21 +821,21 @@ class TestSseStream:
 
 
 # ---------------------------------------------------------------------------
-# TuiDashboard
+# TuiDashboard — REMOVED 2026-05-29
 # ---------------------------------------------------------------------------
 
-class TestTuiDashboard:
-    """Verify TuiDashboard exists (part of observability)."""
+class TestTuiDashboardRemoved:
+    """TuiDashboard 已移除 — trace_viewer.html 提供更好的可观测性."""
 
-    def test_tui_dashboard_exists(self):
-        """TuiDashboard is available in arf/observability/tui.py."""
-        from arf.observability.tui import TuiDashboard
-        assert TuiDashboard is not None
+    def test_tui_module_no_longer_exists(self):
+        """arf/observability/tui.py 已删除."""
+        tui_path = Path(__file__).parent.parent.parent / "arf" / "observability" / "tui.py"
+        assert not tui_path.exists(), "TuiDashboard module should be removed"
 
-    def test_tui_dashboard_exported(self):
-        """TuiDashboard is listed in __all__ of arf/observability."""
-        from arf.observability import TuiDashboard
-        assert TuiDashboard is not None
+    def test_tui_not_in_observability_all(self):
+        """TuiDashboard 不再在 observability __all__ 中."""
+        from arf.observability import __all__ as obs_all
+        assert "TuiDashboard" not in obs_all
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +853,6 @@ class TestTraceModuleFiles:
             "arf/observability/usage_tracker.py",
             "arf/observability/replay.py",
             "arf/observability/otel.py",
-            "arf/observability/tui.py",
             "arf/observability/__init__.py",
             "arf/streaming/adapters/sse.py",
             "arf/core/events.py",
@@ -990,12 +989,10 @@ class TestFindingsWiringGaps:
         assert "subscribe" not in src
         assert "EventBus" not in src
 
-    def test_tui_dashboard_not_wired(self):
-        """TuiDashboard 存在但完全未接入任何组件. 文档也未提及."""
-        from arf.observability.tui import TuiDashboard
-        src = inspect.getsource(TuiDashboard)
-        assert "subscribe" not in src
-        assert "EventBus" not in src
+    def test_tui_dashboard_removed(self):
+        """TuiDashboard 已于 2026-05-29 移除. 不再需要 wiring."""
+        tui_path = Path(__file__).parent.parent.parent / "arf" / "observability" / "tui.py"
+        assert not tui_path.exists()
 
     def test_replay_controller_not_wired(self):
         """FileReplayController 存在但完全未接入任何组件. 不在 BaseAgent 或 Engine 中."""
@@ -1097,23 +1094,15 @@ class TestFindingsApiTableGaps:
                 assert search_path in content, f"Endpoint {endpoint} not found in {file_name}"
 
 
-class TestFindingsTuiNotInDoc:
-    """TuiDashboard + OtelTracer 都未被文档提及作为可观测性组件."""
+class TestFindingsTuiRemovedFromDoc:
+    """TuiDashboard 已从 docs/trace.md 移除 — trace_viewer.html 是更好的替代."""
 
-    def test_tui_dashboard_now_mentioned_in_trace_doc(self):
-        """FIXED 2026-05-29: TuiDashboard 已添加到 trace.md §2.10."""
+    def test_tui_no_longer_in_trace_doc(self):
+        """2026-05-29: TuiDashboard 从 trace.md 移除."""
         doc_path = Path(__file__).parent.parent.parent / "docs" / "trace.md"
         content = doc_path.read_text(encoding="utf-8")
-        assert "TuiDashboard" in content or "TUI" in content, (
-            "FIX VERIFIED: TuiDashboard now documented in trace.md"
-        )
-
-    def test_tui_has_no_config_wiring(self):
-        """TuiDashboard 通过环境变量 ARF_TUI 控制,无法通过 agent.yaml 配置."""
-        from arf.observability.tui import TuiDashboard
-        src = inspect.getsource(TuiDashboard.__init__)
-        assert "ARF_TUI" in src
-        assert "os.environ" in src
+        assert "TuiDashboard" not in content
+        assert "tui.py" not in content
 
 
 class TestFindingsDocAppLayerLeakage:

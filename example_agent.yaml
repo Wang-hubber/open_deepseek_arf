@@ -229,11 +229,8 @@ handover:
 #   replay:
 #     dir: ./traces                      # 录制文件存放目录 (默认 ./traces)
 
-# --- TUI Dashboard ---
-# 实现: arf.observability.tui.TuiDashboard
-# ⚠ 文档未提及. 通过 ARF_TUI 环境变量控制. 未接入 EventBus.
-#   tui:
-#     enabled: false                     # 通过 ARF_TUI=1 环境变量启用 (默认 false)
+# --- TUI Dashboard (已移除) ---
+# TuiDashboard 已于 2026-05-29 移除 — 单文件 trace_viewer.html 提供更好的可观测性。
 
 # ============================================================================
 # § Eval Benchmark (docs/eval-benchmark.md)

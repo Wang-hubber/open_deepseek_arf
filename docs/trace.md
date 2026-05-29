@@ -143,11 +143,7 @@ Round 0 (3 次内部迭代)
 
 `arf/observability/otel.py` 文件存在但当前仅包含框架代码，未接入 EventBus。是预留的 OTLP 导出扩展点——未来可将 AgentEvent 转换为 OpenTelemetry Span 并导出到 Jaeger/Tempo/Prometheus。
 
-### 2.10 TUI Dashboard
-
-`arf/observability/tui.py` — Rich 终端实时调试面板。通过 `ARF_TUI=1` 环境变量启用，实时展示模型调用次数、token 消耗和工具调用时间线。未接入 EventBus，通过 `consume(events)` 方法批量消费。
-
-### 2.11 配置
+### 2.10 配置
 
 `ObservabilityConfig`（`arf/core/config_base.py`）定义可观测性全部配置项，`BaseAgent` 自动根据配置或 `AppContext` 创建 `FileTraceStore` 和 `UsageTracker`。
 
