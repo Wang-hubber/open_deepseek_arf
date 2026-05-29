@@ -519,9 +519,10 @@ class GraphEngine:
                 )
                 if needs_approval:
                     decision_id = f"{session_id}_{name}_{id(tc)}"
-                    events.append({"type": "approval_required",
-                                   "data": {"decision_id": decision_id, "tool_name": name,
-                                            "params": params}})
+                    # Emit approval_required NOW so frontend sees it BEFORE we wait
+                    self._emit("approval_required", {
+                        "decision_id": decision_id, "tool_name": name, "params": params,
+                    }, session_id=session_id)
                     approval_evt = asyncio.Event()
                     self._pending_approvals[decision_id] = approval_evt
                     try:
