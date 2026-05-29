@@ -74,6 +74,7 @@ class PluginProvider:
                             ),
                             "ARF_ROUND": "$ARF_ROUND",
                             "ARF_SESSION_ID": "$ARF_SESSION_ID",
+                            "ARF_MEMORY_DIR": "$ARF_MEMORY_DIR",
                         },
                     ))
 

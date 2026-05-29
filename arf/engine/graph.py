@@ -49,6 +49,7 @@ class GraphEngine:
         # Multi-agent support
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
+        memory_workspace: str = "./memory",
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -77,6 +78,7 @@ class GraphEngine:
         self._memory_top_k = memory_top_k
         self._cancel_event = cancel_event
         self._interaction_round = 0
+        self._memory_dir = memory_workspace
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
@@ -952,6 +954,7 @@ class GraphEngine:
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
+                "memory_dir": self._memory_dir,
             })
         state = self._close_tool_calls(state)
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
@@ -1330,6 +1333,7 @@ class GraphEngine:
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
+                "memory_dir": self._memory_dir,
             })
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},

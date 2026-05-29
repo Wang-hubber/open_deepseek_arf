@@ -228,6 +228,9 @@ class BaseAgent:
         mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
         default_workspace = str(ctx.workspace_dir) if ctx else "./memory"
         mem_workspace = mem_cfg.workspace if mem_cfg else default_workspace
+        # Resolve to absolute path for hook subprocesses
+        from pathlib import Path as _Path
+        _mem_abs = str(_Path(mem_workspace).resolve())
         memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_workspace))
 
         # Build system model adapter for all background tasks (memory, routing, compaction).
@@ -478,6 +481,7 @@ class BaseAgent:
             approval_timeout=_parse_duration(adv.human_loop.timeout if adv and adv.human_loop else "60s"),
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
+            memory_workspace=_mem_abs,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions
