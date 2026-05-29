@@ -249,7 +249,7 @@ handover:
 # --- 注意事项 ---
 # BenchmarkBuilder.build() 只自动提取 expected_tools，不填充 expected_output_contains。
 # 输出关键词需用户在生成的 JSON 中手动补充。
-# max_parallel 参数已定义但当前未实现并行执行（已知缺陷）。
+# max_parallel 已从协议和实现中移除（详见 docs/eval-benchmark.md §7 演进方向）。
 
 # ============================================================================
 # § Agent Execution 补充 (docs/agent-execution.md) — 审计更新 2026-05-29

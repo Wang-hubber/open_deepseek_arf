@@ -19,8 +19,7 @@ class EvalRunner:
             OutputContainsMetric(),
         ]
 
-    async def run(self, benchmark: EvalBenchmark, *,
-                  max_parallel: int = 1) -> EvalReport:
+    async def run(self, benchmark: EvalBenchmark) -> EvalReport:
         config_hash = self._hash_config(self._agent)
 
         per_case = []

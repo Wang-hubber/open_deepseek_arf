@@ -65,9 +65,7 @@ class BenchmarkBuilder(Protocol):
 
 
 class EvalRunner(Protocol):
-    async def run(
-        self, benchmark: EvalBenchmark, *, max_parallel: int = 1,
-    ) -> EvalReport: ...
+    async def run(self, benchmark: EvalBenchmark) -> EvalReport: ...
 
 
 class EvalComparator(Protocol):

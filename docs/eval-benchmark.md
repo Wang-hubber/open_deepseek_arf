@@ -190,3 +190,8 @@ trace 所有 turn 中无 error 事件 → 1.0，有 → 0.0
 - **CI 集成**：退出码 0（通过）/ 1（退化）的 CI 就绪模式
 - **语义相似度 Metric**：用 LLM 评估输出内容的语义差异，而非关键词匹配
 - **增量 Benchmark 更新**：基于真实对话自动追加新用例
+- **并行执行**：支持 `max_parallel` 参数实现多 case 并发运行。前置条件：
+  1. Agent 的 session 级状态隔离 — `_active_sessions`、`EventBus`、`StateStore` 需支持并发访问，或按 session 路由
+  2. 每个 parallel worker 持有独立 agent 实例，或引擎支持 session 级状态分片
+  3. `asyncio.Semaphore(max_parallel)` 控制并发度，`asyncio.gather` 调度多 case
+  4. 当前已删除协议中的 `max_parallel` 参数（避免承诺未实现的能力），待隔离就绪后重新引入

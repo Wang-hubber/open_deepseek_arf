@@ -474,12 +474,12 @@ class TestEvalRunner:
         assert inspect.iscoroutinefunction(EvalRunner.run)
 
     def test_run_signature(self):
-        """Doc: run(benchmark, *, max_parallel=1)."""
+        """2026-05-29: run(benchmark) — max_parallel removed (session isolation not ready)."""
         from arf.evaluation.runner import EvalRunner
         sig = inspect.signature(EvalRunner.run)
         params = list(sig.parameters.keys())
         assert "benchmark" in params
-        assert "max_parallel" in params
+        assert "max_parallel" not in params
 
     def test_run_returns_report(self):
         """Doc: run() returns EvalReport."""
@@ -1133,13 +1133,14 @@ class TestBaseAgentEvaluate:
         assert "EvalRunner" in src
         assert "DefaultEvalRunner" not in src
 
-    def test_evaluate_accepts_benchmark_and_max_parallel(self):
+    def test_evaluate_accepts_benchmark(self):
+        """2026-05-29: evaluate(benchmark) — max_parallel removed."""
         from arf.agent.base import BaseAgent
         import inspect
         sig = inspect.signature(BaseAgent.evaluate)
         params = list(sig.parameters.keys())
         assert "benchmark" in params
-        assert "max_parallel" in params
+        assert "max_parallel" not in params
 
 
 # ---------------------------------------------------------------------------
@@ -1209,7 +1210,8 @@ class TestProtocolNewExports:
         assert "benchmark_name" in impl_fields
 
     def test_protocol_eval_runner_matches_impl(self):
-        """Protocol EvalRunner.run matches implementation signature."""
+        """Protocol EvalRunner.run matches implementation signature.
+        max_parallel removed 2026-05-29 — session isolation not ready."""
         from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
         from arf.evaluation.runner import EvalRunner as ImplRunner
         import inspect
@@ -1218,7 +1220,7 @@ class TestProtocolNewExports:
         proto_params = list(proto_sig.parameters.keys())
         impl_params = list(impl_sig.parameters.keys())
         assert "benchmark" in proto_params
-        assert "max_parallel" in proto_params
+        assert "max_parallel" not in proto_params
         assert proto_params == impl_params, (
             f"Protocol EvalRunner.run params {proto_params} != impl {impl_params}"
         )
@@ -1267,18 +1269,31 @@ class TestFindingsEvalPathFixes:
         )
 
 
-class TestFindingsMaxParallelDeadCode:
-    """max_parallel 参数被接受但从未使用 — 行为缺陷."""
+class TestFindingsEvalRunnerSignature:
+    """Protocol 和实现签名一致性 + max_parallel 已删除."""
 
-    def test_max_parallel_accepted_but_unused(self):
-        """EvalRunner.run() 接受 max_parallel 但循环不使用它.
-        这是行为缺陷: 传入 max_parallel=4 仍然串行执行."""
-        from arf.evaluation.runner import EvalRunner
-        src = inspect.getsource(EvalRunner.run)
-        assert "max_parallel" in src
-        # Check that the loop body doesn't use it
-        lines = [l.strip() for l in src.split("\n")]
-        loop_lines = [l for l in lines if "for case" in l or "gather" in l or "Semaphore" in l]
-        assert not any("gather" in l or "Semaphore" in l for l in loop_lines), (
-            "CONFIRMED: max_parallel parameter is dead code — no parallel dispatch"
+    def test_protocol_eval_runner_matches_impl(self):
+        """Protocol EvalRunner.run matches implementation signature."""
+        from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
+        from arf.evaluation.runner import EvalRunner as ImplRunner
+        import inspect
+        proto_sig = inspect.signature(ProtoRunner.run)
+        impl_sig = inspect.signature(ImplRunner.run)
+        proto_params = list(proto_sig.parameters.keys())
+        impl_params = list(impl_sig.parameters.keys())
+        assert "benchmark" in proto_params
+        assert proto_params == impl_params, (
+            f"Protocol EvalRunner.run params {proto_params} != impl {impl_params}"
         )
+
+    def test_max_parallel_removed_from_signatures(self):
+        """FIXED 2026-05-29: max_parallel 已从协议和实现中删除.
+        参数在 session 级状态隔离就绪前不承诺该能力."""
+        from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
+        from arf.evaluation.runner import EvalRunner as ImplRunner
+        import inspect
+        proto_sig = inspect.signature(ProtoRunner.run)
+        impl_sig = inspect.signature(ImplRunner.run)
+        assert "max_parallel" not in proto_sig.parameters
+        assert "max_parallel" not in impl_sig.parameters
+        # 演进计划已记录在 docs/eval-benchmark.md §7

@@ -821,7 +821,8 @@ class BaseAgent:
             new_data["advanced"] = overrides["advanced"]
             self.config = AgentConfig(**new_data)
 
-    async def evaluate(self, benchmark, *, max_parallel: int = 1):
+    async def evaluate(self, benchmark):
+        """Run an EvalBenchmark against this agent, returning EvalReport."""
         from arf.evaluation.runner import EvalRunner
         runner = EvalRunner(self, self._event_bus)
-        return await runner.run(benchmark, max_parallel=max_parallel)
+        return await runner.run(benchmark)
