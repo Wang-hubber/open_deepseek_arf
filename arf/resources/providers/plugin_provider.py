@@ -64,13 +64,14 @@ class PluginProvider:
                     if hook_file.stem.startswith("_"):
                         continue  # skip __init__, __pycache__, etc.
                     hook_name = f"{plugin_dir.name}__{hook_file.stem}"
+                    import sys as _sys
                     self._scanned_hooks.append(HookDefinition(
                         name=hook_name,
                         type=hook_file.stem,
-                        run=[f"python {hook_file}"],
+                        run=[f"{_sys.executable} {hook_file}"],
                         env={
                             "ARF_PLUGIN_CONFIG": json.dumps(
-                                {"plugin_name": plugin_dir.name}
+                                {"plugin_name": plugin_dir.name, "interval": 1}
                             ),
                             "ARF_ROUND": "$ARF_ROUND",
                             "ARF_SESSION_ID": "$ARF_SESSION_ID",

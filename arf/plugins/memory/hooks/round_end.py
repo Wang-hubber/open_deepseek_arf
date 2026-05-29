@@ -40,15 +40,16 @@ def main():
         Path(__file__).parent.parent
         / "tools" / "memory_extract" / "extractor.py"
     )
-    subprocess.Popen(
-        ["python", str(extractor),
+    result = subprocess.run(
+        [sys.executable, str(extractor),
          "--session-file", str(tmp_file),
          "--memory-dir", str(memory_dir),
          "--session-id", session_id],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=60,
     )
-
+    if result.returncode != 0:
+        print(f"Extractor failed: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
     sys.exit(0)
 
 

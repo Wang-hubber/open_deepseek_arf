@@ -951,6 +951,8 @@ class GraphEngine:
 
 
         if self.hook_runner:
+            _l = logging.getLogger("arf.engine")
+            _l.info("round_end hook firing: round=%d session=%s", self._interaction_round, session_id)
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
@@ -1330,6 +1332,8 @@ class GraphEngine:
 
 
         if self.hook_runner:
+            _l = logging.getLogger("arf.engine")
+            _l.info("round_end hook firing: round=%d session=%s", self._interaction_round, session_id)
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
