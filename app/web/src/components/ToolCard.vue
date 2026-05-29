@@ -25,7 +25,6 @@ const previewFilename = computed(() => parsedResult.value?.filename || '')
 const previewContent = computed(() => parsedResult.value?.preview || '')
 const previewPath = computed(() => parsedResult.value?.path || '')
 
-// Auto-open preview cards
 const autoOpened = ref(false)
 if (hasPreview.value && !autoOpened.value) {
   open.value = true
@@ -36,9 +35,33 @@ function toggle() {
   open.value = !open.value
 }
 
-function tryFormatJson(str: string): string {
-  try { return JSON.stringify(JSON.parse(str), null, 2) }
-  catch { return str }
+const MAX_VAL = 200
+
+function formatArgs(argsStr: string): { label: string; value: string }[] {
+  try {
+    const obj = JSON.parse(argsStr)
+    if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+      return Object.entries(obj).map(([k, v]) => {
+        let val: string
+        if (typeof v === 'string') {
+          if (v.length > MAX_VAL) {
+            // path-like keys: truncate prefix, keep suffix (filename)
+            val = (k === 'path' || k.endsWith('_path'))
+              ? '…' + v.slice(-MAX_VAL)
+              : v.slice(0, MAX_VAL) + '…'
+          } else {
+            val = v
+          }
+        } else {
+          val = JSON.stringify(v)
+          if (val.length > MAX_VAL) val = val.slice(0, MAX_VAL) + '…'
+        }
+        return { label: k, value: val }
+      })
+    }
+  } catch {}
+  const s = argsStr
+  return [{ label: '', value: s.length > MAX_VAL ? s.slice(0, MAX_VAL) + '…' : s }]
 }
 
 function langFromPath(p: string): string {
@@ -81,11 +104,16 @@ function langFromPath(p: string): string {
 
         <div class="tc-field">
           <div class="tc-field-label">{{ t('common.parameters') }}</div>
-          <div class="tc-field-value">{{ tryFormatJson(arguments) }}</div>
+          <div class="tc-params-grid">
+            <div v-for="(p, pi) in formatArgs(arguments)" :key="pi" class="tc-param-row">
+              <span v-if="p.label" class="tc-param-key">{{ p.label }}</span>
+              <code class="tc-param-val">{{ p.value }}</code>
+            </div>
+          </div>
         </div>
         <div v-if="result" class="tc-field">
           <div class="tc-field-label">{{ t('common.result') }}</div>
-          <div class="tc-field-value">{{ tryFormatJson(result) }}</div>
+          <div class="tc-field-value">{{ result }}</div>
         </div>
         <div v-if="error" class="tc-field">
           <div class="tc-field-label">{{ t('common.error') }}</div>
@@ -128,5 +156,30 @@ function langFromPath(p: string): string {
 }
 .fpc-content code {
   font-family: inherit; color: inherit;
+}
+.tc-params-grid {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.tc-param-row {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 12px;
+}
+.tc-param-key {
+  color: var(--accent);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  flex-shrink: 0;
+  min-width: 60px;
+}
+.tc-param-key::after { content: ':'; }
+.tc-param-val {
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  max-width: 100%;
 }
 </style>
