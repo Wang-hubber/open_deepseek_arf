@@ -126,6 +126,25 @@ class GraphEngine:
     def checkpoint_count(self) -> int:
         return self._rounds.count()
 
+    async def _try_repair_400(self, exc: Exception, state: AgentState,
+                               msgs: list, system_prompt: str,
+                               session_id: str, model: str, tools: list) -> tuple:
+        """Try message repair for 400 tool-message errors. Returns (repaired_msgs, response_or_None)."""
+        if "400" not in str(exc) or "tool" not in str(exc).lower():
+            return msgs, None
+        self._repair_messages(state)
+        if self.state_store:
+            await self.state_store.put(session_id, state)
+        rebuilt = [{"role": "system", "content": system_prompt}]
+        rebuilt.extend(state.get("messages", []))
+        try:
+            resp = await self._call_model(rebuilt, model, tools=tools)
+            logger = logging.getLogger("arf.engine")
+            logger.info("Message repair resolved 400 error, retry succeeded")
+            return rebuilt, resp
+        except Exception:
+            return rebuilt, None
+
     def _resolve_fallback(self, model_name: str, exc: Exception) -> str | None:
         """Resolve fallback model via error_policy → model_router chain.
 
@@ -363,31 +382,29 @@ class GraphEngine:
         return event
 
     def _close_tool_calls(self, state: AgentState) -> AgentState:
-        """Ensure every assistant tool_calls has matching tool messages.
+        """Deprecated. Use _repair_messages instead."""
+        return self._repair_messages(state)
 
-        For each assistant message with tool_calls, verify that matching tool
-        messages exist AFTER that assistant and BEFORE the next assistant.
-        If any are missing, inject synthetic tool results immediately after the
-        assistant (or after its existing tool messages).
+    def _repair_messages(self, state: AgentState) -> AgentState:
+        """Repair message sequence integrity before model calls.
 
-        Called before every model call in both invoke() and astream().
+        Two repairs:
+        1. Missing tool results: assistant has tool_calls but no matching
+           tool message in scope → inject synthetic result.
+        2. Orphaned tool messages: tool message without a preceding
+           assistant that has matching tool_calls in its scope → remove.
         """
-        msgs = state.get("messages", [])
+        msgs: list = state.get("messages", [])
         if not msgs:
             return state
 
-        # Find all assistant indices (boundaries for tool result scoping)
+        logger = logging.getLogger("arf.engine")
+
+        # --- Repair 1: inject missing tool results ---
         assistant_indices = [
             i for i, m in enumerate(msgs)
-            if m.get("role") == "assistant"
+            if isinstance(m, dict) and m.get("role") == "assistant"
         ]
-
-        if not assistant_indices:
-            return state
-
-        # For each assistant with tool_calls, check its tool results are in scope
-        logger = logging.getLogger("arf.engine")
-        injected_total = 0
 
         for ai, idx in enumerate(assistant_indices):
             msg = msgs[idx]
@@ -395,47 +412,68 @@ class GraphEngine:
             if not tool_calls:
                 continue
 
-            # The tool results for THIS assistant must lie between idx+1 and
-            # the next assistant (or end of list)
             next_assistant = (
                 assistant_indices[ai + 1]
                 if ai + 1 < len(assistant_indices)
                 else len(msgs)
             )
 
-            # Collect tool_call_ids that ARE already in the correct range
             covered: set[str] = set()
             for j in range(idx + 1, next_assistant):
-                if msgs[j].get("role") == "tool":
+                if isinstance(msgs[j], dict) and msgs[j].get("role") == "tool":
                     tc_id = msgs[j].get("tool_call_id", "")
                     if tc_id:
                         covered.add(tc_id)
 
-            # Find missing ones and inject right after the assistant
             missing = []
             for tc in tool_calls:
                 tc_id = tc.get("id", "")
                 if tc_id and tc_id not in covered:
                     missing.append(tc_id)
 
-            if not missing:
+            if missing:
+                inject_at = idx + 1
+                for j in range(idx + 1, next_assistant):
+                    if isinstance(msgs[j], dict) and msgs[j].get("role") == "tool":
+                        inject_at = j + 1
+
+                for tc_id in reversed(missing):
+                    logger.warning("Repair: injecting missing tool result for %s (assistant idx %d)", tc_id, idx)
+                    msgs.insert(inject_at, {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": "(tool result unavailable)",
+                    })
+
+        # --- Repair 2: remove orphaned tool messages ---
+        orphan_indices = []
+        for i, m in enumerate(msgs):
+            if not isinstance(m, dict) or m.get("role") != "tool":
                 continue
+            tc_id = m.get("tool_call_id", "")
+            if not tc_id:
+                orphan_indices.append(i)
+                continue
+            found = False
+            for j in range(i - 1, -1, -1):
+                prev = msgs[j]
+                if isinstance(prev, dict) and prev.get("role") == "assistant":
+                    for tc in prev.get("tool_calls", []):
+                        if tc.get("id") == tc_id:
+                            found = True
+                            break
+                    if found:
+                        break
+                if isinstance(prev, dict) and prev.get("role") == "user":
+                    break
+            if not found:
+                orphan_indices.append(i)
 
-            # Inject after the last existing tool message for this assistant,
-            # or right after the assistant if no tool messages exist yet
-            inject_at = idx + 1
-            for j in range(idx + 1, next_assistant):
-                if msgs[j].get("role") == "tool":
-                    inject_at = j + 1
-
-            for tc_id in reversed(missing):
-                logger.warning("Closing open tool_call %s from assistant at index %d", tc_id, idx)
-                msgs.insert(inject_at, {
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": "(tool result unavailable)",
-                })
-                injected_total += 1
+        for i in reversed(orphan_indices):
+            orphan = msgs[i]
+            logger.warning("Repair: removing orphaned tool message at idx %d (tool_call_id=%s)",
+                           i, orphan.get("tool_call_id", "?"))
+            del msgs[i]
 
         return state
 
@@ -681,15 +719,18 @@ class GraphEngine:
                 try:
                     response = await self._call_model(msgs, model, tools=tools)
                 except Exception as exc:
-                    fallback_model = self._resolve_fallback(model, exc)
-                    if fallback_model:
-                        self._emit("model_call_start", {"model": fallback_model, "turn": turn,
-                                   "fallback_from": model}, session_id=session_id)
-                        response = await self._call_model(msgs, fallback_model, tools=tools)
-                        model = fallback_model
-                        state["current_model"] = fallback_model
-                    else:
-                        raise
+                    msgs, response = await self._try_repair_400(exc, state, msgs, system_prompt,
+                                                                 session_id, model, tools)
+                    if response is None:
+                        fallback_model = self._resolve_fallback(model, exc)
+                        if fallback_model:
+                            self._emit("model_call_start", {"model": fallback_model, "turn": turn,
+                                       "fallback_from": model}, session_id=session_id)
+                            response = await self._call_model(msgs, fallback_model, tools=tools)
+                            model = fallback_model
+                            state["current_model"] = fallback_model
+                        else:
+                            raise
                 if isinstance(response, dict) and response.get("usage"):
                     state["last_token_usage"] = response["usage"].get("total_tokens", 0)
                 self._emit("model_call_end", {"model": model, "turn": turn,
@@ -1014,32 +1055,42 @@ class GraphEngine:
                         else:
                             resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
                     except Exception as exc:
-                        fallback_model = self._resolve_fallback(model, exc)
-                        if fallback_model:
-                            yield self._make_event(type="model_call_start",
-                                             data={"model": fallback_model, "turn": turn,
-                                                   "fallback_from": model},
-                                             turn=turn, session_id=session_id)
-                            resp = await self._call_model(msgs, fallback_model, tools=tools)
-                            model = fallback_model
-                            state["current_model"] = fallback_model
+                        msgs, repaired = await self._try_repair_400(exc, state, msgs, system_prompt,
+                                                                     session_id, model, tools)
+                        if repaired is not None:
+                            resp = repaired
                         else:
-                            raise
+                            fallback_model = self._resolve_fallback(model, exc)
+                            if fallback_model:
+                                yield self._make_event(type="model_call_start",
+                                                 data={"model": fallback_model, "turn": turn,
+                                                       "fallback_from": model},
+                                                 turn=turn, session_id=session_id)
+                                resp = await self._call_model(msgs, fallback_model, tools=tools)
+                                model = fallback_model
+                                state["current_model"] = fallback_model
+                            else:
+                                raise
                 else:
                     try:
                         resp = await self._call_model(msgs, model, tools=tools)
                     except Exception as exc:
-                        fallback_model = self._resolve_fallback(model, exc)
-                        if fallback_model:
-                            yield self._make_event(type="model_call_start",
-                                             data={"model": fallback_model, "turn": turn,
-                                                   "fallback_from": model},
-                                             turn=turn, session_id=session_id)
-                            resp = await self._call_model(msgs, fallback_model, tools=tools)
-                            model = fallback_model
-                            state["current_model"] = fallback_model
+                        msgs, repaired = await self._try_repair_400(exc, state, msgs, system_prompt,
+                                                                     session_id, model, tools)
+                        if repaired is not None:
+                            resp = repaired
                         else:
-                            raise
+                            fallback_model = self._resolve_fallback(model, exc)
+                            if fallback_model:
+                                yield self._make_event(type="model_call_start",
+                                                 data={"model": fallback_model, "turn": turn,
+                                                       "fallback_from": model},
+                                                 turn=turn, session_id=session_id)
+                                resp = await self._call_model(msgs, fallback_model, tools=tools)
+                                model = fallback_model
+                                state["current_model"] = fallback_model
+                            else:
+                                raise
                     stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
 
                 yield self._make_event(type="model_call_end",

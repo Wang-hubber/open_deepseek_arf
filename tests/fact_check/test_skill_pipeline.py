@@ -260,9 +260,9 @@ class TestToolCallClosure:
         assert hasattr(GraphEngine, "_step_classify_tool_calls")
 
     def test_close_tool_calls_source(self):
-        """Doc: _close_tool_calls injects '(tool result unavailable)' placeholder."""
+        """Doc: _repair_messages injects '(tool result unavailable)' placeholder."""
         from arf.engine.graph import GraphEngine
-        source = inspect.getsource(GraphEngine._close_tool_calls)
+        source = inspect.getsource(GraphEngine._repair_messages)
         assert "tool result unavailable" in source
 
     def test_classify_source_has_blocked_messages(self):
