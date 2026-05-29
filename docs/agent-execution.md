@@ -85,7 +85,7 @@ BaseAgent.chat() / astream()                      arf/agent/base.py:679
 ├─ state_store.get(session_id)                         # 加载或判定新 session
 ├─ crash recovery 判定 → [Hook] session_end(recovery)  # 仅在恢复场景
 ├─ new session? → [Hook] session_start                 # BaseAgent 触发 hook
-├─ begin_round(检查点深拷贝)                             # RoundManager
+├─ begin_round(深拷贝 + 工作区快照)                     # RoundManager 检查点（undo 用）
 ├─ [Hook] round_start                                  # BaseAgent 触发
 │
 ▼
@@ -141,8 +141,8 @@ Round 流转：   begin_round() → [round_start hook] → Engine Loop → [roun
 
 Turn 流转：    should_continue? → next_step() → dispatch
                call_model: turn++ → route → compact → pre_model → model_call
-               → post_model → guard → parse → (text? break) → save assistant+tool_calls
-               execute_tools: guard → execute → close_tool_calls → handoff? → checkpoint → should_break?
+               → post_model → guard → parse → (text? break) → 落盘 assistant+tool_calls
+               execute_tools: guard → execute → close_tool_calls → handoff? → 落盘 → should_break?
 ```
 
 ### 2.4 双模主循环：invoke / astream
@@ -312,7 +312,14 @@ def _cancelled(self) -> bool:
 
 `GraphEngine.undo()`（`arf/engine/graph.py:103-121`）封装 RoundManager.undo，额外 emit `undo_executed` 事件（不删除 trace 事件，只标记回滚边界）。
 
-**检查点在引擎中的行为**：两条路径行为一致——每个 turn 至少一次检查点；有工具执行的 turn 两次（执行前 + 执行后）。'_close_tool_calls()' 在入口处保证消息序列完整性。
+**两种持久化机制**：
+
+| 机制 | 触发时机 | 粒度 | 用途 |
+|------|---------|------|------|
+| `RoundManager.begin_round()` | 每个 `chat()/astream()` 调用入口 | **每 round 一次** | undo 回滚（深拷贝状态 + 工作区快照） |
+| `StateStore.put()` | 引擎循环内多处 | 每 turn 多次 | 崩溃恢复（会话状态落盘）；`_close_tool_calls()` 在下次入口保证消息序列完整 |
+
+两者独立运作：undo 回到 round 起点（从 RoundManager 快照恢复），崩溃恢复从上次 `StateStore.put()` 的磁盘状态继续。
 
 ### 2.12 Hook 系统
 
