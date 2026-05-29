@@ -682,7 +682,8 @@ class GraphEngine:
     async def invoke(self, state: AgentState) -> AgentState:
         state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
-        self._interaction_round = state.get("interaction_round", 0)
+        self._interaction_round = state.get("interaction_round", 0) + 1
+        state["interaction_round"] = self._interaction_round
         self._emit("session_start", {"session_id": session_id}, session_id=session_id)
 
         while self.loop_strategy.should_continue(state):
@@ -962,7 +963,8 @@ class GraphEngine:
         pluggable without changing the engine."""
         state = self._close_tool_calls(state)
         session_id = state.get("session_id", "default")
-        self._interaction_round = state.get("interaction_round", 0)
+        self._interaction_round = state.get("interaction_round", 0) + 1
+        state["interaction_round"] = self._interaction_round
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
 

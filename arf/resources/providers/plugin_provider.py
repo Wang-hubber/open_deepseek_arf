@@ -61,6 +61,8 @@ class PluginProvider:
                 for hook_file in sorted(hooks_dir.iterdir()):
                     if not hook_file.suffix == ".py":
                         continue
+                    if hook_file.stem.startswith("_"):
+                        continue  # skip __init__, __pycache__, etc.
                     hook_name = f"{plugin_dir.name}__{hook_file.stem}"
                     self._scanned_hooks.append(HookDefinition(
                         name=hook_name,
