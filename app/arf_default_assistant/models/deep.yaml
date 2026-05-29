@@ -3,7 +3,7 @@ api_type: openai
 model: deepseek-v4-pro
 api_base: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
-context_window: 1000000
+context_window: 64000
 activation: kernel
 kwargs:
   reasoning_effort: max

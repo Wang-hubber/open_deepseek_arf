@@ -122,14 +122,14 @@ advanced:
         - "rm -rf"
         - "sudo"
         - "chmod 777"
-  human_loop:
-    approval_points: tool_name_allowlist
-    allowlist:
-      - file_writer
-      - file_deleter
-      - python_exec
-    channel: websocket
-    timeout: 60s
+#   human_loop:
+#     approval_points: tool_name_allowlist
+#     allowlist:
+#       - file_writer
+#       - file_deleter
+#       - python_exec
+#     channel: websocket
+#     timeout: 60s
   memory:
     store: file
     workspace: ./memory
