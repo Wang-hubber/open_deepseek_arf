@@ -1,0 +1,127 @@
+"""Tests for e2e_runner.py"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "app" / "arf_default_assistant"))
+
+from e2e_runner import E2ERunner
+
+
+def test_load_personas():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    personas = runner.load_personas()
+    assert len(personas) == 4
+    names = {p["name"] for p in personas}
+    assert names == {"coding", "writer", "novelist", "rpg"}
+    for p in personas:
+        assert "context" in p
+        assert "focus_modules" in p
+        assert "conversation_style" in p
+
+
+def test_state_init():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    state = runner.init_state(total_rounds=40)
+    assert state["round"] == 0
+    assert state["total_rounds"] == 40
+    assert state["rounds"] == []
+    assert state["issues"] == []
+
+
+def test_state_advance():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    runner.init_state(total_rounds=40)
+    round_data = {
+        "persona": "coding",
+        "message": "test message",
+        "response_content": "test response",
+        "sse_types": ["chunk", "done"],
+        "error": None,
+    }
+    runner.record_round(round_data)
+    assert runner.state["round"] == 1
+    assert len(runner.state["rounds"]) == 1
+    assert runner.state["rounds"][0]["persona"] == "coding"
+
+
+def test_trace_needed_triggers():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    runner.init_state(total_rounds=40)
+    for i in range(5):
+        runner.record_round({"persona": "coding", "message": "msg", "response_content": "ok", "sse_types": ["done"], "error": None})
+    assert runner.trace_check_needed(interval=5) is True
+
+
+def test_trace_not_needed_early():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    runner.init_state(total_rounds=40)
+    for i in range(2):
+        runner.record_round({"persona": "coding", "message": "msg", "response_content": "ok", "sse_types": ["done"], "error": None})
+    assert runner.trace_check_needed(interval=5) is False
+
+
+def test_issue_recording():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    runner.init_state(total_rounds=40)
+    runner.record_issue(module="compaction", severity="high", description="context_summary not generated", evidence="trace shows missing summary event")
+    assert len(runner.state["issues"]) == 1
+    assert runner.state["issues"][0]["module"] == "compaction"
+    assert runner.state["issues"][0]["severity"] == "high"
+
+
+def test_parse_sse_events_normal():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    raw = (
+        'data: {"type":"chunk","content":"hello"}\n\n'
+        'data: {"type":"done","response":"hello","history":[],"session_id":"default"}\n\n'
+    )
+    events = runner._parse_sse(raw)
+    assert len(events) == 2
+    assert events[0]["type"] == "chunk"
+    assert events[1]["type"] == "done"
+
+
+def test_parse_sse_with_initial_comment():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    raw = (
+        ': ' + ' ' * 2048 + '\n\n'
+        'data: {"type":"chunk","content":"hi"}\n\n'
+        'data: {"type":"done","response":"hi","history":[],"session_id":"default"}\n\n'
+    )
+    events = runner._parse_sse(raw)
+    assert len(events) == 2
+    assert events[0]["type"] == "chunk"
+
+
+def test_detect_error_events():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    events = [{"type": "chunk"}, {"type": "done"}]
+    assert runner._has_error(events) is False
+
+    events_with_error = [{"type": "chunk"}, {"type": "error", "detail": "API error"}]
+    assert runner._has_error(events_with_error) is True
+
+
+def test_detect_empty_response():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    events = [{"type": "done", "response": "hello"}]
+    assert runner._is_empty_response(events) is False
+
+    events_empty = [{"type": "done", "response": ""}]
+    assert runner._is_empty_response(events_empty) is True
+
+    events_no_done = [{"type": "chunk"}]
+    assert runner._is_empty_response(events_no_done) is True
+
+
+def test_issue_markdown_export():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    runner.init_state()
+    runner.record_issue("compaction", "high", "context_summary missing", "round 12 trace")
+    runner.record_issue("routing", "low", "fallback not logged", "round 15 trace")
+    md = runner.export_issues_markdown()
+    assert "## compaction" in md
+    assert "## routing" in md
+    assert "**High**" in md
+    assert "context_summary missing" in md
