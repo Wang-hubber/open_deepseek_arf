@@ -158,7 +158,12 @@ invoke() / astream() 主循环:
     → continue  # 下一轮自动用新 Agent 配置
 ```
 
-反向 handoff（System Agent → User Agent）走完全相同的检测和解析流程。`_execute_handoff` 发现目标 Agent 的 state 已在 store 中存在时，直接恢复而非重新构建。
+反向 handoff（Agent B → Agent A）走完全相同的检测和解析流程。`_execute_handoff` 发现目标 Agent 的 state 已在 store 中存在时，直接恢复而非重新构建。
+
+**查找与状态查询**：
+
+- `get_rule(from_agent, to_agent)` — 根据 from/to agent 名返回匹配的 `HandoverRuleConfig`，用于引擎在 handoff 时查询规则的 context 配置。无匹配时返回 `None`。
+- `has_rules` (property) — 引擎主循环据此决定每轮工具执行后是否调用 `detect()`。无 handover 规则时跳过检测，避免不必要的扫描。
 
 ### 2.3 InMemoryAgentBus — 消息总线
 
@@ -170,21 +175,25 @@ invoke() / astream() 主循环:
 class InMemoryAgentBus:
     _queues: dict[str, asyncio.Queue]   # 每个 Agent 一个队列（maxsize=100）
     _agents: dict[str, AgentInfo]       # 注册的 Agent 能力清单
+    sent_messages: list[AgentMessage]   # 发送历史（test double）
 
-    async def send(message: AgentMessage):
+    async def send(message: AgentMessage, timeout: float | None = None):
+        timeout=None → put() 阻塞，自然施加背压
+        timeout>0    → put() 超时抛 TimeoutError
         if message.receiver is None:
             → broadcast: 投递到所有已注册队列
         else:
-            → targeted: 投递到指定 Agent 的队列
+            → targeted: 投递到指定 Agent 的队列（不存在则自动创建队列）
 
     async def receive(agent_name: str):
-        → 从自己的队列中 yield AgentMessage
+        → async generator: while True 循环中 yield 队列中的 AgentMessage
+        → 调用方必须 aclose() 清理，否则 event loop 退出时 hang
 
     async def register(agent: AgentInfo):
         → 创建队列 + 记录能力清单
 
-    async def discover(capability: str | None):
-        → 按能力筛选已注册 Agent
+    async def discover(capability: str | None = None):
+        → 按能力筛选已注册 Agent；capability=None 时返回全部
 ```
 
 **AgentMessage 数据模型**：
@@ -198,7 +207,7 @@ class InMemoryAgentBus:
 | `correlation_id` | `str` | 请求-响应匹配 ID |
 | `reply_to` | `str \| None` | 回复目标 Agent 名 |
 
-**背压机制**：`asyncio.Queue(maxsize=100)` 限制队列深度。队列满时 `put()` 阻塞，自然施加背压——对标 OS 管道的数据流控制。
+**背压机制**：`asyncio.Queue(maxsize=100)` 限制队列深度。队列满时 `put()` 阻塞，可通过 `timeout` 参数覆盖——`timeout=None`（默认）时阻塞等待直到有空间，`timeout>0` 时超时抛 `TimeoutError`。`send()` 对未注册 receiver 自动创建队列，避免 receiver 尚未启动时消息丢失。
 
 ### 2.4 PeerAgent — 去中心化 P2P 通讯
 
@@ -208,9 +217,17 @@ class InMemoryAgentBus:
 
 ```python
 class PeerAgent:
+    # 属性
+    name: str                # Agent 名
+    capabilities: list[str]  # 能力列表
+
     # 注册
     async def start():
         → bus.register(AgentInfo(name, description, capabilities))
+
+    # 接收消息（async generator — 调用方必须 aclose()）
+    async def listen():
+        → async for msg in bus.receive(self.name): yield msg
 
     # 广播
     async def broadcast(msg_type, payload):
@@ -220,19 +237,24 @@ class PeerAgent:
     async def send_to(target, msg_type, payload):
         → bus.send(AgentMessage(receiver=target, ...))
 
+    # 发现
+    async def discover_peers(capability=None):
+        → bus.discover(capability)  # 按能力筛选，自动排除自身
+
+    async def find_peer(capability):
+        → 返回第一个匹配 capability 的 AgentInfo 或 None
+
     # 协商
     async def negotiate(proposal, peers, timeout=30s):
         → 向一组 peer 发送 query → 收集响应（在超时前）
         → 返回 {peer_name: response_payload}
-
-    # 发现
-    async def discover_peers(capability=None):
-        → bus.discover(capability)  # 按能力筛选
+        → **注意**: 内部 async for receive() 循环在 target 不响应时死等，
+          因为 receive() 的 q.get() 阻塞先于 deadline 检查
 
     # 高层 Handoff
     async def handoff(task, context, target_capability, timeout=60s):
         → find_peer(capability) → send_to(peer, "handoff", {task, context})
-        → 等待响应
+        → 等待响应；无 capable peer 时返回 None
 ```
 
 **与 HandoffManager 的关系**：`HandoffManager` 是引擎集成的信号式切换（基于 `agent.yaml` 静态配置 + `{"handoff": True}` 工具信号）；`PeerAgent` 是框架库层面的去中心化 P2P 通讯（基于 AgentBus 动态发现 + 消息传递）。两者互补——HandoffManager 处理"当 User Agent 的工具说 handoff 时切换到谁"，PeerAgent 处理"当 Agent 需要跟其他 Agent 通讯时怎么收发消息"。
@@ -247,9 +269,13 @@ class PeerAgent:
 class SharedWorkspace(Protocol):
     async def write(key: str, value: dict, owner: str) -> None
     async def read(key: str) -> dict | None
+
+# DictWorkspace 实现额外提供:
+#   write_history: list[dict]  — 每次 write 的记录（审计追踪）
+#   reset()  — 清空全部数据（test double）
 ```
 
-用于跨 Agent 传递结构化数据——如 System Agent 创建的工具 schema、Skill 生成结果、中间推理状态。
+`read()` 对不存在的 key 返回 `None`。多次 `write()` 同一 key 会覆盖，`write_history` 保留全部写入记录。用于跨 Agent 传递结构化数据——如 Agent B 创建的工具 schema、Skill 生成结果、中间推理状态。
 
 ### 2.6 InMemoryLock — 同步锁
 
@@ -264,7 +290,11 @@ class Lock(Protocol):
 
 class InMemoryLock:
     # 单字典实现，ttl 到期自动释放
-    # acquire() 返回 bool — 成功获取或已被占用
+    # acquire(key, owner, ttl=30.0, wait=None) → bool
+    #   wait=None      — 立即返回（已占用→False）
+    #   wait=seconds   — 阻塞等待最多 N 秒后重试
+    # release(key, owner)  — 仅 owner 可释放
+    # reset()  — 清空全部锁（test double）
 ```
 
 防止两个 Agent 同时修改同一共享资源——如同时写 `tools/` 下的同名文件、同时更新 `DictWorkspace` 的同一 key。
@@ -278,16 +308,20 @@ class InMemoryLock:
 ```python
 class MajorityVoteConsensus:
     def __init__(threshold=0.5):
-        # 默认超过半数即通过
+        # 默认超过半数即通过（> 0.5, 非 >=）
 
     async def propose(proposal, voters) -> dict:
         # 创建提案，返回 {"proposal_id": ..., "status": "open"}
 
     async def vote(proposal_id, vote):
-        # 记录投票
+        # 记录投票；相同 proposal 可多次投票（列表追加，不覆盖）
+
+    async def verdict(proposal_id) -> dict:
+        # 计票结果：{"proposal_id": ..., "status": "passed"|"failed"|"not_found",
+        #           "yes": N, "total": N, "ratio": float, "threshold": float}
 ```
 
-当多个 Agent 需要对"下一步做什么"达成一致时使用——如多个 System Agent worker 竞争创建同一工具的权限、多轮协商后选择最佳方案。
+当多个 Agent 需要对"下一步做什么"达成一致时使用——如多个 Agent worker 竞争创建同一工具的权限、多轮协商后选择最佳方案。`verdict()` 在全部投票完成后调用，返回是否达成共识以及计票详情。
 
 ### 2.8 RoundRobinSupervisor — 集中式编排
 
@@ -344,11 +378,11 @@ A2A 通讯在引擎循环中的介入点：
 
 # 子 Agent 定义
 agents:
-  - name: sys_agent
-    role: 系统工程师
+  - name: agent_a              # 通用占位名（App 层替换为具体名称）
+    role: 用户交互 Agent
     system_prompt:
       template: |
-        You are the ARF System Engineer.
+        You are the ARF Assistant.
         {{INVENTORY}}
         ## Critical Rules
         {{CRITICAL_RULES}}
@@ -373,15 +407,15 @@ agents:
 # 交接规则
 handover:
   rules:
-    - from_agent: arf_assistant
-      to_agent: sys_agent
-      trigger: "创建或修改 resources(tools/skills/models) 目录下的资源文件"
+    - from_agent: agent_a
+      to_agent: agent_b
+      trigger: "创建或修改资源文件（tools/skills/models 目录）"
       context:
         raw_turns: 5        # 携带最近 5 轮对话上下文
-        task_summary: true   # system_model 生成任务摘要
-    - from_agent: sys_agent
-      to_agent: arf_assistant
-      trigger: "资源操作完成或需要用户确认"
+        task_summary: true   # LLM 生成任务摘要
+    - from_agent: agent_b
+      to_agent: agent_a
+      trigger: "资源操作完成或需要确认"
       context:
         raw_turns: 0        # 返回时不给原始上下文
         task_summary: true

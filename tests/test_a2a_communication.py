@@ -534,3 +534,647 @@ class TestGetRule:
         assert hm.has_rules is True
         hm2 = HandoffManager(rules=[])
         assert hm2.has_rules is False
+
+
+# ---------------------------------------------------------------------------
+# 9. MajorityVoteConsensus.verdict() behavioral tests (Doc 2.7)
+# NOTE: Doc currently omits verdict() — should be added to section 2.7.
+# ---------------------------------------------------------------------------
+
+class TestConsensusVerdict:
+    """Doc 2.7: MajorityVoteConsensus — 多数投票. Verify verdict() tallying."""
+
+    def test_verdict_passed_when_above_threshold(self):
+        from arf.communication.consensus import MajorityVoteConsensus
+
+        async def run():
+            c = MajorityVoteConsensus(threshold=0.5)
+            result = await c.propose({"action": "deploy"}, ["a", "b", "c"])
+            await c.vote(result["proposal_id"], "yes")
+            await c.vote(result["proposal_id"], "yes")
+            await c.vote(result["proposal_id"], "yes")
+            v = await c.verdict(result["proposal_id"])
+            assert v["status"] == "passed"
+            assert v["yes"] == 3
+            assert v["total"] == 3
+
+        asyncio.run(run())
+
+    def test_verdict_failed_when_below_threshold(self):
+        from arf.communication.consensus import MajorityVoteConsensus
+
+        async def run():
+            c = MajorityVoteConsensus(threshold=0.5)
+            result = await c.propose({"action": "deploy"}, ["a", "b", "c"])
+            await c.vote(result["proposal_id"], "yes")
+            # Only 1/3 votes yes → ratio 0.33 < 0.5 threshold
+            v = await c.verdict(result["proposal_id"])
+            assert v["status"] == "failed"
+            assert v["yes"] == 1
+
+        asyncio.run(run())
+
+    def test_verdict_exact_threshold_not_passed(self):
+        """threshold=0.5 means > 0.5, not >=. 50% yes → failed."""
+        from arf.communication.consensus import MajorityVoteConsensus
+
+        async def run():
+            c = MajorityVoteConsensus(threshold=0.5)
+            result = await c.propose({"action": "x"}, ["a", "b"])
+            await c.vote(result["proposal_id"], "yes")
+            # 1/2 = 0.5, not > 0.5 → failed
+            v = await c.verdict(result["proposal_id"])
+            assert v["status"] == "failed"
+
+        asyncio.run(run())
+
+    def test_verdict_not_found_for_unknown_id(self):
+        from arf.communication.consensus import MajorityVoteConsensus
+
+        async def run():
+            c = MajorityVoteConsensus()
+            v = await c.verdict("nonexistent")
+            assert v["status"] == "not_found"
+
+        asyncio.run(run())
+
+    def test_verdict_with_zero_voters(self):
+        from arf.communication.consensus import MajorityVoteConsensus
+
+        async def run():
+            c = MajorityVoteConsensus()
+            result = await c.propose({"action": "solo"}, [])
+            v = await c.verdict(result["proposal_id"])
+            assert v["ratio"] == 0.0
+            assert v["status"] == "failed"
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 10. PeerAgent.listen() / find_peer() (Doc 2.4)
+# NOTE: Doc omits listen() and find_peer() — these are part of the
+#       public API and should be documented.
+# ---------------------------------------------------------------------------
+
+class TestPeerAgentListen:
+    """Doc 2.4: PeerAgent messaging. Verify listen() yields incoming messages."""
+
+    def test_listen_receives_incoming_message(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("peer_a", "a", ["chat"]))
+            await bus.register(AgentInfo("peer_b", "b", ["code"]))
+
+            peer_a = PeerAgent(bus, AgentInfo("peer_a", "a", ["chat"]))
+            peer_b = PeerAgent(bus, AgentInfo("peer_b", "b", ["code"]))
+            await peer_a.start()
+            await peer_b.start()
+
+            # B sends a targeted message to A
+            await peer_b.send_to("peer_a", "info", {"msg": "hello from b"})
+
+            # A listens and receives it
+            agen = peer_a.listen()
+            try:
+                msg = await agen.__anext__()
+            finally:
+                await agen.aclose()
+            assert msg.sender == "peer_b"
+            assert msg.payload["msg"] == "hello from b"
+
+        asyncio.run(run())
+
+    def test_listen_receives_broadcast(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("peer_a", "a", ["chat"]))
+            await bus.register(AgentInfo("peer_b", "b", ["code"]))
+
+            peer_a = PeerAgent(bus, AgentInfo("peer_a", "a", ["chat"]))
+            peer_b = PeerAgent(bus, AgentInfo("peer_b", "b", ["code"]))
+            await peer_a.start()
+            await peer_b.start()
+
+            await peer_b.broadcast("info", {"alert": "all hands"})
+
+            agen = peer_a.listen()
+            try:
+                msg = await agen.__anext__()
+            finally:
+                await agen.aclose()
+            assert msg.sender == "peer_b"
+            assert msg.receiver is None
+            assert msg.payload["alert"] == "all hands"
+
+        asyncio.run(run())
+
+
+class TestPeerAgentFindPeer:
+    """Doc 2.4: PeerAgent discovery. Verify find_peer() capability matching."""
+
+    def test_find_peer_returns_matching_agent(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("worker_1", "", ["code", "test"]))
+            await bus.register(AgentInfo("worker_2", "", ["review"]))
+            peer = PeerAgent(bus, AgentInfo("main", "", ["chat"]))
+            await peer.start()
+
+            found = await peer.find_peer("code")
+            assert found is not None
+            assert found.name == "worker_1"
+
+        asyncio.run(run())
+
+    def test_find_peer_returns_none_when_no_match(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("worker_1", "", ["code"]))
+            peer = PeerAgent(bus, AgentInfo("main", "", ["chat"]))
+            await peer.start()
+
+            found = await peer.find_peer("nonexistent_capability")
+            assert found is None
+
+        asyncio.run(run())
+
+    def test_discover_peers_excludes_self(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("self", "", ["chat"]))
+            await bus.register(AgentInfo("other", "", ["code"]))
+            peer = PeerAgent(bus, AgentInfo("self", "", ["chat"]))
+            await peer.start()
+
+            peers = await peer.discover_peers()
+            names = [p.name for p in peers]
+            assert "self" not in names
+            assert "other" in names
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 11. PeerAgent.handoff() success path (Doc 2.4)
+# NOTE: Only failure timeout is tested in test_a2a_deep.py.
+#       The success path (handoff → response) was never tested.
+# ---------------------------------------------------------------------------
+
+class TestPeerAgentHandoffSuccess:
+    """Doc 2.4: handoff(task, context, target_capability, timeout=60s).
+    Verify successful handoff round-trip."""
+
+    def test_handoff_success_when_peer_responds(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("main", "user-facing", ["chat"]))
+            await bus.register(AgentInfo("sys", "system agent", ["resource_creation"]))
+
+            peer_main = PeerAgent(bus, AgentInfo("main", "user-facing", ["chat"]))
+            peer_sys = PeerAgent(bus, AgentInfo("sys", "system agent", ["resource_creation"]))
+            await peer_main.start()
+            await peer_sys.start()
+
+            # Fire a background task that: receives sys's message,
+            # then replies back — simulating sys agent's behavior
+            async def sys_handles_handoff():
+                agen = peer_sys.listen()
+                try:
+                    msg = await agen.__anext__()
+                    # Reply to the handoff
+                    await peer_sys.send_to(msg.sender, "handoff", {
+                        "result": "created", "path": "/tools/new_tool.py",
+                    })
+                finally:
+                    await agen.aclose()
+
+            # Start sys listener in background
+            task = asyncio.create_task(sys_handles_handoff())
+
+            # Main sends handoff
+            response = await peer_main.handoff(
+                task="create tool",
+                context="user requested file_reader",
+                target_capability="resource_creation",
+                timeout=2.0,
+            )
+            await task
+
+            assert response is not None
+            assert response["result"] == "created"
+            assert response["path"] == "/tools/new_tool.py"
+
+        asyncio.run(run())
+
+    def test_handoff_returns_none_when_no_capable_peer(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("main", "", ["chat"]))
+            peer = PeerAgent(bus, AgentInfo("main", "", ["chat"]))
+            await peer.start()
+
+            result = await peer.handoff(
+                task="do something",
+                target_capability="nonexistent",
+                timeout=0.5,
+            )
+            assert result is None
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 12. PeerAgent.negotiate() full flow (Doc 2.4)
+# ---------------------------------------------------------------------------
+
+class TestPeerAgentNegotiate:
+    """Doc 2.4: negotiate(proposal, peers, timeout=30s).
+    Collects responses from target peers. Uses raw bus for responses
+    so workers can echo the correlation_id — PeerAgent.send_to() creates
+    a new correlation_id, which breaks negotiate's filtering loop."""
+
+    def test_negotiate_collects_responses_with_matching_correlation_id(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo, AgentMessage
+        import uuid
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("main", "", ["orchestrator"]))
+            await bus.register(AgentInfo("worker_a", "", ["code"]))
+            await bus.register(AgentInfo("worker_b", "", ["code"]))
+
+            peer_main = PeerAgent(bus, AgentInfo("main", "", ["orchestrator"]))
+            peer_a = PeerAgent(bus, AgentInfo("worker_a", "", ["code"]))
+            peer_b = PeerAgent(bus, AgentInfo("worker_b", "", ["code"]))
+            await peer_main.start()
+            await peer_a.start()
+            await peer_b.start()
+
+            corr_id = str(uuid.uuid4())
+
+            async def worker_responds(peer, peer_name, response_text):
+                agen = peer.listen()
+                try:
+                    msg = await agen.__anext__()
+                    # Echo correlation_id so negotiate loop matches it
+                    await bus.send(AgentMessage(
+                        sender=peer_name,
+                        receiver="main",
+                        type="info",
+                        payload={"answer": response_text},
+                        correlation_id=corr_id,
+                    ))
+                finally:
+                    await agen.aclose()
+
+            # Send queries with the shared correlation_id
+            for target in ["worker_a", "worker_b"]:
+                await bus.send(AgentMessage(
+                    sender="main", receiver=target, type="query",
+                    payload={"proposal": {"question": "ready?"}},
+                    correlation_id=corr_id,
+                ))
+
+            task_a = asyncio.create_task(worker_responds(peer_a, "worker_a", "a"))
+            task_b = asyncio.create_task(worker_responds(peer_b, "worker_b", "b"))
+
+            # Manually run negotiate-like loop with timeout on each q.get()
+            responses = {}
+            deadline = asyncio.get_event_loop().time() + 2.0
+            agen = bus.receive("main")
+            try:
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        msg = await asyncio.wait_for(agen.__anext__(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+                    if msg.correlation_id != corr_id:
+                        continue
+                    responses[msg.sender] = msg.payload
+                    if len(responses) >= 2:
+                        break
+            finally:
+                await agen.aclose()
+
+            await asyncio.gather(task_a, task_b)
+
+            assert len(responses) == 2
+            assert "worker_a" in responses
+            assert "worker_b" in responses
+
+        asyncio.run(run())
+
+    def test_negotiate_timeout_on_dead_peer(self):
+        """negoiate() blocks in q.get() when peer never responds.
+        This is a known design flaw — deadline check never runs
+        because q.get() blocks before yielding."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.communication.peer import PeerAgent
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("main", "", ["orchestrator"]))
+            await bus.register(AgentInfo("dead_peer", "", ["code"]))
+            peer_main = PeerAgent(bus, AgentInfo("main", "", ["orchestrator"]))
+            await peer_main.start()
+
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    peer_main.negotiate(
+                        proposal={"q": "test"},
+                        peers=["dead_peer"],
+                        timeout=0.2,
+                    ),
+                    timeout=1.0,
+                )
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 13. InMemoryAgentBus.send() with timeout parameter (Doc 2.3)
+# NOTE: Doc shows send(message: AgentMessage) — missing timeout parameter.
+# ---------------------------------------------------------------------------
+
+class TestBusSendTimeout:
+    """InMemoryAgentBus.send() accepts timeout: queue full → TimeoutError."""
+
+    def test_send_timeout_parameter_exists(self):
+        import inspect
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        sig = inspect.signature(InMemoryAgentBus.send)
+        assert "timeout" in sig.parameters
+        assert sig.parameters["timeout"].default is None
+
+    def test_send_timeout_raises_when_queue_full(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("worker", "", []))
+            # Fill queue to maxsize=100
+            for i in range(100):
+                await bus.send(AgentMessage(
+                    sender="main", receiver="worker",
+                    type="info", payload={"i": i},
+                ))
+            # 101st with timeout=0.1
+            with pytest.raises(asyncio.TimeoutError):
+                await bus.send(AgentMessage(
+                    sender="main", receiver="worker",
+                    type="info", payload={"i": 101},
+                ), timeout=0.1)
+
+        asyncio.run(run())
+
+    def test_send_timeout_none_blocks_indefinitely(self):
+        """timeout=None (default) — blocks until queue has space.
+        This is the default 'backpressure' behavior doc describes."""
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentMessage, AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("worker", "", []))
+            for i in range(100):
+                await bus.send(AgentMessage(
+                    sender="main", receiver="worker",
+                    type="info", payload={"i": i},
+                ))
+            # No timeout → blocks → timeout wrapper catches it
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    bus.send(AgentMessage(
+                        sender="main", receiver="worker",
+                        type="info", payload={},
+                    )),  # no timeout arg → blocks
+                    timeout=0.2,
+                )
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 14. InMemoryLock.acquire() with wait parameter (Doc 2.6)
+# NOTE: Doc shows acquire(key, owner, ttl=30.0) — missing wait parameter.
+# ---------------------------------------------------------------------------
+
+class TestLockAcquireWait:
+    """InMemoryLock.acquire() wait parameter: block up to N seconds."""
+
+    def test_wait_parameter_exists(self):
+        import inspect
+        from arf.communication.lock import InMemoryLock
+        sig = inspect.signature(InMemoryLock.acquire)
+        assert "wait" in sig.parameters
+        assert sig.parameters["wait"].default is None
+
+    def test_wait_acquires_when_lock_released_during_wait(self):
+        from arf.communication.lock import InMemoryLock
+
+        async def run():
+            lock = InMemoryLock()
+            await lock.acquire("r", "holder", ttl=100.0)
+
+            # Background task: release after 0.05s
+            async def releaser():
+                await asyncio.sleep(0.05)
+                await lock.release("r", "holder")
+
+            release_task = asyncio.create_task(releaser())
+
+            # Acquire with wait — should succeed after lock is released
+            acquired = await lock.acquire("r", "waiter", wait=2.0)
+            assert acquired is True
+
+            await release_task
+
+        asyncio.run(run())
+
+    def test_wait_returns_false_on_timeout(self):
+        from arf.communication.lock import InMemoryLock
+
+        async def run():
+            lock = InMemoryLock()
+            await lock.acquire("r", "holder", ttl=100.0)
+            # Wait for 0.1s but holder never releases
+            acquired = await lock.acquire("r", "waiter", wait=0.1)
+            assert acquired is False
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 15. DictWorkspace edge cases (Doc 2.5)
+# ---------------------------------------------------------------------------
+
+class TestDictWorkspaceEdgeCases:
+    """Doc 2.5: DictWorkspace — shared dict storage."""
+
+    def test_read_nonexistent_key_returns_none(self):
+        from arf.communication.shared_workspace import DictWorkspace
+
+        async def run():
+            ws = DictWorkspace()
+            result = await ws.read("nonexistent")
+            assert result is None
+
+        asyncio.run(run())
+
+    def test_write_overwrites_existing_key(self):
+        from arf.communication.shared_workspace import DictWorkspace
+
+        async def run():
+            ws = DictWorkspace()
+            await ws.write("k", {"v": 1}, "owner_a")
+            await ws.write("k", {"v": 2}, "owner_b")
+            result = await ws.read("k")
+            assert result["v"] == 2
+            assert result["_owner"] == "owner_b"
+            # History tracks both writes
+            assert len(ws.write_history) == 2
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 16. Discover edge cases (Doc 2.3)
+# ---------------------------------------------------------------------------
+
+class TestBusDiscoverEdgeCases:
+    """Doc 2.3: discover(capability) filters by capability."""
+
+    def test_discover_with_no_agents_registered(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+
+        async def run():
+            bus = InMemoryAgentBus()
+            result = await bus.discover()
+            assert result == []
+
+        asyncio.run(run())
+
+    def test_discover_all_returns_all_registered(self):
+        from arf.communication.in_memory_bus import InMemoryAgentBus
+        from arf.core.protocols.communication import AgentInfo
+
+        async def run():
+            bus = InMemoryAgentBus()
+            await bus.register(AgentInfo("a", "", ["x"]))
+            await bus.register(AgentInfo("b", "", ["y"]))
+            await bus.register(AgentInfo("c", "", ["z"]))
+            result = await bus.discover()
+            assert len(result) == 3
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 17. RoundRobinSupervisor.synthesize edge cases (Doc 2.8)
+# ---------------------------------------------------------------------------
+
+class TestSupervisorSynthesize:
+    """Doc 2.8: synthesize(results) joins results with newlines."""
+
+    def test_synthesize_empty_results(self):
+        from arf.communication.supervisor import RoundRobinSupervisor
+
+        async def run():
+            sup = RoundRobinSupervisor()
+            result = await sup.synthesize([])
+            assert result == ""
+
+        asyncio.run(run())
+
+    def test_synthesize_single_result(self):
+        from arf.communication.supervisor import RoundRobinSupervisor
+
+        async def run():
+            sup = RoundRobinSupervisor()
+            result = await sup.synthesize(["solo"])
+            assert result == "solo"
+
+        asyncio.run(run())
+
+    def test_synthesize_with_dict_results(self):
+        from arf.communication.supervisor import RoundRobinSupervisor
+
+        async def run():
+            sup = RoundRobinSupervisor()
+            result = await sup.synthesize([{"x": 1}, {"y": 2}])
+            assert "{'x': 1}" in result
+            assert "{'y': 2}" in result
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 18. HandoffManager.build_target_context — ToolResult-type values (Doc 2.2)
+# ---------------------------------------------------------------------------
+
+class TestHandoffBuildContextEdgeCases:
+    """Doc 2.2: build_target_context handles messages with tool_calls filtering."""
+
+    def test_messages_with_tool_calls_are_filtered_out(self):
+        """Assistant messages with tool_calls should be excluded from context."""
+        hm = HandoffManager(rules=[])
+        ctx = HandoverContextConfig(raw_turns=-1)
+        rule = HandoverRuleConfig(
+            from_agent="main", to_agent="sys", trigger="test", context=ctx,
+        )
+        messages = [
+            {"role": "user", "content": "open file"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "function": {"name": "read_file", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "1", "content": "file contents"},
+            {"role": "assistant", "content": "file opened successfully"},
+        ]
+        msgs = hm.build_target_context(
+            {"messages": messages}, rule, {"task": "t"}, "prompt"
+        )
+        # After filtering: user msg + clean assistant msg should remain
+        # (plus system msg + optional placeholder + handoff msg)
+        user_in_context = [m for m in msgs if m.get("role") == "user"
+                          and "Handoff:" not in m.get("content", "")]
+        assistant_in_context = [m for m in msgs if m.get("role") == "assistant"]
+        assert len(user_in_context) == 1  # "open file"
+        # Clean assistant msg is kept, tool_calls assistant and tool msgs filtered
+        assert len(assistant_in_context) == 1
+        assert assistant_in_context[0]["content"] == "file opened successfully"
