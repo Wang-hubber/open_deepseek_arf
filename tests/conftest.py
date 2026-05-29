@@ -63,3 +63,59 @@ def mock_openai():
         "Real OpenAI call blocked by test fixture. Mock your LLM calls."
     )):
         yield
+
+
+# ── Real resource fixtures (replaces MagicMock-based tests) ──
+
+APP_DIR = Path(__file__).parent.parent / "app" / "arf_default_assistant"
+
+
+@pytest.fixture
+def tools_dir():
+    return APP_DIR / "tools"
+
+
+@pytest.fixture
+def skills_dir():
+    return APP_DIR / "skills"
+
+
+@pytest.fixture
+def models_dir():
+    return APP_DIR / "models"
+
+
+@pytest.fixture
+def tool_provider(tools_dir):
+    from arf.resources.providers.tool_provider import ToolProvider
+    return ToolProvider(tools_dir)
+
+
+@pytest.fixture
+def skill_provider(skills_dir):
+    from arf.resources.providers.skill_provider import SkillProvider
+    return SkillProvider(skills_dir)
+
+
+@pytest.fixture
+def model_provider(models_dir):
+    from arf.resources.providers.model_provider import ModelProvider
+    return ModelProvider(models_dir)
+
+
+@pytest.fixture
+def resolver(tool_provider, skill_provider, model_provider):
+    from arf.resources.resolver import ResourceResolver
+    return ResourceResolver(tool_provider, skill_provider, model_provider)
+
+
+@pytest.fixture
+def fake_model():
+    from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
+    return FakeModelAdapter(default=FakeResponse(content="hello from fake model"))
+
+
+@pytest.fixture
+def agent_config():
+    from arf.agent.config import AgentConfig
+    return AgentConfig.from_yaml(str(APP_DIR / "agent.yaml"))
