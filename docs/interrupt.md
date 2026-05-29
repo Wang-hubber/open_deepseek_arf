@@ -29,7 +29,7 @@ OS 用检查点保存进程状态快照（CRIU、BLCR）。ARF 的 `RoundManager
 | OS 概念 | ARF 对应 |
 |---------|----------|
 | 硬件中断 → 保存现场 → ISR → 恢复 | `cancel_event.set()` → break → `FileStateStore` 持久化 → 下次对话恢复 |
-| 信号（SIGINT） | `POST /api/chat/cancel`，`AbortController.abort()` |
+| 信号（SIGINT） | `cancel_event` — `asyncio.Event` 非阻塞标志，引擎循环边界响应 |
 | 检查点（CRIU） | `RoundManager.begin_round()` → `undo(steps)` |
 | 守护进程 / 看门狗 | Tool `rollback()` — execute 失败时 Framework 自动调用 rollback 清理副作用 |
 
