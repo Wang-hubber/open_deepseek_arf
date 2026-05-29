@@ -1029,11 +1029,10 @@ class TestConfigPaths:
     def test_traces_path_in_config(self):
         """Doc: memory/traces/ for FileTraceStore output."""
         from arf.observability.file_trace import FileTraceStore
-        # Default dir is "./memory/sessions" not "./memory/traces"
         sig = inspect.signature(FileTraceStore.__init__)
         default_dir = sig.parameters["dir"].default
-        assert str(default_dir) == "./memory/sessions", (
-            f"Doc claims memory/traces/ but default is {default_dir}"
+        assert str(default_dir) == "./memory/traces", (
+            f"Default should be ./memory/traces, got {default_dir}"
         )
 
 

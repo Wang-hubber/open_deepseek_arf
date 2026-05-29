@@ -448,6 +448,12 @@ class BaseAgent:
         from arf.observability.usage_tracker import UsageTracker
         self._usage_tracker = UsageTracker(event_bus)
 
+        # Auto-create trace store (framework default)
+        obs_cfg = adv.observability if adv else None
+        trace_dir = str(ctx.trace_dir) if ctx else (obs_cfg.trace_dir if obs_cfg else "./memory/traces")
+        from arf.observability import FileTraceStore
+        self._trace_store = FileTraceStore(event_bus, dir=trace_dir)
+
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
 
@@ -647,6 +653,11 @@ class BaseAgent:
     @property
     def usage_tracker(self):
         return self._usage_tracker
+
+    @property
+    def trace_store(self):
+        """FileTraceStore — auto-created by BaseAgent."""
+        return self._trace_store
 
     @property
     def sub_agent_configs(self) -> dict:

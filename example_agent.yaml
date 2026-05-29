@@ -177,3 +177,60 @@ handover:
 # 工具和技能按约定目录放置，FileWatcher 自动检测，无需手动注册
 # tools: []
 # skills: []
+
+# ============================================================================
+# § Trace & Observability (docs/trace.md)
+# 审计日期: 2026-05-29 | 测试: 97 existing + 25 new = 122 total
+# ============================================================================
+
+# --- EventBus ---
+# 来源: docs/trace.md §2.1
+# Protocol: arf.core.protocols.event_bus.EventBus
+# 默认: InMemoryEventBus (asyncio.Queue-based)
+# Wiring: BaseAgent.__init__ 自动创建, 可通过 override_protocols["event_bus"] 注入
+# event_bus: null  # auto-created by default
+
+# --- FileTraceStore ---
+# 来源: docs/trace.md §2.3
+# 实现: arf.observability.file_trace.FileTraceStore
+# 默认 dir: ./memory/sessions (⚠ 文档错误: 声称 memory/traces/)
+# 过滤: session_start, session_end, thinking_delta 不入磁盘
+# ⚠ Wiring 断裂 2026-05-29: FileTraceStore 未在 BaseAgent 中自动创建,
+#   仅在 server.py/routers/config.py 中手动创建. 框架应像 UsageTracker 一样自动创建.
+# observability:
+#   trace:
+#     enabled: true                      # 是否启用文件持久化 (默认 true)
+#     dir: ./memory/traces               # trace 文件目录 (默认 ./memory/traces)
+#     filter_skip:                       # 不入磁盘的事件类型 (默认如下)
+#       - session_start
+#       - session_end
+#       - thinking_delta
+
+# --- UsageTracker ---
+# 来源: docs/trace.md §2.4
+# 实现: arf.observability.usage_tracker.UsageTracker
+# 默认 dir: ./memory
+# Wiring: BaseAgent.__init__ 自动创建 ✅
+# usage:
+#   dir: ./memory                        # usage.json 存放目录 (默认 ./memory)
+
+# --- OtelTracer (预留) ---
+# 来源: docs/trace.md §2.9
+# 实现: arf.observability.otel.OtelTracer
+# ⚠ 未接入 EventBus, 仅框架代码骨架. 通过 OTEL_EXPORTER 环境变量控制导出目标.
+#   otel:
+#     exporter: none                     # none | console | otlp (默认 none, 通过环境变量)
+
+# --- Replay Controller ---
+# 来源: docs/trace.md §2.8
+# 实现: arf.observability.replay.FileReplayController
+# 默认 dir: ./traces
+# ⚠ Wiring 断裂 2026-05-29: FileReplayController 未在 BaseAgent 中自动创建.
+#   replay:
+#     dir: ./traces                      # 录制文件存放目录 (默认 ./traces)
+
+# --- TUI Dashboard ---
+# 实现: arf.observability.tui.TuiDashboard
+# ⚠ 文档未提及. 通过 ARF_TUI 环境变量控制. 未接入 EventBus.
+#   tui:
+#     enabled: false                     # 通过 ARF_TUI=1 环境变量启用 (默认 false)

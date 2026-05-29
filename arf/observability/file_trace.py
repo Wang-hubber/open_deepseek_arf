@@ -12,11 +12,11 @@ class FileTraceStore:
     每个 session 一个文件，session 结束后完整轨迹可被 /trace/{id} 查询。
 
     用法:
-        store = FileTraceStore(agent.event_bus, dir="./memory/sessions")
+        store = FileTraceStore(agent.event_bus, dir="./memory/traces")
         # 自动开始消费，无需手动管理生命周期
     """
 
-    def __init__(self, bus, dir: str | Path = "./memory/sessions") -> None:
+    def __init__(self, bus, dir: str | Path = "./memory/traces") -> None:
         self._dir = Path(dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._task = asyncio.create_task(self._consume(bus))

@@ -80,9 +80,6 @@ async def lifespan(app: FastAPI):
             await state._agent.state_store.put("default", s)
             logger.info(f"Restored state from archive: {len(s['messages'])} messages")
 
-    from arf.observability import FileTraceStore
-    FileTraceStore(state._agent.event_bus, dir=str(app_context.trace_dir))
-
     logger.info(f"Agent '{cfg.name}' ready")
     await state._agent.start()
     yield

@@ -85,9 +85,6 @@ async def config_register_deepseek(req: dict):
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     state._agent = create_agent(config=cfg, app_context=app_context)
 
-    from arf.observability import FileTraceStore
-    FileTraceStore(state._agent.event_bus, dir=str(app_context.trace_dir))
-
     return JSONResponse({
         "ok": True,
         "action": "register_deepseek",

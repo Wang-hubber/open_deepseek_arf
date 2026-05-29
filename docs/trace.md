@@ -49,17 +49,14 @@ EventBus.emit(AgentEvent)
     ├─ UsageTracker → memory/usage.json
     │   （按模型累加 model_call_end.usage.total_tokens）
     │
-    ├─ SSE stream → /api/chat (stream=True)
-    │   guard/approval 事件与 chunk、tool_call 一同实时推送
-    │
-    └─ 前端 TraceView → /traces 瀑布流
-        （按交互轮次分组，三级展开；
-         guard/approval 事件在 IterationCard 中渲染为状态行）
+    └─ 消费者（App 层按需构建）
+        （SSE 流、WebSocket、Trace Viewer 等，
+         通过 EventBus.subscribe() 获取事件流）
 ```
 
 ### 2.2 事件模型
 
-`AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `session_id` + `turn`。
+`AgentEvent`（`arf/core/events.py`）：`type` + `data` + `timestamp` + `trace_id` + `span_id` + `parent_span_id` + `session_id` + `agent_name` + `turn`。
 
 **事件类型定义**（`EventType` Literal）：
 
@@ -73,19 +70,27 @@ EventBus.emit(AgentEvent)
 | `thinking_delta` | 流式思考增量 | content, reasoning *(仅 SSE，不入磁盘)* |
 | `tool_call_start` | 工具调用开始 | tool_name, arguments |
 | `tool_call_end` | 工具调用结束 | tool_name, success, result, error, duration_ms |
+| `tool_call_result` | 回放时工具结果产出 | tool_name, result *(仅 ReplayController 使用)* |
 | `compaction_start` | 压缩开始 | msg_count, model |
 | `compaction_end` | 压缩结束 | msg_count, summary_len |
 | `guard_block` | 路径沙箱或权限检查拒绝 | tool_name, guard *(path_check\|permission)*, reason |
 | `guard_pass` | 所有 guard 检查通过 | tool_name |
 | `approval_required` | 审批通道：等待用户确认 | decision_id, tool_name, params |
 | `approval_resolved` | 审批通道：用户已决定 | decision_id, tool_name, approved, reason |
+| `agent_switch` | Agent 切换 (handoff) | from_agent, to_agent |
+| `undo_executed` | 撤销操作完成 | undo_count, agent_trace |
+| `rollback_executed` | 工具回滚完成 | rolled_back |
 | `hook_start` | Hook 执行开始 | event (hook 名称) |
 | `hook_end` | Hook 执行结束 | event, passed, failed |
 | `error` | 执行错误 | detail, code |
 
+保护事件（`rate_limited`, `circuit_opened`, `circuit_half_open`, `circuit_closed`, `breaker_blocked`）已在 EventType 中预留，由 `arf/observability/protection.py` 在运行时使用。
+
 ### 2.3 FileTraceStore
 
-`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%。
+`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`（默认 `dir=./memory/traces`，可通过 `ObservabilityConfig.trace_dir` 配置）。过滤规则：`session_start`、`session_end`、`thinking_delta` 不入磁盘——`model_call_end` 已包含完整响应，`thinking_delta` 只是流式中间的片段。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%。
+
+`BaseAgent` 在构造时自动创建 `FileTraceStore` 并订阅 `EventBus`。App 层可通过 `agent.trace_store` 属性访问实例，通过 `ObservabilityConfig.trace_dir` 配置存储路径（或通过 `AppContext.trace_dir` 自动推导）。
 
 ### 2.4 UsageTracker
 
@@ -93,42 +98,42 @@ EventBus.emit(AgentEvent)
 
 ### 2.5 交互轮次分组
 
-`round` 字段由引擎自动注入到每条事件（`arf/engine/graph.py`）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。前端 `/traces` 页面的瀑布流按 round 分组：
+`round` 字段由引擎自动注入到每条事件（`arf/engine/graph.py`）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。App 层可通过 `round` 字段将事件按交互轮次分组展示：
 
 ```
 Round 0 (3 次内部迭代)
-├── 用户输入: "我是谁"
+├── user_input: "我是谁"
 ├── 迭代 1
-│   ├── 模型响应: "让我看看工作区文件"
+│   ├── model_call_end: "让我看看工作区文件"
 │   ├── guard_pass (file_reader)          ← 路径沙箱 + 权限检查通过
-│   ├── file_reader (list .)
-│   ├── pre_tool_exec Hook
-│   └── post_tool_exec Hook
+│   ├── tool_call_end (file_reader)
+│   ├── hook_start / hook_end (pre_tool_exec)
+│   └── hook_start / hook_end (post_tool_exec)
 ├── 迭代 2
-│   ├── 模型响应: "帮你写一个文件"
+│   ├── model_call_end: "帮你写一个文件"
 │   ├── approval_required (file_writer)   ← 权限 ask，需审批
 │   ├── approval_resolved (approved)      ← 用户确认
 │   ├── guard_pass (file_writer)          ← 审批通过后 guard 放行
-│   └── file_writer (result)
+│   └── tool_call_end (file_writer)
 └── 迭代 3
-    └── 最终回复: "你是 ARF 框架的创造者"
+    └── model_call_end: "你是 ARF 框架的创造者"
 ```
 
-### 2.6 API
+### 2.6 框架级查询 API
 
-| 端点 | 说明 |
-|------|------|
-| `GET /api/trace` | 全量事件 |
-| `GET /api/traces/sessions` | Session 列表 |
-| `GET /api/traces/sessions/{id}` | Session 详情 |
-| `GET /api/traces/summary` | 统计（events, tokens, turns） |
-| `GET /api/traces/resource-stats` | 工具/模型调用统计 |
-| `GET /api/traces/export` | 原始 JSON 下载 |
-| `GET /api/trace/stream` | SSE 实时推送 |
+`FileTraceStore` 提供三个查询方法，App 层可通过 `agent.trace_store` 调用：
 
-### 2.7 独立 Trace Viewer
+- `store.load(session_id) → list[dict]` — 加载指定 session 的完整轨迹
+- `store.list_sessions() → list[str]` — 列出所有已记录的 session ID
+- `store._append(session_id, event)` — 追加单条事件（内部使用）
 
-`/trace-viewer` — 单文件 HTML，零外部依赖。支持折叠/展开、时间筛选、token 统计、guard/approval 事件渲染。通过 fetch 从 `/api/traces/sessions/default` 加载数据。
+`UsageTracker` 提供 `summary() → dict` 返回 `{total_tokens, total_calls, by_model}`。
+
+`EventBus.subscribe(event_types=None) → AsyncIterator[AgentEvent]` 逐事件流式消费，支持按类型过滤。App 层可基于此构建 SSE 流或 WebSocket 推送。
+
+### 2.7 Trace Viewer（App 层）
+
+`/trace-viewer` — 框架提供 `arf/observability/trace_viewer.html` 单文件 HTML，零外部依赖。App 层通过路由挂载该文件即可使用。支持折叠/展开、时间筛选、token 统计、guard/approval 事件渲染。
 
 ### 2.8 回放控制器
 
@@ -138,15 +143,25 @@ Round 0 (3 次内部迭代)
 
 `arf/observability/otel.py` 文件存在但当前仅包含框架代码，未接入 EventBus。是预留的 OTLP 导出扩展点——未来可将 AgentEvent 转换为 OpenTelemetry Span 并导出到 Jaeger/Tempo/Prometheus。
 
-### 2.10 配置
+### 2.10 TUI Dashboard
 
-```python
-# FileTraceStore 在 server.py 启动时创建
-FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))  # ./memory/traces/
+`arf/observability/tui.py` — Rich 终端实时调试面板。通过 `ARF_TUI=1` 环境变量启用，实时展示模型调用次数、token 消耗和工具调用时间线。未接入 EventBus，通过 `consume(events)` 方法批量消费。
 
-# UsageTracker 由 BaseAgent 自动创建
-# archive.json 持久化 interaction_round，重启不丢失
+### 2.11 配置
+
+`ObservabilityConfig`（`arf/core/config_base.py`）定义可观测性全部配置项，`BaseAgent` 自动根据配置或 `AppContext` 创建 `FileTraceStore` 和 `UsageTracker`。
+
+```yaml
+# agent.yaml (全部字段可选，有合理默认值)
+advanced:
+  observability:
+    trace_dir: ./memory/traces     # FileTraceStore 存储路径
+    usage_dir: ./memory            # UsageTracker 存储路径
+    trace_enabled: true            # 是否启用 FileTraceStore
+    otel_exporter: none            # none | console | otlp
 ```
+
+`interaction_round` 通过 `FileStateStore`（`agent.state_store`）持久化，每轮用户消息自动 +1，重启不丢失。
 
 ---
 

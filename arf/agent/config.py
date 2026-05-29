@@ -9,7 +9,7 @@ from arf.core.config_base import (
     PipelineSection,
     GuardrailsConfig, ErrorConfig, HumanLoopConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
-    ProtectionConfig,
+    ProtectionConfig, ObservabilityConfig,
 )
 
 
@@ -30,6 +30,7 @@ class AdvancedConfig(BaseModel):
     sandbox: SandboxConfig | None = None
     reload: ReloadConfig | None = None
     protection: ProtectionConfig | None = None
+    observability: ObservabilityConfig | None = None
 
     @classmethod
     def default(cls) -> "AdvancedConfig":
