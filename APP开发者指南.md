@@ -34,7 +34,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 cd app/arf_default_assistant
-python test_setup.py    # 环境验证
+python cli.py validate  # 环境验证（检查依赖、配置、目录结构）
 python cli.py start     # 启动 server + 前端
 ```
 
@@ -132,9 +132,7 @@ my_app/
 ├── skills/             # 技能定义 YAML
 │   └── my_skill.yaml
 ├── hooks/              # Hook 脚本
-├── memory/             # 运行时数据（框架自动生成，无需手动创建）
-└── workspaces/
-    └── default/        # 文件操作根目录
+└── memory/             # 运行时数据：状态持久化、Trace 记录、文件操作根目录
 ```
 
 ### 3.1b 框架 Plugins
@@ -277,60 +275,36 @@ kwargs:
 
 ### 4.4 工具声明
 
-每个工具在 `tools:` 段声明 name、description、parameters (JSON Schema)、activation。
+agent.yaml 中只需按 name 引用工具，框架从 `tools/<name>/tool.yaml` 自动发现完整 Schema。
 
 ```yaml
+# agent.yaml — 仅引用工具，框架从 tools/<name>/tool.yaml 自动发现参数
 tools:
   - name: file_reader
-    description: 读取文件内容或列出目录
-    parameters:
-      type: object
-      properties:
-        path: {type: string, description: 文件路径}
-        operation: {type: string, enum: [read, list], default: read}
-      required: [path]
     activation: kernel
-
   - name: file_writer
-    description: 写入文件（创建或覆盖）
-    parameters:
-      type: object
-      properties:
-        path: {type: string}
-        content: {type: string}
-      required: [path, content]
     activation: kernel
-
   - name: web_search
-    description: 搜索互联网（DuckDuckGo）
-    parameters:
-      type: object
-      properties:
-        query: {type: string}
-      required: [query]
     activation: kernel
-
-  - name: handoff_to_sys
-    description: 将资源创建/修改操作移交给 SysAgent
-    parameters:
-      type: object
-      properties:
-        task: {type: string, description: 任务描述}
-        context: {type: string, description: 任务上下文}
-      required: [task]
-    activation: kernel
-
   - name: python_exec
-    description: 执行 Python 代码片段
-    parameters:
-      type: object
-      properties:
-        code: {type: string}
-      required: [code]
     activation: discoverable
+
+# 框架合并优先级：agent.yaml 覆盖 > tool.yaml 基础定义 > Pydantic 默认值。
+# tool.yaml 提供完整 Schema（description + parameters），agent.yaml 仅覆盖
+# 需要微调的字段（如 activation）。
 ```
 
 `activation: kernel` 的工具始终在 LLM 工具列表中；`discoverable` 的工具按需加载——LLM 知道它们存在但不主动加载，匹配时才激活。
+
+以下为各工具的完整 Schema 参考（完整定义在 `tools/<name>/tool.yaml` 中）：
+
+| 工具 | description | 关键参数 | activation |
+|------|-------------|---------|-----------|
+| `file_reader` | 读取文件内容或列出目录 | `path`(required), `operation`(read\|list) | kernel |
+| `file_writer` | 写入文件（创建或覆盖） | `path`(required), `content`(required) | kernel |
+| `web_search` | 搜索互联网（DuckDuckGo） | `query`(required) | kernel |
+| `handoff_to_sys` | 将资源创建/修改操作移交给 SysAgent | `task`(required), `context` | kernel |
+| `python_exec` | 执行 Python 代码片段 | `code`(required) | discoverable |
 
 > 深入阅读：[`docs/app/tools.md`](docs/app/tools.md)
 
@@ -502,7 +476,7 @@ activation: kernel
 ```python
 from pathlib import Path
 
-WORKSPACE = Path("workspaces/default")
+WORKSPACE = Path("memory/")
 
 async def execute(operation: str, path: str) -> dict:
     p = WORKSPACE / path
@@ -533,7 +507,7 @@ async def execute(operation: str, path: str) -> dict:
         return {"error": str(e)}
 ```
 
-要点：所有文件路径相对于 `workspaces/default/`。框架的 `PathCheckToolGuard` 在每次工具调用前自动阻断 `..` 路径穿越和绝对路径——工具本身不需要额外做路径校验。
+要点：所有文件路径相对于 `memory//`。框架的 `PathCheckToolGuard` 在每次工具调用前自动阻断 `..` 路径穿越和绝对路径——工具本身不需要额外做路径校验。
 
 ### 5.3 模式三：HTTP 请求 — web_search
 
@@ -927,14 +901,10 @@ async def lifespan(app: FastAPI):
     _agent = create_agent(config=cfg, app_context=app_context)          # 组装 Agent
     set_agent(_agent)                                                   # 注册全局实例
 
-    # 恢复会话状态（FileStateStore → archive.json 兜底）
+    # 恢复会话状态
     state = await _agent.state_store.get("default")
     if state:
         logger.info(f"Restored state: {len(state.get('messages', []))} messages")
-
-    # 挂载 Trace 存储
-    from arf.observability import FileTraceStore
-    FileTraceStore(_agent.event_bus, dir=str(app_context.trace_dir))
 
     await _agent.start()
     yield
@@ -961,6 +931,15 @@ def _load_dotenv() -> None:
             if key and key not in os.environ:
                 os.environ[key] = value
 ```
+
+> BaseAgent 自动创建 FileTraceStore 和 UsageTracker，App 无需手动初始化。
+> 参考 `arf/agent/base.py:449-455`。
+
+> **框架自动注入的能力（App 无需编写）：**
+> FileTraceStore（事件追踪）、UsageTracker（用量统计）、
+> call_model / stream_model（模型 API 注入）、
+> SlidingWindowCompactor（上下文压缩）、TwoTierRouter（模型调度）。
+> App 层只需关注 agent.yaml 配置 + server 胶水代码。
 
 ### 8.3 SSE 流式响应
 
@@ -1266,7 +1245,7 @@ agents:
         activation: kernel
       - name: resource_loader
         activation: kernel
-      - name: resource_scaffold
+      - name: handoff_to_sys
         activation: kernel
 
     skills:
@@ -1274,10 +1253,6 @@ agents:
         description: Generate a new Tool or Skill resource from requirements
         tools: [file_writer, resource_loader]
         activation: kernel
-      - name: tool_generator
-        description: Generate complete tool implementations
-        tools: [file_writer, resource_scaffold]
-        activation: discoverable
       - name: validate_tool
         description: Validate tool completeness
         tools: [file_reader]
@@ -1409,7 +1384,7 @@ def main():
 
 | 命令 | 用途 |
 |------|------|
-| `init` | 创建 tools/, skills/, hooks/, memory/, workspaces/default/ 骨架目录 |
+| `init` | 创建 tools/, skills/, hooks/, memory/ 骨架目录 |
 | `start` | 构建前端 → 启动 uvicorn → 前台运行（Ctrl+C 停止） |
 | `stop` | kill 8000 端口进程 |
 | `chat "hello"` | POST /api/chat，打印响应 |
@@ -1514,6 +1489,21 @@ arf/
 ├── testing/        # InMemory* test doubles
 └── core/           # 协议定义、Pydantic 配置模型、事件类型、ModelAdapter
 ```
+
+### 框架自动化能力
+
+以下能力由 BaseAgent 自动注入，App 只需在 agent.yaml 中配置即可：
+
+| 能力 | 机制 | agent.yaml 字段 |
+|------|------|----------------|
+| 工具/技能/模型发现 | FileWatcher + Provider + ResourceResolver | `tools:`, `models/`, `skills/` 目录约定 |
+| 状态持久化 | FileStateStore | 自动，每轮 engine turn 后 put() |
+| Trace 记录 | FileTraceStore | `advanced.observability.trace_dir` |
+| Token 用量追踪 | UsageTracker | 自动 |
+| 上下文压缩 | SlidingWindowCompactor | `advanced.compaction` |
+| 模型路由 | TwoTierRouter | `advanced.routing` |
+| Plugin 注入 | PluginProvider | `plugins:` |
+| 模型 API 注入 | ModelAdapter + call_model | `models/*.yaml` |
 
 ### 12.4 回归测评
 
