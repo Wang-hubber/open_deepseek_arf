@@ -1,0 +1,49 @@
+"""PluginRuntime — unified runtime context injected into plugin hooks and tools."""
+import os
+import sys
+from dataclasses import dataclass, field
+
+
+@dataclass
+class PluginRuntime:
+    """Framework runtime context for plugins. Read-only for plugin code."""
+
+    python_executable: str = field(default_factory=lambda: sys.executable)
+    env_vars: dict[str, str] = field(default_factory=lambda: dict(os.environ))
+
+    memory_dir: str = "./memory"
+    workspace_dir: str = "./workspace"
+    trace_dir: str = "./traces"
+
+    session_id: str = "default"
+    interaction_round: int = 0
+
+    system_model: str = "quick"
+    model_configs: dict[str, dict] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "python_executable": self.python_executable,
+            "env_vars": self.env_vars,
+            "memory_dir": self.memory_dir,
+            "workspace_dir": self.workspace_dir,
+            "trace_dir": self.trace_dir,
+            "session_id": self.session_id,
+            "interaction_round": self.interaction_round,
+            "system_model": self.system_model,
+            "model_configs": self.model_configs,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PluginRuntime":
+        return cls(
+            python_executable=d.get("python_executable", sys.executable),
+            env_vars=d.get("env_vars", {}),
+            memory_dir=d.get("memory_dir", "./memory"),
+            workspace_dir=d.get("workspace_dir", "./workspace"),
+            trace_dir=d.get("trace_dir", "./traces"),
+            session_id=d.get("session_id", "default"),
+            interaction_round=d.get("interaction_round", 0),
+            system_model=d.get("system_model", "quick"),
+            model_configs=d.get("model_configs", {}),
+        )
