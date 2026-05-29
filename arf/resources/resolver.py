@@ -49,6 +49,17 @@ class ResourceResolver:
             for t in merged
         ]
 
+    def get_tool_definitions_sync(self) -> list[ToolConfig]:
+        """Synchronous wrapper — returns tool defs merged with agent.yaml overrides.
+
+        Merges filesystem tool definitions (from tool.yaml, with full descriptions)
+        with agent.yaml overrides. Used by BaseAgent to feed descriptions back into
+        config.tools before system prompt assembly.
+        """
+        tools = list(self._tool_provider.list_kernel()) + list(self._tool_provider.list_dynamic())
+        overrides = self._overrides.get("tools", [])
+        return self._merge_configs(tools, overrides, ToolConfig)
+
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         result = await self._tool_provider.execute(tool_name, params)
         if not result.success and self._plugin_provider:

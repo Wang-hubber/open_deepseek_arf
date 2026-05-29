@@ -173,6 +173,23 @@ class BaseAgent:
         self._file_watcher = file_watcher
         self._resource_resolver = resource_resolver
 
+        # Feed back merged tool definitions (descriptions from tool.yaml)
+        # into config.tools so _build_prompt_sections can build proper inventory.
+        merged_specs = resource_resolver.get_tool_definitions_sync()
+        if merged_specs:
+            from arf.core.config_base import ToolConfig as _ToolConfig
+            agent_tool_activations = {
+                t.name: t.activation for t in (config.tools or [])
+            }
+            merged_tools = []
+            for td in merged_specs:
+                d = td if isinstance(td, dict) else td.model_dump()
+                name = d.get("name", "")
+                activation = agent_tool_activations.get(name, d.get("activation", "discoverable"))
+                d["activation"] = activation
+                merged_tools.append(_ToolConfig(**d))
+            config.tools = merged_tools
+
         # Plugin system
         self._plugin_provider = None
         if config.plugins:
