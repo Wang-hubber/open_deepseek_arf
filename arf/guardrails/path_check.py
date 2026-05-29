@@ -88,6 +88,10 @@ class PathCheckToolGuard:
     # ── internal ──
 
     def _check_one(self, v: str) -> GuardResult:
+        # Skip strings that are clearly file content, not paths
+        if "\n" in v or len(v) > 500:
+            return GuardResult(allowed=True)
+
         # 1. Path traversal
         if self._checks.get("path_traversal") and ".." in Path(v).parts:
             return GuardResult(allowed=False, reason=f"Path traversal blocked: '{v}'")

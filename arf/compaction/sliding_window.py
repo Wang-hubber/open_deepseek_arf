@@ -38,9 +38,13 @@ class SlidingWindowCompactor:
                        window_size: int | None = None) -> bool:
         """Trigger when last model call used > threshold * window tokens.
 
-        window_size overrides the instance default — used when the engine
-        passes the currently-routed model's context window.
+        Cooldown: after compaction, skip 2 rounds to avoid false re-triggers
+        (token usage from the large pre-compaction round persists until the
+        next model call completes).
         """
+        cooldown = state.get("_compaction_cooldown", 0)
+        if cooldown > 0:
+            return False
         t = threshold or self._threshold
         w = window_size or self._window_size
         last_usage = state.get("last_token_usage", 0)
@@ -82,7 +86,8 @@ class SlidingWindowCompactor:
             discarded = len(msgs) - len(non_tool)
             logger.info("Compaction: %d u/a messages discarded (%d tool, no summarizer)",
                         len(old_msgs), discarded)
-        return {**state, "messages": recent, "context_summary": summary}
+        return {**state, "messages": recent, "context_summary": summary,
+                "_compaction_cooldown": 2}
 
     async def summarize_tool_output(self, tool_name: str, output: str, turn: int) -> str:
         """Summarize a long tool output. Saves raw to disk, returns summary for context.

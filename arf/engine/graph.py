@@ -715,6 +715,9 @@ class GraphEngine:
 
                 # Compaction — after routing, before model call
                 if self.compaction:
+                    cd = state.get("_compaction_cooldown", 0)
+                    if cd > 0:
+                        state["_compaction_cooldown"] = cd - 1
                     window = self._model_windows.get(model, DEFAULT_WINDOW_SIZE) if hasattr(self, '_model_windows') else DEFAULT_WINDOW_SIZE
                     if self.compaction.should_compact(state, window_size=window):
                         self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
@@ -1000,6 +1003,9 @@ class GraphEngine:
 
                 # Compaction
                 if self.compaction:
+                    cd = state.get("_compaction_cooldown", 0)
+                    if cd > 0:
+                        state["_compaction_cooldown"] = cd - 1
                     window = self._model_windows.get(model, DEFAULT_WINDOW_SIZE) if hasattr(self, '_model_windows') else DEFAULT_WINDOW_SIZE
                     if self.compaction.should_compact(state, window_size=window):
                         yield self._make_event(type="compaction_start",
