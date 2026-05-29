@@ -19,9 +19,15 @@ class DefaultGuardRunner:
     """
 
     def __init__(self, input_guard=None, output_guard=None, tool_guard=None,
-                 permission_checker: ToolPermissionChecker | None = None) -> None:
+                 permission_checker: ToolPermissionChecker | None = None,
+                 output_patterns: list[tuple[str, str]] | None = None) -> None:
         self._input = input_guard or NoneInputGuard()
-        self._output = output_guard or RegexOutputGuard()
+        if output_guard is not None:
+            self._output = output_guard
+        elif output_patterns is not None:
+            self._output = RegexOutputGuard(patterns=output_patterns)
+        else:
+            self._output = RegexOutputGuard()
         self._tool = tool_guard or PathCheckToolGuard()
         self._permissions = permission_checker or ToolPermissionChecker()
 

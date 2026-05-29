@@ -86,11 +86,23 @@ class PermissionsConfig(BaseModel):
     deny_patterns: list[str] = Field(default_factory=list)
 
 
+class RegexPatternConfig(BaseModel):
+    """A regex pattern + replacement for output sanitization."""
+    pattern: str
+    replacement: str
+
+
 class GuardrailsConfig(BaseModel):
     input: Literal["none", "regex_block", "llm_classifier"] = "none"
     output: Literal["none", "regex_clean", "llm_classifier"] = "regex_clean"
     tool_params: Literal["none", "path_check", "command_check"] = "path_check"
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    output_patterns: list[RegexPatternConfig] = Field(
+        default_factory=list,
+        description="Custom regex patterns for output sanitization. "
+                    "Empty list = use framework built-in defaults. "
+                    "Pass [{\"pattern\": \".*\", \"replacement\": \"[REDACTED]\"}] to disable defaults.",
+    )
 
 
 class ErrorConfig(BaseModel):

@@ -278,8 +278,11 @@ class BaseAgent:
             input_guard = NoneInputGuard()  # only "none" implemented currently
         if gr_cfg and gr_cfg.output == "none":
             output_guard = None
+        elif gr_cfg and gr_cfg.output_patterns:
+            patterns = [(p.pattern, p.replacement) for p in gr_cfg.output_patterns]
+            output_guard = RegexOutputGuard(patterns=patterns)
         else:
-            output_guard = RegexOutputGuard()  # default and only implemented option
+            output_guard = RegexOutputGuard()  # built-in defaults
         if gr_cfg and gr_cfg.tool_params == "none":
             tool_guard = None
         else:

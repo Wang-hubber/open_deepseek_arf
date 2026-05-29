@@ -74,9 +74,8 @@ class TestRegexOutputGuard:
 
     def test_redact_labels_are_specific(self):
         """Doc §2.1: API key → [REDACTED_API_KEY], phone → [REDACTED_PHONE]."""
-        from arf.guardrails.regex_clean import RegexOutputGuard
-        patterns = RegexOutputGuard.PATTERNS
-        replacements = [p[1] for p in patterns]
+        from arf.guardrails.regex_clean import _BUILTIN_PATTERNS
+        replacements = [p[1] for p in _BUILTIN_PATTERNS]
         assert "[REDACTED_API_KEY]" in replacements
         assert "[REDACTED_PHONE]" in replacements
 
@@ -465,6 +464,59 @@ class TestGuardConfigWiring:
         from arf.guardrails.permissions import ToolPermissionChecker
         sig = inspect.signature(ToolPermissionChecker.__init__)
         assert "config" in sig.parameters
+
+    # -- configurability: patterns are NOT hardcoded (2026-05-29 audit) --
+
+    def test_regex_output_guard_accepts_custom_patterns(self):
+        """RegexOutputGuard accepts patterns via constructor — not hardcoded."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard(patterns=[("custom", "[HIDDEN]")])
+        result = asyncio.run(guard.check("my custom secret", {}))
+        assert "[HIDDEN]" in result.modified_message
+
+    def test_regex_output_guard_defaults_work_without_config(self):
+        """No patterns arg → uses _BUILTIN_PATTERNS (backward compat)."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("sk-abcdefghijklmnopqrstuv", {}))
+        assert "[REDACTED_API_KEY]" in (result.modified_message or "")
+
+    def test_regex_output_guard_empty_patterns_disables_filtering(self):
+        """Empty pattern list disables all output filtering."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard(patterns=[])
+        result = asyncio.run(guard.check("sk-abcdefghijklmnopqrstuv", {}))
+        assert result.modified_message is None
+
+    def test_guardrails_config_has_output_patterns_field(self):
+        """GuardrailsConfig exposes output_patterns for user customization."""
+        from arf.core.config_base import GuardrailsConfig, RegexPatternConfig
+        cfg = GuardrailsConfig(
+            output_patterns=[
+                RegexPatternConfig(pattern=r"\d{16}", replacement="[CARD]"),
+            ]
+        )
+        assert len(cfg.output_patterns) == 1
+        assert cfg.output_patterns[0].pattern == r"\d{16}"
+        assert cfg.output_patterns[0].replacement == "[CARD]"
+
+    def test_regex_pattern_config_is_pydantic_model(self):
+        """RegexPatternConfig is a proper Pydantic model with pattern/replacement."""
+        from arf.core.config_base import RegexPatternConfig
+        from pydantic import BaseModel
+        assert issubclass(RegexPatternConfig, BaseModel)
+        assert "pattern" in RegexPatternConfig.model_fields
+        assert "replacement" in RegexPatternConfig.model_fields
+
+    def test_base_agent_wires_patterns_to_regex_output_guard(self):
+        """BaseAgent passes output_patterns from config to RegexOutputGuard.
+        Verify the wiring branch exists in BaseAgent.__init__."""
+        import inspect as _ins
+        from arf.agent.base import BaseAgent
+        src = _ins.getsource(BaseAgent.__init__)
+        assert "output_patterns" in src
+        assert "RegexOutputGuard(patterns=" in src
+        assert "RegexOutputGuard()" in src  # default (built-in) fallback
 
 
 # ============================================================

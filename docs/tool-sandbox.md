@@ -215,6 +215,15 @@ advanced:
     input: none
     output: regex_clean
     tool_params: path_check
+    # 自定义输出过滤规则（省略时使用框架内置默认值）
+    output_patterns:
+      - pattern: "sk-[-a-zA-Z0-9]{20,}"
+        replacement: "[REDACTED_API_KEY]"
+      - pattern: "\\b1[3-9]\\d{9}\\b"
+        replacement: "[REDACTED_PHONE]"
+      # 用户可扩展：身份证、银行卡、邮箱等
+      # - pattern: "\\d{15,19}"
+      #   replacement: "[REDACTED_CARD]"
     permissions:
       deny: []
       ask: [file_writer, file_deleter, python_exec]
