@@ -15,6 +15,7 @@ from arf.core.protocols import (
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
 from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
+from arf.core.plugin_runtime import PluginRuntime
 
 
 class GraphEngine:
@@ -50,6 +51,7 @@ class GraphEngine:
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
         memory_workspace: str = "./memory",
+        plugin_runtime: PluginRuntime | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -79,6 +81,7 @@ class GraphEngine:
         self._cancel_event = cancel_event
         self._interaction_round = 0
         self._memory_dir = memory_workspace
+        self._plugin_runtime = plugin_runtime
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
@@ -951,12 +954,16 @@ class GraphEngine:
 
 
         if self.hook_runner:
-            _l = logging.getLogger("arf.engine")
-            _l.info("round_end hook firing: round=%d session=%s", self._interaction_round, session_id)
+            runtime_dict = None
+            if self._plugin_runtime:
+                self._plugin_runtime.interaction_round = self._interaction_round
+                self._plugin_runtime.session_id = session_id
+                runtime_dict = self._plugin_runtime.to_dict()
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
                 "memory_dir": self._memory_dir,
+                "plugin_runtime": runtime_dict,
             })
         state = self._close_tool_calls(state)
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
@@ -1332,12 +1339,16 @@ class GraphEngine:
 
 
         if self.hook_runner:
-            _l = logging.getLogger("arf.engine")
-            _l.info("round_end hook firing: round=%d session=%s", self._interaction_round, session_id)
+            runtime_dict = None
+            if self._plugin_runtime:
+                self._plugin_runtime.interaction_round = self._interaction_round
+                self._plugin_runtime.session_id = session_id
+                runtime_dict = self._plugin_runtime.to_dict()
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
                 "memory_dir": self._memory_dir,
+                "plugin_runtime": runtime_dict,
             })
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},

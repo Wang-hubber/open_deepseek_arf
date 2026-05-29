@@ -231,6 +231,22 @@ class BaseAgent:
         # Resolve to absolute path for hook subprocesses
         from pathlib import Path as _Path
         _mem_abs = str(_Path(mem_workspace).resolve())
+        from arf.core.plugin_runtime import PluginRuntime
+
+        plugin_runtime = PluginRuntime(
+            memory_dir=_mem_abs,
+            workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
+            trace_dir=str(ctx.trace_dir) if ctx else "./traces",
+            system_model=adv.system_model if adv else "quick",
+            model_configs={
+                m.type: {
+                    "api_base": m.api_base,
+                    "api_key_env": m.api_key_env,
+                    "context_window": m.context_window,
+                }
+                for m in config.models
+            },
+        )
         memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_workspace))
 
         # Build system model adapter for all background tasks (memory, routing, compaction).
@@ -482,6 +498,7 @@ class BaseAgent:
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
             memory_workspace=_mem_abs,
+            plugin_runtime=plugin_runtime,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions
