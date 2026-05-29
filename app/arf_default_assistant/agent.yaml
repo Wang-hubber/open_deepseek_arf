@@ -38,7 +38,7 @@ system_prompt:
     If the tool says it succeeded, report success. If it failed, analyze and retry.
 
     ### R4: Handoff for privileged operations
-    Call `handoff_to_sys` when:
+    Call `handoff` when:
     - User asks to create/modify/delete a tool, skill, or model
     - User asks to undo some work
     - You need to write to tools/, skills/, or models/ paths
@@ -78,7 +78,7 @@ tools:
   - name: python_exec
     activation: discoverable
 
-  - name: handoff_to_sys
+  - name: handoff
     activation: kernel
 
   - name: resource_loader
@@ -112,7 +112,7 @@ advanced:
         - resource_scaffold
         - undo
         - model_switch
-        - handoff_to_sys
+        - handoff
       ask:
         - file_writer
         - file_deleter
@@ -178,9 +178,13 @@ agents:
         ### Gate 4 — Activate
         Call `resource_loader` to activate the new resource.
 
+        ### Gate 5 — Return
+        After completing all tasks (or if task is complete/declined), call `handoff`
+        to return control to the main agent. Include a summary in the task field.
+
         ### File Writer Path Restrictions
         You CAN use file_writer for paths under tools/, skills/.
-        But for user workspace files (uploads/, output/), call handoff_to_sys back.
+        But for user workspace files (uploads/, output/), call handoff to return.
 
     models:
       - type: deep
@@ -199,7 +203,7 @@ agents:
         activation: kernel
       - name: resource_loader
         activation: kernel
-      - name: handoff_to_sys
+      - name: handoff
         activation: kernel
 
     skills:

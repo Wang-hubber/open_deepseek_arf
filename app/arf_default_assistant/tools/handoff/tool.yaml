@@ -1,5 +1,5 @@
-name: handoff_to_sys
-description: Hand off resource creation/modification tasks to SysAgent
+name: handoff
+description: Hand off between agents — forward tasks or return results
 parameters:
   type: object
   properties:

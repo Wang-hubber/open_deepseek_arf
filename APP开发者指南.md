@@ -228,7 +228,7 @@ system_prompt:
     After calling a tool that changes state, verify the result.
 
     ### R4: Handoff for privileged operations
-    Call `handoff_to_sys` when the user asks to create/modify/delete a tool,
+    Call `handoff` when the user asks to create/modify/delete a tool,
     skill, or model, or needs to write to tools/, skills/, models/ paths.
 
     ### R5: Progressive skill loading
@@ -303,7 +303,7 @@ tools:
 | `file_reader` | 读取文件内容或列出目录 | `path`(required), `operation`(read\|list) | kernel |
 | `file_writer` | 写入文件（创建或覆盖） | `path`(required), `content`(required) | kernel |
 | `web_search` | 搜索互联网（DuckDuckGo） | `query`(required) | kernel |
-| `handoff_to_sys` | 将资源创建/修改操作移交给 SysAgent | `task`(required), `context` | kernel |
+| `handoff` | 将资源创建/修改操作移交给 SysAgent | `task`(required), `context` | kernel |
 | `python_exec` | 执行 Python 代码片段 | `code`(required) | discoverable |
 
 > 深入阅读：[`docs/app/tools.md`](docs/app/tools.md)
@@ -332,7 +332,7 @@ advanced:
         - resource_loader
         - resource_registrar
         - model_switch
-        - handoff_to_sys
+        - handoff
       ask:
         - file_writer
         - file_deleter
@@ -731,7 +731,7 @@ prompt: |
 
   ## Writing Files
   - Use file_writer to create or overwrite files
-  - For tools/skills/models paths, use handoff_to_sys
+  - For tools/skills/models paths, use handoff
 
   ## Path Rules
   - All paths are relative to the workspace root
@@ -1249,7 +1249,7 @@ agents:
         activation: kernel
       - name: resource_loader
         activation: kernel
-      - name: handoff_to_sys
+      - name: handoff
         activation: kernel
 
     skills:
@@ -1271,11 +1271,11 @@ agents:
 
 ### 10.3 Handoff 交接
 
-User Agent 调用 `handoff_to_sys` 工具将任务移交给 System Agent：
+User Agent 调用 `handoff` 工具将任务移交给 System Agent：
 
 ```yaml
-# tools/handoff_to_sys/tool.yaml
-name: handoff_to_sys
+# tools/handoff/tool.yaml
+name: handoff
 description: 将资源创建/修改操作移交给 SysAgent
 parameters:
   type: object
@@ -1311,7 +1311,7 @@ handover:
 
 ### 10.4 `_agent_mode` 路径权限分离
 
-`file_writer` 和 `file_deleter` 根据 `_agent_mode` 参数区分权限。User Agent 模式下禁止写入 `tools/`、`skills/`、`models/` 路径——需要调用 `handoff_to_sys` 交接：
+`file_writer` 和 `file_deleter` 根据 `_agent_mode` 参数区分权限。User Agent 模式下禁止写入 `tools/`、`skills/`、`models/` 路径——需要调用 `handoff` 交接：
 
 ```python
 USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
@@ -1320,7 +1320,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path:
-                return {"error": "需要 System Agent 权限，请调用 handoff_to_sys"}
+                return {"error": "需要 System Agent 权限，请调用 handoff"}
     # 正常写入逻辑...
 ```
 
@@ -1328,7 +1328,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
 
 **正向交接（User Agent → System Agent）**：
 
-1. User Agent 调用 `handoff_to_sys(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
+1. User Agent 调用 `handoff(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
 2. 引擎在每次工具执行后调用 `HandoffManager.detect()` 扫描 tool_results，发现 `{"handoff": True}` 信号
 3. 保存当前 User Agent 状态到 `state_store`（key: `{session_id}/{from_agent}`）
 4. `HandoffManager.resolve()` 根据 `handover.rules` 解析目标 Agent
@@ -1338,7 +1338,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
 
 **反向交接（System Agent → User Agent）**：
 
-System Agent 完成任务后再次调用 `handoff_to_sys`，引擎检测到 handoff 信号后解析回 `arf_assistant`，从 state_store 恢复正向交接时保存的 User Agent 状态。子 Agent 的最后一条 assistant 消息作为 handoff 结果注入原对话，用户感知不到切换。
+System Agent 完成任务后再次调用 `handoff`，引擎检测到 handoff 信号后解析回 `arf_assistant`，从 state_store 恢复正向交接时保存的 User Agent 状态。子 Agent 的最后一条 assistant 消息作为 handoff 结果注入原对话，用户感知不到切换。
 
 **`_agent_mode` 传递链路**：
 

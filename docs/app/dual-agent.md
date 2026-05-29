@@ -35,7 +35,7 @@ tools:
     activation: kernel
   - name: web_fetch
     activation: kernel
-  - name: handoff_to_sys      # 交接工具
+  - name: handoff      # 交接工具
     activation: kernel
 
 # System Agent 的完整定义
@@ -88,12 +88,12 @@ agents:
 
 ## handoff 机制
 
-User Agent 调用 `handoff_to_sys` 工具将任务移交给 System Agent：
+User Agent 调用 `handoff` 工具将任务移交给 System Agent：
 
 ```yaml
-# tools/handoff_to_sys/tool.yaml
-name: handoff_to_sys
-description: 将资源创建/修改操作移交给 SysAgent
+# tools/handoff/tool.yaml
+name: handoff
+description: Agent 间移交——派发任务或完成后返回
 parameters:
   type: object
   properties:
@@ -109,9 +109,9 @@ activation: kernel
 
 交接流程：
 
-1. User Agent 判断任务需要系统权限，调用 `handoff_to_sys(task="创建新工具", context="...")`
+1. User Agent 判断任务需要系统权限，调用 `handoff(task="创建新工具", context="...")`
 2. 函数返回 `{"handoff": True, ...}` → 引擎 `HandoffManager.detect()` 捕获信号 → 状态保存 → 目标解析 → 上下文构建 → Agent 切换
-3. System Agent 执行后再次调用 `handoff_to_sys` → 引擎反向解析 → 恢复 User Agent 状态
+3. System Agent 执行后再次调用 `handoff` → 引擎反向解析 → 恢复 User Agent 状态
 4. 用户感知不到 Agent 切换
 
 详见下方 [Handoff 流程详解](#handoff-流程详解)。
@@ -150,7 +150,7 @@ resolve(from_agent, handoff_data):
 
 `file_writer` 和 `file_deleter` 根据 `_agent_mode` 参数区分权限：
 
-- **User Agent** 模式（`_agent_mode: user`）：禁止写入 `tools/`、`skills/`、`models/` 目录——需要调用 `handoff_to_sys` 交接
+- **User Agent** 模式（`_agent_mode: user`）：禁止写入 `tools/`、`skills/`、`models/` 目录——需要调用 `handoff` 交接
 - **System Agent** 模式（`_agent_mode: sys`）：可以写入上述目录
 
 ```python
@@ -161,7 +161,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path:
-                return {"error": "需要 System Agent 权限，请调用 handoff_to_sys"}
+                return {"error": "需要 System Agent 权限，请调用 handoff"}
     # 正常写入逻辑
 ```
 
@@ -171,7 +171,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
 
 ### 正向交接（User Agent → System Agent）
 
-1. User Agent 调用 `handoff_to_sys(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
+1. User Agent 调用 `handoff(task="...", context="...")` → 函数返回 `{"handoff": True, "task": ..., "context": ...}`
 2. 引擎在每次工具执行后调用 `HandoffManager.detect()` 扫描 tool_results，发现 `{"handoff": True}` 信号
 3. 保存当前 User Agent 状态到 `state_store`（key: `{session_id}/{from_agent}`）
 4. `HandoffManager.resolve()` 根据 handover rules 解析目标 Agent（支持多候选时 LLM 匹配 trigger）
@@ -181,7 +181,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
 
 ### 反向交接（System Agent → User Agent）
 
-System Agent 完成任务后再次调用 `handoff_to_sys`，引擎检测到 handoff 信号后：
+System Agent 完成任务后再次调用 `handoff`，引擎检测到 handoff 信号后：
 1. 解析目标为 `arf_assistant`（handover rules 第二条）
 2. `_execute_handoff` 发现 `state_store` 中已有目标 Agent 的状态（正向交接时保存的），直接恢复
 3. 子 Agent 的最后一条 assistant 消息作为 handoff 工具的结果注入原对话

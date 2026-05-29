@@ -1,4 +1,4 @@
-"""handoff_to_sys -- structured handoff to SysAgent."""
+"""handoff -- structured handoff to SysAgent."""
 import json
 
 

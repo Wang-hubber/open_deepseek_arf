@@ -14,7 +14,7 @@ prompt: |
   - Use file_writer to create or overwrite files
   - Always include complete file content (not diffs)
   - Create parent directories as needed
-  - For tools/skills/models paths, use handoff_to_sys
+  - For tools/skills/models paths, use handoff
 
   ## Deleting Files
   - Use file_deleter for soft-deletion (renames with _deleted)

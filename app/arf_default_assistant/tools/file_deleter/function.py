@@ -13,7 +13,7 @@ async def execute(path: str, _agent_mode: str = "sys") -> dict:
                     "error": (
                         f"User Agent cannot delete {path}. "
                         f"tools/, skills/, models/ paths require Sys Agent. "
-                        f"Call handoff_to_sys to hand over."
+                        f"Call handoff to hand over."
                     )
                 }
 
