@@ -62,8 +62,8 @@
 | # | 问题 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
 | 1 | **[Agent 执行 →](docs/agent-execution.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` invoke/astream 双模主循环。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
-| 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 自适应阈值（基于历史错误率动态调整 failure_threshold）；优先级队列（系统 vs 用户请求）；分布式限流（多 Agent 共享配额） |
-| 3 | **[上下文管理 →](docs/context-management.md)**<br>上下文窗口压缩 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。长工具输出摘要写入磁盘。 | 语义单元压缩；自适应阈值；跨会话摘要复用 |
+| 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。Router/Engine 两层降级链。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 三级分类器（light/medium/complex）；连续负载跟踪（PELT 风格）；自适应阈值；优先级队列 |
+| 3 | **[上下文管理 →](docs/context-management.md)**<br>上下文窗口压缩 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。长工具输出摘要写入磁盘。 | 语义单元压缩；自适应阈值；跨会话摘要复用；会话外压缩（父子节点摘要，RAG 风格） |
 | 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
 | 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于 invoke/astream 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
 | 6 | **[资源管理器 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
@@ -83,7 +83,7 @@
 | | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`ToolPermissionChecker` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线 |
 | | **可观测性** | `InMemoryEventBus`、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
 | | **基础设施** | `SubprocessHookRunner`（退出码契约）、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`EvalRunner`/`BenchmarkBuilder`/`EvalComparator`（会话回放与回归） |
-| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`MemoryWriter`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`LoopStrategy` 等全部抽象接口 |
+| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`CompactionStrategy`、`LoopStrategy` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + SSE streaming、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / config |
@@ -119,27 +119,27 @@ skills:
 
 ### 记忆——自动抽取与检索
 
-应用**不实现**自己的记忆系统。框架的 `LLMMemoryWriter` 每轮对话后自动提取事实、偏好和决策。`LLMMemoryRetriever` 将相关记忆注入系统提示。统一存储在 `FileMemoryStore` → `memory/memory.json`。
+应用**不实现**自己的记忆系统。框架的记忆提取位于 [`memory` 插件](docs/plugins/memory.md)（`arf/plugins/memory/`）——基于 subprocess 的异步提取器，通过 system model 按可配置轮次间隔触发。提取的事实、偏好和决策原子写入 `memory.md`（≤300KB），会话启动时加载并注入系统提示。
 
 ```yaml
 advanced:
   system_model: quick     # 系统后台模型 — 记忆、路由分类、压缩共用
   memory:
-    store: file
-    retriever: llm
-    writer: llm
+    store: file           # 存储后端
+    resident_file: memory.md
+    max_size_kb: 300
 ```
 
-[设计文档 →](docs/context-management.md)
+[设计文档 →](docs/plugins/memory.md)
 
 ### 压缩——Token 感知的上下文管理
 
-`SlidingWindowCompactor` 监控上一轮的 token 用量。达到模型上下文窗口 75% 时触发：保留最近 4 条消息，旧轮次通过 LLM 摘要存入 `context_summary`。长工具输出落盘，上下文保留摘要。
+`SlidingWindowCompactor` 监控上一轮的 token 用量。达到模型上下文窗口 75% 时触发：保留最近 4 条消息，旧轮次通过 LLM 生成 7 维结构化摘要存入 `context_summary`。长工具输出（>2000 字符）落盘，上下文保留摘要指针——无 system model 时静默退化到纯截断。
 
 ```yaml
 advanced:
   compaction:
-    strategy: sliding_window
+    strategy: sliding_window    # sliding_window | none
     threshold: 0.75
 ```
 
@@ -147,7 +147,7 @@ advanced:
 
 ### 模型路由——快慢分流
 
-`TwoTierRouter` 通过廉价 LLM 对每次用户查询分类：简单 → `quick`（flash），复杂 → `deep`（pro）。后台任务（记忆、分类）使用专用模型。每轮动态切换。
+`TwoTierRouter` 通过廉价 LLM 对每次用户查询分类：简单 → `quick`（flash），复杂 → `deep`（pro）。Router/Engine 两层降级链确保每请求都有模型可用。后台任务（压缩、分类、handoff）共用 `system_model`。每轮动态切换。
 
 ```yaml
 models:
@@ -304,9 +304,9 @@ cd app/web && npm install && npm run dev
 ### 演进方向
 
 参见各模块设计文档第三章：
-- [上下文管理](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用
+- [上下文管理](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用、会话外压缩（父子节点摘要，RAG 风格）
 - [Memory 插件](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
-- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
+- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪（PELT 风格）、基于负载的自动路由
 - [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
 - [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
 - [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离

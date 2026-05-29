@@ -62,8 +62,8 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | # | Problem | OS Analogy | Current | Evolution |
 |---|---------|------------|---------|-----------|
 | 1 | **[Agent Execution →](docs/agent-execution.md)**<br>Lifecycle + loop control | Process management (fork/exec/scheduler) | `GraphEngine` dual-mode invoke/astream main loop. `BaseAgent` DI assembly of all protocols. `LoopStrategy` ReAct pattern. `max_turns` per-session circuit breaker. | Multi-agent DAG orchestration; pause/resume/checkpoint; plan-execute loop strategy |
-| 2 | **[LLM Scheduling →](docs/model-routing.md)**<br>Model dispatch + API protection | CPU scheduling (big.LITTLE/CFS) + process supervision | `TwoTierRouter` — LLM classifier dispatches simple→flash, complex→pro. `system_model` for background tasks. `TokenBucket` per-endpoint rate limiting (configurable rps + burst). `CircuitBreaker` per-model with exponential cooldown — trips after consecutive failures, probes via HALF_OPEN, auto-recovers. `ModelAdapter` exponential backoff retry. | Adaptive thresholds (history-based failure_threshold); priority queuing (system vs user requests); distributed rate limiting (multi-agent quota sharing) |
-| 3 | **[Context Management →](docs/context-management.md)**<br>Context window compaction | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. Long tool outputs summarized to disk. | Semantic-unit compaction; adaptive threshold; cross-session summary reuse |
+| 2 | **[LLM Scheduling →](docs/model-routing.md)**<br>Model dispatch + API protection | CPU scheduling (big.LITTLE/CFS) + process supervision | `TwoTierRouter` — LLM classifier dispatches simple→flash, complex→pro. Router/Engine two-layer degradation chain. `system_model` for background tasks. `TokenBucket` per-endpoint rate limiting (configurable rps + burst). `CircuitBreaker` per-model with exponential cooldown — trips after consecutive failures, probes via HALF_OPEN, auto-recovers. `ModelAdapter` exponential backoff retry. | Three-tier classifier (light/medium/complex); continuous load tracking (PELT-style history); adaptive thresholds (history-based failure_threshold); priority queuing (system vs user requests) |
+| 3 | **[Context Management →](docs/context-management.md)**<br>Context window compaction | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. Long tool outputs summarized to disk. | Semantic-unit compaction; adaptive threshold; cross-session summary reuse; off-session compaction (parent-child node summary, RAG-style) |
 | 4 | **[Interrupt & Recovery →](docs/interrupt.md)**<br>Cancel + undo + rollback | Hardware interrupt (ISR) + signals | `asyncio.Event` cancellation token checked each turn. `RoundManager` — configurable snapshot window (default 3), state + file rollback across handoff boundaries. `FunctionBackend` rollback — tools export optional `rollback()` called on `execute()` exception. `SubprocessHookRunner` exit-code 2 → message injection. | Pause/redirect vectors; idle timeout; interrupt priority levels |
 | 5 | **[A2A Communication →](docs/a2a-communication.md)**<br>Agent-to-agent interaction | IPC (pipe/signal/shared memory/message queue) | `HandoffManager` signal-based agent switching in invoke/astream loop. `InMemoryAgentBus` — asyncio.Queue message routing (broadcast, targeted, capability discovery). `PeerAgent` — P2P negotiate/handoff/discover. `DictWorkspace` shared memory. `InMemoryLock` synchronisation. `MajorityVoteConsensus`. Protocol layer for AgentBus/Supervisor/Consensus. `SkillPipeline` — tool execution order with explicit dependencies. `ConcurrentToolExecutor` parallel execution. | Network A2A (gRPC); pub/sub agent discovery; DAG multi-agent scheduling |
 | 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
@@ -85,7 +85,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | | **Security** | `PathCheckToolGuard` (.., symlink, depth/count), `ToolPermissionChecker` deny→ask→allow, `HumanLoop` SSE approval + 60s timeout, `GuardDefaults` three-line defense |
 | | **Observability** | `InMemoryEventBus`, `FileTraceStore` (per-session JSON), `UsageTracker` (token accounting), standalone HTML trace viewer, Vue SPA waterfall |
 | | **Infrastructure** | `SubprocessHookRunner` (exit-code contract), `DefaultErrorPolicy`/`FunctionBackend` rollback, `EvalRunner`/`BenchmarkBuilder`/`EvalComparator` (session replay & regression) |
-| | **Protocols** | Protocol classes (`core/protocols/`) — defines `MemoryStore`, `MemoryWriter`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, `LoopStrategy` and all other abstract interfaces |
+| | **Protocols** | Protocol classes (`core/protocols/`) — defines `MemoryStore`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, `CompactionStrategy`, `LoopStrategy` and all other abstract interfaces |
 | **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and other components |
 | | **HTTP Service** | FastAPI + Uvicorn + SSE streaming, REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
 | | **CLI** | init / start / stop / chat / list / validate / config |
@@ -121,27 +121,27 @@ Only essential kernel tools are always active. Everything else loads on demand v
 
 ### Memory — Automatic Extraction & Retrieval
 
-The app **does not** implement its own memory. The framework's `LLMMemoryWriter` extracts facts, preferences, and decisions after every turn. `LLMMemoryRetriever` injects relevant memories into the system prompt. All backed by `FileMemoryStore` → `memory/memory.json`.
+The app **does not** implement its own memory. Framework memory extraction lives in the [`memory` plugin](docs/plugins/memory.md) (`arf/plugins/memory/`) — a subprocess-based extractor that runs asynchronously via system model at configurable round intervals. Extracted facts, preferences, and decisions are written atomically to `memory.md` (≤300KB), loaded at session startup and injected into the system prompt.
 
 ```yaml
 advanced:
   system_model: quick     # system model shared by memory, routing, compaction
   memory:
-    store: file
-    retriever: llm
-    writer: llm
+    store: file           # storage backend
+    resident_file: memory.md
+    max_size_kb: 300
 ```
 
-[Design doc →](docs/context-management.md)
+[Design doc →](docs/plugins/memory.md)
 
 ### Compaction — Token-Aware Context Management
 
-The `SlidingWindowCompactor` monitors the previous turn's token usage. At 75% of the model's context window, it triggers: keeps the last 4 messages, summarizes older turns via LLM, and appends to `context_summary`. Long tool outputs are written to disk with a summary in context.
+The `SlidingWindowCompactor` monitors the previous turn's token usage. At 75% of the model's context window, it triggers: keeps the last 4 messages, summarizes older turns via LLM (7-dimension structured summary), and appends to `context_summary`. Long tool outputs (>2000 chars) are written to disk with a summary pointer in context — degrades gracefully to truncation when no system model.
 
 ```yaml
 advanced:
   compaction:
-    strategy: sliding_window
+    strategy: sliding_window    # sliding_window | none
     threshold: 0.75
 ```
 
@@ -149,7 +149,7 @@ advanced:
 
 ### Model Routing — Fast/Slow Dispatch
 
-`TwoTierRouter` classifies each user query via a cheap LLM: simple → `quick` (flash), complex → `deep` (pro). Background tasks (memory, classification) use a dedicated model. Per-turn dynamic switching.
+`TwoTierRouter` classifies each user query via a cheap LLM: simple → `quick` (flash), complex → `deep` (pro). A two-layer degradation chain (Router → Engine) ensures every request has a model. Background tasks (compaction, classification, handoff) share a dedicated `system_model`. Per-turn dynamic switching.
 
 ```yaml
 models:
@@ -306,9 +306,9 @@ cd app/web && npm install && npm run dev
 ### 演进方向
 
 参见各模块设计文档第三章：
-- [Context Management](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用
+- [Context Management](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用、会话外压缩（父子节点摘要，RAG 风格）
 - [Memory Plugin](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
-- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪、模型硬件化
+- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪（PELT 风格）、基于负载的自动路由
 - [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
 - [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
 - [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离
