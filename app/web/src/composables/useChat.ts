@@ -117,6 +117,8 @@ export function useChat() {
     if (evt.type === 'chunk') {
       if (evt.reasoning) streamingReasoning.value += evt.reasoning
       if (evt.content) streamingText.value += evt.content
+    } else if (evt.type === 'tool_call_streaming') {
+      streamingReasoning.value += evt.delta || ''
     } else if (evt.type === 'tool_call') {
       const name = evt.name || evt.tool || 'unknown'
       const args = evt.arguments || ''

@@ -937,6 +937,13 @@ class GraphEngine:
                                                  data={"content": chunk.get("content", ""),
                                                        "reasoning": reasoning},
                                                  turn=turn, session_id=session_id)
+                            elif chunk.get("type") == "tool_call_chunk":
+                                yield self._make_event(type="tool_call_chunk",
+                                                 data={"name": chunk.get("name", ""),
+                                                       "arguments": chunk.get("arguments", ""),
+                                                       "id": chunk.get("id", ""),
+                                                       "delta": chunk.get("delta", "")},
+                                                 turn=turn, session_id=session_id)
                             elif chunk.get("type") == "tool_call":
                                 tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
                                       "params": {}}

@@ -55,6 +55,8 @@ async def _sse_chat(message: str):
                     chunk["reasoning"] = event.data["reasoning"]
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(0)
+            elif t == "tool_call_chunk":
+                yield f"data: {json.dumps({'type': 'tool_call_streaming', 'name': event.data.get('name', ''), 'arguments': event.data.get('arguments', ''), 'id': event.data.get('id', ''), 'delta': event.data.get('delta', '')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_start":
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_end":

@@ -255,6 +255,14 @@ class ModelAdapter:
                         tool_calls_acc[idx]["name"] = tc.function.name
                     if tc.function and tc.function.arguments:
                         tool_calls_acc[idx]["arguments"] += tc.function.arguments
+                        # Yield incremental updates so frontend can show progress
+                        yield {
+                            "type": "tool_call_chunk",
+                            "name": tool_calls_acc[idx]["name"],
+                            "arguments": tool_calls_acc[idx]["arguments"],
+                            "id": f"call_{idx}",
+                            "delta": tc.function.arguments,
+                        }
 
             if chunk.choices[0].finish_reason == "tool_calls":
                 for idx in sorted(tool_calls_acc.keys()):

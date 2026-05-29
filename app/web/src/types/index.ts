@@ -119,6 +119,7 @@ export interface Attachment {
 
 export type SSEEvent =
   | { type: 'chunk'; content?: string; reasoning?: string }
+  | { type: 'tool_call_streaming'; name: string; arguments: string; id: string; delta: string }
   | { type: 'tool_call'; name?: string; tool?: string; arguments?: string; id: string }
   | { type: 'tool_result'; tool?: string; id: string; result: string }
   | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
