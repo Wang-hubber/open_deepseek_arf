@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
+
 class TestPluginProviderHooks:
     """PluginProvider hooks/ scanning."""
 
@@ -147,14 +149,27 @@ class TestLoadResidentMemory:
 class TestMemoryWriterRemoved:
     """Verify memory_writer is no longer called by engine."""
 
-    def test_engine_does_not_call_memory_writer(self):
+    def test_engine_does_not_call_memory_writer(self, tmp_path):
         from arf.engine.graph import GraphEngine
         from arf.engine.loop_strategies.react import ReActStrategy
+        from arf.memory.file_store import FileMemoryStore
 
         memory_writer = MagicMock()
         memory_writer.extract_and_write = AsyncMock()
-        memory_store = MagicMock()
-        memory_store.load = AsyncMock(return_value=[])
+        memory_store = FileMemoryStore(workspace=str(tmp_path))
+
+        fake = FakeModelAdapter(default=FakeResponse(
+            content="hello",
+            usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        ))
+
+        async def wrap_call(messages, model="", tools=None):
+            result = fake.chat_complete(messages, tools=tools)
+            return {
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+                "usage": result.usage,
+            }
 
         loop_strategy = MagicMock()
         loop_strategy.should_continue.side_effect = [True, False]
@@ -175,12 +190,10 @@ class TestMemoryWriterRemoved:
             memory_writer=memory_writer,
             system_prompt="test",
             max_turns=1,
+            call_model=wrap_call,
         )
-        engine._call_model = AsyncMock(return_value={
-            "content": "hello", "tool_calls": [], "usage": {"total_tokens": 10},
-        })
 
-        state = {
+        state: dict = {
             "session_id": "test",
             "agent_name": "test",
             "messages": [{"role": "user", "content": "hi"}],

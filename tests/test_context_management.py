@@ -4,15 +4,16 @@ Covers: CompactionStrategy Protocol, DEFAULT_WINDOW_SIZE (Doc 2.2),
 summarize_tool_output (Doc 2.6), compaction edge cases (Doc 2.4),
 engine integration (Doc 2.7), config defaults (Doc 2.8).
 """
+from __future__ import annotations
 
 import asyncio
 import inspect
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
 from arf.compaction.sliding_window import SlidingWindowCompactor, DEFAULT_WINDOW_SIZE
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
 # ---------------------------------------------------------------------------
@@ -119,8 +120,13 @@ class TestSummarizeToolOutput:
 
     def test_long_output_summarized_with_summarizer(self, tmp_workspace):
         """Doc: long output → LLM summary + disk path reference."""
-        summarizer = AsyncMock(return_value="Found 42 results matching the query.")
-        c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=summarizer)
+        fake = FakeModelAdapter(default=FakeResponse(content="Found 42 results matching the query."))
+
+        async def fake_summarizer(text: str) -> str:
+            resp = fake.chat_complete([{"role": "user", "content": text}])
+            return resp.content
+
+        c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=fake_summarizer)
         output = "y" * 3000
 
         async def run():
@@ -130,12 +136,17 @@ class TestSummarizeToolOutput:
         assert "[Tool output summarized" in result
         assert "turn_5_search.txt" in result
         assert "Found 42 results" in result
-        summarizer.assert_awaited_once()
+        assert fake.call_count == 1
 
     def test_long_output_falls_back_to_truncation_on_summarizer_error(self, tmp_workspace):
         """Doc gap: summarizer raises → fallback to pure truncation."""
-        failing = AsyncMock(side_effect=RuntimeError("LLM down"))
-        c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=failing)
+        fake = FakeModelAdapter(raise_on_call=RuntimeError("LLM down"))
+
+        async def failing_summarizer(text: str) -> str:
+            resp = fake.chat_complete([{"role": "user", "content": text}])
+            return resp.content
+
+        c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=failing_summarizer)
         output = "z" * 3000
 
         async def run():
@@ -197,8 +208,13 @@ class TestCompactEdgeCases:
 
     def test_compact_adds_earlier_marker(self):
         """Doc: 旧消息摘要追加 [Earlier] 标记."""
-        summarizer = AsyncMock(return_value="User discussed project structure.")
-        c = SlidingWindowCompactor(summarizer=summarizer)
+        fake = FakeModelAdapter(default=FakeResponse(content="User discussed project structure."))
+
+        async def fake_summarizer(text: str) -> str:
+            resp = fake.chat_complete([{"role": "user", "content": text}])
+            return resp.content
+
+        c = SlidingWindowCompactor(summarizer=fake_summarizer)
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -218,9 +234,16 @@ class TestCompactEdgeCases:
 
     def test_consecutive_compactions_accumulate(self):
         """Doc: 摘要叠加而非覆盖 — 连续多轮压缩时累积保留."""
-        summarizer = AsyncMock()
-        summarizer.side_effect = ["First summary.", "Second summary."]
-        c = SlidingWindowCompactor(summarizer=summarizer)
+        fake = FakeModelAdapter(responses=[
+            FakeResponse(content="First summary."),
+            FakeResponse(content="Second summary."),
+        ], default=FakeResponse(content="subsequent summary."))
+
+        async def fake_summarizer(text: str) -> str:
+            resp = fake.chat_complete([{"role": "user", "content": text}])
+            return resp.content
+
+        c = SlidingWindowCompactor(summarizer=fake_summarizer)
 
         # First compaction
         messages = [
@@ -241,7 +264,7 @@ class TestCompactEdgeCases:
         result = asyncio.run(run())
         assert "First summary" in result["context_summary"]
         assert "Second summary" in result["context_summary"]
-        assert summarizer.call_count == 2
+        assert fake.call_count == 2
 
     def test_should_compact_with_explicit_threshold_override(self):
         """Doc 2.2: should_compact supports per-call threshold override."""

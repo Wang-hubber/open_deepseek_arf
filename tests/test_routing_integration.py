@@ -3,12 +3,14 @@
 Covers: ModelAdapter thinking translation (Doc 2.10), streaming event types,
 classifier prompt structure, static strategy, and the background field gap.
 """
+from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from arf.core.model_adapter import ModelAdapter
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
 # ---------------------------------------------------------------------------
@@ -408,19 +410,23 @@ class TestTwoTierRouterSyncClassifier:
     def test_route_with_non_empty_history(self):
         """Doc: route(query, history) — history is passed but not used
         by the current TwoTierRouter implementation."""
+        import asyncio
         from arf.routing.two_tier import TwoTierRouter
         from arf.core.config_base import RoutingConfig
-        from unittest.mock import AsyncMock
 
         cfg = RoutingConfig(
             default="quick",
             classify={"medium": "quick", "complex": "deep"},
         )
-        classifier = AsyncMock(return_value="medium")
+        fake = FakeModelAdapter(default=FakeResponse(content="medium"))
+
+        async def classifier(query: str) -> str:
+            resp = fake.chat_complete([{"role": "user", "content": query}])
+            return resp.content.strip().lower()
+
         router = TwoTierRouter(cfg, models=["quick", "deep"],
                               classifier_call=classifier)
 
-        import asyncio
         history = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},

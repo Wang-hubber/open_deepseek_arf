@@ -1,11 +1,13 @@
 """Tests for GraphEngine model fallback chain and error handling."""
+from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from arf.engine.graph import GraphEngine
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
 def _build_engine(**overrides):
@@ -98,20 +100,24 @@ class TestInvokeFallbackChain:
         """When primary model raises, engine should call fallback model."""
         from arf.errors.retry import DefaultErrorPolicy
 
-        # Primary call raises, fallback call succeeds
-        call_count = 0
-        model_used = []
+        call_count: list[int] = [0]
+        model_used: list[str] = []
+        fake_quick = FakeModelAdapter(default=FakeResponse(
+            content="fallback response",
+            usage={"prompt_tokens": 25, "completion_tokens": 25, "total_tokens": 50},
+        ))
 
-        def mock_call_model_sync(messages, model, **kwargs):
-            nonlocal call_count
-            call_count += 1
+        async def wrap_call(messages, model="", tools=None):
+            call_count[0] += 1
             model_used.append(model)
             if model == "deep":
-                raise Exception("HTTP 500 Internal Server Error")
-            return {"content": "fallback response", "tool_calls": [], "usage": {"total_tokens": 50}}
-
-        async def mock_call_model(messages, model, **kwargs):
-            return mock_call_model_sync(messages, model, **kwargs)
+                raise RuntimeError("HTTP 500 Internal Server Error")
+            result = fake_quick.chat_complete(messages, tools=tools)
+            return {
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+                "usage": result.usage,
+            }
 
         loop_strategy = MagicMock()
         loop_strategy.should_continue.side_effect = [True, False]
@@ -134,9 +140,9 @@ class TestInvokeFallbackChain:
             error_policy=DefaultErrorPolicy(model_5xx_action="fallback"),
             model_router=router,
         )
-        engine.set_call_model(mock_call_model)
+        engine.set_call_model(wrap_call)
 
-        state = {
+        state: dict = {
             "session_id": "test",
             "messages": [{"role": "user", "content": "hello"}],
             "current_turn": 0,
@@ -146,7 +152,7 @@ class TestInvokeFallbackChain:
 
         result = asyncio.run(engine.invoke(state))
 
-        assert call_count == 2
+        assert call_count[0] == 2
         assert model_used == ["deep", "quick"]
         assert result["current_model"] == "quick"
 
@@ -154,8 +160,15 @@ class TestInvokeFallbackChain:
         """When primary fails and no fallback is available, re-raise."""
         from arf.errors.retry import DefaultErrorPolicy
 
-        async def mock_call_model(messages, model, **kwargs):
-            raise Exception("HTTP 500 Internal Server Error")
+        fake = FakeModelAdapter(raise_on_call=RuntimeError("HTTP 500 Internal Server Error"))
+
+        async def wrap_call(messages, model="", tools=None):
+            result = fake.chat_complete(messages, tools=tools)
+            return {
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+                "usage": result.usage,
+            }
 
         loop_strategy = MagicMock()
         loop_strategy.should_continue.side_effect = [True, False]
@@ -177,9 +190,9 @@ class TestInvokeFallbackChain:
             error_policy=DefaultErrorPolicy(model_5xx_action="fallback"),
             model_router=router,
         )
-        engine.set_call_model(mock_call_model)
+        engine.set_call_model(wrap_call)
 
-        state = {
+        state: dict = {
             "session_id": "test",
             "messages": [{"role": "user", "content": "hello"}],
             "current_turn": 0,
