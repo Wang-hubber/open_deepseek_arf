@@ -36,6 +36,15 @@ ARF 将 OS 虚拟内存的页面置换机制适配到 Token 时代。上下文�
 
 OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、需要时换入——直接影响了 ARF 的压缩策略。mmap 统一内存与文件的思路，影响了工具输出摘要的设计：大文件不需要全部读入上下文，按需映射即可。
 
+**OS → ARF 概念映射**：
+
+| OS 概念 | ARF 映射 | 说明 |
+|---------|----------|------|
+| PTE present 位 → Page Fault | `should_compact()` — 当 `last_token_usage > threshold × window` 触发压缩 | 缺页类比令牌压力，触发置换 |
+| kswapd 水位线 (low/min) | threshold 0.75 — 低于水位线压缩，低于 min 激进压缩 | Linux 异步回收 inactive 页面 → 压缩旧轮次 |
+| LRU 双链表 (active/inactive) | context_summary (摘要) + messages[-4:] (活跃) | 冷热分离：旧消息压缩进摘要，最近消息保持原文 |
+| mmap + Page Cache | `summarize_tool_output()` — 长输出写 disk，上下文留摘要指针 | 不全部加载，按需映射 |
+
 ---
 
 ## 2. ARF 当前实现
@@ -69,25 +78,41 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
 
 以上一轮模型调用返回的 `usage.total_tokens` 为信号，在下一轮模型调用之前判断。区别于直接统计 `len(messages)`，API 报告的 token 用量包含工具定义、system prompt 等隐形消耗，更准确。
 
+默认窗口大小为模块常量 `DEFAULT_WINDOW_SIZE = 131_072`（DeepSeek V4 标准上下文窗口）：
+
 ```python
 def should_compact(self, state, window_size=None):
-    w = window_size or self._window_size  # 默认 131,072
+    w = window_size or self._window_size  # 默认 DEFAULT_WINDOW_SIZE (131,072)
     last_usage = state.get("last_token_usage", 0)
     return last_usage > self._threshold * w
 ```
 
-### 2.3 窗口跟随模型
+### 2.3 协议
 
-路由先于压缩执行（`graph.py`）。不同模型的 `context_window` 不同（如 flash 800k, pro 1M），引擎将当前选定模型的窗口大小传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
+`CompactionStrategy` 协议（`arf/core/protocols/compaction.py`）：
 
-### 2.4 压缩行为
+```python
+class CompactionStrategy(Protocol):
+    def should_compact(self, state: AgentState, threshold: float = 0.75) -> bool: ...
+    async def compact(self, state: AgentState) -> AgentState: ...
+```
+
+`SlidingWindowCompactor` 是该协议的唯一实现。将协议与实现分离，允许未来注入替代压缩策略（如语义单元压缩），引擎无需修改。
+
+### 2.4 窗口跟随模型
+
+路由先于压缩执行（`graph.py`）。不同模型的 `context_window` 由模型配置文件定义（参考值：flash ~800k, pro ~1M），引擎通过 `_model_windows` 字典查找当前模型的窗口大小并传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
+
+当 `_model_windows` 未设置或当前模型不在字典中时，引擎回退到 `DEFAULT_WINDOW_SIZE`（131_072）。
+
+### 2.5 压缩行为
 
 - 保留最近 4 条消息（一个用户-助手往返 + 工具调用）
 - 旧消息通过 LLM 生成结构化摘要，追加 `[Earlier]` 标记到 `context_summary`
 - 摘要叠加而非覆盖：连续多轮压缩时，每轮生成的摘要累积保留，避免历史信息丢失
 - 失败静默降级：summarizer 调用异常时仅记录日志，丢弃旧消息继续执行
 
-### 2.5 LLM Summarizer
+### 2.6 LLM Summarizer
 
 在 `BaseAgent.__init__()` 中定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）。取最近 30 条旧消息，每条截断至 300 字符。结构化输出包含：Completed / In Progress / Files Modified / Decisions / Facts & Preferences / Errors & Debugging / Next Steps 七个部分。
 
@@ -113,20 +138,22 @@ async def _summarize(msgs: list[dict]) -> str:
     return (await _system_model_call(prompt)).strip()
 ```
 
-### 2.6 工具输出摘要
+### 2.7 工具输出摘要
 
 工具输出超过 2000 字符时，原文写入 `memory/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入上下文，按需映射即可。
 
-### 2.7 引擎集成
+无 system model 时静默退化：长输出仅截断保留前 2000 字符 + 磁盘路径（`[Tool output truncated — full at ...]`），不生成 LLM 摘要。退化路径与压缩摘要一致：`if self._summarize:` 模式检查，不存在时跳过 LLM 调用。
 
-在 `GraphEngine.invoke()` 和 `astream()` 中：
+### 2.8 引擎集成
 
-1. **路由之后、模型调用之前**：`compaction.should_compact()` → `compaction.compact()`
+`invoke()` 和 `astream()` 中压缩逻辑一致，均在以下节点触发：
+
+1. **路由之后、模型调用之前**：`compaction.should_compact()` → `compaction.compact()`，并 emit `compaction_start` / `compaction_end` 事件
 2. **工具执行成功后**：`compaction.summarize_tool_output()`
 
-路由先于压缩执行，确保使用正确模型的窗口大小。
+路由先于压缩执行，确保使用正确模型的窗口大小。引擎通过 `if self.compaction:` 守卫检查压缩器是否存在——未配置压缩时跳过所有压缩流程。
 
-### 2.8 配置
+### 2.9 配置
 
 ```yaml
 advanced:
@@ -136,6 +163,9 @@ advanced:
 
   system_model: quick           # 系统后台模型，低温度、关闭推理
 ```
+
+- **`sliding_window`**：默认策略，LLM 驱动压缩（需 `system_model` 提供摘要能力，无 system_model 时静默退化到截断）
+- **`none`**：完全禁用压缩——消息无限增长不做处理，适用于短会话或调试场景。不创建 `SlidingWindowCompactor` 实例
 
 ---
 
@@ -156,7 +186,34 @@ advanced:
 
 当前 `context_summary` 仅在当前会话内有效。后续可将压缩摘要作为输入供 memory 插件参考，让长期记忆提取受益于会话内的结构化摘要。类似 OS 的 page cache——压缩摘要可跨会话复用，避免重复处理相同上下文。
 
-### 3.4 探索性方向
+### 3.4 会话外压缩 (Off-Session Compaction)
+
+当前压缩均为会话内：必须在模型调用前同步完成，受限于时间和算力（廉价 system model、最近 30 条消息窗口）。会话外压缩在会话非活跃时异步执行，可以回溯完整会话、配置更强模型、产出更结构化的记忆。
+
+**触发机制**（可组合）：
+
+| 模式 | 触发条件 |
+|------|----------|
+| 用户触发 | 会话显式结束（/stop、关闭） |
+| 定时扫描 | 周期性扫描非活跃会话，逐个处理 |
+
+**核心策略：父子节点摘要**（参照 RAG 父子检索）
+
+1. 回溯完整会话 → 按主题切分段落
+2. 每个主题生成父子对：**父节点**（主题摘要，注入上下文）→ **子节点**（原始对话细节，存盘保留）
+3. 上下文仅加载父节点 + 子节点磁盘路径，按需检索
+
+**与会话内压缩的对比**：
+
+| 维度 | 会话内 | 会话外 |
+|------|--------|--------|
+| 窗口 | 最近 4 条消息 | 完整会话回溯 |
+| 模型 | system model (flash) | 可配置 |
+| 时机 | 同步（模型调用前） | 异步（会话非活跃） |
+| 粒度 | 固定 7 维模板 | 主题驱动的父子分层 |
+| 输出 | `context_summary` 字符串 | 结构化父子节点文件 |
+
+### 3.5 探索性方向
 
 **选择性保留**：当前"保留最近 4 条"是固定窗口。可以改为按消息重要性保留——模型标记哪些消息对后续推理关键，压缩时优先保留关键消息而非简单按时间。
 

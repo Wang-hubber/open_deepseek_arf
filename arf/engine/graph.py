@@ -14,6 +14,7 @@ from arf.core.protocols import (
 )
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
+from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
 
 
 class GraphEngine:
@@ -574,7 +575,7 @@ class GraphEngine:
 
                 # Compaction — after routing, before model call
                 if self.compaction:
-                    window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                    window = self._model_windows.get(model, DEFAULT_WINDOW_SIZE) if hasattr(self, '_model_windows') else DEFAULT_WINDOW_SIZE
                     if self.compaction.should_compact(state, window_size=window):
                         self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
                         state = await self.compaction.compact(state)
@@ -853,7 +854,7 @@ class GraphEngine:
 
                 # Compaction
                 if self.compaction:
-                    window = self._model_windows.get(model, 128_000) if hasattr(self, '_model_windows') else 128_000
+                    window = self._model_windows.get(model, DEFAULT_WINDOW_SIZE) if hasattr(self, '_model_windows') else DEFAULT_WINDOW_SIZE
                     if self.compaction.should_compact(state, window_size=window):
                         yield self._make_event(type="compaction_start",
                                          data={"turn": turn, "model": model, "msg_count": len(state.get("messages", []))},
