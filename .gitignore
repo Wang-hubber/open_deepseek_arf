@@ -62,3 +62,11 @@ app/web/dist/
 docs/superpowers/
 docs/SELF_REVIEW.md
 
+# App runtime data (framework-generated)
+memory/
+traces/
+app/arf_default_assistant/memory/
+app/arf_default_assistant/node_modules/
+app/arf_default_assistant/package-lock.json
+*.png
+
