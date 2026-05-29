@@ -48,24 +48,40 @@ class SlidingWindowCompactor:
         return last_usage > limit
 
     async def compact(self, state: AgentState) -> AgentState:
-        """Keep last 4 messages, summarize older ones into context_summary."""
+        """Keep last 4 user/assistant messages, discard tool messages,
+        summarize older messages into context_summary.
+        """
         msgs = state.get("messages", [])
-        if len(msgs) <= 4:
+        # Only keep user + assistant messages; tool results are transient
+        # Separate dict messages (user/assistant) from tool messages and raw values
+        ua_msgs: list[dict] = []
+        non_tool: list = []
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "tool":
+                continue  # discard tool messages
+            non_tool.append(m)
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
+                ua_msgs.append(m)
+        if len(non_tool) <= 4:
             return state
-        old_msgs = msgs[:-4]
-        recent = msgs[-4:]
+        old_msgs = non_tool[:-4]
+        recent = non_tool[-4:]
         summary = state.get("context_summary", "")
         if self._summarize and old_msgs:
             try:
                 new_summary = await self._summarize(old_msgs)
                 prefix = "[Earlier]" if not summary else ""
                 summary = f"{summary}\n{prefix}: {new_summary}" if summary else f"[Earlier]: {new_summary}"
-                logger.info("Compaction: %d messages summarized, context_summary now %d chars",
-                            len(old_msgs), len(summary))
+                discarded = len(msgs) - len(non_tool)
+                logger.info("Compaction: %d u/a messages summarized (%d tool discarded), "
+                            "context_summary now %d chars",
+                            len(old_msgs), discarded, len(summary))
             except Exception:
                 logger.exception("Compaction summarizer failed, discarding old messages")
         else:
-            logger.info("Compaction: %d old messages discarded (no summarizer)", len(old_msgs))
+            discarded = len(msgs) - len(non_tool)
+            logger.info("Compaction: %d u/a messages discarded (%d tool, no summarizer)",
+                        len(old_msgs), discarded)
         return {**state, "messages": recent, "context_summary": summary}
 
     async def summarize_tool_output(self, tool_name: str, output: str, turn: int) -> str:

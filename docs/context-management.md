@@ -62,7 +62,8 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
     │       last_token_usage > threshold × context_window ?
     │       ├─ No  → 继续
     │       └─ Yes → compact()
-    │                  ├─ 保留最近 4 条消息
+    │                  ├─ 过滤 tool 消息（仅保留 user/assistant）
+    │                  ├─ 保留最近 4 条 user/assistant 消息
     │                  ├─ 旧消息 → LLM 结构化摘要 → 追加到 context_summary
     │                  └─ 返回精简 state
     │
@@ -107,7 +108,8 @@ class CompactionStrategy(Protocol):
 
 ### 2.5 压缩行为
 
-- 保留最近 4 条消息（一个用户-助手往返 + 工具调用）
+- **消息过滤**：压缩时仅保留 `user` 和 `assistant` 角色的消息，`tool` 消息（工具调用结果）被丢弃。工具执行结果属于瞬时上下文，保留会破坏消息序列完整性（tool message 必须紧跟其对应的 assistant(tool_calls)，压缩截断后产生孤儿消息导致 API 400）
+- 保留最近 4 条 user/assistant 消息
 - 旧消息通过 LLM 生成结构化摘要，追加 `[Earlier]` 标记到 `context_summary`
 - 摘要叠加而非覆盖：连续多轮压缩时，每轮生成的摘要累积保留，避免历史信息丢失
 - 失败静默降级：summarizer 调用异常时仅记录日志，丢弃旧消息继续执行
