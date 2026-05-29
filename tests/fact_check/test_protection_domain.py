@@ -8,9 +8,10 @@ import asyncio
 import inspect
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from arf.event_bus import InMemoryEventBus
 
 
 # ---------------------------------------------------------------------------
@@ -255,19 +256,20 @@ class TestModelCallProtector:
         from arf.protection.protector import ModelCallProtector
         from arf.protection.errors import RateLimitError
 
+        async def _ok_call(messages, model_name="", tools=None):
+            return {"text": "ok"}
+
         async def run():
-            eb = MagicMock()
+            eb = InMemoryEventBus()
             p = ModelCallProtector(event_bus=eb, model_map={},
                                    rate_limit_config={"requests_per_second": 0,
                                                       "max_burst": 1})
             # Drain the single token
-            await p.call_with_protection(AsyncMock(return_value={"text": "ok"}),
-                                         [], model_name="test")
+            await p.call_with_protection(_ok_call, [], model_name="test")
             # Next call should be rate limited
             with pytest.raises(RateLimitError):
-                await p.call_with_protection(AsyncMock(return_value={"text": "ok"}),
-                                             [], model_name="test")
-            eb.emit.assert_called()
+                await p.call_with_protection(_ok_call, [], model_name="test")
+            assert eb.event_count() > 0
 
         asyncio.run(run())
 
@@ -276,19 +278,21 @@ class TestModelCallProtector:
         from arf.protection.protector import ModelCallProtector
         from arf.protection.errors import CircuitOpenError
 
+        async def _fail_call(messages, model_name="", tools=None):
+            raise Exception("fail")
+
         async def run():
-            eb = MagicMock()
+            eb = InMemoryEventBus()
             p = ModelCallProtector(event_bus=eb, model_map={"test": {}},
                                    breaker_config={"failure_threshold": 1})
             # Trip the breaker
             try:
-                await p.call_with_protection(AsyncMock(side_effect=Exception("fail")),
-                                             [], model_name="test")
+                await p.call_with_protection(_fail_call, [], model_name="test")
             except Exception:
                 pass
             # 2nd call should be blocked
             with pytest.raises(CircuitOpenError):
-                await p.call_with_protection(AsyncMock(), [], model_name="test")
+                await p.call_with_protection(_fail_call, [], model_name="test")
 
         asyncio.run(run())
 
@@ -296,23 +300,27 @@ class TestModelCallProtector:
         """Doc: breaker 恢复时 emit circuit_closed."""
         from arf.protection.protector import ModelCallProtector
 
+        async def _fail_call(messages, model_name="", tools=None):
+            raise Exception("fail")
+
+        async def _ok_call(messages, model_name="", tools=None):
+            return {"text": "ok"}
+
         async def run():
-            eb = MagicMock()
+            eb = InMemoryEventBus()
             p = ModelCallProtector(event_bus=eb, model_map={"test": {}},
                                    breaker_config={"failure_threshold": 1,
                                                    "base_cooldown": 0.01})
             # Trip
             try:
-                await p.call_with_protection(AsyncMock(side_effect=Exception("fail")),
-                                             [], model_name="test")
+                await p.call_with_protection(_fail_call, [], model_name="test")
             except Exception:
                 pass
             # Wait and succeed
             await asyncio.sleep(0.02)
-            await p.call_with_protection(AsyncMock(return_value={"text": "ok"}),
-                                         [], model_name="test")
+            await p.call_with_protection(_ok_call, [], model_name="test")
             # Check for circuit_closed event
-            emitted = [c[0][0].type for c in eb.emit.call_args_list]
+            emitted = [e.type for e in eb.collected()]
             assert "circuit_closed" in emitted
 
         asyncio.run(run())

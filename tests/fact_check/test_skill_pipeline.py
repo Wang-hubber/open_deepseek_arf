@@ -2,7 +2,6 @@
 
 import asyncio
 import inspect
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -170,11 +169,10 @@ class TestConcurrentToolExecutor:
     def test_sequential_mode(self):
         """Doc: strategy="sequential" executes one at a time."""
         from arf.engine.tool_executor import ConcurrentToolExecutor
-        from unittest.mock import AsyncMock
+        from arf.testing import InMemoryToolResolver
         import asyncio
 
-        resolver = AsyncMock()
-        resolver.execute = AsyncMock(return_value="ok")
+        resolver = InMemoryToolResolver()
         executor = ConcurrentToolExecutor(resolver, strategy="sequential")
 
         calls = [
@@ -183,7 +181,7 @@ class TestConcurrentToolExecutor:
         ]
         results = asyncio.run(executor.execute(calls))
         assert len(results) == 2
-        assert resolver.execute.call_count == 2
+        assert len(resolver.calls) == 2
 
     def test_parallel_mode_uses_semaphore(self):
         """Doc: parallel mode uses asyncio.Semaphore for concurrency limit."""

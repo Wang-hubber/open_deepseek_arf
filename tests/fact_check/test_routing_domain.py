@@ -7,7 +7,7 @@ PASS = doc/code consistent. FAIL = discrepancy found (fact-check finding).
 import inspect
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -66,14 +66,15 @@ class TestTwoTierRouter:
         from arf.core.config_base import RoutingConfig
 
         cfg = RoutingConfig(default="quick", classify={"medium": "quick", "complex": "deep"})
-        router = TwoTierRouter(cfg, models=["quick", "deep"])
+
+        async def _classify(query):
+            return "complex"
+
+        router = TwoTierRouter(cfg, models=["quick", "deep"], classifier_call=_classify)
 
         async def run():
-            # With classifier
-            router._classify = AsyncMock(return_value="complex")
             result = await router.route("write a compiler", [])
             assert result == "deep"
-            router._classify.assert_called_once()
 
         asyncio.run(run())
 
@@ -107,8 +108,11 @@ class TestTwoTierRouter:
         from arf.core.config_base import RoutingConfig
 
         cfg = RoutingConfig(default="quick", classify={"medium": "quick"})
-        router = TwoTierRouter(cfg, models=["quick"])
-        router._classify = AsyncMock(return_value="unknown_level")
+
+        async def _classify(query):
+            return "unknown_level"
+
+        router = TwoTierRouter(cfg, models=["quick"], classifier_call=_classify)
 
         async def run():
             result = await router.route("query", [])
@@ -506,18 +510,13 @@ class TestThinkingEnabledBug:
         """L3: verify that string "false" causes thinking to be enabled.
         BUG: base.py passes thinking_enabled as string "false" (truthy) → enabled."""
         from arf.core.model_adapter import ModelAdapter
-        import arf.core.model_adapter as ma
-        real_openai = ma.OpenAI
-        ma.OpenAI = MagicMock()
-        try:
+        with patch("arf.core.model_adapter.OpenAI"):
             adapter = ModelAdapter({
                 "base_url": "http://test",
                 "api_key": "sk-test",
                 "model_name": "test",
                 "thinking_enabled": "false",
             })
-        finally:
-            ma.OpenAI = real_openai
         params, extra = adapter._build_api_params()
         assert "thinking" in extra, "thinking should be in extra_body"
         assert extra["thinking"]["type"] == "enabled", (
@@ -527,18 +526,13 @@ class TestThinkingEnabledBug:
     def test_thinking_enabled_bool_false_works(self):
         """L3: verify that bool False correctly disables thinking."""
         from arf.core.model_adapter import ModelAdapter
-        import arf.core.model_adapter as ma
-        real_openai = ma.OpenAI
-        ma.OpenAI = MagicMock()
-        try:
+        with patch("arf.core.model_adapter.OpenAI"):
             adapter = ModelAdapter({
                 "base_url": "http://test",
                 "api_key": "sk-test",
                 "model_name": "test",
                 "thinking_enabled": False,
             })
-        finally:
-            ma.OpenAI = real_openai
         params, extra = adapter._build_api_params()
         assert "thinking" in extra
         assert extra["thinking"]["type"] == "disabled", (

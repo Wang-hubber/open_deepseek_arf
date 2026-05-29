@@ -6,7 +6,7 @@ Each test validates a specific claim made in the documentation against actual co
 import asyncio
 import inspect
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 
@@ -151,43 +151,48 @@ class TestPeerAgent:
     def test_start_registers_on_bus(self):
         """Doc: start() → bus.register(AgentInfo(...))."""
         from arf.communication.peer import PeerAgent
+        from arf.communication.in_memory_bus import InMemoryAgentBus
         from arf.core.protocols.communication import AgentInfo
 
         async def run():
-            bus = AsyncMock()
+            bus = InMemoryAgentBus()
             info = AgentInfo("test", "desc", ["code"])
             peer = PeerAgent(bus, info)
             await peer.start()
-            bus.register.assert_called_once_with(info)
+            agents = await bus.discover("code")
+            assert len(agents) == 1
+            assert agents[0].name == "test"
 
         asyncio.run(run())
 
     def test_broadcast_sends_with_receiver_none(self):
         """Doc: broadcast sets receiver=None for broadcast."""
         from arf.communication.peer import PeerAgent
+        from arf.communication.in_memory_bus import InMemoryAgentBus
         from arf.core.protocols.communication import AgentInfo
 
         async def run():
-            bus = AsyncMock()
+            bus = InMemoryAgentBus()
             peer = PeerAgent(bus, AgentInfo("test", "", []))
             await peer.broadcast("info", {"msg": "hello"})
-            call_args = bus.send.call_args[0][0]
-            assert call_args.receiver is None
-            assert call_args.type == "info"
+            assert len(bus.sent_messages) == 1
+            assert bus.sent_messages[0].receiver is None
+            assert bus.sent_messages[0].type == "info"
 
         asyncio.run(run())
 
     def test_send_to_targets_specific_peer(self):
         """Doc: send_to sends targeted message."""
         from arf.communication.peer import PeerAgent
+        from arf.communication.in_memory_bus import InMemoryAgentBus
         from arf.core.protocols.communication import AgentInfo
 
         async def run():
-            bus = AsyncMock()
+            bus = InMemoryAgentBus()
             peer = PeerAgent(bus, AgentInfo("test", "", []))
             await peer.send_to("other", "query", {"q": "x"})
-            call_args = bus.send.call_args[0][0]
-            assert call_args.receiver == "other"
+            assert len(bus.sent_messages) == 1
+            assert bus.sent_messages[0].receiver == "other"
 
         asyncio.run(run())
 

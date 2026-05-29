@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock
+from arf.testing import InMemoryMemoryStore
 
 import pytest
 
@@ -309,12 +309,11 @@ class TestLLMMemoryWriter:
         import asyncio
 
         async def run():
-            fake_call = AsyncMock(return_value='{"actions": [{"action": "add", "entry": {"category": "fact", "content": "' + "x" * 600 + '"}}]}')
-            writer = LLMMemoryWriter(fake_call)
+            async def _fake_call(prompt):
+                return '{"actions": [{"action": "add", "entry": {"category": "fact", "content": "' + "x" * 600 + '"}}]}'
+            writer = LLMMemoryWriter(_fake_call)
             from arf.core.protocols import MemoryEntry
-            store = AsyncMock()
-            store.load = AsyncMock(return_value=[])
-            store.save = AsyncMock()
+            store = InMemoryMemoryStore()
             entries = await writer.extract_and_write(store, [{"role": "user", "content": "test"}], [])
             # Content should be truncated to 500
             for e in entries:
@@ -329,12 +328,14 @@ class TestLLMMemoryWriter:
         from arf.core.protocols import MemoryEntry
 
         async def run():
-            fake_call = AsyncMock(return_value="not valid json {{{")
-            writer = LLMMemoryWriter(fake_call)
+            async def _fake_call(prompt):
+                return "not valid json {{{"
+            writer = LLMMemoryWriter(_fake_call)
             existing = [MemoryEntry(id="1", content="keep", category="fact",
                                      timestamp=0.0, source_turn=0)]
+            store = InMemoryMemoryStore()
             result = await writer.extract_and_write(
-                AsyncMock(), [{"role": "user", "content": "x"}], existing)
+                store, [{"role": "user", "content": "x"}], existing)
             assert result == existing
 
         asyncio.run(run())
@@ -346,11 +347,10 @@ class TestLLMMemoryWriter:
         from arf.memory.llm_writer import LLMMemoryWriter
 
         async def run():
-            fake_call = AsyncMock(return_value='{"actions": [{"action": "add", "entry": {"category": "bogus", "content": "test content"}}]}')
-            writer = LLMMemoryWriter(fake_call)
-            store = AsyncMock()
-            store.load = AsyncMock(return_value=[])
-            store.save = AsyncMock()
+            async def _fake_call(prompt):
+                return '{"actions": [{"action": "add", "entry": {"category": "bogus", "content": "test content"}}]}'
+            writer = LLMMemoryWriter(_fake_call)
+            store = InMemoryMemoryStore()
             entries = await writer.extract_and_write(store, [{"role": "user", "content": "x"}], [])
             assert entries[0].category == "fact"
 
@@ -363,11 +363,10 @@ class TestLLMMemoryWriter:
         from arf.core.protocols import MemoryEntry
 
         async def run():
-            fake_call = AsyncMock(return_value='{"actions": [{"action": "update", "entry": {"category": "preference", "content": "updated"}, "replaces": "old-1"}]}')
-            writer = LLMMemoryWriter(fake_call)
-            store = AsyncMock()
-            store.load = AsyncMock(return_value=[])
-            store.save = AsyncMock()
+            async def _fake_call(prompt):
+                return '{"actions": [{"action": "update", "entry": {"category": "preference", "content": "updated"}, "replaces": "old-1"}]}'
+            writer = LLMMemoryWriter(_fake_call)
+            store = InMemoryMemoryStore()
             entries = await writer.extract_and_write(store, [{"role": "user", "content": "x"}], [])
             assert entries[0].replaces == "old-1"
 
@@ -438,16 +437,18 @@ class TestLLMMemoryRetriever:
         from arf.core.protocols import MemoryEntry
 
         async def run():
-            fake_call = AsyncMock(return_value="not json}")
-            retriever = LLMMemoryRetriever(fake_call)
-            store = AsyncMock()
+            async def _fake_call(prompt):
+                return "not json}"
+            retriever = LLMMemoryRetriever(_fake_call)
+            store = InMemoryMemoryStore()
             entries = [
                 MemoryEntry(id="1", content="old", category="fact",
                             timestamp=100.0, source_turn=0),
                 MemoryEntry(id="2", content="new", category="fact",
                             timestamp=200.0, source_turn=0),
             ]
-            store.load = AsyncMock(return_value=entries)
+            for e in entries:
+                await store.save(e)
             result = await retriever.retrieve(store, "query", "s1", top_k=1)
             # Falls back to recent first: should get the newer entry
             assert len(result) == 1
@@ -465,14 +466,15 @@ class TestLLMMemoryRetriever:
             async def raise_err(prompt):
                 raise RuntimeError("LLM down")
             retriever = LLMMemoryRetriever(raise_err)
-            store = AsyncMock()
+            store = InMemoryMemoryStore()
             entries = [
                 MemoryEntry(id="1", content="old", category="fact",
                             timestamp=100.0, source_turn=0),
                 MemoryEntry(id="2", content="new", category="fact",
                             timestamp=200.0, source_turn=0),
             ]
-            store.load = AsyncMock(return_value=entries)
+            for e in entries:
+                await store.save(e)
             result = await retriever.retrieve(store, "query", "s1", top_k=1)
             assert len(result) == 1
             assert result[0].id == "2"
@@ -494,8 +496,7 @@ class TestRuleBasedMemoryWriter:
 
         async def run():
             writer = RuleBasedMemoryWriter()
-            store = AsyncMock()
-            store.save = AsyncMock()
+            store = InMemoryMemoryStore()
             msgs = [
                 {"role": "user", "content": "I prefer Python"},
                 {"role": "assistant", "content": "I understand you prefer Python for development"},
@@ -519,8 +520,7 @@ class TestRuleBasedMemoryWriter:
 
         async def run():
             writer = RuleBasedMemoryWriter()
-            store = AsyncMock()
-            store.save = AsyncMock()
+            store = InMemoryMemoryStore()
             existing = [MemoryEntry(id="1", content="I understand you prefer Python for development",
                                      category="preference", timestamp=0.0, source_turn=0)]
             msgs = [{"role": "assistant",

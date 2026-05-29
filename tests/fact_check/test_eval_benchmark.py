@@ -10,9 +10,30 @@ import time
 import asyncio
 from pathlib import Path
 from dataclasses import fields
-from unittest.mock import MagicMock, AsyncMock
 
 import pytest
+
+from arf.event_bus import InMemoryEventBus
+
+
+class _EventsStore:
+    """Minimal trace store for BenchmarkBuilder tests."""
+    def __init__(self, events):
+        self._events = events
+    def load(self, session_id):
+        return list(self._events)
+
+
+class _FakeEvalAgent:
+    """Minimal agent for EvalRunner tests."""
+    def __init__(self, chat_response="response text", config="test_config"):
+        self._chat_response = chat_response
+        self.config = config
+
+    async def chat(self, input_text, session_id=""):
+        if isinstance(self._chat_response, BaseException):
+            raise self._chat_response
+        return self._chat_response
 
 
 # ---------------------------------------------------------------------------
@@ -399,12 +420,11 @@ class TestBenchmarkBuilder:
     def test_build_creates_benchmark(self):
         """Doc: build() returns EvalBenchmark with cases from user messages."""
         from arf.evaluation.builder import BenchmarkBuilder
-        mock_store = MagicMock()
-        mock_store.load.return_value = [
+        store = _EventsStore([
             {"type": "user_input", "turn": 0, "data": {"content": "hello"}},
             {"type": "user_input", "turn": 1, "data": {"content": "world"}},
-        ]
-        builder = BenchmarkBuilder(mock_store)
+        ])
+        builder = BenchmarkBuilder(store)
         bm = builder.build(session_id="default", name="test_bm")
         assert bm.name == "test_bm"
         assert bm.source_session == "default"
@@ -419,9 +439,8 @@ class TestBenchmarkBuilder:
         """Doc: Raises EvalError if session not found."""
         from arf.evaluation.builder import BenchmarkBuilder
         from arf.evaluation.exceptions import EvalError
-        mock_store = MagicMock()
-        mock_store.load.return_value = []
-        builder = BenchmarkBuilder(mock_store)
+        store = _EventsStore([])
+        builder = BenchmarkBuilder(store)
         with pytest.raises(EvalError, match="not found"):
             builder.build(session_id="nonexistent", name="bm")
 
@@ -429,25 +448,23 @@ class TestBenchmarkBuilder:
         """Doc: Raises EvalError if no user messages found."""
         from arf.evaluation.builder import BenchmarkBuilder
         from arf.evaluation.exceptions import EvalError
-        mock_store = MagicMock()
-        mock_store.load.return_value = [
+        store = _EventsStore([
             {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "ls"}},
-        ]
-        builder = BenchmarkBuilder(mock_store)
+        ])
+        builder = BenchmarkBuilder(store)
         with pytest.raises(EvalError, match="No user messages"):
             builder.build(session_id="sess", name="bm")
 
     def test_build_extracts_tools_from_same_turn(self):
         """Doc: expected_tools extracted from tool_call_start events in same turn."""
         from arf.evaluation.builder import BenchmarkBuilder
-        mock_store = MagicMock()
-        mock_store.load.return_value = [
+        store = _EventsStore([
             {"type": "user_input", "turn": 0, "data": {"content": "list files"}},
             {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "list_directory"}},
             {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "read_file"}},
             {"type": "user_input", "turn": 1, "data": {"content": "next"}},
-        ]
-        builder = BenchmarkBuilder(mock_store)
+        ])
+        builder = BenchmarkBuilder(store)
         bm = builder.build(session_id="default", name="test")
         assert bm.cases[0].expected_tools == ["list_directory", "read_file"]
         assert bm.cases[1].expected_tools is None
@@ -485,14 +502,10 @@ class TestEvalRunner:
         """Doc: run() returns EvalReport."""
         from arf.evaluation.runner import EvalRunner
         from arf.evaluation.models import EvalBenchmark, EvalCase
-        mock_agent = MagicMock()
-        mock_agent.chat = AsyncMock(return_value="response text")
-        mock_agent.config = "test_config"
-        mock_bus = MagicMock()
-        mock_bus.event_count.return_value = 0
-        mock_bus.events_since.return_value = []
+        agent = _FakeEvalAgent(chat_response="response text", config="test_config")
+        bus = InMemoryEventBus()
 
-        runner = EvalRunner(mock_agent, mock_bus)
+        runner = EvalRunner(agent, bus)
         bm = EvalBenchmark(
             name="test",
             cases=[EvalCase(id="c0", input="hello")],
@@ -514,13 +527,10 @@ class TestEvalRunner:
         """Doc: run() records failed cases with error info."""
         from arf.evaluation.runner import EvalRunner
         from arf.evaluation.models import EvalBenchmark, EvalCase
-        mock_agent = MagicMock()
-        mock_agent.chat = AsyncMock(side_effect=ValueError("agent crashed"))
-        mock_agent.config = "test"
-        mock_bus = MagicMock()
-        mock_bus.event_count.return_value = 0
+        agent = _FakeEvalAgent(chat_response=ValueError("agent crashed"), config="test")
+        bus = InMemoryEventBus()
 
-        runner = EvalRunner(mock_agent, mock_bus)
+        runner = EvalRunner(agent, bus)
         bm = EvalBenchmark(
             name="test",
             cases=[EvalCase(id="c0", input="hello")],
@@ -930,8 +940,7 @@ class TestRunnerHashConfig:
     def test_hash_config_returns_12_char_hex(self):
         """Doc: agent_config_hash = SHA256 digest, truncated to 12 chars."""
         from arf.evaluation.runner import EvalRunner
-        agent = MagicMock()
-        agent.config = "test_config_string"
+        agent = _FakeEvalAgent(config="test_config_string")
         h = EvalRunner._hash_config(agent)
         assert isinstance(h, str)
         assert len(h) == 12
