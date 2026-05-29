@@ -123,13 +123,19 @@ def _build_prompt_sections(config: AgentConfig) -> dict[str, str]:
     """
     sp = config.system_prompt
 
-    # inventory: kernel tools + discoverable skills
+    # inventory: kernel tools + discoverable tools + skills
     kernel_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "kernel"]
+    discoverable_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "discoverable"]
     skills = config.skills
     inv_lines = []
     if kernel_tools:
         inv_lines.append("## Available Tools\n")
         for t in kernel_tools:
+            inv_lines.append(f"- `{t.name}`: {t.description}")
+    if discoverable_tools:
+        inv_lines.append("\n## Discoverable Tools\n")
+        inv_lines.append("These tools are available on demand. Use `resource_loader` to activate them:\n")
+        for t in discoverable_tools:
             inv_lines.append(f"- `{t.name}`: {t.description}")
     if skills:
         inv_lines.append("\n## Available Skills\n")
@@ -201,6 +207,12 @@ class BaseAgent:
                 d["activation"] = activation
                 merged_tools.append(_ToolConfig(**d))
             config.tools = merged_tools
+
+        # Feed back merged skill definitions (from skills/*.yaml + plugins)
+        # into config.skills so _build_prompt_sections can build proper inventory.
+        merged_skills = resource_resolver.get_skill_definitions_sync()
+        if merged_skills:
+            config.skills = merged_skills
 
         # Plugin system
         self._plugin_provider = None

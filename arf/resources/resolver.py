@@ -52,13 +52,23 @@ class ResourceResolver:
     def get_tool_definitions_sync(self) -> list[ToolConfig]:
         """Synchronous wrapper — returns tool defs merged with agent.yaml overrides.
 
-        Merges filesystem tool definitions (from tool.yaml, with full descriptions)
-        with agent.yaml overrides. Used by BaseAgent to feed descriptions back into
-        config.tools before system prompt assembly.
+        Merges filesystem + plugin tool definitions (with full descriptions from
+        tool.yaml) with agent.yaml overrides. Used by BaseAgent to feed descriptions
+        back into config.tools before system prompt assembly.
         """
         tools = list(self._tool_provider.list_kernel()) + list(self._tool_provider.list_dynamic())
+        if self._plugin_provider:
+            tools.extend(self._plugin_provider.list_tools())
         overrides = self._overrides.get("tools", [])
         return self._merge_configs(tools, overrides, ToolConfig)
+
+    def get_skill_definitions_sync(self) -> list[SkillConfig]:
+        """Synchronous wrapper — returns skill defs merged with agent.yaml overrides."""
+        skills = list(self._skill_provider.list()) if self._skill_provider else []
+        if self._plugin_provider:
+            skills.extend(self._plugin_provider.list_skills())
+        overrides = self._overrides.get("skills", [])
+        return self._merge_configs(skills, overrides, SkillConfig)
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         result = await self._tool_provider.execute(tool_name, params)
