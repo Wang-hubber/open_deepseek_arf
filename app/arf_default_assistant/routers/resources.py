@@ -71,8 +71,6 @@ async def configure_model(name: str, req: dict):
 
 @router.get("/api/resources/generate-config")
 async def resources_generate_config():
-    if not hasattr(state._agent, '_resource_resolver'):
-        return JSONResponse({"error": "resource resolver not available"}, status_code=500)
     import yaml
     config_data = await state._agent.resource_resolver.generate_config()
     config_data["name"] = state._agent.config.name

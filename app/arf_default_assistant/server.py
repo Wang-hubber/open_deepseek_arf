@@ -62,23 +62,6 @@ async def lifespan(app: FastAPI):
     s = await state._agent.state_store.get("default")
     if s:
         logger.info(f"Restored state: {len(s.get('messages', []))} messages, turn {s.get('current_turn', 0)}")
-    else:
-        from lazy_persistence import load_archive
-        archive = load_archive(str(app_context.workspace_dir))
-        if archive:
-            s = {
-                "session_id": "default",
-                "agent_name": cfg.name,
-                "messages": archive.get("messages", []),
-                "current_model": cfg.models[0].type if cfg.models else "default",
-                "current_turn": archive.get("current_turn", 0),
-                "context_summary": archive.get("context_summary", ""),
-                "tool_results": {},
-                "plan": None,
-                "metadata": archive.get("metadata", {}),
-            }
-            await state._agent.state_store.put("default", s)
-            logger.info(f"Restored state from archive: {len(s['messages'])} messages")
 
     logger.info(f"Agent '{cfg.name}' ready")
     await state._agent.start()

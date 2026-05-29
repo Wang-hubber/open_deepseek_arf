@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from agent_main import app_context
 from routers import state
 
+_api_key_cache: dict[str, bool | float] = {"valid": False, "checked_at": 0}
+
 logger = logging.getLogger("arf-assistant")
 router = APIRouter()
 
@@ -39,15 +41,15 @@ def _mask_api_key(key: str) -> str:
 
 async def _verify_api_key(cfg) -> bool:
     now = time.time()
-    if now - state._api_key_cache["checked_at"] < 60:
-        return state._api_key_cache["valid"]
+    if now - _api_key_cache["checked_at"] < 60:
+        return _api_key_cache["valid"]
     if not cfg or not cfg.models:
-        state._api_key_cache.update(valid=False, checked_at=now)
+        _api_key_cache.update(valid=False, checked_at=now)
         return False
     m = cfg.models[0]
     key = os.environ.get(m.api_key_env, "")
     if not key.strip():
-        state._api_key_cache.update(valid=False, checked_at=now)
+        _api_key_cache.update(valid=False, checked_at=now)
         return False
     try:
         import httpx
@@ -62,10 +64,10 @@ async def _verify_api_key(cfg) -> bool:
                 },
             )
         valid = resp.status_code == 200
-        state._api_key_cache.update(valid=valid, checked_at=now)
+        _api_key_cache.update(valid=valid, checked_at=now)
         return valid
     except Exception:
-        state._api_key_cache.update(valid=False, checked_at=now)
+        _api_key_cache.update(valid=False, checked_at=now)
         return False
 
 
@@ -80,7 +82,7 @@ async def config_register_deepseek(req: dict):
 
     _save_api_key(api_key)
     os.environ["DEEPSEEK_API_KEY"] = api_key
-    state._api_key_cache["checked_at"] = 0
+    _api_key_cache["checked_at"] = 0
 
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     state._agent = create_agent(config=cfg, app_context=app_context)

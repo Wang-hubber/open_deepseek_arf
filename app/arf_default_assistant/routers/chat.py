@@ -146,33 +146,3 @@ async def undo_status():
     engine = state._agent.engine
     return JSONResponse({"available": engine.checkpoint_count(), "max": 3})
 
-
-@router.get("/api/chat/stream")
-async def chat_stream(message: str = Query(...)):
-    import asyncio as _aio
-
-    async def gen():
-        bus = state._agent.event_bus
-        queue: _aio.Queue = _aio.Queue()
-        async def _collect():
-            async for event in bus.subscribe():
-                await queue.put(event)
-        collector = _aio.create_task(_collect())
-        chat_task = _aio.create_task(state._agent.chat(message))
-        try:
-            while not chat_task.done():
-                try:
-                    event = await _aio.wait_for(queue.get(), timeout=0.1)
-                    yield f"data: {json.dumps({'type': event.type, 'data': event.data, 'timestamp': event.timestamp, 'turn': event.turn}, ensure_ascii=False)}\n\n"
-                except _aio.TimeoutError:
-                    pass
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps({'type': event.type, 'data': event.data, 'timestamp': event.timestamp, 'turn': event.turn}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
-        finally:
-            collector.cancel()
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
