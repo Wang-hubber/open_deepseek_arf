@@ -353,11 +353,12 @@ class GraphEngine:
                 agent_name=agent_name or data.get("agent_name", ""),
             ))
 
-    def _make_event(self, type: str, data: dict[str, object], turn: int = 0, session_id: str = "") -> AgentEvent:
-        """Create an AgentEvent and publish to EventBus (if set)."""
+    def _make_event(self, type: str, data: dict[str, object], turn: int = 0,
+                    session_id: str = "", emit: bool = True) -> AgentEvent:
+        """Create an AgentEvent and optionally publish to EventBus."""
         data["round"] = self._interaction_round
         event = AgentEvent(type=type, data=data, turn=turn, session_id=session_id)
-        if self.event_bus:
+        if emit and self.event_bus:
             self.event_bus.emit(event)
         return event
 
@@ -979,14 +980,16 @@ class GraphEngine:
                                 yield self._make_event(type="thinking_delta",
                                                  data={"content": chunk.get("content", ""),
                                                        "reasoning": reasoning},
-                                                 turn=turn, session_id=session_id)
+                                                 turn=turn, session_id=session_id,
+                                                 emit=False)
                             elif chunk.get("type") == "tool_call_chunk":
                                 yield self._make_event(type="tool_call_chunk",
                                                  data={"name": chunk.get("name", ""),
                                                        "arguments": chunk.get("arguments", ""),
                                                        "id": chunk.get("id", ""),
                                                        "delta": chunk.get("delta", "")},
-                                                 turn=turn, session_id=session_id)
+                                                 turn=turn, session_id=session_id,
+                                                 emit=False)
                             elif chunk.get("type") == "tool_call":
                                 tc = {"id": chunk.get("id", ""), "name": chunk.get("name", ""),
                                       "params": {}}

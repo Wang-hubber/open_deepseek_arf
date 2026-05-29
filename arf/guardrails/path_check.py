@@ -59,10 +59,17 @@ class PathCheckToolGuard:
         quota: ResourceQuota | None = None,
         writable_dirs: list[str] | None = None,
         allow_escape: bool = False,
+        checks: dict[str, bool] | None = None,
     ) -> None:
         self._sandbox = PathSandbox(workspace_root, writable_dirs=writable_dirs)
         self._quota = quota
         self._allow_escape = allow_escape
+        self._checks = checks or {
+            "path_traversal": False,
+            "absolute_path": False,
+            "workspace_containment": True,
+            "symlink": False,
+        }
 
     # ── public API ──
 
@@ -82,11 +89,11 @@ class PathCheckToolGuard:
 
     def _check_one(self, v: str) -> GuardResult:
         # 1. Path traversal
-        if ".." in Path(v).parts:
+        if self._checks.get("path_traversal") and ".." in Path(v).parts:
             return GuardResult(allowed=False, reason=f"Path traversal blocked: '{v}'")
 
         # 2. Absolute path
-        if v.startswith("/"):
+        if self._checks.get("absolute_path") and v.startswith("/"):
             return GuardResult(allowed=False, reason=f"Absolute path blocked: '{v}'")
 
         # 3. Depth quota
@@ -106,13 +113,14 @@ class PathCheckToolGuard:
             )
 
         # 5. Symlink detection
-        if self._quota and self._quota.deny_symlinks:
+        if self._checks.get("symlink") and self._quota and self._quota.deny_symlinks:
             if self._sandbox.has_symlink(v):
                 return GuardResult(allowed=False, reason=f"Symlink traversal blocked: '{v}'")
 
         # 6. Workspace containment
-        if not self._sandbox.validate_path(v):
-            return GuardResult(allowed=False, reason=f"Path escapes workspace: '{v}'")
+        if self._checks.get("workspace_containment"):
+            if not self._sandbox.validate_path(v):
+                return GuardResult(allowed=False, reason=f"Path escapes workspace: '{v}'")
 
         return GuardResult(allowed=True)
 

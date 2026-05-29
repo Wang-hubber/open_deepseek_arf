@@ -119,9 +119,18 @@ class HumanLoopConfig(BaseModel):
     timeout: str = "3600s"
 
 
+class PathCheckFlags(BaseModel):
+    """Individual path safety checks. Default: only workspace containment."""
+    path_traversal: bool = False
+    absolute_path: bool = False
+    workspace_containment: bool = True
+    symlink: bool = False
+
+
 class SandboxConfig(BaseModel):
     allow_escape: bool = False
     writable_dirs: list[str] = Field(default_factory=list)
+    checks: PathCheckFlags = Field(default_factory=PathCheckFlags)
 
 
 class ToolRetrievalConfig(BaseModel):

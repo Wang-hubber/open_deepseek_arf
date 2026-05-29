@@ -328,10 +328,12 @@ class BaseAgent:
             tool_guard = None
         else:
             sandbox_cfg = adv.sandbox if adv else None
+            checks = sandbox_cfg.checks.model_dump() if sandbox_cfg and sandbox_cfg.checks else None
             tool_guard = PathCheckToolGuard(
                 workspace_root=_workspace_root,
                 writable_dirs=sandbox_cfg.writable_dirs if sandbox_cfg else None,
                 allow_escape=sandbox_cfg.allow_escape if sandbox_cfg else False,
+                checks=checks,
             )
         # Permissions config: deny → ask → allow pipeline
         perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else None

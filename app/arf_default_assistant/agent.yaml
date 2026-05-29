@@ -105,6 +105,8 @@ advanced:
     permissions:
       allow:
         - file_reader
+        - file_writer
+        - file_deleter
         - web_search
         - web_fetch
         - resource_loader
@@ -113,15 +115,10 @@ advanced:
         - undo
         - model_switch
         - handoff
-      ask:
-        - file_writer
-        - file_deleter
         - python_exec
+      ask: []
       deny: []
-      deny_patterns:
-        - "rm -rf"
-        - "sudo"
-        - "chmod 777"
+      deny_patterns: []
 #   human_loop:
 #     approval_points: tool_name_allowlist
 #     allowlist:
@@ -130,6 +127,14 @@ advanced:
 #       - python_exec
 #     channel: websocket
 #     timeout: 60s
+  sandbox:
+    allow_escape: false
+    writable_dirs: []
+    checks:
+      path_traversal: false
+      absolute_path: false
+      workspace_containment: true
+      symlink: false
   memory:
     store: file
     workspace: ./memory

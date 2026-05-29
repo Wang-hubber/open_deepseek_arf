@@ -172,14 +172,14 @@ class TestPathCheckToolGuard:
 
     def test_blocks_path_traversal(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp")
+        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"path_traversal": True, "workspace_containment": True})
         result = asyncio.run(guard.check("test", {"file": "../etc/passwd"}))
         assert result.allowed is False
         assert "traversal" in result.reason.lower()
 
     def test_blocks_absolute_path(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp")
+        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"absolute_path": True, "workspace_containment": True})
         result = asyncio.run(guard.check("test", {"file": "/etc/passwd"}))
         assert result.allowed is False
         assert "absolute" in result.reason.lower()
@@ -260,7 +260,7 @@ class TestQuotaCheckOrder:
 
     def test_check_order_traversal_before_absolute(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp")
+        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"path_traversal": True, "absolute_path": True, "workspace_containment": True})
         result = asyncio.run(guard.check("test", {"file": "../etc"}))
         assert result.allowed is False
         assert "traversal" in result.reason.lower()
@@ -268,7 +268,7 @@ class TestQuotaCheckOrder:
     def test_check_order_absolute_before_depth(self):
         from arf.guardrails.path_check import PathCheckToolGuard, ResourceQuota
         quota = ResourceQuota(max_path_depth=0)
-        guard = PathCheckToolGuard(workspace_root="/tmp", quota=quota)
+        guard = PathCheckToolGuard(workspace_root="/tmp", quota=quota, checks={"absolute_path": True, "workspace_containment": True})
         result = asyncio.run(guard.check("test", {"file": "/a"}))
         assert result.allowed is False
         assert "absolute" in result.reason.lower()

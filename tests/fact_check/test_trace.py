@@ -883,10 +883,10 @@ class TestEventValidation:
         assert "if self.event_bus:" in src
 
     def test_make_event_guards_against_null_event_bus(self):
-        """Doc: _make_event checks `if self.event_bus:` before emitting."""
+        """Doc: _make_event checks `if emit and self.event_bus:` before emitting."""
         from arf.engine.graph import GraphEngine
         src = inspect.getsource(GraphEngine._make_event)
-        assert "if self.event_bus:" in src
+        assert "if emit and self.event_bus:" in src
 
     def test_file_trace_store_records_all_fields_in_json(self):
         """Doc: persisted JSON includes type, data, turn, timestamp, trace_id,
