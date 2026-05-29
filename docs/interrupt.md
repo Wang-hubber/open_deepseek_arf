@@ -114,16 +114,39 @@ if state:
 
 ---
 
-## 3. 回滚
+## 3. 错误处理
 
-### 3.1 回滚场景
+在回滚之前，框架先通过错误处理策略决定如何响应异常。`ErrorPolicy` 协议定义三类异常的处理动作。
+
+### 3.0 协议
+
+`ErrorPolicy` 协议（`arf/core/protocols/errors.py`）：
+
+```python
+class ErrorPolicy(Protocol):
+    def on_tool_error(self, error: Exception, tool_name: str, attempt: int) -> ErrorAction: ...
+    def on_model_error(self, error: Exception, model_name: str, attempt: int) -> ErrorAction: ...
+    def on_guardrail_block(self, result: GuardResult, context: TurnContext) -> ErrorAction: ...
+```
+
+`DefaultErrorPolicy`（`arf/errors/retry.py`）是该协议的唯一实现：
+
+- **工具错误**：指数退避重试（2^attempt × 1.0s），超出 `tool_retry` 后 abort
+- **模型 5xx**：根据 `model_5xx_action` 决定 fallback（切换到备用模型）、retry 或 abort。引擎级重试已移除，瞬时重试由 protection 层处理
+- **护栏拦截**：根据 `guardrail_block_action` 决定 abort 或 ask_user
+
+---
+
+## 4. 回滚
+
+### 4.1 回滚场景
 
 | 场景 | 触发方式 | 行为 |
 |------|---------|------|
 | **用户主动撤销** | `POST /api/chat/undo?steps=N`，对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
 | **检查点损坏/不可用** | `undo()` 返回 `None`，或 `checkpoint_count()` < steps | 拒绝回滚，返回错误信息 |
 
-### 3.2 RoundManager 检查点
+### 4.2 RoundManager 检查点
 
 `RoundManager`（`arf/engine/round_manager.py`）维护可配数量的 `RoundTransaction` 滚动窗口。每个 round 代表一次用户交互，可跨多次 agent handoff：
 
@@ -141,7 +164,7 @@ class RoundManager:
 
 **Handoff 与检查点**：Agent 切换时 `rounds.record_handoff(from, to)` 仅记录参与顺序，**不创建新检查点**。一个 round 内无论多少次 handoff，undo 都回退整个 round。
 
-### 3.3 Undo 过程
+### 4.3 Undo 过程
 
 ```
 Round 0: hello.txt(v1) → begin_round → memory/checkpoints/0/hello.txt
@@ -164,7 +187,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 
 **Trace 集成**：undo 时不删除已有 trace 事件（审计日志不可篡改），而是追加 `undo_executed` 事件。前端可根据 `from_round` / `to_round` 折叠或灰度显示被撤销的轮次。
 
-### 3.4 检查点不可用时的行为
+### 4.4 检查点不可用时的行为
 
 当 `checkpoint_count() < steps` 或检查点数据损坏时：
 
@@ -172,7 +195,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 - 对话内 `undo` 工具返回 `{"ok": false, "error": "Only N checkpoints available"}`
 - 不会部分回滚，不会损坏现有状态
 
-### 3.5 Tool 级回滚 — FunctionBackend 内联回滚
+### 4.5 Tool 级回滚 — FunctionBackend 内联回滚
 
 RoundManager 的 undo 是**跨轮次**的状态回退。ARF 也提供**单 Tool 执行失败时**的副作用清理机制。
 
@@ -219,11 +242,19 @@ emit rollback_executed trace 事件（如有回滚发生）
 
 ---
 
-## 4. 配置
+## 5. 配置
 
 ```yaml
 advanced:
+  # 中断与回滚
   max_undo_depth: 3             # 最大 undo 步数（RoundManager 滚动窗口大小）
+
+  # 错误处理（ErrorConfig）
+  errors:
+    tool_retry: 2                         # 工具失败最大重试次数（默认 2）
+    tool_backoff: exponential             # 退避策略（exponential | linear | none）
+    model_5xx_action: fallback            # 模型 5xx 处理（fallback | retry | abort）
+    guardrail_block_action: abort         # 护栏拦截处理（abort | ask_user）
 
 tools:
   - name: undo
@@ -232,18 +263,23 @@ tools:
     activation: kernel
 ```
 
+- **`tool_retry`**：工具执行失败时的最大重试次数，默认 2。超出后 abort
+- **`tool_backoff`**：重试退避策略。exponential 为 2^attempt × 1.0s 延迟
+- **`model_5xx_action`**：模型返回 500/502/503/504 时的行为。`fallback` 切换备用模型，`retry`/`abort` 直接终止（引擎级重试已移除，瞬时重试由 protection 层处理）
+- **`guardrail_block_action`**：护栏拦截时的行为。`abort` 终止执行，`ask_user` 推送审批
+
 ---
 
-## 5. 演进方向
+## 6. 演进方向
 
-### 5.1 暂停/恢复
+### 6.1 暂停/恢复
 
 当前取消是"终止型"的——一旦取消，整个 Agent 循环退出。可以支持更细粒度的干预：
 
 - **暂停/恢复**：类似 SIGSTOP/SIGCONT。用户暂停 Agent 后，可在稍后恢复继续。需将完整 engine 状态序列化，支持跨进程恢复
 - **重定向**：类似信号 handler。用户不停止 Agent，而是注入新的指令，Agent 在当前 turn 结束后切换任务
 
-### 5.2 探索性方向
+### 6.2 探索性方向
 
 - **空闲超时**：Agent 长时间无交互时自动暂停，释放资源
 - **中断优先级**：区分"紧急中断"（强制停止）和"软中断"（LLM 自行决定是否采纳），紧急中断在循环边界立即响应
