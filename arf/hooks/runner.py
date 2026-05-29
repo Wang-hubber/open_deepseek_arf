@@ -37,6 +37,15 @@ class SubprocessHookRunner:
                     for ck, cv in context.items():
                         v = v.replace(f"$ARF_{ck.upper()}", str(cv))
                     env_vars[k] = v
+                # Inject PluginRuntime JSON if provided in context
+                runtime_dict = context.get("plugin_runtime")
+                if runtime_dict:
+                    import json as _json
+                    env_vars["ARF_RUNTIME"] = _json.dumps(runtime_dict)
+                    # Deprecated individual vars (backward compat)
+                    env_vars.setdefault("ARF_ROUND", str(runtime_dict.get("interaction_round", 0)))
+                    env_vars.setdefault("ARF_SESSION_ID", runtime_dict.get("session_id", "default"))
+                    env_vars.setdefault("ARF_MEMORY_DIR", runtime_dict.get("memory_dir", "./memory"))
                 try:
                     proc = await asyncio.create_subprocess_shell(
                         cmd, env=env_vars,
