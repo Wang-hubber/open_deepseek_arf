@@ -1,0 +1,179 @@
+# ============================================================================
+# ARF Agent 完整配置示例
+# ============================================================================
+# 本文件由 fact-check 审计过程逐步构建，每轮审计追加该域涉及的全部配置项。
+# 字段按文档域组织，注释标注来源文档、Pydantic model 和默认值。
+# ============================================================================
+
+# ============================================================================
+# § Agent Execution (docs/agent-execution.md)
+# 审计日期: 2026-05-29 | 测试: 109 passed
+# ============================================================================
+
+# --- 模型定义 ---
+# 来源: docs/agent-execution.md §2.14
+# Model: arf.core.config_base.ModelConfig
+# 每个 model type 必须在 models/ 目录有对应 YAML 文件，agent.yaml 仅覆盖需微调的字段
+models:
+  - type: quick                          # Literal["quick", "deep"]
+    model: deepseek-v4-flash             # 模型名称
+    api_base: https://api.deepseek.com   # API 端点
+    api_key_env: DEEPSEEK_API_KEY         # 从环境变量读取 API key
+    context_window: 131072               # 模型上下文窗口 (tokens)，默认 131_072
+    # kwargs: {}                         # 传递给 OpenAI 客户端的额外参数
+
+  - type: deep
+    model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 131072
+
+# --- 高级配置 ---
+# 来源: docs/agent-execution.md §2.14
+# Model: arf.agent.config.AdvancedConfig
+advanced:
+
+  # -- 循环策略 --
+  # Model: AdvancedConfig.loop_strategy / max_turns / max_undo_depth
+  loop_strategy: react                   # "react" (唯一实现) | "direct" | "plan_execute" (预留)
+  max_turns: 50                          # 每轮断路器，默认 50
+  max_undo_depth: 3                      # undo 检查点窗口大小，默认 3
+
+  # -- 系统模型 (后台任务) --
+  system_model: null                     # 用于 memory/routing/compaction 的模型，默认取 models[0]
+
+  # -- 并发控制 --
+  # Model: arf.core.config_base.ConcurrencyConfig
+  concurrency:
+    strategy: parallel                   # "parallel" | "sequential"
+    max_concurrency: 5                   # 并行信号量上限，默认 5
+
+  # -- 上下文压缩 --
+  # Model: arf.core.config_base.CompactionConfig
+  compaction:
+    strategy: sliding_window             # "sliding_window" | "none"
+    threshold: 0.75                      # 触发阈值 (last_token_usage > threshold * window_size)，默认 0.75
+
+  # -- 内存/记忆 --
+  # Model: arf.core.config_base.MemoryConfig
+  memory:
+    store: file                          # "file" | "sqlite" | "none"
+    workspace: ./memory                  # 记忆存储目录
+    retriever: llm                       # "recent_first" | "llm"
+    writer: llm                          # "rule" | "llm"
+    max_tokens: 2000                     # 记忆检索最大 token 数，默认 2000
+    top_k: 5                             # 记忆检索条数，默认 5
+    resident_file: memory.md             # 常驻记忆文件名，默认 "memory.md"
+    max_size_kb: 300                     # 常驻记忆文件最大 KB，默认 300
+
+  # -- 安全护栏 --
+  # Model: arf.core.config_base.GuardrailsConfig
+  guardrails:
+    input: none                          # 输入护栏: "none" | "regex_block" | "llm_classifier"
+    output: regex_clean                  # 输出护栏: "none" | "regex_clean" | "llm_classifier"
+    tool_params: path_check              # 工具参数护栏: "none" | "path_check" | "command_check"
+    permissions:                         # 工具权限 (deny → ask → allow 三级判定)
+      deny: []                           # 拒绝列表
+      ask: []                            # 需审批列表
+      allow: []                          # 允许列表
+      deny_patterns: []                  # 自定义拒绝模式
+    # output_patterns: []                # 自定义输出正则过滤 (空 = 使用内置默认)
+
+  # -- 路径沙箱 --
+  # Model: arf.core.config_base.SandboxConfig
+  sandbox:
+    allow_escape: false                  # 是否允许路径穿越，默认 false
+    writable_dirs: []                    # 可写目录白名单，默认 []
+
+  # -- 错误处理 --
+  # Model: arf.core.config_base.ErrorConfig
+  errors:
+    tool_retry: 2                        # 工具执行重试次数，默认 2
+    tool_backoff: exponential            # 重试退避策略: "exponential" | "linear" | "none"
+    model_5xx_action: fallback           # 模型 5xx 响应: "fallback" | "retry" | "abort"
+    guardrail_block_action: abort        # 护栏拦截后: "abort" | "ask_user"
+
+  # -- 人机交互 --
+  # Model: arf.core.config_base.HumanLoopConfig
+  human_loop:
+    approval_points: always_auto         # "always_auto" | "tool_name_allowlist"
+    allowlist: []                        # 需要审批的工具名列表
+    # channel: console                   # 审批通道: "console" | "websocket" | "callback"
+    # timeout: 3600s                     # 审批超时，默认 3600s
+
+  # -- 热加载 --
+  # Model: arf.core.config_base.ReloadConfig
+  # ✅ 2026-05-29 修复: poll_interval 现已正确 wiring
+  reload:
+    watch: true                          # 是否启用文件监听，默认 true
+    poll_interval: 5.0                   # 轮询间隔 (秒)，默认 5.0
+    # signals: [SIGHUP]                  # 触发热加载的信号，默认 ["SIGHUP"]
+
+  # -- 模型路由 --
+  # 来源: docs/model-routing.md §2.11 | 审计日期: 2026-05-29 | 测试: 61 passed
+  # Model: arf.core.config_base.RoutingConfig
+  # wiring: agent.yaml → AdvancedConfig.routing → BaseAgent.__init__ → TwoTierRouter
+  routing:
+    strategy: two_tier                   # "two_tier" (LLM 分类器) | "static" (始终用 default)
+    default: ""                          # 分类结果不在 classify dict 中的兜底模型，默认空
+    classify:                            # 分类结果 → model type 映射
+      medium: quick
+      complex: deep
+    fallback:                            # 模型调用失败时的降级映射
+      deep: quick
+    # background: null                   # 预留字段 — 未来用于更细粒度的后台任务模型配置
+
+  # -- API 保护 --
+  # Model: arf.core.config_base.ProtectionConfig
+  protection:
+    enabled: true                        # 是否启用限流+断路器，默认 true
+    rate_limit:
+      requests_per_second: 5.0           # 令牌桶速率，默认 5.0
+      max_burst: 10                      # 最大突发请求数，默认 10
+    circuit_breaker:
+      failure_threshold: 3               # 连续失败触发断路，默认 3
+      base_cooldown: 10s                 # 基础冷却时间，默认 "10s"
+      cooldown_multiplier: 2.0           # 冷却时间倍增因子，默认 2.0
+      max_cooldown: 300s                 # 最大冷却时间，默认 "300s"
+      half_open_max_requests: 1          # 半开状态最大探测请求，默认 1
+
+  # -- 工具检索 --
+  # Model: arf.core.config_base.ToolRetrievalConfig
+  # tool_retrieval:
+  #   enabled: false                     # 是否启用工具检索，默认 false
+  #   top_k: 10                          # 检索 top-k，默认 10
+
+# --- 多 Agent 配置 (可选) ---
+# 来源: docs/agent-execution.md §2.10
+# Model: arf.core.config_base.HandoverConfig / HandoverRuleConfig
+agents:
+  - name: agent_b                        # 子 Agent 名称
+    role: 工作 Agent                     # 角色描述
+    task: 资源创建、模型配置、工具/技能生成  # 任务描述
+
+# --- Handoff 规则 ---
+handover:
+  rules:
+    - from_agent: agent_a                # 源 Agent
+      to_agent: agent_b                  # 目标 Agent
+      trigger: "创建工具 生成技能 配置模型" # 触发关键词
+      context:
+        raw_turns: 4                     # 传递最近 N 轮对话 (-1=全部, 0=无)，默认 5
+        task_summary: true               # 是否生成 LLM 任务摘要，默认 true
+
+# --- Hook 定义 ---
+# 来源: docs/agent-execution.md §2.12
+# Model: arf.core.config_base.HookDefinition
+# 8 种事件: session_start, round_start, pre_model_call, post_model_call,
+#           pre_tool_exec, post_tool_exec, round_end, session_end
+# hooks:
+#   - name: my_hook
+#     type: session_start
+#     run: ["python my_script.py"]
+#     env: {}
+#     timeout: 30s
+
+# --- 工具/技能 ---
+# 工具和技能按约定目录放置，FileWatcher 自动检测，无需手动注册
+# tools: []
+# skills: []

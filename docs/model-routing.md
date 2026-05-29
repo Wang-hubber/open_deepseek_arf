@@ -130,8 +130,11 @@ async def _classify(query: str) -> str:
         "Return ONLY one word (medium or complex).\n\n"
         f"Task: {query[:300]}"
     )
-    result = (await _system_model_call(prompt)).strip().lower()
-    return result if result in ("medium", "complex") else "medium"
+    try:
+        result = (await _system_model_call(prompt)).strip().lower()
+        return result if result in ("medium", "complex") else "medium"
+    except Exception:
+        return "medium"
 ```
 
 输入截断至 300 字符，分类失败或异常一律返回 `"medium"` → quick，不阻塞主流程。
@@ -195,9 +198,9 @@ KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓�
 
 | 事件类型 | 字段 | 说明 |
 |----------|------|------|
-| `chunk` | `type`, `content`, `reasoning?` | 文本增量（DeepSeek deep-thinking 时附带 reasoning） |
+| `chunk` | `type`, `content`, `reasoning?` | 文本增量（DeepSeek deep-thinking 时附带 reasoning 字段） |
 | `tool_call` | `type`, `name`, `arguments`, `id` | 累积完成的工具调用（finish_reason="tool_calls" 时产出） |
-| `usage` | `type`, `prompt_tokens`, `completion_tokens`, `total_tokens` | 流结束时统计用量（通常出现在最后一个 chunk 上） |
+| `usage` | `type`, `prompt_tokens`, `completion_tokens`, `total_tokens` | 流结束时统计用量（出现在 usage chunk 上） |
 | `error` | `type`, `code`, `detail` | API 调用失败时产出（status_code + message） |
 
 - **空 key 保护**：`api_key` 为空时使用 `"sk-placeholder"` 防止 OpenAI SDK 拒绝 falsy 值

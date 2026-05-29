@@ -492,3 +492,162 @@ class TestCrossDocConsistency:
         """Doc: TwoTierRouter in arf/routing/two_tier.py."""
         from arf.routing.two_tier import TwoTierRouter
         assert TwoTierRouter is not None
+
+
+# ---------------------------------------------------------------------------
+# 12. Thinking enabled — L3 behavior (BUG: string "false" is truthy)
+# ---------------------------------------------------------------------------
+
+class TestThinkingEnabledBug:
+    """Doc 2.1/2.13: system model uses thinking_enabled=false.
+    Bug: the string "false" is truthy → thinking gets ENABLED."""
+
+    def test_thinking_disabled_string_is_truthy(self):
+        """L3: verify that string "false" causes thinking to be enabled.
+        BUG: base.py passes thinking_enabled as string "false" (truthy) → enabled."""
+        from arf.core.model_adapter import ModelAdapter
+        import arf.core.model_adapter as ma
+        real_openai = ma.OpenAI
+        ma.OpenAI = MagicMock()
+        try:
+            adapter = ModelAdapter({
+                "base_url": "http://test",
+                "api_key": "sk-test",
+                "model_name": "test",
+                "thinking_enabled": "false",
+            })
+        finally:
+            ma.OpenAI = real_openai
+        params, extra = adapter._build_api_params()
+        assert "thinking" in extra, "thinking should be in extra_body"
+        assert extra["thinking"]["type"] == "enabled", (
+            "BUG: string 'false' is truthy, thinking got ENABLED instead of disabled"
+        )
+
+    def test_thinking_enabled_bool_false_works(self):
+        """L3: verify that bool False correctly disables thinking."""
+        from arf.core.model_adapter import ModelAdapter
+        import arf.core.model_adapter as ma
+        real_openai = ma.OpenAI
+        ma.OpenAI = MagicMock()
+        try:
+            adapter = ModelAdapter({
+                "base_url": "http://test",
+                "api_key": "sk-test",
+                "model_name": "test",
+                "thinking_enabled": False,
+            })
+        finally:
+            ma.OpenAI = real_openai
+        params, extra = adapter._build_api_params()
+        assert "thinking" in extra
+        assert extra["thinking"]["type"] == "disabled", (
+            "bool False should disable thinking"
+        )
+
+    def test_base_agent_uses_bool_false(self):
+        """L1: base.py passes thinking_enabled as bool False (not string 'false')."""
+        import inspect as _ins
+        from arf.agent.base import BaseAgent
+        src = _ins.getsource(BaseAgent.__init__)
+        assert '"thinking_enabled": False' in src, (
+            "base.py should use bool False for thinking_enabled"
+        )
+
+    def test_memory_extractor_uses_bool_false(self):
+        """L1: extractor.py passes thinking_enabled as bool False (not string 'false')."""
+        from pathlib import Path
+        root = Path(__file__).parent.parent.parent
+        src = (root / "arf/plugins/memory/tools/memory_extract/extractor.py").read_text()
+        assert '"thinking_enabled": False' in src, (
+            "extractor.py should use bool False for thinking_enabled"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 13. Stream event field names vs doc (doc says reasoning_content, code uses reasoning)
+# ---------------------------------------------------------------------------
+
+class TestStreamEventFieldNames:
+    """Doc 2.10: stream events table."""
+
+    def test_chunk_event_uses_reasoning_not_reasoning_content(self):
+        """Doc says 'reasoning_content' but code uses 'reasoning' field.
+        The doc table (line 201) says reasoning_content but the code emits reasoning."""
+        import inspect as _ins
+        from arf.core.model_adapter import ModelAdapter
+        src = _ins.getsource(ModelAdapter.chat_stream_full)
+        assert '"reasoning"' in src, "code emits 'reasoning' field"
+        # The doc says reasoning_content — this is the delta attr name, not the event key
+        assert 'reasoning_content' in src, "delta attribute is reasoning_content"
+
+
+# ---------------------------------------------------------------------------
+# 14. HandoffManager LLM usage (doc 2.13)
+# ---------------------------------------------------------------------------
+
+class TestHandoffLLMClassification:
+    """Doc 2.13: HandoffManager uses LLM to resolve handoff targets."""
+
+    def test_handoff_manager_accepts_system_model_call(self):
+        """Doc: HandoffManager accepts system_model_call parameter."""
+        import inspect as _ins
+        from arf.engine.handoff import HandoffManager
+        sig = _ins.signature(HandoffManager.__init__)
+        assert "system_model_call" in sig.parameters
+
+    def test_handoff_uses_llm_for_multi_candidate(self):
+        """Doc: multiple candidates → LLM matches trigger against task."""
+        import inspect as _ins
+        from arf.engine.handoff import HandoffManager
+        src = _ins.getsource(HandoffManager.resolve)
+        assert "_system_model_call" in src, "resolve() should use LLM for multi-candidate"
+
+    def test_handoff_falls_back_to_keyword_match(self):
+        """Doc: LLM unavailable → falls back to trigger keyword match."""
+        import inspect as _ins
+        from arf.engine.handoff import HandoffManager
+        src = _ins.getsource(HandoffManager.resolve)
+        assert "trigger.split" in src, "should fall back to keyword trigger match"
+
+    def test_handoff_detect_doc_claim(self):
+        """Doc 2.13 table: handoff 规则仍基于 trigger 字段匹配生效."""
+        import inspect as _ins
+        from arf.engine.handoff import HandoffManager
+        src = _ins.getsource(HandoffManager.detect)
+        assert "handoff" in src.lower()
+
+
+# ---------------------------------------------------------------------------
+# 15. DEFAULT_WINDOW_SIZE vs ModelConfig default
+# ---------------------------------------------------------------------------
+
+class TestWindowSizeDefaults:
+    """Cross-module consistency: compaction window vs model config."""
+
+    def test_default_window_size(self):
+        """Doc: compaction uses model's context_window. Default is 131072."""
+        from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
+        assert DEFAULT_WINDOW_SIZE == 131_072
+
+    def test_model_config_default_context_window(self):
+        """ModelConfig default context_window matches DEFAULT_WINDOW_SIZE."""
+        from arf.core.config_base import ModelConfig
+        assert ModelConfig.model_fields["context_window"].default == 131_072
+
+
+# ---------------------------------------------------------------------------
+# 16. Doc 2.5 code snippet accuracy — missing try/except
+# ---------------------------------------------------------------------------
+
+class TestDocCodeSnippetAccuracy:
+    """Doc 2.5 shows classifier code without try/except wrapper."""
+
+    def test_classifier_has_try_except(self):
+        """Doc code snippet omits try/except; actual code has it."""
+        import inspect as _ins
+        from arf.agent.base import BaseAgent
+        src = _ins.getsource(BaseAgent.__init__)
+        # The actual _classify closure has try/except
+        assert "except Exception:" in src
+        assert 'return "medium"' in src

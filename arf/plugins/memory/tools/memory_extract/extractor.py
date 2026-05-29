@@ -49,7 +49,7 @@ def call_sysmodel(prompt: str) -> str:
         "api_key": api_key or "sk-placeholder",
         "model_name": "deepseek-v4-flash",
         "temperature": 0.3,
-        "thinking_enabled": "false",
+        "thinking_enabled": False,
         "max_tokens": 4096,
     })
     msg = adapter.chat_complete(

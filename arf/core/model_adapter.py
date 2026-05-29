@@ -202,7 +202,7 @@ class ModelAdapter:
             {"type": "chunk", "content": "...", "reasoning": "..."}
             {"type": "tool_call", "name": "...", "arguments": "{...}", "id": "call_N"}
         At end of stream (finish_reason stop), yields:
-            {"type": "chunk", "content": "...", "reasoning_content": "..."}  (if reasoning present)
+            {"type": "chunk", "content": "...", "reasoning": "..."}  (if reasoning present)
 
         On API error, yields:
             {"type": "error", "code": 400, "detail": "..."}
