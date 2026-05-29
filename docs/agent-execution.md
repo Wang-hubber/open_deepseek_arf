@@ -29,9 +29,9 @@ ARF 将 OS 进程管理的三个核心机制——fork/exec（进程创建）、
 | OS 概念 | ARF 对应 | 实现位置 |
 |---------|----------|---------|
 | fork + exec 间隙 | `BaseAgent.__init__` DI 组装——创建引擎→注入全部 Protocol→启动 | `arf/agent/base.py` |
-| CFS vruntime | `LoopStrategy.should_continue()`——每 turn 判断是否继续 | `arf/engine/graph.py:549` |
-| cgroup 配额 | `max_turns`——每轮断路器 | `arf/engine/graph.py:780` |
-| 抢占标志 | `cancel_event` (asyncio.Event)——循环边界非阻塞检测 | `arf/engine/graph.py:144` |
+| CFS vruntime | `LoopStrategy.should_continue()`——每 turn 判断是否继续 | `arf/engine/graph.py` |
+| cgroup 配额 | `max_turns`——每轮断路器 | `arf/engine/graph.py`（默认值）→ `_active_config()` 解析 per-agent → `should_continue`/`should_break` 判定 |
+| 抢占标志 | `cancel_event` (asyncio.Event)——循环边界非阻塞检测 | `arf/engine/graph.py` |
 | IPC 管道/信号/共享内存 | HandoffManager / AgentBus / PeerAgent / DictWorkspace | `arf/engine/handoff.py` |
 
 ---
@@ -71,7 +71,7 @@ Session  ───────────────────────�
                                                    CLOSED
 ```
 
-**Crash recovery**：`BaseAgent.chat()` 入口处检测（`arf/agent/base.py:684-698`）：
+**Crash recovery**：`BaseAgent.chat()` 入口处检测（`arf/agent/base.py`）：
 
 1. `session_id` 已在 `_active_sessions` → 续用已有 session，不触发任何 session 级 hook
 2. `session_id` 不在 `_active_sessions` 但磁盘 state 中 `session_active == True` → 进程被 kill，触发 `session_end(reason="recovery")` hook，然后作为新 session 触发 `session_start`
@@ -80,7 +80,7 @@ Session  ───────────────────────�
 ### 2.2 执行流程
 
 ```
-BaseAgent.chat() / astream()                      arf/agent/base.py:679
+BaseAgent.chat() / astream()                      arf/agent/base.py
 │
 ├─ state_store.get(session_id)                         # StateStore 加载 State快照（崩溃恢复）
 ├─ crash recovery 判定 → [Hook] session_end(recovery)  # 仅在恢复场景
@@ -89,7 +89,7 @@ BaseAgent.chat() / astream()                      arf/agent/base.py:679
 ├─ [Hook] round_start                                  # BaseAgent 触发
 │
 ▼
-GraphEngine.invoke() / astream()                     arf/engine/graph.py:543
+GraphEngine.invoke() / astream()                     arf/engine/graph.py
 │
 ├─ _close_tool_calls(state)                            # 保证消息序列完整性
 │
@@ -147,7 +147,7 @@ Turn 流转：    should_continue? → next_step() → dispatch
 
 ### 2.4 双模主循环：invoke / astream
 
-`GraphEngine` 提供两条执行路径（`arf/engine/graph.py:543-1097`），共享同一个 Agent Loop 逻辑骨架：
+`GraphEngine` 提供两条执行路径（`arf/engine/graph.py`），共享同一个 Agent Loop 逻辑骨架：
 
 | 方法 | 返回 | 适用场景 |
 |------|------|---------|
@@ -169,7 +169,7 @@ Turn 流转：    should_continue? → next_step() → dispatch
 
 ### 2.5 循环策略
 
-`LoopStrategy` 协议（`arf/core/protocols/engine.py:7-14`）定义两个门控方法：
+`LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义两个门控方法：
 
 ```python
 class LoopStrategy(Protocol):
@@ -196,9 +196,18 @@ class ReActStrategy:
         return state.get("current_turn", 0) >= self.max_turns
 
     def next_step(self, state: AgentState) -> str:
-        # 预留，引擎当前未调用
-        last = state["messages"][-1]
-        return "call_model" if last.get("role") == "tool" else "execute_tools"
+        # 引擎每轮调用：user/system → call_model；assistant+tool_calls → execute_tools
+        # tool result → call_model（observe → think）
+        msgs = state.get("messages", [])
+        if not msgs:
+            return "call_model"
+        last = msgs[-1]
+        role = last.get("role", "")
+        if role in ("user", "system"):
+            return "call_model"
+        if role == "assistant" and last.get("tool_calls"):
+            return "execute_tools"
+        return "call_model"
 ```
 
 循环终止条件（四个独立路径）：
@@ -210,7 +219,7 @@ class ReActStrategy:
 
 ### 2.6 取消机制
 
-`asyncio.Event` 作为取消信号（`arf/engine/graph.py:144`）：
+`asyncio.Event` 作为取消信号（`arf/engine/graph.py`）：
 
 ```python
 def _cancelled(self) -> bool:
@@ -221,9 +230,9 @@ def _cancelled(self) -> bool:
 
 ### 2.7 会话断路器
 
-`max_turns` 是每轮的硬限制。默认 50（`GraphEngine.__init__: max_turns: int = 50`）。`current_turn` 每 round 在 `BaseAgent.chat()/astream()` 中复位到 0（`arf/agent/base.py:699/763`）。
+`max_turns` 是每轮的硬限制。默认 50（`GraphEngine.__init__`）。`current_turn` 每 round 在 `BaseAgent.chat()/astream()` 中复位到 0（`arf/agent/base.py`）。
 
-多 Agent 场景：`_active_config()` 返回子 Agent 的 `max_turns`（通过 `cfg.effective_advanced().max_turns`），引擎在 turn 边界使用该值判定。子 Agent 的 turn 在 `_execute_handoff()` 中 reset 为 0（`arf/engine/graph.py:241`）。返回主 Agent 时，从 StateStore 恢复主 Agent 的消息历史（`_restore_from_handoff()`），turn 计数随之恢复。
+多 Agent 场景：`_active_config()` 返回子 Agent 的 `max_turns`（通过 `cfg.effective_advanced().max_turns`），引擎在 turn 边界使用该值判定。子 Agent 的 turn 在 `_execute_handoff()` 中 reset 为 0（`arf/engine/graph.py`）。返回主 Agent 时，从 StateStore 恢复主 Agent 的消息历史（`_restore_from_handoff()`），turn 计数随之恢复。
 
 ### 2.8 工具执行
 
@@ -238,7 +247,7 @@ def _cancelled(self) -> bool:
 
 工具执行结果（`ToolResult`）含 `success/data/error/duration_ms/rolled_back/rollback_error`。引擎在注入消息历史前，若配置了 compaction，会调用 `compaction.summarize_tool_output()` 截断超长输出。
 
-`_step_classify_tool_calls()` 的工具守卫流水线（`arf/engine/graph.py:448-541`）：
+`_step_classify_tool_calls()` 的工具守卫流水线（`arf/engine/graph.py`）：
 1. **Pipeline**：检查 `SkillPipeline.can_execute()`，确保工具依赖顺序
 2. **PathCheckToolGuard**：检查路径参数合法性（拒绝 `..` 穿越和绝对路径）
 3. **ToolPermissionChecker**：deny → ask → allow 三级判定
@@ -248,7 +257,7 @@ def _cancelled(self) -> bool:
 
 ### 2.9 BaseAgent 装配
 
-`BaseAgent.__init__()`（`arf/agent/base.py:139-435`）按固定顺序初始化子系统：
+`BaseAgent.__init__()`（`arf/agent/base.py`）按固定顺序初始化子系统：
 
 | 步骤 | 子系统 | 默认实现 | Protocol |
 |------|--------|----------|----------|
@@ -264,7 +273,7 @@ def _cancelled(self) -> bool:
 | 10 | Loop Strategy | `ReActStrategy`（max_turns=50） | `LoopStrategy` |
 
 额外装配：
-- **Planner**（可选）：协议已定义（`arf/core/protocols/engine.py:30-35`），但引擎侧尚未集成——`plan_execute` 循环策略未实现
+- **Planner**（可选）：协议已定义（`arf/core/protocols/engine.py`），但引擎侧尚未集成——`plan_execute` 循环策略未实现
 - **Sub-agents**：遍历 `config.agents`，为每个子 Agent 创建独立 system prompt 和 ModelAdapter
 - **HandoffManager**：从 `config.handover.rules` 构建规则表
 - **ModelAdapter**：`_inject_model_calls()` 为每个模型配置创建适配器，注入 `_call_model` / `_stream_model` 闭包；可选包裹 `ModelCallProtector`（rate limit + circuit breaker）
@@ -279,7 +288,7 @@ def _cancelled(self) -> bool:
 
 **检测**（`detect()`）：扫描 `state["tool_results"]`，查找 `{"handoff": true}` 信号。支持格式：`ToolResult.data` 嵌套、`FunctionBackend` 的 `{"result": {...}}` 包装、扁平 dict。
 
-**Forward 流程**（`GraphEngine._execute_handoff()`，`arf/engine/graph.py:172-259`）：
+**Forward 流程**（`GraphEngine._execute_handoff()`，`arf/engine/graph.py`）：
 1. 保存当前 Agent 状态到 `StateStore`（key: `{session_id}/{from_agent}`）
 2. `HandoffManager.resolve()` 解析目标——单规则直接匹配，多规则 LLM 分类（fallback: 关键词匹配）
 3. `RoundManager.record_handoff()` 记录切换（不创建新 checkpoint）
@@ -288,7 +297,7 @@ def _cancelled(self) -> bool:
 6. 重置 `current_turn = 0`，清除 `tool_results`，设置 `active_agent`
 7. Emit `AgentEvent(type="agent_switch")` + log
 
-**Return 流程**（`_restore_from_handoff()`，`arf/engine/graph.py:261-309`）：
+**Return 流程**（`_restore_from_handoff()`，`arf/engine/graph.py`）：
 1. 提取子 Agent 最后一条 assistant 消息作为结果
 2. 保存子 Agent 最终状态
 3. 从 StateStore 恢复主 Agent 消息历史
@@ -318,7 +327,7 @@ ARF 有两套独立的持久化机制：Round检查点（undo 回滚）和 State
 - 持久化：`rounds.json` 索引 + 每个检查点的 `state.json`。`_restore_from_disk()` 在 RoundManager 构造时重放，**支持跨进程重启后 undo**
 - `max_undo_depth`：默认 3，deque 自动淘汰最旧 round
 
-`GraphEngine.undo()`（`arf/engine/graph.py:103-121`）封装 RoundManager.undo，额外 emit `undo_executed` 事件。
+`GraphEngine.undo()`（`arf/engine/graph.py`）封装 RoundManager.undo，额外 emit `undo_executed` 事件。
 
 #### 两者关系
 
@@ -334,7 +343,7 @@ ARF 有两套独立的持久化机制：Round检查点（undo 回滚）和 State
 
 ### 2.12 Hook 系统
 
-`SubprocessHookRunner`（`arf/hooks/runner.py`）执行生命周期钩子。8 种事件类型（`arf/core/config_base.py:47-54`）：
+`SubprocessHookRunner`（`arf/hooks/runner.py`）执行生命周期钩子。8 种事件类型（`arf/core/config_base.py`）：
 
 | Hook 事件 | 触发位置 | Payload |
 |-----------|---------|---------|
@@ -405,20 +414,20 @@ advanced:
 
 # 多 Agent 配置（可选）
 agents:
-  - name: sys_agent
-    role: 系统工程师
+  - name: agent_b
+    role: 工作 Agent
     task: 资源创建、模型配置、工具/技能生成
 
 handover:
   rules:
-    - from_agent: main
-      to_agent: sys_agent
+    - from_agent: agent_a
+      to_agent: agent_b
       trigger: "创建工具 生成技能 配置模型"
       context:
         raw_turns: 4
         task_summary: true
-    - from_agent: sys_agent
-      to_agent: main
+    - from_agent: agent_b
+      to_agent: agent_a
       trigger: "完成 返回"
       context:
         raw_turns: 4
@@ -433,7 +442,7 @@ handover:
 
 ### 3.1 plan-execute 循环策略
 
-**状态**：`Planner` 协议已定义（`arf/core/protocols/engine.py:30-35`），`arf/plugins/planner/` 目录存在但只含 `skills/` 和 `tools/` 骨架，无 Python 代码。`PlanExecuteStrategy` 未实现，`agent.yaml` 中 `loop_strategy: plan_execute` 选项不存在。
+**状态**：`Planner` 协议已定义（`arf/core/protocols/engine.py`），`arf/plugins/planner/` 目录存在但只含 `skills/` 和 `tools/` 骨架，无 Python 代码。`PlanExecuteStrategy` 未实现，`agent.yaml` 中 `loop_strategy: plan_execute` 选项不存在。
 
 实现要点：
 - Plan 阶段：system model 生成步骤化执行计划

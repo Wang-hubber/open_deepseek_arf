@@ -1040,3 +1040,593 @@ class TestEngineCheckpointBehavior:
             assert put_found, (
                 f"{name}() must call state_store.put() after appending assistant_msg"
             )
+
+
+# ---------------------------------------------------------------------------
+# ReActStrategy.next_step() — all role transitions (Doc 2.5)
+# NOTE: Doc previously claimed next_step() was "unused" — it IS called
+# every loop iteration. This test suite covers all 5 transition states.
+# ---------------------------------------------------------------------------
+
+class TestReActStrategyNextStep:
+    """Doc 2.5: next_step() drives the main loop dispatch."""
+
+    def test_empty_messages_returns_call_model(self):
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": []}) == "call_model"
+
+    def test_user_message_returns_call_model(self):
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": [
+            {"role": "user", "content": "hello"}
+        ]}) == "call_model"
+
+    def test_system_message_returns_call_model(self):
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": [
+            {"role": "system", "content": "instructions"}
+        ]}) == "call_model"
+
+    def test_assistant_with_tool_calls_returns_execute_tools(self):
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "ok", "tool_calls": [{"id": "1", "function": {"name": "read", "arguments": "{}"}}]},
+        ]}) == "execute_tools"
+
+    def test_assistant_without_tool_calls_returns_call_model(self):
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello there"},
+        ]}) == "call_model"
+
+    def test_tool_result_returns_call_model(self):
+        """After tool execution → back to model to observe results."""
+        from arf.engine.loop_strategies.react import ReActStrategy
+        s = ReActStrategy()
+        assert s.next_step({"messages": [
+            {"role": "user", "content": "do"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "content": "result data", "tool_call_id": "1"},
+        ]}) == "call_model"
+
+
+# ---------------------------------------------------------------------------
+# ConcurrentToolExecutor — parameter injection (Doc 2.8)
+# ---------------------------------------------------------------------------
+
+class TestToolExecutorInjection:
+    """Doc 2.8: _agent_mode, _engine, _state_store injected into tool params."""
+
+    def test_agent_mode_injected_when_set(self):
+        from arf.engine.tool_executor import ConcurrentToolExecutor
+        from unittest.mock import AsyncMock, MagicMock
+        resolver = MagicMock()
+        resolver.execute = AsyncMock(return_value=MagicMock())
+        executor = ConcurrentToolExecutor(resolver, strategy="sequential")
+        tc = {"id": "t1", "name": "test_tool", "params": {"x": 1}}
+
+        async def run():
+            await executor.execute([tc], agent_mode="sys_agent")
+            call_args = resolver.execute.call_args
+            assert call_args[0][1].get("_agent_mode") == "sys_agent"
+
+        asyncio.run(run())
+
+    def test_engine_injected_when_passed(self):
+        from arf.engine.tool_executor import ConcurrentToolExecutor
+        from unittest.mock import AsyncMock, MagicMock
+        resolver = MagicMock()
+        resolver.execute = AsyncMock(return_value=MagicMock())
+        executor = ConcurrentToolExecutor(resolver, strategy="sequential")
+        tc = {"id": "t1", "name": "test_tool", "params": {}}
+        mock_engine = MagicMock()
+
+        async def run():
+            await executor.execute([tc], engine=mock_engine)
+            call_args = resolver.execute.call_args
+            assert call_args[0][1].get("_engine") is mock_engine
+
+        asyncio.run(run())
+
+    def test_state_store_injected_when_passed(self):
+        from arf.engine.tool_executor import ConcurrentToolExecutor
+        from unittest.mock import AsyncMock, MagicMock
+        resolver = MagicMock()
+        resolver.execute = AsyncMock(return_value=MagicMock())
+        executor = ConcurrentToolExecutor(resolver, strategy="sequential")
+        tc = {"id": "t1", "name": "test_tool", "params": {}}
+        mock_store = MagicMock()
+
+        async def run():
+            await executor.execute([tc], state_store=mock_store)
+            call_args = resolver.execute.call_args
+            assert call_args[0][1].get("_state_store") is mock_store
+
+        asyncio.run(run())
+
+    def test_parallel_strategy_uses_semaphore(self):
+        from arf.engine.tool_executor import ConcurrentToolExecutor
+        from unittest.mock import AsyncMock, MagicMock
+        resolver = MagicMock()
+        resolver.execute = AsyncMock(return_value=MagicMock())
+        executor = ConcurrentToolExecutor(resolver, strategy="parallel", max_concurrency=2)
+
+        tc1 = {"id": "t1", "name": "a", "params": {}}
+        tc2 = {"id": "t2", "name": "b", "params": {}}
+
+        async def run():
+            results = await executor.execute([tc1, tc2])
+            assert "t1" in results
+            assert "t2" in results
+            assert resolver.execute.call_count == 2
+
+        asyncio.run(run())
+
+    def test_sequential_strategy_executes_in_order(self):
+        from arf.engine.tool_executor import ConcurrentToolExecutor
+        from unittest.mock import AsyncMock, MagicMock
+        order = []
+        resolver = MagicMock()
+
+        async def track_exec(name, params):
+            order.append(name)
+            return MagicMock()
+        resolver.execute = track_exec
+        executor = ConcurrentToolExecutor(resolver, strategy="sequential")
+
+        tc1 = {"id": "t1", "name": "first", "params": {}}
+        tc2 = {"id": "t2", "name": "second", "params": {}}
+
+        async def run():
+            await executor.execute([tc1, tc2])
+            assert order == ["first", "second"]
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# RoundManager — checkpoints and undo (Doc 2.11)
+# ---------------------------------------------------------------------------
+
+class TestRoundManager:
+    """Doc 2.11: RoundManager — round-level checkpoint and undo.
+
+    Each RoundManager() reads from disk on init (memory/checkpoints/rounds.json).
+    Clean disk state before each test to avoid cross-test contamination.
+    """
+
+    def setup_method(self):
+        import shutil
+        shutil.rmtree("memory/checkpoints", ignore_errors=True)
+
+    def test_begin_round_creates_snapshot(self):
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=3)
+        assert rm.count() == 0
+        state = {"session_id": "s1", "agent_name": "main",
+                 "messages": [{"role": "user", "content": "hi"}],
+                 "current_turn": 0}
+        tx = rm.begin_round(state)
+        assert tx.round_num == 1
+        assert tx.state_snapshot["session_id"] == "s1"
+        assert rm.count() == 1
+
+    def test_undo_one_round_pops_round_and_returns_its_snapshot(self):
+        """undo(1) pops the newest round, returns its state_snapshot.
+        RoundManager snapshots at round-START state, so the popped
+        snapshot is what the state was when the round began."""
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=3)
+
+        original = {"session_id": "s1", "agent_name": "main",
+                    "messages": [{"role": "user", "content": "original"}],
+                    "current_turn": 0}
+        rm.begin_round(original)
+
+        modified = {"session_id": "s1", "agent_name": "main",
+                    "messages": [{"role": "user", "content": "modified"}],
+                    "current_turn": 5}
+        rm.begin_round(modified)
+
+        restored = rm.undo(1)
+        assert restored is not None
+        assert restored["session_id"] == "s1"
+        assert restored["messages"][0]["content"] == "modified"
+        assert rm.count() == 1  # one round remaining
+
+    def test_undo_multi_step_restores_target(self):
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=5)
+        for i in range(5):
+            rm.begin_round({"session_id": "s1", "round": i, "messages": [],
+                           "agent_name": "main", "current_turn": 0})
+
+        restored = rm.undo(3)  # pop 3, back to round 2
+        assert restored is not None
+        assert restored["round"] == 2
+        assert rm.count() == 2  # 5 - 3 = 2 remaining
+
+    def test_undo_too_many_returns_none(self):
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=3)
+        rm.begin_round({"session_id": "s1", "agent_name": "main",
+                        "messages": [], "current_turn": 0})
+        assert rm.undo(5) is None
+        assert rm.undo(0) is None
+
+    def test_record_handoff_tracks_agent_trace(self):
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=3)
+        rm.begin_round({"session_id": "s1", "agent_name": "main",
+                        "messages": [], "current_turn": 0})
+        rm.record_handoff("main", "agent_b")
+        rm.record_handoff("agent_b", "main")
+        assert rm.active_round.agent_trace == ["main", "agent_b", "main"]
+        assert rm.active_round.handoff_count == 2
+
+    def test_close_round_marks_closed(self):
+        from arf.engine.round_manager import RoundManager
+        rm = RoundManager(max_undo_depth=3)
+        rm.begin_round({"session_id": "s1", "agent_name": "main",
+                        "messages": [], "current_turn": 0})
+        assert rm.active_round is not None
+        rm.close_round()
+        assert rm.active_round is None
+
+
+# ---------------------------------------------------------------------------
+# _close_tool_calls() — unmatched tool_call injection (Doc 2.4/2.10)
+# ---------------------------------------------------------------------------
+
+class TestCloseToolCalls:
+    """Doc 2.4/2.10: _close_tool_calls ensures message sequence validity."""
+
+    def test_no_messages_returns_unchanged(self):
+        from arf.engine.graph import GraphEngine
+        engine = _build_engine()
+        state = {"messages": []}
+        result = engine._close_tool_calls(state)
+        assert result["messages"] == []
+
+    def test_no_tool_calls_returns_unchanged(self):
+        from arf.engine.graph import GraphEngine
+        engine = _build_engine()
+        state = {"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]}
+        result = engine._close_tool_calls(state)
+        assert len(result["messages"]) == 2
+
+    def test_unmatched_tool_call_gets_synthetic_result(self):
+        from arf.engine.graph import GraphEngine
+        engine = _build_engine()
+        state = {"messages": [
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "orphan1", "function": {"name": "missing_tool", "arguments": "{}"}}
+            ]},
+        ]}
+        result = engine._close_tool_calls(state)
+        # Should have injected a synthetic tool result
+        tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "orphan1"
+        assert "(tool result unavailable)" in tool_msgs[0]["content"]
+
+    def test_matched_tool_call_not_touched(self):
+        from arf.engine.graph import GraphEngine
+        engine = _build_engine()
+        state = {"messages": [
+            {"role": "user", "content": "do"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "function": {"name": "read", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "result", "tool_call_id": "tc1"},
+        ]}
+        result = engine._close_tool_calls(state)
+        assert len(result["messages"]) == 3  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# _active_config() — multi-agent config resolution (Doc 2.7)
+# ---------------------------------------------------------------------------
+
+class TestActiveConfig:
+    """Doc 2.7: _active_config() returns per-agent or default config."""
+
+    def test_returns_default_when_no_active_agent(self):
+        engine = _build_engine(system_prompt="default_prompt", max_turns=20)
+        cfg = engine._active_config({"active_agent": ""})
+        assert cfg["system_prompt"] == "default_prompt"
+        assert cfg["max_turns"] == 20
+        assert cfg["tools"] == []
+
+    def test_returns_sub_agent_config_when_active(self):
+        from arf.core.config_base import ModelConfig
+        from arf.agent.config import AgentConfig
+        sub_cfg = AgentConfig(
+            name="agent_b",
+            models=[ModelConfig(
+                type="deep", model="test-model",
+                api_base="https://api.example.com",
+                api_key_env="KEY", context_window=128000,
+            )],
+        )
+        engine = _build_engine(
+            system_prompt="main_prompt",
+            max_turns=10,
+            sub_agent_configs={
+                "agent_b": {
+                    "system_prompt": "sub_prompt",
+                    "config": sub_cfg,
+                    "adapters": {},
+                }
+            },
+        )
+        cfg = engine._active_config({"active_agent": "agent_b"})
+        assert cfg["system_prompt"] == "sub_prompt"
+        assert cfg["max_turns"] > 0  # from effective_advanced().max_turns
+
+
+# ---------------------------------------------------------------------------
+# _cancelled() — cancel_event detection (Doc 2.6)
+# ---------------------------------------------------------------------------
+
+class TestCancelled:
+    """Doc 2.6: _cancelled() checks cancel_event non-blocking."""
+
+    def test_cancelled_false_without_event(self):
+        engine = _build_engine()
+        assert engine._cancelled() is False
+
+    def test_cancelled_false_when_event_not_set(self):
+        import asyncio
+        engine = _build_engine(cancel_event=asyncio.Event())
+        assert engine._cancelled() is False
+
+    def test_cancelled_true_when_event_set(self):
+        import asyncio
+        evt = asyncio.Event()
+        evt.set()
+        engine = _build_engine(cancel_event=evt)
+        assert engine._cancelled() is True
+
+    def test_set_cancel_event_late_binding(self):
+        import asyncio
+        engine = _build_engine()
+        assert engine._cancelled() is False
+        evt = asyncio.Event()
+        engine.set_cancel_event(evt)
+        evt.set()
+        assert engine._cancelled() is True
+
+
+# ---------------------------------------------------------------------------
+# GraphEngine.approve() — approval resolution (Doc 2.8)
+# ---------------------------------------------------------------------------
+
+class TestApprove:
+    """Doc 2.8: approve(decision_id, approved) resolves pending approvals."""
+
+    def test_approve_returns_false_for_unknown_id(self):
+        engine = _build_engine()
+        assert engine.approve("unknown", True) is False
+
+    def test_approve_sets_event_and_returns_true(self):
+        import asyncio
+        engine = _build_engine()
+        evt = asyncio.Event()
+        engine._pending_approvals["d1"] = evt
+        assert engine.approve("d1", True) is True
+        assert engine._approval_results["d1"] is True
+
+    def test_approve_denied_sets_false(self):
+        import asyncio
+        engine = _build_engine()
+        evt = asyncio.Event()
+        engine._pending_approvals["d1"] = evt
+        assert engine.approve("d1", False) is True
+        assert engine._approval_results["d1"] is False
+
+
+# ---------------------------------------------------------------------------
+# _pars_tool_calls() — response parsing (Doc 2.2 flow)
+# ---------------------------------------------------------------------------
+
+class TestParsToolCalls:
+    """Doc 2.2: _pars_tool_calls handles dict and string model responses."""
+
+    def test_dict_with_tool_calls(self):
+        engine = _build_engine()
+        resp = {"content": "", "tool_calls": [
+            {"id": "1", "name": "read", "params": {"file": "x"}}
+        ]}
+        result = engine._pars_tool_calls(resp)
+        assert len(result) == 1
+        assert result[0]["name"] == "read"
+
+    def test_dict_without_tool_calls(self):
+        engine = _build_engine()
+        resp = {"content": "hello", "tool_calls": []}
+        result = engine._pars_tool_calls(resp)
+        assert result == []
+
+    def test_string_json_with_tool_calls(self):
+        import json
+        engine = _build_engine()
+        resp_str = json.dumps({"content": "", "tool_calls": [
+            {"id": "1", "name": "write", "params": {"text": "hi"}}
+        ]})
+        result = engine._pars_tool_calls(resp_str)
+        assert len(result) == 1
+        assert result[0]["name"] == "write"
+
+    def test_invalid_string_returns_empty(self):
+        engine = _build_engine()
+        result = engine._pars_tool_calls("not json")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _inject_hook_messages() — exit code 2 injection (Doc 2.12)
+# ---------------------------------------------------------------------------
+
+class TestInjectHookMessages:
+    """Doc 2.12: hook exit_code=2 → injects system message."""
+
+    def test_exit_code_2_injects_message(self):
+        from dataclasses import dataclass
+        @dataclass
+        class HookResult:
+            exit_code: int
+            hook_name: str = "test_hook"
+            injected_message: str = ""
+
+        engine = _build_engine()
+        state = {"messages": []}
+        results = [HookResult(exit_code=2, injected_message="injected content")]
+        engine._inject_hook_messages(results, state)
+        assert any("[Hook: test_hook] injected content" in m["content"]
+                   for m in state["messages"])
+
+    def test_exit_code_not_2_does_nothing(self):
+        from dataclasses import dataclass
+        @dataclass
+        class HookResult:
+            exit_code: int
+            hook_name: str = "test_hook"
+            injected_message: str = ""
+
+        engine = _build_engine()
+        state = {"messages": []}
+        results = [HookResult(exit_code=0, injected_message="should not appear")]
+        engine._inject_hook_messages(results, state)
+        assert state["messages"] == []
+
+    def test_none_results_does_nothing(self):
+        engine = _build_engine()
+        state = {"messages": []}
+        engine._inject_hook_messages(None, state)
+        assert state["messages"] == []
+
+
+# ---------------------------------------------------------------------------
+# InMemoryStateStore — snapshot tracking (Doc 2.11)
+# ---------------------------------------------------------------------------
+
+class TestInMemoryStateStore:
+    """Doc 2.11: InMemoryStateStore has snapshots list for testing."""
+
+    def test_put_stores_snapshot(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        async def run():
+            store = InMemoryStateStore()
+            await store.put("s1", {"messages": [], "current_turn": 3})
+            assert len(store.snapshots) == 1
+            assert store.snapshots[0]["turn"] == 3
+            assert store.snapshots[0]["session_id"] == "s1"
+
+        asyncio.run(run())
+
+    def test_get_returns_stored_state(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        async def run():
+            store = InMemoryStateStore()
+            await store.put("s1", {"messages": [{"role": "user", "content": "x"}]})
+            state = await store.get("s1")
+            assert state is not None
+            assert state["messages"][0]["content"] == "x"
+
+        asyncio.run(run())
+
+    def test_get_returns_none_for_unknown_session(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        async def run():
+            store = InMemoryStateStore()
+            assert await store.get("nonexistent") is None
+
+        asyncio.run(run())
+
+    def test_delete_removes_state(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        async def run():
+            store = InMemoryStateStore()
+            await store.put("s1", {"messages": []})
+            await store.delete("s1")
+            assert await store.get("s1") is None
+
+        asyncio.run(run())
+
+    def test_reset_clears_all(self):
+        from arf.engine.checkpoint import InMemoryStateStore
+        async def run():
+            store = InMemoryStateStore()
+            await store.put("s1", {"messages": []})
+            await store.put("s2", {"messages": []})
+            store.reset()
+            assert await store.get("s1") is None
+            assert await store.get("s2") is None
+            assert store.snapshots == []
+
+        asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# FileStateStore — tool_results not persisted (Doc 2.11)
+# ---------------------------------------------------------------------------
+
+class TestFileStateStore:
+    """Doc 2.11: FileStateStore strips tool_results before write."""
+
+    def test_tool_results_not_persisted(self):
+        from arf.engine.checkpoint import FileStateStore
+        import tempfile, os
+        async def run():
+            tmp = tempfile.mkdtemp()
+            try:
+                store = FileStateStore(state_dir=tmp)
+                await store.put("s1", {
+                    "session_id": "s1",
+                    "messages": [],
+                    "current_turn": 1,
+                    "tool_results": {"t1": {"success": True, "data": "secret"}},
+                })
+                restored = await store.get("s1")
+                assert restored is not None
+                assert "tool_results" not in restored, (
+                    "tool_results must NOT be persisted — they are transient"
+                )
+            finally:
+                import shutil
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        asyncio.run(run())
+
+    def test_atomic_write_uses_tmp_rename(self):
+        from arf.engine.checkpoint import FileStateStore
+        import tempfile
+        async def run():
+            tmp = tempfile.mkdtemp()
+            try:
+                store = FileStateStore(state_dir=tmp)
+                await store.put("s1", {"messages": [{"role": "user", "content": "a"}],
+                                       "current_turn": 0})
+                # The final path should exist, not just .tmp
+                path = store._path("s1")
+                assert path.exists(), f"Expected {path} to exist after put()"
+                assert not path.with_suffix(".tmp").exists(), (
+                    "tmp file should have been renamed to final path"
+                )
+            finally:
+                import shutil
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        asyncio.run(run())
