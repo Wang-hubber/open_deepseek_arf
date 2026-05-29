@@ -80,6 +80,82 @@ class TestRegexOutputGuard:
         assert "[REDACTED_API_KEY]" in replacements
         assert "[REDACTED_PHONE]" in replacements
 
+    # -- real-world boundary tests --
+
+    def test_sk_key_exactly_20_chars_redacted(self):
+        """API key at minimum threshold (20 chars after sk-) matches."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("sk-abcdefghijklmnopqrst", {}))
+        assert "[REDACTED_API_KEY]" in (result.modified_message or "")
+
+    def test_sk_key_19_chars_not_redacted(self):
+        """API key below threshold (19 chars) does NOT match."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("sk-shortkeyabcde", {}))
+        assert result.modified_message is None
+
+    def test_openai_project_key_redacted(self):
+        """OpenAI project keys (sk-proj-*) contain '-' — fixed regex to include '-'.
+        Previously: NOT redacted (gap). Now: correctly redacted."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check(
+            "use key sk-proj-abc123def456ghi789jkl", {}
+        ))
+        assert "[REDACTED_API_KEY]" in (result.modified_message or "")
+
+    def test_phone_redacts_199_prefix(self):
+        """New prefix 199 (5G) matches."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("19912345678", {}))
+        assert "[REDACTED_PHONE]" in (result.modified_message or "")
+
+    def test_phone_does_not_redact_120_prefix(self):
+        """120/110/122 etc (second digit 0-2) NOT mobile numbers."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("12012345678", {}))
+        assert result.modified_message is None
+
+    def test_id_card_no_longer_false_positive(self):
+        """ID card '110101199001011234' had substring '19900101123' matching
+        phone regex. Fixed with \\b word boundaries — ID card no longer
+        triggers false positive phone redaction."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("110101199001011234", {}))
+        assert result.modified_message is None, (
+            "ID card should NOT be redacted with word-boundary regex"
+        )
+
+    def test_bank_card_not_redacted(self):
+        """GAP: Bank card numbers have no pattern — unprotected."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("6222021234567890123", {}))
+        assert result.modified_message is None
+
+    def test_two_phones_both_redacted(self):
+        """Multiple phone numbers in same text all replaced."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check(
+            "call 13900000000 or 18887654321", {}
+        ))
+        msg = result.modified_message or ""
+        assert msg.count("[REDACTED_PHONE]") == 2
+
+    def test_phone_in_longer_number_not_redacted(self):
+        """14-digit number: \\b word boundaries prevent partial match.
+        Only exact 11-digit phone numbers are redacted."""
+        from arf.guardrails.regex_clean import RegexOutputGuard
+        guard = RegexOutputGuard()
+        result = asyncio.run(guard.check("139000000001234", {}))
+        assert result.modified_message is None
+
 
 # ============================================================
 # Section 2.3 — PathCheckToolGuard
