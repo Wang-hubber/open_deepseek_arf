@@ -108,9 +108,17 @@ class ResourceResolver:
         """Merge filesystem items with agent.yaml overrides.
 
         Filesystem is base. Override dicts with matching key_field are applied on top.
-        Override-only entries (not in filesystem) are appended as new items.
+        Empty strings / empty dicts are treated as "not set" and do NOT override
+        filesystem values. Override-only entries (not in filesystem) are appended.
         """
-        override_map = {o[key_field]: o for o in override_list if key_field in o}
+        # Clean overrides: remove empty defaults so filesystem values are preserved
+        cleaned = []
+        for o in override_list:
+            c = {k: v for k, v in o.items()
+                 if v not in ("", {}, [], None)}
+            if c:
+                cleaned.append(c)
+        override_map = {o[key_field]: o for o in cleaned if key_field in o}
         result = []
         seen = set()
         for item in fs_items:
