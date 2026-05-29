@@ -2,7 +2,7 @@
 
 ARF 将 OS 虚拟内存的页面置换机制适配到 Token 时代。上下文窗口是物理内存，Token 是字节，压缩是页面置换。当上下文接近窗口上限时，旧轮次被压缩为结构化摘要，释放空间给新对话。
 
-> **长期记忆**（跨会话事实提取）已移至 [`arf/plugins/memory/`](plugins/memory.md) 插件。本文档仅涵盖会话内上下文压缩。
+> **长期记忆**（跨会话事实提取）通过 `arf/plugins/memory/` 插件实现。使用 `round_end` hook 每 N 轮触发 LLM 提取用户身份、偏好、决策等持久事实，写入 `memory/memory.md`。本文档涵盖会话内上下文压缩。
 
 ---
 
@@ -184,7 +184,23 @@ advanced:
 - **min（85%）**：同步压缩，压缩完成后继续
 - **critical（95%）**：激进压缩，仅保留最近 2 条消息
 
-### 3.3 跨会话摘要复用
+### 3.3 长期记忆提取 (Memory Plugin)
+
+通过 `arf/plugins/memory/` 插件的 `round_end` hook 实现。每轮交互结束后，hook 子进程检查 `interaction_round % interval == 0`（默认 interval=10，由 `config.yaml` 配置），触发时将最近 20 条消息交给 system model 提取持久事实，写入 `memory/memory.md`。
+
+**提取规则**：
+- 用户身份（角色、技能、背景）
+- 工作偏好（语言、风格、工具）
+- 决策与原因（架构、技术栈、拒绝的方案）
+- 跨会话事实（项目布局、部署流程、认证方式）
+
+**注入机制**：框架通过 `PluginRuntime` 对象向 hook 子进程注入运行环境——API keys、模型配置、应用路径、会话上下文——序列化为 `ARF_RUNTIME` JSON 环境变量。Hook 脚本一行 `json.loads(os.environ["ARF_RUNTIME"])` 获取全部上下文。
+
+**Trigger chain**: `Engine.round_end → hook_runner.fire("round_end") → ARF_RUNTIME env → round_end.py → subprocess.run(extractor.py) → system model → memory.md`
+
+参见 [`arf/plugins/memory/`](../../arf/plugins/memory/) 和 [`PluginRuntime`](../../arf/core/plugin_runtime.py)。
+
+### 3.4 跨会话摘要复用
 
 当前 `context_summary` 仅在当前会话内有效。后续可将压缩摘要作为输入供 memory 插件参考，让长期记忆提取受益于会话内的结构化摘要。类似 OS 的 page cache——压缩摘要可跨会话复用，避免重复处理相同上下文。
 
