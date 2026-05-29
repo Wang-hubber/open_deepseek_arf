@@ -456,15 +456,14 @@ class TestSystemModel:
         src = _ins.getsource(BaseAgent.__init__)
         assert "api_key_env" in src
 
-    def test_four_consumers_degradation(self):
-        """Doc: 4 consumers — memory write, memory retrieve, compaction summary, routing classify."""
+    def test_three_consumers_reference_system_model_call(self):
+        """Doc: _system_model_call used by summarizer, classifier, and HandoffManager."""
         import inspect as _ins
         from arf.agent.base import BaseAgent
         src = _ins.getsource(BaseAgent.__init__)
-        # All four should use _system_model_call
         count = src.count("_system_model_call")
-        assert count >= 4, (
-            f"Expected at least 4 references to _system_model_call, found {count}"
+        assert count >= 3, (
+            f"Expected at least 3 references to _system_model_call (summarizer, classifier, handoff), found {count}"
         )
 
     def test_conditional_degradation_pattern(self):

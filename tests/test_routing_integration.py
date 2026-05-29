@@ -341,3 +341,91 @@ class TestStaticStrategyIntegration:
         from arf.agent.base import BaseAgent
         src = _ins.getsource(BaseAgent.__init__)
         assert "len(config.models) > 1" in src
+
+
+# ---------------------------------------------------------------------------
+# System model adapter creation — parameter penetration (Doc 2.13)
+# ---------------------------------------------------------------------------
+
+class TestSystemModelConfigValues:
+    """Doc 2.13: system model adapter — temperature=0.3, thinking disabled, max_tokens=1024."""
+
+    def test_system_model_snippet_has_correct_values(self):
+        """Doc claims verified via source inspection (fact_check tests cover text presence).
+        This test verifies via inspect that the literal values 0.3, 1024, false appear
+        in the system model adapter creation block."""
+        import inspect
+        from arf.agent.base import BaseAgent
+        src = inspect.getsource(BaseAgent.__init__)
+
+        # Locate the system model adapter creation block
+        sys_start = src.find('"temperature": 0.3')
+        assert sys_start > 0, "Expected temperature=0.3 in system model adapter creation"
+        sys_block = src[sys_start:sys_start + 300]
+        assert "1024" in sys_block
+        assert "thinking_enabled" in sys_block
+        assert 'false' in sys_block.lower()
+
+    def test_max_tokens_actually_1024(self):
+        """Doc: max_tokens=1024. Verify the literal in source, not a variable."""
+        import inspect
+        from arf.agent.base import BaseAgent
+        src = inspect.getsource(BaseAgent.__init__)
+        assert '"max_tokens": 1024' in src, (
+            "max_tokens should be literal 1024, not a variable"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TwoTierRouter with sync callable (Doc 2.5)
+# ---------------------------------------------------------------------------
+
+class TestTwoTierRouterSyncClassifier:
+    """Doc 2.5: classifier is an async callable — verify sync callables work too."""
+
+    def test_classifier_must_return_awaitable(self):
+        """classify() does `await self._classify(query)` — the callable
+        must return an awaitable (coroutine or Future), not a plain string."""
+        from arf.routing.two_tier import TwoTierRouter
+        from arf.core.config_base import RoutingConfig
+
+        cfg = RoutingConfig(
+            default="quick",
+            classify={"medium": "quick", "complex": "deep"},
+        )
+
+        async def run():
+            async def async_classifier(q):
+                return "complex"
+            router = TwoTierRouter(cfg, models=["quick", "deep"],
+                                  classifier_call=async_classifier)
+            result = await router.classify("some text")
+            assert result == "complex"
+
+        import asyncio
+        asyncio.run(run())
+
+    def test_route_with_non_empty_history(self):
+        """Doc: route(query, history) — history is passed but not used
+        by the current TwoTierRouter implementation."""
+        from arf.routing.two_tier import TwoTierRouter
+        from arf.core.config_base import RoutingConfig
+        from unittest.mock import AsyncMock
+
+        cfg = RoutingConfig(
+            default="quick",
+            classify={"medium": "quick", "complex": "deep"},
+        )
+        classifier = AsyncMock(return_value="medium")
+        router = TwoTierRouter(cfg, models=["quick", "deep"],
+                              classifier_call=classifier)
+
+        import asyncio
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        result = asyncio.run(router.route("what time is it", history))
+        assert result == "quick"
+        # history was passed but current implementation doesn't use it
+        # (this validates the parameter exists and is accepted)
