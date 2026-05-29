@@ -362,9 +362,10 @@ class GraphEngine:
     def _close_tool_calls(self, state: AgentState) -> AgentState:
         """Ensure every assistant tool_calls has matching tool messages.
 
-        For any tool_call without a matching tool result, inject a synthetic
-        tool message with empty/skip content. This guarantees the message
-        sequence is always valid for the model API.
+        For each assistant message with tool_calls, verify that matching tool
+        messages exist AFTER that assistant and BEFORE the next assistant.
+        If any are missing, inject synthetic tool results immediately after the
+        assistant (or after its existing tool messages).
 
         Called before every model call in both invoke() and astream().
         """
@@ -372,48 +373,66 @@ class GraphEngine:
         if not msgs:
             return state
 
-        # Collect all expected tool_call_ids
-        expected_ids: list[tuple[int, str]] = []  # (assistant_idx, tool_call_id)
-        for i, msg in enumerate(msgs):
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    tc_id = tc.get("id", "")
-                    if tc_id:
-                        expected_ids.append((i, tc_id))
+        # Find all assistant indices (boundaries for tool result scoping)
+        assistant_indices = [
+            i for i, m in enumerate(msgs)
+            if m.get("role") == "assistant"
+        ]
 
-        if not expected_ids:
+        if not assistant_indices:
             return state
 
-        # Collect all existing tool message ids
-        seen_ids: set[str] = set()
-        for msg in msgs:
-            if msg.get("role") == "tool":
-                tc_id = msg.get("tool_call_id", "")
-                if tc_id:
-                    seen_ids.add(tc_id)
+        # For each assistant with tool_calls, check its tool results are in scope
+        logger = logging.getLogger("arf.engine")
+        injected_total = 0
 
-        # Find unmatched ids and inject synthetic results.
-        # Inject after the later of: last tool message, or the unmatched assistant.
-        unmatched = [(idx, tid) for idx, tid in expected_ids if tid not in seen_ids]
-        if unmatched:
-            logger = logging.getLogger("arf.engine")
-            # Find the last tool message position
-            last_tool_idx = -1
-            for i in range(len(msgs) - 1, -1, -1):
-                if msgs[i].get("role") == "tool":
-                    last_tool_idx = i
-                    break
-            # Inject after whichever is later: last tool result or unmatched assistant
-            max_unmatched_idx = max(idx for idx, _ in unmatched)
-            inject_point = max(last_tool_idx + 1, max_unmatched_idx + 1)
+        for ai, idx in enumerate(assistant_indices):
+            msg = msgs[idx]
+            tool_calls = msg.get("tool_calls")
+            if not tool_calls:
+                continue
 
-            for _, tc_id in reversed(unmatched):
-                logger.warning("Closing open tool_call %s with empty result", tc_id)
-                msgs.insert(inject_point, {
+            # The tool results for THIS assistant must lie between idx+1 and
+            # the next assistant (or end of list)
+            next_assistant = (
+                assistant_indices[ai + 1]
+                if ai + 1 < len(assistant_indices)
+                else len(msgs)
+            )
+
+            # Collect tool_call_ids that ARE already in the correct range
+            covered: set[str] = set()
+            for j in range(idx + 1, next_assistant):
+                if msgs[j].get("role") == "tool":
+                    tc_id = msgs[j].get("tool_call_id", "")
+                    if tc_id:
+                        covered.add(tc_id)
+
+            # Find missing ones and inject right after the assistant
+            missing = []
+            for tc in tool_calls:
+                tc_id = tc.get("id", "")
+                if tc_id and tc_id not in covered:
+                    missing.append(tc_id)
+
+            if not missing:
+                continue
+
+            # Inject after the last existing tool message for this assistant,
+            # or right after the assistant if no tool messages exist yet
+            inject_at = idx + 1
+            for j in range(idx + 1, next_assistant):
+                if msgs[j].get("role") == "tool":
+                    inject_at = j + 1
+
+            for tc_id in reversed(missing):
+                logger.warning("Closing open tool_call %s from assistant at index %d", tc_id, idx)
+                msgs.insert(inject_at, {
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "content": "(tool result unavailable)",
                 })
+                injected_total += 1
 
         return state
 
