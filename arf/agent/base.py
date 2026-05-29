@@ -230,7 +230,7 @@ class BaseAgent:
         mem_workspace = mem_cfg.workspace if mem_cfg else default_workspace
         # Resolve to absolute path for hook subprocesses
         from pathlib import Path as _Path
-        _mem_abs = str(_Path(mem_workspace).resolve())
+        _mem_abs = str((ctx.root if ctx else _Path(".")) / _Path(mem_workspace))
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
