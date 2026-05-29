@@ -76,13 +76,14 @@ App 层通过 `engine.set_cancel_event()` 注入事件，监听 `session_end(rea
 
 **引擎侧**：`FileStateStore` 在每个 turn 结束、工具执行前后、`human_loop` 暂停前自动调用 `put()`。状态以 JSON 格式写入 `memory/state/{session_id}.json`。
 
-**服务端**：启动时从 `FileStateStore` 加载状态，存在则恢复对话历史、当前模型、上下文摘要等。`api/chat` 和 `astream` 入口读取 `state_store.get("default")` 拿到已有状态后追加新消息。
+**启动恢复**：引擎初始化时从 `FileStateStore` 加载状态，存在则恢复对话历史、当前模型、上下文摘要等。`BaseAgent.chat()/astream()` 入口通过 `state_store.get(session_id)` 读取已有状态后追加新消息：
 
 ```python
-# server.py lifespan — startup
-state = await _agent.state_store.get("default")
-if state:
-    logger.info(f"Restored state: {len(state['messages'])} messages")
+# BaseAgent.chat() — crash recovery
+existing = await self._state_store.get(session_id)
+if existing:
+    messages = existing["messages"] + [{"role": "user", "content": user_message}]
+    interaction = existing.get("interaction_round", 0) + 1
 ```
 
 **当前限制**：多 Agent Team 并行模式的检查点恢复待 `RoundTransaction` 扩展支持
@@ -118,7 +119,7 @@ class ErrorPolicy(Protocol):
 
 | 场景 | 触发方式 | 行为 |
 |------|---------|------|
-| **用户主动撤销** | `POST /api/chat/undo?steps=N`，对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
+| **用户主动撤销** | `GraphEngine.undo(steps=N)` 或对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
 | **检查点损坏/不可用** | `undo()` 返回 `None`，或 `checkpoint_count()` < steps | 拒绝回滚，返回错误信息 |
 
 ### 4.2 RoundManager 检查点
@@ -166,7 +167,8 @@ Round 2: hello.txt(v3)  ← 改坏了
 
 当 `checkpoint_count() < steps` 或检查点数据损坏时：
 
-- API 端点返回 `{"status": "insufficient_checkpoints", "available": N, "requested": steps}`
+- `GraphEngine.undo()` 返回 `None`
+- 调用方应检查返回值并报告 `{"status": "insufficient_checkpoints", "available": N, "requested": steps}`
 - 对话内 `undo` 工具返回 `{"ok": false, "error": "Only N checkpoints available"}`
 - 不会部分回滚，不会损坏现有状态
 

@@ -352,7 +352,7 @@ class TestInMemoryStateStore:
 # ---------------------------------------------------------------------------
 
 class TestRoundManagerInit:
-    """Doc 3.2: RoundManager structure and initialization."""
+    """Doc 4.2: RoundManager structure and initialization."""
 
     def test_round_manager_exists_at_path(self):
         """Doc: RoundManager in arf/engine/round_manager.py."""
@@ -470,7 +470,7 @@ class TestRoundManagerInit:
 
 
 class TestRoundManagerUndo:
-    """Doc 3.2-3.3: undo functionality."""
+    """Doc 4.2-4.3: undo functionality."""
 
     def test_undo_restores_state_snapshot(self):
         """Doc: undo(steps=N) restores state from target round."""
@@ -564,7 +564,7 @@ class TestRoundManagerUndo:
 # ---------------------------------------------------------------------------
 
 class TestGraphEngineUndo:
-    """Doc 3.3: GraphEngine.undo() and checkpoint_count()."""
+    """Doc 4.3: GraphEngine.undo() and checkpoint_count()."""
 
     def test_engine_has_undo_method(self):
         """Doc: GraphEngine has undo(steps=1, workspace_dir, session_id)."""
@@ -655,7 +655,7 @@ class TestGraphEngineUndo:
 # ---------------------------------------------------------------------------
 
 class TestFunctionBackendRollback:
-    """Doc 3.5: FunctionBackend.execute_with_fn -- rollback on exception."""
+    """Doc 4.5: FunctionBackend.execute_with_fn -- rollback on exception."""
 
     def test_function_backend_exists(self):
         """Doc: FunctionBackend in arf/resources/backends/function.py."""
@@ -836,7 +836,7 @@ class TestFunctionBackendRollback:
 # ---------------------------------------------------------------------------
 
 class TestToolProviderRollback:
-    """Doc 3.5: ToolProvider stores _rollbacks and _kernel_rollbacks."""
+    """Doc 4.5: ToolProvider stores _rollbacks and _kernel_rollbacks."""
 
     def test_tool_provider_has_rollbacks_dict(self):
         """Doc: ToolProvider has _rollbacks and _kernel_rollbacks."""
@@ -950,7 +950,7 @@ class TestToolProviderRollback:
 # ---------------------------------------------------------------------------
 
 class TestToolResult:
-    """Doc 3.5: ToolResult has rolled_back and rollback_error fields."""
+    """Doc 4.5: ToolResult has rolled_back and rollback_error fields."""
 
     def test_tool_result_has_rolled_back_field(self):
         """Doc: ToolResult includes rolled_back: bool and rollback_error."""
@@ -1182,7 +1182,7 @@ class TestModelFallback:
 # ---------------------------------------------------------------------------
 
 class TestBaseAgentCheckpointWiring:
-    """Doc 3.2: BaseAgent calls begin_round in chat/astream."""
+    """Doc 4.2: BaseAgent calls begin_round in chat/astream."""
 
     def test_base_agent_calls_begin_round(self):
         """Doc: BaseAgent.chat/astream calls rounds.begin_round(state)."""
@@ -1196,7 +1196,7 @@ class TestBaseAgentCheckpointWiring:
 # ---------------------------------------------------------------------------
 
 class TestRoundPersistence:
-    """Doc 3.2: round metadata persisted to memory/checkpoints/rounds.json."""
+    """Doc 4.2: round metadata persisted to memory/checkpoints/rounds.json."""
 
     def test_round_manager_persist_file_default(self):
         """Doc: _PERSIST_FILE = Path('memory/checkpoints/rounds.json')."""
@@ -1239,7 +1239,7 @@ class TestRoundPersistence:
 # ---------------------------------------------------------------------------
 
 class TestHandoffRoundRecording:
-    """Doc 3.2: handoffs recorded via record_handoff, no new checkpoint."""
+    """Doc 4.2: handoffs recorded via record_handoff, no new checkpoint."""
 
     def test_execute_handoff_records_handoff_in_round(self):
         """Doc: _execute_handoff calls rounds.record_handoff()."""
@@ -1265,7 +1265,7 @@ class TestHandoffRoundRecording:
 # ---------------------------------------------------------------------------
 
 class TestWorkspaceSnapshot:
-    """Doc 3.2: workspace file snapshots under memory/checkpoints/{round_num}/."""
+    """Doc 4.2: workspace file snapshots under memory/checkpoints/{round_num}/."""
 
     def test_round_manager_has_snapshot_workspace(self):
         """Doc: RoundManager has _snapshot_workspace method."""
