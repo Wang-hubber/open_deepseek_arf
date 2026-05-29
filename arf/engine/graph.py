@@ -550,6 +550,8 @@ class GraphEngine:
         while self.loop_strategy.should_continue(state):
             if self._cancelled():
                 self._emit("session_end", {"session_id": session_id, "reason": "cancelled"}, session_id=session_id)
+                state = self._close_tool_calls(state)
+                await self.state_store.put(session_id, state)
                 break
 
             step = self.loop_strategy.next_step(state)
@@ -806,6 +808,7 @@ class GraphEngine:
                 "session_id": session_id,
                 "round": self._interaction_round,
             })
+        state = self._close_tool_calls(state)
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
         return state
 
@@ -824,6 +827,8 @@ class GraphEngine:
                 yield self._make_event(type="session_end",
                                  data={"session_id": session_id, "reason": "cancelled"},
                                  session_id=session_id)
+                state = self._close_tool_calls(state)
+                await self.state_store.put(session_id, state)
                 break
 
             step = self.loop_strategy.next_step(state)
@@ -1128,5 +1133,6 @@ class GraphEngine:
                 "session_id": session_id,
                 "round": self._interaction_round,
             })
+        state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)

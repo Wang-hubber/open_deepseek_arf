@@ -710,6 +710,9 @@ class BaseAgent:
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
         existing = await self._state_store.get(session_id)
+        if existing:
+            existing = self._engine._close_tool_calls(existing)
+            await self._state_store.put(session_id, existing)
 
         # Determine new session and crash recovery
         if session_id in self._active_sessions:
@@ -774,6 +777,9 @@ class BaseAgent:
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
         existing = await self._state_store.get(session_id)
+        if existing:
+            existing = self._engine._close_tool_calls(existing)
+            await self._state_store.put(session_id, existing)
 
         # Determine new session and crash recovery
         if session_id in self._active_sessions:

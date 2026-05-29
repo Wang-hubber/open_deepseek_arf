@@ -27,8 +27,10 @@ class FunctionBackend:
                     sig = inspect.signature(fn)
                 except (ValueError, TypeError):
                     sig = None
-                if sig and "_agent_mode" not in sig.parameters:
-                    params.pop("_agent_mode", None)
+                if sig:
+                    for reserved in ("_agent_mode", "_engine", "_state_store"):
+                        if reserved not in sig.parameters:
+                            params.pop(reserved, None)
                 result = fn(**params)
             else:
                 result = fn()
