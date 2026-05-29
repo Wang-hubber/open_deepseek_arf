@@ -1008,24 +1008,22 @@ class TestModuleExports:
 # ---------------------------------------------------------------------------
 
 class TestConfigPaths:
-    """Doc Section 6: Benchmark/report/trace storage paths."""
+    """Doc Section 6: Benchmark/report paths are app-level, not framework-managed."""
 
-    def test_benchmark_path_exists(self):
-        """Doc: benchmarks/ directory for benchmark JSON."""
+    def test_benchmark_path_not_at_root(self):
+        """benchmarks/ is app-level usage data, not a framework directory."""
         root = Path(__file__).parent.parent.parent
         p = root / "benchmarks"
-        assert p.exists(), (
-            "Claim: benchmarks/ is storage path. "
-            f"Expected: {p} exists. If not created at runtime, this is a doc inaccuracy."
+        assert not p.exists(), (
+            "benchmarks/ should NOT exist at repo root — it is app-level usage data"
         )
 
-    def test_reports_path_exists(self):
-        """Doc: reports/ for runner output JSON."""
+    def test_reports_path_not_at_root(self):
+        """reports/ is app-level usage data, not a framework directory."""
         root = Path(__file__).parent.parent.parent
         p = root / "reports"
-        assert p.exists(), (
-            "Claim: reports/ is storage path. "
-            f"Expected: {p} exists."
+        assert not p.exists(), (
+            "reports/ should NOT exist at repo root — it is app-level usage data"
         )
 
     def test_traces_path_in_config(self):

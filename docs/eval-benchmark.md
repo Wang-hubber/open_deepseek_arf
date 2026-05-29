@@ -175,10 +175,10 @@ trace 所有 turn 中无 error 事件 → 1.0，有 → 0.0
 
 ```yaml
 # 无需额外配置。eval 模块在 arf/evaluation/ 下自动可用。
-# Benchmark 和 report 的存储路径：
-#   benchmarks/ → 用户创建和编辑的 benchmark JSON
-#   reports/    → runner 输出的 report JSON
-#   memory/sessions/ → FileTraceStore 写入的真实对话 trace
+# Benchmark 和 report 的存储路径由 App 层决定，API 接受任意相对/绝对路径：
+#   benchmarks/{name}.json → 用户创建和编辑的 benchmark JSON
+#   reports/{name}.json    → runner 输出的 report JSON
+#   memory/sessions/       → FileTraceStore 写入的真实对话 trace
 ```
 
 ---
