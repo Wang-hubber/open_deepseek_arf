@@ -121,17 +121,18 @@ A2A 通讯分为四条通路：**信号式 Handoff**（引擎自动切换）、*
 
 **检测**：`HandoffManager.detect(tool_results)` 扫描每轮工具执行结果，查找 `{"handoff": True}` 信号。兼容四种返回格式——`ToolResult.data`、嵌套 dict `{"data": ...}`、FunctionBackend 包装 `{"result": ...}`、直接 dict。
 
-**目标解析**（`HandoffManager.resolve`）：三级递进策略，当前每条规则链仅一个目标，Tier 1 直接命中：
+**目标解析**（`HandoffManager.resolve`）：四级递进策略，后一级在前一级无法确定目标时生效：
 
 ```
-Tier 1: len(candidates) == 1
-  → 直接返回 candidates[0].to_agent
+1. 单候选 — len(candidates) == 1 → 直接返回 candidates[0].to_agent
 
-Tier 2: len(candidates) > 1 && system_model 可用
-  → LLM 语义匹配 trigger 描述与 handoff task 内容
+2. LLM 语义匹配 — system_model 可用时，LLM 将 task 文本与各 candidate trigger
+   做语义匹配，选择最佳规则 → 返回对应的 to_agent
 
-Tier 3: len(candidates) > 1 && system_model 不可用
-  → 关键词 fallback: trigger 文本分词后与 task 做交集
+3. 关键词 fallback — system_model 不可用或匹配失败 → trigger 文本分词后与
+   task 做交集，首个命中规则生效
+
+4. 默认回退 — 以上均无法匹配 → 返回 candidates[0].to_agent（第一个候选）
 ```
 
 **上下文构建**（`HandoffManager.build_target_context`）：根据 `HandoverContextConfig` 决定传递给目标 Agent 的信息：
@@ -334,7 +335,7 @@ A2A 通讯在引擎循环中的介入点：
 1. **Handoff 检测** — 每次工具执行后（`invoke` 和 `astream` 两条路径均覆盖）
 2. **Agent 切换** — `_execute_handoff` → `active_agent` 变化 → 下一轮自动使用新 Agent 的 system_prompt / tools / skills / max_turns
 3. **`_agent_mode` 注入** — `state["active_agent"]` → `tool_executor.execute(agent_mode=...)` → `params["_agent_mode"]`
-4. **`agent_switch` 事件** — 落盘到 `FileTraceStore`，前端通过 SSE `agent_switch` 事件感知切换
+4. **`agent_switch` 事件** — emit 到 `EventBus` 落盘 `FileTraceStore`，SSE stream 可消费此事件通知上层
 
 ### 2.11 配置
 
