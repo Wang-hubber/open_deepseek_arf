@@ -348,6 +348,10 @@ advanced:
 
 **Human Loop — 审批通道**：
 
+> `approval_required` 事件通过 EventBus 发射（astream 路径同时 `yield` 给 SSE）。
+> App 层可通过 `event_bus.subscribe()` 自行推送到前端（WebSocket/轮询），
+> 收到审批后调用 `engine.approve()` 解除 60s 阻塞。SSE 路径已内置支持。
+
 ```yaml
   human_loop:
     approval_points: tool_name_allowlist

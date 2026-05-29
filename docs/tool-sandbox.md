@@ -190,10 +190,12 @@ def check(self, tool_name: str, params: dict) -> str:
 - `"ask"` → 若 `human_loop` 审批通道已开启（`approval_enabled=True`），emit `approval_required` SSE 事件并暂停执行，等待用户在前端确认（60s 超时则自动拒绝）；若审批通道未开启（`approval_enabled=False`，即 YOLO 模式），跳过权限控制直接放行
 
 审批通道实现（`GraphEngine._step_classify_tool_calls`）：
-1. 引擎生成 `decision_id`，yield `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
-2. 事件通过 EventBus/SSE 推送到调用方，由 App 层展示审批 UI
-3. App 层调用 `engine.approve(decision_id, approved)` → Event.set()
-4. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
+1. 引擎生成 `decision_id`，发射 `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
+2. **SSE 流式路径（astream）**：事件通过 `yield` 直接推送 SSE → 前端展示审批 UI
+3. **非流式路径（invoke）**：事件通过 `EventBus` 发射，App 层需自行订阅 EventBus
+   并推送给前端（如 WebSocket 或轮询）；收到审批后调用 `engine.approve()` 解除阻塞
+4. App 层调用 `engine.approve(decision_id, approved)` → Event.set()
+5. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
 
 ### 2.6 Hook 退出码契约
 

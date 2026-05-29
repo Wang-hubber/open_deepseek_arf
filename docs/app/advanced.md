@@ -81,7 +81,7 @@ advanced:
   guardrails:
     permissions:
       deny: [python_exec, file_deleter]     # 硬阻断
-      ask: [file_writer]                    # 审批（当前自动放行，预留审批通道）
+      ask: [file_writer]                    # 审批（60s 超时自动拒绝）
       allow: [file_reader, web_search, web_fetch]  # 自动放行
       deny_patterns:                        # 可配置的危险命令模式
         - "rm -rf"
