@@ -43,8 +43,8 @@ OS 用检查点保存进程状态快照（CRIU、BLCR）。ARF 的 `RoundManager
 
 | 场景 | 触发方式 | 引擎行为 |
 |------|---------|---------|
-| **用户主动中断** | `POST /api/chat/cancel`，前端 Stop 按钮 | `cancel_event.set()` → 循环边界检测 → break → 状态落盘 |
-| **网络异常/超时** | 客户端 `AbortController.abort()`，SSE 断开 | `asyncio.CancelledError` → `cancel_event.set()` → break → 状态落盘 |
+| **用户主动中断** | App 层 inject `cancel_event.set()`（如 Stop 按钮） | `cancel_event.set()` → 循环边界检测 `_cancelled()` → break → 状态落盘 |
+| **网络异常/超时** | 客户端断开 → `asyncio.CancelledError` → App 层调用 `cancel_event.set()` | 同上 — 引擎响应 cancel_event 信号 |
 | **服务异常** | 进程崩溃、OOM、kill | 最后一次 `state_store.put()` 的状态可用（每 turn 结束时写入） |
 
 ### 2.2 取消信号传递
@@ -70,32 +70,7 @@ def _cancelled(self) -> bool:
 
 `asyncio.Event` 是非阻塞检查——取消信号到达后，引擎在当前循环边界响应，类似硬件中断在当前指令边界响应。
 
-**应用服务端**（App FastAPI）集成模式：
-
-```python
-# SSE 流启动时注入 cancel_event
-async def _sse_chat(message: str):
-    cancel_evt = asyncio.Event()
-    _active_cancel_events["default"] = cancel_evt
-    _agent.engine.set_cancel_event(cancel_evt)  # 注入引擎
-
-    try:
-        async for event in _agent.astream(message):
-            ...
-            if event.type == "session_end" and event.data.get("reason") == "cancelled":
-                yield '{"type": "cancelled"}'  # 通知前端
-                return
-    except asyncio.CancelledError:  # 客户端断开
-        cancel_evt.set()
-
-# 取消 API 端点
-@app.post("/api/chat/cancel")
-async def cancel_chat():
-    evt = _active_cancel_events.get("default")
-    if evt:
-        evt.set()
-    return {"status": "cancelled"}
-```
+App 层通过 `engine.set_cancel_event()` 注入事件，监听 `session_end(reason="cancelled")` 事件通知前端。具体集成方式见 App 开发者指南。
 
 ### 2.3 状态持久化与恢复
 
