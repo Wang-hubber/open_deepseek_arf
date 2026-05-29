@@ -5,7 +5,6 @@ import { useI18n } from '@/composables/useI18n'
 import { useAppStore } from '@/stores/app'
 import type { ResourceMap, SlotInfo, ResourceItem } from '@/types'
 import DeepSeekConfigForm from '@/components/DeepSeekConfigForm.vue'
-import OpenAIConfigForm from '@/components/OpenAIConfigForm.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -248,12 +247,6 @@ defineExpose({ load })
         <template v-else>
           <DeepSeekConfigForm
             v-if="configPageName === 'DeepSeekConfigForm'"
-            :model-name="configModelTarget"
-            @saved="onConfigSaved"
-            @close="onConfigClose"
-          />
-          <OpenAIConfigForm
-            v-else-if="configPageName === 'OpenAIConfigForm'"
             :model-name="configModelTarget"
             @saved="onConfigSaved"
             @close="onConfigClose"

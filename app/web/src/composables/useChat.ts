@@ -142,6 +142,16 @@ export function useChat() {
         tool_name: evt.tool_name,
         params: evt.params,
       }
+    } else if (evt.type === 'approval_resolved') {
+      pendingApproval.value = null
+      if (!evt.approved) {
+        streamError.value = `Tool "${evt.tool_name}" was denied: ${evt.reason || 'no reason given'}`
+      }
+    } else if (evt.type === 'guard_block') {
+      streamError.value = `Blocked: ${evt.tool_name} — ${evt.reason || 'security policy'}`
+      console.warn('Guard blocked:', evt.tool_name, evt.reason)
+    } else if (evt.type === 'guard_pass') {
+      console.debug('Guard pass:', evt.tool_name)
     } else if (evt.type === 'agent_switch') {
       chatStore.setActiveAgent(evt.to || '')
     } else if (evt.type === 'done') {
@@ -151,6 +161,8 @@ export function useChat() {
     } else if (evt.type === 'error') {
       isStreaming.value = false
       streamError.value = evt.detail || 'Unknown error'
+    } else if (evt.type === 'cancelled') {
+      isStreaming.value = false
     }
   }
 

@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useApi } from '@/composables/useApi'
 import { useI18n } from '@/composables/useI18n'
-import OpenAIConfigForm from '@/components/OpenAIConfigForm.vue'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -131,17 +130,6 @@ function onOtherSaved(_name: string) {
             {{ t('config.enterSystem') }}
           </button>
         </template>
-      </div>
-
-      <!-- Other Provider Tab -->
-      <div v-if="activeTab === 'other'" class="tab-content">
-        <div class="other-hint">
-          {{ t('config.otherProviderHint') }}
-        </div>
-        <OpenAIConfigForm
-          model-name="deep_thinking"
-          @saved="onOtherSaved"
-        />
       </div>
     </div>
   </div>

@@ -121,8 +121,8 @@ export type SSEEvent =
   | { type: 'chunk'; content?: string; reasoning?: string }
   | { type: 'tool_call'; name?: string; tool?: string; arguments?: string; id: string }
   | { type: 'tool_result'; tool?: string; id: string; result: string }
-  | { type: 'registration_required'; registration_id: string; template: Record<string, FormField>; resource_type: string; resource_name: string }
   | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
+  | { type: 'agent_switch'; to: string }
   | { type: 'approval_required'; decision_id: string; tool_name: string; params: Record<string, unknown> }
   | { type: 'approval_resolved'; decision_id: string; tool_name: string; approved: boolean; reason: string }
   | { type: 'guard_block'; tool_name: string; guard: string; reason: string }
@@ -144,21 +144,6 @@ export interface ToolCallRecord {
   status: 'executing' | 'completed' | 'failed'
   result?: string
   error?: string
-}
-
-export interface ProjectInfo {
-  workspace: string
-  system_resources: string
-}
-
-export interface AuthUser {
-  id: number
-  username: string
-}
-
-export interface AuthResult {
-  token: string
-  user: AuthUser
 }
 
 export interface TraceEvent {

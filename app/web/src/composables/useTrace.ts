@@ -143,7 +143,7 @@ export function useTrace() {
       if (toolPairs.length === 0 && hooks.pre.length === 0 && hooks.post.length === 0) return []
       return [{
         index: 1, toolCalls: toolPairs,
-        guardEvents: [], approvalEvents: [],
+        guardEvents: [], approvalEvents: [], protectionEvents: [],
         preToolUseHooks: hooks.pre, afterToolHooks: hooks.post, isFinal: true,
       }]
     }
