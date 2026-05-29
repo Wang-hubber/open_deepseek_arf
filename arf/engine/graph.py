@@ -403,6 +403,7 @@ class GraphEngine:
             return state
 
         logger = logging.getLogger("arf.engine")
+        orig_len = len(raw)
 
         # Phase 1: collect assistant → tool_calls map (by index in filtered result)
         # First pass: filter to valid roles and record positions
@@ -442,22 +443,17 @@ class GraphEngine:
                     scope_end = j
                     break
 
-            # Collect existing tool coverage in scope
-            covered: dict[str, int] = {}  # tc_id → position
+            # Collect existing tool coverage in scope (keep first, mark rest duplicate)
+            covered: dict[str, int] = {}  # tc_id → first position
             for j in range(a_idx + 1, scope_end):
                 if keep[j].get("role") == "tool":
                     tc_id = keep[j].get("tool_call_id", "")
                     if tc_id:
-                        covered[tc_id] = j
-
-            # Remove duplicate tool messages for same tc_id
-            seen: set[str] = set()
-            for j in sorted(covered.values()):
-                tc_id = keep[j].get("tool_call_id", "")
-                if tc_id in seen:
-                    to_remove.add(j)
-                else:
-                    seen.add(tc_id)
+                        if tc_id in covered:
+                            to_remove.add(j)  # duplicate → remove
+                        else:
+                            covered[tc_id] = j
+            seen: set[str] = set(covered.keys())
 
             # Inject missing tool results
             for tc in tcs:
@@ -512,6 +508,8 @@ class GraphEngine:
             logger.warning("Repair: removing invalid message at idx %d (role=%s)", i, keep[i].get("role"))
             del keep[i]
 
+        if len(keep) != orig_len:
+            logger.info("_repair_messages: %d → %d messages", orig_len, len(keep))
         state["messages"] = keep
         return state
 
@@ -1089,6 +1087,9 @@ class GraphEngine:
                                     self._repair_messages(state)
                                     if self.state_store:
                                         await self.state_store.put(session_id, state)
+                                    state["_retry_after_repair"] = True
+                                    resp = None
+                                    break
                                 yield self._make_event(type="error",
                                                  data={"code": code,
                                                        "detail": chunk.get("detail", "")},
@@ -1135,6 +1136,12 @@ class GraphEngine:
                             else:
                                 raise
                     stream_usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
+
+                # After stream: check if we need to retry after 400 repair
+                if state.pop("_retry_after_repair", False):
+                    state["current_turn"] = state.get("current_turn", 1) - 1
+                    await self.state_store.put(session_id, state)
+                    continue  # restart while loop → call_model step with repaired state
 
                 yield self._make_event(type="model_call_end",
                                  data={"model": model, "turn": turn,

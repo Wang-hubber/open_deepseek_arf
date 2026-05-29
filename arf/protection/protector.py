@@ -103,13 +103,30 @@ class ModelCallProtector:
             self._emit("circuit_closed", {"model": model_name})
 
     async def call_with_protection(self, raw_call, messages,
-                                     model_name="", tools=None):
+                                     model_name="", tools=None,
+                                     on_400=None):
+        """Wrap a model call with rate limiting + circuit breaker.
+
+        If on_400(exc, messages) is provided and the call fails with a 400
+        tool-message error, the callback is invoked to repair the messages.
+        If it returns new messages, the call is retried once.
+        """
         api_base, mn = self._resolve(model_name)
         await self._check_rate_limit(api_base, mn)
         await self._check_breaker(mn)
         try:
             result = await raw_call(messages, model_name, tools=tools)
         except Exception as exc:
+            # 400 tool-message error → try message repair (does not count as failure)
+            if on_400 is not None:
+                repaired = await on_400(exc, messages)
+                if repaired is not None:
+                    try:
+                        result = await raw_call(repaired, model_name, tools=tools)
+                        await self._on_success(mn)
+                        return result
+                    except Exception:
+                        pass  # repair didn't help, fall through to record failure
             await self._on_failure(mn, exc)
             raise
         await self._on_success(mn)

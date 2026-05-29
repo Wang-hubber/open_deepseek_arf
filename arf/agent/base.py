@@ -650,10 +650,23 @@ class BaseAgent:
         if protector:
             raw_call = _call_model
             raw_stream = _stream_model
+            engine_ref = self._engine
+
+            async def _on_400_repair(exc, messages):
+                """Try to repair messages on 400 tool errors. Returns repaired list or None."""
+                detail = str(exc)
+                if "400" not in detail or "tool" not in detail.lower():
+                    return None
+                # The engine repairs its own internal state; we rebuild externally
+                import logging
+                logger = logging.getLogger("arf.agent")
+                logger.info("Protection: 400 tool error detected, attempting repair")
+                return None  # engine handles repair internally in model_call step
 
             async def _protected_call(messages, model_name="", tools=None):
                 return await protector.call_with_protection(
                     raw_call, messages, model_name, tools=tools,
+                    on_400=_on_400_repair,
                 )
 
             async def _protected_stream(messages, model_name="", tools=None):
