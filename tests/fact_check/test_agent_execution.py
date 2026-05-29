@@ -6,14 +6,14 @@ PASS = doc/code consistent. FAIL = discrepancy found (fact-check finding).
 
 import asyncio
 import inspect
-import os
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from arf.core.state import AgentState
+from tests.test_agent_execution import _build_real_engine, CountingStateStore
+from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
 # ---------------------------------------------------------------------------
@@ -282,59 +282,25 @@ class TestCancelMechanism:
 
     def test_cancelled_returns_false_when_no_event(self):
         """Doc: _cancelled 在无 cancel_event 时返回 False."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
-        )
+        engine = _build_real_engine(fake_model=FakeModelAdapter())
         assert engine._cancelled() is False
 
     def test_cancelled_returns_false_when_event_not_set(self):
         """Doc: cancel_event 存在但未 set → False."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
         event = asyncio.Event()
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
-            cancel_event=event,
-        )
+        engine = _build_real_engine(fake_model=FakeModelAdapter(), cancel_event=event)
         assert engine._cancelled() is False
 
     def test_cancelled_returns_true_when_event_set(self):
         """Doc: cancel_event.set() → _cancelled() True."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
         event = asyncio.Event()
         event.set()
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
-            cancel_event=event,
-        )
+        engine = _build_real_engine(fake_model=FakeModelAdapter(), cancel_event=event)
         assert engine._cancelled() is True
 
     def test_set_cancel_event_late_binding_works(self):
         """Doc: set_cancel_event 延迟绑定后 _cancelled() 反映新状态."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
-        )
+        engine = _build_real_engine(fake_model=FakeModelAdapter())
         assert engine._cancelled() is False
         event = asyncio.Event()
         engine.set_cancel_event(event)
@@ -352,15 +318,8 @@ class TestCircuitBreaker:
 
     def test_active_config_returns_max_turns_for_main_agent(self):
         """Doc: _active_config 返回主 Agent 的 max_turns."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
-
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(max_turns=50),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
+        engine = _build_real_engine(
+            fake_model=FakeModelAdapter(),
             max_turns=42,
         )
         state: AgentState = {"active_agent": ""}
@@ -369,23 +328,12 @@ class TestCircuitBreaker:
 
     def test_active_config_returns_sub_agent_max_turns(self):
         """Doc: 多 Agent 场景: _active_config 返回子 Agent max_turns."""
-        from arf.engine.graph import GraphEngine
-        from arf.engine.checkpoint import InMemoryStateStore
-        from arf.engine.loop_strategies.react import ReActStrategy
+        from arf.agent.config import AgentConfig, AdvancedConfig
 
-        sub_cfg = MagicMock()
-        sub_cfg.tools = []
-        sub_cfg.skills = []
-        sub_cfg.hooks = []
-        sub_adv = MagicMock()
-        sub_adv.max_turns = 25
-        sub_cfg.effective_advanced = lambda: sub_adv
+        sub_cfg = AgentConfig(name="agent_b", advanced=AdvancedConfig(max_turns=25))
 
-        engine = GraphEngine(
-            loop_strategy=ReActStrategy(),
-            state_store=InMemoryStateStore(),
-            tool_executor=MagicMock(),
-            tool_resolver=MagicMock(),
+        engine = _build_real_engine(
+            fake_model=FakeModelAdapter(),
             sub_agent_configs={
                 "agent_b": {
                     "config": sub_cfg,
@@ -921,38 +869,17 @@ class TestEvolutionClaims:
 class TestBehavioralEndToEnd:
     """L3-L5: 构造真实引擎实例，验证行为声称."""
 
-    @staticmethod
-    def _make_tool_resolver():
-        """Helper: create an AsyncMock tool_resolver that returns no tools."""
-        tr = MagicMock()
-        tr.get_tool_definitions = AsyncMock(return_value=[])
-        return tr
-
     def test_text_only_response_triggers_break_and_checkpoint(self):
         """Doc: 模型返回纯文本 → break + State快照.put()."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
+            fake = FakeModelAdapter(default=FakeResponse(content="Hello!"))
+            store = CountingStateStore()
 
-            store = InMemoryStateStore()
-            store.reset()
-
-            call_count = 0
-
-            async def _call_model(msgs, model_name="", tools=None):
-                nonlocal call_count
-                call_count += 1
-                return {"content": "Hello!", "tool_calls": [], "usage": {"total_tokens": 10}}
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(max_turns=50),
+            engine = _build_real_engine(
+                fake_model=fake,
                 state_store=store,
-                tool_executor=MagicMock(),
-                tool_resolver=self._make_tool_resolver(),
             )
-            engine.set_call_model(_call_model)
 
             state: AgentState = {
                 "session_id": "test",
@@ -965,8 +892,8 @@ class TestBehavioralEndToEnd:
             }
 
             result = await engine.invoke(state)
-            assert call_count == 1
-            assert len(store.snapshots) >= 1
+            assert fake.call_count == 1
+            assert store.put_call_count >= 1
             assert result["messages"][-1]["role"] == "assistant"
             assert result["messages"][-1]["content"] == "Hello!"
 
@@ -976,40 +903,16 @@ class TestBehavioralEndToEnd:
         """Doc: 模型返回 tool_calls → 进入 execute_tools 阶段."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
-            from arf.core.results import ToolResult
+            fake = FakeModelAdapter(responses=[
+                FakeResponse(content="", tool_calls=[{"id": "tc1", "name": "echo", "params": {"text": "hi"}}]),
+                FakeResponse(content="Done."),
+            ])
+            store = CountingStateStore()
 
-            store = InMemoryStateStore()
-            store.reset()
-
-            call_count = 0
-
-            async def _call_model(msgs, model_name="", tools=None):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    return {
-                        "content": "",
-                        "tool_calls": [{"id": "tc1", "name": "echo", "params": {"text": "hi"}}],
-                        "usage": {"total_tokens": 20},
-                    }
-                else:
-                    return {"content": "Done.", "tool_calls": [], "usage": {"total_tokens": 15}}
-
-            mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(return_value={
-                "tc1": ToolResult(tool_name="echo", success=True, data="hi", duration_ms=5),
-            })
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(max_turns=50),
+            engine = _build_real_engine(
+                fake_model=fake,
                 state_store=store,
-                tool_executor=mock_executor,
-                tool_resolver=self._make_tool_resolver(),
             )
-            engine.set_call_model(_call_model)
 
             state: AgentState = {
                 "session_id": "test",
@@ -1022,8 +925,7 @@ class TestBehavioralEndToEnd:
             }
 
             result = await engine.invoke(state)
-            assert call_count == 2
-            mock_executor.execute.assert_called_once()
+            assert fake.call_count == 2
 
         asyncio.run(_run())
 
@@ -1034,42 +936,17 @@ class TestBehavioralEndToEnd:
         """
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
-            from arf.core.results import ToolResult
+            fake = FakeModelAdapter(default=FakeResponse(
+                content="",
+                tool_calls=[{"id": "tc1", "name": "echo", "params": {}}],
+            ))
+            store = CountingStateStore()
 
-            store = InMemoryStateStore()
-            store.reset()
-
-            call_count = 0
-
-            async def _call_model(msgs, model_name="", tools=None):
-                nonlocal call_count
-                call_count += 1
-                return {
-                    "content": "",
-                    "tool_calls": [{"id": f"tc{call_count}", "name": "echo", "params": {}}],
-                    "usage": {"total_tokens": 10},
-                }
-
-            # Side effect: dynamically return results matching the current call_count
-            mock_executor = MagicMock()
-
-            async def _execute(valid_calls, **kwargs):
-                cid = valid_calls[0]["id"] if valid_calls else "unknown"
-                return {cid: ToolResult(tool_name="echo", success=True, data="ok", duration_ms=1)}
-
-            mock_executor.execute = _execute
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(max_turns=1),
+            engine = _build_real_engine(
+                fake_model=fake,
                 state_store=store,
-                tool_executor=mock_executor,
-                tool_resolver=self._make_tool_resolver(),
                 max_turns=1,
             )
-            engine.set_call_model(_call_model)
 
             state: AgentState = {
                 "session_id": "test",
@@ -1083,7 +960,7 @@ class TestBehavioralEndToEnd:
 
             result = await engine.invoke(state)
             # With max_turns=1, only 1 call_model before should_continue blocks
-            assert call_count == 1
+            assert fake.call_count == 1
 
         asyncio.run(_run())
 
@@ -1091,31 +968,17 @@ class TestBehavioralEndToEnd:
         """Doc: _cancelled() True → break 退出循环 (L3)."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
-
-            store = InMemoryStateStore()
-            store.reset()
-
+            store = CountingStateStore()
             event = asyncio.Event()
             event.set()
 
-            call_count = 0
+            fake = FakeModelAdapter(default=FakeResponse(content="hi"))
 
-            async def _call_model(msgs, model_name="", tools=None):
-                nonlocal call_count
-                call_count += 1
-                return {"content": "hi", "tool_calls": [], "usage": {"total_tokens": 5}}
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(max_turns=50),
+            engine = _build_real_engine(
+                fake_model=fake,
                 state_store=store,
-                tool_executor=MagicMock(),
-                tool_resolver=MagicMock(),
                 cancel_event=event,
             )
-            engine.set_call_model(_call_model)
 
             state: AgentState = {
                 "session_id": "test",
@@ -1128,7 +991,7 @@ class TestBehavioralEndToEnd:
             }
 
             result = await engine.invoke(state)
-            assert call_count == 0  # cancelled before first model call
+            assert fake.call_count == 0  # cancelled before first model call
 
         asyncio.run(_run())
 
@@ -1136,16 +999,7 @@ class TestBehavioralEndToEnd:
         """Doc: _close_tool_calls 为孤儿 tool_call 注入合成结果 (L3)."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(),
-                state_store=InMemoryStateStore(),
-                tool_executor=MagicMock(),
-                tool_resolver=MagicMock(),
-            )
+            engine = _build_real_engine(fake_model=FakeModelAdapter())
 
             state: AgentState = {
                 "messages": [
@@ -1171,16 +1025,7 @@ class TestBehavioralEndToEnd:
         """Doc: _close_tool_calls 全部匹配时不修改消息 (L3)."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
-
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(),
-                state_store=InMemoryStateStore(),
-                tool_executor=MagicMock(),
-                tool_resolver=MagicMock(),
-            )
+            engine = _build_real_engine(fake_model=FakeModelAdapter())
 
             state: AgentState = {
                 "messages": [
@@ -1204,20 +1049,14 @@ class TestBehavioralEndToEnd:
         """Doc: GraphEngine.undo() 恢复状态 + emit undo_executed (L5)."""
 
         async def _run():
-            from arf.engine.graph import GraphEngine
-            from arf.engine.checkpoint import InMemoryStateStore
-            from arf.engine.loop_strategies.react import ReActStrategy
             from arf.event_bus import InMemoryEventBus
 
-            store = InMemoryStateStore()
-            store.reset()
+            store = CountingStateStore()
             event_bus = InMemoryEventBus()
 
-            engine = GraphEngine(
-                loop_strategy=ReActStrategy(),
+            engine = _build_real_engine(
+                fake_model=FakeModelAdapter(),
                 state_store=store,
-                tool_executor=MagicMock(),
-                tool_resolver=MagicMock(),
                 event_bus=event_bus,
             )
 
