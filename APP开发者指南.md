@@ -807,17 +807,19 @@ pipeline:
 
 ## 7. 生命周期 Hook
 
-Hook 是独立子进程脚本，在 Agent 的六个生命周期事件点触发。通过 `SubprocessHookRunner` 以 `asyncio.create_subprocess_shell` 并行启动。
+Hook 是独立子进程脚本，在 Agent 的八个生命周期事件点触发。通过 `SubprocessHookRunner` 以 `asyncio.create_subprocess_shell` 并行启动。
 
-### 7.1 六个事件点
+### 7.1 八个事件点
 
 | 事件 | 触发时机 | 典型用途 |
 |------|---------|---------|
 | `session_start` | 会话开始时 | 初始化日志、加载外部配置 |
+| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 |
 | `pre_model_call` | 每次调用模型前 | 消息预处理、敏感词过滤 |
 | `post_model_call` | 每次模型响应后 | 响应审计、内容归档 |
 | `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 |
 | `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 |
+| `round_end` | 每轮用户交互结束时 | 记忆提取、状态持久化 |
 | `session_end` | 会话结束时 | 清理临时文件、发送通知 |
 
 ### 7.2 配置与退出码
@@ -850,10 +852,24 @@ print("注意：用户之前提到过偏好 dark mode 界面风格。")
 sys.exit(2)
 ```
 
-注意事项：
+### 7.3 运行时环境变量
+
+所有 hook 子进程自动获得完整的运行时上下文环境变量：
+
+| 变量 | 说明 |
+|------|------|
+| `ARF_RUNTIME` | 完整运行时上下文 JSON |
+| `ARF_SESSION_ID` | 当前会话 ID |
+| `ARF_ROUND` | 当前交互轮次 |
+| `ARF_MEMORY_DIR` | memory 目录绝对路径 |
+| `ARF_WORKSPACE` | workspace 目录绝对路径 |
+
+### 7.4 注意事项
+
 - Hook 是独立子进程，不能直接访问 Agent 内存状态
 - 同一事件类型的多个 Hook 通过 `asyncio.gather` 并行执行，顺序不保证
 - 超时 Hook 被 SIGKILL 强制终止
+- 所有 hook 子进程自动获得 `ARF_RUNTIME`、`ARF_SESSION_ID`、`ARF_ROUND`、`ARF_MEMORY_DIR`、`ARF_WORKSPACE` 环境变量
 
 > 深入阅读：[`docs/app/hooks.md`](docs/app/hooks.md)
 
