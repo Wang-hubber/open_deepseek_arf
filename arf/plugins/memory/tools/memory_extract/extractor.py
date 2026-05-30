@@ -46,10 +46,16 @@ def call_sysmodel(prompt: str) -> str:
     api_key = env_vars.get("DEEPSEEK_API_KEY", "")
     api_base = env_vars.get("DEEPSEEK_API_BASE", "https://api.deepseek.com")
 
+    # Resolve model config from runtime: system_model → model_configs
+    system_model = runtime.get("system_model", "quick")
+    model_configs = runtime.get("model_configs", {})
+    model_cfg = model_configs.get(system_model, {})
+    model_name = model_cfg.get("model", "deepseek-v4-flash")
+
     adapter = ModelAdapter({
         "base_url": api_base,
         "api_key": api_key or "sk-placeholder",
-        "model_name": "deepseek-v4-flash",
+        "model_name": model_name,
         "temperature": 0.3,
         "thinking_enabled": False,
         "max_tokens": 4096,

@@ -248,5 +248,5 @@ handover:
       to_agent: arf_assistant
       trigger: "资源操作完成或需要用户确认"
       context:
-        raw_turns: 0
+        raw_turns: 5
         task_summary: true

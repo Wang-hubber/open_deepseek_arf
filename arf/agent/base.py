@@ -220,7 +220,10 @@ class BaseAgent:
             from arf.resources.providers.plugin_provider import PluginProvider
             plugins_dir = Path(override_protocols.pop("plugins_dir", "arf/plugins"))
             if not plugins_dir.is_absolute():
-                plugins_dir = Path.cwd() / plugins_dir
+                # Resolve relative to arf package root, not CWD or app root
+                import arf as _arf_pkg
+                _arf_root = Path(_arf_pkg.__file__).parent
+                plugins_dir = _arf_root / "plugins"
             self._plugin_provider = PluginProvider(plugins_dir, config.plugins)
             resource_resolver.set_plugin_provider(self._plugin_provider)
 

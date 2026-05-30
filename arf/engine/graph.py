@@ -224,11 +224,23 @@ class GraphEngine:
         # 3. Record agent switch in the current round (no new checkpoint)
         self._rounds.record_handoff(from_agent or "main", to_agent)
 
+        # Capture sub-agent's result before state swap (for return handoffs)
+        sub_agent_result = ""
+        for m in reversed(state.get("messages", [])):
+            if m.get("role") == "assistant":
+                sub_agent_result = m.get("content", "")
+                break
+
         # 4. Try to load existing target agent state, or build fresh context
         existing_target = await self.state_store.get(f"{session_id}/{to_agent}")
         if existing_target:
             # Resume: restore target agent's previous state
             state.update(existing_target)
+            # For return handoffs: replace raw tool result with sub-agent's actual response
+            if sub_agent_result and to_agent == (self._active_agent or state.get("agent_name", "")):
+                msgs = state.get("messages", [])
+                if msgs and msgs[-1].get("role") == "tool":
+                    msgs[-1]["content"] = sub_agent_result
         else:
             # First time: build target context from handoff data
             target_cfg = self._sub_agent_configs.get(to_agent, {})
@@ -433,6 +445,13 @@ class GraphEngine:
             removed = keep.pop(0)
             logger.warning("Repair: removed leading %s message (sequence must start with user)",
                            removed.get("role"))
+
+        # Rebuild assistant_tc_map after removing leading messages
+        # (indices shifted, entries for removed assistants must be dropped)
+        assistant_tc_map = {}
+        for i, m in enumerate(keep):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                assistant_tc_map[i] = list(m["tool_calls"])
 
         # Phase 2: for each assistant with tool_calls, ensure matching tool messages
         # exist immediately after it (before next user or assistant)
@@ -725,6 +744,7 @@ class GraphEngine:
                     if self.compaction.should_compact(state, window_size=window):
                         self._emit("compaction_start", {"turn": turn, "model": model, "msg_count": len(state.get("messages", []))}, session_id=session_id)
                         state = await self.compaction.compact(state)
+                        state = self._repair_messages(state)
                         self._emit("compaction_end", {"turn": turn, "msg_count": len(state.get("messages", [])), "summary_len": len(state.get("context_summary", ""))}, session_id=session_id)
 
                 # Get tool definitions — use active agent's tools
@@ -763,6 +783,12 @@ class GraphEngine:
                 self._emit("model_call_start", {"model": model, "turn": turn}, session_id=session_id)
                 response = None
                 try:
+                    # Debug: log last 10 messages before model call
+                    _dbg = []
+                    for _m in msgs[-10:]:
+                        _dbg.append({"role": _m.get("role",""), "tc_ids": [tc.get("id","") for tc in _m.get("tool_calls",[])], "content_len": len(str(_m.get("content","")))})
+                    logger = logging.getLogger("arf.engine")
+                    logger.info("PRE_CALL msgs tail: %s", json.dumps(_dbg, ensure_ascii=False))
                     response = await self._call_model(msgs, model, tools=tools)
                 except Exception as exc:
                     msgs, response = await self._try_repair_400(exc, state, msgs, system_prompt,

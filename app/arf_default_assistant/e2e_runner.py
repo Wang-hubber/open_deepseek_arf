@@ -55,6 +55,7 @@ class E2ERunner:
             "rounds": [],
             "issues": [],
             "last_trace_check": 0,
+            "persona_lock": None,
         }
         self._save_state()
         return self.state
@@ -101,10 +102,18 @@ class E2ERunner:
 
     # ── Context for subagent ──────────────────────────────────────────────
 
+    def _get_persona(self) -> dict:
+        personas = self.load_personas()
+        lock = self.state.get("persona_lock")
+        if lock:
+            for p in personas:
+                if p["name"] == lock:
+                    return p
+        return personas[self.state["round"] % len(personas)]
+
     def context_for_subagent(self) -> dict:
         """Return the context a subagent needs to generate the next message."""
-        personas = self.load_personas()
-        persona = personas[self.state["round"] % len(personas)]
+        persona = self._get_persona()
         recent = self.state.get("rounds", [])[-8:]
         return {
             "round": self.state["round"] + 1,
@@ -410,8 +419,7 @@ def cmd_send(runner: E2ERunner, message: str, persona_name: str = "") -> None:
 def cmd_trace(runner: E2ERunner) -> None:
     """Print trace context for subagent analysis."""
     runner.load_state()
-    personas = runner.load_personas()
-    persona = personas[(runner.state["round"] - 1) % len(personas)]
+    persona = runner._get_persona()
     trace_ctx = runner.trace_for_subagent(persona.get("focus_modules", []))
     print(json.dumps(trace_ctx, ensure_ascii=False, indent=2, default=str))
     runner.mark_trace_checked()
@@ -434,6 +442,22 @@ def cmd_verify_memory(runner: E2ERunner) -> None:
     runner.load_state()
     result = runner.verify_memory()
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_persona_lock(runner: E2ERunner, name: str) -> None:
+    """Lock persona to a specific name, skipping auto-cycle."""
+    runner.load_state()
+    runner.state["persona_lock"] = name
+    runner._save_state()
+    print(json.dumps({"persona_lock": name}))
+
+
+def cmd_persona_unlock(runner: E2ERunner) -> None:
+    """Unlock persona, resume auto-cycle."""
+    runner.load_state()
+    runner.state["persona_lock"] = None
+    runner._save_state()
+    print(json.dumps({"persona_lock": None}))
 
 
 def cmd_mock_deep_down(runner: E2ERunner) -> None:
@@ -533,6 +557,13 @@ def main():
         cmd_report(runner)
     elif cmd == "verify-memory":
         cmd_verify_memory(runner)
+    elif cmd == "persona-lock":
+        if len(sys.argv) < 3:
+            print("Usage: python e2e_runner.py persona-lock <name>")
+            sys.exit(1)
+        cmd_persona_lock(runner, sys.argv[2])
+    elif cmd == "persona-unlock":
+        cmd_persona_unlock(runner)
     elif cmd == "mock-deep-down":
         cmd_mock_deep_down(runner)
     elif cmd == "mock-deep-restore":
