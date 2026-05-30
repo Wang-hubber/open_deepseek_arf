@@ -355,8 +355,20 @@ def cmd_prepare(runner: E2ERunner) -> None:
 
 
 def cmd_cleanup(runner: E2ERunner) -> None:
-    """Revert config changes via git checkout."""
+    """Revert config changes via git checkout. Kill mock server if running."""
     import subprocess
+    import os
+    import signal
+
+    if MOCK_PID_FILE.exists():
+        pid = int(MOCK_PID_FILE.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        MOCK_PID_FILE.unlink()
+        print("[CLEANUP] Mock server killed")
+
     files = [
         str(runner.app_dir / "models" / "deep.yaml"),
         str(runner.app_dir / "models" / "quick.yaml"),
@@ -478,7 +490,7 @@ def cmd_mock_deep_restore(runner: E2ERunner) -> None:
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python e2e_runner.py <prepare|cleanup|state|send|trace|issue|report|verify-memory>")
+        print("Usage: python e2e_runner.py <prepare|cleanup|state|send|trace|issue|report|verify-memory|mock-deep-down|mock-deep-restore>")
         sys.exit(1)
 
     runner = E2ERunner()
