@@ -4,15 +4,17 @@ Hook 是独立子进程脚本，在 Agent 的六个生命周期事件点触发�
 
 ---
 
-## 六个事件点
+## 八个事件点
 
 | 事件 | 触发时机 | 典型用途 |
 |------|---------|---------|
 | `session_start` | 会话开始时 | 初始化日志、加载外部配置 |
+| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 |
 | `pre_model_call` | 每次调用模型前 | 消息预处理、敏感词过滤 |
 | `post_model_call` | 每次模型响应后 | 响应审计、内容归档 |
 | `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 |
 | `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 |
+| `round_end` | 每轮用户交互结束时 | 记忆提取、状态持久化 |
 | `session_end` | 会话结束时 | 清理临时文件、发送通知 |
 
 ---
@@ -66,11 +68,43 @@ sys.exit(2)
 ```yaml
 hooks:
   - name: my_hook
-    type: post_tool_exec        # 六个事件之一
+    type: post_tool_exec        # 八个事件之一
     run: ["python", "./hooks/my_hook.py"]  # 命令行（支持多参数）
     timeout: 10s                # 超时时间，默认 30s
     env:                        # 可选环境变量
       MY_VAR: "value"
+```
+
+---
+
+## 运行时环境变量
+
+所有 hook 子进程自动获得以下环境变量，无需在 `env:` 中声明：
+
+| 变量 | 内容 | 示例 |
+|------|------|------|
+| `ARF_RUNTIME` | 完整运行时上下文 JSON | `{"session_id":"default","interaction_round":3,...}` |
+| `ARF_SESSION_ID` | 当前会话 ID | `default` |
+| `ARF_ROUND` | 当前交互轮次 | `3` |
+| `ARF_MEMORY_DIR` | memory 目录绝对路径 | `/app/memory` |
+| `ARF_WORKSPACE` | workspace 目录绝对路径 | `/app/workspace` |
+| `ARF_TRACE_DIR` | trace 目录绝对路径 | `/app/traces` |
+| `ARF_SYSTEM_MODEL` | 系统后台模型名 | `quick` |
+
+`ARF_RUNTIME` JSON 包含上述所有字段，Python hook 可通过 `json.loads(os.environ["ARF_RUNTIME"])` 一次读取全部信息。
+
+### 自定义环境变量
+
+`hook.env` 中的值支持 `$ARF_XXX` 占位符，从运行时信息 + 事件上下文合并字典中替换：
+
+```yaml
+hooks:
+  - name: my_hook
+    type: round_end
+    run: ["python", "./hooks/my_hook.py"]
+    env:
+      MY_DIR: "$ARF_MEMORY_DIR/subdir"
+      MY_ROUND: "$ARF_INTERACTION_ROUND"
 ```
 
 ---
