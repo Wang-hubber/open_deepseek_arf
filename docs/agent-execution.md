@@ -364,7 +364,8 @@ Hook 行为：
 - 退出码 2 + stdout 内容 → `injected_message`，引擎调用 `_inject_hook_messages()` 将 `[Hook: name] msg` 作为 system 消息注入 state
 - 单 hook 失败不影响其他 hook
 - `set_order()` 控制同事件类型的执行顺序
-- Env var 模板：`$ARF_{CONTEXT_KEY}` 自动替换
+- 所有 hook 子进程自动获得运行时环境变量：`ARF_RUNTIME`（JSON）、`ARF_SESSION_ID`、`ARF_ROUND`、`ARF_MEMORY_DIR`、`ARF_WORKSPACE`、`ARF_TRACE_DIR`、`ARF_SYSTEM_MODEL`
+- `$ARF_{KEY}` 占位符从 `runtime_dict + context` 合并字典替换（context key 优先级更高）
 
 ### 2.13 EventBus 事件目录
 
