@@ -15,7 +15,6 @@ from arf.core.protocols import (
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
 from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
-from arf.core.plugin_runtime import PluginRuntime
 
 
 class GraphEngine:
@@ -51,7 +50,6 @@ class GraphEngine:
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
         memory_workspace: str = "./memory",
-        plugin_runtime: PluginRuntime | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -81,7 +79,6 @@ class GraphEngine:
         self._cancel_event = cancel_event
         self._interaction_round = 0
         self._memory_dir = memory_workspace
-        self._plugin_runtime = plugin_runtime
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
@@ -747,6 +744,10 @@ class GraphEngine:
                 msgs.extend(state.get("messages", []))
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     self._emit("hook_start", {"event": "pre_model_call", "turn": turn}, session_id=session_id)
                     results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
                     self._emit("hook_end", {"event": "pre_model_call", "turn": turn,
@@ -784,6 +785,10 @@ class GraphEngine:
                            session_id=session_id)
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     self._emit("hook_start", {"event": "post_model_call", "turn": turn}, session_id=session_id)
                     results = await self.hook_runner.fire("post_model_call", {"response": response})
                     self._emit("hook_end", {"event": "post_model_call", "turn": turn,
@@ -863,6 +868,10 @@ class GraphEngine:
 
                 # Hooks + execute
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     self._emit("hook_start", {"event": "pre_tool_exec", "turn": turn}, session_id=session_id)
                     results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
                     self._emit("hook_end", {"event": "pre_tool_exec", "turn": turn,
@@ -901,6 +910,10 @@ class GraphEngine:
                     }, session_id=session_id)
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     self._emit("hook_start", {"event": "post_tool_exec", "turn": turn}, session_id=session_id)
                     hook_results = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
                     self._emit("hook_end", {"event": "post_tool_exec", "turn": turn,
@@ -954,16 +967,13 @@ class GraphEngine:
 
 
         if self.hook_runner:
-            runtime_dict = None
-            if self._plugin_runtime:
-                self._plugin_runtime.interaction_round = self._interaction_round
-                self._plugin_runtime.session_id = session_id
-                runtime_dict = self._plugin_runtime.to_dict()
+            self.hook_runner.update_runtime(
+                session_id=session_id,
+                interaction_round=self._interaction_round,
+            )
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
-                "memory_dir": self._memory_dir,
-                "plugin_runtime": runtime_dict,
             })
         state = self._close_tool_calls(state)
         self._emit("session_end", {"session_id": session_id}, session_id=session_id)
@@ -1049,6 +1059,10 @@ class GraphEngine:
                 msgs.extend(state.get("messages", []))
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
                                      turn=turn, session_id=session_id)
                     h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
@@ -1170,6 +1184,10 @@ class GraphEngine:
                                  turn=turn, session_id=session_id)
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     yield self._make_event(type="hook_start", data={"event": "post_model_call", "turn": turn},
                                      turn=turn, session_id=session_id)
                     h_results = await self.hook_runner.fire("post_model_call", {"response": resp})
@@ -1249,6 +1267,10 @@ class GraphEngine:
                     logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
 
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     yield self._make_event(type="hook_start", data={"event": "pre_tool_exec", "turn": turn},
                                      turn=turn, session_id=session_id)
                     h_results = await self.hook_runner.fire("pre_tool_exec", {"tool_calls": valid_calls, "turn": turn})
@@ -1299,6 +1321,10 @@ class GraphEngine:
                                            "success": all(rb["rollback_error"] is None for rb in rb_stream)},
                                      turn=turn, session_id=session_id)
                 if self.hook_runner:
+                    self.hook_runner.update_runtime(
+                        session_id=session_id,
+                        interaction_round=self._interaction_round,
+                    )
                     yield self._make_event(type="hook_start", data={"event": "post_tool_exec", "turn": turn},
                                      turn=turn, session_id=session_id)
                     hr = await self.hook_runner.fire("post_tool_exec", {"tool_calls": valid_calls, "results": {k: {"success": v.success} for k, v in results.items()}, "turn": turn})
@@ -1339,16 +1365,13 @@ class GraphEngine:
 
 
         if self.hook_runner:
-            runtime_dict = None
-            if self._plugin_runtime:
-                self._plugin_runtime.interaction_round = self._interaction_round
-                self._plugin_runtime.session_id = session_id
-                runtime_dict = self._plugin_runtime.to_dict()
+            self.hook_runner.update_runtime(
+                session_id=session_id,
+                interaction_round=self._interaction_round,
+            )
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id,
                 "round": self._interaction_round,
-                "memory_dir": self._memory_dir,
-                "plugin_runtime": runtime_dict,
             })
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
