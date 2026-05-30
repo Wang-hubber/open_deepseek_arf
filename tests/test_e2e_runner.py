@@ -125,3 +125,46 @@ def test_issue_markdown_export():
     assert "## routing" in md
     assert "**High**" in md
     assert "context_summary missing" in md
+
+
+import tempfile
+
+
+def test_validate_memory_md_valid():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    content = "## User Identity\n- Name: Test User\n- Role: Developer\n\n## Preferences\n- Prefers Python\n"
+    assert runner._validate_memory_md(content) is True
+
+
+def test_validate_memory_md_empty():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    assert runner._validate_memory_md("") is False
+    assert runner._validate_memory_md("NO_NEW_MEMORY") is False
+
+
+def test_validate_memory_md_no_headings():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    assert runner._validate_memory_md("just some text\n- bullet\n") is False
+
+
+def test_parse_memory_md_categories():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    content = "## User Identity\n- Name: Test\n- Role: Dev\n\n## Preferences\n- Likes Python\n"
+    cats = runner._parse_memory_md_categories(content)
+    assert len(cats) == 2
+    assert "User Identity" in cats
+    assert "Preferences" in cats
+    assert len(cats["User Identity"]) == 2
+    assert cats["User Identity"][0] == "Name: Test"
+
+
+def test_validate_memory_entry_valid():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    entry = {"id": "1", "content": "test", "category": "fact", "timestamp": 1.0}
+    assert runner._validate_memory_entry(entry) is True
+
+
+def test_validate_memory_entry_invalid():
+    runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
+    assert runner._validate_memory_entry({"id": "1"}) is False
+    assert runner._validate_memory_entry({"id": "1", "content": "x", "category": "invalid", "timestamp": 1.0}) is False

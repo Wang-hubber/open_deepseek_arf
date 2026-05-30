@@ -235,6 +235,94 @@ class E2ERunner:
                     lines.append(f"  - Evidence: {item['evidence']}")
         return "\n".join(lines) + "\n"
 
+    # ── Memory verification ──────────────────────────────────────────────
+
+    def verify_memory(self) -> dict:
+        """Check memory files on disk for existence, validity, and growth."""
+        memory_dir = self.app_dir / "memory"
+        md_path = memory_dir / "memory.md"
+        json_path = memory_dir / "memory.json"
+
+        md_info: dict = {"exists": False}
+        json_info: dict = {"exists": False}
+
+        if md_path.exists():
+            content = md_path.read_text(encoding="utf-8")
+            md_info["exists"] = True
+            md_info["size"] = len(content)
+            md_info["valid"] = self._validate_memory_md(content)
+            md_info["truncated"] = "<!-- WARNING: memory truncated" in content
+            if md_info["valid"]:
+                categories = self._parse_memory_md_categories(content)
+                md_info["categories"] = len(categories)
+                md_info["category_names"] = list(categories.keys())
+                md_info["entries"] = sum(len(v) for v in categories.values())
+            else:
+                md_info["categories"] = 0
+                md_info["category_names"] = []
+                md_info["entries"] = 0
+
+        if json_path.exists():
+            json_info["exists"] = True
+            json_info["valid"] = False
+            try:
+                data = json.loads(json_path.read_text())
+                if isinstance(data, list) and all(self._validate_memory_entry(e) for e in data):
+                    json_info["valid"] = True
+                    json_info["entries"] = len(data)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        prev = self.state.get("last_memory_check", {})
+        prev_size = prev.get("md_size", 0)
+        growth: dict = {
+            "current_size": md_info.get("size", 0),
+            "previous_size": prev_size,
+            "grown": md_info.get("size", 0) > prev_size,
+        }
+
+        self.state["last_memory_check"] = {
+            "md_size": md_info.get("size", 0),
+            "md_entries": md_info.get("entries", 0),
+            "checked_at_round": self.state.get("round", 0),
+        }
+        self._save_state()
+
+        return {"markdown": md_info, "json": json_info, "growth": growth}
+
+    @staticmethod
+    def _validate_memory_md(content: str) -> bool:
+        stripped = content.strip()
+        if not stripped or stripped == "NO_NEW_MEMORY":
+            return False
+        if "## " not in content:
+            return False
+        if "- " not in content:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_memory_md_categories(content: str) -> dict:
+        categories: dict[str, list[str]] = {}
+        current_cat = ""
+        for line in content.split("\n"):
+            if line.startswith("## "):
+                current_cat = line[3:].strip()
+                categories.setdefault(current_cat, [])
+            elif line.strip().startswith("- ") and current_cat:
+                categories[current_cat].append(line.strip()[2:])
+        return categories
+
+    @staticmethod
+    def _validate_memory_entry(entry: dict) -> bool:
+        required = {"id", "content", "category", "timestamp"}
+        valid_categories = {"fact", "preference", "decision", "context"}
+        if not all(k in entry for k in required):
+            return False
+        if entry.get("category", "") not in valid_categories:
+            return False
+        return True
+
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -327,9 +415,16 @@ def cmd_report(runner: E2ERunner) -> None:
     print(runner.export_issues_markdown())
 
 
+def cmd_verify_memory(runner: E2ERunner) -> None:
+    """Check memory files on disk and report content quality."""
+    runner.load_state()
+    result = runner.verify_memory()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python e2e_runner.py <prepare|cleanup|state|send|trace|issue|report>")
+        print("Usage: python e2e_runner.py <prepare|cleanup|state|send|trace|issue|report|verify-memory>")
         sys.exit(1)
 
     runner = E2ERunner()
@@ -370,6 +465,8 @@ def main():
         cmd_issue(runner, " ".join(desc_parts), module=module, severity=severity)
     elif cmd == "report":
         cmd_report(runner)
+    elif cmd == "verify-memory":
+        cmd_verify_memory(runner)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
