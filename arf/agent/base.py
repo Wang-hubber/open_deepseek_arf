@@ -376,7 +376,7 @@ class BaseAgent:
         hooks_list = list(override_protocols.pop("hooks", list(config.hooks)))
         if self._plugin_provider and self._plugin_provider.list_hooks():
             hooks_list.extend(self._plugin_provider.list_hooks())
-        hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list))
+        hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list, plugin_runtime=plugin_runtime))
 
         # 7. Tool executor
         from arf.core.config_base import ConcurrencyConfig
@@ -498,7 +498,6 @@ class BaseAgent:
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
             memory_workspace=_mem_abs,
-            plugin_runtime=plugin_runtime,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions
@@ -818,6 +817,9 @@ class BaseAgent:
         self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
 
+        if self._engine.hook_runner:
+            self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
+
         if is_new_session and self._engine.hook_runner:
             await self._engine.hook_runner.fire("session_start", {
                 "session_id": session_id,
@@ -884,6 +886,9 @@ class BaseAgent:
 
         self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
+
+        if self._engine.hook_runner:
+            self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
 
         if is_new_session and self._engine.hook_runner:
             await self._engine.hook_runner.fire("session_start", {
