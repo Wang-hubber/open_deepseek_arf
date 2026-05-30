@@ -1,5 +1,6 @@
 """SubprocessHookRunner — execute hooks as subprocesses with parallel launch."""
 import asyncio
+import json
 import os
 from arf.core.config_base import HookDefinition
 from arf.core.results import HookResult
@@ -44,19 +45,22 @@ class SubprocessHookRunner:
             results: list[HookResult] = []
             for cmd in hook.run:
                 env_vars = {**os.environ}
-                for k, v in (hook.env or {}).items():
-                    for ck, cv in context.items():
-                        v = v.replace(f"$ARF_{ck.upper()}", str(cv))
-                    env_vars[k] = v
-                # Inject PluginRuntime JSON if provided in context
-                runtime_dict = context.get("plugin_runtime")
+                # Inject PluginRuntime env vars (all event types)
+                runtime_dict = self._runtime.to_dict() if self._runtime else {}
                 if runtime_dict:
-                    import json as _json
-                    env_vars["ARF_RUNTIME"] = _json.dumps(runtime_dict)
-                    # Deprecated individual vars (backward compat)
-                    env_vars.setdefault("ARF_ROUND", str(runtime_dict.get("interaction_round", 0)))
-                    env_vars.setdefault("ARF_SESSION_ID", runtime_dict.get("session_id", "default"))
-                    env_vars.setdefault("ARF_MEMORY_DIR", runtime_dict.get("memory_dir", "./memory"))
+                    env_vars["ARF_RUNTIME"] = json.dumps(runtime_dict)
+                    env_vars["ARF_SESSION_ID"] = runtime_dict.get("session_id", "default")
+                    env_vars["ARF_ROUND"] = str(runtime_dict.get("interaction_round", 0))
+                    env_vars["ARF_MEMORY_DIR"] = runtime_dict.get("memory_dir", "./memory")
+                    env_vars["ARF_WORKSPACE"] = runtime_dict.get("workspace_dir", "./workspace")
+                    env_vars["ARF_TRACE_DIR"] = runtime_dict.get("trace_dir", "./traces")
+                    env_vars["ARF_SYSTEM_MODEL"] = runtime_dict.get("system_model", "quick")
+                merge_dict = dict(runtime_dict)
+                merge_dict.update(context)
+                for k, v in (hook.env or {}).items():
+                    for mk, mv in merge_dict.items():
+                        v = v.replace(f"$ARF_{mk.upper()}", str(mv))
+                    env_vars[k] = v
                 try:
                     proc = await asyncio.create_subprocess_shell(
                         cmd, env=env_vars,

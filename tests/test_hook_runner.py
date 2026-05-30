@@ -313,3 +313,62 @@ class TestPluginRuntimeInjection:
         from arf.hooks.runner import SubprocessHookRunner
         runner = SubprocessHookRunner([])
         assert runner._runtime is None
+
+    def test_fire_injects_arf_runtime_env_var(self):
+        import json
+        from arf.hooks.runner import SubprocessHookRunner
+        from arf.core.config_base import HookDefinition
+        from arf.core.plugin_runtime import PluginRuntime
+
+        async def _test():
+            rt = PluginRuntime(
+                memory_dir="/tmp/mem",
+                workspace_dir="/tmp/ws",
+                trace_dir="/tmp/trace",
+                session_id="test-session",
+                interaction_round=7,
+                system_model="quick",
+            )
+            runner = SubprocessHookRunner([
+                HookDefinition(
+                    name="envdump", type="session_start",
+                    run=["echo SID=$ARF_SESSION_ID ROUND=$ARF_ROUND MEM=$ARF_MEMORY_DIR WS=$ARF_WORKSPACE"],
+                    env={}, timeout="30s",
+                ),
+            ], plugin_runtime=rt)
+            results = await runner.fire("session_start", {})
+            stdout = results[0].stdout
+            assert "SID=test-session" in stdout
+            assert "ROUND=7" in stdout
+            assert "MEM=/tmp/mem" in stdout
+            assert "WS=/tmp/ws" in stdout
+
+        asyncio.run(_test())
+
+    def test_fire_injects_arf_runtime_json(self):
+        import json
+        from arf.hooks.runner import SubprocessHookRunner
+        from arf.core.config_base import HookDefinition
+        from arf.core.plugin_runtime import PluginRuntime
+
+        async def _test():
+            rt = PluginRuntime(
+                memory_dir="/tmp/m",
+                workspace_dir="/tmp/w",
+                trace_dir="/tmp/t",
+                session_id="json-sess",
+                interaction_round=3,
+                system_model="deep",
+            )
+            runner = SubprocessHookRunner([
+                HookDefinition(
+                    name="dump", type="round_end",
+                    run=["echo $ARF_RUNTIME | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d['session_id'], d['interaction_round'], d['memory_dir'])\""],
+                    env={}, timeout="30s",
+                ),
+            ], plugin_runtime=rt)
+            results = await runner.fire("round_end", {})
+            stdout = results[0].stdout.strip()
+            assert "json-sess 3 /tmp/m" == stdout
+
+        asyncio.run(_test())
