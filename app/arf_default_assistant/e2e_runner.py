@@ -23,6 +23,8 @@ from urllib.error import HTTPError, URLError
 
 BASE = "http://127.0.0.1:8000"
 STATE_FILE = Path("/tmp/e2e_state.json")
+MOCK_PID_FILE = Path("/tmp/e2e_mock_server.pid")
+MOCK_PORT = 19999
 
 
 class E2ERunner:
@@ -422,6 +424,58 @@ def cmd_verify_memory(runner: E2ERunner) -> None:
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def cmd_mock_deep_down(runner: E2ERunner) -> None:
+    """Start a mock HTTP server returning 503, point deep model at it."""
+    import subprocess
+    import yaml
+
+    server_code = f"""
+import http.server
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_error(503, "Service Unavailable")
+    def do_POST(self):
+        self.send_error(503, "Service Unavailable")
+    def log_message(self, format, *args):
+        pass
+http.server.HTTPServer(('127.0.0.1', {MOCK_PORT}), Handler).serve_forever()
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", server_code],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    MOCK_PID_FILE.write_text(str(proc.pid))
+
+    deep_path = runner.app_dir / "models" / "deep.yaml"
+    deep = yaml.safe_load(deep_path.read_text())
+    deep["api_base"] = f"http://127.0.0.1:{MOCK_PORT}/v1"
+    deep_path.write_text(yaml.dump(deep, default_flow_style=False, allow_unicode=True))
+    print(json.dumps({"mock": "deep-down", "pid": proc.pid, "port": MOCK_PORT}))
+
+
+def cmd_mock_deep_restore(runner: E2ERunner) -> None:
+    """Kill mock server and restore deep model config via git checkout."""
+    import subprocess
+    import os
+    import signal
+
+    if MOCK_PID_FILE.exists():
+        pid = int(MOCK_PID_FILE.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        MOCK_PID_FILE.unlink()
+
+    subprocess.run(
+        ["git", "checkout", "--", str(runner.app_dir / "models" / "deep.yaml")],
+        cwd=runner.app_dir,
+        check=True,
+    )
+    print(json.dumps({"mock": "restored"}))
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python e2e_runner.py <prepare|cleanup|state|send|trace|issue|report|verify-memory>")
@@ -467,6 +521,10 @@ def main():
         cmd_report(runner)
     elif cmd == "verify-memory":
         cmd_verify_memory(runner)
+    elif cmd == "mock-deep-down":
+        cmd_mock_deep_down(runner)
+    elif cmd == "mock-deep-restore":
+        cmd_mock_deep_restore(runner)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

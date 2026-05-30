@@ -168,3 +168,44 @@ def test_validate_memory_entry_invalid():
     runner = E2ERunner(app_dir=Path(__file__).parent.parent / "app" / "arf_default_assistant")
     assert runner._validate_memory_entry({"id": "1"}) is False
     assert runner._validate_memory_entry({"id": "1", "content": "x", "category": "invalid", "timestamp": 1.0}) is False
+
+
+import time
+
+
+def test_mock_pid_file_path():
+    from e2e_runner import MOCK_PID_FILE
+    assert MOCK_PID_FILE == Path("/tmp/e2e_mock_server.pid")
+
+
+def test_mock_server_responds_503():
+    import subprocess
+    import sys
+    from urllib.request import urlopen
+    from urllib.error import HTTPError
+
+    server_script = """
+import http.server
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_error(503, "Service Unavailable")
+    def do_POST(self):
+        self.send_error(503, "Service Unavailable")
+    def log_message(self, format, *args):
+        pass
+http.server.HTTPServer(('127.0.0.1', 19998), Handler).serve_forever()
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", server_script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.3)
+    try:
+        try:
+            urlopen("http://127.0.0.1:19998/", timeout=2)
+        except HTTPError as e:
+            assert e.code == 503
+    finally:
+        proc.kill()
+        proc.wait()
