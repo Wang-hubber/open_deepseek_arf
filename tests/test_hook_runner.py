@@ -269,3 +269,47 @@ class TestParseTimeout:
     def test_pars_default(self):
         from arf.hooks.runner import _pars_timeout
         assert _pars_timeout("") == 30.0
+
+
+class TestPluginRuntimeInjection:
+    """All hook events receive runtime env vars from runner-owned PluginRuntime."""
+
+    def test_runner_accepts_plugin_runtime(self):
+        from arf.hooks.runner import SubprocessHookRunner
+        from arf.core.plugin_runtime import PluginRuntime
+
+        rt = PluginRuntime(
+            memory_dir="/tmp/mem",
+            workspace_dir="/tmp/ws",
+            trace_dir="/tmp/trace",
+            session_id="sess-1",
+            interaction_round=3,
+            system_model="quick",
+        )
+        runner = SubprocessHookRunner([], plugin_runtime=rt)
+        assert runner._runtime is rt
+
+    def test_update_runtime_partial_update(self):
+        from arf.hooks.runner import SubprocessHookRunner
+        from arf.core.plugin_runtime import PluginRuntime
+
+        rt = PluginRuntime(session_id="old", interaction_round=0)
+        runner = SubprocessHookRunner([], plugin_runtime=rt)
+        runner.update_runtime(session_id="new")
+        assert runner._runtime.session_id == "new"
+        assert runner._runtime.interaction_round == 0  # unchanged
+
+    def test_update_runtime_updates_round(self):
+        from arf.hooks.runner import SubprocessHookRunner
+        from arf.core.plugin_runtime import PluginRuntime
+
+        rt = PluginRuntime(session_id="s", interaction_round=1)
+        runner = SubprocessHookRunner([], plugin_runtime=rt)
+        runner.update_runtime(interaction_round=5)
+        assert runner._runtime.interaction_round == 5
+
+    def test_runner_without_runtime_still_works(self):
+        """Backward compat: runner sans runtime does not crash."""
+        from arf.hooks.runner import SubprocessHookRunner
+        runner = SubprocessHookRunner([])
+        assert runner._runtime is None

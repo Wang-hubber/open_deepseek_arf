@@ -6,11 +6,22 @@ from arf.core.results import HookResult
 
 
 class SubprocessHookRunner:
-    def __init__(self, hooks: list[HookDefinition]) -> None:
+    def __init__(self, hooks: list[HookDefinition], plugin_runtime=None) -> None:
+        from arf.core.plugin_runtime import PluginRuntime
         self._hooks: dict[str, list[HookDefinition]] = {}
         self._order: dict[str, list[str]] = {}
+        self._runtime: PluginRuntime | None = plugin_runtime
         for h in hooks:
             self._hooks.setdefault(h.type, []).append(h)
+
+    def update_runtime(self, session_id: str | None = None,
+                       interaction_round: int | None = None) -> None:
+        if self._runtime is None:
+            return
+        if session_id is not None:
+            self._runtime.session_id = session_id
+        if interaction_round is not None:
+            self._runtime.interaction_round = interaction_round
 
     def set_order(self, event_type: str, hook_names: list[str]) -> None:
         self._order[event_type] = hook_names
