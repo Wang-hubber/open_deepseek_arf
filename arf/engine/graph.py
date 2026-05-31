@@ -27,8 +27,7 @@ _CONTINUE_MESSAGE = (
 
 def _backoff_delay(attempt: int, base: float = 1.0, max_delay: float = 30.0) -> float:
     """Exponential backoff with jitter for transient transport errors."""
-    import random as _random
-    return min(base * (2 ** attempt), max_delay) + _random.uniform(0, 1)
+    return min(base * (2 ** attempt), max_delay) + random.uniform(0, 1)
 
 
 class GraphEngine:
@@ -64,6 +63,7 @@ class GraphEngine:
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
         memory_workspace: str = "./memory",
+        recovery_config: "RecoveryConfig | None" = None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -94,8 +94,11 @@ class GraphEngine:
         self._interaction_round = 0
         self._memory_dir = memory_workspace
         # Recovery config with safe defaults
-        from arf.agent.config import RecoveryConfig
-        self._recovery_config = RecoveryConfig()
+        if recovery_config is not None:
+            self._recovery_config = recovery_config
+        else:
+            from arf.agent.config import RecoveryConfig
+            self._recovery_config = RecoveryConfig()
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
@@ -209,13 +212,11 @@ class GraphEngine:
 
         return RecoveryDecision(kind="fail", reason="unknown or non-recoverable error")
 
-    def _apply_recovery(
+    async def _apply_recovery(
         self,
         decision: "RecoveryDecision",
         state: dict[str, Any],
         msgs: list[dict],
-        session_id: str,
-        model: str | None = None,
         error: Exception | None = None,
     ) -> tuple[dict[str, Any], list[dict], bool]:
         """Apply a recovery decision. Returns (state, msgs, should_continue).
@@ -223,8 +224,6 @@ class GraphEngine:
         should_continue=True means caller should 'continue' its loop.
         Raises the original error if budget is exhausted for backoff.
         """
-        import logging
-        logger = logging.getLogger("arf.engine")
 
         rs = state.setdefault("_recovery_state", {
             "continuation_attempts": 0,
@@ -254,9 +253,7 @@ class GraphEngine:
             logger.info("[Recovery] compact (attempt %s/%s)",
                         rs["compact_attempts"], self._recovery_config.max_compaction)
             if self.compaction:
-                import asyncio
-                state = asyncio.get_event_loop().run_until_complete(
-                    self.compaction.compact(state))
+                state = await self.compaction.compact(state)
                 state = self._repair_messages(state)
             return state, msgs, True
 
@@ -269,7 +266,7 @@ class GraphEngine:
                     f"({self._recovery_config.max_transport_retry}) reached"
                 )
             rs["transport_attempts"] += 1
-            import time as _time
+            import asyncio as _asyncio
             delay = _backoff_delay(
                 rs["transport_attempts"],
                 self._recovery_config.backoff_base,
@@ -277,7 +274,7 @@ class GraphEngine:
             )
             logger.info("[Recovery] backoff %.1fs (attempt %s/%s)",
                         delay, rs["transport_attempts"], self._recovery_config.max_transport_retry)
-            _time.sleep(delay)
+            await _asyncio.sleep(delay)
             return state, msgs, True
 
         # fail — do nothing, let existing fallback chain handle it
