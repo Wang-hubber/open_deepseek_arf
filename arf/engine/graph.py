@@ -207,7 +207,10 @@ class GraphEngine:
                 return RecoveryDecision(kind="compact", reason="context too large")
 
             # Transient transport failures
-            if any(w in el for w in ["timeout", "rate", "unavailable", "connection", "timed out", "server error"]):
+            # Note: "server error" is deliberately excluded — 5xx errors
+            # go through the existing fallback chain (_resolve_fallback)
+            # instead of retry-with-backoff.
+            if any(w in el for w in ["timeout", "rate", "unavailable", "connection", "timed out"]):
                 return RecoveryDecision(kind="backoff", reason="transient transport failure")
 
         return RecoveryDecision(kind="fail", reason="unknown or non-recoverable error")
@@ -925,6 +928,19 @@ class GraphEngine:
                     logger.info("PRE_CALL msgs tail: %s", json.dumps(_dbg, ensure_ascii=False))
                     response = await self._call_model(msgs, model, tools=tools)
                 except Exception as exc:
+                    # --- Recovery: check for transient transport error ---
+                    recovery = self._choose_recovery(None, str(exc).lower())
+                    if recovery.kind == "backoff":
+                        try:
+                            state, msgs, should_continue = await self._apply_recovery(
+                                recovery, state, msgs, exc)
+                            if should_continue:
+                                await self.state_store.put(session_id, state)
+                                continue
+                        except Exception:
+                            pass  # Recovery exhausted — fall through to existing fallback chain
+
+                    # --- Existing repair + fallback ---
                     msgs, response = await self._try_repair_400(exc, state, msgs, system_prompt,
                                                                  session_id, model, tools)
                     if response is None:
@@ -972,6 +988,16 @@ class GraphEngine:
                                 break
                     elif gr.modified_message:
                         response_text = gr.modified_message
+
+                # --- Recovery: check finish_reason for truncation/overflow ---
+                finish_reason = response.get("finish_reason", "stop") if isinstance(response, dict) else "stop"
+                recovery = self._choose_recovery(finish_reason, None)
+                if recovery.kind in ("continue", "compact"):
+                    state, msgs, should_continue = await self._apply_recovery(
+                        recovery, state, msgs, None)
+                    if should_continue:
+                        await self.state_store.put(session_id, state)
+                        continue
 
                 # Parse tool calls
                 tool_calls = self._pars_tool_calls(response)
@@ -1119,6 +1145,8 @@ class GraphEngine:
                             self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
                         continue
 
+                # Normal successful round — reset recovery budgets
+                self._reset_recovery_state(state)
                 # Checkpoint
                 await self.state_store.put(session_id, state)
 
@@ -1295,6 +1323,19 @@ class GraphEngine:
                         else:
                             resp = {"content": full_text, "tool_calls": stream_tool_calls, "reasoning": full_reasoning}
                     except Exception as exc:
+                        # --- Recovery: check for transient transport error ---
+                        recovery = self._choose_recovery(None, str(exc).lower())
+                        if recovery.kind == "backoff":
+                            try:
+                                state, msgs, should_continue = await self._apply_recovery(
+                                    recovery, state, msgs, exc)
+                                if should_continue:
+                                    await self.state_store.put(session_id, state)
+                                    continue
+                            except Exception:
+                                pass  # Recovery exhausted — fall through to existing fallback chain
+
+                        # --- Existing repair + fallback ---
                         msgs, repaired = await self._try_repair_400(exc, state, msgs, system_prompt,
                                                                      session_id, model, tools)
                         if repaired is not None:
@@ -1315,6 +1356,19 @@ class GraphEngine:
                     try:
                         resp = await self._call_model(msgs, model, tools=tools)
                     except Exception as exc:
+                        # --- Recovery: check for transient transport error ---
+                        recovery = self._choose_recovery(None, str(exc).lower())
+                        if recovery.kind == "backoff":
+                            try:
+                                state, msgs, should_continue = await self._apply_recovery(
+                                    recovery, state, msgs, exc)
+                                if should_continue:
+                                    await self.state_store.put(session_id, state)
+                                    continue
+                            except Exception:
+                                pass  # Recovery exhausted — fall through to existing fallback chain
+
+                        # --- Existing repair + fallback ---
                         msgs, repaired = await self._try_repair_400(exc, state, msgs, system_prompt,
                                                                      session_id, model, tools)
                         if repaired is not None:
@@ -1338,6 +1392,16 @@ class GraphEngine:
                     state["current_turn"] = state.get("current_turn", 1) - 1
                     await self.state_store.put(session_id, state)
                     continue  # restart while loop → call_model step with repaired state
+
+                # --- Recovery: check finish_reason ---
+                finish_reason = resp.get("finish_reason", "stop") if isinstance(resp, dict) else "stop"
+                recovery = self._choose_recovery(finish_reason, None)
+                if recovery.kind in ("continue", "compact"):
+                    state, msgs, should_continue = await self._apply_recovery(
+                        recovery, state, msgs, None)
+                    if should_continue:
+                        await self.state_store.put(session_id, state)
+                        continue
 
                 yield self._make_event(type="model_call_end",
                                  data={"model": model, "turn": turn,
@@ -1520,6 +1584,8 @@ class GraphEngine:
                         await self.state_store.put(session_id, state)
                         continue
 
+                # Normal successful round — reset recovery budgets
+                self._reset_recovery_state(state)
                 await self.state_store.put(session_id, state)
 
                 if self.loop_strategy.should_break(state):
