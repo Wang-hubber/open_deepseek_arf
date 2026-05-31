@@ -209,6 +209,7 @@ class TestResourceScheduler:
 
 class TestRetryExecutor:
     @pytest.mark.anyio
+
     async def test_success_first_attempt_no_retry(self):
         """Successful execution returns immediately."""
         from arf.action_runner.retry import RetryExecutor
@@ -235,6 +236,10 @@ class TestRetryExecutor:
         assert result.success
         assert result.attempt == 1
         assert len(calls) == 1
+
+
+    @pytest.mark.anyio
+
 
     async def test_transient_retries_then_succeeds(self):
         """Transient errors are retried and succeed on later attempt."""
@@ -270,6 +275,10 @@ class TestRetryExecutor:
         assert result.attempt == 3
         assert call_count == 3
 
+
+    @pytest.mark.anyio
+
+
     async def test_deterministic_error_no_retry(self):
         """Deterministic errors skip retry entirely."""
         from arf.action_runner.retry import RetryExecutor
@@ -299,6 +308,10 @@ class TestRetryExecutor:
         assert result.error is not None
         assert result.error.kind == "deterministic"
 
+
+    @pytest.mark.anyio
+
+
     async def test_retries_exhausted_returns_last_failure(self):
         """When max attempts exhausted, return last failure."""
         from arf.action_runner.retry import RetryExecutor
@@ -325,6 +338,10 @@ class TestRetryExecutor:
         result = await RetryExecutor.execute(_AlwaysDown())  # type: ignore[arg-type]
         assert not result.success
         assert result.attempt == 2
+
+
+    @pytest.mark.anyio
+
 
     async def test_exception_treated_as_transient(self):
         """Execute() raising an exception is treated as transient and retried."""
@@ -359,6 +376,7 @@ class TestRetryExecutor:
 
 class TestRollbackManager:
     @pytest.mark.anyio
+
     async def test_rollback_called_on_failed_unit(self):
         """Failed unit gets rollback() called."""
         from arf.action_runner.rollback import RollbackManager
@@ -386,6 +404,10 @@ class TestRollbackManager:
 
         await RollbackManager.handle(_FailingLocal(), [])  # type: ignore[arg-type]
         assert rolled_back == ["failer"]
+
+
+    @pytest.mark.anyio
+
 
     async def test_downstream_cancelled(self):
         """All executables depending on the failed unit are cancelled."""
@@ -415,6 +437,10 @@ class TestRollbackManager:
         # execute should NOT be called on cancelled units
         assert executed == []
 
+
+    @pytest.mark.anyio
+
+
     async def test_sibling_not_affected(self):
         """Units not depending on the failed one are not cancelled."""
         from arf.action_runner.rollback import RollbackManager
@@ -436,6 +462,10 @@ class TestRollbackManager:
 
         cancelled = await RollbackManager.handle(_Failing(), [_Sibling()])  # type: ignore[list-item]
         assert cancelled == []
+
+
+    @pytest.mark.anyio
+
 
     async def test_rollback_error_suppressed(self):
         """If rollback() itself raises, the error is captured, not propagated."""
@@ -462,6 +492,10 @@ class TestRollbackManager:
 
         # Should not raise
         await RollbackManager.handle(_BadRollback(), [])  # type: ignore[arg-type]
+
+
+    @pytest.mark.anyio
+
 
     async def test_successful_unit_rollback_called_but_error_suppressed(self):
         """Rollback on a successful unit is called but errors are suppressed."""
@@ -491,6 +525,7 @@ class TestRollbackManager:
 
 class TestActionRunnerIntegration:
     @pytest.mark.anyio
+
     async def test_simple_execution_all_succeed(self):
         """All executables succeed -> all results returned."""
         from arf.action_runner.runner import ActionRunner
@@ -500,6 +535,10 @@ class TestActionRunnerIntegration:
         )
         assert len(results) == 3
         assert all(r.success for r in results)
+
+
+    @pytest.mark.anyio
+
 
     async def test_dependency_order_enforced(self):
         """b depends on a -> a executes before b."""
@@ -528,6 +567,10 @@ class TestActionRunnerIntegration:
             [_Ordered("b", deps=["a"]), _Ordered("a")]
         )
         assert order.index("a") < order.index("b")
+
+
+    @pytest.mark.anyio
+
 
     async def test_rollback_on_failure_cancels_downstream(self):
         """a fails -> a gets rollback, b (depends on a) is cancelled."""
@@ -567,6 +610,10 @@ class TestActionRunnerIntegration:
         result_map = {r.name: r for r in results}
         assert result_map["a"].success is False
         assert result_map["b"].success is False  # cancelled
+
+
+    @pytest.mark.anyio
+
 
     async def test_parallel_within_wave(self):
         """No dependencies -> all execute in parallel (same wave)."""
