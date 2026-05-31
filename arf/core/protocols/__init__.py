@@ -28,6 +28,14 @@ from arf.core.protocols.evaluation import (
     EvalSummary, EvalReport, EvalDiff, BenchmarkBuilder, EvalComparator,
 )
 from arf.core.protocols.errors import ErrorPolicy
+from arf.core.execution import (
+    Decision,
+    Executable,
+    ExecuteResult,
+    ExecutionError,
+    RetryPolicy,
+    Wave,
+)
 
 __all__ = [
     "LoopStrategy", "StateStore", "ToolExecutor", "Planner",
@@ -49,4 +57,10 @@ __all__ = [
     "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset", "EvalBenchmark",
     "EvalSummary", "EvalReport", "EvalDiff", "BenchmarkBuilder", "EvalComparator",
     "ErrorPolicy",
+    "Decision",
+    "Executable",
+    "ExecuteResult",
+    "ExecutionError",
+    "RetryPolicy",
+    "Wave",
 ]
