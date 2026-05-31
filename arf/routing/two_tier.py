@@ -1,4 +1,36 @@
 """TwoTierRouter — complexity classifier -> model selection."""
+
+# ---- keyword heuristic (E2E Bug 3.4) ----
+
+COMPLEX_KEYWORDS = [
+    "create", "build", "generate", "implement",
+    "refactor", "rewrite", "debug", "deploy",
+    "design", "architect",
+]
+
+MEDIUM_KEYWORDS = [
+    "read", "list", "show", "display", "find", "search",
+    "what is", "who is", "explain", "describe", "summarize",
+    "how many", "how do", "summary",
+]
+
+
+def keyword_classify(query: str) -> str | None:
+    """Fast keyword heuristic for task complexity classification.
+
+    Returns 'medium', 'complex', or None (ambiguous — needs LLM).
+    Case-insensitive.
+    """
+    q = query.lower()
+    has_complex = any(kw in q for kw in COMPLEX_KEYWORDS)
+    has_medium = any(kw in q for kw in MEDIUM_KEYWORDS)
+    if has_complex and not has_medium:
+        return "complex"
+    if has_medium and not has_complex:
+        return "medium"
+    return None  # both or neither — ambiguous
+
+
 from arf.core.config_base import RoutingConfig
 
 
