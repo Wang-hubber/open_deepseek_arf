@@ -183,6 +183,7 @@ class ModelAdapter:
         response = self._call_with_retry(messages, tools, stream=False,
                                          max_tokens=max_tokens)
         msg = response.choices[0].message
+        msg.finish_reason = response.choices[0].finish_reason
         if response.usage:
             msg.usage = {
                 "prompt_tokens": response.usage.prompt_tokens,

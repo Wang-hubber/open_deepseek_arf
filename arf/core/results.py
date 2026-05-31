@@ -55,3 +55,22 @@ class ErrorAction:
     delay: float = 0.0
     fallback_model: str | None = None
     message: str = ""
+
+
+@dataclass
+class RecoveryState:
+    """Per-session recovery budget tracking. Stored in AgentState['_recovery_state'].
+
+    Each recovery path has its own counter — prevents infinite loops by
+    enforcing independent retry budgets.
+    """
+    continuation_attempts: int = 0   # max_tokens 续写计数
+    compact_attempts: int = 0        # context overflow 压缩计数
+    transport_attempts: int = 0      # timeout/rate/connection 退避计数
+
+
+@dataclass
+class RecoveryDecision:
+    """Output of choose_recovery: what action to take and why."""
+    kind: Literal["continue", "compact", "backoff", "fail"]
+    reason: str

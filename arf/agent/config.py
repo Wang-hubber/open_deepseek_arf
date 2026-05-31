@@ -13,6 +13,16 @@ from arf.core.config_base import (
 )
 
 
+class RecoveryConfig(BaseModel):
+    """Engine-level error recovery budgets. Each recovery path has an
+    independent max-attempt counter to prevent infinite retry loops."""
+    max_continuation: int = Field(default=3, ge=0, le=10)
+    max_compaction: int = Field(default=3, ge=0, le=10)
+    max_transport_retry: int = Field(default=3, ge=0, le=10)
+    backoff_base: float = Field(default=1.0, ge=0.1, le=60.0)
+    backoff_max: float = Field(default=30.0, ge=1.0, le=300.0)
+
+
 class AdvancedConfig(BaseModel):
     """All internal framework mechanisms with production-grade defaults."""
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
@@ -30,6 +40,7 @@ class AdvancedConfig(BaseModel):
     sandbox: SandboxConfig | None = None
     reload: ReloadConfig | None = None
     protection: ProtectionConfig | None = None
+    recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
     observability: ObservabilityConfig | None = None
 
     @classmethod

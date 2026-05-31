@@ -666,7 +666,8 @@ class BaseAgent:
             if hasattr(msg, "usage") and msg.usage:
                 usage = dict(msg.usage)
             reasoning = getattr(msg, "reasoning_content", None) or ""
-            return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage, "reasoning": reasoning}
+            finish_reason = getattr(msg, "finish_reason", "stop")
+            return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage, "reasoning": reasoning, "finish_reason": finish_reason}
 
         async def _stream_model(messages: list[dict], model_name: str = "", tools=None):
             """Token-level streaming via ModelAdapter.chat_stream_full."""
