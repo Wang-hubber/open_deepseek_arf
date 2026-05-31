@@ -733,11 +733,11 @@ class TestTraceConfig:
         )
 
     def test_app_context_trace_dir_is_memory_traces(self):
-        """Doc: trace_dir resolves to ./memory/traces/."""
+        """Doc: trace_dir resolves to ./workspace/traces/."""
         from arf.agent.app_context import AppContext
         from pathlib import Path
         ctx = AppContext(root=Path("/test"))
-        assert str(ctx.trace_dir) == "/test/memory/traces"
+        assert str(ctx.trace_dir) == "/test/workspace/traces"
 
     def test_base_agent_holds_event_bus(self):
         """Doc: BaseAgent creates event_bus and holds it."""
@@ -923,7 +923,7 @@ class TestEventValidation:
         from pathlib import Path
         ctx = AppContext(root=Path("/app"))
         assert hasattr(ctx, "trace_dir")
-        assert str(ctx.trace_dir) == "/app/memory/traces"
+        assert str(ctx.trace_dir) == "/app/workspace/traces"
 
 
 # ===========================================================================

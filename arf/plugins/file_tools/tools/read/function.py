@@ -12,8 +12,10 @@ async def execute(
     file_path: str,
     offset: int = 1,
     limit: int | None = None,
+    _workspace: str = "",
 ) -> dict:
-    p = WORKSPACE / file_path
+    ws = Path(_workspace) if _workspace else WORKSPACE
+    p = ws / file_path
     try:
         if not p.exists():
             return {"ok": False, "error": f"File not found: {file_path}"}

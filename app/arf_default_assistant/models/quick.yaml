@@ -3,7 +3,8 @@ api_type: openai
 model: deepseek-v4-flash
 api_base: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
-context_window: 32000
+context_window: 50000
+max_token: 5120
 activation: kernel
 kwargs:
   reasoning_effort: high

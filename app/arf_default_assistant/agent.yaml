@@ -11,7 +11,6 @@ plugins:
   - todo
   - file_tools
   - undo
-  - memory
 
 system_prompt:
   template: |
@@ -71,12 +70,6 @@ tools:
   - name: file_download
     activation: discoverable
 
-  - name: web_search
-    activation: kernel
-
-  - name: web_fetch
-    activation: kernel
-
   - name: python_exec
     activation: discoverable
 
@@ -111,8 +104,10 @@ advanced:
         - glob
         - file_writer
         - file_deleter
-        - web_search
-        - web_fetch
+        - file_download
+        - planner
+        - todo
+        - md2pdf
         - resource_loader
         - resource_registrar
         - resource_scaffold

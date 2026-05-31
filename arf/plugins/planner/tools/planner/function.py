@@ -3,7 +3,7 @@ import json
 import time
 
 
-async def execute(task: str = "", confirm: bool = False, _engine=None) -> dict:
+async def execute(task: str = "", confirm: bool = False, _engine=None, _workspace: str = "") -> dict:
     """Decompose a task into ordered steps using the system model."""
     if not task or not task.strip():
         return {"error": "task must be a non-empty string"}
@@ -58,7 +58,7 @@ async def execute(task: str = "", confirm: bool = False, _engine=None) -> dict:
         # If confirmed, materialize steps as todo tasks
         if confirm and steps and _engine is not None:
             from pathlib import Path
-            workspace = Path("workspace/default")
+            workspace = Path(_workspace) if _workspace else Path("workspace/default")
             tasks_file = workspace / "tasks.json"
 
             # Load existing tasks to compute next ID

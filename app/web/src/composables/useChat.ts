@@ -16,12 +16,12 @@ export function useChat() {
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   // Callbacks that the component sets
-  let onToolCall: ((name: string, args: string, id: string) => void) | null = null
+  let onToolCall: ((name: string, args: string, id: string, turn?: number) => void) | null = null
   let onToolResult: ((id: string, result: string, tool: string) => void) | null = null
   let onDone: ((history?: ChatMessage[]) => void) | null = null
 
   function setCallbacks(callbacks: {
-    onToolCall?: (name: string, args: string, id: string) => void
+    onToolCall?: (name: string, args: string, id: string, turn?: number) => void
     onToolResult?: (id: string, result: string, tool: string) => void
     onDone?: (history?: ChatMessage[]) => void
   }) {
@@ -121,10 +121,18 @@ export function useChat() {
       streamingReasoning.value += evt.delta || ''
     } else if (evt.type === 'tool_call') {
       const name = evt.name || evt.tool || 'unknown'
-      const args = evt.arguments || ''
+      const rawArgs = (evt as any).arguments
+      let args = ''
+      if (typeof rawArgs === 'string') {
+        args = rawArgs
+      } else if (rawArgs && typeof rawArgs === 'object') {
+        args = JSON.stringify(rawArgs)
+      }
       const id = evt.id
-      toolCalls.value.push({ id, name, args, status: 'executing' })
-      if (onToolCall) onToolCall(name, args, id)
+      const turn = (evt as any).turn || 0
+      const tcEntry: any = { id, name, args, status: 'executing', turn }
+      toolCalls.value.push(tcEntry)
+      if (onToolCall) onToolCall(name, args, id, turn)
     } else if (evt.type === 'tool_result') {
       const id = evt.id
       const tc = toolCalls.value.find(t => t.id === id)

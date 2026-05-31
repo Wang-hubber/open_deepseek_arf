@@ -28,7 +28,7 @@ class FunctionBackend:
                 except (ValueError, TypeError):
                     sig = None
                 if sig:
-                    for reserved in ("_agent_mode", "_engine", "_state_store"):
+                    for reserved in ("_agent_mode", "_engine", "_state_store", "_workspace"):
                         if reserved not in sig.parameters:
                             params.pop(reserved, None)
                 result = fn(**params)

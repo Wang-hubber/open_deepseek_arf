@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 
 WORKSPACE = Path("workspace/default")
+
+
+def _resolve_workspace(workspace: str) -> Path:
+    return Path(workspace) if workspace else WORKSPACE
 DEFAULT_EXCLUDES = [".git", "__pycache__", "node_modules", ".venv", "*.pyc", "*.pyo"]
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
@@ -39,8 +43,10 @@ async def execute(
     include: str | None = None,
     exclude: str | None = None,
     max_results: int = 50,
+    _workspace: str = "",
 ) -> dict:
-    search_root = WORKSPACE / path
+    ws = _resolve_workspace(_workspace)
+    search_root = ws / path
     if not search_root.exists():
         return {"ok": False, "error": f"Directory not found: {path}"}
     if not search_root.is_dir():
@@ -80,7 +86,7 @@ async def execute(
             except (UnicodeDecodeError, OSError):
                 continue
 
-            rel_path = str(filepath.relative_to(WORKSPACE))
+            rel_path = str(filepath.relative_to(ws))
             for line_num, line in enumerate(lines, 1):
                 if regex.search(line):
                     results.append({

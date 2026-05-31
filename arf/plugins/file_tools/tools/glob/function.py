@@ -6,8 +6,9 @@ MAX_RESULTS = 200
 DEFAULT_EXCLUDES = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".pytest_cache"}
 
 
-async def execute(pattern: str, path: str = ".") -> dict:
-    search_root = WORKSPACE / path
+async def execute(pattern: str, path: str = ".", _workspace: str = "") -> dict:
+    ws = Path(_workspace) if _workspace else WORKSPACE
+    search_root = ws / path
     if not search_root.exists():
         return {"ok": False, "error": f"Directory not found: {path}"}
     if not search_root.is_dir():
@@ -18,7 +19,7 @@ async def execute(pattern: str, path: str = ".") -> dict:
         for filepath in sorted(search_root.rglob(pattern)):
             if any(part in DEFAULT_EXCLUDES for part in filepath.parts):
                 continue
-            rel_path = filepath.relative_to(WORKSPACE)
+            rel_path = filepath.relative_to(ws)
             entry = {
                 "path": str(rel_path),
                 "type": "dir" if filepath.is_dir() else "file",

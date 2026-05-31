@@ -59,6 +59,7 @@ async def _sse_chat(message: str):
                 yield f"data: {json.dumps({'type': 'tool_call_streaming', 'name': event.data.get('name', ''), 'arguments': event.data.get('arguments', ''), 'id': event.data.get('id', ''), 'delta': event.data.get('delta', '')}, ensure_ascii=False)}\n\n"
             elif t == "tool_call_start":
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0)  # flush before blocking tool execution
             elif t == "tool_call_end":
                 success = event.data.get("success", False)
                 yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"

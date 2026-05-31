@@ -24,7 +24,7 @@ class TestToolInventoryCompleteness:
     def test_all_tools_have_descriptions(self, resolver):
         """Every tool (kernel + discoverable) should have a non-empty description."""
         tools = resolver.get_tool_definitions_sync()
-        assert len(tools) >= 12, f"Expected at least 12 tools, got {len(tools)}"
+        assert len(tools) >= 11, f"Expected at least 11 tools, got {len(tools)}"
         for t in tools:
             assert t.description, f"Tool {t.name} has empty description"
 
@@ -38,16 +38,16 @@ class TestToolInventoryCompleteness:
     def test_merge_preserves_filesystem_descriptions(self, resolver):
         """Agent.yaml overrides with only name+activation must not clear descriptions."""
         tools = resolver.get_tool_definitions_sync()
-        # file_reader has description in tool.yaml
-        reader = next(t for t in tools if t.name == "file_reader")
-        assert reader.description, "file_reader should have description from tool.yaml"
-        assert "Read" in reader.description or "read" in reader.description.lower()
+        # file_writer has description in tool.yaml
+        writer = next(t for t in tools if t.name == "file_writer")
+        assert writer.description, "file_writer should have description from tool.yaml"
+        assert "Create" in writer.description or "file" in writer.description.lower()
 
     def test_discoverable_tools_exist(self, resolver):
         """Discoverable tools should be in the list with descriptions."""
         tools = resolver.get_tool_definitions_sync()
         discoverable = [t for t in tools if t.activation == "discoverable"]
-        assert len(discoverable) >= 6, f"Expected >=6 discoverable tools, got {len(discoverable)}"
+        assert len(discoverable) >= 5, f"Expected >=5 discoverable tools, got {len(discoverable)}"
         for t in discoverable:
             assert t.description, f"Discoverable tool {t.name} has empty description"
             assert t.parameters, f"Discoverable tool {t.name} has empty parameters"
@@ -56,18 +56,18 @@ class TestToolInventoryCompleteness:
 class TestEngineToolExecution:
     """Verify tools execute without _engine contamination."""
 
-    def test_file_reader_executes_without_engine_error(self, resolver):
-        """file_reader should not receive unexpected _engine kwarg."""
+    def test_file_writer_executes_without_engine_error_direct(self, resolver):
+        """file_writer should not receive unexpected _engine kwarg."""
         async def run():
-            result = await resolver.execute("file_reader", {"path": "skills/", "operation": "list"})
-            assert result.success, f"file_reader failed: {result.error}"
+            result = await resolver.execute("file_writer", {"path": "test.md", "content": "# test"})
+            assert result.success, f"file_writer failed: {result.error}"
             assert "unexpected keyword argument" not in str(result.error or "")
         asyncio.run(run())
 
-    def test_web_search_executes_without_engine_error(self, resolver):
-        """web_search should execute without _engine contamination."""
+    def test_python_exec_executes_without_engine_error(self, resolver):
+        """python_exec should execute without _engine contamination."""
         async def run():
-            result = await resolver.execute("web_search", {"query": "test"})
+            result = await resolver.execute("python_exec", {"code": "print('hello')"})
             error = str(result.error or "")
             assert "unexpected keyword argument" not in error, f"Got _engine error: {error}"
         asyncio.run(run())
@@ -141,8 +141,8 @@ class TestSystemPromptInventory:
 
     def test_inventory_tool_descriptions_are_present(self):
         """Tool descriptions from tool.yaml should appear in the inventory."""
-        assert "- `file_reader`:" in self._sections["inventory"]
-        assert "Read" in self._sections["inventory"] or "read" in self._sections["inventory"].lower()
+        assert "- `file_writer`:" in self._sections["inventory"]
+        assert "Create" in self._sections["inventory"] or "file" in self._sections["inventory"].lower()
 
     def test_inventory_skill_descriptions_are_present(self):
         """Skill descriptions from skills/*.yaml should appear in the inventory."""

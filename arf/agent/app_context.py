@@ -13,7 +13,7 @@ class AppContext:
     """
 
     root: Path
-    workspace: str = "memory"
+    workspace: str = "workspace"
 
     # -- derived paths --
     @property

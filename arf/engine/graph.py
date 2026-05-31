@@ -63,6 +63,7 @@ class GraphEngine:
         sub_agent_configs: dict | None = None,
         handoff_manager=None,
         memory_workspace: str = "./memory",
+        workspace_dir: str = "",
         recovery_config: "RecoveryConfig | None" = None,
     ):
         self.loop_strategy = loop_strategy
@@ -93,6 +94,7 @@ class GraphEngine:
         self._cancel_event = cancel_event
         self._interaction_round = 0
         self._memory_dir = memory_workspace
+        self._workspace_dir = workspace_dir
         # Recovery config with safe defaults
         if recovery_config is not None:
             self._recovery_config = recovery_config
@@ -933,6 +935,12 @@ class GraphEngine:
                         system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
+                if getattr(self, '_workspace_dir', '') and "{{WORKSPACE}}" in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        "{{WORKSPACE}}",
+                        f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
+                        "Use relative paths from this directory."
+                    )
                 # Proactive repair before every model call (E2E Bug 3.1)
                 state = self._repair_messages(state)
                 msgs = [{"role": "system", "content": system_prompt}]
@@ -1111,6 +1119,7 @@ class GraphEngine:
                 results = await self.tool_executor.execute(
                 valid_calls, agent_mode=agent_mode,
                 engine=self, state_store=self.state_store,
+                workspace_dir=getattr(self, '_workspace_dir', ''),
             )
                 for tc in valid_calls:
                     r = results.get(tc.get("id", ""))
@@ -1281,6 +1290,12 @@ class GraphEngine:
                         system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
+                if getattr(self, '_workspace_dir', '') and "{{WORKSPACE}}" in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        "{{WORKSPACE}}",
+                        f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
+                        "Use relative paths from this directory."
+                    )
                 # Proactive repair before every model call (E2E Bug 3.1)
                 state = self._repair_messages(state)
                 msgs = [{"role": "system", "content": system_prompt}]
@@ -1553,6 +1568,7 @@ class GraphEngine:
                 results = await self.tool_executor.execute(
                 valid_calls, agent_mode=agent_mode,
                 engine=self, state_store=self.state_store,
+                workspace_dir=getattr(self, '_workspace_dir', ''),
             )
                 for tc in valid_calls:
                     r = results.get(tc.get("id", ""))

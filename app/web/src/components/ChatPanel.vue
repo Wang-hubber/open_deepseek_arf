@@ -90,17 +90,37 @@ async function handleThumbsDown(msgIdx: number, text: string) {
 
 // Set up callbacks for streaming
 setCallbacks({
-  onToolCall(name, args, id) {
+  onToolCall(name: string, args: string, id: string, turn?: number) {
     currentToolCalls.value.push({
-      id, name, arguments: args, status: 'executing',
+      id, name, arguments: args, status: 'executing', turn,
     })
   },
-  onToolResult(id, result, tool) {
+  onToolResult(id: string, result: string, tool: string) {
     const tc = currentToolCalls.value.find(t => t.id === id)
     if (tc) {
       // result is now the actual content string (not just "success"/"error")
       tc.status = 'completed'
       tc.result = result || ''
+    }
+
+    // Stream informational tool results as visible text
+    if ((tool === 'planner' || tool === 'todo') && result) {
+      try {
+        const parsed = JSON.parse(result)
+        if (parsed.result?.steps) {
+          const steps = parsed.result.steps
+          let planText = '\n\n**Plan:**\n'
+          for (const s of steps) {
+            planText += `- [ ] ${s.description || s}\n`
+          }
+          currentText.value += planText
+        } else if (parsed.result?.ok && typeof parsed.result?.task === 'string') {
+          currentText.value += `\n\n> ${parsed.result.task}`
+        }
+      } catch {
+        // result is plain text, show it directly
+        currentText.value += `\n\n${result}`
+      }
     }
 
     // Reload resources when file_writer creates tools/skills
@@ -113,7 +133,7 @@ setCallbacks({
       } catch {}
     }
   },
-  onDone(history) {
+  onDone(history?: any[]) {
     // Save the final message to chatStore
     const finalContent = currentText.value
     if (finalContent || currentReasoning.value) {
@@ -364,6 +384,7 @@ function escapeHtml(s: string): string {
             :status="tc.status"
             :result="tc.result"
             :error="tc.error"
+            :turn="tc.turn"
           />
 
           <!-- Text -->

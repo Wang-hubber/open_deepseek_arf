@@ -4,10 +4,11 @@ from pathlib import Path
 WORKSPACE = Path("workspaces/default")
 
 
-async def execute(path: str, label: str = "") -> dict:
-    p = (WORKSPACE / path).resolve()
+async def execute(path: str, label: str = "", _workspace: str = "") -> dict:
+    ws = Path(_workspace) if _workspace else WORKSPACE
+    p = (ws / path).resolve()
 
-    if not str(p).startswith(str(WORKSPACE.resolve())):
+    if not str(p).startswith(str(ws.resolve())):
         return {"error": f"Path escapes workspace: {path}"}
 
     if not p.exists():
@@ -17,7 +18,7 @@ async def execute(path: str, label: str = "") -> dict:
         return {"error": f"Cannot download directory: {path}"}
 
     try:
-        rel = str(p.relative_to(WORKSPACE))
+        rel = str(p.relative_to(ws))
         display = label or p.name
         return {
             "ok": True,

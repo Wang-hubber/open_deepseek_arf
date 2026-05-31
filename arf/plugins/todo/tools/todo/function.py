@@ -3,21 +3,30 @@ import json
 import time
 from pathlib import Path
 
-WORKSPACE = Path("workspace/default")
-TASKS_FILE = WORKSPACE / "tasks.json"
+_FALLBACK_WORKSPACE = Path("workspace/default")
 
 
-def _load_tasks() -> dict:
-    if not TASKS_FILE.exists():
+def _resolve_workspace(workspace: str) -> Path:
+    return Path(workspace) if workspace else _FALLBACK_WORKSPACE
+
+
+def _get_tasks_file(workspace: str = "") -> Path:
+    return _resolve_workspace(workspace) / "tasks.json"
+
+
+def _load_tasks(workspace: str = "") -> dict:
+    tasks_file = _get_tasks_file(workspace)
+    if not tasks_file.exists():
         return {"tasks": [], "last_updated_round": 0}
-    return json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+    return json.loads(tasks_file.read_text(encoding="utf-8"))
 
 
-def _save_tasks(data: dict, _engine=None) -> None:
+def _save_tasks(data: dict, _engine=None, _workspace: str = "") -> None:
+    tasks_file = _get_tasks_file(_workspace)
     if _engine is not None and hasattr(_engine, "_interaction_round"):
         data["last_updated_round"] = _engine._interaction_round
-    TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TASKS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tasks_file.parent.mkdir(parents=True, exist_ok=True)
+    tasks_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _task_summary(t: dict) -> dict:
@@ -35,9 +44,10 @@ async def execute(
     filter_status: str | None = None,
     metadata: dict | None = None,
     _engine=None,
+    _workspace: str = "",
 ) -> dict:
     try:
-        data = _load_tasks()
+        data = _load_tasks(_workspace)
         tasks: list[dict] = data["tasks"]
 
         if action == "create":
@@ -55,7 +65,7 @@ async def execute(
                 "updated_at": time.time(),
             }
             tasks.append(task)
-            _save_tasks(data, _engine)
+            _save_tasks(data, _engine, _workspace)
             return {"ok": True, "task": task}
 
         elif action == "update":
@@ -97,7 +107,7 @@ async def execute(
                         task["blockedBy"].append(bid)
                 task["updated_at"] = time.time()
 
-            _save_tasks(data, _engine)
+            _save_tasks(data, _engine, _workspace)
             return {"ok": True, "task": task}
 
         elif action == "get":
@@ -128,7 +138,7 @@ async def execute(
                 return {"ok": False, "error": f"Cannot delete task with status '{task['status']}'. Only pending or completed tasks can be deleted."}
             task["status"] = "deleted"
             task["updated_at"] = time.time()
-            _save_tasks(data, _engine)
+            _save_tasks(data, _engine, _workspace)
             return {"ok": True, "deleted": id}
 
         else:

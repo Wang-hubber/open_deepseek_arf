@@ -21,6 +21,7 @@ class ConcurrentToolExecutor:
         agent_mode: str = "",
         engine=None,
         state_store=None,
+        workspace_dir: str = "",
     ) -> dict[str, ToolResult]:
         strategy = self._strategy
         max_concurrency = self._max_concurrency
@@ -34,6 +35,8 @@ class ConcurrentToolExecutor:
                     params["_engine"] = engine
                 if state_store is not None:
                     params["_state_store"] = state_store
+                if workspace_dir:
+                    params["_workspace"] = workspace_dir
                 results[tc["id"]] = await self._resolver.execute(
                     tc["name"], params
                 )
@@ -48,6 +51,8 @@ class ConcurrentToolExecutor:
                     params["_engine"] = engine
                 if state_store is not None:
                     params["_state_store"] = state_store
+                if workspace_dir:
+                    params["_workspace"] = workspace_dir
                 async with sem:
                     return tc["id"], await self._resolver.execute(
                         tc["name"], params

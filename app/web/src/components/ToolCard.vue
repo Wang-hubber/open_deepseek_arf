@@ -10,6 +10,7 @@ const props = defineProps<{
   status: 'executing' | 'completed' | 'failed'
   result?: string
   error?: string
+  turn?: number
 }>()
 
 const open = ref(false)
@@ -38,29 +39,38 @@ function toggle() {
 const MAX_VAL = 200
 
 function formatArgs(argsStr: string): { label: string; value: string }[] {
-  try {
-    const obj = JSON.parse(argsStr)
-    if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
-      return Object.entries(obj).map(([k, v]) => {
-        let val: string
-        if (typeof v === 'string') {
-          if (v.length > MAX_VAL) {
-            // path-like keys: truncate prefix, keep suffix (filename)
-            val = (k === 'path' || k.endsWith('_path'))
-              ? '…' + v.slice(-MAX_VAL)
-              : v.slice(0, MAX_VAL) + '…'
-          } else {
-            val = v
-          }
-        } else {
-          val = JSON.stringify(v)
-          if (val.length > MAX_VAL) val = val.slice(0, MAX_VAL) + '…'
-        }
-        return { label: k, value: val }
+  let obj: any = null
+  if (typeof argsStr === 'object' && argsStr !== null) {
+    obj = argsStr
+  } else if (typeof argsStr === 'string') {
+    try { obj = JSON.parse(argsStr) } catch {}
+  }
+  if (obj && typeof obj === 'object') {
+    const isArray = Array.isArray(obj) || Object.prototype.toString.call(obj) === '[object Array]'
+    if (isArray) {
+      return (obj as any[]).map((item, i) => {
+        const val = typeof item === 'string' ? item : JSON.stringify(item)
+        return { label: String(i), value: val.length > MAX_VAL ? val.slice(0, MAX_VAL) + '…' : val }
       })
     }
-  } catch {}
-  const s = argsStr
+    return Object.entries(obj).map(([k, v]) => {
+      let val: string
+      if (typeof v === 'string') {
+        if (v.length > MAX_VAL) {
+          val = (k === 'path' || k.endsWith('_path'))
+            ? '…' + v.slice(-MAX_VAL)
+            : v.slice(0, MAX_VAL) + '…'
+        } else {
+          val = v
+        }
+      } else {
+        val = JSON.stringify(v)
+        if (val.length > MAX_VAL) val = val.slice(0, MAX_VAL) + '…'
+      }
+      return { label: k, value: val }
+    })
+  }
+  const s = typeof argsStr === 'string' ? argsStr : JSON.stringify(argsStr)
   return [{ label: '', value: s.length > MAX_VAL ? s.slice(0, MAX_VAL) + '…' : s }]
 }
 
@@ -84,6 +94,7 @@ function langFromPath(p: string): string {
         {{ status === 'executing' ? '…' : status === 'completed' ? '✓' : '✗' }}
       </span>
       <span class="tc-name">{{ name }}</span>
+      <span v-if="turn" class="tc-turn">T{{ turn }}</span>
       <span class="tc-status" :class="status">
         {{ status === 'executing' ? t('common.executing') : status === 'completed' ? t('common.completed') : t('common.failed') }}
       </span>

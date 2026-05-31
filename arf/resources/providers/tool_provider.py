@@ -1,11 +1,16 @@
 """ToolProvider — scan tools/{name}/ for tool.yaml + function.py."""
 import importlib.util
+import inspect
+import logging
 from pathlib import Path
 import yaml
 from arf.core.config_base import ToolConfig
 from arf.core.results import ToolResult
 from arf.resources.backends.function import FunctionBackend
 from arf.resources.cache import ResourceCache
+
+logger = logging.getLogger("arf.tools")
+
 
 
 class ToolProvider:
@@ -78,6 +83,27 @@ class ToolProvider:
 
     # -- internal --
 
+    def _validate_yaml_against_fn(self, cfg: ToolConfig, fn: callable, func_path: Path) -> None:
+        """Warn when tool.yaml parameters don't match function.py signature."""
+        try:
+            sig = inspect.signature(fn)
+        except (ValueError, TypeError):
+            return
+        yaml_params = set((cfg.parameters or {}).get("properties", {}).keys())
+        fn_params = {name for name in sig.parameters if not name.startswith("_")}
+        extra_in_yaml = yaml_params - fn_params
+        if extra_in_yaml:
+            logger.warning(
+                "tool.yaml '%s' declares params not in function signature: %s (%s)",
+                cfg.name, extra_in_yaml, func_path,
+            )
+        extra_in_fn = fn_params - yaml_params
+        if extra_in_fn:
+            logger.warning(
+                "function.py '%s' expects params not in tool.yaml: %s (%s)",
+                cfg.name, extra_in_fn, func_path,
+            )
+
     def _load(self) -> None:
         self._loaded = True
         self._cache.invalidate_dynamic()
@@ -115,6 +141,7 @@ class ToolProvider:
                 if not self._cache.has_kernel(name):
                     self._cache.kernel[name] = cfg
                     if fn:
+                        self._validate_yaml_against_fn(cfg, fn, func_path)
                         self._kernel_functions[name] = fn
                     if rb_fn:
                         self._kernel_rollbacks[name] = rb_fn

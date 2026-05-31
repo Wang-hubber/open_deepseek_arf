@@ -333,7 +333,7 @@ class BaseAgent:
             )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        _workspace_root = str(tools_dir.parent.resolve())
+        _workspace_root = str(ctx.workspace_dir.resolve()) if ctx else str(Path("workspace").resolve())
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
             input_guard = NoneInputGuard()
@@ -508,6 +508,7 @@ class BaseAgent:
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
             memory_workspace=_mem_abs,
+            workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions

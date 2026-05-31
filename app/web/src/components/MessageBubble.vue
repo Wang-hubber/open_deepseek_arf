@@ -82,6 +82,7 @@ function escapeHtml(s: string): string {
         :status="tc.status"
         :result="tc.result"
         :error="tc.error"
+        :turn="tc.turn"
       />
 
       <!-- Text content -->

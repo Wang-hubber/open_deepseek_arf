@@ -5,7 +5,11 @@ WORKSPACE = Path("workspaces/default")
 USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
 
 
-async def execute(path: str, _agent_mode: str = "sys") -> dict:
+def _resolve_workspace(workspace: str) -> Path:
+    return Path(workspace) if workspace else WORKSPACE
+
+
+async def execute(path: str, _agent_mode: str = "sys", _workspace: str = "") -> dict:
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
@@ -17,7 +21,8 @@ async def execute(path: str, _agent_mode: str = "sys") -> dict:
                     )
                 }
 
-    p = WORKSPACE / path
+    ws = _resolve_workspace(_workspace)
+    p = ws / path
     try:
         if not p.exists():
             return {"error": f"File not found: {path}"}
@@ -30,13 +35,14 @@ async def execute(path: str, _agent_mode: str = "sys") -> dict:
         return {"error": str(e)}
 
 
-async def rollback(path: str, _agent_mode: str = "sys") -> dict:
+async def rollback(path: str, _agent_mode: str = "sys", _workspace: str = "") -> dict:
     """Undo file_deleter: rename the _deleted file back to original name."""
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
                 return {"ok": False, "error": f"User Agent cannot rollback {path}"}
-    p = WORKSPACE / path
+    ws = _resolve_workspace(_workspace)
+    p = ws / path
     deleted_path = p.with_name(p.name + "_deleted")
     try:
         if deleted_path.exists():

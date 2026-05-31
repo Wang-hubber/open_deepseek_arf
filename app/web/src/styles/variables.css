@@ -262,6 +262,11 @@ select.dark-select option { background: var(--bg-card); color: var(--text-primar
   font-weight: 600; color: var(--text-primary); flex: 1;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.tc-turn {
+  font-size: 9px; color: var(--text-muted); background: var(--bg-input);
+  padding: 1px 5px; border-radius: var(--radius-sm); flex-shrink: 0;
+  margin-right: 4px; font-family: monospace;
+}
 .tc-status {
   font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full);
   font-weight: 500; white-space: nowrap; flex-shrink: 0;

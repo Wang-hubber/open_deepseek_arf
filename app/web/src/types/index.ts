@@ -145,6 +145,7 @@ export interface ToolCallRecord {
   status: 'executing' | 'completed' | 'failed'
   result?: string
   error?: string
+  turn?: number
 }
 
 export interface TraceEvent {
