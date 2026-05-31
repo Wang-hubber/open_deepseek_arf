@@ -59,6 +59,7 @@ class TestChooseRecovery:
         from arf.agent.config import RecoveryConfig
         engine = GraphEngine.__new__(GraphEngine)
         engine._recovery_config = RecoveryConfig()
+        engine.event_bus = None
         return engine
 
     def test_max_tokens_stop_reason(self):
@@ -115,6 +116,7 @@ class TestApplyRecovery:
         engine = GraphEngine.__new__(GraphEngine)
         engine._recovery_config = RecoveryConfig()
         engine.compaction = None
+        engine.event_bus = None
         return engine
 
     @pytest.mark.anyio
@@ -200,9 +202,32 @@ class TestResetRecoveryState:
     def test_all_counters_reset(self):
         from arf.engine.graph import GraphEngine
         engine = GraphEngine.__new__(GraphEngine)
+        engine.event_bus = None
         state = {"_recovery_state": {"continuation_attempts": 5, "compact_attempts": 2, "transport_attempts": 3}}
         engine._reset_recovery_state(state)
         assert state["_recovery_state"] == {"continuation_attempts": 0, "compact_attempts": 0, "transport_attempts": 0}
+
+    def test_reset_emits_only_when_counters_were_active(self):
+        """recovery_reset event only fires when at least one counter > 0."""
+        from arf.engine.graph import GraphEngine
+        from unittest.mock import MagicMock
+        engine = GraphEngine.__new__(GraphEngine)
+        bus = MagicMock()
+        engine.event_bus = bus
+        engine._interaction_round = 1
+
+        # All zeros — no emit
+        state_zero = {"_recovery_state": {"continuation_attempts": 0, "compact_attempts": 0, "transport_attempts": 0}}
+        engine._reset_recovery_state(state_zero)
+        bus.emit.assert_not_called()
+
+        # Has counts — emit fires
+        bus.reset_mock()
+        state_active = {"_recovery_state": {"continuation_attempts": 3, "compact_attempts": 0, "transport_attempts": 0}}
+        engine._reset_recovery_state(state_active)
+        bus.emit.assert_called_once()
+        args = bus.emit.call_args[0]
+        assert args[0].type == "recovery_reset"
 
 
 class TestBackoffDelay:

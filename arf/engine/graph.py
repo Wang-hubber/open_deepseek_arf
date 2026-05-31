@@ -236,6 +236,11 @@ class GraphEngine:
 
         if decision.kind == "continue":
             if rs["continuation_attempts"] >= self._recovery_config.max_continuation:
+                self._emit("recovery_exhausted", {
+                    "path": "continue",
+                    "attempts": rs["continuation_attempts"],
+                    "max": self._recovery_config.max_continuation,
+                }, session_id=state.get("session_id", "default"))
                 raise RuntimeError(
                     f"Recovery exhausted: max continuation attempts "
                     f"({self._recovery_config.max_continuation}) reached"
@@ -243,6 +248,11 @@ class GraphEngine:
             rs["continuation_attempts"] += 1
             logger.info("[Recovery] continue (attempt %s/%s)",
                         rs["continuation_attempts"], self._recovery_config.max_continuation)
+            self._emit("recovery_continue", {
+                "attempt": rs["continuation_attempts"],
+                "max": self._recovery_config.max_continuation,
+                "reason": decision.reason,
+            }, session_id=state.get("session_id", "default"))
             # Persist continue message into state so it survives the loop restart
             state.setdefault("messages", []).append({"role": "user", "content": _CONTINUE_MESSAGE})
             msgs.append({"role": "user", "content": _CONTINUE_MESSAGE})
@@ -250,6 +260,11 @@ class GraphEngine:
 
         if decision.kind == "compact":
             if rs["compact_attempts"] >= self._recovery_config.max_compaction:
+                self._emit("recovery_exhausted", {
+                    "path": "compact",
+                    "attempts": rs["compact_attempts"],
+                    "max": self._recovery_config.max_compaction,
+                }, session_id=state.get("session_id", "default"))
                 raise RuntimeError(
                     f"Recovery exhausted: max compaction attempts "
                     f"({self._recovery_config.max_compaction}) reached"
@@ -257,6 +272,11 @@ class GraphEngine:
             rs["compact_attempts"] += 1
             logger.info("[Recovery] compact (attempt %s/%s)",
                         rs["compact_attempts"], self._recovery_config.max_compaction)
+            self._emit("recovery_compact", {
+                "attempt": rs["compact_attempts"],
+                "max": self._recovery_config.max_compaction,
+                "reason": decision.reason,
+            }, session_id=state.get("session_id", "default"))
             if self.compaction:
                 state = await self.compaction.compact(state)
                 state = self._repair_messages(state)
@@ -264,6 +284,11 @@ class GraphEngine:
 
         if decision.kind == "backoff":
             if rs["transport_attempts"] >= self._recovery_config.max_transport_retry:
+                self._emit("recovery_exhausted", {
+                    "path": "backoff",
+                    "attempts": rs["transport_attempts"],
+                    "max": self._recovery_config.max_transport_retry,
+                }, session_id=state.get("session_id", "default"))
                 if error:
                     raise error
                 raise RuntimeError(
@@ -279,6 +304,12 @@ class GraphEngine:
             )
             logger.info("[Recovery] backoff %.1fs (attempt %s/%s)",
                         delay, rs["transport_attempts"], self._recovery_config.max_transport_retry)
+            self._emit("recovery_backoff", {
+                "attempt": rs["transport_attempts"],
+                "max": self._recovery_config.max_transport_retry,
+                "delay": delay,
+                "reason": decision.reason,
+            }, session_id=state.get("session_id", "default"))
             await _asyncio.sleep(delay)
             return state, msgs, True
 
@@ -291,6 +322,11 @@ class GraphEngine:
         Called after tool execution completes normally — the agent made
         progress, so recovery budgets are refreshed for the next round.
         """
+        old_state = state.get("_recovery_state", {})
+        if any(old_state.get(k, 0) > 0 for k in ("continuation_attempts", "compact_attempts", "transport_attempts")):
+            self._emit("recovery_reset", {
+                "previous": dict(old_state),
+            }, session_id=state.get("session_id", "default"))
         state["_recovery_state"] = {
             "continuation_attempts": 0,
             "compact_attempts": 0,
