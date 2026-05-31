@@ -291,3 +291,72 @@ class TestStaticStrategy:
 
         simple, complex_q = asyncio.run(run())
         assert simple == complex_q
+
+
+# ---------------------------------------------------------------------------
+# Keyword heuristic classifier (E2E Bug 3.4)
+# ---------------------------------------------------------------------------
+
+class TestKeywordClassify:
+    """E2E Bug 3.4: keyword heuristic before LLM classification.
+    Fast path for obvious simple/complex queries, fallback for ambiguous."""
+
+    def test_importable_from_routing(self):
+        """keyword_classify must be importable from arf.routing.two_tier."""
+        from arf.routing.two_tier import keyword_classify
+        assert callable(keyword_classify)
+
+    def test_returns_medium_for_read(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("read the file") == "medium"
+        assert keyword_classify("list all files") == "medium"
+        assert keyword_classify("show me the content") == "medium"
+
+    def test_returns_medium_for_search(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("find errors in log") == "medium"
+        assert keyword_classify("search for the keyword") == "medium"
+        assert keyword_classify("what is the status") == "medium"
+
+    def test_returns_medium_for_explain(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("explain this code") == "medium"
+        assert keyword_classify("describe the code") == "medium"
+        assert keyword_classify("summarize this document") == "medium"
+
+    def test_returns_complex_for_create(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("create a new tool") == "complex"
+        assert keyword_classify("build a web app") == "complex"
+        assert keyword_classify("generate a report") == "complex"
+
+    def test_returns_complex_for_refactor(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("refactor the engine") == "complex"
+        assert keyword_classify("implement auth middleware") == "complex"
+        assert keyword_classify("debug the crash") == "complex"
+
+    def test_returns_complex_for_design(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("design a new system") == "complex"
+        assert keyword_classify("architect the solution") == "complex"
+        assert keyword_classify("deploy to production") == "complex"
+
+    def test_returns_none_for_ambiguous(self):
+        """When both complex AND medium keywords present, return None (need LLM)."""
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("create a summary") is None
+        assert keyword_classify("explain the deployment") is None
+        assert keyword_classify("read the design doc") is None
+
+    def test_returns_none_for_neutral(self):
+        """When neither complex nor medium keywords present, return None."""
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("hello") is None
+        assert keyword_classify("ok") is None
+        assert keyword_classify("thanks") is None
+
+    def test_case_insensitive(self):
+        from arf.routing.two_tier import keyword_classify
+        assert keyword_classify("CREATE a tool") == "complex"
+        assert keyword_classify("READ the file") == "medium"

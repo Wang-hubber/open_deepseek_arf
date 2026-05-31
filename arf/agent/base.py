@@ -451,7 +451,14 @@ class BaseAgent:
                     models=[m.type for m in config.models],
                 )
             elif _system_model_call:
+                from arf.routing.two_tier import keyword_classify
+
                 async def _classify(query: str) -> str:
+                    # Fast keyword heuristic first (E2E Bug 3.4)
+                    kw_result = keyword_classify(query)
+                    if kw_result is not None:
+                        return kw_result
+                    # Ambiguous — fallback to LLM classifier
                     prompt = (
                         "Classify this task as 'medium' or 'complex'. "
                         "medium = simple chat, file I/O, single tool call. "
