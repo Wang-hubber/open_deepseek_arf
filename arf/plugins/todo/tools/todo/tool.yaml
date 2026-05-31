@@ -1,17 +1,47 @@
 name: todo
-description: Manage a structured task list. Use to track progress on multi-step plans.
+description: Manage a structured task list for tracking progress on multi-step plans. Use to create, update, list, get, and delete tasks with dependency tracking.
 parameters:
   type: object
   properties:
     action:
       type: string
-      enum: [list, add, check, clear]
-      description: "list (show all), add (append items), check (mark done), clear (remove all)"
-    items:
+      enum: [create, update, get, list, delete]
+      description: |
+        create — add a new task (requires subject)
+        update — change status or dependencies (requires id)
+        get — show full details of one task (requires id)
+        list — show summary of all tasks, optionally filtered by status
+        delete — remove a task (only pending or completed tasks)
+    id:
+      type: string
+      description: Task ID (required for update, get, delete)
+    subject:
+      type: string
+      description: Short task title (required for create)
+    description:
+      type: string
+      description: What needs to be done (optional for create)
+    status:
+      type: string
+      enum: [pending, in_progress, completed]
+      description: New status (for update action)
+    addBlocks:
       type: array
       items:
         type: string
-      description: "Items to add (required for 'add' action)"
+      description: Task IDs that this task blocks (for update action)
+    addBlockedBy:
+      type: array
+      items:
+        type: string
+      description: Task IDs that block this task (for update action)
+    filter_status:
+      type: string
+      enum: [pending, in_progress, completed, deleted]
+      description: Filter tasks by status (for list action)
+    metadata:
+      type: object
+      description: Arbitrary metadata key-value pairs (for create action)
   required:
     - action
 execution:
