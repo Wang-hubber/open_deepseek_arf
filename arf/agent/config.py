@@ -9,7 +9,7 @@ from arf.core.config_base import (
     PipelineSection,
     GuardrailsConfig, ErrorConfig, HumanLoopConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
-    ProtectionConfig, ObservabilityConfig,
+    ProtectionConfig, ObservabilityConfig, PromotionConfig,
 )
 
 
@@ -41,6 +41,7 @@ class AdvancedConfig(BaseModel):
     reload: ReloadConfig | None = None
     protection: ProtectionConfig | None = None
     recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
+    promotion: PromotionConfig | None = None
     observability: ObservabilityConfig | None = None
 
     @classmethod

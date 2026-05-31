@@ -203,3 +203,12 @@ class ObservabilityConfig(BaseModel):
     usage_dir: str = "./memory"
     trace_enabled: bool = True
     otel_exporter: Literal["none", "console", "otlp"] = "none"
+
+
+class PromotionConfig(BaseModel):
+    """Permission gating strategy configuration."""
+    strategy: Literal["auto", "ask", "plan"] = "ask"
+    deny: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
+    deny_patterns: list[str] = Field(default_factory=list)

@@ -7,6 +7,8 @@ from arf.engine.graph import GraphEngine
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
+from arf.promotion.gate import Promotion
+from arf.action_runner.runner import ActionRunner
 
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
@@ -509,6 +511,8 @@ class BaseAgent:
             handoff_manager=handoff_manager,
             memory_workspace=_mem_abs,
             workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
+            promotion=self._build_promotion(adv) if adv else None,
+            action_runner=ActionRunner() if adv else None,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions
@@ -534,6 +538,19 @@ class BaseAgent:
 
         # ---- Active session tracking ----
         self._active_sessions: set[str] = set()
+
+    @staticmethod
+    def _build_promotion(adv: AdvancedConfig) -> Promotion | None:
+        """Build Promotion gate from AdvancedConfig, defaulting to ask strategy."""
+        from arf.core.config_base import PromotionConfig
+        pc = adv.promotion or PromotionConfig()
+        return Promotion(
+            strategy=pc.strategy,
+            deny=pc.deny,
+            ask=pc.ask,
+            allow=pc.allow,
+            deny_patterns=pc.deny_patterns,
+        )
 
     def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
                                    model_provider, tools_dir, skills_dir, models_dir,

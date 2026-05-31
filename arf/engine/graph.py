@@ -30,6 +30,64 @@ def _backoff_delay(attempt: int, base: float = 1.0, max_delay: float = 30.0) -> 
     return min(base * (2 ** attempt), max_delay) + random.uniform(0, 1)
 
 
+class _ToolExecutable:
+    """Adapter: wraps a tool call as an Executable for ActionRunner/Promotion."""
+
+    def __init__(
+        self, name: str, params: dict[str, Any], tool_call_id: str,
+        dependencies: list[str] | None = None,
+        resources: list[str] | None = None,
+        side_effect: bool = True,
+        retry_policy: "RetryPolicy | None" = None,
+        timeout: float | None = None,
+        engine: "GraphEngine | None" = None,
+    ):
+        from arf.core.execution import RetryPolicy as RP
+        self.name = name
+        self.kind = "tool"
+        self.dependencies = dependencies or []
+        self.resources = resources or []
+        self.side_effect = side_effect
+        self.retry_policy = retry_policy or RP()
+        self.timeout = timeout
+        self._params = params
+        self._id = tool_call_id
+        self._engine = engine
+
+    async def execute(self) -> "ExecuteResult":
+        import time as _time
+        from arf.core.execution import ExecuteResult, ExecutionError
+        start = _time.monotonic()
+        try:
+            if self._engine is None:
+                return ExecuteResult(name=self.name, success=False,
+                    error=ExecutionError(kind="deterministic", message="no engine reference"))
+            results = await self._engine.tool_executor.execute(
+                [{"name": self.name, "params": self._params, "id": self._id}],
+                agent_mode="",
+                engine=self._engine,
+                state_store=self._engine.state_store,
+                workspace_dir=getattr(self._engine, '_workspace_dir', ''),
+            )
+            r = results.get(self._id)
+            if r and r.success:
+                return ExecuteResult(name=self.name, success=True, data=r.data,
+                    duration_ms=(_time.monotonic() - start) * 1000)
+            error_msg = str(r.error) if r and r.error else "tool execution failed"
+            # Classify error: tool-level errors are deterministic
+            return ExecuteResult(name=self.name, success=False,
+                error=ExecutionError(kind="deterministic", message=error_msg),
+                duration_ms=(_time.monotonic() - start) * 1000)
+        except Exception as exc:
+            return ExecuteResult(name=self.name, success=False,
+                error=ExecutionError(kind="transient",
+                    message=f"{type(exc).__name__}: {exc}"),
+                duration_ms=(_time.monotonic() - start) * 1000)
+
+    async def rollback(self) -> None:
+        pass  # tool backends don't implement rollback yet
+
+
 class GraphEngine:
     def __init__(
         self,
@@ -65,6 +123,8 @@ class GraphEngine:
         memory_workspace: str = "./memory",
         workspace_dir: str = "",
         recovery_config: "RecoveryConfig | None" = None,
+        promotion: "Promotion | None" = None,
+        action_runner: "ActionRunner | None" = None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -95,6 +155,8 @@ class GraphEngine:
         self._interaction_round = 0
         self._memory_dir = memory_workspace
         self._workspace_dir = workspace_dir
+        self._promotion = promotion
+        self._action_runner = action_runner
         # Recovery config with safe defaults
         if recovery_config is not None:
             self._recovery_config = recovery_config
@@ -760,7 +822,7 @@ class GraphEngine:
         pipeline_data = state.get("active_pipeline")
         completed = set(pipeline_data.get("completed", [])) if pipeline_data else set()
 
-        if not self.guard_runner:
+        if not self.guard_runner and not self._promotion:
             return tool_calls, [], [], []
 
         for tc in tool_calls:
@@ -768,31 +830,53 @@ class GraphEngine:
             params = tc.get("params", {})
 
             if pipeline_data:
-                from arf.skills.pipeline import SkillPipeline
-                sp = SkillPipeline(pipeline_data.get("steps", []))
-                if not sp.can_execute(name, completed):
-                    reason = sp.validation_error(name, completed)
-                    denied_calls.append((name, reason))
+                steps = pipeline_data.get("steps", [])
+                step_info = {s["tool"]: s.get("depends_on", []) for s in steps}
+                if name in step_info:
+                    missing = [d for d in step_info[name] if d not in completed]
+                    if missing:
+                        ready = [t for t, deps in step_info.items()
+                                 if t not in completed and all(d in completed for d in deps)]
+                        reason = (
+                            f"pipeline: '{name}' requires {missing} to complete first. "
+                            f"Ready: {ready}"
+                        )
+                        denied_calls.append((name, reason))
+                        events.append({"type": "guard_block",
+                                       "data": {"tool_name": name, "guard": "pipeline", "reason": reason}})
+                        continue
+
+            if self.guard_runner:
+                gr = await self.guard_runner.check_tool_params(name, params)
+                if not gr.allowed:
+                    denied_calls.append((name, gr.reason))
                     events.append({"type": "guard_block",
-                                   "data": {"tool_name": name, "guard": "pipeline", "reason": reason}})
+                                   "data": {"tool_name": name, "guard": "path_check", "reason": gr.reason}})
                     continue
 
-            gr = await self.guard_runner.check_tool_params(name, params)
-            if not gr.allowed:
-                denied_calls.append((name, gr.reason))
-                events.append({"type": "guard_block",
-                               "data": {"tool_name": name, "guard": "path_check", "reason": gr.reason}})
-                continue
+            # Use Promotion for permission gating when available, fall back to guard_runner
+            if self._promotion:
+                decision = self._promotion.evaluate(
+                    _ToolExecutable(name=name, params=params, tool_call_id=tc.get("id", "")),
+                    params=params,
+                )
+                perm_action = decision.action
+                perm_reason = decision.reason
+            elif self.guard_runner:
+                perm_action = self.guard_runner.check_tool_permission(name, params)
+                perm_reason = "denied by config" if perm_action == "deny" else ""
+            else:
+                perm_action = "allow"
+                perm_reason = ""
 
-            perm = self.guard_runner.check_tool_permission(name, params)
-            if perm == "deny":
-                denied_calls.append((name, "denied by permission config"))
+            if perm_action == "deny":
+                denied_calls.append((name, perm_reason or "denied by permission config"))
                 events.append({"type": "guard_block",
                                "data": {"tool_name": name, "guard": "permission",
-                                        "reason": "denied by config"}})
+                                        "reason": perm_reason or "denied by config"}})
                 continue
 
-            if perm == "ask":
+            if perm_action == "ask":
                 needs_approval = self.approval_enabled and (
                     not self._approval_allowlist or name in self._approval_allowlist
                 )

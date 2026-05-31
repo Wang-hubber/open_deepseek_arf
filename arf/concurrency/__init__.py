@@ -1,4 +1,4 @@
-"""ARF Concurrency — task scheduling."""
-from arf.concurrency.sequential import SequentialScheduler
+"""ARF Concurrency — task scheduling (migrated to arf.action_runner.scheduler)."""
+from arf.action_runner.scheduler import ResourceScheduler
 
-__all__ = ["SequentialScheduler"]
+__all__ = ["ResourceScheduler"]

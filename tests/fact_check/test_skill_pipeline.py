@@ -1,4 +1,4 @@
-"""Fact-check tests: Skill Pipeline — docs/skill-pipeline.md vs arf/skills/ + arf/engine/."""
+"""Fact-check tests: ActionRunner & Promotion — docs vs arf/action_runner/ + arf/promotion/."""
 
 import asyncio
 import inspect
@@ -7,130 +7,102 @@ import pytest
 
 
 # ============================================================
-# Section 2.4 — SkillPipeline
+# Section 2.4 — DependencyResolver (was SkillPipeline)
 # ============================================================
 
-class TestSkillPipeline:
-    """Doc §2.4: SkillPipeline enforces tool execution order."""
+class TestDependencyResolver:
+    """Doc: DependencyResolver replaces SkillPipeline for execution ordering."""
 
-    def test_pipeline_module_exists(self):
-        """Doc: SkillPipeline in arf/skills/pipeline.py."""
-        from arf.skills.pipeline import SkillPipeline
-        assert SkillPipeline is not None
+    def test_resolver_module_exists(self):
+        """Doc: DependencyResolver in arf/action_runner/resolver.py."""
+        from arf.action_runner.resolver import DependencyResolver
+        assert DependencyResolver is not None
 
-    def test_can_execute_allows_tool_not_in_pipeline(self):
-        """Doc: pipeline 外工具不受限 (tools outside pipeline are free)."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "file_writer"},
-            {"tool": "resource_loader", "depends_on": ["file_writer"]},
+    def test_resolve_linear_chain(self):
+        """Doc: a -> b -> c produces three waves."""
+        from arf.action_runner.resolver import DependencyResolver
+        from arf.core.execution import Executable, ExecuteResult, RetryPolicy
+
+        class _E:
+            def __init__(self, name, deps=None):
+                self.name = name; self.kind = "tool"
+                self.dependencies = deps or []; self.resources = []
+                self.side_effect = False; self.retry_policy = RetryPolicy()
+                self.timeout = None
+            async def execute(self): return ExecuteResult(name=self.name, success=True)
+            async def rollback(self): pass
+
+        waves = DependencyResolver.resolve([
+            _E("c", deps=["b"]), _E("a"), _E("b", deps=["a"]),
         ])
-        assert sp.can_execute("web_search") is True
+        assert len(waves) == 3
+        assert waves[0].executables[0].name == "a"
+        assert waves[1].executables[0].name == "b"
+        assert waves[2].executables[0].name == "c"
 
-    def test_can_execute_blocks_unmet_dependency(self):
-        """Doc: 依赖未满足时调用 → 阻断."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "file_writer"},
-            {"tool": "resource_loader", "depends_on": ["file_writer"]},
+    def test_diamond_dependency(self):
+        """Doc: a -> [b, c] -> d produces three waves."""
+        from arf.action_runner.resolver import DependencyResolver
+        from arf.core.execution import Executable, ExecuteResult, RetryPolicy
+
+        class _E:
+            def __init__(self, name, deps=None):
+                self.name = name; self.kind = "tool"
+                self.dependencies = deps or []; self.resources = []
+                self.side_effect = False; self.retry_policy = RetryPolicy()
+                self.timeout = None
+            async def execute(self): return ExecuteResult(name=self.name, success=True)
+            async def rollback(self): pass
+
+        waves = DependencyResolver.resolve([
+            _E("d", deps=["b", "c"]), _E("c", deps=["a"]),
+            _E("b", deps=["a"]), _E("a"),
         ])
-        # resource_loader needs file_writer, but nothing completed
-        assert sp.can_execute("resource_loader", set()) is False
-        # file_writer has no deps, should be allowed
-        assert sp.can_execute("file_writer", set()) is True
-
-    def test_can_execute_allows_met_dependency(self):
-        """Doc: dependency satisfied → allowed."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "file_writer"},
-            {"tool": "resource_loader", "depends_on": ["file_writer"]},
-        ])
-        assert sp.can_execute("resource_loader", {"file_writer"}) is True
-
-    def test_is_empty_true_for_no_steps(self):
-        """Doc: pipeline 为空时所有工具自由并行."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([])
-        assert sp.is_empty() is True
-        sp2 = SkillPipeline(None)
-        assert sp2.is_empty() is True
-
-    def test_is_empty_false_with_steps(self):
-        """Doc: pipeline with steps is not empty."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([{"tool": "step1"}])
-        assert sp.is_empty() is False
+        assert len(waves) == 3
+        assert {e.name for e in waves[1].executables} == {"b", "c"}
 
     def test_circular_dependency_detected(self):
-        """Doc: 循环依赖抛出 ValueError."""
-        from arf.skills.pipeline import SkillPipeline
-        with pytest.raises(ValueError, match="circular"):
-            SkillPipeline([
-                {"tool": "A", "depends_on": ["B"]},
-                {"tool": "B", "depends_on": ["A"]},
+        """Doc: circular dependency raises ValueError."""
+        from arf.action_runner.resolver import DependencyResolver
+        from arf.core.execution import Executable, ExecuteResult, RetryPolicy
+
+        class _E:
+            def __init__(self, name, deps=None):
+                self.name = name; self.kind = "tool"
+                self.dependencies = deps or []; self.resources = []
+                self.side_effect = False; self.retry_policy = RetryPolicy()
+                self.timeout = None
+            async def execute(self): return ExecuteResult(name=self.name, success=True)
+            async def rollback(self): pass
+
+        with pytest.raises(ValueError, match="(?i)circular"):
+            DependencyResolver.resolve([
+                _E("a", deps=["b"]), _E("b", deps=["a"]),
             ])
 
     def test_missing_dependency_detected(self):
-        """Doc: A depends_on B 但 B 不在 pipeline → ValueError."""
-        from arf.skills.pipeline import SkillPipeline
-        with pytest.raises(ValueError, match="not in the pipeline"):
-            SkillPipeline([
-                {"tool": "A", "depends_on": ["nonexistent"]},
+        """Doc: missing dependency raises ValueError."""
+        from arf.action_runner.resolver import DependencyResolver
+        from arf.core.execution import Executable, ExecuteResult, RetryPolicy
+
+        class _E:
+            def __init__(self, name, deps=None):
+                self.name = name; self.kind = "tool"
+                self.dependencies = deps or []; self.resources = []
+                self.side_effect = False; self.retry_policy = RetryPolicy()
+                self.timeout = None
+            async def execute(self): return ExecuteResult(name=self.name, success=True)
+            async def rollback(self): pass
+
+        with pytest.raises(ValueError, match="missing"):
+            DependencyResolver.resolve([
+                _E("a", deps=["nonexistent"]),
             ])
 
-    def test_next_steps_returns_ready(self):
-        """Doc: next_steps returns tools whose deps are met."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "A"},
-            {"tool": "B", "depends_on": ["A"]},
-            {"tool": "C", "depends_on": ["A"]},
-        ])
-        # Only A has no deps
-        assert sp.next_steps() == ["A"]
-        # After A completes, B and C are ready
-        assert sp.next_steps({"A"}) == ["B", "C"]
-
-    def test_is_complete(self):
-        """Doc: is_complete checks if all steps done."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "A"},
-            {"tool": "B", "depends_on": ["A"]},
-        ])
-        assert sp.is_complete({"A"}) is False
-        assert sp.is_complete({"A", "B"}) is True
-
-    def test_steps_property(self):
-        """Doc: steps property returns dependency map."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "A"},
-            {"tool": "B", "depends_on": ["A"]},
-        ])
-        steps = sp.steps
-        assert steps == {"A": [], "B": ["A"]}
-
-    def test_order_property(self):
-        """Doc: order property returns declared order."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "A"},
-            {"tool": "B", "depends_on": ["A"]},
-        ])
-        assert sp.order == ["A", "B"]
-
-    def test_validation_error_message(self):
-        """Doc: validation_error returns human-readable error."""
-        from arf.skills.pipeline import SkillPipeline
-        sp = SkillPipeline([
-            {"tool": "A"},
-            {"tool": "B", "depends_on": ["A"]},
-        ])
-        err = sp.validation_error("B", set())
-        assert "requires" in err
-        assert "A" in err
+    def test_empty_input(self):
+        """Doc: empty input returns empty waves."""
+        from arf.action_runner.resolver import DependencyResolver
+        assert DependencyResolver.resolve([]) == []
 
 
 # ============================================================
@@ -224,22 +196,21 @@ class TestConcurrencyConfig:
 
 
 # ============================================================
-# Section 2.6 — SequentialScheduler (defined but unused)
+# Section 2.6 — ResourceScheduler (was SequentialScheduler)
 # ============================================================
 
-class TestSequentialScheduler:
-    """Doc §2.6: SequentialScheduler exists but is unused."""
+class TestResourceScheduler:
+    """Doc: ResourceScheduler replaces SequentialScheduler for resource-aware scheduling."""
 
-    def test_sequential_scheduler_exists(self):
-        """Doc: SequentialScheduler in arf/concurrency/sequential.py."""
-        from arf.concurrency.sequential import SequentialScheduler
-        assert SequentialScheduler is not None
+    def test_resource_scheduler_exists(self):
+        """Doc: ResourceScheduler in arf/action_runner/scheduler.py."""
+        from arf.action_runner.scheduler import ResourceScheduler
+        assert ResourceScheduler is not None
 
-    def test_sequential_scheduler_has_schedule_and_execute(self):
-        """Doc: schedule() and execute() methods."""
-        from arf.concurrency.sequential import SequentialScheduler
-        assert hasattr(SequentialScheduler, "schedule")
-        assert hasattr(SequentialScheduler, "execute")
+    def test_resource_scheduler_has_schedule(self):
+        """Doc: schedule() method for resource conflict detection."""
+        from arf.action_runner.scheduler import ResourceScheduler
+        assert hasattr(ResourceScheduler, "schedule")
 
 
 # ============================================================
@@ -269,7 +240,6 @@ class TestToolCallClosure:
         """Doc: denied calls get [Blocked] messages injected."""
         from arf.engine.graph import GraphEngine
         source = inspect.getsource(GraphEngine._step_classify_tool_calls)
-        # Verify denied calls are tracked separately from valid calls
         assert "denied_calls" in source
         assert "valid_calls" in source
 
@@ -292,7 +262,7 @@ class TestHookParallelism:
 # ============================================================
 
 class TestGraphEngineIntegration:
-    """Doc: Engine integration with pipeline and concurrency."""
+    """Doc: Engine integration with Promotion and ActionRunner."""
 
     def test_graph_engine_takes_concurrency_executor(self):
         """Doc: GraphEngine uses ConcurrentToolExecutor."""
@@ -305,11 +275,18 @@ class TestGraphEngineIntegration:
         from arf.engine.graph import GraphEngine
         assert hasattr(GraphEngine, "approve")
 
+    def test_graph_engine_takes_promotion_and_action_runner(self):
+        """Doc: GraphEngine accepts promotion and action_runner parameters."""
+        from arf.engine.graph import GraphEngine
+        sig = inspect.signature(GraphEngine.__init__)
+        assert "promotion" in sig.parameters
+        assert "action_runner" in sig.parameters
+
     def test_pipeline_check_in_classify(self):
-        """Doc: SkillPipeline.can_execute() called in _step_classify_tool_calls."""
+        """Doc: pipeline dependency check in _step_classify_tool_calls."""
         from arf.engine.graph import GraphEngine
         source = inspect.getsource(GraphEngine._step_classify_tool_calls)
-        assert "SkillPipeline" in source or "pipeline" in source.lower()
+        assert "pipeline" in source.lower()
 
 
 # ============================================================
@@ -321,6 +298,16 @@ class TestCompleteness:
 
     def test_concurrency_module_init_exists(self):
         path = __import__("pathlib").Path("arf/concurrency/__init__.py")
+        assert path.exists()
+
+    def test_action_runner_module_exists(self):
+        """Doc: ActionRunner in arf/action_runner/."""
+        path = __import__("pathlib").Path("arf/action_runner/__init__.py")
+        assert path.exists()
+
+    def test_promotion_module_exists(self):
+        """Doc: Promotion in arf/promotion/."""
+        path = __import__("pathlib").Path("arf/promotion/__init__.py")
         assert path.exists()
 
     def test_loop_strategies_module_exists(self):
