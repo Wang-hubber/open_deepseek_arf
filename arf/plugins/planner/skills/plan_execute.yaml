@@ -4,17 +4,21 @@ prompt: |
   # Plan & Execute
 
   When facing a multi-step task, use the `planner` tool first to decompose the goal.
-  Then execute each step in order, calling `todo` to mark items complete.
+  Then execute each step in order, tracking progress with `todo`.
 
   ## When to Plan
   - User asks for something with multiple distinct sub-tasks
   - You're unsure about the right approach
   - The task involves creating/modifying multiple resources
 
-  ## After Planning
-  1. List the plan steps to the user for confirmation
-  2. Execute steps in order
-  3. Call `todo` to track progress
+  ## Workflow
+  1. Call `planner(task="...")` to decompose the goal into steps
+  2. Present the steps to the user for confirmation
+  3. Once confirmed, call `planner(task="...", confirm=true)` to create todo tasks
+  4. Execute steps in order, updating todo status as you go:
+     - `todo(action="update", id="...", status="in_progress")` when starting
+     - `todo(action="update", id="...", status="completed")` when done
+  5. Use `todo(action="list")` to check overall progress
 tools:
   - planner
   - todo
