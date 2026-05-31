@@ -1,0 +1,14 @@
+name: file_tools
+description: File system tools — read files, search content, find by pattern
+prompt: |
+  # File System Tools
+
+  Use `read` to view file contents, `grep` to search for text patterns,
+  and `glob` to find files by name pattern.
+
+  Prefer these over shell commands — they are faster and respect workspace boundaries.
+tools:
+  - read
+  - grep
+  - glob
+activation: kernel

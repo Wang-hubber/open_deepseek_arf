@@ -1,0 +1,17 @@
+name: glob
+description: Find files matching a glob pattern. Returns relative file paths.
+parameters:
+  type: object
+  properties:
+    pattern:
+      type: string
+      description: Glob pattern (e.g. "**/*.py", "src/**/*.tsx")
+    path:
+      type: string
+      description: Search root directory (default workspace root)
+  required:
+    - pattern
+execution:
+  sandbox: inherit
+  timeout: 15s
+activation: kernel

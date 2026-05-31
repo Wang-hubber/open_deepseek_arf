@@ -1,0 +1,20 @@
+name: read
+description: Read file contents with line numbers. Supports text files and images (PNG, JPG, GIF).
+parameters:
+  type: object
+  properties:
+    file_path:
+      type: string
+      description: File path relative to workspace root
+    offset:
+      type: integer
+      description: Start line number (default 1)
+    limit:
+      type: integer
+      description: Max lines to read (default all, max 2000)
+  required:
+    - file_path
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel
