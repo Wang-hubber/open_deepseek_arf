@@ -243,6 +243,8 @@ class GraphEngine:
             rs["continuation_attempts"] += 1
             logger.info("[Recovery] continue (attempt %s/%s)",
                         rs["continuation_attempts"], self._recovery_config.max_continuation)
+            # Persist continue message into state so it survives the loop restart
+            state.setdefault("messages", []).append({"role": "user", "content": _CONTINUE_MESSAGE})
             msgs.append({"role": "user", "content": _CONTINUE_MESSAGE})
             return state, msgs, True
 
