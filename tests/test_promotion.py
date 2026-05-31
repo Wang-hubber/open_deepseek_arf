@@ -99,3 +99,37 @@ class TestPlanStrategy:
         s = PlanStrategy()
         result = s.evaluate(_make_exec("hook", kind="hook", side_effect=True))
         assert result.action == "deny"
+
+
+class TestPromotionGate:
+    def test_select_auto_strategy(self) -> None:
+        from arf.promotion.gate import Promotion
+
+        gate = Promotion(strategy="auto")
+        assert isinstance(gate._strategy, AutoStrategy)
+
+    def test_select_ask_strategy(self) -> None:
+        from arf.promotion.gate import Promotion
+
+        gate = Promotion(strategy="ask", deny=["bad"], ask=[], allow=["ok"])
+        assert isinstance(gate._strategy, AskStrategy)
+        assert gate._strategy.deny_list == {"bad"}
+
+    def test_select_plan_strategy(self) -> None:
+        from arf.promotion.gate import Promotion
+
+        gate = Promotion(strategy="plan")
+        assert isinstance(gate._strategy, PlanStrategy)
+
+    def test_evaluate_delegates_to_strategy(self) -> None:
+        from arf.promotion.gate import Promotion
+
+        gate = Promotion(strategy="auto")
+        result = gate.evaluate(_make_exec("x"))
+        assert result.action == "allow"
+
+    def test_unknown_strategy_defaults_to_ask(self) -> None:
+        from arf.promotion.gate import Promotion
+
+        gate = Promotion(strategy="unknown_xyz")
+        assert isinstance(gate._strategy, AskStrategy)
