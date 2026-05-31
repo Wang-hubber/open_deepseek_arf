@@ -333,7 +333,7 @@ class BaseAgent:
             )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        _workspace_root = str(ctx.workspace_dir.resolve()) if ctx else str(Path("workspace").resolve())
+        _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
             input_guard = NoneInputGuard()
