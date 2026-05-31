@@ -3,7 +3,7 @@ import json
 import time
 from pathlib import Path
 
-WORKSPACE = Path("workspaces/default")
+WORKSPACE = Path("workspace/default")
 TASKS_FILE = WORKSPACE / "tasks.json"
 
 
@@ -75,6 +75,8 @@ async def execute(
 
             all_ids = {t["id"] for t in tasks if t["status"] != "deleted"}
             if addBlocks is not None:
+                if id in addBlocks:
+                    return {"ok": False, "error": "A task cannot block itself"}
                 for bid in addBlocks:
                     if bid not in all_ids:
                         return {"ok": False, "error": f"Block target task {bid} not found"}
@@ -85,6 +87,8 @@ async def execute(
                 task["updated_at"] = time.time()
 
             if addBlockedBy is not None:
+                if id in addBlockedBy:
+                    return {"ok": False, "error": "A task cannot depend on itself"}
                 for bid in addBlockedBy:
                     if bid not in all_ids:
                         return {"ok": False, "error": f"Dependency task {bid} not found"}

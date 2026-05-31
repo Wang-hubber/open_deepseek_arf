@@ -37,7 +37,7 @@ parameters:
       description: Task IDs that block this task (for update action)
     filter_status:
       type: string
-      enum: [pending, in_progress, completed, deleted]
+      enum: [pending, in_progress, completed]
       description: Filter tasks by status (for list action)
     metadata:
       type: object
