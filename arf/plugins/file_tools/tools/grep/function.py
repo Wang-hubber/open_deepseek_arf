@@ -56,6 +56,7 @@ async def execute(
     effective_excludes = exclude_pats if exclude_pats else DEFAULT_EXCLUDES
 
     results = []
+    dir_excludes = {d for d in effective_excludes if not d.startswith("*")}
     try:
         for filepath in sorted(search_root.rglob("*")):
             if not filepath.is_file():
@@ -68,7 +69,6 @@ async def execute(
             if _path_matches_globs(filepath, effective_excludes):
                 continue
 
-            dir_excludes = {d for d in effective_excludes if not d.startswith("*")}
             if any(d in filepath.parts for d in dir_excludes):
                 continue
 
@@ -85,7 +85,7 @@ async def execute(
                 if regex.search(line):
                     results.append({
                         "file": rel_path,
-                        "line": line.strip(),
+                        "line": line.rstrip("\n"),
                         "line_number": line_num,
                     })
                     if len(results) >= max_results:
@@ -98,7 +98,7 @@ async def execute(
     return {
         "ok": True,
         "pattern": pattern,
-        "matches": results[:max_results],
+        "matches": results,
         "count": len(results),
         "truncated": len(results) >= max_results,
     }

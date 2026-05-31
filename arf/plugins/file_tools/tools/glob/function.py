@@ -37,7 +37,7 @@ async def execute(pattern: str, path: str = ".") -> dict:
     return {
         "ok": True,
         "pattern": pattern,
-        "matches": results[:MAX_RESULTS],
+        "matches": results,
         "count": len(results),
         "truncated": len(results) >= MAX_RESULTS,
     }

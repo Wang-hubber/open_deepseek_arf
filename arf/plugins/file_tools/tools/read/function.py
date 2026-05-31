@@ -4,6 +4,7 @@ from pathlib import Path
 
 WORKSPACE = Path("workspace/default")
 MAX_LINES = 2000
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
@@ -27,6 +28,8 @@ async def execute(
                 ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
             }
+            if p.stat().st_size > MAX_IMAGE_BYTES:
+                return {"ok": False, "error": f"Image file too large: {file_path} ({p.stat().st_size} bytes > {MAX_IMAGE_BYTES} max)"}
             mime = mime_map.get(suffix, "application/octet-stream")
             data = base64.b64encode(p.read_bytes()).decode("ascii")
             return {
