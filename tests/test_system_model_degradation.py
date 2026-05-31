@@ -49,7 +49,7 @@ class TestCompactionSummarizerDegradation:
 
     def test_compact_no_summarizer_discards_old_messages(self):
         """Doc: 无 system_model → _summarizer=None → 旧消息直接丢弃."""
-        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=None)
+        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=None, keep_count=4)
 
         messages = [
             {"role": "user", "content": "msg1"},
@@ -76,7 +76,7 @@ class TestCompactionSummarizerDegradation:
         """Doc: 有 system_model → _summarize via LLM → 旧轮次压缩为摘要."""
         summarizer = AsyncMock(return_value="User asked about X, assistant replied with Y.")
 
-        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=summarizer)
+        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=summarizer, keep_count=4)
         messages = [
             {"role": "user", "content": "msg1"},
             {"role": "assistant", "content": "msg2"},
@@ -99,7 +99,7 @@ class TestCompactionSummarizerDegradation:
     def test_compact_summarizer_failure_graceful(self):
         """Doc: summarizer异常 → 旧消息丢弃, 不阻塞主流程."""
         failing_summarizer = AsyncMock(side_effect=RuntimeError("LLM API down"))
-        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=failing_summarizer)
+        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=failing_summarizer, keep_count=4)
 
         messages = [
             {"role": "user", "content": "msg1"},
@@ -137,7 +137,7 @@ class TestCompactionSummarizerDegradation:
     def test_compact_appends_to_existing_summary(self):
         """Doc: new summary appends to existing context_summary."""
         summarizer = AsyncMock(return_value="New topic discussed.")
-        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=summarizer)
+        compactor = SlidingWindowCompactor(threshold=0.75, summarizer=summarizer, keep_count=4)
 
         messages = [
             {"role": "user", "content": "old1"},

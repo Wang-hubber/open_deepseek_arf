@@ -187,7 +187,7 @@ class TestSlidingWindowCompactor:
         from arf.compaction.sliding_window import SlidingWindowCompactor
 
         async def run():
-            c = SlidingWindowCompactor(threshold=0.75)
+            c = SlidingWindowCompactor(threshold=0.75, keep_count=4)
             state = {"messages": list(range(10)),
                      "context_summary": ""}
             result = await c.compact(state)
@@ -200,7 +200,7 @@ class TestSlidingWindowCompactor:
         from arf.compaction.sliding_window import SlidingWindowCompactor
 
         async def run():
-            c = SlidingWindowCompactor(threshold=0.75)
+            c = SlidingWindowCompactor(threshold=0.75, keep_count=4)
             state = {"messages": list(range(10)),
                      "context_summary": ""}
             result = await c.compact(state)
@@ -215,7 +215,7 @@ class TestSlidingWindowCompactor:
         async def run():
             async def fake_summarize(msgs):
                 return "summary_text"
-            c = SlidingWindowCompactor(summarizer=fake_summarize)
+            c = SlidingWindowCompactor(summarizer=fake_summarize, keep_count=4)
             state = {"messages": ["a", "b", "c", "d", "e", "f"],
                      "context_summary": "prior summary"}
             result = await c.compact(state)
@@ -232,7 +232,7 @@ class TestSlidingWindowCompactor:
         async def run():
             async def failing(msgs):
                 raise RuntimeError("simulated failure")
-            c = SlidingWindowCompactor(summarizer=failing)
+            c = SlidingWindowCompactor(summarizer=failing, keep_count=4)
             state = {"messages": list(range(10)),
                      "context_summary": "before"}
             result = await c.compact(state)

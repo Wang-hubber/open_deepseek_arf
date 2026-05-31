@@ -28,11 +28,13 @@ class SlidingWindowCompactor:
     """
 
     def __init__(self, threshold: float = 0.75, summarizer: callable | None = None,
-                 window_size: int = DEFAULT_WINDOW_SIZE, workspace: str | Path = "./memory") -> None:
+                 window_size: int = DEFAULT_WINDOW_SIZE, workspace: str | Path = "./memory",
+                 keep_count: int = 8) -> None:
         self._threshold = threshold
         self._summarize = summarizer
         self._window_size = window_size
         self._workspace = Path(workspace)
+        self._keep_count = keep_count
 
     def should_compact(self, state: AgentState, threshold: float | None = None,
                        window_size: int | None = None) -> bool:
@@ -52,40 +54,41 @@ class SlidingWindowCompactor:
         return last_usage > limit
 
     async def compact(self, state: AgentState) -> AgentState:
-        """Keep last 4 user/assistant messages, discard tool messages,
-        summarize older messages into context_summary.
+        """Keep last keep_count user/assistant messages and their associated
+        tool messages. Summarize older messages into context_summary.
         """
         msgs = state.get("messages", [])
-        # Only keep user + assistant messages; tool results are transient
-        # Separate dict messages (user/assistant) from tool messages and raw values
-        ua_msgs: list[dict] = []
-        non_tool: list = []
-        for m in msgs:
+        # Find positions of all non-tool messages (for keep threshold)
+        ua_indices: list[int] = []
+        for i, m in enumerate(msgs):
             if isinstance(m, dict) and m.get("role") == "tool":
-                continue  # discard tool messages
-            non_tool.append(m)
-            if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
-                ua_msgs.append(m)
-        if len(non_tool) <= 4:
+                continue  # tool messages handled separately below
+            ua_indices.append(i)
+        if len(ua_indices) <= self._keep_count:
             return state
-        old_msgs = non_tool[:-4]
-        recent = non_tool[-4:]
+        # Keep everything from the keep_count-th UA message from the end,
+        # preserving tool messages that belong to kept assistant messages
+        split = ua_indices[-self._keep_count]
+        old_msgs = msgs[:split]
+        recent = msgs[split:]
+        tool_discarded = sum(
+            1 for m in old_msgs
+            if isinstance(m, dict) and m.get("role") == "tool"
+        )
         summary = state.get("context_summary", "")
         if self._summarize and old_msgs:
             try:
                 new_summary = await self._summarize(old_msgs)
                 prefix = "[Earlier]" if not summary else ""
                 summary = f"{summary}\n{prefix}: {new_summary}" if summary else f"[Earlier]: {new_summary}"
-                discarded = len(msgs) - len(non_tool)
-                logger.info("Compaction: %d u/a messages summarized (%d tool discarded), "
+                logger.info("Compaction: %d msgs summarized (%d tool discarded), "
                             "context_summary now %d chars",
-                            len(old_msgs), discarded, len(summary))
+                            len(old_msgs), tool_discarded, len(summary))
             except Exception:
                 logger.exception("Compaction summarizer failed, discarding old messages")
         else:
-            discarded = len(msgs) - len(non_tool)
-            logger.info("Compaction: %d u/a messages discarded (%d tool, no summarizer)",
-                        len(old_msgs), discarded)
+            logger.info("Compaction: %d msgs discarded (%d tool, no summarizer)",
+                        len(old_msgs), tool_discarded)
         return {**state, "messages": recent, "context_summary": summary,
                 "_compaction_cooldown": 2}
 

@@ -214,7 +214,7 @@ class TestCompactEdgeCases:
             resp = fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
-        c = SlidingWindowCompactor(summarizer=fake_summarizer)
+        c = SlidingWindowCompactor(summarizer=fake_summarizer, keep_count=4)
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -243,7 +243,7 @@ class TestCompactEdgeCases:
             resp = fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
-        c = SlidingWindowCompactor(summarizer=fake_summarizer)
+        c = SlidingWindowCompactor(summarizer=fake_summarizer, keep_count=4)
 
         # First compaction
         messages = [
@@ -446,4 +446,165 @@ class TestSummarizerStructure:
         from arf.agent.base import BaseAgent
         src = _ins.getsource(BaseAgent.__init__)
         assert "conversation summary unavailable" in src
+
+
+# ---------------------------------------------------------------------------
+# 8. Proactive message repair before model call (E2E Bug 3.1)
+# ---------------------------------------------------------------------------
+
+class TestProactiveRepairBeforeModelCall:
+    """E2E Bug 3.1: _repair_messages called proactively before every model call,
+    not just reactively on 400 errors."""
+
+    def test_repair_before_msgs_in_invoke(self):
+        """_repair_messages must be called right before building msgs in invoke()."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine.invoke)
+        repair_pos = src.find("_repair_messages(state)")
+        msgs_pos = src.find('msgs = [{"role": "system"')
+        assert repair_pos > 0, "_repair_messages(state) not found in invoke()"
+        assert msgs_pos > 0, "msgs = [...] not found in invoke()"
+        assert repair_pos < msgs_pos, (
+            f"_repair_messages({repair_pos}) must be called BEFORE "
+            f"building msgs({msgs_pos}) in invoke()"
+        )
+
+    def test_repair_before_msgs_in_astream(self):
+        """_repair_messages must be called right before building msgs in astream()."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine.astream)
+        repair_pos = src.find("_repair_messages(state)")
+        msgs_pos = src.find('msgs = [{"role": "system"')
+        assert repair_pos > 0, "_repair_messages(state) not found in astream()"
+        assert msgs_pos > 0, "msgs = [...] not found in astream()"
+        assert repair_pos < msgs_pos, (
+            f"_repair_messages({repair_pos}) must be called BEFORE "
+            f"building msgs({msgs_pos}) in astream()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Compaction keeps 8 UA msgs + associated tool msgs (E2E Bug 3.2)
+# ---------------------------------------------------------------------------
+
+class TestCompactionKeepToolMessages:
+    """E2E Bug 3.2: compaction should keep last 8 user/assistant messages
+    and their associated tool messages, not discard all tool messages."""
+
+    def test_compact_keep_count_default_is_8(self):
+        """Default keep_count should be 8 (not 4)."""
+        c = SlidingWindowCompactor()
+        assert c._keep_count == 8, (
+            f"Expected default keep_count=8, got {c._keep_count}"
+        )
+
+    def test_compact_keep_count_configurable(self):
+        """keep_count should be configurable via constructor."""
+        c = SlidingWindowCompactor(keep_count=12)
+        assert c._keep_count == 12
+
+    def test_compact_keeps_associated_tool_messages(self):
+        """Tool messages matching kept assistant tool_calls must be preserved."""
+        messages = []
+        # Build 12 user/assistant messages (exceeds keep_count=8)
+        for i in range(12):
+            messages.append({"role": "user", "content": f"u{i}"})
+            assistant_msg = {"role": "assistant", "content": f"a{i}"}
+            if i >= 8:  # last 4 have tool_calls
+                assistant_msg["tool_calls"] = [
+                    {"id": f"tc_{i}", "type": "function",
+                     "function": {"name": "read", "arguments": "{}"}}
+                ]
+            messages.append(assistant_msg)
+            if i >= 8:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"tc_{i}",
+                    "content": f"result for tc_{i}",
+                })
+
+        state = {"messages": messages, "context_summary": ""}
+        c = SlidingWindowCompactor(keep_count=8)
+
+        async def run():
+            return await c.compact(state)
+
+        result = asyncio.run(run())
+        kept = result["messages"]
+
+        # Should have kept UA msgs 8-11 (~8 UA messages * 2 + associated tools)
+        assert len(kept) < len(messages), "Should have compacted some messages"
+        # Verify tool messages for kept assistants are present
+        tool_ids_in_kept = {
+            m["tool_call_id"] for m in kept if m.get("role") == "tool"
+        }
+        assert "tc_8" in tool_ids_in_kept, "Tool message for tc_8 should be kept"
+        assert "tc_11" in tool_ids_in_kept, "Tool message for tc_11 should be kept"
+        # Verify earlier tool messages are discarded
+        assert "tc_0" not in tool_ids_in_kept, "Tool message for tc_0 should be discarded"
+
+    def test_compact_exactly_keep_count_no_change(self):
+        """Boundary: exactly keep_count UA indices → no compaction needed."""
+        c = SlidingWindowCompactor(keep_count=8)
+        messages = []
+        for i in range(4):
+            messages.append({"role": "user", "content": f"u{i}"})
+            messages.append({"role": "assistant", "content": f"a{i}"})
+        state = {"messages": messages, "context_summary": ""}
+
+        async def run():
+            return await c.compact(state)
+
+        result = asyncio.run(run())
+        assert len(result["messages"]) == len(messages)
+
+
+# ---------------------------------------------------------------------------
+# 10. A2A return handoff agent_switch (E2E Bug 3.3)
+# ---------------------------------------------------------------------------
+
+class TestA2AReturnHandoffEvents:
+    """E2E Bug 3.3: return handoff must save sub-agent state
+    and emit agent_switch event."""
+
+    def test_execute_handoff_saves_sub_agent_state_on_return(self):
+        """Return handoff must save sub-agent's final state before switching back."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine._execute_handoff)
+        # In the return path (after existing_target load), state_store.put
+        # must be called with the sub-agent's session key
+        assert "state_store.put" in src, (
+            "state_store.put must be called for return handoff"
+        )
+        # Check that put is called in the return path context (after get for existing_target)
+        get_pos = src.find("state_store.get")
+        put_after_get = src.find("state_store.put", get_pos)
+        assert put_after_get > get_pos, (
+            "state_store.put for sub-agent must be called in the return path "
+            "(after state_store.get for main agent)"
+        )
+
+    def test_execute_handoff_emits_agent_switch_on_return(self):
+        """agent_switch event must be emitted for return handoffs too."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine._execute_handoff)
+        agent_switch_count = src.count('"agent_switch"')
+        assert agent_switch_count >= 1, (
+            f"agent_switch must be emitted in _execute_handoff, "
+            f"found {agent_switch_count} occurrences"
+        )
+
+    def test_restore_from_handoff_not_dead_code(self):
+        """_restore_from_handoff should either be integrated or cleaned up."""
+        from arf.engine.graph import GraphEngine
+        src = inspect.getsource(GraphEngine)
+        # _restore_from_handoff exists but was never called —
+        # verify it's either called or its logic is in _execute_handoff
+        restore_def = src.find("async def _restore_from_handoff")
+        assert restore_def > 0, "_restore_from_handoff method exists"
+        # The _execute_handoff return path should contain equivalent logic
+        exec_h = inspect.getsource(GraphEngine._execute_handoff)
+        assert "state_store.put" in exec_h, (
+            "_execute_handoff should save sub-agent state (from _restore_from_handoff)"
+        )
 

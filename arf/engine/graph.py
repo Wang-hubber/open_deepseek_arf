@@ -234,6 +234,9 @@ class GraphEngine:
         # 4. Try to load existing target agent state, or build fresh context
         existing_target = await self.state_store.get(f"{session_id}/{to_agent}")
         if existing_target:
+            # Save sub-agent's final state before switching back (E2E Bug 3.3)
+            if from_agent:
+                await self.state_store.put(f"{session_id}/{from_agent}", state)
             # Resume: restore target agent's previous state
             state.update(existing_target)
             # For return handoffs: replace raw tool result with sub-agent's actual response
@@ -760,6 +763,8 @@ class GraphEngine:
                         system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
+                # Proactive repair before every model call (E2E Bug 3.1)
+                state = self._repair_messages(state)
                 msgs = [{"role": "system", "content": system_prompt}]
                 msgs.extend(state.get("messages", []))
 
@@ -1081,6 +1086,8 @@ class GraphEngine:
                         system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
+                # Proactive repair before every model call (E2E Bug 3.1)
+                state = self._repair_messages(state)
                 msgs = [{"role": "system", "content": system_prompt}]
                 msgs.extend(state.get("messages", []))
 
