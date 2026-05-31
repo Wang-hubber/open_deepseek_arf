@@ -2,11 +2,13 @@
 import asyncio
 import copy
 import json
+import time
+import random
 import logging
 logger = logging.getLogger("arf.engine")
 from collections import deque
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from arf.core.protocols import (
     LoopStrategy, StateStore, ToolExecutor, Planner,
     ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
@@ -15,6 +17,18 @@ from arf.core.protocols import (
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
 from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
+
+# Recovery: continue message for max_tokens truncation
+_CONTINUE_MESSAGE = (
+    "Output limit hit. Continue directly from where you stopped. "
+    "Do not restart, do not summarize, do not repeat what was already said."
+)
+
+
+def _backoff_delay(attempt: int, base: float = 1.0, max_delay: float = 30.0) -> float:
+    """Exponential backoff with jitter for transient transport errors."""
+    import random as _random
+    return min(base * (2 ** attempt), max_delay) + _random.uniform(0, 1)
 
 
 class GraphEngine:
@@ -79,6 +93,9 @@ class GraphEngine:
         self._cancel_event = cancel_event
         self._interaction_round = 0
         self._memory_dir = memory_workspace
+        # Recovery config with safe defaults
+        from arf.agent.config import RecoveryConfig
+        self._recovery_config = RecoveryConfig()
         # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
@@ -162,6 +179,121 @@ class GraphEngine:
         if action.action != "fallback":
             return None
         return self.model_router.fallback_from(model_name)
+
+    def _choose_recovery(
+        self,
+        stop_reason: str | None,
+        error_text: str | None,
+    ) -> "RecoveryDecision":
+        """Classify an error/stop condition into a recovery decision.
+
+        Called from invoke/astream at two points:
+          (a) after response: check finish_reason for "length"
+          (b) in except block: check exception text for transient/overflow
+        """
+        from arf.core.results import RecoveryDecision
+
+        # Output truncated by max_tokens
+        if stop_reason == "length":
+            return RecoveryDecision(kind="continue", reason="output truncated at max_tokens")
+
+        if error_text:
+            el = error_text.lower()
+            # Context overflow
+            if ("prompt" in el and "long" in el) or ("context" in el and ("too" in el or "exceed" in el)):
+                return RecoveryDecision(kind="compact", reason="context too large")
+
+            # Transient transport failures
+            if any(w in el for w in ["timeout", "rate", "unavailable", "connection", "timed out", "server error"]):
+                return RecoveryDecision(kind="backoff", reason="transient transport failure")
+
+        return RecoveryDecision(kind="fail", reason="unknown or non-recoverable error")
+
+    def _apply_recovery(
+        self,
+        decision: "RecoveryDecision",
+        state: dict[str, Any],
+        msgs: list[dict],
+        session_id: str,
+        model: str | None = None,
+        error: Exception | None = None,
+    ) -> tuple[dict[str, Any], list[dict], bool]:
+        """Apply a recovery decision. Returns (state, msgs, should_continue).
+
+        should_continue=True means caller should 'continue' its loop.
+        Raises the original error if budget is exhausted for backoff.
+        """
+        import logging
+        logger = logging.getLogger("arf.engine")
+
+        rs = state.setdefault("_recovery_state", {
+            "continuation_attempts": 0,
+            "compact_attempts": 0,
+            "transport_attempts": 0,
+        })
+
+        if decision.kind == "continue":
+            if rs["continuation_attempts"] >= self._recovery_config.max_continuation:
+                raise RuntimeError(
+                    f"Recovery exhausted: max continuation attempts "
+                    f"({self._recovery_config.max_continuation}) reached"
+                )
+            rs["continuation_attempts"] += 1
+            logger.info("[Recovery] continue (attempt %s/%s)",
+                        rs["continuation_attempts"], self._recovery_config.max_continuation)
+            msgs.append({"role": "user", "content": _CONTINUE_MESSAGE})
+            return state, msgs, True
+
+        if decision.kind == "compact":
+            if rs["compact_attempts"] >= self._recovery_config.max_compaction:
+                raise RuntimeError(
+                    f"Recovery exhausted: max compaction attempts "
+                    f"({self._recovery_config.max_compaction}) reached"
+                )
+            rs["compact_attempts"] += 1
+            logger.info("[Recovery] compact (attempt %s/%s)",
+                        rs["compact_attempts"], self._recovery_config.max_compaction)
+            if self.compaction:
+                import asyncio
+                state = asyncio.get_event_loop().run_until_complete(
+                    self.compaction.compact(state))
+                state = self._repair_messages(state)
+            return state, msgs, True
+
+        if decision.kind == "backoff":
+            if rs["transport_attempts"] >= self._recovery_config.max_transport_retry:
+                if error:
+                    raise error
+                raise RuntimeError(
+                    f"Recovery exhausted: max transport retries "
+                    f"({self._recovery_config.max_transport_retry}) reached"
+                )
+            rs["transport_attempts"] += 1
+            import time as _time
+            delay = _backoff_delay(
+                rs["transport_attempts"],
+                self._recovery_config.backoff_base,
+                self._recovery_config.backoff_max,
+            )
+            logger.info("[Recovery] backoff %.1fs (attempt %s/%s)",
+                        delay, rs["transport_attempts"], self._recovery_config.max_transport_retry)
+            _time.sleep(delay)
+            return state, msgs, True
+
+        # fail — do nothing, let existing fallback chain handle it
+        return state, msgs, False
+
+    def _reset_recovery_state(self, state: dict[str, Any]) -> None:
+        """Reset all recovery counters after a normal successful round.
+
+        Called after tool execution completes normally — the agent made
+        progress, so recovery budgets are refreshed for the next round.
+        """
+        state["_recovery_state"] = {
+            "continuation_attempts": 0,
+            "compact_attempts": 0,
+            "transport_attempts": 0,
+        }
 
     def _cancelled(self) -> bool:
         """Check if execution has been cancelled (non-blocking)."""
