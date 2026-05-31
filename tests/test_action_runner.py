@@ -42,21 +42,22 @@ class _Failing:
 def _make_exec(
     exec_name: str,
     deps: list[str] | None = None,
-    res: list[str] | None = None,
+    resources: list[str] | None = None,
 ) -> Executable:
     """Build a minimal Executable for testing."""
 
     _deps = deps or []
-    _res = res or []
+    _res = resources or []
 
     class _E:
-        name = exec_name
-        kind = "tool"
-        dependencies = _deps
-        resources = _res
-        side_effect = False
-        retry_policy = RetryPolicy()
-        timeout: float | None = None
+        def __init__(self) -> None:
+            self.name = exec_name
+            self.kind = "tool"
+            self.dependencies = _deps
+            self.resources = _res
+            self.side_effect = False
+            self.retry_policy = RetryPolicy()
+            self.timeout: float | None = None
 
         async def execute(self) -> ExecuteResult:
             return ExecuteResult(name=self.name, success=True)
@@ -153,7 +154,9 @@ class TestResourceScheduler:
         from arf.action_runner.scheduler import ResourceScheduler
 
         a = _make_exec("a", resources=["file:x"])
+        a.side_effect = True
         b = _make_exec("b", resources=["file:x"])
+        b.side_effect = True
         schedule = ResourceScheduler.schedule([a, b])
         assert len(schedule) >= 2
 
@@ -191,6 +194,7 @@ class TestResourceScheduler:
         from arf.action_runner.scheduler import ResourceScheduler
 
         a = _make_exec("a", resources=["file:x", "file:y"])
+        a.side_effect = True
         b = _make_exec("b", resources=["file:x"])
         c = _make_exec("c", resources=["file:y"])
         schedule = ResourceScheduler.schedule([a, b, c])
@@ -204,6 +208,7 @@ class TestResourceScheduler:
 
 
 class TestRetryExecutor:
+    @pytest.mark.anyio
     async def test_success_first_attempt_no_retry(self):
         """Successful execution returns immediately."""
         from arf.action_runner.retry import RetryExecutor
@@ -353,6 +358,7 @@ class TestRetryExecutor:
 
 
 class TestRollbackManager:
+    @pytest.mark.anyio
     async def test_rollback_called_on_failed_unit(self):
         """Failed unit gets rollback() called."""
         from arf.action_runner.rollback import RollbackManager
@@ -484,6 +490,7 @@ class TestRollbackManager:
 
 
 class TestActionRunnerIntegration:
+    @pytest.mark.anyio
     async def test_simple_execution_all_succeed(self):
         """All executables succeed -> all results returned."""
         from arf.action_runner.runner import ActionRunner
