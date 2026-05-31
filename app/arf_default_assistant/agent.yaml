@@ -9,6 +9,7 @@ description: >
 plugins:
   - planner
   - todo
+  - file_tools
   - undo
   - memory
 
@@ -51,8 +52,8 @@ system_prompt:
 
     ### R5: Progressive skill loading
     Skills listed under Available Skills are loaded on demand.
-    When a skill matches the user's intent, read its full instructions via `file_reader`.
-    Example: `file_reader` with `operation: read` and `path: skills/code_review.yaml`
+    When a skill matches the user's intent, read its full instructions via `read`.
+    Example: `read` with `file_path: skills/code_review.yaml`
 
 # models are defined in models/*.yaml — filesystem is source of truth.
 # Uncomment below to override specific fields (merged on top of filesystem):
@@ -61,9 +62,6 @@ system_prompt:
 #     temperature: 0.3
 
 tools:
-  - name: file_reader
-    activation: kernel
-
   - name: file_writer
     activation: kernel
 
@@ -108,7 +106,9 @@ advanced:
   guardrails:
     permissions:
       allow:
-        - file_reader
+        - read
+        - grep
+        - glob
         - file_writer
         - file_deleter
         - web_search
@@ -206,8 +206,6 @@ agents:
           reasoning_effort: max
 
     tools:
-      - name: file_reader
-        activation: kernel
       - name: file_writer
         activation: kernel
       - name: resource_loader
