@@ -133,10 +133,10 @@ advanced:
     allow_escape: false
     writable_dirs: []
     checks:
-      path_traversal: false
-      absolute_path: false
+      path_traversal: true
+      absolute_path: true
       workspace_containment: true
-      symlink: false
+      symlink: true
   memory:
     store: file
     retriever: llm

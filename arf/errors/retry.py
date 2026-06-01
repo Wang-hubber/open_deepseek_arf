@@ -4,15 +4,21 @@ from arf.core.results import ErrorAction, GuardResult
 
 
 class DefaultErrorPolicy:
-    def __init__(self, tool_retry: int = 2,
+    def __init__(self, tool_retry: int = 2, tool_backoff: str = "exponential",
                  model_5xx_action: str = "fallback", guardrail_block_action: str = "abort") -> None:
         self._tool_retry = tool_retry
+        self._tool_backoff = tool_backoff
         self._model_5xx_action = model_5xx_action
         self._guardrail_block_action = guardrail_block_action
 
     def on_tool_error(self, error: Exception, tool_name: str, attempt: int) -> ErrorAction:
         if attempt < self._tool_retry:
-            delay = 2 ** attempt * 1.0
+            if self._tool_backoff == "none":
+                delay = 0.0
+            elif self._tool_backoff == "linear":
+                delay = (attempt + 1) * 2.0
+            else:  # exponential (default)
+                delay = 2 ** attempt * 1.0
             return ErrorAction(action="retry", delay=delay)
         return ErrorAction(action="abort", message=str(error))
 

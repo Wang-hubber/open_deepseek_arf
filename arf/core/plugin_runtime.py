@@ -13,6 +13,7 @@ class PluginRuntime:
 
     memory_dir: str = "./data/memory"
     workspace_dir: str = "."
+    state_dir: str = "./data/state"
     trace_dir: str = "./data/traces"
     files_dir: str = "./data/files"
 
@@ -28,6 +29,7 @@ class PluginRuntime:
             "env_vars": self.env_vars,
             "memory_dir": self.memory_dir,
             "workspace_dir": self.workspace_dir,
+            "state_dir": self.state_dir,
             "trace_dir": self.trace_dir,
             "files_dir": self.files_dir,
             "session_id": self.session_id,
@@ -43,6 +45,7 @@ class PluginRuntime:
             env_vars=d.get("env_vars", {}),
             memory_dir=d.get("memory_dir", "./data/memory"),
             workspace_dir=d.get("workspace_dir", "."),
+            state_dir=d.get("state_dir", "./data/state"),
             trace_dir=d.get("trace_dir", "./data/traces"),
             files_dir=d.get("files_dir", "./data/files"),
             session_id=d.get("session_id", "default"),

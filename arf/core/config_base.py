@@ -17,6 +17,7 @@ class ModelConfig(BaseModel):
     api_base: str = "https://api.deepseek.com"
     api_key_env: str = "DEEPSEEK_API_KEY"
     context_window: int = 131_072  # max tokens for this model
+    max_token: int | None = None  # per-call output token limit (maps to API max_tokens)
     kwargs: dict = Field(default_factory=dict)
     activation: Literal["kernel", "discoverable"] = "discoverable"
 
@@ -120,11 +121,11 @@ class HumanLoopConfig(BaseModel):
 
 
 class PathCheckFlags(BaseModel):
-    """Individual path safety checks. Default: only workspace containment."""
-    path_traversal: bool = False
-    absolute_path: bool = False
+    """Individual path safety checks. All enabled by default for security."""
+    path_traversal: bool = True
+    absolute_path: bool = True
     workspace_containment: bool = True
-    symlink: bool = False
+    symlink: bool = True
 
 
 class SandboxConfig(BaseModel):

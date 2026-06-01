@@ -68,3 +68,27 @@ def test_defaults():
     assert rt.session_id == "default"
     assert rt.interaction_round == 0
     assert isinstance(rt.env_vars, dict)
+
+
+def test_state_dir_in_to_dict():
+    """BUG-007: state_dir must be present in to_dict() so hooks can find state files."""
+    rt = PluginRuntime()
+    d = rt.to_dict()
+    assert "state_dir" in d, "BUG-007: state_dir missing from PluginRuntime.to_dict()"
+    assert d["state_dir"] == "./data/state"
+
+
+def test_state_dir_custom_value():
+    rt = PluginRuntime(state_dir="/custom/state")
+    assert rt.state_dir == "/custom/state"
+    d = rt.to_dict()
+    assert d["state_dir"] == "/custom/state"
+
+
+def test_state_dir_roundtrip():
+    """state_dir must survive JSON serialization roundtrip."""
+    import json
+    rt = PluginRuntime(state_dir="/app/data/state")
+    json_str = json.dumps(rt.to_dict())
+    restored = PluginRuntime.from_dict(json.loads(json_str))
+    assert restored.state_dir == "/app/data/state"

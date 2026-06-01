@@ -65,10 +65,10 @@ class PathCheckToolGuard:
         self._quota = quota
         self._allow_escape = allow_escape
         self._checks = checks or {
-            "path_traversal": False,
-            "absolute_path": False,
+            "path_traversal": True,
+            "absolute_path": True,
             "workspace_containment": True,
-            "symlink": False,
+            "symlink": True,
         }
 
     # ── public API ──
@@ -116,8 +116,8 @@ class PathCheckToolGuard:
                 reason=f"Path count exceeds limit {self._quota.max_path_count}",
             )
 
-        # 5. Symlink detection
-        if self._checks.get("symlink") and self._quota and self._quota.deny_symlinks:
+        # 5. Symlink detection (independent of quota)
+        if self._checks.get("symlink"):
             if self._sandbox.has_symlink(v):
                 return GuardResult(allowed=False, reason=f"Symlink traversal blocked: '{v}'")
 

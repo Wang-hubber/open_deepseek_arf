@@ -447,7 +447,7 @@ class TestUsageTracker:
         from arf.agent.base import BaseAgent
         src = inspect.getsource(BaseAgent.__init__)
         assert "UsageTracker" in src
-        assert "self._usage_tracker = UsageTracker(event_bus)" in src
+        assert "self._usage_tracker = UsageTracker(event_bus" in src
 
     def test_usage_tracker_exported_from_observability(self):
         """Doc: UsageTracker is importable from arf.observability."""
@@ -969,7 +969,7 @@ class TestFindingsWiringGaps:
         """对比: UsageTracker 在 BaseAgent.__init__ 中自动创建 ✓."""
         from arf.agent.base import BaseAgent
         src = inspect.getsource(BaseAgent.__init__)
-        assert "UsageTracker(event_bus)" in src
+        assert "UsageTracker(event_bus" in src
 
     def test_observability_config_now_in_config_base(self):
         """FIXED 2026-05-29: ObservabilityConfig 已添加到 config_base.py.

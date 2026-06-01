@@ -239,6 +239,7 @@ class BaseAgent:
         plugin_runtime = PluginRuntime(
             memory_dir=_mem_dir,
             workspace_dir=_workspace_dir,
+            state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
             files_dir=str(ctx.files_dir) if ctx else "./data/files",
             system_model=adv.system_model if adv else "quick",
@@ -370,10 +371,11 @@ class BaseAgent:
 
         # 5. Error + Transaction
         err_cfg = (adv.errors or AdvancedConfig.default().errors) if adv else None
-        tool_retry = err_cfg.tool_retry if err_cfg else 2
         error_policy = override_protocols.pop("error_policy", DefaultErrorPolicy(
-            tool_retry=tool_retry,
+            tool_retry=(err_cfg.tool_retry if err_cfg else 2),
+            tool_backoff=(err_cfg.tool_backoff if err_cfg else "exponential"),
             model_5xx_action=(err_cfg.model_5xx_action if err_cfg else "fallback"),
+            guardrail_block_action=(err_cfg.guardrail_block_action if err_cfg else "abort"),
         ))
 
         # 6. Hooks
@@ -406,12 +408,15 @@ class BaseAgent:
                 sub_prompt = _build_system_prompt(sub_cfg)
                 sub_adapters = {}
                 for m in (sub_cfg.models or []):
-                    sub_adapters[m.type] = _SubModelAdapter({
+                    sub_adapter_cfg: dict[str, Any] = {
                         "base_url": m.api_base,
                         "api_key": _os3.environ.get(m.api_key_env, ""),
                         "model_name": m.model,
                         **m.kwargs,
-                    })
+                    }
+                    if m.max_token is not None:
+                        sub_adapter_cfg["max_tokens"] = m.max_token
+                    sub_adapters[m.type] = _SubModelAdapter(sub_adapter_cfg)
                 self._sub_agent_configs[sub_cfg.name] = {
                     "config": sub_cfg,
                     "system_prompt": sub_prompt,
@@ -523,11 +528,12 @@ class BaseAgent:
         self._memory_store = memory_store
         self._tool_resolver = resource_resolver
         # Auto-create usage tracker (framework default)
+        obs_cfg = adv.observability if adv else None
         from arf.observability.usage_tracker import UsageTracker
-        self._usage_tracker = UsageTracker(event_bus)
+        usage_dir = obs_cfg.usage_dir if obs_cfg else "./memory"
+        self._usage_tracker = UsageTracker(event_bus, dir=usage_dir)
 
         # Auto-create trace store (framework default)
-        obs_cfg = adv.observability if adv else None
         trace_dir = str(ctx.trace_dir) if ctx else (obs_cfg.trace_dir if obs_cfg else "./memory/traces")
         from arf.observability import FileTraceStore
         self._trace_store = FileTraceStore(event_bus, dir=trace_dir)
@@ -605,12 +611,15 @@ class BaseAgent:
         adapters: dict[str, ModelAdapter] = {}
         for m in config.models:
             api_key = _os.environ.get(m.api_key_env, "")
-            adapters[m.type] = ModelAdapter({
+            adapter_cfg: dict[str, Any] = {
                 "base_url": m.api_base,
                 "api_key": api_key,
                 "model_name": m.model,
                 **m.kwargs,
-            })
+            }
+            if m.max_token is not None:
+                adapter_cfg["max_tokens"] = m.max_token
+            adapters[m.type] = ModelAdapter(adapter_cfg)
         default_name = config.models[0].type if config.models else ""
 
         # --- Protection layer (TODO #10) ---

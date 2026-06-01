@@ -23,6 +23,7 @@ models:
 | `api_key_env` | 从哪个环境变量读取 API key | 是 |
 | `api_type` | `openai` / `anthropic` / `custom`，默认 `openai` | 否 |
 | `context_window` | 模型上下文窗口 token 数上限，用于压缩阈值计算 | 是 |
+| `max_token` | 每次 API 调用输出 token 上限（映射为 `max_tokens`），默认不限制 | 否 |
 | `kwargs` | 传递给 API 的额外参数（temperature、reasoning_effort 等） | 否 |
 | `activation` | `kernel` / `discoverable`，默认 `discoverable` | 否 |
 
