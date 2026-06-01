@@ -417,10 +417,17 @@ class BaseAgent:
                     if m.max_token is not None:
                         sub_adapter_cfg["max_tokens"] = m.max_token
                     sub_adapters[m.type] = _SubModelAdapter(sub_adapter_cfg)
+                # Per-agent permission checker
+                sub_adv = sub_cfg.effective_advanced()
+                sub_perms = sub_adv.guardrails.permissions if sub_adv.guardrails else None
+                sub_perm_checker = ToolPermissionChecker(
+                    config=sub_perms.model_dump() if sub_perms else None
+                )
                 self._sub_agent_configs[sub_cfg.name] = {
                     "config": sub_cfg,
                     "system_prompt": sub_prompt,
                     "adapters": sub_adapters,
+                    "permission_checker": sub_perm_checker,
                 }
 
         # 4.6 Handoff manager — from config.handover rules

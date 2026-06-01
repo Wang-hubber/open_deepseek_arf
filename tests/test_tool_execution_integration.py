@@ -64,12 +64,14 @@ class TestEngineToolExecution:
             assert "unexpected keyword argument" not in str(result.error or "")
         asyncio.run(run())
 
-    def test_python_exec_executes_without_engine_error(self, resolver):
-        """python_exec should execute without _engine contamination."""
+    def test_python_exec_executes_without_engine_error(self, resolver, tmp_path):
+        """python_exec should accept script path parameter without _engine error."""
+        script = tmp_path / "hello.py"
+        script.write_text("print('hello')")
         async def run():
-            result = await resolver.execute("python_exec", {"code": "print('hello')"})
+            result = await resolver.execute("python_exec", {"script": str(script)})
             error = str(result.error or "")
-            assert "unexpected keyword argument" not in error, f"Got _engine error: {error}"
+            assert "unexpected keyword argument" not in error, f"Got error: {error}"
         asyncio.run(run())
 
     def test_file_writer_executes_without_engine_error(self, resolver, tmp_path):

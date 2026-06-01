@@ -186,6 +186,11 @@ function createChatInstance(): ChatInstance {
       console.debug('Guard pass:', evt.tool_name)
     } else if (evt.type === 'agent_switch') {
       chatStore.setActiveAgent(evt.to || '')
+      const fromName = (evt as any).from || ''
+      const toName = evt.to || ''
+      if (fromName && toName) {
+        streamingText.value += `\n\n---\n🔄 **交接**: ${fromName} → ${toName}\n`
+      }
     } else if (evt.type === 'done') {
       isStreaming.value = false
       chatStore.setHistory(evt.history || [])

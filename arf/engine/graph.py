@@ -174,6 +174,12 @@ class GraphEngine:
         # Tool progress streaming — tools write chunks here, SSE loop reads them
         import asyncio as _asyncio_queue
         self._tool_progress_queue: _asyncio_queue.Queue = _asyncio_queue.Queue()
+        # Monotonic tool call ID counter for globally unique SSE event IDs
+        self._tc_seq: int = 0
+
+    def _next_tc_id(self, model_id: str) -> str:
+        self._tc_seq += 1
+        return f"tc{self._tc_seq}_{model_id}"
 
     @property
     def cancel_event(self) -> asyncio.Event | None:
@@ -406,8 +412,17 @@ class GraphEngine:
 
     # ---- multi-agent support ----
 
+    def _swap_permission_checker(self, agent_name: str) -> None:
+        """Swap the active permission checker to the named agent's config."""
+        if not self.guard_runner:
+            return
+        sub = self._sub_agent_configs.get(agent_name, {})
+        checker = sub.get("permission_checker")
+        if checker:
+            self.guard_runner._permissions = checker
+
     def _active_config(self, state: AgentState) -> dict:
-        """Return (system_prompt, tools, skills, max_turns) for active agent."""
+        """Return config for the currently active agent."""
         agent_name = state.get("active_agent", "")
         if agent_name and agent_name in self._sub_agent_configs:
             sub = self._sub_agent_configs[agent_name]
@@ -419,6 +434,7 @@ class GraphEngine:
                 "max_turns": cfg.effective_advanced().max_turns,
                 "hooks": cfg.hooks,
                 "adapters": sub.get("adapters", {}),
+                "permission_checker": sub.get("permission_checker"),
             }
 
         return {
@@ -428,6 +444,7 @@ class GraphEngine:
             "max_turns": self._max_turns,
             "hooks": [],
             "adapters": {},
+            "permission_checker": None,
         }
 
     async def _execute_handoff(self, state: AgentState, handoff_data: dict[str, object],
@@ -1633,7 +1650,7 @@ class GraphEngine:
                     matched = next((reason for dname, reason in denied_calls if dname == name), None)
                     if matched is None:
                         continue
-                    tc_id = tc.get("__prefixed_id", tc.get("id", ""))
+                    tc_id = tc.get("__tc_uid", tc.get("id", ""))
                     yield self._make_event(type="tool_call_end",
                                      data={"tool_name": name, "turn": turn, "id": tc_id,
                                            "success": False, "error": f"Blocked: {matched}"},
@@ -1659,14 +1676,13 @@ class GraphEngine:
                                      turn=turn, session_id=session_id)
                     self._inject_hook_messages(h_results, state)
                 for tc in valid_calls:
-                    tc_id = f"r{state.get('interaction_round', 0)}_{tc.get('id', '')}"
+                    tc_uid = self._next_tc_id(tc.get("id", ""))
+                    tc["__tc_uid"] = tc_uid
                     yield self._make_event(type="tool_call_start",
                                      data={"tool_name": tc.get("name", ""), "turn": turn,
-                                           "id": tc_id,
+                                           "id": tc_uid,
                                            "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                      turn=turn, session_id=session_id)
-                    # Update the tc dict so tool_call_end uses the same prefixed id
-                    tc["__prefixed_id"] = tc_id
                 agent_mode = state.get("active_agent", "")
                 # Fresh queue per round — tools write progress here, SSE loop reads it
                 self._tool_progress_queue = asyncio.Queue()
@@ -1689,7 +1705,7 @@ class GraphEngine:
                 results = await tool_task
                 for tc in valid_calls:
                     r = results.get(tc.get("id", ""))
-                    tc_id = tc.get("__prefixed_id", tc.get("id", ""))
+                    tc_id = tc.get("__tc_uid", tc.get("id", ""))
                     yield self._make_event(type="tool_call_end",
                                      data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc_id,
                                            "success": r.success if r else False,
@@ -1753,6 +1769,13 @@ class GraphEngine:
                                              turn=turn, session_id=session_id)
                         else:
                             self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                            # Swap to the target agent's permission checker
+                            target = state.get("active_agent", "")
+                            self._swap_permission_checker(target)
+                            # Notify frontend via SSE
+                            yield self._make_event("agent_switch",
+                                {"from": self._active_agent, "to": target},
+                                turn=turn, session_id=session_id)
                         await self.state_store.put(session_id, state)
                         continue
 
