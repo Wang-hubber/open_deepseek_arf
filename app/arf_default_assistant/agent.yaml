@@ -98,7 +98,7 @@ advanced:
   # 应选廉价快速模型 (flash, thinking disabled, low temp)
   system_model: quick
   promotion:
-    strategy: auto
+    strategy: ask
   guardrails:
     permissions:
       allow:

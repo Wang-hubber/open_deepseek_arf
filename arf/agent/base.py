@@ -546,15 +546,23 @@ class BaseAgent:
 
     @staticmethod
     def _build_promotion(adv: AdvancedConfig) -> Promotion | None:
-        """Build Promotion gate from AdvancedConfig, defaulting to ask strategy."""
-        from arf.core.config_base import PromotionConfig
+        """Build Promotion gate, sharing permissions from guardrails.permissions.
+
+        Promotion's deny/ask/allow lists are drawn from the unified permissions
+        model (guardrails.permissions). The Promotion strategy controls *how*
+        permission decisions are made ('auto' bypasses, 'ask' requires user
+        input, 'plan' is read-only).
+        """
+        from arf.core.config_base import PromotionConfig, PermissionsConfig
         pc = adv.promotion or PromotionConfig()
+        # Use unified permissions from guardrails as the single source of truth
+        perms = adv.guardrails.permissions if adv.guardrails else PermissionsConfig()
         return Promotion(
             strategy=pc.strategy,
-            deny=pc.deny,
-            ask=pc.ask,
-            allow=pc.allow,
-            deny_patterns=pc.deny_patterns,
+            deny=pc.deny or perms.deny,
+            ask=pc.ask or perms.ask,
+            allow=pc.allow or perms.allow,
+            deny_patterns=pc.deny_patterns or perms.deny_patterns,
         )
 
     def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
