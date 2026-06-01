@@ -5,11 +5,11 @@ import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/composables/useI18n'
 
 const props = defineProps<{
-  showResources: boolean
+  showSidePanel: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'toggle-resources'): void
+  (e: 'toggle-side-panel'): void
 }>()
 
 const { t } = useI18n()
@@ -55,8 +55,8 @@ function onLanguageChange() {
         <option value="en">EN</option>
       </select>
 
-      <button class="sb-btn sb-btn-icon" :title="t('common.resources')" @click="emit('toggle-resources')">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <button class="sb-btn sb-btn-icon" :title="showSidePanel ? '收起执行区' : '展开执行区'" @click="emit('toggle-side-panel')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
       </button>
     </span>
   </div>

@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import StatusBar from '@/components/StatusBar.vue'
 import ChatPanel from '@/components/ChatPanel.vue'
-import ResourcePanel from '@/components/ResourcePanel.vue'
+import SidePanel from '@/components/SidePanel.vue'
 import { useSessionStore } from '@/stores/sessions'
 import { useChatStore } from '@/stores/chat'
 import { useAppStore } from '@/stores/app'
@@ -16,10 +16,10 @@ const chatStore = useChatStore()
 const appStore = useAppStore()
 const api = useApi()
 
-const showResources = ref(false)
+const showSidePanel = ref(true)
 
-function toggleResources() {
-  showResources.value = !showResources.value
+function toggleSidePanel() {
+  showSidePanel.value = !showSidePanel.value
 }
 
 async function loadHistory() {
@@ -64,37 +64,34 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div id="main-layout" :class="{ 'resources-hidden': !showResources }">
+  <div id="main-layout" :class="{ 'side-hidden': !showSidePanel }">
     <StatusBar
-      :show-resources="showResources"
-      @toggle-resources="toggleResources"
+      :show-side-panel="showSidePanel"
+      @toggle-side-panel="toggleSidePanel"
     />
     <ChatPanel />
-    <ResourcePanel v-if="showResources" />
+    <SidePanel v-if="showSidePanel" />
   </div>
 </template>
 
 <style scoped>
 #main-layout {
   display: grid;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: 1fr 340px;
   grid-template-rows: 40px 1fr;
   height: 100vh;
   background: var(--bg-root);
 }
-#main-layout.resources-hidden {
+#main-layout.side-hidden {
   grid-template-columns: 1fr;
 }
 
 @media (max-width: 900px) {
-  #main-layout {
-    grid-template-columns: 1fr;
-  }
+  #main-layout { grid-template-columns: 1fr; }
+  #main-layout.side-hidden { grid-template-columns: 1fr; }
 }
 
 @media (min-width: 1600px) {
-  #main-layout:not(.resources-hidden) {
-    grid-template-columns: 1fr 320px;
-  }
+  #main-layout:not(.side-hidden) { grid-template-columns: 1fr 380px; }
 }
 </style>

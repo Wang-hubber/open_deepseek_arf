@@ -24,12 +24,14 @@ const {
   toolCalls,
   isStreaming,
   streamError,
-  pendingApproval,
   sendMessage,
   abort,
   approve,
   setCallbacks,
+  pendingApprovals,
 } = useChat()
+
+const currentApproval = computed(() => pendingApprovals.value[0] || null)
 
 const textarea = ref<HTMLTextAreaElement | null>(null)
 const chatHistoryEl = ref<HTMLElement | null>(null)
@@ -435,15 +437,16 @@ function escapeHtml(s: string): string {
     </div>
 
     <!-- Approval prompt -->
-    <div v-if="pendingApproval" id="approval-bar">
+    <div v-if="currentApproval" id="approval-bar">
       <div class="ap-info">
         <span class="ap-icon">&#9888;</span>
-        <span class="ap-tool-name">{{ pendingApproval.tool_name }}</span>
-        <span class="ap-label">需要确认才能执行此工具调用</span>
+        <span class="ap-tool-name">{{ currentApproval.tool_name }}</span>
+        <span class="ap-label">需要确认才能执行</span>
+        <span v-if="pendingApprovals.length > 1" class="ap-queue">({{ pendingApprovals.length }} 个待审批)</span>
       </div>
       <div class="ap-actions">
-        <button class="ap-btn ap-deny" @click="approve(pendingApproval.decision_id, false)">拒绝</button>
-        <button class="ap-btn ap-allow" @click="approve(pendingApproval.decision_id, true)">允许</button>
+        <button class="ap-btn ap-deny" @click="approve(currentApproval.decision_id, false)">拒绝</button>
+        <button class="ap-btn ap-allow" @click="approve(currentApproval.decision_id, true)">允许</button>
       </div>
     </div>
 

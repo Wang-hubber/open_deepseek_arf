@@ -11,7 +11,7 @@ export function useChat() {
   const toolCalls = ref<{ id: string; name: string; args: string; status: string; result?: string; error?: string }[]>([])
   const isStreaming = ref(false)
   const streamError = ref('')
-  const pendingApproval = ref<{ decision_id: string; tool_name: string; params: Record<string, unknown> } | null>(null)
+  const pendingApprovals = ref<{ decision_id: string; tool_name: string; params: Record<string, unknown> }[]>([])
   let abortController: AbortController | null = null
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
@@ -75,7 +75,6 @@ export function useChat() {
   }
 
   async function approve(decisionId: string, approved: boolean) {
-    pendingApproval.value = null
     await fetch('/api/chat/approve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -147,13 +146,13 @@ export function useChat() {
       }
       if (onToolResult) onToolResult(id, (evt as any).content || evt.result, evt.tool || '')
     } else if (evt.type === 'approval_required') {
-      pendingApproval.value = {
+      pendingApprovals.value.push({
         decision_id: evt.decision_id,
         tool_name: evt.tool_name,
         params: evt.params,
-      }
+      })
     } else if (evt.type === 'approval_resolved') {
-      pendingApproval.value = null
+      pendingApprovals.value = pendingApprovals.value.filter(a => a.decision_id !== evt.decision_id)
       if (!evt.approved) {
         streamError.value = `Tool "${evt.tool_name}" was denied: ${evt.reason || 'no reason given'}`
       }
@@ -182,7 +181,7 @@ export function useChat() {
     toolCalls,
     isStreaming,
     streamError,
-    pendingApproval,
+    pendingApprovals,
     sendMessage,
     abort,
     approve,

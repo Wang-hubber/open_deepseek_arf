@@ -113,9 +113,105 @@ async def ws_stub(ws: WebSocket):
     await ws.close()
 
 
+@router.get("/api/files")
+async def list_workspace_files():
+    """List all files in workspace (for file tree panel). Max depth 4, skip hidden."""
+    from pathlib import Path
+    root = app_context.workspace_dir
+    entries: list[dict] = []
+
+    def _walk_data_files(dir: Path, depth: int = 0):
+        """Walk data/files/ sub-tree (simplified, no depth limit)."""
+        if depth > 3:
+            return
+        for p in sorted(dir.iterdir()):
+            if p.name.startswith('.'):
+                continue
+            if p.is_dir():
+                entries.append({"name": p.name, "type": "dir",
+                               "path": str(p.relative_to(root)), "children": []})
+                _walk_data_files(p, depth + 1)
+            else:
+                entries.append({"name": p.name, "type": "file",
+                               "path": str(p.relative_to(root)),
+                               "size": p.stat().st_size,
+                               "suffix": p.suffix.lower()})
+
+    def _walk(dir: Path, depth: int = 0):
+        if depth > 4:
+            return
+        for p in sorted(dir.iterdir()):
+            if p.name.startswith('.') or p.name.startswith('__pycache__'):
+                continue
+            if p.name in ('node_modules', 'logs', 'memory'):
+                continue
+            if p.name == 'data' and depth == 0:
+                for sub in sorted(p.iterdir()):
+                    if sub.name == 'files' and sub.is_dir():
+                        entries.append({"name": "data/files", "type": "dir",
+                                       "path": str(sub.relative_to(root)), "children": []})
+                        _walk_data_files(sub, depth + 1)
+                continue
+            if p.is_dir():
+                entries.append({"name": p.name, "type": "dir",
+                               "path": str(p.relative_to(root)), "children": []})
+                _walk(p, depth + 1)
+            else:
+                entries.append({"name": p.name, "type": "file",
+                               "path": str(p.relative_to(root)),
+                               "size": p.stat().st_size,
+                               "suffix": p.suffix.lower()})
+    _walk(root)
+    return JSONResponse({"ok": True, "root": str(root), "files": entries})
+
+
+@router.get("/api/files/{file_path:path}")
+async def serve_workspace_file(file_path: str, download: str = ""):
+    """Serve a workspace file for preview (md/txt/html) or download (others).
+
+    Preview types render inline in browser; all others force download.
+    Add ?download=1 to force download even for preview-able types.
+    """
+    from pathlib import Path
+    root = app_context.workspace_dir
+    target = (root / file_path).resolve()
+
+    # Security: must be within workspace
+    if not str(target).startswith(str(root.resolve())):
+        return JSONResponse({"error": "path escapes workspace"}, status_code=403)
+    if not target.exists() or not target.is_file():
+        return JSONResponse({"error": "file not found"}, status_code=404)
+
+    preview_suffixes = {'.md': 'text/markdown', '.txt': 'text/plain',
+                       '.html': 'text/html', '.htm': 'text/html',
+                       '.json': 'application/json', '.csv': 'text/csv',
+                       '.yaml': 'text/plain', '.yml': 'text/plain',
+                       '.py': 'text/plain', '.log': 'text/plain'}
+
+    if download != '1' and download != 'true' and target.suffix.lower() in preview_suffixes:
+        media_type = preview_suffixes[target.suffix.lower()]
+        return FileResponse(target, media_type=media_type,
+                           headers={"Content-Disposition": f"inline; filename=\"{target.name}\""})
+    return FileResponse(target, filename=target.name,
+                       headers={"Content-Disposition": f"attachment; filename=\"{target.name}\""})
+
+
 @router.post("/api/upload")
 async def upload_file(file: UploadFile = None):
-    return JSONResponse({"ok": True, "path": "", "filename": "", "size": 0, "content_type": "", "preview": ""})
+    """Upload a file to data/files/uploads/ directory."""
+    if not file or not file.filename:
+        return JSONResponse({"ok": False, "error": "no file"}, status_code=400)
+    from pathlib import Path
+    upload_dir = app_context.files_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / file.filename
+    content = await file.read()
+    target.write_bytes(content)
+    preview_suffixes = {'.md', '.txt', '.html', '.htm', '.json', '.csv', '.yaml', '.yml', '.py', '.log'}
+    return JSONResponse({"ok": True, "path": str(target.relative_to(app_context.workspace_dir)),
+                        "filename": file.filename, "size": len(content),
+                        "content_type": file.content_type or "",
+                        "preview": target.suffix.lower() in preview_suffixes})
 
 
 # ---- Resource stats (from trace data) ----
