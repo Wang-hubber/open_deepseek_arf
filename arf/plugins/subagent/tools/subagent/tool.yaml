@@ -1,0 +1,28 @@
+name: subagent
+description: >
+  Dispatch a subtask to an isolated sub-agent with fresh context.
+  The sub-agent works independently, sharing only the filesystem,
+  and returns a summary. Use for exploration, research, or
+  multi-step operations that would clutter the main conversation.
+parameters:
+  type: object
+  properties:
+    prompt:
+      type: string
+      description: "The task for the sub-agent. Be specific about what to do."
+    model:
+      type: string
+      description: "Model override. Defaults to system_model."
+    description:
+      type: string
+      description: "Short label (for trace/logging)."
+  required: [prompt]
+execution:
+  sandbox: inherit
+  timeout: 120s
+  allowed_tools:
+    - read
+    - grep
+    - glob
+    - bash
+activation: kernel
