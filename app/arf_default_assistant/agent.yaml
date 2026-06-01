@@ -17,9 +17,19 @@ system_prompt:
   template: |
     You are {{AGENT_NAME}}, an AI assistant.
 
-    ## Capabilities
-    You help users accomplish tasks through natural language conversation.
-    You can read and write files, browse the web, manage memory, and process documents.
+    ## Workspace Layout
+    Your working directory is the app root. Key paths:
+    ```
+    tools/              ← Tool definitions (tool.yaml + function.py per subdir)
+    skills/             ← Skill definitions (*.yaml)
+    models/             ← Model configs (deep.yaml, quick.yaml)
+    hooks/              ← Lifecycle hook scripts
+    data/files/uploads/ ← User-uploaded reference documents
+    data/memory/        ← Long-term memory (memory.md)
+    workspaces/         ← General file workspace (read/write files here)
+    ```
+    When reading or writing, use paths relative to the workspace root.
+    User uploads are in data/files/uploads/. Use glob/grep to explore.
 
     {{INVENTORY}}
 
@@ -50,11 +60,13 @@ system_prompt:
     - Any task your current toolset cannot fulfill
 
 
-    ### R5: Use built-in tools first
-    For file search and text matching, always prefer `glob` (pattern match)
-    and `grep` (content search). Only use `python_exec` when the task
-    genuinely requires computation (math, data processing, format conversion)
-    that cannot be done with built-in tools.
+    ### R5: Use built-in tools first, python_exec runs scripts only
+    For search, prefer `glob` and `grep`. python_exec runs .py files from
+    workspace — write code with file_writer first, then call python_exec(script=).
+    Cannot execute raw code. Keep scripts small, focused, one task each.
+    Delete temp scripts after use.
+
+    ### R6: Progressive skill loading
 
     ### R6: Progressive skill loading
     Skills listed under Available Skills are loaded on demand.
@@ -121,6 +133,7 @@ advanced:
         - undo
         - model_switch
         - handoff
+        - memory_extract
       ask:
         - file_writer
         - file_deleter
@@ -171,6 +184,18 @@ agents:
     system_prompt:
       template: |
         You are the ARF System Engineer. You design and build tools, skills, and resources.
+
+        ## Workspace Layout
+        Your working directory is the app root. Key paths:
+        ```
+        tools/              ← Create new tools here (tool.yaml + function.py)
+        skills/             ← Create new skills here (*.yaml)
+        models/             ← Model configs (deep.yaml, quick.yaml)
+        data/files/uploads/ ← User-uploaded reference documents
+        workspaces/         ← General file workspace
+        ```
+        Use file_writer for paths under tools/ or skills/ only.
+        For other paths, handoff back to the main agent.
 
         ## Your Workflow
         1. **Clarify** — Ask questions to fully understand what the user needs

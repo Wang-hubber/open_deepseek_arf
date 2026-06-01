@@ -1633,7 +1633,7 @@ class GraphEngine:
                     matched = next((reason for dname, reason in denied_calls if dname == name), None)
                     if matched is None:
                         continue
-                    tc_id = tc.get("id", "")
+                    tc_id = tc.get("__prefixed_id", tc.get("id", ""))
                     yield self._make_event(type="tool_call_end",
                                      data={"tool_name": name, "turn": turn, "id": tc_id,
                                            "success": False, "error": f"Blocked: {matched}"},
@@ -1659,11 +1659,14 @@ class GraphEngine:
                                      turn=turn, session_id=session_id)
                     self._inject_hook_messages(h_results, state)
                 for tc in valid_calls:
+                    tc_id = f"r{state.get('interaction_round', 0)}_{tc.get('id', '')}"
                     yield self._make_event(type="tool_call_start",
                                      data={"tool_name": tc.get("name", ""), "turn": turn,
-                                           "id": tc.get("id", ""),
+                                           "id": tc_id,
                                            "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                      turn=turn, session_id=session_id)
+                    # Update the tc dict so tool_call_end uses the same prefixed id
+                    tc["__prefixed_id"] = tc_id
                 agent_mode = state.get("active_agent", "")
                 # Fresh queue per round — tools write progress here, SSE loop reads it
                 self._tool_progress_queue = asyncio.Queue()
@@ -1686,8 +1689,9 @@ class GraphEngine:
                 results = await tool_task
                 for tc in valid_calls:
                     r = results.get(tc.get("id", ""))
+                    tc_id = tc.get("__prefixed_id", tc.get("id", ""))
                     yield self._make_event(type="tool_call_end",
-                                     data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc.get("id", ""),
+                                     data={"tool_name": tc.get("name", ""), "turn": turn, "id": tc_id,
                                            "success": r.success if r else False,
                                            "duration_ms": r.duration_ms if r else 0,
                                            "result": str(r.data)[:500] if r and r.success and r.data else "",
