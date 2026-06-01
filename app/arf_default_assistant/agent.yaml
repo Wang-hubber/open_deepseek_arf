@@ -105,8 +105,6 @@ advanced:
         - read
         - grep
         - glob
-        - file_writer
-        - file_deleter
         - file_download
         - planner
         - todo
@@ -117,18 +115,16 @@ advanced:
         - undo
         - model_switch
         - handoff
+      ask:
+        - file_writer
+        - file_deleter
         - python_exec
-      ask: []
       deny: []
       deny_patterns: []
-#   human_loop:
-#     approval_points: tool_name_allowlist
-#     allowlist:
-#       - file_writer
-#       - file_deleter
-#       - python_exec
-#     channel: websocket
-#     timeout: 60s
+      approval:
+        channel: websocket
+        timeout: 60s
+# human_loop removed — approval now integrated into permissions.ask + permissions.approval
   sandbox:
     allow_escape: false
     writable_dirs: []

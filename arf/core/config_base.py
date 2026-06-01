@@ -79,12 +79,31 @@ class MemoryConfig(BaseModel):
     max_size_kb: int = 300
 
 
+class ApprovalConfig(BaseModel):
+    """Approval channel config for tools in the 'ask' list.
+
+    Only active when permissions.ask is non-empty. Tools in 'ask' require
+    explicit user approval before execution.
+    """
+    channel: Literal["console", "websocket", "callback"] = "console"
+    timeout: str = "60s"
+
+
 class PermissionsConfig(BaseModel):
-    """Tool permission lists — deny / ask / allow, plus custom deny patterns."""
+    """Unified tool permission model — deny / ask / allow.
+
+    Three actions:
+      - deny: hard block, tool call rejected
+      - ask:  require user approval (uses ApprovalConfig for channel/timeout)
+      - allow: execute immediately
+
+    deny_patterns provide regex-based blocking for dangerous URI schemes etc.
+    """
     deny: list[str] = Field(default_factory=list)
     ask: list[str] = Field(default_factory=list)
     allow: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
 
 
 class RegexPatternConfig(BaseModel):
@@ -111,13 +130,6 @@ class ErrorConfig(BaseModel):
     tool_backoff: Literal["exponential", "linear", "none"] = "exponential"
     model_5xx_action: Literal["fallback", "retry", "abort"] = "fallback"
     guardrail_block_action: Literal["abort", "ask_user"] = "abort"
-
-
-class HumanLoopConfig(BaseModel):
-    approval_points: Literal["always_auto", "tool_name_allowlist"] = "always_auto"
-    allowlist: list[str] = Field(default_factory=list)
-    channel: Literal["console", "websocket", "callback"] = "console"
-    timeout: str = "3600s"
 
 
 class PathCheckFlags(BaseModel):

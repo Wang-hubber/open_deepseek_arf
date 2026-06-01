@@ -355,12 +355,17 @@ def cmd_prepare(runner: E2ERunner) -> None:
 
     agent_path = runner.app_dir / "agent.yaml"
     cfg = yaml.safe_load(agent_path.read_text())
-    if "advanced" in cfg and "human_loop" in cfg["advanced"]:
-        del cfg["advanced"]["human_loop"]
+    # Disable approval for E2E: move any 'ask' tools to 'allow'
+    perms = cfg.get("advanced", {}).get("guardrails", {}).get("permissions", {})
+    if "ask" in perms and perms["ask"]:
+        moved = perms["ask"]
+        perms.setdefault("allow", [])
+        perms["allow"].extend(moved)
+        perms["ask"] = []
         agent_path.write_text(yaml.dump(cfg, default_flow_style=False, allow_unicode=True))
-        print(f"[PREPARE] {agent_path.name}: human_loop disabled")
+        print(f"[PREPARE] {agent_path.name}: approval disabled (moved {moved} to allow)")
     else:
-        print(f"[PREPARE] {agent_path.name}: human_loop already disabled")
+        print(f"[PREPARE] {agent_path.name}: approval already disabled")
 
 
 def cmd_cleanup(runner: E2ERunner) -> None:

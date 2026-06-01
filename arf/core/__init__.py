@@ -10,7 +10,7 @@ from arf.core.config_base import (
     PipelineSection,
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
-    GuardrailsConfig, ErrorConfig, HumanLoopConfig,
+    GuardrailsConfig, ErrorConfig, PermissionsConfig, ApprovalConfig,
     SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverRuleConfig, HandoverConfig, SupervisorConfig,
 )
@@ -22,7 +22,7 @@ __all__ = [
     "PipelineSection",
     "ModelConfig", "SkillConfig", "ToolConfig", "HookDefinition",
     "RoutingConfig", "CompactionConfig", "MemoryConfig",
-    "GuardrailsConfig", "ErrorConfig", "HumanLoopConfig",
+    "GuardrailsConfig", "ErrorConfig", "PermissionsConfig", "ApprovalConfig",
     "SandboxConfig", "ToolRetrievalConfig",
     "ReloadConfig", "HandoverRuleConfig", "HandoverConfig", "SupervisorConfig",
 ]

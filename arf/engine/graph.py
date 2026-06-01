@@ -877,56 +877,60 @@ class GraphEngine:
                 continue
 
             if perm_action == "ask":
+                # Unified permission model: 'ask' list defines tools that
+                # require user approval. approval_enabled is True when
+                # permissions.ask is non-empty.
                 needs_approval = self.approval_enabled and (
                     not self._approval_allowlist or name in self._approval_allowlist
                 )
-                if needs_approval:
-                    decision_id = f"{session_id}_{name}_{id(tc)}"
-                    if collect_approvals:
-                        events.append({"type": "approval_required",
-                                       "data": {"decision_id": decision_id, "tool_name": name,
-                                                "params": params}})
-                        pending_approvals.append({
-                            "decision_id": decision_id, "tool_name": name, "params": params,
-                        })
-                        continue  # caller will wait_approvals then re-classify
-                    else:
-                        self._emit("approval_required", {
-                            "decision_id": decision_id, "tool_name": name, "params": params,
-                        }, session_id=session_id)
-                        approval_evt = asyncio.Event()
-                        self._pending_approvals[decision_id] = approval_evt
-                        try:
-                            await asyncio.wait_for(approval_evt.wait(), timeout=self.approval_timeout)
-                        except asyncio.TimeoutError:
-                            self._pending_approvals.pop(decision_id, None)
-                            self._approval_results.pop(decision_id, None)
-                            denied_calls.append((name, "approval timed out"))
-                            events.append({"type": "approval_resolved",
-                                           "data": {"decision_id": decision_id, "tool_name": name,
-                                                    "approved": False, "reason": "timeout"}})
-                            continue
-                        approved = self._approval_results.pop(decision_id, False)
-                        if not approved:
-                            denied_calls.append((name, "denied by user"))
-                            events.append({"type": "approval_resolved",
-                                           "data": {"decision_id": decision_id, "tool_name": name,
-                                                    "approved": False, "reason": "denied by user"}})
-                            continue
-                        events.append({"type": "approval_resolved",
-                                       "data": {"decision_id": decision_id, "tool_name": name,
-                                                "approved": True, "reason": "approved"}})
-                        valid_calls.append(tc)
-                else:
+                if not needs_approval:
                     denied_calls.append((name, "requires approval (channel not enabled)"))
                     events.append({"type": "guard_block",
                                    "data": {"tool_name": name, "guard": "approval",
-                                            "reason": "requires approval (channel not enabled)"}})
+                                            "reason": "requires approval"}})
                     continue
-
-            events.append({"type": "guard_pass", "data": {"tool_name": name}})
-            completed.add(name)
-            valid_calls.append(tc)
+                # --- approval required ---
+                decision_id = f"{session_id}_{name}_{id(tc)}"
+                if collect_approvals:
+                    events.append({"type": "approval_required",
+                                   "data": {"decision_id": decision_id, "tool_name": name,
+                                            "params": params}})
+                    pending_approvals.append({
+                        "decision_id": decision_id, "tool_name": name, "params": params,
+                    })
+                    continue  # caller will _wait_approvals then re-classify
+                # Inline wait (invoke path)
+                self._emit("approval_required", {
+                    "decision_id": decision_id, "tool_name": name, "params": params,
+                }, session_id=session_id)
+                approval_evt = asyncio.Event()
+                self._pending_approvals[decision_id] = approval_evt
+                try:
+                    await asyncio.wait_for(approval_evt.wait(), timeout=self.approval_timeout)
+                except asyncio.TimeoutError:
+                    self._pending_approvals.pop(decision_id, None)
+                    self._approval_results.pop(decision_id, None)
+                    denied_calls.append((name, "approval timed out"))
+                    events.append({"type": "approval_resolved",
+                                   "data": {"decision_id": decision_id, "tool_name": name,
+                                            "approved": False, "reason": "timeout"}})
+                    continue
+                approved = self._approval_results.pop(decision_id, False)
+                if not approved:
+                    denied_calls.append((name, "denied by user"))
+                    events.append({"type": "approval_resolved",
+                                   "data": {"decision_id": decision_id, "tool_name": name,
+                                            "approved": False, "reason": "denied by user"}})
+                    continue
+                events.append({"type": "approval_resolved",
+                               "data": {"decision_id": decision_id, "tool_name": name,
+                                        "approved": True, "reason": "approved"}})
+                valid_calls.append(tc)
+            else:
+                # allow — no approval needed
+                events.append({"type": "guard_pass", "data": {"tool_name": name}})
+                completed.add(name)
+                valid_calls.append(tc)
 
         if pipeline_data:
             state["active_pipeline"]["completed"] = list(completed)

@@ -79,7 +79,7 @@ agent.yaml ──────────────┘                        
 | `memory` | `MemoryConfig\|None` | `None` | 内存管理（见 §Memory） |
 | `guardrails` | `GuardrailsConfig\|None` | `None` | 安全护栏（见 §Guardrails） |
 | `errors` | `ErrorConfig\|None` | `None` | 错误处理（见 §Errors） |
-| `human_loop` | `HumanLoopConfig\|None` | `None` | 人机审批（见 §HumanLoop） |
+| `human_loop` | Removed in v1.1 — 审批已整合到 `guardrails.permissions.ask` + `guardrails.permissions.approval` | — |
 | `tool_retrieval` | `ToolRetrievalConfig\|None` | `None` | 工具检索（工具 > 20 时自动启用） |
 | `concurrency` | `ConcurrencyConfig\|None` | `None` | 并发策略（见 §Concurrency） |
 | `sandbox` | `SandboxConfig\|None` | `None` | 路径沙箱（见 §Sandbox） |
@@ -378,31 +378,37 @@ advanced:
 
 ---
 
-## HumanLoop：人机审批
+## 统一权限模型（v1.1）
 
-**定义**: `arf/core/config_base.py:115`
+审批已整合到 `guardrails.permissions` 中，不再有独立的 `human_loop` 配置块。
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `approval_points` | `"always_auto" \| "tool_name_allowlist"` | `"always_auto"` | 审批模式 |
-| `allowlist` | `list[str]` | `[]` | 需要审批的工具名列表 |
-| `channel` | `"console" \| "websocket" \| "callback"` | `"console"` | 审批通道 |
-| `timeout` | `str` | `"3600s"` | 审批超时 |
-
-### 启用方式
+**三态模型**:
+- `allow` — 直接放行，无需审批
+- `ask` — 需要用户审批（通过 `approval` 配置通道）
+- `deny` — 硬拦截
 
 ```yaml
 advanced:
-  human_loop:
-    approval_points: tool_name_allowlist
-    allowlist:
-      - file_writer
-      - file_deleter
-    channel: websocket
-    timeout: 60s
+  guardrails:
+    permissions:
+      allow: [read, grep, glob]
+      ask: [file_writer, file_deleter, python_exec]
+      deny: []
+      deny_patterns: []
+      approval:               # 仅对 ask 列表生效
+        channel: websocket    # console | websocket | callback
+        timeout: 60s
 ```
 
-设置为 `always_auto`（默认）时，无需审批。
+### 判定流程
+
+```
+tool_call → deny 匹配?     → ❌ 硬拦截
+         → ask 匹配?       → 🔔 弹出审批（channel/timeout 控制）
+         → allow 匹配?     → ✅ 直接放行
+         → deny_patterns?  → ❌ 正则拦截
+         → 都不匹配         → ❌ 默认拒绝（安全优先）
+```
 
 ---
 

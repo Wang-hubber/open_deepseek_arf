@@ -72,11 +72,14 @@ advanced:
     input: none                          # 输入护栏: "none" | "regex_block" | "llm_classifier"
     output: regex_clean                  # 输出护栏: "none" | "regex_clean" | "llm_classifier"
     tool_params: path_check              # 工具参数护栏: "none" | "path_check" | "command_check"
-    permissions:                         # 工具权限 (deny → ask → allow 三级判定)
-      deny: []                           # 拒绝列表
-      ask: []                            # 需审批列表
-      allow: []                          # 允许列表
-      deny_patterns: []                  # 自定义拒绝模式
+    permissions:                         # 统一权限模型 (deny → ask → allow)
+      deny: []                           # 硬拦截
+      ask: []                            # 需用户审批（配合 approval 配置）
+      allow: []                          # 直接放行
+      deny_patterns: []                  # 正则拒绝模式
+      approval:                          # 审批通道 (仅对 ask 列表生效)
+        channel: console                 # "console" | "websocket" | "callback"
+        timeout: 60s
     # output_patterns: []                # 自定义输出正则过滤 (空 = 使用内置默认)
 
   # -- 路径沙箱 --
@@ -92,14 +95,6 @@ advanced:
     tool_backoff: exponential            # 重试退避策略: "exponential" | "linear" | "none"
     model_5xx_action: fallback           # 模型 5xx 响应: "fallback" | "retry" | "abort"
     guardrail_block_action: abort        # 护栏拦截后: "abort" | "ask_user"
-
-  # -- 人机交互 --
-  # Model: arf.core.config_base.HumanLoopConfig
-  human_loop:
-    approval_points: always_auto         # "always_auto" | "tool_name_allowlist"
-    allowlist: []                        # 需要审批的工具名列表
-    # channel: console                   # 审批通道: "console" | "websocket" | "callback"
-    # timeout: 3600s                     # 审批超时，默认 3600s
 
   # -- 热加载 --
   # Model: arf.core.config_base.ReloadConfig
