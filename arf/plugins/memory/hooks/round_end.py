@@ -16,6 +16,7 @@ def main():
     interval = plugin_config.get("interval", 10)
     current_round = runtime.get("interaction_round", 0)
     memory_dir = runtime.get("memory_dir", "./memory")
+    workspace_dir = runtime.get("workspace_dir", "./workspace")
     session_id = runtime.get("session_id", "default")
     python_exe = runtime.get("python_executable", sys.executable)
 
@@ -23,8 +24,9 @@ def main():
     if current_round <= 0 or current_round % interval != 0:
         sys.exit(0)
 
-    # Read session messages from FileStateStore
-    state_file = Path(memory_dir) / "state" / f"{session_id}.json"
+    # Read session messages from engine's state store (workspace/state/),
+    # NOT from memory_dir/state/ (which is a separate path for memory.md storage only)
+    state_file = Path(workspace_dir) / "state" / f"{session_id}.json"
     if not state_file.exists():
         sys.exit(0)
 

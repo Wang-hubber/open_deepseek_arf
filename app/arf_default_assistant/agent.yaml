@@ -11,6 +11,7 @@ plugins:
   - todo
   - file_tools
   - undo
+  - memory
 
 system_prompt:
   template: |
@@ -96,6 +97,8 @@ advanced:
   # 系统后台模型 — 记忆提取/检索、路由分类、上下文压缩共用
   # 应选廉价快速模型 (flash, thinking disabled, low temp)
   system_model: quick
+  promotion:
+    strategy: auto
   guardrails:
     permissions:
       allow:
@@ -136,7 +139,6 @@ advanced:
       symlink: false
   memory:
     store: file
-    workspace: ./memory
     retriever: llm
     writer: llm
     max_tokens: 2000

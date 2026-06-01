@@ -69,7 +69,7 @@ class CompactionConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     store: Literal["file", "sqlite", "none"] = "file"
-    workspace: str = "./memory"
+    workspace: str = "./data/memory"
     retriever: Literal["recent_first", "llm"] = "llm"
     writer: Literal["rule", "llm"] = "llm"
     max_tokens: int = 2000

@@ -1,7 +1,7 @@
 """file_deleter -- async soft-delete files."""
 from pathlib import Path
 
-WORKSPACE = Path("workspaces/default")
+WORKSPACE = Path("data/files")
 USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
 
 

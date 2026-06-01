@@ -230,18 +230,17 @@ class BaseAgent:
             resource_resolver.set_plugin_provider(self._plugin_provider)
 
         # 3. Memory — LLM-driven by default, falls back to rule-based
-        mem_cfg = (adv.memory or AdvancedConfig.default().memory) if adv else AdvancedConfig.default().memory
-        default_workspace = str(ctx.workspace_dir) if ctx else "./memory"
-        mem_workspace = mem_cfg.workspace if mem_cfg else default_workspace
-        # Resolve to absolute path for hook subprocesses
         from pathlib import Path as _Path
-        _mem_abs = str((ctx.root if ctx else _Path(".")) / _Path(mem_workspace))
+        _mem_dir = str(ctx.memory_dir) if ctx else "./data/memory"
+        _workspace_dir = str(ctx.root) if ctx else "."
+        _trace_dir = str(ctx.trace_dir) if ctx else "./data/traces"
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
-            memory_dir=_mem_abs,
-            workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
-            trace_dir=str(ctx.trace_dir) if ctx else "./traces",
+            memory_dir=_mem_dir,
+            workspace_dir=_workspace_dir,
+            trace_dir=_trace_dir,
+            files_dir=str(ctx.files_dir) if ctx else "./data/files",
             system_model=adv.system_model if adv else "quick",
             model_configs={
                 m.type: {
@@ -252,7 +251,7 @@ class BaseAgent:
                 for m in config.models
             },
         )
-        memory_store = override_protocols.pop("memory_store", FileMemoryStore(mem_workspace))
+        memory_store = override_protocols.pop("memory_store", FileMemoryStore(_mem_dir))
 
         # Build system model adapter for all background tasks (memory, routing, compaction).
         # Uses advanced.system_model if set, otherwise falls back to the first configured model.
@@ -499,8 +498,8 @@ class BaseAgent:
             error_policy=error_policy,
             model_router=model_router,
             compaction=compaction,
-            memory_max_tokens=mem_cfg.max_tokens if mem_cfg else 2000,
-            memory_top_k=mem_cfg.top_k if mem_cfg else 5,
+            memory_max_tokens=_mem_cfg.max_tokens if _mem_cfg else 2000,
+            memory_top_k=_mem_cfg.top_k if _mem_cfg else 5,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             max_undo_depth=(adv.max_undo_depth if adv else 3),
@@ -509,7 +508,7 @@ class BaseAgent:
             approval_timeout=_parse_duration(adv.human_loop.timeout if adv and adv.human_loop else "60s"),
             sub_agent_configs=self._sub_agent_configs,
             handoff_manager=handoff_manager,
-            memory_workspace=_mem_abs,
+            memory_workspace=_mem_dir,
             workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
             promotion=self._build_promotion(adv) if adv else None,
             action_runner=ActionRunner() if adv else None,

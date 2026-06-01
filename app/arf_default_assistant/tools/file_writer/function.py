@@ -1,7 +1,7 @@
 """file_writer -- async write file with content."""
 from pathlib import Path
 
-WORKSPACE = Path("workspaces/default")
+WORKSPACE = Path("data/files")
 USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
 
 

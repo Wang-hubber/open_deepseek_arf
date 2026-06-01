@@ -11,6 +11,9 @@ from arf.core.execution import Decision, Executable
 class AutoStrategy:
     """All executables pass through. For fully-trusted environments."""
 
+    def __init__(self, **kwargs: Any) -> None:
+        pass
+
     def evaluate(self, executable: Executable, **context: Any) -> Decision:
         return Decision(action="allow", reason="auto strategy: all allowed")
 

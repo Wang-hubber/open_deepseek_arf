@@ -36,7 +36,7 @@ def _httpx_post(path: str, data: dict | None = None) -> dict | None:
 
 def cmd_init(args):
     """Create skeleton directories for the assistant."""
-    dirs = ["tools", "skills", "hooks", "memory", "workspaces/default"]
+    dirs = ["tools", "skills", "hooks", "data/files"]
     for d in dirs:
         (APP_DIR / d).mkdir(parents=True, exist_ok=True)
         print(f"  Created: {d}")
