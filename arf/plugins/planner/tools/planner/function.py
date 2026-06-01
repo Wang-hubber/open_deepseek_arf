@@ -36,7 +36,7 @@ async def execute(task: str = "", confirm: bool = False, _engine=None, _workspac
             queue = getattr(_engine, '_tool_progress_queue', None)
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
-            for chunk in _engine._stream_model(
+            async for chunk in _engine._stream_model(
                 [{"role": "user", "content": prompt}],
                 model_name=getattr(_engine, '_system_model_name', ''),
             ):

@@ -51,7 +51,7 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
     if "call_model" not in overrides:
 
         async def _wrap_call(messages, model_name="", tools=None):
-            result = fake_model.chat_complete(messages, tools=tools)
+            result = await fake_model.chat_complete(messages, tools=tools)
             return {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
@@ -63,7 +63,7 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
     if "stream_model" not in overrides:
 
         async def _wrap_stream(messages, model_name="", tools=None):
-            for chunk in fake_model.chat_stream_full(messages, tools=tools):
+            async for chunk in fake_model.chat_stream_full(messages, tools=tools):
                 yield chunk
 
         defaults["stream_model"] = _wrap_stream
@@ -233,7 +233,7 @@ class TestSessionHooks:
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
             with patch("arf.agent.base.BaseAgent._inject_model_calls", return_value=None):
-                with patch("arf.core.model_adapter.OpenAI"):
+                with patch("arf.core.model_adapter.AsyncOpenAI"):
                     from arf.agent.base import BaseAgent
                     agent = BaseAgent(
                         config,
@@ -558,7 +558,7 @@ class TestBaseAgentStop:
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
             with patch("arf.agent.base.BaseAgent._inject_model_calls", return_value=None):
-                with patch("arf.core.model_adapter.OpenAI"):
+                with patch("arf.core.model_adapter.AsyncOpenAI"):
                     from arf.agent.base import BaseAgent
                     return BaseAgent(config, **overrides)
 
@@ -700,7 +700,7 @@ class TestRoundStartHook:
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
             with patch("arf.agent.base.BaseAgent._inject_model_calls", return_value=None):
-                with patch("arf.core.model_adapter.OpenAI"):
+                with patch("arf.core.model_adapter.AsyncOpenAI"):
                     from arf.agent.base import BaseAgent
                     return BaseAgent(config, hook_runner=hook_runner)
 
@@ -824,7 +824,7 @@ class TestSessionLifecycleEdgeCases:
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
             with patch("arf.agent.base.BaseAgent._inject_model_calls", return_value=None):
-                with patch("arf.core.model_adapter.OpenAI"):
+                with patch("arf.core.model_adapter.AsyncOpenAI"):
                     from arf.agent.base import BaseAgent
                     return BaseAgent(config, **overrides)
 

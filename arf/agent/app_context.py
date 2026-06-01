@@ -71,4 +71,4 @@ class AppContext:
 
     @property
     def logs_dir(self) -> Path:
-        return self.root / "logs"
+        return self.data_dir / "logs"

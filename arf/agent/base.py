@@ -166,7 +166,7 @@ class BaseAgent:
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        default_state_dir = str(ctx.state_dir) if ctx else "./memory/state"
+        default_state_dir = str(ctx.state_dir) if ctx else "./data/state"
         state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
 
         # 2. Resources — from AppContext if provided, otherwise defaults
@@ -280,8 +280,7 @@ class BaseAgent:
 
                 async def _system_model_call(prompt: str) -> str:
                     """Call the system model with a simple prompt, return text content."""
-                    msg = await _aio2.to_thread(
-                        _system_adapter.chat_complete,
+                    msg = await _system_adapter.chat_complete(
                         [{"role": "user", "content": prompt}],
                         tools=None,
                         max_tokens=1024,
@@ -523,6 +522,7 @@ class BaseAgent:
             memory_workspace=_mem_dir,
             workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
             promotion=self._build_promotion(adv) if adv else None,
+            main_permissions=adv.guardrails.permissions if adv and adv.guardrails else None,
             action_runner=ActionRunner() if adv else None,
             **override_protocols,
         )
@@ -530,6 +530,8 @@ class BaseAgent:
         self._engine.set_model_windows(
             {m.type: m.context_window for m in config.models}
         )
+        # Store main agent's tools so _active_config doesn't fall back to resolver
+        self._engine._main_agent_tools = list(config.tools)
         self._state_store = state_store
         self._event_bus = event_bus
         self._memory_store = memory_store
@@ -692,9 +694,7 @@ class BaseAgent:
 
         async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
             adapter = adapters.get(model_name, adapters[default_name])
-            msg = await _asyncio.to_thread(
-                adapter.chat_complete, messages, tools=_to_openai_tools(tools),
-            )
+            msg = await adapter.chat_complete(messages, tools=_to_openai_tools(tools))
             tool_calls = []
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -712,11 +712,9 @@ class BaseAgent:
 
         async def _stream_model(messages: list[dict], model_name: str = "", tools=None):
             """Token-level streaming via ModelAdapter.chat_stream_full."""
-            import asyncio as _asyncio_stream
             adapter = adapters.get(model_name, adapters[default_name])
-            for chunk in adapter.chat_stream_full(messages, tools=_to_openai_tools(tools)):
+            async for chunk in adapter.chat_stream_full(messages, tools=_to_openai_tools(tools)):
                 yield chunk
-                await _asyncio_stream.sleep(0)  # yield to event loop so ASGI can flush
 
         # --- Apply protection wrapper ---
         if protector:
@@ -852,9 +850,17 @@ class BaseAgent:
             summary = ""
             interaction = 0
 
+        # Route to currently active agent if handoff is in progress
+        active_agent = existing.get("active_agent", "") if existing else ""
+        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
+            agent_name = active_agent
+        else:
+            agent_name = self.config.name
+
         state: AgentState = {
             "session_id": session_id,
-            "agent_name": self.config.name,
+            "agent_name": agent_name,
+            "active_agent": active_agent,
             "messages": messages,
             "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
@@ -868,6 +874,10 @@ class BaseAgent:
 
         self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
+
+        # Restore sub-agent permissions if continuing a handoff
+        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
+            self._engine._activate_agent(active_agent)
 
         if self._engine.hook_runner:
             self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
@@ -922,9 +932,17 @@ class BaseAgent:
             summary = ""
             interaction = 0
 
+        # Route to currently active agent if handoff is in progress
+        active_agent = existing.get("active_agent", "") if existing else ""
+        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
+            agent_name = active_agent
+        else:
+            agent_name = self.config.name
+
         state: AgentState = {
             "session_id": session_id,
-            "agent_name": self.config.name,
+            "agent_name": agent_name,
+            "active_agent": active_agent,
             "messages": messages,
             "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
@@ -938,6 +956,10 @@ class BaseAgent:
 
         self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
+
+        # Restore sub-agent permissions if continuing a handoff
+        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
+            self._engine._activate_agent(active_agent)
 
         if self._engine.hook_runner:
             self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)

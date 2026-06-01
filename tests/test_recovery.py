@@ -1,4 +1,5 @@
 """Tests for ARF engine recovery mechanism — continuation, compaction, backoff."""
+import asyncio
 import pytest
 from arf.core.results import RecoveryState, RecoveryDecision
 
@@ -372,7 +373,7 @@ class TestFinishReasonPropagation:
         fake_response.choices = [fake_choice]
         fake_response.usage = None
 
-        with patch("arf.core.model_adapter.OpenAI"):
+        with patch("arf.core.model_adapter.AsyncOpenAI"):
             adapter = ModelAdapter(
                 config={
                     "model_name": "test-model",
@@ -381,5 +382,5 @@ class TestFinishReasonPropagation:
                 },
             )
             with patch.object(adapter, "_call_with_retry", return_value=fake_response):
-                result = adapter.chat_complete([{"role": "user", "content": "hi"}])
+                result = asyncio.run(adapter.chat_complete([{"role": "user", "content": "hi"}]))
                 assert result.finish_reason == "stop"

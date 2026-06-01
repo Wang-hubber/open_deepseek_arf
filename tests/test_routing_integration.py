@@ -5,12 +5,18 @@ classifier prompt structure, static strategy, and the background field gap.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from arf.core.model_adapter import ModelAdapter
 from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
+
+
+async def _collect(async_gen):
+    """Collect all items from an async generator into a list."""
+    return [item async for item in async_gen]
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +107,11 @@ class TestStreamingEventTypes:
         )]
         chunk.usage = None
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk]))
-        events = list(adapter.chat_stream_full([], None))
+        async def _mock_stream():
+            yield chunk
+
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         assert any(e["type"] == "chunk" for e in events)
         assert any(e.get("content") == "Hello" for e in events)
@@ -136,8 +145,11 @@ class TestStreamingEventTypes:
             choices = [FakeChoice]
             usage = None
 
-        adapter._call_with_retry = MagicMock(return_value=iter([FakeChunk]))
-        events = list(adapter.chat_stream_full([], None))
+        async def _mock_stream():
+            yield FakeChunk
+
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         tool_events = [e for e in events if e["type"] == "tool_call"]
         assert len(tool_events) == 1
@@ -160,8 +172,11 @@ class TestStreamingEventTypes:
         mock_usage.total_tokens = 30
         chunk.usage = mock_usage
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk]))
-        events = list(adapter.chat_stream_full([], None))
+        async def _mock_stream():
+            yield chunk
+
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         usage_events = [e for e in events if e["type"] == "usage"]
         assert len(usage_events) == 1
@@ -176,11 +191,11 @@ class TestStreamingEventTypes:
             "api_key": "sk-test",
             "model_name": "test-model",
         })
-        adapter._call_with_retry = MagicMock(
+        adapter._call_with_retry = AsyncMock(
             side_effect=ModelAdapterError(status_code=503, message="Down")
         )
 
-        events = list(adapter.chat_stream_full([], None))
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
         error_events = [e for e in events if e["type"] == "error"]
         assert len(error_events) == 1
         assert error_events[0]["code"] == 503
@@ -218,8 +233,12 @@ class TestStreamingEventTypes:
         mock_usage.total_tokens = 15
         chunk2.usage = mock_usage
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk1, chunk2]))
-        events = list(adapter.chat_stream_full([], None))
+        async def _mock_stream():
+            yield chunk1
+            yield chunk2
+
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         event_types = {e["type"] for e in events}
         assert "chunk" in event_types
@@ -236,11 +255,11 @@ class TestStreamingEventTypes:
             "api_key": "sk-test",
             "model_name": "test-model",
         })
-        adapter._call_with_retry = MagicMock(
+        adapter._call_with_retry = AsyncMock(
             side_effect=ModelAdapterError(status_code=400, message="Bad Request")
         )
 
-        events = list(adapter.chat_stream_full([], None))
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
         event_types = {e["type"] for e in events}
         assert event_types == {"error"}
 
@@ -421,7 +440,7 @@ class TestTwoTierRouterSyncClassifier:
         fake = FakeModelAdapter(default=FakeResponse(content="medium"))
 
         async def classifier(query: str) -> str:
-            resp = fake.chat_complete([{"role": "user", "content": query}])
+            resp = await fake.chat_complete([{"role": "user", "content": query}])
             return resp.content.strip().lower()
 
         router = TwoTierRouter(cfg, models=["quick", "deep"],

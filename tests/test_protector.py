@@ -29,7 +29,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         result = asyncio.run(
@@ -58,7 +58,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         with pytest.raises(RateLimitError):
@@ -70,7 +70,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         with pytest.raises(CircuitOpenError):
@@ -86,7 +86,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         result = asyncio.run(protector.call_with_protection(raw_call, [], "deep"))
@@ -102,7 +102,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         with pytest.raises(RateLimitError):
@@ -121,7 +121,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(raise_on_call=RuntimeError("500 error"))
 
         async def failing_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         for _ in range(2):
@@ -146,7 +146,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         with pytest.raises(CircuitOpenError):
@@ -187,7 +187,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         with pytest.raises(RateLimitError):
@@ -200,7 +200,7 @@ class TestModelCallProtector:
         fake = FakeModelAdapter(default=FakeResponse(content="ok"))
 
         async def raw_call(messages, model_name="", tools=None):
-            r = fake.chat_complete(messages, tools=tools)
+            r = await fake.chat_complete(messages, tools=tools)
             return {"content": r.content, "tool_calls": r.tool_calls, "usage": r.usage}
 
         result = asyncio.run(

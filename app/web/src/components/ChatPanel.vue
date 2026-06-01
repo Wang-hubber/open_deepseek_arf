@@ -229,6 +229,7 @@ async function handleSend() {
 
   chatStore.addUserMsg(displayText)
   chatStore.clearAttachments()
+  chatStore.currentHandoff = null  // dismiss handoff banner on new user message
   baseMessageCount.value = chatStore.displayMessages.length
 
   currentText.value = ''
@@ -365,6 +366,15 @@ function escapeHtml(s: string): string {
         @thumbs-down="handleThumbsDown"
       />
 
+      <!-- Handoff banner -->
+      <div v-if="chatStore.currentHandoff" class="handoff-banner">
+        <div class="handoff-arrow">
+          <span class="handoff-from">{{ chatStore.currentHandoff.from }}</span>
+          <span class="handoff-sep">→</span>
+          <span class="handoff-to">{{ chatStore.currentHandoff.to }}</span>
+        </div>
+      </div>
+
       <!-- Current streaming message -->
       <div v-if="isStreaming || currentText || currentReasoning || currentToolCalls.length > 0" class="chat-msg assistant">
         <div class="bubble">
@@ -477,6 +487,45 @@ function escapeHtml(s: string): string {
   position: relative; background: var(--bg-root);
 }
 #chat-history { flex: 1; overflow-y: auto; padding: 24px 28px; scroll-behavior: smooth; }
+
+/* ── Handoff banner ──────────────────────────── */
+.handoff-banner {
+  display: flex; align-items: center; justify-content: center;
+  margin: 20px 0; padding: 0;
+}
+.handoff-arrow {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08));
+  border: 1px solid rgba(99,102,241,0.25);
+  border-radius: 24px;
+  font-size: 14px; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(99,102,241,0.12);
+  animation: handoffSlideIn 0.4s ease;
+}
+@keyframes handoffSlideIn {
+  from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.handoff-from {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.handoff-sep {
+  color: var(--accent);
+  font-size: 18px; font-weight: 700;
+  animation: sepPulse 1.5s ease infinite;
+}
+@keyframes sepPulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+.handoff-to {
+  color: var(--accent);
+  padding: 4px 12px;
+  background: rgba(99,102,241,0.15);
+  border-radius: 12px;
+}
 
 
 #approval-bar {

@@ -123,13 +123,14 @@ export type SSEEvent =
   | { type: 'tool_call'; name?: string; tool?: string; arguments?: string; id: string }
   | { type: 'tool_result'; tool?: string; id: string; result: string }
   | { type: 'done'; response?: string; history?: ChatMessage[]; session_id?: string }
-  | { type: 'agent_switch'; to: string }
+  | { type: 'agent_switch'; to: string; from?: string }
   | { type: 'approval_required'; decision_id: string; tool_name: string; params: Record<string, unknown> }
   | { type: 'approval_resolved'; decision_id: string; tool_name: string; approved: boolean; reason: string }
   | { type: 'guard_block'; tool_name: string; guard: string; reason: string }
   | { type: 'guard_pass'; tool_name: string }
   | { type: 'error'; detail?: string }
   | { type: 'cancelled' }
+  | { type: 'round_end'; reason?: string; round?: number }
 
 export interface DisplayMessage {
   role: 'user' | 'assistant' | 'system'

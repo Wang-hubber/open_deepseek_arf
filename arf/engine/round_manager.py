@@ -24,7 +24,7 @@ class RoundTransaction:
     round_id: str                       # "session_id/round_num"
     round_num: int                      # monotonic, lifetime of RoundManager
     state_snapshot: dict                # deepcopy(AgentState) at round start
-    workspace_snapshot_dir: str | None = None  # memory/checkpoints/{round_num}/
+    workspace_snapshot_dir: str | None = None  # data/checkpoints/{round_num}/
     created_at: float = field(default_factory=time.time)
     agent_trace: list[str] = field(default_factory=list)  # ["main","sys","main"]
     handoff_count: int = 0
@@ -39,7 +39,7 @@ class RoundManager:
     do NOT create new checkpoints.  undo(N) restores to round-N ago.
     """
 
-    _PERSIST_FILE = Path("memory/checkpoints/rounds.json")
+    _PERSIST_FILE = Path("data/checkpoints/rounds.json")
 
     def __init__(self, max_undo_depth: int = 3) -> None:
         self._max_depth = max_undo_depth
@@ -123,12 +123,12 @@ class RoundManager:
 
     def _snapshot_workspace(self, workspace: Path, round_num: int,
                             state_snapshot: dict | None = None) -> str | None:
-        """Copy workspace files to memory/checkpoints/{round_num}/.
+        """Copy workspace files to data/checkpoints/{round_num}/.
 
         If *state_snapshot* is provided, also writes state.json into the
         checkpoint directory for crash-safe undo recovery.
         """
-        ckpt_dir = Path("memory/checkpoints") / str(round_num)
+        ckpt_dir = Path("data/checkpoints") / str(round_num)
         if ckpt_dir.exists():
             shutil.rmtree(ckpt_dir)
         ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,7 @@ class RoundManager:
 
     def _cleanup_checkpoint_dirs(self, from_round: int, workspace: Path) -> None:
         """Remove checkpoint directories >= *from_round*."""
-        ckpts = Path("memory/checkpoints")
+        ckpts = Path("data/checkpoints")
         if not ckpts.exists():
             return
         for d in ckpts.iterdir():
@@ -227,7 +227,7 @@ class RoundManager:
         restored = 0
         for entry in index[-self._max_depth:]:
             round_num = entry.get("round_num", 0)
-            ckpt_dir = Path("memory/checkpoints") / str(round_num)
+            ckpt_dir = Path("data/checkpoints") / str(round_num)
             state_file = ckpt_dir / "state.json"
             if not state_file.exists():
                 continue

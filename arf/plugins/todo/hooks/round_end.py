@@ -19,7 +19,7 @@ def main():
     if current_round <= 0:
         sys.exit(0)
 
-    tasks_file = Path(workspace_dir) / "default" / "tasks.json"
+    tasks_file = Path(workspace_dir) / "tasks.json"
     if not tasks_file.exists():
         sys.exit(0)
 

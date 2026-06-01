@@ -3,6 +3,7 @@
 Usage: python extractor.py --session-file <json> --memory-dir <dir> --session-id <id>
 """
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -35,7 +36,7 @@ def build_prompt(template: str, existing_memory: str, messages: list) -> str:
     return prompt
 
 
-def call_sysmodel(prompt: str) -> str:
+async def call_sysmodel(prompt: str) -> str:
     """Call system model (deepseek-v4-flash, thinking=false, temp=0.3)."""
     from arf.core.model_adapter import ModelAdapter
 
@@ -60,7 +61,7 @@ def call_sysmodel(prompt: str) -> str:
         "thinking_enabled": False,
         "max_tokens": 4096,
     })
-    msg = adapter.chat_complete(
+    msg = await adapter.chat_complete(
         [{"role": "user", "content": prompt}],
         tools=None,
         max_tokens=4096,
@@ -103,7 +104,7 @@ def main():
     prompt = build_prompt(template, existing, messages)
 
     try:
-        output = call_sysmodel(prompt)
+        output = asyncio.run(call_sysmodel(prompt))
     except Exception as e:
         print(f"EXTRACTION_FAILED: {e}", file=sys.stderr)
         sys.exit(1)

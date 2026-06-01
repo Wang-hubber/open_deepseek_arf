@@ -1,10 +1,10 @@
 """Model adapter -- unified interface for OpenAI-compatible endpoints."""
 
+import asyncio
 import os
-import time
 import logging
 
-from openai import OpenAI, APIStatusError
+from openai import AsyncOpenAI, APIStatusError
 
 logger = logging.getLogger("arf.model_adapter")
 
@@ -42,7 +42,7 @@ class ModelAdapter:
     _PROVIDER_KEYS = frozenset({"thinking_enabled", "reasoning_effort"})
 
     def __init__(self, config: dict, context_window: int = 1048576):
-        self.client = OpenAI(
+        self.client = AsyncOpenAI(
             base_url=config.get("base_url"),
             api_key=config.get("api_key", "") or "sk-placeholder",
         )
@@ -60,7 +60,7 @@ class ModelAdapter:
     def _should_retry(self, status_code: int) -> bool:
         return status_code in RETRYABLE_STATUS
 
-    def _call_with_retry(self, messages, tools, stream=False, max_tokens=None):
+    async def _call_with_retry(self, messages, tools, stream=False, max_tokens=None):
         """Call the API with exponential backoff retry on transient errors.
 
         Raises ModelAdapterError for non-retryable errors (400, 401, etc.).
@@ -68,7 +68,7 @@ class ModelAdapter:
         last_exc = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                return self._create_completion(messages, tools, stream, max_tokens)
+                return await self._create_completion(messages, tools, stream, max_tokens)
             except APIStatusError as e:
                 last_exc = e
                 if self._should_retry(e.status_code) and attempt < MAX_RETRIES:
@@ -77,7 +77,7 @@ class ModelAdapter:
                         "API call attempt %d/%d failed with %d, retrying in %.1fs",
                         attempt + 1, MAX_RETRIES + 1, e.status_code, delay,
                     )
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                     continue
                 raise ModelAdapterError(
                     status_code=e.status_code,
@@ -91,7 +91,7 @@ class ModelAdapter:
                         "API call attempt %d/%d failed with %s, retrying in %.1fs",
                         attempt + 1, MAX_RETRIES + 1, type(e).__name__, delay,
                     )
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                     continue
                 raise ModelAdapterError(
                     status_code=0,
@@ -131,7 +131,7 @@ class ModelAdapter:
             standard["response_format"] = {"type": rf}
         return standard, extra_body
 
-    def _create_completion(self, messages, tools, stream=False, max_tokens=None):
+    async def _create_completion(self, messages, tools, stream=False, max_tokens=None):
         """Raw API call -- separated so retry logic is clean."""
         params, extra = self._build_api_params()
         if max_tokens is not None:
@@ -144,7 +144,7 @@ class ModelAdapter:
             kwargs["tools"] = tools
         if extra:
             kwargs["extra_body"] = extra
-        return self.client.chat.completions.create(
+        return await self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             stream=stream,
@@ -152,14 +152,14 @@ class ModelAdapter:
             **kwargs,
         )
 
-    def chat(self, messages: list[dict], **kwargs) -> str:
+    async def chat(self, messages: list[dict], **kwargs) -> str:
         """Send a chat completion request and return the response text."""
         params, extra = self._build_api_params()
         params.update(kwargs)
         kwargs2 = {}
         if extra:
             kwargs2["extra_body"] = extra
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             **params,
@@ -167,8 +167,8 @@ class ModelAdapter:
         )
         return response.choices[0].message.content
 
-    def chat_complete(self, messages: list[dict], tools: list[dict] | None = None,
-                      max_tokens: int | None = None):
+    async def chat_complete(self, messages: list[dict], tools: list[dict] | None = None,
+                            max_tokens: int | None = None):
         """Send a chat completion and return the full message (content + tool_calls).
 
         Retries on transient errors (429, 5xx, network). Raises ModelAdapterError
@@ -180,8 +180,8 @@ class ModelAdapter:
             max_tokens: Optional per-call override. When None, uses the config
                         default; when set, limits the response token budget.
         """
-        response = self._call_with_retry(messages, tools, stream=False,
-                                         max_tokens=max_tokens)
+        response = await self._call_with_retry(messages, tools, stream=False,
+                                               max_tokens=max_tokens)
         msg = response.choices[0].message
         msg.finish_reason = response.choices[0].finish_reason
         if response.usage:
@@ -194,8 +194,8 @@ class ModelAdapter:
             msg.usage = None
         return msg
 
-    def chat_stream_full(self, messages: list[dict], tools: list[dict] | None = None,
-                         max_tokens: int | None = None):
+    async def chat_stream_full(self, messages: list[dict], tools: list[dict] | None = None,
+                               max_tokens: int | None = None):
         """Stream with full delta support -- yields text chunks and accumulated tool calls.
 
         Yields:
@@ -209,8 +209,8 @@ class ModelAdapter:
             {"type": "error", "code": 400, "detail": "..."}
         """
         try:
-            stream = self._call_with_retry(messages, tools, stream=True,
-                                           max_tokens=max_tokens)
+            stream = await self._call_with_retry(messages, tools, stream=True,
+                                                 max_tokens=max_tokens)
         except ModelAdapterError as e:
             yield {
                 "type": "error",
@@ -220,7 +220,7 @@ class ModelAdapter:
             return
         tool_calls_acc: dict[int, dict] = {}
 
-        for chunk in stream:
+        async for chunk in stream:
             # Capture usage from the final chunk before any skip guards.
             # Many providers (e.g. DeepSeek) send usage on a chunk with choices=[].
             if hasattr(chunk, "usage") and chunk.usage:

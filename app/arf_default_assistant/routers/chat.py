@@ -71,6 +71,10 @@ async def _sse_chat(message: str):
                 yield f"data: {json.dumps({'type': 'guard_block', 'tool_name': event.data.get('tool_name', ''), 'guard': event.data.get('guard', ''), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
             elif t == "guard_pass":
                 yield f"data: {json.dumps({'type': 'guard_pass', 'tool_name': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
+            elif t == "agent_switch":
+                yield f"data: {json.dumps({'type': 'agent_switch', 'to': event.data.get('to', ''), 'from': event.data.get('from', '')}, ensure_ascii=False)}\n\n"
+            elif t == "round_end":
+                yield f"data: {json.dumps({'type': 'round_end', 'reason': event.data.get('reason', ''), 'round': event.data.get('round', 0)}, ensure_ascii=False)}\n\n"
             elif t == "error":
                 detail = event.data.get("detail", "API error")
                 code = event.data.get("code", 0)

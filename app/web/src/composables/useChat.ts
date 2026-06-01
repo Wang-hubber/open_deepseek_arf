@@ -184,12 +184,43 @@ function createChatInstance(): ChatInstance {
       console.warn('Guard blocked:', evt.tool_name, evt.reason)
     } else if (evt.type === 'guard_pass') {
       console.debug('Guard pass:', evt.tool_name)
+    } else if (evt.type === 'round_end') {
+      const reason = (evt as any).reason || ''
+      // Flush current streaming content as a completed message
+      const content = streamingText.value
+      const reasoning = streamingReasoning.value
+      if (content || reasoning) {
+        chatStore.displayMessages.push({
+          role: 'assistant', content, thinking: reasoning || undefined,
+          toolCalls: toolCalls.value.length > 0
+            ? toolCalls.value.map(tc => ({ ...tc, arguments: (tc as any).args || '' })) as any
+            : undefined,
+        })
+      }
+      streamingText.value = ''
+      streamingReasoning.value = ''
+      toolCalls.value = []
+      // Handoff round end: insert a system handoff banner
+      if (reason === 'handoff') {
+        const activeAgent = chatStore.activeAgentName
+        const label = activeAgent === 'sys_agent'
+          ? '🛠️ SysAgent 接管 — 系统工程师处理中...'
+          : `🤖 已交接至 ${activeAgent || '子 Agent'}`
+        chatStore.addSystemMsg(label)
+      }
     } else if (evt.type === 'agent_switch') {
-      chatStore.setActiveAgent(evt.to || '')
-      const fromName = (evt as any).from || ''
       const toName = evt.to || ''
+      const fromName = (evt as any).from || ''
+      chatStore.setActiveAgent(toName)
+      // Insert a clear transition banner (not inline text)
       if (fromName && toName) {
-        streamingText.value += `\n\n---\n🔄 **交接**: ${fromName} → ${toName}\n`
+        const agentLabels: Record<string, string> = {
+          arf_assistant: '💬 主助手',
+          sys_agent: '🛠️ 系统工程师',
+        }
+        const fromLabel = agentLabels[fromName] || fromName
+        const toLabel = agentLabels[toName] || toName
+        chatStore.currentHandoff = { from: fromLabel, to: toLabel }
       }
     } else if (evt.type === 'done') {
       isStreaming.value = false

@@ -26,3 +26,20 @@ class Promotion:
 
     def evaluate(self, executable: Executable, **context: Any) -> Decision:
         return self._strategy.evaluate(executable, **context)
+
+    def reconfigure(self, *, deny=None, ask=None, allow=None, deny_patterns=None) -> None:
+        """Hot-swap permission lists at runtime (e.g. during agent handoff).
+
+        Only effective for AskStrategy; auto/plan strategies are no-ops.
+        """
+        from arf.promotion.strategies import AskStrategy
+        if not isinstance(self._strategy, AskStrategy):
+            return
+        if deny is not None:
+            self._strategy.deny_list = set(deny)
+        if ask is not None:
+            self._strategy.ask_list = set(ask)
+        if allow is not None:
+            self._strategy.allow_list = set(allow)
+        if deny_patterns is not None:
+            self._strategy._deny_patterns = list(deny_patterns)

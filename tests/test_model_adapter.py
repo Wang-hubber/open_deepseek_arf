@@ -1,6 +1,7 @@
 """Tests for ModelAdapter retry, error handling, and rate limiting behavior."""
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from openai import APIStatusError
@@ -23,6 +24,11 @@ def make_status_error(status_code: int, message: str = "") -> APIStatusError:
     return APIStatusError(message or f"Error {status_code}", response=response, body=None)
 
 
+async def _collect(async_gen):
+    """Collect all items from an async generator into a list."""
+    return [item async for item in async_gen]
+
+
 # ---------------------------------------------------------------------------
 # Retry logic — _call_with_retry
 # ---------------------------------------------------------------------------
@@ -38,9 +44,9 @@ class TestCallWithRetry:
     def test_success_first_attempt(self, adapter):
         """First successful call should not retry."""
         mock_resp = MagicMock()
-        adapter._create_completion = MagicMock(return_value=mock_resp)
+        adapter._create_completion = AsyncMock(return_value=mock_resp)
 
-        result = adapter._call_with_retry([], None)
+        result = asyncio.run(adapter._call_with_retry([], None))
 
         assert result is mock_resp
         assert adapter._create_completion.call_count == 1
@@ -48,13 +54,13 @@ class TestCallWithRetry:
     def test_retry_on_429_then_succeed(self, adapter):
         """Should retry on 429 and return result on success."""
         mock_resp = MagicMock()
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(429, "Rate limited"),
             mock_resp,
         ])
 
-        with patch("time.sleep", return_value=None) as mock_sleep:
-            result = adapter._call_with_retry([], None)
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = asyncio.run(adapter._call_with_retry([], None))
 
         assert result is mock_resp
         assert adapter._create_completion.call_count == 2
@@ -64,13 +70,13 @@ class TestCallWithRetry:
         """Should retry on 500/502/503/504 and return result on success."""
         for status in [500, 502, 503, 504]:
             mock_resp = MagicMock()
-            adapter._create_completion = MagicMock(side_effect=[
+            adapter._create_completion = AsyncMock(side_effect=[
                 make_status_error(status, f"Server error {status}"),
                 mock_resp,
             ])
 
-            with patch("time.sleep", return_value=None):
-                result = adapter._call_with_retry([], None)
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = asyncio.run(adapter._call_with_retry([], None))
 
             assert result is mock_resp, f"Failed for status {status}"
             assert adapter._create_completion.call_count == 2
@@ -78,65 +84,65 @@ class TestCallWithRetry:
     def test_retry_on_network_error_then_succeed(self, adapter):
         """Should retry on network/timeout errors and return result on success."""
         mock_resp = MagicMock()
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             ConnectionError("Connection reset"),
             mock_resp,
         ])
 
-        with patch("time.sleep", return_value=None):
-            result = adapter._call_with_retry([], None)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(adapter._call_with_retry([], None))
 
         assert result is mock_resp
         assert adapter._create_completion.call_count == 2
 
     def test_exhausts_retries_on_5xx(self, adapter):
         """Should raise ModelAdapterError after exhausting all retries on 5xx."""
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(503, "Service Unavailable")
-            for _ in range(MAX_RETRIES + 2)  # more than available
+            for _ in range(MAX_RETRIES + 2)
         ])
 
-        with patch("time.sleep", return_value=None):
+        with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(ModelAdapterError) as exc_info:
-                adapter._call_with_retry([], None)
+                asyncio.run(adapter._call_with_retry([], None))
 
         assert exc_info.value.status_code == 503
-        assert adapter._create_completion.call_count == MAX_RETRIES + 1  # 1 initial + N retries
+        assert adapter._create_completion.call_count == MAX_RETRIES + 1
 
     def test_exhausts_retries_on_network_error(self, adapter):
         """Should raise ModelAdapterError with status_code=0 on network errors."""
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             ConnectionError("Connection reset")
             for _ in range(MAX_RETRIES + 2)
         ])
 
-        with patch("time.sleep", return_value=None):
+        with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(ModelAdapterError) as exc_info:
-                adapter._call_with_retry([], None)
+                asyncio.run(adapter._call_with_retry([], None))
 
         assert exc_info.value.status_code == 0
         assert "ConnectionError" in exc_info.value.message
 
     def test_no_retry_on_400(self, adapter):
         """Non-retryable errors (400, 401) should raise immediately without retry."""
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(400, "Bad Request"),
         ])
 
         with pytest.raises(ModelAdapterError) as exc_info:
-            adapter._call_with_retry([], None)
+            asyncio.run(adapter._call_with_retry([], None))
 
         assert exc_info.value.status_code == 400
-        assert adapter._create_completion.call_count == 1  # no retry
+        assert adapter._create_completion.call_count == 1
 
     def test_no_retry_on_401(self, adapter):
         """401 Unauthorized should raise immediately without retry."""
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(401, "Unauthorized"),
         ])
 
         with pytest.raises(ModelAdapterError) as exc_info:
-            adapter._call_with_retry([], None)
+            asyncio.run(adapter._call_with_retry([], None))
 
         assert exc_info.value.status_code == 401
         assert adapter._create_completion.call_count == 1
@@ -144,17 +150,17 @@ class TestCallWithRetry:
     def test_exponential_backoff_increases(self, adapter):
         """Verify backoff delay increases exponentially: base^(1), base^(2), base^(3)."""
         delays = []
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(500, "Error")
             for _ in range(MAX_RETRIES + 2)
         ])
 
-        def capture_sleep(seconds):
+        async def capture_sleep(seconds):
             delays.append(seconds)
 
-        with patch("time.sleep", side_effect=capture_sleep):
+        with patch("asyncio.sleep", side_effect=capture_sleep):
             try:
-                adapter._call_with_retry([], None)
+                asyncio.run(adapter._call_with_retry([], None))
             except ModelAdapterError:
                 pass
 
@@ -167,15 +173,15 @@ class TestCallWithRetry:
     def test_success_after_partial_failures_stops_retrying(self, adapter):
         """Once a call succeeds, stop retrying immediately."""
         mock_resp = MagicMock()
-        adapter._create_completion = MagicMock(side_effect=[
+        adapter._create_completion = AsyncMock(side_effect=[
             make_status_error(500, "Error 1"),
             make_status_error(500, "Error 2"),
             mock_resp,
             make_status_error(500, "Should not be called"),
         ])
 
-        with patch("time.sleep", return_value=None):
-            result = adapter._call_with_retry([], None)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(adapter._call_with_retry([], None))
 
         assert result is mock_resp
         assert adapter._create_completion.call_count == 3
@@ -203,9 +209,9 @@ class TestChatComplete:
         mock_resp.choices = [MagicMock(message=msg)]
         mock_resp.usage = mock_usage
 
-        adapter._create_completion = MagicMock(return_value=mock_resp)
+        adapter._create_completion = AsyncMock(return_value=mock_resp)
 
-        result = adapter.chat_complete([], None)
+        result = asyncio.run(adapter.chat_complete([], None))
 
         assert result.content == "test response"
         assert result.usage == {
@@ -221,9 +227,9 @@ class TestChatComplete:
         mock_resp.choices = [MagicMock(message=msg)]
         mock_resp.usage = None
 
-        adapter._create_completion = MagicMock(return_value=mock_resp)
+        adapter._create_completion = AsyncMock(return_value=mock_resp)
 
-        result = adapter.chat_complete([], None)
+        result = asyncio.run(adapter.chat_complete([], None))
 
         assert result.content == "no usage"
         assert result.usage is None
@@ -240,11 +246,11 @@ class TestChatStreamFull:
                               "model_name": "test-model"})
 
     def test_yields_error_event_on_model_adapter_error(self, adapter):
-        adapter._call_with_retry = MagicMock(
+        adapter._call_with_retry = AsyncMock(
             side_effect=ModelAdapterError(status_code=503, message="Service Unavailable")
         )
 
-        events = list(adapter.chat_stream_full([], None))
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         assert len(events) == 1
         assert events[0]["type"] == "error"
@@ -261,9 +267,13 @@ class TestChatStreamFull:
                                      finish_reason="stop")]
         chunk2.usage = None
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk1, chunk2]))
+        async def _mock_stream():
+            yield chunk1
+            yield chunk2
 
-        events = list(adapter.chat_stream_full([], None))
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         content_events = [e for e in events if e["type"] == "chunk"]
         assert len(content_events) == 2
@@ -278,9 +288,12 @@ class TestChatStreamFull:
         )]
         chunk.usage = None
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk]))
+        async def _mock_stream():
+            yield chunk
 
-        events = list(adapter.chat_stream_full([], None))
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
+
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
         reasoning_events = [e for e in events if "reasoning" in e]
         assert len(reasoning_events) == 1
@@ -291,11 +304,14 @@ class TestChatStreamFull:
         chunk.choices = []
         chunk.usage = None
 
-        adapter._call_with_retry = MagicMock(return_value=iter([chunk]))
+        async def _mock_stream():
+            yield chunk
 
-        events = list(adapter.chat_stream_full([], None))
+        adapter._call_with_retry = AsyncMock(return_value=_mock_stream())
 
-        assert len(events) == 0  # no events from empty choices
+        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
+
+        assert len(events) == 0
 
 
 # ---------------------------------------------------------------------------

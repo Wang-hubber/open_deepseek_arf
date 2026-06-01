@@ -123,7 +123,7 @@ class TestSummarizeToolOutput:
         fake = FakeModelAdapter(default=FakeResponse(content="Found 42 results matching the query."))
 
         async def fake_summarizer(text: str) -> str:
-            resp = fake.chat_complete([{"role": "user", "content": text}])
+            resp = await fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
         c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=fake_summarizer)
@@ -143,7 +143,7 @@ class TestSummarizeToolOutput:
         fake = FakeModelAdapter(raise_on_call=RuntimeError("LLM down"))
 
         async def failing_summarizer(text: str) -> str:
-            resp = fake.chat_complete([{"role": "user", "content": text}])
+            resp = await fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
         c = SlidingWindowCompactor(workspace=tmp_workspace, summarizer=failing_summarizer)
@@ -211,7 +211,7 @@ class TestCompactEdgeCases:
         fake = FakeModelAdapter(default=FakeResponse(content="User discussed project structure."))
 
         async def fake_summarizer(text: str) -> str:
-            resp = fake.chat_complete([{"role": "user", "content": text}])
+            resp = await fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
         c = SlidingWindowCompactor(summarizer=fake_summarizer, keep_count=4)
@@ -240,7 +240,7 @@ class TestCompactEdgeCases:
         ], default=FakeResponse(content="subsequent summary."))
 
         async def fake_summarizer(text: str) -> str:
-            resp = fake.chat_complete([{"role": "user", "content": text}])
+            resp = await fake.chat_complete([{"role": "user", "content": text}])
             return resp.content
 
         c = SlidingWindowCompactor(summarizer=fake_summarizer, keep_count=4)

@@ -1,10 +1,10 @@
-"""handoff -- structured handoff to SysAgent."""
+"""handoff — forward tasks or return results between agents."""
 import json
 
 
-async def execute(task: str, context: str = "") -> dict:
+async def execute(task: str = "", context: str = "") -> dict:
     return {
         "handoff": True,
-        "task": task,
-        "context": context,
+        "task": task or "",
+        "context": context or "",
     }

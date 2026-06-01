@@ -1,16 +1,15 @@
 name: handoff
-description: Hand off between agents — forward tasks or return results
+description: Hand off between agents. Context is in conversation history — no long task descriptions needed. Call with empty params or just a brief note.
 parameters:
   type: object
   properties:
     task:
       type: string
-      description: "Task description in natural language"
+      description: "Brief one-liner (optional — SysAgent reads conversation context)"
     context:
       type: string
-      description: "Additional context for the task"
-  required:
-    - task
+      description: "Optional extra notes"
+  required: []
 execution:
   sandbox: inherit
   timeout: 30s

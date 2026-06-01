@@ -27,9 +27,16 @@ function onLanguageChange() {
 <template>
   <div id="status-bar">
     <span class="status-left">
-      <span class="dot dot-ok" title="当前会话激活模型"></span>
+      <span class="dot" :class="chatStore.activeAgentName && chatStore.activeAgentName !== 'arf_assistant' ? 'dot-sys' : 'dot-ok'" :title="chatStore.activeAgentName || '主助手'"></span>
       <span class="model-name">{{ appStore.configStatus?.model_name || 'ARF Agent' }}</span>
-      <span v-if="chatStore.activeAgentName && chatStore.activeAgentName !== 'arf_assistant'" class="agent-badge">{{ chatStore.activeAgentName }}</span>
+      <span v-if="chatStore.activeAgentName && chatStore.activeAgentName !== 'arf_assistant'" class="agent-badge sys-active">
+        <span class="agent-dot-sys"></span>
+        🛠️ 系统工程师
+      </span>
+      <span v-else class="agent-badge main-active">
+        <span class="agent-dot-main"></span>
+        💬 主助手
+      </span>
     </span>
 
     <span class="status-right">
@@ -95,10 +102,38 @@ function onLanguageChange() {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .agent-badge {
-  color: var(--accent); font-size: 11px;
-  font-weight: 600; padding: 1px 8px;
-  border: 1px solid var(--accent); border-radius: 10px;
-  opacity: 0.85;
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; padding: 3px 10px;
+  border-radius: 12px;
+  transition: all 0.3s ease;
+}
+.agent-badge.main-active {
+  color: var(--text-secondary); opacity: 0.5;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.agent-badge.sys-active {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  opacity: 0.9;
+  animation: badgeGlow 2s ease infinite;
+}
+@keyframes badgeGlow {
+  0%, 100% { box-shadow: 0 0 6px rgba(99,102,241,0.2); }
+  50%      { box-shadow: 0 0 14px rgba(99,102,241,0.5); }
+}
+.agent-dot-main, .agent-dot-sys {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+}
+.agent-dot-main { background: var(--text-muted); }
+.agent-dot-sys  { background: var(--accent); }
+.dot-sys {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(99,102,241,0.6);
+  animation: sysPulse 2s ease infinite;
+}
+@keyframes sysPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(99,102,241,0.6); }
+  50%      { box-shadow: 0 0 16px rgba(139,92,246,0.8); }
 }
 .status-user { color: var(--text-primary); font-weight: 600; font-size: 13px; }
 

@@ -112,7 +112,7 @@ class TestInvokeFallbackChain:
             model_used.append(model)
             if model == "deep":
                 raise RuntimeError("HTTP 500 Internal Server Error")
-            result = fake_quick.chat_complete(messages, tools=tools)
+            result = await fake_quick.chat_complete(messages, tools=tools)
             return {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
@@ -163,7 +163,7 @@ class TestInvokeFallbackChain:
         fake = FakeModelAdapter(raise_on_call=RuntimeError("HTTP 500 Internal Server Error"))
 
         async def wrap_call(messages, model="", tools=None):
-            result = fake.chat_complete(messages, tools=tools)
+            result = await fake.chat_complete(messages, tools=tools)
             return {
                 "content": result.content,
                 "tool_calls": result.tool_calls,

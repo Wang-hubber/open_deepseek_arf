@@ -50,8 +50,8 @@ class FakeModelAdapter:
         self._last_messages = None
         self._last_tools = None
 
-    def chat_complete(self, messages, tools=None, max_tokens=None):
-        """Synchronous call — returns FakeResponse."""
+    async def chat_complete(self, messages, tools=None, max_tokens=None):
+        """Async call — returns FakeResponse."""
         if self._raise_on_call:
             raise self._raise_on_call
         self._call_count += 1
@@ -61,15 +61,16 @@ class FakeModelAdapter:
             return self._responses.pop(0)
         return self._default
 
-    def chat_stream_full(self, messages, tools=None):
-        """Streaming call — yields chunk dicts."""
+    async def chat_stream_full(self, messages, tools=None):
+        """Async streaming call — yields chunk dicts."""
         if self._raise_on_call:
             raise self._raise_on_call
         self._call_count += 1
         self._last_messages = messages
         self._last_tools = tools
         if self._stream_chunks:
-            yield from self._stream_chunks
+            for chunk in self._stream_chunks:
+                yield chunk
         elif self._default.content:
             yield {"type": "chunk", "content": self._default.content}
             if self._default.reasoning:

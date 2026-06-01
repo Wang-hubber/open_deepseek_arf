@@ -350,7 +350,7 @@ class TestModelAdapter:
 
     def test_empty_api_key_uses_placeholder(self):
         """Doc: api_key 为空时使用 'sk-placeholder'."""
-        with patch("arf.core.model_adapter.OpenAI") as mock_cls:
+        with patch("arf.core.model_adapter.AsyncOpenAI") as mock_cls:
             from arf.core.model_adapter import ModelAdapter
             ModelAdapter({"api_key": "", "base_url": "http://x", "model_name": "x"})
             mock_cls.assert_called_once_with(
@@ -510,7 +510,7 @@ class TestThinkingEnabledBug:
         """L3: verify that string "false" causes thinking to be enabled.
         BUG: base.py passes thinking_enabled as string "false" (truthy) → enabled."""
         from arf.core.model_adapter import ModelAdapter
-        with patch("arf.core.model_adapter.OpenAI"):
+        with patch("arf.core.model_adapter.AsyncOpenAI"):
             adapter = ModelAdapter({
                 "base_url": "http://test",
                 "api_key": "sk-test",
@@ -526,7 +526,7 @@ class TestThinkingEnabledBug:
     def test_thinking_enabled_bool_false_works(self):
         """L3: verify that bool False correctly disables thinking."""
         from arf.core.model_adapter import ModelAdapter
-        with patch("arf.core.model_adapter.OpenAI"):
+        with patch("arf.core.model_adapter.AsyncOpenAI"):
             adapter = ModelAdapter({
                 "base_url": "http://test",
                 "api_key": "sk-test",

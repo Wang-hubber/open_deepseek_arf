@@ -124,6 +124,7 @@ class GraphEngine:
         workspace_dir: str = "",
         recovery_config: "RecoveryConfig | None" = None,
         promotion: "Promotion | None" = None,
+        main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
     ):
         self.loop_strategy = loop_strategy
@@ -157,6 +158,7 @@ class GraphEngine:
         self._workspace_dir = workspace_dir
         self._promotion = promotion
         self._action_runner = action_runner
+        self._main_permissions = main_permissions  # persisted for restore on handoff return
         # Recovery config with safe defaults
         if recovery_config is not None:
             self._recovery_config = recovery_config
@@ -412,14 +414,46 @@ class GraphEngine:
 
     # ---- multi-agent support ----
 
-    def _swap_permission_checker(self, agent_name: str) -> None:
-        """Swap the active permission checker to the named agent's config."""
-        if not self.guard_runner:
-            return
-        sub = self._sub_agent_configs.get(agent_name, {})
-        checker = sub.get("permission_checker")
-        if checker:
-            self.guard_runner._permissions = checker
+    def _get_agent_permissions(self, agent_name: str):
+        """Return PermissionsConfig for the named agent, or main permissions if blank."""
+        if not agent_name or agent_name not in self._sub_agent_configs:
+            return self._main_permissions
+        sub_cfg = self._sub_agent_configs[agent_name].get("config")
+        if sub_cfg:
+            sub_adv = sub_cfg.effective_advanced()
+            if sub_adv and sub_adv.guardrails:
+                return sub_adv.guardrails.permissions
+        return None
+
+    def _activate_agent(self, agent_name: str) -> None:
+        """Swap guard_runner + Promotion + approval to the named agent's permissions."""
+        perms = self._get_agent_permissions(agent_name)
+
+        # 1. Guard runner — permission checker
+        if self.guard_runner:
+            if agent_name and agent_name in self._sub_agent_configs:
+                checker = self._sub_agent_configs[agent_name].get("permission_checker")
+                if checker:
+                    self.guard_runner._permissions = checker
+            elif self._main_permissions:
+                from arf.guardrails.permissions import ToolPermissionChecker
+                self.guard_runner._permissions = ToolPermissionChecker(
+                    config=self._main_permissions.model_dump() if hasattr(self._main_permissions, 'model_dump') else None
+                )
+
+        # 2. Promotion — strategy lists
+        if self._promotion:
+            self._promotion.reconfigure(
+                deny=list(perms.deny) if perms else [],
+                ask=list(perms.ask) if perms else [],
+                allow=list(perms.allow) if perms else [],
+                deny_patterns=list(perms.deny_patterns) if perms else [],
+            )
+
+        # 3. Approval allowlist follows the active agent's ask list
+        ask_list = list(perms.ask) if perms and perms.ask else []
+        self._approval_allowlist = set(ask_list)
+        self.approval_enabled = len(ask_list) > 0
 
     def _active_config(self, state: AgentState) -> dict:
         """Return config for the currently active agent."""
@@ -439,7 +473,7 @@ class GraphEngine:
 
         return {
             "system_prompt": self._system_prompt,
-            "tools": [],
+            "tools": getattr(self, '_main_agent_tools', []),
             "skills": [],
             "max_turns": self._max_turns,
             "hooks": [],
@@ -494,7 +528,7 @@ class GraphEngine:
             # Resume: restore target agent's previous state
             state.update(existing_target)
             # For return handoffs: replace raw tool result with sub-agent's actual response
-            if sub_agent_result and to_agent == (self._active_agent or state.get("agent_name", "")):
+            if sub_agent_result:
                 msgs = state.get("messages", [])
                 if msgs and msgs[-1].get("role") == "tool":
                     msgs[-1]["content"] = sub_agent_result
@@ -534,11 +568,12 @@ class GraphEngine:
             state["current_turn"] = 0
             state["tool_results"] = {}
 
-        # 5. Swap active agent
+        # 5. Swap active agent — save source for later auto-return
+        state["handoff_from_agent"] = from_agent
         state["active_agent"] = to_agent
         state["handoff_task"] = handoff_data.get("task", "")
 
-        # 6. Emit agent_switch
+        # 6. Emit agent_switch (event_bus / trace)
         self._emit("agent_switch", {
             "from": from_agent,
             "to": to_agent,
@@ -601,26 +636,104 @@ class GraphEngine:
 
         return state
 
+    async def _auto_return_from_handoff(self, state: AgentState,
+                                          current_agent: str,
+                                          session_id: str) -> AgentState:
+        """Auto-restore calling agent when sub-agent finishes without handoff back.
+
+        Called when a sub-agent produces a text-only response (no tool_calls).
+        Saves sub-agent state, loads parent state, injects result.
+        """
+        target_agent = (
+            state.get("handoff_from_agent", "")
+            or state.get("agent_name", "")
+            or "main"
+        )
+
+        # Capture sub-agent's final response
+        result = ""
+        for m in reversed(state.get("messages", [])):
+            if m.get("role") == "assistant":
+                result = m.get("content", "")
+                break
+        if not result:
+            result = "(handoff completed, no response)"
+
+        # Save sub-agent's final state to its per-agent key
+        if current_agent:
+            await self.state_store.put(f"{session_id}/{current_agent}", state)
+
+        # Load parent agent's state (saved by _execute_handoff)
+        parent = await self.state_store.get(f"{session_id}/{target_agent}")
+        if parent:
+            msgs = parent.get("messages", [])
+            # Replace handoff tool result with sub-agent's actual response
+            if msgs and msgs[-1].get("role") == "tool":
+                msgs[-1]["content"] = (
+                    f"[{current_agent} handoff complete]\n{result}"
+                )
+        else:
+            msgs = state.get("messages", [])
+
+        self._rounds.record_handoff(current_agent, target_agent)
+
+        self._emit("agent_switch", {
+            "from": current_agent,
+            "to": target_agent,
+            "task": "handoff complete (auto-return)",
+        }, session_id=session_id, agent_name=target_agent)
+
+        # Restore parent state, reset sub-agent metadata
+        state["messages"] = msgs
+        state["active_agent"] = target_agent
+        state["tool_results"] = {}
+        state.pop("handoff_task", None)
+        state.pop("handoff_from_agent", None)
+
+        # Restore parent agent's permissions
+        self._activate_agent(target_agent)
+
+        return self._close_tool_calls(state)
+
     async def _resolve_tools_for_agent(self, state: AgentState, active: dict[str, object]) -> list[dict[str, object]]:
-        """Get tool definitions for the active agent, falling back to resolver."""
+        """Get tool definitions for the active agent, merging config tools with resolver (plugins)."""
+        result: list[dict[str, object]] = []
+        seen: set[str] = set()
+
+        # 1. Static tools from agent config / _main_agent_tools
         active_tools = active.get("tools", [])
-        if active_tools:
-            result = []
-            for t in active_tools:
-                if hasattr(t, "name"):
-                    result.append({
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    })
-                elif isinstance(t, dict):
-                    result.append(t)
-            return result
+        for t in active_tools:
+            d = t.model_dump() if hasattr(t, "model_dump") else t
+            name = d.get("name", "") if isinstance(d, dict) else getattr(t, "name", "")
+            if name and name not in seen:
+                seen.add(name)
+                result.append({
+                    "name": name,
+                    "description": d.get("description", "") if isinstance(d, dict) else getattr(t, "description", ""),
+                    "parameters": d.get("parameters", {}) if isinstance(d, dict) else getattr(t, "parameters", {}),
+                })
+
+        # 2. Plugin tools from resolver (subagent, todo, etc.)
         if self.tool_resolver:
-            return await self.tool_resolver.get_tool_definitions(
-                self._last_user_message(state), top_k=10
-            )
-        return []
+            try:
+                for td in await self.tool_resolver.get_tool_definitions(
+                    self._last_user_message(state), top_k=20
+                ):
+                    td_name = td.get("name", "") if isinstance(td, dict) else getattr(td, "name", "")
+                    if td_name and td_name not in seen:
+                        seen.add(td_name)
+                        if isinstance(td, dict):
+                            result.append(td)
+                        else:
+                            result.append({
+                                "name": td.name,
+                                "description": td.description,
+                                "parameters": td.parameters,
+                            })
+            except Exception:
+                pass
+
+        return result
 
     def set_call_model(self, call_model) -> None:
         """Late-binding injection of the model API call function."""
@@ -1058,6 +1171,17 @@ class GraphEngine:
                         f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
                         "Use relative paths from this directory."
                     )
+                if "{{TURN_BUDGET}}" in system_prompt:
+                    remaining = self.loop_strategy.max_turns - state.get("current_turn", 0)
+                    system_prompt = system_prompt.replace(
+                        "{{TURN_BUDGET}}",
+                        f"## Turn Budget\n"
+                        f"You have {self.loop_strategy.max_turns} turns total, "
+                        f"{max(0, remaining)} remaining. "
+                        "Plan your work within this budget. "
+                        "When running low, compress: skip non-essentials, "
+                        "summarize partial progress, and handoff."
+                    )
                 # Proactive repair before every model call (E2E Bug 3.1)
                 state = self._repair_messages(state)
                 msgs = [{"role": "system", "content": system_prompt}]
@@ -1294,6 +1418,35 @@ class GraphEngine:
                 # Ensure message sequence is valid before next_step re-evaluates
                 state = self._close_tool_calls(state)
 
+                # Delegate execution failures to ErrorPolicy (guard blocks NOT counted)
+                executed_failures = sum(
+                    1 for v in results.values() if not v.success
+                )
+                executed_success = sum(
+                    1 for v in results.values() if v.success
+                )
+                if executed_success > 0:
+                    state.pop("_tool_failures", None)
+                elif executed_failures > 0 and len(valid_calls) > 0:
+                    state.setdefault("_tool_failures", 0)
+                    state["_tool_failures"] += executed_failures
+                    # Circuit-break after accumulating 5+ consecutive failures
+                    if state["_tool_failures"] >= 5 and self.error_policy:
+                        action = self.error_policy.on_tool_error(
+                            RuntimeError(f"{state['_tool_failures']} consecutive execution failures"),
+                            "aggregate",
+                            state["_tool_failures"],
+                        )
+                        if action.action == "abort":
+                            self._emit("error", {
+                                "detail": (
+                                    f"Tool failure limit reached "
+                                    f"({state['_tool_failures']} consecutive failures). "
+                                    f"{action.message}"
+                                ),
+                            }, session_id=session_id)
+                            break
+
                 # Handoff detection (invoke)
                 if self._handoff_manager and self._handoff_manager.has_rules:
                     handoff_signal = self._handoff_manager.detect(state["tool_results"])
@@ -1307,6 +1460,11 @@ class GraphEngine:
                             await self.state_store.put(session_id, state)
                         else:
                             self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
+                            target = state.get("active_agent", "")
+                            self._active_agent = target
+                            self._activate_agent(target)
+                            state["tool_results"] = {}
+                            state["interaction_round"] = state.get("interaction_round", 0) + 1
                         continue
 
                 # Normal successful round — reset recovery budgets
@@ -1412,6 +1570,17 @@ class GraphEngine:
                         "{{WORKSPACE}}",
                         f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
                         "Use relative paths from this directory."
+                    )
+                if "{{TURN_BUDGET}}" in system_prompt:
+                    remaining = self.loop_strategy.max_turns - state.get("current_turn", 0)
+                    system_prompt = system_prompt.replace(
+                        "{{TURN_BUDGET}}",
+                        f"## Turn Budget\n"
+                        f"You have {self.loop_strategy.max_turns} turns total, "
+                        f"{max(0, remaining)} remaining. "
+                        "Plan your work within this budget. "
+                        "When running low, compress: skip non-essentials, "
+                        "summarize partial progress, and handoff."
                     )
                 # Proactive repair before every model call (E2E Bug 3.1)
                 state = self._repair_messages(state)
@@ -1755,6 +1924,35 @@ class GraphEngine:
                 }
                 state = self._close_tool_calls(state)
 
+                # Delegate execution failures to ErrorPolicy (guard blocks NOT counted)
+                executed_failures = sum(
+                    1 for v in results.values() if not v.success
+                )
+                executed_success = sum(
+                    1 for v in results.values() if v.success
+                )
+                if executed_success > 0:
+                    state.pop("_tool_failures", None)
+                elif executed_failures > 0 and len(valid_calls) > 0:
+                    state.setdefault("_tool_failures", 0)
+                    state["_tool_failures"] += executed_failures
+                    # Circuit-break after accumulating 5+ consecutive failures
+                    if state["_tool_failures"] >= 5 and self.error_policy:
+                        action = self.error_policy.on_tool_error(
+                            RuntimeError(f"{state['_tool_failures']} consecutive execution failures"),
+                            "aggregate",
+                            state["_tool_failures"],
+                        )
+                        if action.action == "abort":
+                            yield self._make_event("error", {
+                                "detail": (
+                                    f"Tool failure limit reached "
+                                    f"({state['_tool_failures']} consecutive failures). "
+                                    f"{action.message}"
+                                ),
+                            }, turn=turn, session_id=session_id)
+                            break
+
                 if self._handoff_manager and self._handoff_manager.has_rules:
                     handoff_signal = self._handoff_manager.detect(state["tool_results"])
                     if handoff_signal:
@@ -1769,13 +1967,33 @@ class GraphEngine:
                                              turn=turn, session_id=session_id)
                         else:
                             self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
-                            # Swap to the target agent's permission checker
                             target = state.get("active_agent", "")
-                            self._swap_permission_checker(target)
-                            # Notify frontend via SSE
+                            # Fire round_end hooks for the old agent's round
+                            if self.hook_runner:
+                                await self.hook_runner.fire("round_end", {
+                                    "session_id": session_id, "reason": "handoff",
+                                    "round": state.get("interaction_round", 0),
+                                })
+                            self._active_agent = target
+                            self._activate_agent(target)
+                            state.pop("_pending_tool_calls", None)
+                            state["tool_results"] = {}
+                            state["interaction_round"] = state.get("interaction_round", 0) + 1
+                            state["current_turn"] = 0
+                            yield self._make_event("round_end",
+                                {"reason": "handoff", "round": state["interaction_round"] - 1},
+                                turn=turn, session_id=session_id)
                             yield self._make_event("agent_switch",
                                 {"from": self._active_agent, "to": target},
-                                turn=turn, session_id=session_id)
+                                turn=turn, session_id=session_id, emit=False)
+                            # Fire round_start for the new agent
+                            if self.hook_runner:
+                                self.hook_runner.update_runtime(session_id=session_id,
+                                    interaction_round=state["interaction_round"])
+                                await self.hook_runner.fire("round_start", {
+                                    "session_id": session_id,
+                                    "round": state["interaction_round"],
+                                })
                         await self.state_store.put(session_id, state)
                         continue
 
