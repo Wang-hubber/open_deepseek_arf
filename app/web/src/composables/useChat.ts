@@ -1,8 +1,31 @@
-import { ref } from 'vue'
+import { ref, inject, type InjectionKey, type Ref } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import type { SSEEvent, ChatMessage } from '@/types'
 
-export function useChat() {
+type ToolCallEntry = { id: string; name: string; args: string; status: string; result?: string; error?: string }
+type ApprovalEntry = { decision_id: string; tool_name: string; params: Record<string, unknown> }
+
+export interface ChatInstance {
+  streamingText: Ref<string>
+  streamingReasoning: Ref<string>
+  toolCalls: Ref<ToolCallEntry[]>
+  isStreaming: Ref<boolean>
+  streamError: Ref<string>
+  pendingApprovals: Ref<ApprovalEntry[]>
+  sendMessage: (text: string) => Promise<void>
+  abort: () => void
+  approve: (decisionId: string, approved: boolean) => Promise<void>
+  setCallbacks: (cbs: { onToolCall?: (...args: any[]) => void; onToolResult?: (...args: any[]) => void; onDone?: (...args: any[]) => void }) => void
+}
+
+export const CHAT_KEY: InjectionKey<ChatInstance> = Symbol('chat')
+
+/** Get chat instance — injected singleton if provided, otherwise creates new. */
+export function useChat(): ChatInstance {
+  return inject(CHAT_KEY, null) || createChatInstance()
+}
+
+function createChatInstance(): ChatInstance {
   const chatStore = useChatStore()
 
   // Reactive streaming state for the active message

@@ -31,7 +31,35 @@ async def execute(task: str = "", confirm: bool = False, _engine=None, _workspac
             '{"steps": [{"index": 1, "description": "...", "tool_hint": "...", "depends_on": []}]}\n'
         )
 
-        if _engine is not None and hasattr(_engine, '_call_model'):
+        if _engine is not None and hasattr(_engine, '_stream_model'):
+            # Stream system model output to progress queue so frontend sees it
+            queue = getattr(_engine, '_tool_progress_queue', None)
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            for chunk in _engine._stream_model(
+                [{"role": "user", "content": prompt}],
+                model_name=getattr(_engine, '_system_model_name', ''),
+            ):
+                if isinstance(chunk, dict):
+                    if chunk.get("type") == "chunk":
+                        text = chunk.get("content", "")
+                        if text:
+                            content_parts.append(text)
+                            if queue:
+                                await queue.put({"content": text})
+                        reasoning = chunk.get("reasoning", "")
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
+                            if queue:
+                                await queue.put({"reasoning": reasoning, "content": ""})
+                    elif chunk.get("type") == "usage":
+                        pass
+            content = "".join(content_parts)
+            try:
+                plan = json.loads(content)
+            except json.JSONDecodeError:
+                plan = {"steps": [{"index": 1, "description": task}]}
+        elif _engine is not None and hasattr(_engine, '_call_model'):
             response = await _engine._call_model(
                 [{"role": "user", "content": prompt}],
                 model_name=getattr(_engine, '_system_model_name', ''),

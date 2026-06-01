@@ -31,7 +31,7 @@ const {
   pendingApprovals,
 } = useChat()
 
-const currentApproval = computed(() => pendingApprovals.value[0] || null)
+const currentApproval = computed(() => pendingApprovals.value?.[0] || null)
 
 const textarea = ref<HTMLTextAreaElement | null>(null)
 const chatHistoryEl = ref<HTMLElement | null>(null)
@@ -156,9 +156,9 @@ setCallbacks({
 })
 
 // Watch streaming state
-watch(streamingText, (val) => { currentText.value = val })
-watch(streamingReasoning, (val) => { currentReasoning.value = val })
-watch(streamError, (val) => { currentError.value = val })
+watch(streamingText, (val: string) => { currentText.value = val })
+watch(streamingReasoning, (val: string) => { currentReasoning.value = val })
+watch(streamError, (val: string) => { currentError.value = val })
 
 // Sync baseMessageCount when messages change outside streaming (archive view, new session, etc.)
 watch(() => chatStore.displayMessages.length, (len) => {
@@ -442,7 +442,7 @@ function escapeHtml(s: string): string {
         <span class="ap-icon">&#9888;</span>
         <span class="ap-tool-name">{{ currentApproval.tool_name }}</span>
         <span class="ap-label">需要确认才能执行</span>
-        <span v-if="pendingApprovals.length > 1" class="ap-queue">({{ pendingApprovals.length }} 个待审批)</span>
+        <span v-if="(pendingApprovals?.length || 0) > 1" class="ap-queue">({{ pendingApprovals?.length || 0 }} 个待审批)</span>
       </div>
       <div class="ap-actions">
         <button class="ap-btn ap-deny" @click="approve(currentApproval.decision_id, false)">拒绝</button>

@@ -50,7 +50,13 @@ system_prompt:
     - Any task your current toolset cannot fulfill
 
 
-    ### R5: Progressive skill loading
+    ### R5: Use built-in tools first
+    For file search and text matching, always prefer `glob` (pattern match)
+    and `grep` (content search). Only use `python_exec` when the task
+    genuinely requires computation (math, data processing, format conversion)
+    that cannot be done with built-in tools.
+
+    ### R6: Progressive skill loading
     Skills listed under Available Skills are loaded on demand.
     When a skill matches the user's intent, read its full instructions via `read`.
     Example: `read` with `file_path: skills/code_review.yaml`

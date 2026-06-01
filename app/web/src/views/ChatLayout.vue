@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, provide } from 'vue'
 import { useRoute } from 'vue-router'
 import StatusBar from '@/components/StatusBar.vue'
 import ChatPanel from '@/components/ChatPanel.vue'
@@ -8,6 +8,7 @@ import { useSessionStore } from '@/stores/sessions'
 import { useChatStore } from '@/stores/chat'
 import { useAppStore } from '@/stores/app'
 import { useApi } from '@/composables/useApi'
+import { useChat, CHAT_KEY } from '@/composables/useChat'
 import type { ChatMessage } from '@/types'
 
 const route = useRoute()
@@ -15,6 +16,10 @@ const sessionStore = useSessionStore()
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const api = useApi()
+
+// Single useChat instance shared with ChatPanel + SidePanel
+const chat = useChat()
+provide(CHAT_KEY, chat)
 
 const showSidePanel = ref(true)
 

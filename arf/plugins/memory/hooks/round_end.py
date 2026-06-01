@@ -37,6 +37,7 @@ def main():
 
     # Write messages to temp file for subprocess
     tmp_file = Path(memory_dir) / "state" / f"extract_{session_id}.json"
+    tmp_file.parent.mkdir(parents=True, exist_ok=True)
     tmp_file.write_text(json.dumps(messages, ensure_ascii=False))
 
     # Dispatch extractor subprocess

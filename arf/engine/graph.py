@@ -171,6 +171,9 @@ class GraphEngine:
         self._handoff_manager = handoff_manager
         self._active_agent: str = ""
         self._agent_states: dict[str, AgentState] = {}
+        # Tool progress streaming — tools write chunks here, SSE loop reads them
+        import asyncio as _asyncio_queue
+        self._tool_progress_queue: _asyncio_queue.Queue = _asyncio_queue.Queue()
 
     @property
     def cancel_event(self) -> asyncio.Event | None:
@@ -1653,11 +1656,25 @@ class GraphEngine:
                                            "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                                      turn=turn, session_id=session_id)
                 agent_mode = state.get("active_agent", "")
-                results = await self.tool_executor.execute(
-                valid_calls, agent_mode=agent_mode,
-                engine=self, state_store=self.state_store,
-                workspace_dir=getattr(self, '_workspace_dir', ''),
-            )
+                # Fresh queue per round — tools write progress here, SSE loop reads it
+                self._tool_progress_queue = asyncio.Queue()
+                tool_task = asyncio.ensure_future(
+                    self.tool_executor.execute(
+                        valid_calls, agent_mode=agent_mode,
+                        engine=self, state_store=self.state_store,
+                        workspace_dir=getattr(self, '_workspace_dir', ''),
+                    )
+                )
+                while not tool_task.done():
+                    try:
+                        chunk = await asyncio.wait_for(
+                            self._tool_progress_queue.get(), timeout=0.1
+                        )
+                        yield self._make_event("thinking_delta", chunk,
+                                               turn=turn, session_id=session_id)
+                    except asyncio.TimeoutError:
+                        continue
+                results = await tool_task
                 for tc in valid_calls:
                     r = results.get(tc.get("id", ""))
                     yield self._make_event(type="tool_call_end",

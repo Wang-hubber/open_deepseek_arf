@@ -113,17 +113,17 @@ async def cancel_chat():
     return JSONResponse({"status": "no_active_chat"})
 
 
+class ApproveReq(BaseModel):
+    decision_id: str
+    approved: bool = False
+
 @router.post("/api/chat/approve")
-async def approve_tool_call(req: dict):
-    decision_id = (req or {}).get("decision_id", "")
-    approved = (req or {}).get("approved", False)
-    if not decision_id:
-        return JSONResponse({"error": "decision_id required"}, status_code=400)
-    ok = state._agent.engine.approve(decision_id, approved)
+async def approve_tool_call(req: ApproveReq):
+    ok = state._agent.engine.approve(req.decision_id, req.approved)
     if not ok:
-        return JSONResponse({"error": f"unknown decision_id: {decision_id}"}, status_code=404)
-    logger.info(f"Approval {decision_id}: {'approved' if approved else 'denied'}")
-    return JSONResponse({"status": "ok", "decision_id": decision_id, "approved": approved})
+        return JSONResponse({"error": f"unknown decision_id: {req.decision_id}"}, status_code=404)
+    logger.info(f"Approval {req.decision_id}: {'approved' if req.approved else 'denied'}")
+    return JSONResponse({"status": "ok", "decision_id": req.decision_id, "approved": req.approved})
 
 
 @router.post("/api/chat/undo")
