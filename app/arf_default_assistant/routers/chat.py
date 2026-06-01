@@ -121,7 +121,9 @@ class ApproveReq(BaseModel):
 async def approve_tool_call(req: ApproveReq):
     ok = state._agent.engine.approve(req.decision_id, req.approved)
     if not ok:
-        return JSONResponse({"error": f"unknown decision_id: {req.decision_id}"}, status_code=404)
+        # Already resolved (double-click or timeout) — return 200 so frontend doesn't error
+        logger.info(f"Approval {req.decision_id}: already resolved (duplicate or timeout)")
+        return JSONResponse({"status": "ok", "decision_id": req.decision_id, "approved": req.approved, "note": "already resolved"})
     logger.info(f"Approval {req.decision_id}: {'approved' if req.approved else 'denied'}")
     return JSONResponse({"status": "ok", "decision_id": req.decision_id, "approved": req.approved})
 

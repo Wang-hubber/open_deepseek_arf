@@ -943,13 +943,22 @@ class GraphEngine:
     async def _wait_approvals(
         self, pending: list[dict], session_id: str,
     ) -> list[dict]:
-        """Wait for each pending approval and return resolved events."""
+        """Wait for each pending approval and return resolved events.
+
+        Pre-registers ALL events before waiting, so that rapid user clicks
+        (which arrive while we're still yielding earlier events) can find
+        the decision_id in _pending_approvals.
+        """
+        # Pre-register all events first — the SSE stream already sent
+        # approval_required events; the frontend may POST /approve at any moment.
+        for pa in pending:
+            self._pending_approvals.setdefault(pa["decision_id"], asyncio.Event())
+
         events: list[dict] = []
         for pa in pending:
             decision_id = pa["decision_id"]
             tool_name = pa["tool_name"]
-            approval_evt = asyncio.Event()
-            self._pending_approvals[decision_id] = approval_evt
+            approval_evt = self._pending_approvals[decision_id]
             try:
                 await asyncio.wait_for(approval_evt.wait(), timeout=self.approval_timeout)
             except asyncio.TimeoutError:
