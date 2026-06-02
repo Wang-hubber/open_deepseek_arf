@@ -1014,10 +1014,8 @@ class TestEventTypes:
     def test_rollback_executed_in_graph_engine(self):
         """Doc: GraphEngine emits 'rollback_executed' events."""
         from arf.engine.graph import GraphEngine
-        src_invoke = inspect.getsource(GraphEngine.invoke)
-        src_astream = inspect.getsource(GraphEngine.astream)
-        assert '"rollback_executed"' in src_invoke or "'rollback_executed'" in src_invoke
-        assert '"rollback_executed"' in src_astream or "'rollback_executed'" in src_astream
+        src = inspect.getsource(GraphEngine._step_execute_tools)
+        assert '"rollback_executed"' in src or "'rollback_executed'" in src
 
     def test_all_event_types_in_doc(self):
         """Doc: EventType includes all documented events."""
@@ -1199,9 +1197,9 @@ class TestRoundPersistence:
     """Doc 4.2: round metadata persisted to memory/checkpoints/rounds.json."""
 
     def test_round_manager_persist_file_default(self):
-        """Doc: _PERSIST_FILE = Path('memory/checkpoints/rounds.json')."""
+        """Doc: _PERSIST_FILE = Path('data/checkpoints/rounds.json')."""
         from arf.engine.round_manager import RoundManager
-        assert RoundManager._PERSIST_FILE == Path("memory/checkpoints/rounds.json")
+        assert RoundManager._PERSIST_FILE == Path("data/checkpoints/rounds.json")
 
     def test_round_manager_has_save_and_restore(self):
         """Doc: _save_rounds and _restore_from_disk."""

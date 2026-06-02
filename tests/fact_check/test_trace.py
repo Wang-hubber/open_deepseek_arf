@@ -58,16 +58,11 @@ class TestArchitectureOverview:
         src = inspect.getsource(GraphEngine.__init__)
         assert "self._interaction_round = 0" in src
 
-    def test_interaction_round_reads_from_state_in_invoke(self):
-        """Doc: _interaction_round read from state['interaction_round']."""
+    def test_interaction_round_reads_from_state_in_execute(self):
+        """Doc: _interaction_round read from state['interaction_round'].
+        Reading now happens in _execute (shared by invoke and astream)."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
-        assert 'state.get("interaction_round", 0)' in src
-
-    def test_interaction_round_reads_from_state_in_astream(self):
-        """Doc: _interaction_round read from state in astream too."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
+        src = inspect.getsource(GraphEngine._execute)
         assert 'state.get("interaction_round", 0)' in src
 
     def test_base_agent_increments_interaction_round(self):
@@ -732,12 +727,12 @@ class TestTraceConfig:
             "FIX VERIFIED: FileTraceStore is no longer manually created in server.py"
         )
 
-    def test_app_context_trace_dir_is_memory_traces(self):
-        """Doc: trace_dir resolves to ./workspace/traces/."""
+    def test_app_context_trace_dir_is_data_traces(self):
+        """Doc: trace_dir resolves to ./data/traces/ (via AppContext.data)."""
         from arf.agent.app_context import AppContext
         from pathlib import Path
         ctx = AppContext(root=Path("/test"))
-        assert str(ctx.trace_dir) == "/test/workspace/traces"
+        assert str(ctx.trace_dir) == "/test/data/traces"
 
     def test_base_agent_holds_event_bus(self):
         """Doc: BaseAgent creates event_bus and holds it."""
@@ -756,68 +751,6 @@ class TestTraceConfig:
         from arf.agent.base import BaseAgent
         src = inspect.getsource(BaseAgent.__init__)
         assert "InMemoryEventBus()" in src
-
-
-# ---------------------------------------------------------------------------
-# SseStream (streaming module referenced by architecture)
-# ---------------------------------------------------------------------------
-
-class TestSseStream:
-    """Doc 2.1 references SSE stream as a sink.
-    Verify SseStream exists and implements the expected interface."""
-
-    def test_sse_stream_exists(self):
-        """Doc: SSE stream sink references SseStream."""
-        from arf.streaming import SseStream
-        assert SseStream is not None
-
-    def test_sse_stream_has_publish(self):
-        """Doc: SseStream.publish(event) sends data as SSE format."""
-        from arf.streaming.adapters.sse import SseStream
-        from arf.core.events import AgentEvent
-        import asyncio
-
-        async def run():
-            stream = SseStream()
-            # publish should not raise
-            event = AgentEvent(type="test", data={"key": "val"})
-            await stream.publish(event)
-
-        asyncio.run(run())
-
-    def test_sse_stream_has_listen(self):
-        """Doc: SseStream.listen() is an async context manager for consumers."""
-        from arf.streaming.adapters.sse import SseStream
-        assert hasattr(SseStream, "listen")
-
-    def test_sse_publish_formats_sse_protocol(self):
-        """Doc: publish formats as 'data: {...}\n\n'."""
-        from arf.streaming.adapters.sse import SseStream
-        from arf.core.events import AgentEvent
-        import asyncio
-
-        async def run():
-            stream = SseStream()
-            received = []
-
-            async def collect():
-                async with stream.listen() as q:
-                    async for msg in q:
-                        received.append(msg)
-                        break
-
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(collect())
-                await asyncio.sleep(0.05)
-                event = AgentEvent(type="model_call_end", data={"usage": {"total_tokens": 10}})
-                await stream.publish(event)
-                await asyncio.sleep(0.05)
-
-            assert len(received) == 1
-            assert received[0].startswith("data: ")
-            assert received[0].endswith("\n\n")
-
-        asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +787,6 @@ class TestTraceModuleFiles:
             "arf/observability/replay.py",
             "arf/observability/otel.py",
             "arf/observability/__init__.py",
-            "arf/streaming/adapters/sse.py",
             "arf/core/events.py",
             "arf/core/protocols/event_bus.py",
             "arf/core/protocols/tracer.py",
@@ -918,12 +850,12 @@ class TestEventValidation:
         asyncio.run(run())
 
     def test_app_context_has_trace_dir_property(self):
-        """Doc: AppContext has trace_dir property pointing to ./memory/traces."""
+        """Doc: AppContext has trace_dir property pointing to ./data/traces."""
         from arf.agent import AppContext
         from pathlib import Path
         ctx = AppContext(root=Path("/app"))
         assert hasattr(ctx, "trace_dir")
-        assert str(ctx.trace_dir) == "/app/workspace/traces"
+        assert str(ctx.trace_dir) == "/app/data/traces"
 
 
 # ===========================================================================

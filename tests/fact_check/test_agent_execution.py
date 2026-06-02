@@ -123,27 +123,25 @@ class TestInvokeAstream:
         assert hasattr(GraphEngine, "_step_classify_tool_calls")
 
     def test_invoke_calls_close_tool_calls_at_entry(self):
-        """Doc: invoke() 入口调用 _close_tool_calls()."""
+        """Doc: invoke() 入口调用 _close_tool_calls() (via _execute)."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
-        source = _inspect.getsource(GraphEngine.invoke)
+        source = _inspect.getsource(GraphEngine._execute)
         assert "_close_tool_calls(state)" in source
 
     def test_astream_calls_close_tool_calls_at_entry(self):
-        """Doc: astream() 入口调用 _close_tool_calls()."""
+        """Doc: astream() 入口调用 _close_tool_calls() (via _execute)."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
-        source = _inspect.getsource(GraphEngine.astream)
+        source = _inspect.getsource(GraphEngine._execute)
         assert "_close_tool_calls(state)" in source
 
     def test_both_invoke_and_astream_call_next_step(self):
-        """Doc: 两条路径共享 LoopStrategy.next_step() 分派."""
+        """Doc: 两条路径共享 LoopStrategy.next_step() 分派 (via _execute)."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
-        invoke_src = _inspect.getsource(GraphEngine.invoke)
-        astream_src = _inspect.getsource(GraphEngine.astream)
-        assert "next_step(state)" in invoke_src
-        assert "next_step(state)" in astream_src
+        source = _inspect.getsource(GraphEngine._execute)
+        assert "next_step(state)" in source
 
 
 # ---------------------------------------------------------------------------
@@ -256,16 +254,11 @@ class TestLoopStrategy:
         """Doc: 四个独立终止条件: should_continue=False, text-only break, should_break=True, _cancelled."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
-        invoke_src = _inspect.getsource(GraphEngine.invoke)
-        astream_src = _inspect.getsource(GraphEngine.astream)
-        assert "should_continue" in invoke_src
-        assert "break" in invoke_src
-        assert "should_break" in invoke_src
-        assert "_cancelled" in invoke_src
-        assert "should_continue" in astream_src
-        assert "break" in astream_src
-        assert "should_break" in astream_src
-        assert "_cancelled" in astream_src
+        source = _inspect.getsource(GraphEngine._execute)
+        assert "should_continue" in source
+        assert "break" in source
+        assert "should_break" in source
+        assert "_cancelled" in source
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +378,7 @@ class TestToolExecution:
         """Doc: 被拒工具注入 [Blocked] reason."""
         from arf.engine.graph import GraphEngine
         import inspect as _inspect
-        source = _inspect.getsource(GraphEngine.invoke)
+        source = _inspect.getsource(GraphEngine._step_execute_tools)
         assert "[Blocked]" in source
 
 
