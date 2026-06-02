@@ -63,7 +63,7 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 
 | # | 骨架 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
-| 1 | **[Prompt 组装](docs/agent-execution.md)** | 程序加载器 (execve) | `SystemPromptProvider` — prefix（role + critical_rules）+ suffix（`$INVENTORY` 模板）。`string.Template` 占位符（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）。引擎每轮替换。 | 多 Agent prompt 组合；基于角色的模板分发 |
+| 1 | **Prompt 组装** | 程序加载器 (execve) | `SystemPromptProvider` — prefix（role + critical_rules）+ suffix（`$INVENTORY` 模板）。`string.Template` 占位符（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）。引擎每轮替换。 | 多 Agent prompt 组合；基于角色的模板分发 |
 | 2 | **[资源注册 (MCP)](docs/resource-registry.md)** | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`。模型在 `agent.yaml` 中内联定义（`model_defs`）。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并。MCP 统一接口（本地 MCP Server 子进程，stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | 3 | **[权限控制](docs/tool-sandbox.md)** | ACL + 能力位 | `SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow 执行。Per-agent `policy` 覆盖。`deny_patterns` 正则匹配。 | OAuth 范围权限；基于角色的访问控制 |
 | 4 | **[安全审核](docs/tool-sandbox.md)** | 保护环 (Ring 0-3) | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ContentGuard` — 执行前/后 + 输出前基于规则的筛查。`GuardDefaults` 三道防线。 | 逐次调用沙箱；内容感知扫描 |
