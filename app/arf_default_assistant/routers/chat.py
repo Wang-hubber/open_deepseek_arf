@@ -25,8 +25,8 @@ class ChatReq(BaseModel):
 async def chat(req: ChatReq):
     if req.stream:
         return StreamingResponse(
-            _sse_chat(req.message),
-            media_type="text/event-stream",
+            _ndjson_stream(req.message),
+            media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
@@ -39,82 +39,24 @@ async def chat(req: ChatReq):
         return JSONResponse({"content": "", "error": str(e)}, status_code=500)
 
 
-async def _sse_chat(message: str):
-    cancel_evt = asyncio.Event()
-    state._active_cancel_events["default"] = cancel_evt
-    state._agent.engine.set_cancel_event(cancel_evt)
-
-    yield ":" + " " * 2048 + "\n\n"
-
+async def _ndjson_stream(message: str):
+    """Stream agent events as NDJSON (application/x-ndjson).
+    Each line is a complete JSON object terminated by \\n.
+    Cancellation via asyncio.CancelledError propagation."""
     try:
         async for event in state._agent.astream(message):
-            t = event.type
-            if t == "thinking_delta":
-                chunk = {"type": "chunk", "content": event.data.get("content", "")}
-                if event.data.get("reasoning"):
-                    chunk["reasoning"] = event.data["reasoning"]
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0)
-            elif t == "tool_call_chunk":
-                yield f"data: {json.dumps({'type': 'tool_call_streaming', 'name': event.data.get('name', ''), 'arguments': event.data.get('arguments', ''), 'id': event.data.get('id', ''), 'delta': event.data.get('delta', '')}, ensure_ascii=False)}\n\n"
-            elif t == "tool_call_start":
-                yield f"data: {json.dumps({'type': 'tool_call', 'name': event.data.get('tool_name', ''), 'arguments': event.data.get('arguments', '{}'), 'id': event.data.get('id', 'call_0')}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0)  # flush before blocking tool execution
-            elif t == "tool_call_end":
-                success = event.data.get("success", False)
-                yield f"data: {json.dumps({'type': 'tool_result', 'id': event.data.get('id', event.data.get('tool_name', 'call_0')), 'result': 'success' if success else 'error', 'tool': event.data.get('tool_name', ''), 'content': event.data.get('result', '') if success else '', 'error_msg': event.data.get('error', '')}, ensure_ascii=False)}\n\n"
-            elif t == "approval_required":
-                yield f"data: {json.dumps({'type': 'approval_required', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'params': event.data.get('params', {})}, ensure_ascii=False)}\n\n"
-            elif t == "approval_resolved":
-                yield f"data: {json.dumps({'type': 'approval_resolved', 'decision_id': event.data.get('decision_id', ''), 'tool_name': event.data.get('tool_name', ''), 'approved': event.data.get('approved', False), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
-            elif t == "guard_block":
-                yield f"data: {json.dumps({'type': 'guard_block', 'tool_name': event.data.get('tool_name', ''), 'guard': event.data.get('guard', ''), 'reason': event.data.get('reason', '')}, ensure_ascii=False)}\n\n"
-            elif t == "guard_pass":
-                yield f"data: {json.dumps({'type': 'guard_pass', 'tool_name': event.data.get('tool_name', '')}, ensure_ascii=False)}\n\n"
-            elif t == "agent_switch":
-                yield f"data: {json.dumps({'type': 'agent_switch', 'to': event.data.get('to', ''), 'from': event.data.get('from', '')}, ensure_ascii=False)}\n\n"
-            elif t == "round_end":
-                yield f"data: {json.dumps({'type': 'round_end', 'reason': event.data.get('reason', ''), 'round': event.data.get('round', 0)}, ensure_ascii=False)}\n\n"
-            elif t == "error":
-                detail = event.data.get("detail", "API error")
-                code = event.data.get("code", 0)
-                yield f"data: {json.dumps({'type': 'error', 'detail': f'[{code}] {detail}'}, ensure_ascii=False)}\n\n"
-                return
-            elif t == "session_end":
-                reason = event.data.get("reason", "")
-                if reason == "cancelled":
-                    yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                    return
-
-        state_data = await state._agent.state_store.get("default")
-        history = state_data.get("messages", []) if state_data else []
-        last = ""
-        for m in reversed(history):
-            if m.get("role") == "assistant":
-                last = m.get("content", "")
-                break
-        yield f"data: {json.dumps({'type': 'done', 'response': last, 'history': history, 'session_id': 'default'}, ensure_ascii=False)}\n\n"
+            line = json.dumps({
+                "type": event.type,
+                **event.data,
+            }, ensure_ascii=False, default=str) + "\n"
+            yield line.encode("utf-8")
+            await asyncio.sleep(0)
     except asyncio.CancelledError:
-        cancel_evt.set()
-        logger.info("SSE client disconnected, cancelling agent")
+        logger.info("Stream client disconnected, cancelling")
     except Exception as e:
         import traceback
-        logger.error(f"SSE chat error: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
-    finally:
-        state._active_cancel_events.pop("default", None)
-        state._agent.engine.set_cancel_event(None)
-        cancel_evt.clear()
-
-
-@router.post("/api/chat/cancel")
-async def cancel_chat():
-    evt = state._active_cancel_events.get("default")
-    if evt and not evt.is_set():
-        evt.set()
-        logger.info("Chat cancelled via API")
-        return JSONResponse({"status": "cancelled"})
-    return JSONResponse({"status": "no_active_chat"})
+        logger.error(f"Stream error: {traceback.format_exc()}")
+        yield json.dumps({"type": "error", "detail": str(e)}, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
 class ApproveReq(BaseModel):
