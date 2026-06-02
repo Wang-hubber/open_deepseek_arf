@@ -91,7 +91,14 @@ class PermissionsConfig(BaseModel):
       - allow: execute immediately
 
     deny_patterns provide regex-based blocking for dangerous URI schemes etc.
+
+    policy: per-agent override (only active when global session_mode=ask)
+      - None:  follow global session_mode (default)
+      - auto:  all tools allowed for this agent
+      - ask:   evaluate deny/ask/allow lists
+      - plan:  read-only for this agent
     """
+    policy: Literal["auto", "ask", "plan"] | None = None
     deny: list[str] = Field(default_factory=list)
     ask: list[str] = Field(default_factory=list)
     allow: list[str] = Field(default_factory=list)

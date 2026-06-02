@@ -83,6 +83,7 @@ class AgentConfig(BaseModel):
     """Agent = name + role + task + system_prompt + 4 core resources.
     User-facing: model/skill/tool/hook. Framework auto-handles the rest."""
     schema_version: str = Field(default="1.0", frozen=True)
+    session_mode: Literal["auto", "ask", "plan"] = "ask"
     name: str
     role: str = ""
     task: str = ""
