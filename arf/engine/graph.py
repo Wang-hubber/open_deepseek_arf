@@ -1161,20 +1161,20 @@ class GraphEngine:
                 system_prompt = active["system_prompt"]
                 summary = state.get("context_summary", "")
                 if summary:
-                    if "{{MEMORY}}" in system_prompt:
-                        system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                    if "$MEMORY" in system_prompt:
+                        system_prompt = system_prompt.replace("$MEMORY", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
-                if getattr(self, '_workspace_dir', '') and "{{WORKSPACE}}" in system_prompt:
+                if getattr(self, '_workspace_dir', '') and "$WORKSPACE" in system_prompt:
                     system_prompt = system_prompt.replace(
-                        "{{WORKSPACE}}",
+                        "$WORKSPACE",
                         f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
                         "Use relative paths from this directory."
                     )
-                if "{{TURN_BUDGET}}" in system_prompt:
+                if "$TURN_BUDGET" in system_prompt:
                     remaining = self.loop_strategy.max_turns - state.get("current_turn", 0)
                     system_prompt = system_prompt.replace(
-                        "{{TURN_BUDGET}}",
+                        "$TURN_BUDGET",
                         f"## Turn Budget\n"
                         f"You have {self.loop_strategy.max_turns} turns total, "
                         f"{max(0, remaining)} remaining. "
@@ -1561,20 +1561,20 @@ class GraphEngine:
                 system_prompt = active["system_prompt"]
                 summary = state.get("context_summary", "")
                 if summary:
-                    if "{{MEMORY}}" in system_prompt:
-                        system_prompt = system_prompt.replace("{{MEMORY}}", f"## Memory\n{summary}")
+                    if "$MEMORY" in system_prompt:
+                        system_prompt = system_prompt.replace("$MEMORY", f"## Memory\n{summary}")
                     else:
                         system_prompt += f"\n\n## Memory\n{summary}"
-                if getattr(self, '_workspace_dir', '') and "{{WORKSPACE}}" in system_prompt:
+                if getattr(self, '_workspace_dir', '') and "$WORKSPACE" in system_prompt:
                     system_prompt = system_prompt.replace(
-                        "{{WORKSPACE}}",
+                        "$WORKSPACE",
                         f"## Workspace\nAll file operations are relative to `{self._workspace_dir}`. "
                         "Use relative paths from this directory."
                     )
-                if "{{TURN_BUDGET}}" in system_prompt:
+                if "$TURN_BUDGET" in system_prompt:
                     remaining = self.loop_strategy.max_turns - state.get("current_turn", 0)
                     system_prompt = system_prompt.replace(
-                        "{{TURN_BUDGET}}",
+                        "$TURN_BUDGET",
                         f"## Turn Budget\n"
                         f"You have {self.loop_strategy.max_turns} turns total, "
                         f"{max(0, remaining)} remaining. "
