@@ -2,6 +2,7 @@
 import asyncio
 from arf.core.protocols import ToolResolver
 from arf.core.results import ToolResult
+from arf.sandbox.directory_boundary import DirectoryBoundary
 
 
 class ConcurrentToolExecutor:
@@ -11,11 +12,15 @@ class ConcurrentToolExecutor:
         strategy: str = "parallel",
         max_concurrency: int = 5,
         tool_guard=None,
+        tool_boundaries: dict[str, DirectoryBoundary] | None = None,
+        default_boundary: DirectoryBoundary | None = None,
     ) -> None:
         self._resolver = tool_resolver
         self._strategy = strategy
         self._max_concurrency = max_concurrency
         self._tool_guard = tool_guard
+        self._tool_boundaries = tool_boundaries or {}
+        self._default_boundary = default_boundary
 
     async def execute(
         self,
@@ -40,7 +45,6 @@ class ConcurrentToolExecutor:
                 if workspace_dir:
                     params["_workspace"] = workspace_dir
 
-                # Pre-execution safety check
                 guard_blocked = await self._check_params(tc["name"], params)
                 if guard_blocked:
                     results[tc["id"]] = guard_blocked
@@ -63,7 +67,6 @@ class ConcurrentToolExecutor:
                 if workspace_dir:
                     params["_workspace"] = workspace_dir
                 async with sem:
-                    # Pre-execution safety check
                     guard_blocked = await self._check_params(tc["name"], params)
                     if guard_blocked:
                         return tc["id"], guard_blocked
@@ -84,7 +87,10 @@ class ConcurrentToolExecutor:
         """Run path-check guard before execution. Returns ToolResult if blocked, None if safe."""
         if self._tool_guard is None:
             return None
-        gr = await self._tool_guard.check(tool_name, params)
+        boundary = self._tool_boundaries.get(tool_name, self._default_boundary)
+        if boundary is None:
+            return None
+        gr = await self._tool_guard.check(tool_name, params, boundary)
         if not gr.allowed:
             return ToolResult(
                 tool_name=tool_name,
