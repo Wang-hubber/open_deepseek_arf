@@ -131,7 +131,7 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 
 > **模型**不再经文件系统扫描。模型定义在 `agent.yaml` 顶部的 `model_defs` 中内联声明，通过 `ModelRegistry` 解析和校验。详见 [`prompt-assembly.md`](prompt-assembly.md) 和 agent.yaml 的 `models_defs` 字段。
 
-此外，**PluginProvider**（`arf/resources/providers/plugin_provider.py`）扩展了上述架构，支持从插件目录加载工具和技能。每个插件是 `plugins/{name}/` 子目录，内部结构与应用层一致：`tools/{name}/tool.yaml + function.py` 和 `skills/*.yaml`。BaseAgent 在检测到 `agent.yaml` 配置了 `plugins` 字段时自动装配 PluginProvider——这是多源 Provider 架构的第一个实际案例，证明文件系统扫描契约可以无侵入地扩展到第三方来源。
+此外，**PluginProvider**（`arf/resources/providers/plugin_provider.py`）在 MCP 架构中运行，从 `arf/plugins/{name}/` 目录加载工具和技能。每个插件子目录内部结构与应用层一致：`tools/{name}/tool.yaml + function.py` 和 `skills/*.yaml`。Plugin 资源合并到 `arf__` 命名空间，与 app 工具统一暴露。详见 [§2.7 MCP 统一资源接口](#27-mcp-统一资源接口)。
 
 ### 2.3 内核/动态分离
 
@@ -224,6 +224,98 @@ advanced:
     poll_interval: 5     # 轮询间隔秒数（非 Linux 平台）
 ```
 
+### 2.7 MCP 统一资源接口
+
+ARF 通过 MCP（Model Context Protocol）将本地文件系统资源与外部 MCP 服务器统一为一个接口。架构：
+
+```
+Agent (BaseAgent)
+  │
+  ├─ McpClientManager :: ToolResolver
+  │     │
+  │     │  stdio JSON-RPC (Content-Length framing)
+  │     ▼
+  │  ArfLocalMcpServer (子进程: python -m arf.mcp.local_server)
+  │     │
+  │     ├─ ToolProvider      → app tools/     → arf__tool_name
+  │     ├─ SkillProvider     → app skills/    → arf__skill_name
+  │     ├─ PluginProvider    → arf/plugins/   → arf__tool_name (同前缀)
+  │     └─ McpRemoteClient[] → 外部 MCP Server → {server}__tool_name
+  │
+  └─ 结果统一为 ToolDefinition，Agent 不感知来源
+```
+
+#### 工具命名空间
+
+所有工具通过 `{source}__` 前缀区分来源：
+
+| 前缀 | 来源 | 示例 |
+|------|------|------|
+| `arf__` | 本地 app tools/ 或插件 | `arf__file_reader`、`arf__memory_extract` |
+| `{server}__` | 外部 MCP 服务器 | `search__web_lookup`、`ci__run_tests` |
+
+框架自动处理前缀的添加（list 时）和剥离（call 时），Agent 和工具实现者无需感知。
+
+#### Plugin 与 MCP 的关系
+
+Plugin 在 MCP 架构中有**双重身份**:
+
+1. **作为资源提供者** — `PluginProvider` 在 `ArfLocalMcpServer` 内部运行，扫描 `arf/plugins/{name}/tools/` 和 `skills/` 子目录。插件的工具与 app 层工具合并到同一个 `arf__` 命名空间，App 同名工具覆盖插件版本（app > plugin）。
+
+2. **作为 Hook 行为** — Plugin 的 `plugin.py` 实现 `PluginProtocol`，通过 `InProcessHookRunner` 在生命周期 Hook 点执行。这部分不经过 MCP——MCP 只管理 Agent 可调用的函数资源。
+
+```
+Plugin 目录结构:
+arf/plugins/{name}/
+├── plugin.yaml     → 声明 name / hooks / config
+├── plugin.py       → PluginProtocol 实现 (Hook 行为, 不经过 MCP)
+├── tools/          → Agent 可调用的工具 (经过 MCP, arf__ 前缀)
+│   └── xxx/
+│       ├── tool.yaml
+│       └── function.py
+├── skills/         → Agent 可发现的技能 (经过 MCP)
+│   └── xxx.yaml
+└── hooks/          → 子进程 Hook 脚本 (通过 SubprocessHookRunner)
+    └── round_end.py
+```
+
+#### 外部 MCP 接入
+
+`agent.yaml` 中声明外部 MCP 服务器:
+
+```yaml
+mcp_servers:
+  - name: search
+    transport: sse
+    url: http://localhost:9000/sse
+  - name: ci
+    transport: http
+    url: http://localhost:9001
+    api_key_env: MCP_CI_KEY
+```
+
+`ArfLocalMcpServer` 启动时创建 `McpRemoteClient` 列表，调用 `connect()` 建立连接。外部工具以 `{server}__` 前缀暴露给 Agent。
+
+> **实现状态**: 本地 MCP Server 架构和 JSON-RPC 协议层已完成。外部 MCP 连接（`McpRemoteClient`）当前为 stub 实现——连接生命周期已定义，`tools/list` 返回空列表，`tools/call` 返回错误。本地 Server 缺少 `__main__` 入口（`-m arf.mcp.local_server` 无法独立启动）。这些是下一阶段的实现重点。
+
+#### 协议层
+
+```python
+# arf/mcp/protocol.py
+# JSON-RPC 2.0 over stdio, Content-Length framing
+class JsonRpcRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    id: int | str
+    method: str        # tools/list, tools/call, resources/list
+    params: dict
+
+class StdioFraming:
+    encode(payload) → Content-Length: N\r\n\r\n{body}
+    decode(buffer)   → body or None (incomplete)
+```
+
+`McpClientManager` 在 Agent 进程中以子进程方式启动 `python -m arf.mcp.local_server`，通过 stdin/stdout 进行 JSON-RPC 通信。每次工具调用是一次请求-响应往返。`McpClientManager` 实现 `ToolResolver` Protocol，可直接替换 `ConcurrentToolExecutor` 中的原有 `ResourceResolver`——对外接口完全一致。
+
 ---
 
 ## 3. 演进方向
@@ -236,7 +328,13 @@ advanced:
 
 ### 3.2 MCP 多源 Provider
 
-三个 Provider 的文件系统扫描架构天然支持多源扩展。增加 `MCPToolProvider` 后，来自 MCP 服务器的工具与本地文件系统的工具共享同一缓存/失效契约——对标 Windows 注册表中来自不同安装源的程序条目共用同一个查询 API。引擎层守卫检查（PathCheckToolGuard、权限分级）自动覆盖所有来源。
+两个 Provider 的文件系统扫描架构天然支持多源扩展。当前 MCP 框架已就位（JSON-RPC 协议、子进程隔离、命名空间前缀），外部 MCP Server 集成需完成:
+
+1. **`McpRemoteClient` SSE/HTTP 实现** — 当前为 stub。需实现 SSE 流连接 + endpoint discovery，HTTP JSON-RPC 请求/响应，重连和心跳。
+2. **`local_server.py` 主入口** — 添加 `__main__` 或 `if __name__ == "__main__"` 块，使子进程 `python -m arf.mcp.local_server` 可独立启动和监听。
+3. **MCP 资源变更通知** — 外部 Server 工具列表变更时通过 `notifications/resources/updated` 通知本地 Server → `FileWatcher` → Agent 刷新工具清单。
+
+对标 Windows 注册表中来自不同安装源的程序条目共用同一个查询 API。引擎层 Guard（PathCheckToolGuard、ContentGuard、权限分级）自动覆盖所有来源。
 
 ### 3.3 探索性方向
 
