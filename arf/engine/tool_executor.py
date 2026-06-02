@@ -49,7 +49,11 @@ class ConcurrentToolExecutor:
                 if workspace_dir:
                     params["_workspace"] = workspace_dir
 
-                guard_blocked = await self._check_params(tc["name"], params)
+                session_id = ""
+                if engine is not None:
+                    session_id = getattr(engine, '_current_session_id', '')
+
+                guard_blocked = await self._check_params(tc["name"], params, session_id)
                 if guard_blocked:
                     results[tc["id"]] = guard_blocked
                     continue
@@ -70,8 +74,11 @@ class ConcurrentToolExecutor:
                     params["_state_store"] = state_store
                 if workspace_dir:
                     params["_workspace"] = workspace_dir
+                session_id = ""
+                if engine is not None:
+                    session_id = getattr(engine, '_current_session_id', '')
                 async with sem:
-                    guard_blocked = await self._check_params(tc["name"], params)
+                    guard_blocked = await self._check_params(tc["name"], params, session_id)
                     if guard_blocked:
                         return tc["id"], guard_blocked
                     return tc["id"], await self._resolver.execute(
@@ -87,24 +94,32 @@ class ConcurrentToolExecutor:
                 results[tid] = tr
             return results
 
-    async def _check_params(self, tool_name: str, params: dict) -> ToolResult | None:
-        """Run path-check guard before execution. Returns ToolResult if blocked, None if safe."""
-        if self._tool_guard is None:
-            return None
-        boundary = self._tool_boundaries.get(tool_name, self._default_boundary)
-        if boundary is None:
-            return None
-        gr = await self._tool_guard.check(tool_name, params, boundary)
-        if not gr.allowed:
-            return ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"[PathCheck] {gr.reason}",
-                blocked=True,
+    async def _check_params(self, tool_name: str, params: dict,
+                            session_id: str = "") -> ToolResult | None:
+        """Run path-check guard + content guard before execution. Returns ToolResult if blocked, None if safe."""
+        # Resolve boundary: whitelist tool → allowed_dir, other → sandbox
+        if tool_name in self._tool_boundaries:
+            boundary = self._tool_boundaries[tool_name]
+        elif self._sandbox_manager is not None and session_id:
+            boundary = DirectoryBoundary(
+                str(self._sandbox_manager.sandbox_path(session_id))
             )
+        else:
+            boundary = self._default_boundary
+
+        # Path safety check
+        if self._tool_guard is not None and boundary is not None:
+            gr = await self._tool_guard.check(tool_name, params, boundary)
+            if not gr.allowed:
+                return ToolResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=f"[PathCheck] {gr.reason}",
+                    blocked=True,
+                )
 
         # ContentGuard: dangerous behavior check
-        if self._content_guard:
+        if getattr(self, '_content_guard', None):
             import json as _json
             params_str = _json.dumps(params, ensure_ascii=False) if params else ""
             dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
@@ -115,4 +130,5 @@ class ConcurrentToolExecutor:
                     error=f"[ContentGuard] {dr.reason}",
                     blocked=True,
                 )
+
         return None
