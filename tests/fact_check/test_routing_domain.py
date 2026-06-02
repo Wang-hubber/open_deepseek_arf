@@ -189,11 +189,11 @@ class TestEngineIntegration:
     def test_routing_before_compaction(self):
         """Doc: 路由在压缩之前执行（graph.py），确保压缩使用正确模型的窗口大小."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         route_pos = src.find("model_router.route")
         compact_pos = src.find("compaction.should_compact")
-        assert route_pos > 0, "route() call not found in invoke"
-        assert compact_pos > 0, "should_compact() not found in invoke"
+        assert route_pos > 0, "route() call not found in _step_call_model"
+        assert compact_pos > 0, "should_compact() not found in _step_call_model"
         assert route_pos < compact_pos, (
             f"Routing (pos {route_pos}) must come before compaction (pos {compact_pos})"
         )
@@ -201,21 +201,21 @@ class TestEngineIntegration:
     def test_window_size_passed_from_routed_model(self):
         """Doc: 压缩使用正确模型的窗口大小."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         # window should come from _model_windows dict using the routed model
-        assert "window_size=window" in src or "window_size=windows" in src or "_model_windows" in src
+        assert "window_size=window" in src or "_model_windows" in src
 
     def test_routing_per_turn(self):
         """Doc: 每次 turn 之间可无缝切换模型."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         # route() should be inside the while loop, not outside
         assert "model_router.route" in src
 
     def test_state_current_model_updated_after_routing(self):
         """Doc: state['current_model'] updated with routed model."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert 'state["current_model"] = model' in src or "state['current_model'] = model" in src
 
 
@@ -291,7 +291,7 @@ class TestDefaultModelFallback:
         Engine should guard: if route() returns falsy, keep current_model."""
         import inspect as _ins
         from arf.engine.graph import GraphEngine
-        src = _ins.getsource(GraphEngine.invoke)
+        src = _ins.getsource(GraphEngine._step_call_model)
         route_idx = src.find("model_router.route")
         section = src[route_idx:route_idx + 200]
         has_guard = ('or model' in section or

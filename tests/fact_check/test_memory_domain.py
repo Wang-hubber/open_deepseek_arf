@@ -602,9 +602,9 @@ class TestEngineIntegration:
         import inspect
         from arf.engine.graph import GraphEngine
 
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         route_pos = src.find("self.model_router.route")
-        assert route_pos > 0, "route call not found in invoke"
+        assert route_pos > 0, "route call not found in _step_call_model"
         # Memory retrieval is no longer embedded in the engine loop
         assert "memory_retriever.retrieve" not in src, (
             "memory_retriever.retrieve should have been removed from engine"
@@ -614,7 +614,7 @@ class TestEngineIntegration:
         """Doc: [2] 路由之后、[4] 模型调用之前 = [3] 压缩判断."""
         import inspect
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         route_pos = src.find("self.model_router.route")
         compact_pos = src.find("compaction.should_compact")
         # model_call is harder to find as it depends on adapter
@@ -657,8 +657,8 @@ class TestEngineIntegration:
         """Doc: [5] 工具输出摘要 — 工具执行成功后."""
         import inspect
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
-        assert "summarize_tool_output" in src, "summarize_tool_output not in invoke"
+        src = inspect.getsource(GraphEngine._step_execute_tools)
+        assert "summarize_tool_output" in src, "summarize_tool_output not in _step_execute_tools"
 
     def test_memory_max_tokens_and_top_k_wired_from_config(self):
         """F2 fix: engine accepts memory_max_tokens/top_k and uses them
@@ -748,13 +748,13 @@ class TestConfigModels:
         assert c.threshold == 0.75
 
     def test_memory_config_fields(self):
-        """Doc: memory.store (file|sqlite|none), workspace (./memory),
+        """Doc: memory.store (file|sqlite|none), workspace (./data/memory),
         retriever (llm|recent_first), writer (llm|rule), max_tokens (2000),
         top_k (5)."""
         from arf.core.config_base import MemoryConfig
         m = MemoryConfig()
         assert m.store == "file"
-        assert m.workspace == "./memory"
+        assert m.workspace == "./data/memory"
         assert m.retriever == "llm"
         assert m.writer == "llm"
         assert m.max_tokens == 2000
