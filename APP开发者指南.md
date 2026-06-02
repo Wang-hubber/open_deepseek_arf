@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界
 
 ---
 
@@ -423,6 +423,26 @@ ARF 提供三种会话权限模式，控制 Agent 对工具和系统操作的访
 > `approval_required` 事件通过 EventBus 发射（astream 路径同时 `yield` 给 SSE）。
 > App 层可通过 `event_bus.subscribe()` 自行推送到前端（WebSocket/轮询），
 > 收到审批后调用 `engine.approve()` 解除阻塞。SSE 路径已内置支持。
+
+**沙箱边界 — 工具的白名单目录**：
+
+每次工具调用前，`PathCheckToolGuard` 对参数中的路径进行六项安全校验（路径穿越阻断、绝对路径阻断、深度限制、数量限制、符号链接检测、白名单包含性检测）。校验使用的白名单边界分为两层：
+
+- **全局默认边界**：`workspace_root`（`memory/` 目录），作为所有工具的 fallback 边界
+- **Per-tool 提升边界**：在 `tool.yaml` 中声明 `allowed_dir` 字段，工具可以声明其安全目录范围
+
+```yaml
+# tools/my_tool/tool.yaml
+name: my_tool
+description: 操作 /tmp 目录的工具
+allowed_dir: /tmp          # <-- 此工具的白名单目录（可超出 workspace_root）
+```
+
+**继承规则**：
+- 未配置 `allowed_dir` → 自动继承全局 `workspace_root` 边界
+- 配置了 `allowed_dir` → 以此目录作为白名单，可以超出 `workspace_root` 范围
+
+> `allowed_dir` 是**提升（elevation）语义**——工具主动声明"我需要访问这个目录"。路径安全性仍由 `PathCheckToolGuard` 的六项检查统一保障。
 
 **Memory — 长期记忆**：
 
@@ -1555,10 +1575,10 @@ arf/
 ├── memory/         # FileMemoryStore、LLMMemoryWriter、LLMMemoryRetriever
 ├── compaction/     # SlidingWindowCompactor — token 感知窗口压缩
 ├── routing/        # TwoTierRouter — 快慢模型调度
-├── guardrails/     # PathCheckToolGuard（路径穿越阻断，已移至 executor 层）
+├── guardrails/     # PathCheckToolGuard — 基于 DirectoryBoundary 的路径安全校验（边界由 executor 传入）
 ├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
 ├── hooks/          # SubprocessHookRunner — 六个生命周期事件
-├── sandbox/        # PathSandbox — 路径合法性校验
+├── sandbox/        # DirectoryBoundary — 白名单目录边界；PathSandbox — 轻量路径解析
 ├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
 ├── skills/         # SkillPipeline — 工具依赖执行时序
 ├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
@@ -1767,6 +1787,117 @@ if (evt.type === 'guard_block') {
 ```
 
 审批弹窗仅在 `session_mode=ask` 且工具命中 `ask` 列表时触发，前端收到 `approval_required` 事件后展示确认对话框。
+
+---
+
+### 12.6 工具目录边界 (Tool Directory Boundary)
+
+ARF 的目录边界系统在 `PathCheckToolGuard` 执行路径安全校验时使用 `DirectoryBoundary` 对象进行白名单包含性检查。系统采用**两层白名单模型**，兼顾安全与灵活性。
+
+#### 两层白名单模型
+
+```
+workspace_root (memory/) ---- 全局 fallback 边界
+    ├── tool_a（无 allowed_dir）→ 使用全局边界
+    ├── tool_b（allowed_dir: /tmp）→ 使用 /tmp 边界（提升）
+    └── tool_c（allowed_dir: /var/data）→ 使用 /var/data 边界（提升）
+```
+
+- **第一层（全局默认）**：`workspace_root`（通常为 `memory/`），所有未声明 `allowed_dir` 的工具自动继承
+- **第二层（Per-tool 提升）**：在 `tool.yaml` 的 `allowed_dir` 字段声明，允许工具访问 `workspace_root` 之外的目录
+
+#### DirectoryBoundary 类
+
+`arf/sandbox/directory_boundary.py` 提供白名单边界实现。三个主要方法：
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `contains` | `(path_str: str) -> bool` | 检查路径是否在边界内（拒绝 `..` 穿越） |
+| `has_symlink` | `(path_str: str) -> bool` | 检查路径任意段是否为符号链接 |
+| `resolve` | `(path_str: str) -> Path` | 将相对路径解析为边界内的绝对路径 |
+
+核心逻辑：
+```python
+def contains(self, path_str: str) -> bool:
+    if ".." in Path(path_str).parts:
+        return False
+    resolved = (self._root / path_str).resolve()
+    return resolved.is_relative_to(self._root)
+```
+
+#### 边界解析流程
+
+`ConcurrentToolExecutor._check_params()` 中执行边界查找：
+```python
+boundary = self._tool_boundaries.get(tool_name, self._default_boundary)
+```
+
+1. 从 `tool_boundaries` dict 中按工具名查找 per-tool 边界
+2. 未找到 → 使用 `default_boundary`（全局 `workspace_root`）
+3. 两者均不存在 → 跳过路径检查
+
+#### PathCheckToolGuard 重构
+
+`PathCheckToolGuard` 不再持有全局 workspace_root 状态。边界由执行器在每次调用时传入：
+```python
+async def check(
+    self, tool_name: str, params: dict, boundary: DirectoryBoundary
+) -> GuardResult:
+```
+
+六项顺序检查：路径穿越 → 绝对路径 → 深度限制 → 数量限制 → 符号链接 → 白名单包含性。
+
+#### 配置示例
+
+**tool.yaml — 默认继承 workspace_root**：
+```yaml
+name: file_reader
+description: Read file contents or list directory entries
+# 未声明 allowed_dir → 自动使用 workspace_root (memory/)
+```
+
+**tool.yaml — 提升边界**：
+```yaml
+name: file_download
+description: Download file from URL and save to disk
+allowed_dir: /tmp           # 此工具可以操作 /tmp 目录
+```
+
+**agent.yaml — 沙箱配置（控制 PathCheckToolGuard 检查开关）**：
+```yaml
+advanced:
+  sandbox:
+    checks:
+      path_traversal: true
+      absolute_path: true
+      workspace_containment: true
+      symlink: true
+```
+
+#### Subagent 安全继承
+
+子 Agent 执行器自动继承父 Agent 的 `tool_guard` 和 `tool_boundaries`，确保安全性一致性：
+```python
+# arf/plugins/subagent/tools/subagent/function.py
+parent_executor = getattr(_engine, 'tool_executor', None)
+if parent_executor is not None:
+    tool_guard = getattr(parent_executor, '_tool_guard', None)
+    tool_boundaries = getattr(parent_executor, '_tool_boundaries', {})
+    default_boundary = getattr(parent_executor, '_default_boundary', None)
+```
+
+此修复填补了子 Agent 缺少路径安全检查的安全缺口。
+
+#### 关注点分离
+
+目录边界系统与权限授权系统职责明确：
+
+| 系统 | 模块 | 职责 |
+|------|------|------|
+| **安全 (Safety)** | `DirectoryBoundary` + `PathCheckToolGuard` | 路径合法性校验：阻断穿越、绝对路径、符号链接逃逸 |
+| **授权 (Auth)** | `SessionModeManager` + `PermissionRegistry` | 权限授权："谁可以用什么工具"，deny/ask/allow 列表 |
+
+两者在工具执行链路中互补，共同构成 ARF 的安全防线。
 
 ---
 

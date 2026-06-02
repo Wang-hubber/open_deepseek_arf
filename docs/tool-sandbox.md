@@ -63,8 +63,13 @@ GraphEngine（权限判断 — auth）
     │       approval_required 事件 → 前端确认 → 恢复/拒绝执行
     │
     ├─ [5] tool_executor.execute()
-    │       ├─ PathCheckToolGuard.check()（硬阻断，安全 — are params safe?）
-    │       │   可配置检查项（默认仅工作区逃逸）：路径穿越 / 绝对路径 / symlink / 工作区逃逸
+    │       ├─ 解析 DirectoryBoundary（per-tool 白名单边界）
+    │       │    优先使用 tool.yaml 中声明的 allowed_dir
+    │       │    未配置则使用全局 workspace_root 作为默认边界
+    │       ├─ PathCheckToolGuard.check(tool_name, params, boundary)
+    │       │   （硬阻断，安全 — are params safe?）
+    │       │   两层白名单：全局 workspace_root + per-tool allowed_dir 提权
+    │       │   检查项：路径穿越 / 绝对路径 / symlink / 边界逃逸
     │       │   自动跳过文件内容字符串（含换行或 >500 字符）
     │       └─ 工具在 Agent 进程内执行
     │
@@ -82,35 +87,97 @@ GraphEngine（权限判断 — auth）
 |--------|------|------|------|
 | `NoneInputGuard` | 输入 | — | 始终放行，预留 LLM 分类器扩展点 |
 | `PermissionRegistry` | 工具权限 | 软阻断 | 通过 `SessionModeManager` 解析有效模式后，按 deny_patterns → deny → ask → allow → 默认 ask 优先级判断 |
-| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 在 execution 中执行（而非引擎流水线），递归扫描参数中的路径字符串（跳过内容字符串）；默认仅检查工作区逃逸，其他检查项通过 `SandboxConfig.checks` 按需启用 |
+| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 在 execution 中执行（而非引擎流水线），接收 `DirectoryBoundary` 进行白名单校验；递归扫描参数中的路径字符串（跳过内容字符串）；两层边界：全局 `workspace_root`（默认）+ per-tool `allowed_dir`（提权）|
 | `RegexOutputGuard` | 输出 | 过滤 | API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]` |
 
-### 2.3 PathCheckToolGuard — 路径沙箱
+### 2.3 路径沙箱 — DirectoryBoundary + PathCheckToolGuard
 
-`arf/guardrails/path_check.py`。在每次工具调用前执行（`graph.py`），递归检查所有参数中的路径字符串。各检查项通过 `SandboxConfig.checks` 独立开关，默认仅启用 `workspace_containment`：
+#### DirectoryBoundary — 白名单路径边界
+
+`arf/sandbox/directory_boundary.py`。`DirectoryBoundary` 是基于白名单的路径校验边界，替代了旧的 `PathSandbox` 路径沙箱。每个边界绑定一个根目录，路径合法性通过白名单验证（路径必须解析到边界根目录之内），而非黑名单模式。
+
+```python
+boundary = DirectoryBoundary("/path/to/workspace")
+boundary.contains("subdir/file.txt")    # True — 完全在边界内
+boundary.contains("../etc/passwd")       # False — .. 穿越直接拒绝
+boundary.has_symlink("link/file.txt")    # 检查路径组件中的 symlink
+```
+
+核心方法：
+
+| 方法 | 说明 |
+|------|------|
+| `contains(path_str)` | 白名单验证——路径解析后是否在边界根目录内；`..` 穿越直接拒绝 |
+| `has_symlink(path_str)` | 从根目录向下逐段检查路径每个组件是否为符号链接 |
+| `resolve(path_str)` | 相对于边界根目录解析路径，返回完全解析的 `Path` 对象 |
+
+`PathSandbox`（`arf/sandbox/path_sandbox.py`）已精简为纯路径解析工具，仅保留 `resolve_path()` 和 `validate_command()`，所有边界逻辑移至 `DirectoryBoundary`。
+
+#### 两层白名单模型
+
+`PathCheckToolGuard`（`arf/guardrails/path_check.py`）不再在内部持有固定的 `workspace_root`。边界由 executor 在每次调用时传入，框架支持两层白名单：
+
+```
+executor._check_params(tool_name, params):
+    boundary = tool_boundaries.get(tool_name, default_boundary)
+    # ① 优先使用 per-tool allowed_dir（提权）
+    # ② 未配置则使用全局 workspace_root（默认）
+    tool_guard.check(tool_name, params, boundary)
+```
+
+- **默认边界（`default_boundary`）**：全局 `workspace_root`，所有工具共享，阻止工作区逃逸
+- **Per-tool 提权（`tool_boundaries`）**：工具在 `tool.yaml` 中声明 `allowed_dir` 后，可访问 `workspace_root` 之外的白名单目录。框架在 `BaseAgent` 装配时自动收集所有工具的 `allowed_dir`，构建 `tool_name → DirectoryBoundary` 映射
+
+这种做法取代了旧的 `SandboxConfig.allow_escape`（黑名单逃逸开关）和 `SandboxConfig.writable_dirs`（可写目录列表）——基于白名单的 `DirectoryBoundary` 更接近安全最佳实践，也消除了 "声明的可写目录" 与 "实际可访问目录" 之间的歧义。
+
+例如，一个需要访问系统级模板目录的工具在 `tool.yaml` 中声明：
+
+```yaml
+# app/arf_default_assistant/tools/template_manager/tool.yaml
+name: template_manager
+description: 管理系统模板文件
+allowed_dir: /usr/share/templates  # 提权到 workspace_root 之外的目录
+```
+
+`BaseAgent` 装配时自动为 `template_manager` 创建指向 `/usr/share/templates` 的 `DirectoryBoundary`，executor 执行时优先使用此边界。
+
+#### Subagent 继承修复
+
+子代理执行器（`arf/plugins/subagent/tools/subagent/function.py`）现在从父引擎继承 `tool_guard` 和 `tool_boundaries`：
+
+```python
+tool_guard = getattr(parent_executor, '_tool_guard', None)
+tool_boundaries = getattr(parent_executor, '_tool_boundaries', {})
+default_boundary = getattr(parent_executor, '_default_boundary', None)
+```
+
+此前子代理执行器未继承这些安全组件，存在安全缺口。现在子代理与父代理共享相同的 `PathCheckToolGuard` 和边界配置，安全策略在 agent 层次结构中保持一致。
+
+#### PathCheckToolGuard 检查流程
+
+各检查项通过 `PathCheckFlags` 独立开关，默认全部启用：
 
 ```yaml
 # agent.yaml
 advanced:
   sandbox:
     checks:
-      path_traversal: false          # 目录穿越（..）
-      absolute_path: false           # 绝对路径（/）
-      workspace_containment: true    # 工作区逃逸（默认唯一开启）
-      symlink: false                 # 符号链接检测
+      path_traversal: true          # 目录穿越（..）
+      absolute_path: true           # 绝对路径（/）
+      workspace_containment: true   # 工作区逃逸（白名单）
+      symlink: true                 # 符号链接检测
 ```
 
-检查时自动跳过文件内容字符串（含换行符或长度 >500 字符的字符串视为内容而非路径），避免 `/* CSS 注释 */` 等被误判为路径。检查顺序：内容跳过 → 目录穿越 → 绝对路径 → 深度/数量配额 → 符号链接 → 工作区逃逸。
+检查顺序（首次失败即返回）：
+1. **内容跳过** — 含换行符或长度 >500 字符的字符串视为内容而非路径，避免 `/* CSS 注释 */` 等被误判
+2. **路径穿越**（`..`）
+3. **绝对路径**（以 `/` 开头）
+4. **路径深度** — 超过 `ResourceQuota.max_path_depth` 则阻断
+5. **路径数量** — 超过 `ResourceQuota.max_path_count` 则阻断
+6. **符号链接穿越** — 通过 `boundary.has_symlink()` 检测
+7. **白名单边界逃逸** — 通过 `boundary.contains()` 验证
 
-`PathSandbox.has_symlink()`（`arf/sandbox/path_sandbox.py`）从根目录向下逐段检查原始路径的每个组件是否为符号链接——在 `resolve()` 之前检测，防止 symlink 劫持逃逸。
-
-`PathSandbox` 还提供以下实用方法：
-
-| 方法 | 说明 |
-|------|------|
-| `validate_command(command)` | 检查命令字符串是否包含危险 shell 模式（`;`、`&&`、`|`、`$(`、`` ` `` 等） |
-| `resolve_path(path_str)` | 将路径字符串相对于工作区根目录解析为绝对 `Path` 对象 |
-| `allowed_dirs()` | 返回可写目录列表（构造时传入的 `writable_dirs`） |
+#### ResourceQuota
 
 `ResourceQuota` 支持三个可选限制：
 
@@ -119,14 +186,6 @@ advanced:
 | `max_path_count` | `int \| None` | 单次调用最多检查的路径字符串数量 |
 | `max_path_depth` | `int \| None` | 单个路径的最大目录深度（`Path.parts` 长度） |
 | `deny_symlinks` | `bool` | 是否拦截 symlink 穿越（默认 `True`） |
-
-检测顺序（首次失败即返回）：
-1. 路径穿越（`..`）
-2. 绝对路径（以 `/` 开头）
-3. 路径深度超配额
-4. 路径数量超配额
-5. 符号链接穿越（可配置）
-6. 解析后工作区逃逸（PathSandbox containment）
 
 ### 2.4 双源隔离 — 应用层约定
 
@@ -277,7 +336,7 @@ advanced:
     timeout: 60s
 ```
 
-**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）通过 `AdvancedConfig.sandbox` → `PathCheckToolGuard` 完整接入。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。
+**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig.checks` 通过 `AdvancedConfig.sandbox.checks` → `PathCheckToolGuard` 完整接入。`allowed_dir` 在 `tool.yaml` 中声明，由 `BaseAgent` 装配时收集并构建 `tool_boundaries` 映射。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。
 
 ---
 
