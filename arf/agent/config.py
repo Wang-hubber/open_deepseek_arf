@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 import yaml
 from arf.core.config_base import (
-    ModelConfig, SkillConfig, ToolConfig, HookDefinition,
+    McpServerConfig, ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
@@ -92,6 +92,7 @@ class AgentConfig(BaseModel):
     skills: list[SkillConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
     tools: list[ToolConfig] = Field(default_factory=list)    # optional — filesystem is source of truth
     plugins: list[str] = Field(default_factory=list)  # plugin names to activate from arf/plugins/
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     hooks: list[HookDefinition] = Field(default_factory=list)
     advanced: AdvancedConfig | None = None
     agents: list["AgentConfig"] | None = None

@@ -218,3 +218,14 @@ class PromotionConfig(BaseModel):
     ask: list[str] = Field(default_factory=list)
     allow: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
+
+
+class McpServerConfig(BaseModel):
+    """External MCP server connection configuration."""
+    name: str
+    transport: Literal["sse", "http", "stdio"] = "sse"
+    url: str = ""
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    api_key_env: str = ""
+    timeout: str = "30s"
