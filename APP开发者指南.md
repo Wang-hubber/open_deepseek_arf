@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、回归测评
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评
 
 ---
 
@@ -365,11 +365,28 @@ advanced:
   system_model: quick
 ```
 
+**Session Mode — 会话权限模式**：
+
+ARF 提供三种会话权限模式，控制 Agent 对工具和系统操作的访问级别。`session_mode` 在 `advanced:` 顶层声明，作用于所有 Agent。
+
+```yaml
+  session_mode: ask             # auto | ask | plan
+```
+
+| 模式 | 行为 | 典型场景 |
+|------|------|---------|
+| `auto` | 所有允许的工具自动执行，无需人工干预 | 受信环境、自动化 |
+| `ask` | `permissions.ask` 列表中的工具触发审批弹窗，等待用户确认 | 人机协作 |
+| `plan` | 写工具（file_writer / file_deleter 等）自动被 deny，只读工具正常工作 | 审计/只读会话 |
+
 **Guardrails — 权限与安全**：
+
+每次工具调用前，框架执行 deny → ask/permissions.policy → allow 检查。审批通道现已集成到 `permissions.ask` + `permissions.approval` 中。
 
 ```yaml
   guardrails:
     permissions:
+      policy: null                # null（跟随全局）| auto | ask | plan
       allow:
         - file_reader
         - web_search
@@ -382,6 +399,9 @@ advanced:
         - file_writer
         - file_deleter
         - python_exec
+      approval:
+        channel: websocket
+        timeout: 60s
       deny: []
       deny_patterns:
         - "rm -rf"
@@ -389,24 +409,20 @@ advanced:
         - "chmod 777"
 ```
 
-每次工具调用前，框架执行 deny → ask → allow 检查。`ask` 列表中的工具需要人工审批（前端弹出确认框）。`deny_patterns` 硬阻断危险命令模式。
+`policy` 字段支持按 Agent 粒度覆盖全局 `session_mode`（仅在 `session_mode=ask` 时生效）：
+- `null`（不配置）— 跟随全局 session_mode，按 deny/ask/allow 列表判断
+- `auto` — 此 Agent 全部工具自动执行，忽略列表
+- `ask` — 按 deny/ask/allow 列表判断
+- `plan` — 此 Agent 只读，写工具一律拒绝
 
-**Human Loop — 审批通道**：
+`session_mode` 对审批行为的具体影响：
+- **auto 模式**：`permissions.ask` 列表被忽略，所有工具自动执行
+- **ask 模式**：`permissions.ask` 中的工具发射 `approval_required` 事件，前端弹窗等待用户确认；`permissions.approval.channel` 和 `timeout` 控制审批交互方式与等待时长
+- **plan 模式**：`permissions.allow` 中的只读工具正常工作，写工具自动阻断
 
 > `approval_required` 事件通过 EventBus 发射（astream 路径同时 `yield` 给 SSE）。
 > App 层可通过 `event_bus.subscribe()` 自行推送到前端（WebSocket/轮询），
-> 收到审批后调用 `engine.approve()` 解除 60s 阻塞。SSE 路径已内置支持。
-
-```yaml
-  human_loop:
-    approval_points: tool_name_allowlist
-    allowlist:
-      - file_writer
-      - file_deleter
-      - python_exec
-    channel: websocket
-    timeout: 60s
-```
+> 收到审批后调用 `engine.approve()` 解除阻塞。SSE 路径已内置支持。
 
 **Memory — 长期记忆**：
 
@@ -1539,7 +1555,8 @@ arf/
 ├── memory/         # FileMemoryStore、LLMMemoryWriter、LLMMemoryRetriever
 ├── compaction/     # SlidingWindowCompactor — token 感知窗口压缩
 ├── routing/        # TwoTierRouter — 快慢模型调度
-├── guardrails/     # PathCheckToolGuard、ToolPermissionChecker
+├── guardrails/     # PathCheckToolGuard（路径穿越阻断，已移至 executor 层）
+├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
 ├── hooks/          # SubprocessHookRunner — 六个生命周期事件
 ├── sandbox/        # PathSandbox — 路径合法性校验
 ├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
@@ -1593,6 +1610,163 @@ report.to_json("reports/regression_v1_baseline.json")
 4 个内置指标：成功率、工具准确率、轮次效率、输出关键词匹配。
 
 > 深入阅读：[`docs/eval-benchmark.md`](docs/eval-benchmark.md)
+
+### 12.5 会话权限模式
+
+ARF 的会话权限模式系统由三个组件协同工作，在工具调用链路的多个层级实施访问控制。
+
+#### 组件架构
+
+```
+arf/session/
+├── SessionModeManager     # 全局 session_mode 状态管理，按 Agent 解析生效策略
+├── PermissionRegistry     # 注册 tools 的读写分类（read_only / write / system）
+└── PermissionLists        # 加载并合并 guardrails.permissions.* 列表
+```
+
+**分离原则**：`PathCheckToolGuard`（路径安全性校验，阻断 `..` 穿越和绝对路径）已移至 `arf/guardrails/` 的 executor 层，与权限授权（"谁可以用什么工具"）解耦。`arf/session/` 负责权限授权，`arf/guardrails/` 负责路径安全，两者互补。
+
+#### 全局 session_mode 与 per-agent policy
+
+`session_mode` 在 `advanced:` 顶层声明，作用于所有 Agent。每个 Agent 的 `permissions.policy` 可以覆盖全局设置：
+
+```yaml
+# agent.yaml — 顶层全局设置
+advanced:
+  session_mode: ask            # auto | ask | plan
+```
+
+```yaml
+# per-agent policy 覆盖（在 agent.yaml 的 agents: 段中或顶层 guardrails.permissions 中）
+agents:
+  - name: sys_agent
+    advanced:
+      guardrails:
+        permissions:
+          policy: auto         # 此 Agent 全放行，忽略全局
+```
+
+**`policy` 可选值**：
+
+| policy | 行为 | 何时生效 |
+|--------|------|---------|
+| `null`（默认） | 跟随全局 session_mode | 始终 |
+| `auto` | 此 Agent 全部工具自动执行 | 仅全局 ask 时 |
+| `ask` | 按 deny/ask/allow 列表判断 | 仅全局 ask 时 |
+| `plan` | 此 Agent 只读，写工具拒绝 | 仅全局 ask 时 |
+
+> **注意：** 全局 `auto` 或 `plan` 是硬覆盖，Agent 的 `policy` 字段被忽略。`policy` 仅在全局 `ask` 时生效。
+
+#### 组合规则表
+
+实际生效的模式由 `session_mode` × `policy` 两层决定：
+
+| 全局 session_mode | Agent policy | 有效结果 |
+|-------------------|-------------|---------|
+| `auto` | *任意 / null* | **auto** — 全放 |
+| `plan` | *任意 / null* | **plan** — 只读 |
+| `ask` | `auto` | **auto** — 全放 |
+| `ask` | `ask` | **ask** — 按列表 |
+| `ask` | `plan` | **plan** — 只读 |
+| `ask` | null | **ask** — 按列表（跟随全局） |
+
+**关键行为**：
+- `global auto/plan` 是硬覆盖，Agent 的 `policy` 字段被忽略
+- `deny` 列表在任何模式下均为硬阻断，优先级最高
+- `deny_patterns` 在 PermissionRegistry 层做正则匹配，独立于 session 模式
+- `PathCheckToolGuard`（路径安全）在 executor 层执行，与权限授权解耦
+
+#### 各模式配置示例
+
+**auto 模式** — 全自动运行，适合受信环境：
+
+```yaml
+advanced:
+  session_mode: auto
+  guardrails:
+    permissions:
+      allow:
+        - file_reader
+        - file_writer
+        - web_search
+        - python_exec
+      deny: []
+```
+
+**ask 模式** — 写操作需人工审批，适合日常人机协作：
+
+```yaml
+advanced:
+  session_mode: ask
+  guardrails:
+    permissions:
+      allow:
+        - file_reader
+        - web_search
+      ask:
+        - file_writer
+        - file_deleter
+        - python_exec
+      approval:
+        channel: websocket
+        timeout: 60s
+      deny: []
+```
+
+**plan 模式** — 只读审计：
+
+```yaml
+advanced:
+  session_mode: plan
+  guardrails:
+    permissions:
+      allow:
+        - file_reader
+        - web_search
+        - handoff
+      ask: []
+      deny: []
+```
+
+> plan 模式下所有 Agent 均为只读。若需某个 Agent 保留写权限，应使用 `session_mode: ask` 配合 Agent 级 `policy`。
+
+**混合模式** — 主 Agent 只读，SysAgent 可写：
+
+```yaml
+advanced:
+  session_mode: ask              # 全局 ask，让 Agent policy 决策
+  guardrails:
+    permissions:
+      policy: plan               # 主 Agent 只读
+      allow:
+        - file_reader
+        - web_search
+        - handoff
+
+agents:
+  - name: sys_agent
+    advanced:
+      guardrails:
+        permissions:
+          policy: auto            # SysAgent 全放行
+          allow:
+            - file_writer
+            - resource_loader
+```
+
+#### 前端集成
+
+前端通过 SSE 事件的 `guard_block` 类型获知工具被权限系统阻断：
+
+```typescript
+// 前端 SSE 事件处理
+if (evt.type === 'guard_block') {
+  // evt.reason 包含阻断原因，如 "plan mode: write tool denied"
+  showToast(`工具 ${evt.tool_name} 被权限系统阻断：${evt.reason}`)
+}
+```
+
+审批弹窗仅在 `session_mode=ask` 且工具命中 `ask` 列表时触发，前端收到 `approval_required` 事件后展示确认对话框。
 
 ---
 

@@ -67,7 +67,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | 4 | **[Interrupt & Recovery →](docs/interrupt.md)**<br>Cancel + undo + rollback | Hardware interrupt (ISR) + signals | `asyncio.Event` cancellation token checked each turn. `RoundManager` — configurable snapshot window (default 3), state + file rollback across handoff boundaries. `FunctionBackend` rollback — tools export optional `rollback()` called on `execute()` exception. `SubprocessHookRunner` exit-code 2 → message injection. | Pause/redirect vectors; idle timeout; interrupt priority levels |
 | 5 | **[A2A Communication →](docs/a2a-communication.md)**<br>Agent-to-agent interaction | IPC (pipe/signal/shared memory/message queue) | `HandoffManager` signal-based agent switching in unified `_execute` loop. `InMemoryAgentBus` — asyncio.Queue message routing (broadcast, targeted, capability discovery). `PeerAgent` — P2P negotiate/handoff/discover. `DictWorkspace` shared memory. `InMemoryLock` synchronisation. `MajorityVoteConsensus`. Protocol layer for AgentBus/Supervisor/Consensus. `SkillPipeline` — tool execution order with explicit dependencies. `ConcurrentToolExecutor` parallel execution. | Network A2A (gRPC); pub/sub agent discovery; DAG multi-agent scheduling |
 | 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. MCP-based unified resource interface via local MCP Server subprocess (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
-| 7 | **[Security & Sandbox →](docs/tool-sandbox.md)**<br>Access control + path safety | Protection rings (Ring 0-3) + ACL | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ToolPermissionChecker` deny→ask→allow enforcement. `HumanLoop` approval channel with SSE push + 60s timeout. `GuardDefaults` three-line defense (PathCheck/Regex/None). | Per-invocation sandbox; MCP protocol; OAuth-scoped permissions |
+| 7 | **[Security & Sandbox →](docs/tool-sandbox.md)**<br>Access control + path safety | Protection rings (Ring 0-3) + ACL | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `SessionModeManager` (auto/ask/plan) — global session mode with per-agent policy override. `PermissionRegistry` deny→ask→allow enforcement. `HumanLoop` approval channel with SSE push + 60s timeout. `GuardDefaults` three-line defense (PathCheck/Regex/None). | Per-invocation sandbox; MCP protocol; OAuth-scoped permissions |
 | 8 | **[Observability →](docs/trace.md)**<br>Event tracing + metrics | syslog / dtrace / perf | `EventType` Literal covering the full lifecycle. `InMemoryEventBus` → `FileTraceStore` (per-session JSON). `UsageTracker` token accounting. Standalone HTML trace viewer. Vue SPA waterfall grouped by interaction round. Streamable HTTP (NDJSON) for real-time events. | SQLite trace DB; OpenTelemetry export; Prometheus metrics |
 | 9 | **[Plugin System →](docs/api-protection.md)**<br>Plugin framework | OS bundled software (coreutils, Notepad) | `arf/plugins/` directory — `agent.yaml` `plugins:` field activates by name. `PluginProvider` scans `tools/`, `skills/`, and `hooks/` per plugin. `ResourceResolver` merges into tool/skill lists. P0 plugins: `planner` (task decomposition), `todo` (task list), `undo` (round rollback), [`memory`](docs/plugins/memory.md) (long-term memory extraction). App-layer overrides plugin tools (app > plugin). | P1: bash, code_interpreter, file_ops; P2: web_search, web_fetch, resource_loader; community plugin registry |
 | 10 | **[Quality Assurance →](docs/eval-benchmark.md)**<br>Regression testing | CI test suite + session replay | `BenchmarkBuilder` creates test cases from real session traces. `EvalRunner` replays via `agent.chat()`, captures via `EventBus.events_since()`. 4 built-in metrics (success rate, tool accuracy, turn efficiency, output contains). `EvalComparator` diffs reports. 198 unit/functional tests. | CLI integration; HTML visual report; semantic similarity metric; CI pipeline |
@@ -82,7 +82,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | | **LLM Scheduling** | `TwoTierRouter` fast/slow dispatch, `ModelAdapter` exponential backoff retry, `TokenBucket` per-endpoint rate limiting, `CircuitBreaker` per-model fault isolation, `ModelCallProtector` decorator-pattern injection |
 | | **Context Management** | `SlidingWindowCompactor` (75% threshold + LLM summary), `_load_resident_memory()` (loads `memory.md` at startup, injects into `{{MEMORY}}` placeholder) |
 | | **Resource System** | `ResourceResolver` (unified resolution), `ToolProvider`/`SkillProvider`/`ModelProvider`, `PluginProvider` (scans `arf/plugins/`), `ResourceCache` (kernel/dynamic), `FileWatcher` (inotify/polling hot reload) |
-| | **Security** | `PathCheckToolGuard` (.., symlink, depth/count), `ToolPermissionChecker` deny→ask→allow, `HumanLoop` SSE approval + 60s timeout, `GuardDefaults` three-line defense |
+| | **Security** | `PathCheckToolGuard` (.., symlink, depth/count), `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow, `HumanLoop` SSE approval + 60s timeout, `GuardDefaults` three-line defense |
 | | **Observability** | `InMemoryEventBus`, `FileTraceStore` (per-session JSON), `UsageTracker` (token accounting), standalone HTML trace viewer, Vue SPA waterfall |
 | | **Infrastructure** | `SubprocessHookRunner` (exit-code contract), `DefaultErrorPolicy`/`FunctionBackend` rollback, `EvalRunner`/`BenchmarkBuilder`/`EvalComparator` (session replay & regression) |
 | | **Protocols** | Protocol classes (`core/protocols/`) — defines `MemoryStore`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, `CompactionStrategy`, `LoopStrategy` and all other abstract interfaces |
@@ -186,14 +186,23 @@ advanced:
 
 ### Sandbox & Permissions
 
-`PathCheckToolGuard` blocks path traversal and absolute paths before every tool call. `ToolPermissionChecker` enforces deny→ask→allow rules. Tools run in-process; the guard checks every invocation.
+`PathCheckToolGuard` blocks path traversal and absolute paths before every tool call. `SessionModeManager` controls the global permission mode (`auto` / `ask` / `plan`), with optional per-agent `policy` overrides. `PermissionRegistry` enforces deny→ask→allow lists. Tools run in-process; the guard checks every invocation.
+
+Three session modes:
+- **auto** — all tools execute directly, ignores permission lists
+- **ask** — evaluate deny/ask/allow lists per tool; unknown tools require approval (default, recommended)
+- **plan** — global read-only; all write/exec tools are denied (security review)
 
 ```yaml
+session_mode: ask                # global mode: auto | ask | plan
+
 advanced:
-  permissions:
-    deny: []
-    ask: [python_exec, file_deleter]
-    allow: [file_reader, web_search, web_fetch]
+  guardrails:
+    permissions:
+      policy: ask                # per-agent override (auto/ask/plan), only active in global ask mode
+      deny: []
+      ask: [python_exec, file_deleter]
+      allow: [file_reader, web_search, web_fetch]
 ```
 
 [Design doc →](docs/tool-sandbox.md)

@@ -46,38 +46,43 @@ x86 保护环模型（Ring 0–3）。Ring 0（内核态）可执行特权指令
 LLM 生成 tool_call
     │
     ▼
-GraphEngine
+GraphEngine（权限判断 — auth）
     │
     ├─ [1] Pipeline 顺序检查（硬阻断）
     │       SkillPipeline.can_execute() → 依赖未满足则阻断
     │
-    ├─ [2] PathCheckToolGuard.check()（硬阻断，框架级）
-    │       可配置检查项（默认仅工作区逃逸）：路径穿越 / 绝对路径 / symlink / 工作区逃逸
-    │       自动跳过文件内容字符串（含换行或 >500 字符）
+    ├─ [2] SessionModeManager.resolve()（框架级）
+    │       将全局 session_mode + 当前 AgentPolicy 解析为有效模式
+    │       auto → 全部放行；plan → 只读放行 + 写工具阻断；ask → 检查权限列表
     │
-    ├─ [3] ToolPermissionChecker.check()（软阻断，框架级）
-    │       模式匹配 → deny / ask / allow
-    │       deny → 阻断；ask → 审批通道（60s 超时自动拒绝）
+    ├─ [3] PermissionRegistry.evaluate()（框架级，仅 ASK 模式）
+    │       deny_patterns → deny list → ask list → allow list → 默认 ask
+    │       deny → 阻断；ask → 审批通道（60s 超时自动拒绝）；allow → 放行
     │
     ├─ [4] 审批通道（GraphEngine + SSE + 前端）
     │       approval_required 事件 → 前端确认 → 恢复/拒绝执行
     │
     ├─ [5] tool_executor.execute()
-    │       工具在 Agent 进程内执行
+    │       ├─ PathCheckToolGuard.check()（硬阻断，安全 — are params safe?）
+    │       │   可配置检查项（默认仅工作区逃逸）：路径穿越 / 绝对路径 / symlink / 工作区逃逸
+    │       │   自动跳过文件内容字符串（含换行或 >500 字符）
+    │       └─ 工具在 Agent 进程内执行
     │
     └─ [6] RegexOutputGuard.check()（输出过滤，框架级）
             API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]`
+
+**关键架构变化**：权限（能否使用此工具）与安全（参数是否安全）现已分离。路径沙箱从引擎流水线下移到执行器，作为工具执行前的最后一层安全检查。认证由引擎中的 SessionModeManager + PermissionRegistry 处理。
 ```
 
 ### 2.2 防护栏 — 框架级强制
 
-三个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`）组合，在引擎中统一调用：
+三个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`）组合，在引擎中统一调用。PermissionRegistry 通过 `check_tool_permission()` 接口接入，PathCheckToolGuard 通过 `check_tool_params()` 接口接入：
 
 | 防护栏 | 位置 | 类型 | 行为 |
 |--------|------|------|------|
 | `NoneInputGuard` | 输入 | — | 始终放行，预留 LLM 分类器扩展点 |
-| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 递归扫描参数中的路径字符串（跳过内容字符串）；默认仅检查工作区逃逸，其他检查项通过 `SandboxConfig.checks` 按需启用 |
-| `ToolPermissionChecker` | 工具参数 | 软阻断 | deny → 阻断；ask → 审批通道；allow → 放行 |
+| `PermissionRegistry` | 工具权限 | 软阻断 | 通过 `SessionModeManager` 解析有效模式后，按 deny_patterns → deny → ask → allow → 默认 ask 优先级判断 |
+| `PathCheckToolGuard` | 工具参数 | 硬阻断 | 在 execution 中执行（而非引擎流水线），递归扫描参数中的路径字符串（跳过内容字符串）；默认仅检查工作区逃逸，其他检查项通过 `SandboxConfig.checks` 按需启用 |
 | `RegexOutputGuard` | 输出 | 过滤 | API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]` |
 
 ### 2.3 PathCheckToolGuard — 路径沙箱
@@ -137,39 +142,85 @@ advanced:
 
 框架提供的是 `PathCheckToolGuard`——保证工具调用不会逃逸工作区边界。至于"框架文件不可写"这一约束，依赖工具实现遵守工作区约定，框架未在代码层面强制。
 
-### 2.5 权限分级 — deny → ask → allow
+### 2.5 会话权限模式 — 全新的 session 级权限系统
 
-`ToolPermissionChecker`（`arf/guardrails/permissions.py`）：
+ARF 引入了统一的会话权限模式系统，替代了旧的 `ToolPermissionChecker` 和 `Promotion/strategies`。新的 `arf/session/` 模块将权限控制从"工具参数级别"提升到"会话级别"，并支持全局模式与代理级策略的组合。
 
-```python
-def check(self, tool_name: str, params: dict) -> str:
-    # 1. 内建危险模式匹配（rm -rf /, sudo, curl|sh 等）→ "deny"
-    # 2. 配置 deny 列表匹配 → "deny"
-    # 3. 配置 ask 列表匹配 → "ask"
-    # 4. 配置 allow 列表匹配 → "allow"
-    # 5. 以上都不匹配 → "ask"（安全默认）
+#### 核心类型（`arf/session/types.py`）
+
+`SessionMode` 定义三种全局模式：
+
+| 模式 | 含义 |
+|------|------|
+| `auto` | 全部放行，忽略所有权限列表和代理策略 |
+| `ask` | 按 deny/ask/allow 权限列表审批，代理策略可生效 |
+| `plan` | 只读模式，所有有副作用的工具被阻断 |
+
+`AgentPolicy` 定义代理级策略覆盖（仅在全局模式为 `ask` 时生效）：
+
+| 策略 | 含义 |
+|------|------|
+| `auto` | 该代理全部放行 |
+| `ask` | 检查 deny/ask/allow 权限列表 |
+| `plan` | 该代理只读，不允许副作用工具 |
+| `null` | 跟随全局模式（即 `ask`） |
+
+#### 组合矩阵（`arf/session/mode_manager.py`）
+
+`SessionModeManager` 负责将全局模式与代理策略解析为有效模式：
+
+| 全局模式 | 代理策略 | 有效模式 |
+|----------|----------|----------|
+| `auto` | 任意 / `null` | `auto` |
+| `plan` | 任意 / `null` | `plan` |
+| `ask` | `auto` | `auto` |
+| `ask` | `ask` | `ask` |
+| `ask` | `plan` | `plan` |
+| `ask` | `null` | `ask` |
+
+`auto` 和 `plan` 是**硬覆盖**——无论代理策略如何设定，都强制执行全局模式。
+
+#### PermissionRegistry — 统一权限列表评估（`arf/session/permissions.py`）
+
+`PermissionRegistry` 接收 `PermissionLists` 进行工具权限评估，评估优先级如下：
+
+```
+deny_patterns（参数内容危险模式匹配）
+  → deny 列表
+    → ask 列表
+      → allow 列表
+        → 默认 ask（安全默认）
 ```
 
-`ToolPermissionChecker` 内置两组默认规则：
+内置默认规则：
 
 - `_DEFAULT_ALLOW_TOOLS`：默认允许工具列表，包含 `["file_reader", "web_search", "web_fetch", "memory_store", "resource_loader", "resource_registrar", "resource_scaffold"]`
 - `_BUILTIN_DENY_PATTERNS`：内置危险模式列表，包含 `["rm -rf /", "sudo ", "chmod 777 /", "> /dev/sda", "curl.*|.*sh", "wget.*|.*sh"]`
 
 当 `agent.yaml` 中 `permissions.allow` 未配置时，`_DEFAULT_ALLOW_TOOLS` 作为默认值；`_BUILTIN_DENY_PATTERNS` 始终与配置的 `deny_patterns` 合并生效。
 
-检查顺序：deny 优先（模式匹配 > 配置列表），其次 ask，最后 allow。引擎在 `graph.py` 中处理：
+`PermissionLists` 支持热替换——引擎在代理切换（handoff）时调用 `swap_lists()` 切换权限列表。
 
-- `"deny"` → 直接阻断，emit 错误事件
-- `"allow"` → 放行执行
-- `"ask"` → 若 `human_loop` 审批通道已开启（`approval_enabled=True`），emit `approval_required` SSE 事件并暂停执行，等待用户在前端确认（60s 超时则自动拒绝）；若审批通道未开启（`approval_enabled=False`，即 YOLO 模式），跳过权限控制直接放行
+#### PLAN 模式与副作用检测
 
-审批通道实现（`GraphEngine._step_classify_tool_calls`）：
-1. 引擎生成 `decision_id`，发射 `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
-2. **SSE 流式路径（astream）**：事件通过 `yield` 直接推送 SSE → 前端展示审批 UI
-3. **非流式路径（invoke）**：事件通过 `EventBus` 发射，App 层需自行订阅 EventBus
+`arf/session/mode_manager.py` 提供 `has_side_effect(tool_name)` 函数，用于 PLAN 模式下的只读/写判断：
+
+- **已知只读工具**（通过）：`file_reader`、`glob`、`grep`、`web_search`、`web_fetch`、`memory_store`、`memory_extract`、`resource_loader`、`planner`、`todo`、`handoff`、`model_switch`、`undo`
+- **已知写工具**（阻断）：`file_writer`、`file_deleter`、`file_download`、`python_exec`、`bash`、`resource_registrar`、`resource_scaffold`、`md2pdf`
+- **未知工具**（安全默认）：假定有副作用，阻断
+
+#### 审批通道实现
+
+引擎在 `graph.py` 中处理 ASK 模式的审批流程：
+
+1. `SessionModeManager` 解析有效模式 → `SessionMode.ASK`
+2. `DefaultGuardRunner.check_tool_permission()` → `PermissionRegistry.evaluate()` 返回 `"ask"`
+3. 引擎生成 `decision_id`，发射 `approval_required` 事件，`asyncio.Event.wait(60s)` 挂起
+4. **SSE 流式路径（astream）**：事件通过 `yield` 直接推送 SSE → 前端展示审批 UI
+5. **非流式路径（invoke）**：事件通过 `EventBus` 发射，App 层需自行订阅 EventBus
    并推送给前端（如 WebSocket 或轮询）；收到审批后调用 `engine.approve()` 解除阻塞
-4. App 层调用 `engine.approve(decision_id, approved)` → Event.set()
-5. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
+6. App 层调用 `engine.approve(decision_id, approved)` → Event.set()
+7. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
 
 ### 2.6 Hook 退出码契约
 
@@ -186,6 +237,12 @@ Hook 不是安全机制（子进程行为不可信），而是框架与外部脚
 ### 2.7 配置
 
 ```yaml
+# 顶层：会话级全局权限模式
+session_mode: ask            # auto | ask | plan
+                             # auto: 全部放行（YOLO 模式）
+                             # ask:  权限列表 + 审批通道（默认）
+                             # plan: 只读模式，写工具阻断
+
 advanced:
   guardrails:
     input: none
@@ -206,6 +263,13 @@ advanced:
       allow: [file_reader, web_search, web_fetch, …]
       deny_patterns: ["rm -rf", "sudo", "chmod 777"]
 
+  # 代理级策略覆盖（仅当 session_mode=ask 时生效）
+  # 每个子代理可在其配置中指定 permissions.policy:
+  #   policy: auto       # 该代理全部放行
+  #   policy: ask        # 该代理按权限列表审批
+  #   policy: plan       # 该代理只读
+  #   policy: null       # 跟随全局模式（默认）
+
   human_loop:
     approval_points: tool_name_allowlist   # always_auto | tool_name_allowlist
     allowlist: [file_writer, file_deleter, python_exec]
@@ -213,7 +277,7 @@ advanced:
     timeout: 60s
 ```
 
-**事实校验**：`PermissionsConfig` 通过 `base.py` → `ToolPermissionChecker` 完整接入；`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）通过 `AdvancedConfig.sandbox` → `PathCheckToolGuard` 完整接入。
+**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`allow_escape`、`writable_dirs`）通过 `AdvancedConfig.sandbox` → `PathCheckToolGuard` 完整接入。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。
 
 ---
 
@@ -231,6 +295,12 @@ advanced:
 
 ARF 的工具解析器架构（`ToolResolver` + `ToolProvider`）支持多提供者扩展。增加 `MCPToolProvider` 后，沙箱检查在引擎层统一执行，与工具来源无关。
 
-### 3.3 探索性方向
+### 3.3 已实现：会话权限模式系统
 
-**审批通道增强**：支持更丰富的审批策略（如按参数值审批、审批链），审批历史记录与回溯，审批超时策略定制。
+会话权限模式（`arf/session/`）已实现并完整接入引擎、配置系统和 Agent 组装流程。替代了旧的 `ToolPermissionChecker`（已删除）和 `Promotion/strategies`（已删除）。详见 2.5 节。
+
+### 3.4 探索性方向
+
+- **审批通道增强**：支持更丰富的审批策略（如按参数值审批、审批链），审批历史记录与回溯，审批超时策略定制
+- **审计日志**：将每次权限判定（deny/ask/allow）写入结构化审计日志，支持会话回放和合规审查
+- **运行时模式切换**：支持通过 API 在 auto/ask/plan 之间动态切换（当前仅在配置加载时确定）
