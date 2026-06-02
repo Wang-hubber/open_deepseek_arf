@@ -76,65 +76,65 @@ class BaseAgent:
         default_state_dir = str(ctx.state_dir) if ctx else "./data/state"
         state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
 
-        # 2. Resources — from AppContext if provided, otherwise defaults
-        tools_dir = override_protocols.pop("tools_dir", ctx.tools_dir if ctx else Path("./tools"))
-        skills_dir = override_protocols.pop("skills_dir", ctx.skills_dir if ctx else Path("./skills"))
-        models_dir = override_protocols.pop("models_dir", ctx.models_dir if ctx else Path("./models"))
-        reload_cfg = adv.reload if adv else None
-        watch_enabled = override_protocols.pop("watch_enabled",
-            reload_cfg.watch if reload_cfg else True)
+        # 2. Resources — MCP-based unified management
+        # McpClientManager replaces ToolProvider + SkillProvider +
+        # PluginProvider + ResourceResolver quartet.
+        tools_dir = override_protocols.pop(
+            "tools_dir", ctx.tools_dir if ctx else Path("./tools")
+        )
+        skills_dir = override_protocols.pop(
+            "skills_dir", ctx.skills_dir if ctx else Path("./skills")
+        )
+        models_dir = override_protocols.pop(
+            "models_dir", ctx.models_dir if ctx else Path("./models")
+        )
 
-        from arf.resources.providers.skill_provider import SkillProvider
+        # ModelProvider stays in BaseAgent (models not in MCP scope)
         from arf.resources.providers.model_provider import ModelProvider
-
-        tool_provider = ToolProvider(tools_dir)
-        skill_provider = SkillProvider(skills_dir)
         model_provider = ModelProvider(models_dir)
-
         self._merge_models(config, model_provider)
 
-        resource_resolver, file_watcher = self._build_resource_resolver(
-            config, tool_provider, skill_provider, model_provider,
-            tools_dir, skills_dir, models_dir, watch_enabled, reload_cfg, override_protocols,
+        # Resolve plugins_dir
+        _plugins_dir_raw = override_protocols.pop("plugins_dir", None)
+        if _plugins_dir_raw is None:
+            import arf as _arf_pkg
+            _arf_root = Path(_arf_pkg.__file__).parent
+            _plugins_dir = _arf_root / "plugins"
+        else:
+            _plugins_dir = Path(_plugins_dir_raw)
+
+        # MCP Client Manager — spawns local MCP server subprocess
+        from arf.mcp.client_manager import McpClientManager
+        mcp_manager = override_protocols.pop(
+            "mcp_manager",
+            McpClientManager(
+                tools_dir=tools_dir,
+                skills_dir=skills_dir,
+                models_dir=models_dir or Path("./models"),
+                plugins_dir=_plugins_dir,
+                mcp_servers=getattr(config, "mcp_servers", []),
+                plugin_names=config.plugins,
+            ),
         )
-        self._file_watcher = file_watcher
-        self._resource_resolver = resource_resolver
+        self._mcp_manager = mcp_manager
 
-        # Feed back merged tool definitions (descriptions from tool.yaml)
-        # into config.tools so SystemPromptProvider can build proper inventory.
-        merged_specs = resource_resolver.get_tool_definitions_sync()
-        if merged_specs:
-            from arf.core.config_base import ToolConfig as _ToolConfig
-            agent_tool_activations = {
-                t.name: t.activation for t in (config.tools or [])
-            }
-            merged_tools = []
-            for td in merged_specs:
-                d = td if isinstance(td, dict) else td.model_dump()
-                name = d.get("name", "")
-                activation = agent_tool_activations.get(name, d.get("activation", "discoverable"))
-                d["activation"] = activation
-                merged_tools.append(_ToolConfig(**d))
-            config.tools = merged_tools
-
-        # Feed back merged skill definitions (from skills/*.yaml + plugins)
-        # into config.skills so SystemPromptProvider can build proper inventory.
-        merged_skills = resource_resolver.get_skill_definitions_sync()
-        if merged_skills:
-            config.skills = merged_skills
-
-        # Plugin system
+        # Plugin system — for hooks only (tools/skills via MCP)
         self._plugin_provider = None
         if config.plugins:
             from arf.resources.providers.plugin_provider import PluginProvider
-            plugins_dir = Path(override_protocols.pop("plugins_dir", "arf/plugins"))
-            if not plugins_dir.is_absolute():
-                # Resolve relative to arf package root, not CWD or app root
-                import arf as _arf_pkg
-                _arf_root = Path(_arf_pkg.__file__).parent
-                plugins_dir = _arf_root / "plugins"
-            self._plugin_provider = PluginProvider(plugins_dir, config.plugins)
-            resource_resolver.set_plugin_provider(self._plugin_provider)
+            self._plugin_provider = PluginProvider(_plugins_dir, config.plugins)
+
+        # FileWatcher
+        reload_cfg = adv.reload if adv else None
+        watch_enabled = override_protocols.pop(
+            "watch_enabled",
+            reload_cfg.watch if reload_cfg else True,
+        )
+        from arf.resources.file_watcher import FileWatcher
+        file_watcher = FileWatcher(
+            poll_interval=reload_cfg.poll_interval if reload_cfg else 5.0
+        ) if watch_enabled else None
+        self._file_watcher = file_watcher
 
         # 3. Memory — LLM-driven by default, falls back to rule-based
         from pathlib import Path as _Path
@@ -295,7 +295,7 @@ class BaseAgent:
         cc_cfg = adv.concurrency if adv and adv.concurrency else ConcurrencyConfig()
         tool_executor = override_protocols.pop(
             "tool_executor",
-            ConcurrentToolExecutor(resource_resolver, strategy=cc_cfg.strategy, max_concurrency=cc_cfg.max_concurrency),
+            ConcurrentToolExecutor(mcp_manager, strategy=cc_cfg.strategy, max_concurrency=cc_cfg.max_concurrency),
         )
 
         # 8. Loop strategy
@@ -312,19 +312,7 @@ class BaseAgent:
             from arf.core.model_adapter import ModelAdapter as _SubModelAdapter
             for sub_cfg in config.agents:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider as _SubProvider
-                sub_tool_defs = [
-                    t.model_dump() if hasattr(t, "model_dump") else t
-                    for t in (sub_cfg.tools or [])
-                ]
-                sub_skill_defs = [
-                    s.model_dump() if hasattr(s, "model_dump") else s
-                    for s in (sub_cfg.skills or [])
-                ]
-                sub_provider = _SubProvider(
-                    config=sub_cfg,
-                    tool_definitions=sub_tool_defs,
-                    skill_definitions=sub_skill_defs,
-                )
+                sub_provider = _SubProvider(config=sub_cfg)
                 sub_prompt = sub_provider.build().full_text
                 sub_adapters = {}
                 for m in (sub_cfg.models or []):
@@ -359,24 +347,19 @@ class BaseAgent:
                 system_model_call=_system_model_call,
             )
 
-        # 10. Build system prompt via provider
+        # 10. Build system prompt via provider (prefix only — inventory via MCP)
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
         prompt_provider = override_protocols.pop(
             "system_prompt_provider",
-            DefaultSystemPromptProvider(
-                config=config,
-                tool_definitions=[
-                    t.model_dump() if hasattr(t, "model_dump") else t
-                    for t in config.tools
-                ],
-                skill_definitions=[
-                    s.model_dump() if hasattr(s, "model_dump") else s
-                    for s in config.skills
-                ],
-            ),
+            DefaultSystemPromptProvider(config=config),
         )
         system_prompt_obj = prompt_provider.build()
         system_prompt = system_prompt_obj.full_text
+
+        # Fill $INVENTORY once at startup via MCP, cached for subsequent turns
+        inventory_text = self._build_inventory_from_mcp()
+        if inventory_text:
+            system_prompt = system_prompt.replace("$INVENTORY", inventory_text)
 
         # Load resident memory — injected into $MEMORY once at session start
         from arf.core.config_base import MemoryConfig
@@ -435,7 +418,7 @@ class BaseAgent:
             loop_strategy=loop_strategy,
             state_store=state_store,
             tool_executor=tool_executor,
-            tool_resolver=resource_resolver,
+            tool_resolver=mcp_manager,
             planner=planner,
             memory_store=memory_store,
             memory_retriever=memory_retriever,
@@ -472,7 +455,7 @@ class BaseAgent:
         self._state_store = state_store
         self._event_bus = event_bus
         self._memory_store = memory_store
-        self._tool_resolver = resource_resolver
+        self._tool_resolver = mcp_manager
         # Auto-create usage tracker (framework default)
         obs_cfg = adv.observability if adv else None
         from arf.observability.usage_tracker import UsageTracker
@@ -489,6 +472,29 @@ class BaseAgent:
 
         # ---- Active session tracking ----
         self._active_sessions: set[str] = set()
+
+    def _build_inventory_from_mcp(self) -> str:
+        """Build inventory section from MCP tool list. Called at startup.
+
+        Returns empty string if MCP is not available yet.
+        """
+        try:
+            tools = self._mcp_manager.get_tool_definitions_sync()
+        except Exception:
+            return ""
+        kernel = [t for t in tools if t.get("activation", "") == "kernel"]
+        discoverable = [t for t in tools if t.get("activation", "") == "discoverable"]
+        lines: list[str] = []
+        if kernel:
+            lines.append("## Available Tools\n")
+            for t in kernel:
+                lines.append(f"- `{t['name']}`: {t.get('description', '')}")
+        if discoverable:
+            lines.append("\n## Discoverable Tools\n")
+            lines.append("These tools are available on demand:\n")
+            for t in discoverable:
+                lines.append(f"- `{t['name']}`: {t.get('description', '')}")
+        return "\n".join(lines) if lines else ""
 
     @staticmethod
     def _build_promotion(adv: AdvancedConfig) -> Promotion | None:
