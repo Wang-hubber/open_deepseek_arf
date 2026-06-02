@@ -187,11 +187,11 @@ class TestSubagentExecute:
 
 
 class TestFilteredToolProvider:
-    def test_filters_kernel_tools(self, app_tools_dir):
+    def test_filters_tools(self, app_tools_dir):
         """FilteredToolProvider only lists allowed tools."""
         parent = ToolProvider(app_tools_dir)
         filtered = FilteredToolProvider(parent, {"read", "bash"})
-        tools = filtered.list_kernel()
+        tools = filtered.list()
         names = {t.name for t in tools}
         assert names == {"read", "bash"}
 

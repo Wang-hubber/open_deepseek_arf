@@ -1,74 +1,25 @@
-"""ResourceCache — kernel/dynamic split with freeze-once semantics."""
-
+"""ResourceCache — simple name→config store with invalidation support."""
 from typing import Any
 
 
-class _FrozenDict(dict):
-    """A dict that rejects modifications after freeze()."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._frozen = False
-
-    def freeze(self):
-        self._frozen = True
-
-    def __setitem__(self, key, value):
-        if self._frozen:
-            raise RuntimeError("kernel cache is frozen — cannot modify after init")
-        super().__setitem__(key, value)
-
-    def __delitem__(self, key):
-        if self._frozen:
-            raise RuntimeError("kernel cache is frozen — cannot modify after init")
-        super().__delitem__(key)
-
-    def pop(self, key, *args):
-        if self._frozen:
-            raise RuntimeError("kernel cache is frozen — cannot modify after init")
-        return super().pop(key, *args)
-
-    def popitem(self):
-        if self._frozen:
-            raise RuntimeError("kernel cache is frozen — cannot modify after init")
-        return super().popitem()
-
-    def clear(self):
-        if self._frozen:
-            raise RuntimeError("kernel cache is frozen — cannot modify after init")
-        super().clear()
-
-
 class ResourceCache:
-    """Split cache for framework resources.
-
-    kernel  — populated at BaseAgent.__init__, frozen, never cleared.
-    dynamic — lazy-loaded, cleared on filesystem change.
-    """
+    """Flat cache for framework resources. Cleared on filesystem change."""
 
     def __init__(self):
-        self.kernel: _FrozenDict = _FrozenDict()
-        self.dynamic: dict[str, Any] = {}
+        self._items: dict[str, Any] = {}
 
-    @property
-    def _kernel_frozen(self) -> bool:
-        return self.kernel._frozen
+    def has(self, name: str) -> bool:
+        return name in self._items
 
-    def freeze_kernel(self) -> None:
-        """Lock kernel cache. After this, kernel writes raise RuntimeError."""
-        self.kernel.freeze()
+    def get_all(self) -> list:
+        return list(self._items.values())
 
-    def invalidate_dynamic(self) -> None:
-        """Clear all dynamic entries. Kernel entries unaffected."""
-        self.dynamic.clear()
+    def get(self, name: str) -> Any | None:
+        return self._items.get(name)
 
-    def has_kernel(self, name: str) -> bool:
-        return name in self.kernel
+    def put(self, name: str, value: Any) -> None:
+        self._items[name] = value
 
-    def has_dynamic(self, name: str) -> bool:
-        return name in self.dynamic
-
-    def all_items(self) -> dict[str, Any]:
-        """Return merged kernel + dynamic (dynamic wins on conflict)."""
-        merged = dict(self.kernel)
-        merged.update(self.dynamic)
-        return merged
+    def invalidate(self) -> None:
+        """Clear all entries on filesystem change."""
+        self._items.clear()

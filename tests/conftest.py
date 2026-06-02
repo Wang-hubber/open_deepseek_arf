@@ -18,8 +18,8 @@ def temp_root():
 def skill_yaml(temp_root):
     """Factory: write a Skill YAML file into temp_root, return its path."""
 
-    def _write(name: str, activation: str = "discoverable", **extra):
-        data = {"name": name, "description": f"{name} skill", "activation": activation}
+    def _write(name: str, **extra):
+        data = {"name": name, "description": f"{name} skill"}
         data.update(extra)
         p = temp_root / f"{name}.yaml"
         p.write_text(yaml.dump(data), encoding="utf-8")

@@ -28,4 +28,3 @@ prompt: |
   Report issues in priority order: CRITICAL, MAJOR, MINOR.
 tools:
   - file_reader
-activation: discoverable

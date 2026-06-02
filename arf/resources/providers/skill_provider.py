@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 class SkillProvider:
     """Scans skills/ directory for *.yaml files. Each file = one skill.
 
-    Splits skills into kernel (activation: kernel, readonly framework skills)
-    and dynamic (user-created skills, invalidated on filesystem change).
+    All skills are loaded uniformly — no kernel/dynamic split.
+    FileWatcher triggers full reload on filesystem change.
     """
 
     def __init__(self, skills_dir: str | Path):
@@ -20,25 +20,19 @@ class SkillProvider:
         self._cache = ResourceCache()
         self._loaded = False
 
-    def list_kernel(self) -> list[SkillConfig]:
-        if not self._loaded:
-            self._load()
-        return list(self._cache.kernel.values())
-
-    def list_dynamic(self) -> list[SkillConfig]:
-        if not self._loaded:
-            self._load()
-        return list(self._cache.dynamic.values())
-
     def list(self) -> list[SkillConfig]:
-        return self.list_kernel() + self.list_dynamic()
+        """Return all loaded skills."""
+        if not self._loaded:
+            self._load()
+        return self._cache.get_all()
 
     def invalidate_dynamic(self) -> None:
-        self._cache.invalidate_dynamic()
+        """Clear cache and reread on next list()."""
+        self._cache.invalidate()
         self._loaded = False
 
     def _load(self) -> None:
-        self._cache.invalidate_dynamic()
+        self._cache.invalidate()
         if not self._dir.exists():
             self._loaded = True
             return
@@ -48,12 +42,7 @@ class SkillProvider:
                 if not raw or "name" not in raw:
                     continue
                 cfg = SkillConfig(**raw)
-                activation = getattr(cfg, "activation", "discoverable")
-                if activation == "kernel":
-                    if not self._cache.has_kernel(cfg.name):
-                        self._cache.kernel[cfg.name] = cfg
-                else:
-                    self._cache.dynamic[cfg.name] = cfg
+                self._cache.put(cfg.name, cfg)
             except Exception as e:
                 logger.warning("Skipping %s: %s", yaml_path, e)
         self._loaded = True

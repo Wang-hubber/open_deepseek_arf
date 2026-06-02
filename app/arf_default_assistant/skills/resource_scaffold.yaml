@@ -47,7 +47,6 @@ prompt: |
   prompt: |
     {detailed instructions for the LLM when this skill is invoked}
   tools: [{referenced_tool_names}]
-  activation: discoverable
   ```
 
   ## After creation:
@@ -55,4 +54,3 @@ prompt: |
 tools:
   - file_writer
   - resource_loader
-activation: kernel

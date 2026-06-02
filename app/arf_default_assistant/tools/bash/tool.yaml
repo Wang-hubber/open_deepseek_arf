@@ -15,4 +15,3 @@ parameters:
 execution:
   sandbox: workspace_containment
   timeout: 30s
-activation: kernel

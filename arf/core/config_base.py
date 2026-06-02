@@ -25,7 +25,6 @@ class SkillConfig(BaseModel):
     description: str
     prompt: str = ""
     tools: list[str] = Field(default_factory=list)
-    activation: Literal["kernel", "discoverable"] = "discoverable"
     pipeline: list[PipelineStep] = Field(default_factory=list)
 
 
@@ -34,7 +33,6 @@ class ToolConfig(BaseModel):
     description: str = ""          # optional for sub-agent tool references
     parameters: dict = Field(default_factory=dict)
     allowed_dir: str | None = None
-    activation: Literal["kernel", "discoverable"] = "kernel"
 
 
 class HookDefinition(BaseModel):

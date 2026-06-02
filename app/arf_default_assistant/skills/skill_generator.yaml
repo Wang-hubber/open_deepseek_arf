@@ -11,4 +11,3 @@ prompt: |
   Target: skills/<skill_name>.yaml
 tools:
   - file_writer
-activation: discoverable

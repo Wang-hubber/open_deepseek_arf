@@ -27,11 +27,8 @@ class FilteredToolProvider:
         self._parent = parent_provider
         self._allowed = allowed
 
-    def list_kernel(self):
-        return [t for t in self._parent.list_kernel() if t.name in self._allowed]
-
-    def list_dynamic(self):
-        return [t for t in self._parent.list_dynamic() if t.name in self._allowed]
+    def list(self):
+        return [t for t in self._parent.list() if t.name in self._allowed]
 
     async def list_tools(self):
         return [t for t in await self._parent.list_tools() if t.name in self._allowed]

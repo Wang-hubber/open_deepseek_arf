@@ -1,104 +1,41 @@
-import pytest
+"""Test ResourceCache — flat name→config store with invalidation."""
 from arf.resources.cache import ResourceCache
 
 
-class TestEmptyCache:
-    def test_kernel_is_empty(self):
+class TestResourceCache:
+    def test_put_and_get(self):
         cache = ResourceCache()
-        assert cache.kernel == {}
+        cache.put("a", 1)
+        assert cache.get("a") == 1
+        assert cache.has("a")
+        assert not cache.has("b")
 
-    def test_dynamic_is_empty(self):
+    def test_put_overwrites(self):
         cache = ResourceCache()
-        assert cache.dynamic == {}
+        cache.put("a", 1)
+        cache.put("a", 2)
+        assert cache.get("a") == 2
 
-
-class TestDynamicOperations:
-    def test_set_and_get(self):
+    def test_get_missing_returns_none(self):
         cache = ResourceCache()
-        cache.dynamic["file_reader"] = {"name": "file_reader", "activation": "kernel"}
-        assert "file_reader" in cache.dynamic
-        assert cache.dynamic["file_reader"]["name"] == "file_reader"
+        assert cache.get("x") is None
 
-
-class TestKernelOperations:
-    def test_set_and_get(self):
+    def test_get_all(self):
         cache = ResourceCache()
-        cache.kernel["web_search"] = {"name": "web_search", "activation": "kernel"}
-        assert "web_search" in cache.kernel
+        cache.put("a", 1)
+        cache.put("b", 2)
+        assert sorted(cache.get_all()) == [1, 2]
 
-
-class TestFreezeKernel:
-    def test_freeze_marks_frozen(self):
+    def test_invalidate_clears_all(self):
         cache = ResourceCache()
-        cache.kernel["a"] = {}
-        cache.freeze_kernel()
-        assert cache._kernel_frozen is True
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.invalidate()
+        assert cache.get_all() == []
+        assert cache.get("a") is None
 
-    def test_frozen_rejects_setitem(self):
+    def test_has_after_invalidate(self):
         cache = ResourceCache()
-        cache.kernel["a"] = {}
-        cache.freeze_kernel()
-        with pytest.raises(RuntimeError, match="kernel.*frozen"):
-            cache.kernel["b"] = {}
-
-    def test_frozen_rejects_pop(self):
-        cache = ResourceCache()
-        cache.kernel["a"] = {"val": 1}
-        cache.freeze_kernel()
-        with pytest.raises(RuntimeError, match="kernel.*frozen"):
-            cache.kernel.pop("a")
-
-    def test_frozen_rejects_popitem(self):
-        cache = ResourceCache()
-        cache.kernel["a"] = {"val": 1}
-        cache.freeze_kernel()
-        with pytest.raises(RuntimeError, match="kernel.*frozen"):
-            cache.kernel.popitem()
-
-    def test_frozen_rejects_clear(self):
-        cache = ResourceCache()
-        cache.kernel["a"] = {"val": 1}
-        cache.freeze_kernel()
-        with pytest.raises(RuntimeError, match="kernel.*frozen"):
-            cache.kernel.clear()
-
-
-class TestInvalidateDynamic:
-    def test_clears_dynamic_only(self):
-        cache = ResourceCache()
-        cache.kernel["k"] = {"name": "k"}
-        cache.dynamic["d"] = {"name": "d"}
-        cache.invalidate_dynamic()
-        assert "k" in cache.kernel
-        assert cache.dynamic == {}
-
-    def test_does_not_touch_frozen_kernel(self):
-        cache = ResourceCache()
-        cache.kernel["k"] = {"name": "k"}
-        cache.freeze_kernel()
-        cache.dynamic["d"] = {"name": "d"}
-        cache.invalidate_dynamic()
-        assert cache.kernel["k"] == {"name": "k"}
-
-
-class TestLookup:
-    def test_has_kernel(self):
-        cache = ResourceCache()
-        cache.kernel["k"] = {}
-        cache.dynamic["d"] = {}
-        assert cache.has_kernel("k") is True
-        assert cache.has_kernel("d") is False
-
-    def test_has_dynamic(self):
-        cache = ResourceCache()
-        cache.kernel["k"] = {}
-        cache.dynamic["d"] = {}
-        assert cache.has_dynamic("d") is True
-        assert cache.has_dynamic("k") is False
-
-    def test_all_items_merges_both(self):
-        cache = ResourceCache()
-        cache.kernel["k"] = {"name": "k"}
-        cache.dynamic["d"] = {"name": "d"}
-        all_items = cache.all_items()
-        assert set(all_items.keys()) == {"k", "d"}
+        cache.put("x", 42)
+        cache.invalidate()
+        assert not cache.has("x")

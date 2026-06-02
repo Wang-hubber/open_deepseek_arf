@@ -54,7 +54,7 @@ class ResourceResolver:
         tool.yaml) with agent.yaml overrides. Used by BaseAgent to feed descriptions
         back into config.tools before system prompt assembly.
         """
-        tools = list(self._tool_provider.list_kernel()) + list(self._tool_provider.list_dynamic())
+        tools = self._tool_provider.list()
         if self._plugin_provider:
             tools.extend(self._plugin_provider.list_tools())
         overrides = self._overrides.get("tools", [])

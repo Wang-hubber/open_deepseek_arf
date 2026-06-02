@@ -50,9 +50,7 @@ class ArfLocalMcpServer:
     def list_tools_sync(self) -> list[dict]:
         """Synchronous tool listing -- uses existing ToolProvider API."""
         results: list[dict] = []
-        for t in list(self._tool_provider.list_kernel()) + list(
-            self._tool_provider.list_dynamic()
-        ):
+        for t in self._tool_provider.list():
             d = t.model_dump() if hasattr(t, "model_dump") else t
             d["name"] = f"arf__{d['name']}"
             results.append(d)
@@ -99,9 +97,7 @@ class ArfLocalMcpServer:
     def list_resources_sync(self) -> list[dict]:
         """Synchronous resource listing -- exposes skills as resources."""
         results: list[dict] = []
-        for s in list(self._skill_provider.list_kernel()) + list(
-            self._skill_provider.list_dynamic()
-        ):
+        for s in self._skill_provider.list():
             d = s.model_dump() if hasattr(s, "model_dump") else s
             d["uri"] = f"skills/{d['name']}.yaml"
             results.append(d)

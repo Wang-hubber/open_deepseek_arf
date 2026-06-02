@@ -36,4 +36,3 @@ tools:
   - file_writer
   - python_exec
   - web_search
-activation: discoverable

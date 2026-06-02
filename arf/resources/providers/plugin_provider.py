@@ -82,13 +82,11 @@ class PluginProvider:
 
         # Collect tools from all enabled plugin tool providers
         for tp in self._tool_providers.values():
-            self._scanned_tools.extend(tp.list_kernel())
-            self._scanned_tools.extend(tp.list_dynamic())
+            self._scanned_tools.extend(tp.list())
 
         # Collect skills from all enabled plugin skill providers
         for sp in self._skill_providers.values():
-            self._scanned_skills.extend(sp.list_kernel())
-            self._scanned_skills.extend(sp.list_dynamic())
+            self._scanned_skills.extend(sp.list())
 
     def list_tools(self) -> list[ToolConfig]:
         if not self._loaded:

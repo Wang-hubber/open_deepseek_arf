@@ -16,4 +16,3 @@ parameters:
 execution:
   sandbox: inherit
   timeout: 30s
-activation: discoverable

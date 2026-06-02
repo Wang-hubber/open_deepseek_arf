@@ -434,17 +434,10 @@ class BaseAgent:
             tools = self._mcp_manager.get_tool_definitions_sync()
         except Exception:
             return ""
-        kernel = [t for t in tools if t.get("activation", "") == "kernel"]
-        discoverable = [t for t in tools if t.get("activation", "") == "discoverable"]
         lines: list[str] = []
-        if kernel:
+        if tools:
             lines.append("## Available Tools\n")
-            for t in kernel:
-                lines.append(f"- `{t['name']}`: {t.get('description', '')}")
-        if discoverable:
-            lines.append("\n## Discoverable Tools\n")
-            lines.append("These tools are available on demand:\n")
-            for t in discoverable:
+            for t in tools:
                 lines.append(f"- `{t['name']}`: {t.get('description', '')}")
         return "\n".join(lines) if lines else ""
 

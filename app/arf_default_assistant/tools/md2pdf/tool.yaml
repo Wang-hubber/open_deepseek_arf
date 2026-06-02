@@ -20,4 +20,3 @@ parameters:
 execution:
   sandbox: inherit
   timeout: 120s
-activation: kernel

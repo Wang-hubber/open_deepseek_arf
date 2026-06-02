@@ -839,16 +839,14 @@ class TestToolProviderRollback:
     """Doc 4.5: ToolProvider stores _rollbacks and _kernel_rollbacks."""
 
     def test_tool_provider_has_rollbacks_dict(self):
-        """Doc: ToolProvider has _rollbacks and _kernel_rollbacks."""
+        """Doc: ToolProvider has _rollbacks dict."""
         from arf.resources.providers.tool_provider import ToolProvider
         import tempfile
 
         with tempfile.TemporaryDirectory() as td:
             tp = ToolProvider(td)
             assert hasattr(tp, "_rollbacks")
-            assert hasattr(tp, "_kernel_rollbacks")
             assert isinstance(tp._rollbacks, dict)
-            assert isinstance(tp._kernel_rollbacks, dict)
 
     def test_tool_provider_execute_passes_rollback_fn(self):
         """Doc: execute() picks up rollback from function.py."""
@@ -863,7 +861,7 @@ class TestToolProviderRollback:
             (tool_dir / "tool.yaml").write_text(
                 "name: test_writer\ndescription: a test writer\n"
                 "parameters:\n  type: object\n  properties:\n    path:\n      type: string\n"
-                "activation: discoverable\n",
+                "",
                 encoding="utf-8",
             )
             (tool_dir / "function.py").write_text(
@@ -892,7 +890,7 @@ class TestToolProviderRollback:
             (tool_dir / "tool.yaml").write_text(
                 "name: fail_writer\ndescription: a failing writer\n"
                 "parameters:\n  type: object\n  properties:\n    path:\n      type: string\n"
-                "activation: discoverable\n",
+                "",
                 encoding="utf-8",
             )
             (tool_dir / "function.py").write_text(
@@ -915,20 +913,19 @@ class TestToolProviderRollback:
 
             asyncio.run(run())
 
-    def test_tool_provider_kernel_rollbacks(self):
-        """Doc: kernel tools can have rollback functions."""
+    def test_tool_provider_rollbacks(self):
+        """Doc: tools can have rollback functions."""
         from arf.resources.providers.tool_provider import ToolProvider
         import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as td:
             tools_dir = Path(td)
-            tool_dir = tools_dir / "kernel_tool"
+            tool_dir = tools_dir / "my_tool"
             tool_dir.mkdir()
             (tool_dir / "tool.yaml").write_text(
-                "name: kernel_tool\ndescription: a kernel tool\n"
-                "parameters:\n  type: object\n  properties: {}\n"
-                "activation: kernel\n",
+                "name: my_tool\ndescription: a tool\n"
+                "parameters:\n  type: object\n  properties: {}\n",
                 encoding="utf-8",
             )
             (tool_dir / "function.py").write_text(
@@ -942,7 +939,7 @@ class TestToolProviderRollback:
 
             tp = ToolProvider(td)
             tp._load()
-            assert "kernel_tool" in tp._kernel_rollbacks
+            assert "my_tool" in tp._rollbacks
 
 
 # ---------------------------------------------------------------------------

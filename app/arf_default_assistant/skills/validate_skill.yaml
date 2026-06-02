@@ -10,4 +10,3 @@ prompt: |
 tools:
   - file_reader
   - resource_registrar
-activation: discoverable

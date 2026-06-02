@@ -9,4 +9,3 @@ prompt: |
   4. No missing imports or syntax errors
 tools:
   - file_reader
-activation: discoverable

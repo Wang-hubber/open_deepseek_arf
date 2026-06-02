@@ -33,4 +33,3 @@ tools:
   - file_writer
   - file_deleter
   - file_download
-activation: kernel

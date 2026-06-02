@@ -145,36 +145,24 @@ system_prompt:
     ## Rules
     (Rules are above in the system instructions.)
 
-# models are defined in models/*.yaml — filesystem is source of truth.
-# Uncomment below to override specific fields (merged on top of filesystem):
-# models:
-#   - name: deep
-#     temperature: 0.3
+# models — defined at top of file (model_defs), referenced by agent_models and plugins_config
 
 tools:
   - name: file_writer
-    activation: kernel
 
   - name: file_deleter
-    activation: kernel
 
   - name: file_download
-    activation: discoverable
 
   - name: python_exec
-    activation: discoverable
 
   - name: handoff
-    activation: kernel
 
   - name: resource_loader
-    activation: discoverable
 
   - name: resource_registrar
-    activation: discoverable
 
   - name: model_switch
-    activation: discoverable
 
 hooks:
   - name: log_session_start
@@ -184,9 +172,6 @@ hooks:
 
 advanced:
   max_turns: 15
-  # 系统后台模型 — 记忆提取/检索、路由分类、上下文压缩共用
-  # 应选廉价快速模型 (flash, thinking disabled, low temp)
-  system_model: quick
   promotion:
     strategy: ask
   guardrails:
@@ -230,14 +215,6 @@ advanced:
     writer: llm
     max_tokens: 2000
     top_k: 5
-  routing:
-    strategy: two_tier
-    default: quick
-    classify:
-      medium: quick
-      complex: deep
-    fallback:
-      deep: quick
   compaction:
     strategy: sliding_window
     threshold: 0.75
@@ -346,40 +323,25 @@ agents:
 
     tools:
       - name: bash
-        activation: kernel
       - name: resource_loader
-        activation: kernel
       - name: handoff
-        activation: kernel
 
     skills:
       - name: resource_scaffold
         description: Generate a new Tool or Skill resource from requirements
         tools: [file_writer, resource_loader]
-        activation: kernel
       - name: tool_generator
         description: Generate complete tool implementations (tool.yaml + function.py)
         tools: [file_writer, resource_scaffold]
-        activation: discoverable
       - name: validate_tool
         description: Validate tool completeness (schema + interface match)
         tools: [file_reader]
-        activation: discoverable
       - name: validate_skill
         description: Validate skill completeness (format + quality)
         tools: [file_reader, resource_registrar]
-        activation: discoverable
 
     advanced:
       max_turns: 8
-      routing:
-        strategy: two_tier
-        default: quick
-        classify:
-          medium: quick
-          complex: deep
-        fallback:
-          deep: quick
       guardrails:
         permissions:
           # policy not set = follow global session_mode

@@ -16,4 +16,3 @@ prompt: |
 tools:
   - file_writer
   - resource_scaffold
-activation: discoverable

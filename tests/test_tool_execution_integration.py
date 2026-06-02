@@ -12,21 +12,19 @@ from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 class TestToolInventoryCompleteness:
     """Verify that the inventory built from real tools has descriptions."""
 
-    def test_all_kernel_tools_have_descriptions(self, resolver):
-        """Every kernel tool should have a non-empty description."""
-        tools = resolver.get_tool_definitions_sync()
-        kernel = [t for t in tools if t.activation == "kernel"]
-        assert len(kernel) > 0, "No kernel tools found"
-        for t in kernel:
-            assert t.description, f"Tool {t.name} has empty description"
-            assert t.parameters, f"Tool {t.name} has empty parameters"
-
     def test_all_tools_have_descriptions(self, resolver):
-        """Every tool (kernel + discoverable) should have a non-empty description."""
+        """Every tool should have a non-empty description."""
         tools = resolver.get_tool_definitions_sync()
-        assert len(tools) >= 11, f"Expected at least 11 tools, got {len(tools)}"
+        assert len(tools) >= 10, f"Expected at least 10 tools, got {len(tools)}"
         for t in tools:
             assert t.description, f"Tool {t.name} has empty description"
+
+    def test_all_tools_have_parameters(self, resolver):
+        """Every tool should have parameters defined."""
+        tools = resolver.get_tool_definitions_sync()
+        assert len(tools) > 0, "No tools found"
+        for t in tools:
+            assert t.parameters, f"Tool {t.name} has empty parameters"
 
     def test_skills_have_descriptions(self, resolver):
         """Skills from filesystem should have non-empty descriptions."""
@@ -36,21 +34,11 @@ class TestToolInventoryCompleteness:
             assert s.description, f"Skill {s.name} has empty description"
 
     def test_merge_preserves_filesystem_descriptions(self, resolver):
-        """Agent.yaml overrides with only name+activation must not clear descriptions."""
+        """Agent.yaml overrides must not clear descriptions from tool.yaml."""
         tools = resolver.get_tool_definitions_sync()
-        # file_writer has description in tool.yaml
         writer = next(t for t in tools if t.name == "file_writer")
         assert writer.description, "file_writer should have description from tool.yaml"
         assert "Create" in writer.description or "file" in writer.description.lower()
-
-    def test_discoverable_tools_exist(self, resolver):
-        """Discoverable tools should be in the list with descriptions."""
-        tools = resolver.get_tool_definitions_sync()
-        discoverable = [t for t in tools if t.activation == "discoverable"]
-        assert len(discoverable) >= 5, f"Expected >=5 discoverable tools, got {len(discoverable)}"
-        for t in discoverable:
-            assert t.description, f"Discoverable tool {t.name} has empty description"
-            assert t.parameters, f"Discoverable tool {t.name} has empty parameters"
 
 
 class TestEngineToolExecution:
@@ -100,17 +88,9 @@ class TestSystemPromptInventory:
         merged_specs = resolver.get_tool_definitions_sync()
         if merged_specs:
             from arf.core.config_base import ToolConfig as _ToolConfig
-            agent_tool_activations = {
-                t.name: t.activation for t in (agent_config.tools or [])
-            }
             merged_tools = []
             for td in merged_specs:
                 d = td if isinstance(td, dict) else td.model_dump()
-                name = d.get("name", "")
-                activation = agent_tool_activations.get(
-                    name, d.get("activation", "discoverable")
-                )
-                d["activation"] = activation
                 merged_tools.append(_ToolConfig(**d))
             agent_config.tools = merged_tools
 
