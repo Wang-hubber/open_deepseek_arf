@@ -92,6 +92,7 @@ class TestSystemPromptInventory:
     via DefaultSystemPromptProvider."""
 
     _suffix = None
+    _sp = None
 
     @pytest.fixture(autouse=True)
     def _build_inventory(self, resolver, agent_config):
@@ -118,47 +119,36 @@ class TestSystemPromptInventory:
             agent_config.skills = merged_skills
 
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
-        provider = DefaultSystemPromptProvider(
-            config=agent_config,
-            tool_definitions=[
-                t.model_dump() if hasattr(t, "model_dump") else t
-                for t in agent_config.tools
-            ],
-            skill_definitions=[
-                s.model_dump() if hasattr(s, "model_dump") else s
-                for s in agent_config.skills
-            ],
-        )
-        sp = provider.build()
-        self._suffix = sp.suffix
+        provider = DefaultSystemPromptProvider(config=agent_config)
+        self._sp = provider.build()
+        self._suffix = self._sp.suffix
 
-    def test_inventory_contains_available_tools(self):
-        """System prompt should contain Available Tools section."""
-        assert "Available Tools" in self._suffix, (
-            "Missing Available Tools section"
+    def test_inventory_placeholder_present(self):
+        """Suffix should contain $INVENTORY placeholder for MCP fill."""
+        assert "$INVENTORY" in self._suffix, (
+            "Missing $INVENTORY placeholder in suffix"
         )
 
-    def test_inventory_contains_discoverable_tools_section(self):
-        """System prompt should contain Discoverable Tools section."""
-        assert "Discoverable Tools" in self._suffix, (
-            "Missing Discoverable Tools section"
+    def test_suffix_is_template_not_rendered(self):
+        """Suffix template should NOT have been rendered with tool descriptions.
+        Inventory filling is deferred to MCP at startup and cached thereafter."""
+        assert "Available Tools" not in self._suffix, (
+            "Invetory should NOT be pre-rendered — it's filled by MCP"
         )
 
-    def test_inventory_contains_available_skills(self):
-        """System prompt should contain Available Skills section."""
-        assert "Available Skills" in self._suffix, (
-            "Missing Available Skills section"
+    def test_prefix_role_populated(self):
+        """Prefix should contain role from agent.yaml."""
+        sp = self._sp
+        assert len(sp.prefix) > 0, "Prefix should be populated"
+
+    def test_prefix_critical_rules_populated(self):
+        """Prefix should contain critical rules."""
+        sp = self._sp
+        assert "R1" in sp.prefix or "R2" in sp.prefix, (
+            "Prefix should contain critical rules"
         )
 
-    def test_inventory_tool_descriptions_are_present(self):
-        """Tool descriptions from tool.yaml should appear in the inventory."""
-        assert "`file_writer`:" in self._suffix
-        assert (
-            "Create" in self._suffix
-            or "file" in self._suffix.lower()
-        )
-
-    def test_inventory_skill_descriptions_are_present(self):
-        """Skill descriptions from skills/*.yaml should appear in the inventory."""
-        assert "code_review" in self._suffix
-        assert "debug" in self._suffix
+    def test_full_text_combines_prefix_and_suffix(self):
+        """full_text should be prefix + suffix concatenated."""
+        sp = self._sp
+        assert sp.full_text == sp.prefix + sp.suffix

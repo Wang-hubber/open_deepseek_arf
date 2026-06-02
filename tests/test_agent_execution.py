@@ -1213,6 +1213,7 @@ class TestRoundManager:
     def setup_method(self):
         import shutil
         shutil.rmtree("memory/checkpoints", ignore_errors=True)
+        shutil.rmtree("data/checkpoints", ignore_errors=True)
 
     def test_begin_round_creates_snapshot(self):
         from arf.engine.round_manager import RoundManager

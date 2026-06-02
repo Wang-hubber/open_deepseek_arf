@@ -130,12 +130,15 @@ class ToolProvider:
                     f"arf_tool_{name}", str(func_path),
                 )
                 if spec and spec.loader:
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                    if hasattr(mod, "execute"):
-                        fn = mod.execute
-                    if hasattr(mod, "rollback"):
-                        rb_fn = mod.rollback
+                    try:
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        if hasattr(mod, "execute"):
+                            fn = mod.execute
+                        if hasattr(mod, "rollback"):
+                            rb_fn = mod.rollback
+                    except Exception as e:
+                        logger.warning("Failed to load tool '%s': %s", name, e)
 
             if activation == "kernel":
                 if not self._cache.has_kernel(name):
