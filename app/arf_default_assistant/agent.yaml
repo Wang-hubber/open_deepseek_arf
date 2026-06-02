@@ -1,4 +1,12 @@
 # arf_version: 1.0
+# --------------------------------------------------------------------
+# session_mode — session-level global permission mode
+#   auto:  ignore all agent permission configs, all tools execute directly
+#   ask:   each agent's policy + lists take effect (default, recommended)
+#   plan:  global read-only, all write/exec tools denied (security review)
+# --------------------------------------------------------------------
+session_mode: ask
+
 name: arf_assistant
 role: 主助手
 task: 与用户对话、调用工具完成任务、工具不足时交接给 SysAgent
@@ -151,6 +159,7 @@ advanced:
     strategy: ask
   guardrails:
     permissions:
+      # policy not set = follow global session_mode
       allow:
         - read
         - grep
@@ -343,6 +352,7 @@ agents:
           deep: quick
       guardrails:
         permissions:
+          # policy not set = follow global session_mode
           allow:
             - bash
             - resource_loader
