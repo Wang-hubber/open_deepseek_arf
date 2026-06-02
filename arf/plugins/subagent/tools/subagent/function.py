@@ -64,7 +64,21 @@ async def execute(
         parent_tool_provider = resolver._tool_provider
     filtered_provider = FilteredToolProvider(parent_tool_provider, _DEFAULT_ALLOWED)
     sub_tool_resolver = ResourceResolver(tool_provider=filtered_provider)
-    sub_tool_executor = ConcurrentToolExecutor(tool_resolver=sub_tool_resolver)
+    tool_guard = None
+    tool_boundaries = {}
+    default_boundary = None
+    # Inherit tool guard + boundaries from parent engine's executor
+    parent_executor = getattr(_engine, 'tool_executor', None)
+    if parent_executor is not None:
+        tool_guard = getattr(parent_executor, '_tool_guard', None)
+        tool_boundaries = getattr(parent_executor, '_tool_boundaries', {})
+        default_boundary = getattr(parent_executor, '_default_boundary', None)
+    sub_tool_executor = ConcurrentToolExecutor(
+        tool_resolver=sub_tool_resolver,
+        tool_guard=tool_guard,
+        tool_boundaries=tool_boundaries,
+        default_boundary=default_boundary,
+    )
 
     # Build isolated sub-engine
     session_id = f"sub_{description or 'task'}_{int(time.time() * 1000)}"
