@@ -308,7 +308,12 @@ class BaseAgent:
         cc_cfg = adv.concurrency if adv and adv.concurrency else ConcurrencyConfig()
         tool_executor = override_protocols.pop(
             "tool_executor",
-            ConcurrentToolExecutor(mcp_manager, strategy=cc_cfg.strategy, max_concurrency=cc_cfg.max_concurrency),
+            ConcurrentToolExecutor(
+                mcp_manager,
+                strategy=cc_cfg.strategy,
+                max_concurrency=cc_cfg.max_concurrency,
+                tool_guard=tool_guard,
+            ),
         )
 
         # 8. Loop strategy

@@ -21,6 +21,7 @@ class ToolResult:
     rollback: Callable | None = None
     rolled_back: bool = False
     rollback_error: str | None = None
+    blocked: bool = False
 
 
 @dataclass
