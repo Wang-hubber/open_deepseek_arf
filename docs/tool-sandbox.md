@@ -71,24 +71,33 @@ GraphEngine（权限判断 — auth）
     │       │   两层白名单：全局 workspace_root + per-tool allowed_dir 提权
     │       │   检查项：路径穿越 / 绝对路径 / symlink / 边界逃逸
     │       │   自动跳过文件内容字符串（含换行或 >500 字符）
+    │       ├─ ContentGuard.check_dangerous()（硬阻断 — is the intent safe?）
+    │       │   CP1：工具执行前检测危险行为模式
+    │       │   built-in：pipe_to_shell / eval_exec / rm_rf_root
     │       └─ 工具在 Agent 进程内执行
     │
-    └─ [6] RegexOutputGuard.check()（输出过滤，框架级）
-            API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]`
+    ├─ [6] ContentGuard.redact_sensitive()（输出过滤，引擎级）
+    │       CP2：_step_execute_tools — 工具输出脱敏
+    │       CP3：_step_call_model — 模型响应脱敏
+    │       built-in：openai_key / phone_cn
+    │
+    └─ [7] RegexOutputGuard.check()（已废弃，由 ContentGuard 替代）
 
 **关键架构变化**：权限（能否使用此工具）与安全（参数是否安全）现已分离。路径沙箱从引擎流水线下移到执行器，作为工具执行前的最后一层安全检查。认证由引擎中的 SessionModeManager + PermissionRegistry 处理。
 ```
 
 ### 2.2 防护栏 — 框架级强制
 
-三个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`）组合，在引擎中统一调用。PermissionRegistry 通过 `check_tool_permission()` 接口接入，PathCheckToolGuard 通过 `check_tool_params()` 接口接入：
+五个防护栏通过 `DefaultGuardRunner`（`arf/guardrails/runner.py`）组合，在引擎中统一调用。PermissionRegistry 通过 `check_tool_permission()` 接口接入，PathCheckToolGuard 通过 `check_tool_params()` 接口接入，ContentGuard 通过 `check_dangerous()` 和 `redact_sensitive()` 两个接口分别集成到执行器和引擎中：
 
 | 防护栏 | 位置 | 类型 | 行为 |
 |--------|------|------|------|
 | `NoneInputGuard` | 输入 | — | 始终放行，预留 LLM 分类器扩展点 |
 | `PermissionRegistry` | 工具权限 | 软阻断 | 通过 `SessionModeManager` 解析有效模式后，按 deny_patterns → deny → ask → allow → 默认 ask 优先级判断 |
 | `PathCheckToolGuard` | 工具参数 | 硬阻断 | 在 execution 中执行（而非引擎流水线），接收 `DirectoryBoundary` 进行白名单校验；递归扫描参数中的路径字符串（跳过内容字符串）；两层边界：全局 `workspace_root`（默认）+ per-tool `allowed_dir`（提权）|
-| `RegexOutputGuard` | 输出 | 过滤 | API key → `[REDACTED_API_KEY]`，手机号 → `[REDACTED_PHONE]` |
+| `ContentGuard`（危险） | 工具参数 | 硬阻断 | CP1：工具执行前检测危险行为模式（pipe_to_shell / eval_exec / rm_rf_root），匹配即阻断 |
+| `ContentGuard`（敏感） | 输出 + 工具输出 | 过滤 | CP2：工具输出脱敏 openai_key / phone_cn；CP3：模型响应脱敏 openai_key / phone_cn |
+| `RegexOutputGuard` | 输出 | 过滤 | **已废弃**，由 ContentGuard 的 sensitive_patterns 替代 |
 
 ### 2.3 路径沙箱 — DirectoryBoundary + PathCheckToolGuard
 
@@ -187,7 +196,71 @@ advanced:
 | `max_path_depth` | `int \| None` | 单个路径的最大目录深度（`Path.parts` 长度） |
 | `deny_symlinks` | `bool` | 是否拦截 symlink 穿越（默认 `True`） |
 
-### 2.4 双源隔离 — 应用层约定
+### 2.4 ContentGuard — 统一内容安全检查引擎
+
+ContentGuard（`arf/guardrails/content_guard.py`）是统一的内容安全检查引擎，覆盖工具调用前后的全链路安全：执行前检测危险行为，执行后和输出前脱敏敏感信息。
+
+#### 两类规则
+
+| 规则类型 | 检查时机 | 违规行为 |
+|----------|----------|----------|
+| `dangerous_patterns` | 执行前（CP1） | 阻断调用，返回错误 |
+| `sensitive_patterns` | 执行后 + 输出前（CP2/CP3） | 替换脱敏，写入消息 |
+
+框架内置默认规则：
+
+**dangerous_patterns（内置）：**
+
+| 名称 | 模式 | 说明 |
+|------|------|------|
+| `pipe_to_shell` | `(curl\|wget).*\|.*(sh\|bash\|python)` | 阻止下载内容管道到 shell |
+| `eval_exec` | `\beval\s*\(` | 阻止 eval() 动态执行 |
+| `rm_rf_root` | `rm\s+-rf\s+/` | 阻止递归删除根目录 |
+
+**sensitive_patterns（内置）：**
+
+| 名称 | 模式 | 替换 |
+|------|------|------|
+| `openai_key` | `sk-[-a-zA-Z0-9]{20,}` | `[REDACTED_API_KEY]` |
+| `phone_cn` | `\b1[3-9]\d{9}\b` | `[REDACTED_PHONE]` |
+
+#### 三个检查点
+
+| 检查点 | 位置 | 时机 | 规则类型 | 结果 |
+|--------|------|------|----------|------|
+| CP1 | `ConcurrentToolExecutor._check_params()` | 工具执行前 | `dangerous_patterns` | 匹配则阻断，不执行 |
+| CP2 | `GraphEngine._step_execute_tools()` | 工具执行后，追加到消息前 | `sensitive_patterns` | 匹配则替换，写入消息 |
+| CP3 | `GraphEngine._step_call_model()` | 模型响应后，追加到消息前 | `sensitive_patterns` | 匹配则替换，写入消息 |
+
+#### 合并策略
+
+App 配置与框架内置规则通过名称合并。同名规则覆盖内置规则，异名规则追加到列表：
+
+```python
+_BUILTIN_DANGEROUS = [
+    {"name": "pipe_to_shell", "pattern": r"(curl|wget).*\|.*(sh|bash|python)", ...},
+    {"name": "eval_exec", ...},
+    {"name": "rm_rf_root", ...},
+]
+# App 配置与内置合并：同名覆盖，异名追加
+merged = _merge_rules(_BUILTIN_DANGEROUS, app_dangerous)
+```
+
+合并后的规则顺序：内置规则在前，App 新增规则在后。同名规则仅保留 App 版本（覆盖内置）。
+
+#### 启用/禁用
+
+ContentGuard 默认启用。可通过 `agent.yaml` 中 `content_guard.enabled: false` 完全禁用（包括所有 dangerous + sensitive 检查）。
+
+#### 与 RegexOutputGuard 的关系
+
+`RegexOutputGuard`（`arf/guardrails/regex_clean.py`）现已废弃，功能由 ContentGuard 的 `sensitive_patterns` 完全替代。ContentGuard 的默认敏感规则（`openai_key`、`phone_cn`）与旧 `RegexOutputGuard` 默认规则一致，确保向后兼容。
+
+#### 与 PathSandbox.validate_command() 的清理
+
+`PathSandbox.validate_command()` 已被移除（dead code），其职责由 ContentGuard 的 `dangerous_patterns` 完全覆盖。`PathSandbox` 现仅保留 `resolve_path()` 作为纯路径解析工具。
+
+### 2.5 双源隔离 — 应用层约定
 
 > **以下隔离为应用层约定，非框架强制。**
 
@@ -201,7 +274,7 @@ advanced:
 
 框架提供的是 `PathCheckToolGuard`——保证工具调用不会逃逸工作区边界。至于"框架文件不可写"这一约束，依赖工具实现遵守工作区约定，框架未在代码层面强制。
 
-### 2.5 会话权限模式 — 全新的 session 级权限系统
+### 2.6 会话权限模式 — 全新的 session 级权限系统
 
 ARF 引入了统一的会话权限模式系统，替代了旧的 `ToolPermissionChecker` 和 `Promotion/strategies`。新的 `arf/session/` 模块将权限控制从"工具参数级别"提升到"会话级别"，并支持全局模式与代理级策略的组合。
 
@@ -281,7 +354,7 @@ deny_patterns（参数内容危险模式匹配）
 6. App 层调用 `engine.approve(decision_id, approved)` → Event.set()
 7. 引擎恢复执行：批准 → `valid_calls`，拒绝 → `denied_calls`
 
-### 2.6 Hook 退出码契约
+### 2.7 Hook 退出码契约
 
 Hook 作为独立子进程运行（`SubprocessHookRunner`），通过退出码与引擎协作：
 
@@ -293,7 +366,7 @@ Hook 作为独立子进程运行（`SubprocessHookRunner`），通过退出码�
 
 Hook 不是安全机制（子进程行为不可信），而是框架与外部脚本的协作接口。安全边界由 `PathCheckToolGuard` 和权限配置强制保证。
 
-### 2.7 配置
+### 2.8 配置
 
 ```yaml
 # 顶层：会话级全局权限模式
@@ -316,6 +389,28 @@ advanced:
       # 用户可扩展：身份证、银行卡、邮箱等
       # - pattern: "\\d{15,19}"
       #   replacement: "[REDACTED_CARD]"
+    # ContentGuard — 统一内容安全检查（危险行为检测 + 敏感信息过滤）
+    content_guard:
+      enabled: true
+      # 危险行为模式（执行前检测，匹配即阻断）
+      dangerous_patterns:
+        - name: pipe_to_shell
+          pattern: "(curl|wget).*\\|.*(sh|bash|python)"
+          description: "Prevent piping downloaded content to shell"
+        # - name: custom_danger
+        #   pattern: "some_other_dangerous_pattern"
+        #   description: "..."
+      # 敏感信息模式（执行后和输出前脱敏）
+      sensitive_patterns:
+        - name: openai_key
+          pattern: "sk-[-a-zA-Z0-9]{20,}"
+          replacement: "[REDACTED_API_KEY]"
+        - name: phone_cn
+          pattern: "\\b1[3-9]\\d{9}\\b"
+          replacement: "[REDACTED_PHONE]"
+        # - name: custom_sensitive
+        #   pattern: "..."
+        #   replacement: "..."
     permissions:
       deny: []
       ask: [file_writer, file_deleter, python_exec]
@@ -336,7 +431,7 @@ advanced:
     timeout: 60s
 ```
 
-**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig.checks` 通过 `AdvancedConfig.sandbox.checks` → `PathCheckToolGuard` 完整接入。`allowed_dir` 在 `tool.yaml` 中声明，由 `BaseAgent` 装配时收集并构建 `tool_boundaries` 映射。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。
+**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig.checks` 通过 `AdvancedConfig.sandbox.checks` → `PathCheckToolGuard` 完整接入。`allowed_dir` 在 `tool.yaml` 中声明，由 `BaseAgent` 装配时收集并构建 `tool_boundaries` 映射。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。`ContentGuard` 通过 `BaseAgent` → `ContentGuard(config)` 装配，通过 `DefaultGuardRunner` → `ConcurrentToolExecutor`（CP1）和 `GraphEngine`（CP2/CP3）接入引擎。配置通过 `GuardrailsConfig.content_guard` → `ContentGuardConfig` 完整接入。
 
 ---
 
@@ -356,7 +451,7 @@ ARF 的工具解析器架构（`ToolResolver` + `ToolProvider`）支持多提供
 
 ### 3.3 已实现：会话权限模式系统
 
-会话权限模式（`arf/session/`）已实现并完整接入引擎、配置系统和 Agent 组装流程。替代了旧的 `ToolPermissionChecker`（已删除）和 `Promotion/strategies`（已删除）。详见 2.5 节。
+会话权限模式（`arf/session/`）已实现并完整接入引擎、配置系统和 Agent 组装流程。替代了旧的 `ToolPermissionChecker`（已删除）和 `Promotion/strategies`（已删除）。详见 2.6 节。
 
 ### 3.4 探索性方向
 

@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界、内容安全引擎
 
 ---
 
@@ -443,6 +443,47 @@ allowed_dir: /tmp          # <-- 此工具的白名单目录（可超出 workspa
 - 配置了 `allowed_dir` → 以此目录作为白名单，可以超出 `workspace_root` 范围
 
 > `allowed_dir` 是**提升（elevation）语义**——工具主动声明"我需要访问这个目录"。路径安全性仍由 `PathCheckToolGuard` 的六项检查统一保障。
+
+**ContentGuard — 危险行为与敏感信息过滤**：
+
+`ContentGuard` 是框架统一的内容安全引擎，在工具调用前后对内容进行检测与过滤。包含两种规则类型和三个检查点。
+
+**两种规则类型**：
+
+| 规则类型 | 匹配后行为 | 检查时机 | 典型用途 |
+|----------|-----------|---------|---------|
+| `dangerous_patterns` | 阻断（block） | 工具执行前 | 防止危险命令（pipe to shell、eval、rm -rf /） |
+| `sensitive_patterns` | 替换（redact） | 工具执行后 + 输出前 | 脱敏 API Key、电话号码等敏感信息 |
+
+**三个检查点**：
+
+1. **pre-exec** — 调用前对 `tool_name + params` 做危险模式匹配，匹配则阻断工具执行
+2. **post-exec** — 工具结果写入对话前对 content 做敏感信息脱敏
+3. **pre-output** — 助理消息（含 tool_calls 的响应文本）写入前做敏感信息脱敏
+
+**配置示例**（在 `advanced.guardrails.content_guard` 中声明）：
+
+```yaml
+advanced:
+  guardrails:
+    content_guard:
+      enabled: true
+      dangerous_patterns:
+        - name: docker_rm_f
+          pattern: "docker\\s+rm\\s+-f"
+          description: "Prevent force-remove containers"
+      sensitive_patterns:
+        - name: email
+          pattern: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+          replacement: "[REDACTED_EMAIL]"
+```
+
+**内置默认规则**：
+
+- `dangerous_patterns`：pipe_to_shell（`curl|wget ... | sh|bash|python`）、eval_exec（`eval(`）、rm_rf_root（`rm -rf /`）
+- `sensitive_patterns`：openai_key（`sk-...` 格式 API Key）、phone_cn（中国大陆手机号）
+
+**合并策略**：App 配置与内置规则按 name 合并——同名覆盖，异名追加。如需关闭所有检查，设置 `enabled: false`。
 
 **Memory — 长期记忆**：
 
@@ -1575,7 +1616,7 @@ arf/
 ├── memory/         # FileMemoryStore、LLMMemoryWriter、LLMMemoryRetriever
 ├── compaction/     # SlidingWindowCompactor — token 感知窗口压缩
 ├── routing/        # TwoTierRouter — 快慢模型调度
-├── guardrails/     # PathCheckToolGuard — 基于 DirectoryBoundary 的路径安全校验（边界由 executor 传入）
+├── guardrails/     # PathCheckToolGuard（路径安全）+ ContentGuard（内容安全）；regex_clean.py 已废弃
 ├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
 ├── hooks/          # SubprocessHookRunner — 六个生命周期事件
 ├── sandbox/        # DirectoryBoundary — 白名单目录边界；PathSandbox — 轻量路径解析
@@ -1898,6 +1939,189 @@ if parent_executor is not None:
 | **授权 (Auth)** | `SessionModeManager` + `PermissionRegistry` | 权限授权："谁可以用什么工具"，deny/ask/allow 列表 |
 
 两者在工具执行链路中互补，共同构成 ARF 的安全防线。
+
+---
+
+### 12.7 内容安全引擎 (ContentGuard)
+
+ARF 的内容安全引擎 `ContentGuard` 是一个独立的安全层，专注于检测危险行为和脱敏敏感信息。它在工具执行管道的三个检查点介入，与 `PathCheckToolGuard`（路径安全）和 `PermissionRegistry`（权限授权）共同构成 ARF 的三道独立安全防线。
+
+#### 架构概览
+
+`ContentGuard` 在 `BaseAgent` 初始化时通过 `advanced.guardrails.content_guard` 配置创建，注入到 `DefaultGuardRunner` 和 `GraphEngine` 中：
+
+```
+BaseAgent init
+  └── ContentGuard(config)  ← 从 agent.yaml 读取
+        ├── 传入 DefaultGuardRunner  → 用于 pre-exec 检查点
+        └── 传入 GraphEngine         → 用于 post-exec + pre-output 检查点
+```
+
+#### 三种规则类型
+
+| 类型 | Pydantic 模型 | 行为 | 检查点 | 配置字段 |
+|------|-------------|------|--------|---------|
+| `dangerous_patterns` | `DangerousPatternConfig` | 阻断（block） | pre-exec | `name` + `pattern` + `description` |
+| `sensitive_patterns` | `SensitivePatternConfig` | 替换（redact） | post-exec + pre-output | `name` + `pattern` + `replacement` |
+
+**DangerousPatternConfig** 字段：
+- `name`: 规则名称，用于合并识别
+- `pattern`: 正则表达式，匹配时阻断
+- `description`: 阻断原因描述（可选，会出现在阻断消息中）
+
+**SensitivePatternConfig** 字段：
+- `name`: 规则名称，用于合并识别
+- `pattern`: 正则表达式，匹配时替换
+- `replacement`: 替换文本，默认 `[REDACTED]`
+
+#### 三个检查点详解
+
+**检查点 1 — pre-exec（工具执行前）**
+
+位于 `ConcurrentToolExecutor._check_params()` 中，在 `PathCheckToolGuard` 的六项路径安全校验之后执行。对 `tool_name + json.dumps(params)` 做危险模式匹配：
+
+```python
+# tool_executor.py — 简化逻辑
+params_str = json.dumps(params, ensure_ascii=False) if params else ""
+dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
+if not dr.allowed:
+    return ToolResult(success=False, error=f"[ContentGuard] {dr.reason}", blocked=True)
+```
+
+检查的内容包含工具名称和所有参数——LLM 构造的危险命令在到达操作系统前就被阻断。阻断结果通过 `guard_block` 类型 SSE 事件推送到前端。
+
+**检查点 2 — post-exec（工具执行后）**
+
+位于 `GraphEngine._step_execute_tools()` 中，工具结果写入 `state["messages"]` 前执行。对工具返回的 content 做敏感信息脱敏：
+
+```python
+# graph.py — 简化逻辑
+if getattr(self, '_content_guard', None):
+    cleaned, _ = self._content_guard.redact_sensitive(content)
+    if cleaned is not None:
+        content = cleaned
+```
+
+**检查点 3 — pre-output（模型输出前）**
+
+位于 `GraphEngine._step_process_response()` 中，助理消息（含 tool_calls 的响应文本）写入 `state["messages"]` 前执行。分两种情况：
+
+1. 纯文本响应（无 tool_calls）：对 `resp.content` 做脱敏
+2. 含 tool_calls 的响应：对 `response_text`（assistant 消息的 content 字段）做脱敏
+
+```python
+# graph.py — 纯文本路径
+if getattr(self, '_content_guard', None):
+    cleaned, _ = self._content_guard.redact_sensitive(content)
+    if cleaned is not None:
+        content = cleaned
+
+# graph.py — tool_calls 路径
+if getattr(self, '_content_guard', None) and response_text:
+    response_text, _ = self._content_guard.redact_sensitive(response_text)
+```
+
+#### 内置默认规则
+
+`ContentGuard` 内置两组默认规则，App 启动时自动加载：
+
+**dangerous_patterns 内置规则**：
+
+| name | pattern | 说明 |
+|------|---------|------|
+| `pipe_to_shell` | `(curl\|wget).*\|.*(sh\|bash\|python)` | 阻止下载内容管道到 shell |
+| `eval_exec` | `\beval\s*\(` | 阻止 eval() 动态执行 |
+| `rm_rf_root` | `rm\s+-rf\s+/` | 阻止递归删除根目录 |
+
+**sensitive_patterns 内置规则**：
+
+| name | pattern | replacement | 说明 |
+|------|---------|-------------|------|
+| `openai_key` | `sk-[-a-zA-Z0-9]{20,}` | `[REDACTED_API_KEY]` | OpenAI 格式 API Key |
+| `phone_cn` | `\b1[3-9]\d{9}\b` | `[REDACTED_PHONE]` | 中国大陆手机号 |
+
+#### 配置示例
+
+**基础配置 — 追加自定义规则**：
+
+```yaml
+advanced:
+  guardrails:
+    content_guard:
+      enabled: true
+      dangerous_patterns:
+        - name: encoded_shell
+          pattern: "base64.*\\|.*(?:sh|bash)"
+          description: "Prevent base64-encoded shell commands"
+      sensitive_patterns:
+        - name: aws_key
+          pattern: "AKIA[0-9A-Z]{16}"
+          replacement: "[REDACTED_AWS_KEY]"
+```
+
+App 定义的 `name` 与内置规则同名时覆盖内置规则，异名时追加。例如上面的 `encoded_shell` 和 `aws_key` 是新增规则，不会影响内置的 `pipe_to_shell` 或 `openai_key`。
+
+**覆盖内置规则**：
+
+```yaml
+advanced:
+  guardrails:
+    content_guard:
+      dangerous_patterns:
+        - name: rm_rf_root
+          pattern: "rm\\s+-rf\\s+[\\w/]"   # 更精确的匹配，减少误报
+          description: "Prevent recursive deletion"
+```
+
+此处 `rm_rf_root` 与内置规则同名，App 的 pattern 覆盖内置版本。
+
+**禁用 ContentGuard**：
+
+```yaml
+advanced:
+  guardrails:
+    content_guard:
+      enabled: false
+```
+
+设置 `enabled: false` 后，`check_dangerous()` 始终返回 `allowed=True`，`redact_sensitive()` 直接返回原始内容。
+
+#### 合并策略 (Merge Strategy)
+
+`ContentGuard` 在 `__init__` 中使用 `_merge_rules` 静态方法合并内置规则和 App 配置：
+
+```python
+@staticmethod
+def _merge_rules(builtins: list[dict], app_rules: list[dict]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for r in builtins:
+        merged[r["name"]] = dict(r)
+    for r in app_rules:
+        merged[r["name"]] = dict(r)
+    return list(merged.values())
+```
+
+策略：**按 name 做 dict merge**，App 规则后写入，同名覆盖，异名追加。
+
+| App 是否定义 name | 内置规则同名 | 结果 |
+|------------------|-------------|------|
+| 新 name | — | 追加到合并列表 |
+| 与内置同名 | 存在 | App 的 pattern/replacement 覆盖内置 |
+| 与内置同名 | 不存在 | 视为新规则追加 |
+
+#### 三层安全防线对比
+
+| 安全层 | 模块 | 职责 | 触发时机 |
+|--------|------|------|---------|
+| **路径安全** | `PathCheckToolGuard` + `DirectoryBoundary` | 路径合法性校验：阻断穿越、绝对路径、符号链接逃逸 | 工具执行前 |
+| **内容安全** | `ContentGuard` | 危险行为检测（block）+ 敏感信息脱敏（redact） | pre-exec + post-exec + pre-output |
+| **权限授权** | `SessionModeManager` + `PermissionRegistry` | 权限授权：deny/ask/allow 列表，会话模式控制 | 工具执行前 |
+
+三者独立运作、互补覆盖，共同构成 ARF 的纵深防御体系。`ContentGuard` 负责的"内容安全"区域是此前框架的空白——`regex_clean.py` 仅覆盖了输出脱敏且没有配置合并机制，现在由 `ContentGuard` 统一替代。
+
+#### 与 regex_clean.py 的关系
+
+`arf/guardrails/regex_clean.py` 中的 `RegexOutputGuard` 是早期实现，仅支持输出阶段的敏感信息替换，缺少危险行为检测和配置合并能力。**`regex_clean.py` 已废弃**，所有内容安全能力由 `ContentGuard` 统一提供。
 
 ---
 
