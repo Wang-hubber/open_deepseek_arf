@@ -4,7 +4,6 @@ from __future__ import annotations
 from arf.core.results import GuardResult
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
-from arf.guardrails.path_check import PathCheckToolGuard
 from arf.session import PermissionLists, PermissionRegistry
 
 
@@ -28,7 +27,7 @@ class DefaultGuardRunner:
             self._output = RegexOutputGuard(patterns=output_patterns)
         else:
             self._output = RegexOutputGuard()
-        self._tool = tool_guard or PathCheckToolGuard()
+        self._tool = tool_guard
         self._permission_registry = permission_registry or PermissionRegistry()
         self._permission_lists = permission_lists or PermissionLists()
 
@@ -38,13 +37,18 @@ class DefaultGuardRunner:
     async def check_output(self, message: str, context: dict) -> GuardResult:
         return await self._output.check(message, context)
 
-    async def check_tool_params(self, tool_name: str, params: dict) -> GuardResult:
+    async def check_tool_params(
+        self, tool_name: str, params: dict, boundary=None
+    ) -> GuardResult:
         """Hard guard: path sandbox, command injection, etc.
 
         Called from tool executor as pre-execution check, NOT from
-        the engine permission pipeline.
+        the engine permission pipeline. boundary is resolved per-tool
+        by the executor.
         """
-        return await self._tool.check(tool_name, params)
+        if self._tool is not None and boundary is not None:
+            return await self._tool.check(tool_name, params, boundary)
+        return GuardResult(allowed=True)
 
     def check_tool_permission(self, tool_name: str, params: dict) -> str:
         """Soft guard: deny/ask/allow based on permission lists."""
