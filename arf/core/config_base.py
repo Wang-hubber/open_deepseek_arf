@@ -33,6 +33,7 @@ class ToolConfig(BaseModel):
     name: str
     description: str = ""          # optional for sub-agent tool references
     parameters: dict = Field(default_factory=dict)
+    allowed_dir: str | None = None
     activation: Literal["kernel", "discoverable"] = "kernel"
 
 
