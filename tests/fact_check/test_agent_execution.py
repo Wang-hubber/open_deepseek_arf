@@ -714,6 +714,7 @@ class TestHookSystem:
             "session_start", "round_start", "round_end",
             "pre_tool_exec", "post_tool_exec",
             "pre_model_call", "post_model_call", "session_end",
+            "post_permission", "sandbox_persist",
         }
         hook_type_literal = HookDefinition.model_fields["type"].annotation
         actual_types = set(get_args(hook_type_literal))

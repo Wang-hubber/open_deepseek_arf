@@ -1179,7 +1179,12 @@ class GraphEngine:
                 session_id=session_id, interaction_round=self._interaction_round)
             yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
                              turn=turn, session_id=session_id)
-            h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+            h_results = await self.hook_runner.fire("pre_model_call", {
+                "messages": msgs,
+                "model": state.get("current_model", ""),
+                "messages_count": len(state.get("messages", [])),
+                "session_id": session_id,
+            })
             yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
                              "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
                              "failed": sum(1 for r in h_results if r.exit_code != 0)},
@@ -1589,6 +1594,14 @@ class GraphEngine:
                             "session_id": session_id, "round": state["interaction_round"]})
                 await self.state_store.put(session_id, state)
                 return
+
+        # Fire sandbox_persist hook after tool execution, before final state write
+        if self.hook_runner:
+            self.hook_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await self.hook_runner.fire("sandbox_persist", {
+                "session_id": session_id,
+            })
 
         self._reset_recovery_state(state)
         await self.state_store.put(session_id, state)

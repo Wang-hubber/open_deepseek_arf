@@ -43,6 +43,7 @@ class HookDefinition(BaseModel):
         "session_start", "round_start", "round_end",
         "pre_tool_exec", "post_tool_exec",
         "pre_model_call", "post_model_call", "session_end",
+        "post_permission", "sandbox_persist",
     ]
     run: list[str]
     env: dict[str, str] = Field(default_factory=dict)
