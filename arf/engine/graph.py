@@ -127,6 +127,8 @@ class GraphEngine:
         main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
         session_mode_manager=None,
+        main_permission_lists=None,
+        main_agent_policy=None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -161,6 +163,8 @@ class GraphEngine:
         self._action_runner = action_runner
         self._session_mode_manager = session_mode_manager
         self._main_permissions = main_permissions  # persisted for restore on handoff return
+        self._main_permission_lists = main_permission_lists
+        self._main_agent_policy = main_agent_policy
         # Recovery config with safe defaults
         if recovery_config is not None:
             self._recovery_config = recovery_config
@@ -416,45 +420,24 @@ class GraphEngine:
 
     # ---- multi-agent support ----
 
-    def _get_agent_permissions(self, agent_name: str):
-        """Return PermissionsConfig for the named agent, or main permissions if blank."""
-        if not agent_name or agent_name not in self._sub_agent_configs:
-            return self._main_permissions
-        sub_cfg = self._sub_agent_configs[agent_name].get("config")
-        if sub_cfg:
-            sub_adv = sub_cfg.effective_advanced()
-            if sub_adv and sub_adv.guardrails:
-                return sub_adv.guardrails.permissions
-        return None
-
     def _activate_agent(self, agent_name: str) -> None:
-        """Swap guard_runner + Promotion + approval to the named agent's permissions."""
-        perms = self._get_agent_permissions(agent_name)
+        """Swap permission lists to the named agent's (lists + approval allowlist)."""
+        if not self.guard_runner:
+            return
 
-        # 1. Guard runner — permission checker
-        if self.guard_runner:
-            if agent_name and agent_name in self._sub_agent_configs:
-                checker = self._sub_agent_configs[agent_name].get("permission_checker")
-                if checker:
-                    self.guard_runner._permissions = checker
-            elif self._main_permissions:
-                from arf.guardrails.permissions import ToolPermissionChecker
-                self.guard_runner._permissions = ToolPermissionChecker(
-                    config=self._main_permissions.model_dump() if hasattr(self._main_permissions, 'model_dump') else None
-                )
+        if agent_name and agent_name in self._sub_agent_configs:
+            sub = self._sub_agent_configs[agent_name]
+            lists = sub.get("permission_lists")
+            if lists and hasattr(self.guard_runner, "swap_lists"):
+                self.guard_runner.swap_lists(lists)
+            ask_list = lists.ask if lists else set()
+        else:
+            main_lists = getattr(self, '_main_permission_lists', None)
+            if main_lists and hasattr(self.guard_runner, "swap_lists"):
+                self.guard_runner.swap_lists(main_lists)
+            ask_list = main_lists.ask if main_lists else set()
 
-        # 2. Promotion — strategy lists
-        if self._promotion:
-            self._promotion.reconfigure(
-                deny=list(perms.deny) if perms else [],
-                ask=list(perms.ask) if perms else [],
-                allow=list(perms.allow) if perms else [],
-                deny_patterns=list(perms.deny_patterns) if perms else [],
-            )
-
-        # 3. Approval allowlist follows the active agent's ask list
-        ask_list = list(perms.ask) if perms and perms.ask else []
-        self._approval_allowlist = set(ask_list)
+        self._approval_allowlist = ask_list
         self.approval_enabled = len(ask_list) > 0
 
     def _active_config(self, state: AgentState) -> dict:
@@ -470,7 +453,6 @@ class GraphEngine:
                 "max_turns": cfg.effective_advanced().max_turns,
                 "hooks": cfg.hooks,
                 "adapters": sub.get("adapters", {}),
-                "permission_checker": sub.get("permission_checker"),
             }
 
         return {
@@ -480,7 +462,6 @@ class GraphEngine:
             "max_turns": self._max_turns,
             "hooks": [],
             "adapters": {},
-            "permission_checker": None,
         }
 
     async def _execute_handoff(self, state: AgentState, handoff_data: dict[str, object],
@@ -967,28 +948,36 @@ class GraphEngine:
                                        "data": {"tool_name": name, "guard": "pipeline", "reason": reason}})
                         continue
 
-            if self.guard_runner:
-                gr = await self.guard_runner.check_tool_params(name, params)
-                if not gr.allowed:
-                    denied_calls.append((name, gr.reason))
-                    events.append({"type": "guard_block",
-                                   "data": {"tool_name": name, "guard": "path_check", "reason": gr.reason}})
-                    continue
+            # --- Unified permission check via SessionModeManager ---
+            agent_name = state.get("active_agent", "")
+            agent_policy = None
+            if agent_name and agent_name in self._sub_agent_configs:
+                agent_policy = self._sub_agent_configs[agent_name].get("agent_policy")
+            elif hasattr(self, '_main_agent_policy'):
+                agent_policy = self._main_agent_policy
 
-            # Use Promotion for permission gating when available, fall back to guard_runner
-            if self._promotion:
-                decision = self._promotion.evaluate(
-                    _ToolExecutable(name=name, params=params, tool_call_id=tc.get("id", "")),
-                    params=params,
-                )
-                perm_action = decision.action
-                perm_reason = decision.reason
-            elif self.guard_runner:
-                perm_action = self.guard_runner.check_tool_permission(name, params)
-                perm_reason = "denied by config" if perm_action == "deny" else ""
-            else:
+            from arf.session import SessionMode, has_side_effect
+            effective_mode = SessionMode.ASK
+            if self._session_mode_manager:
+                effective_mode = self._session_mode_manager.resolve(agent_policy)
+
+            if effective_mode == SessionMode.AUTO:
                 perm_action = "allow"
-                perm_reason = ""
+                perm_reason = "auto mode"
+            elif effective_mode == SessionMode.PLAN:
+                if has_side_effect(name):
+                    perm_action = "deny"
+                    perm_reason = "plan mode: read-only, this tool has side effects"
+                else:
+                    perm_action = "allow"
+                    perm_reason = "plan mode: read-only tool allowed"
+            else:  # ASK
+                if self.guard_runner:
+                    perm_action = self.guard_runner.check_tool_permission(name, params)
+                    perm_reason = "denied by config" if perm_action == "deny" else ""
+                else:
+                    perm_action = "allow"
+                    perm_reason = ""
 
             if perm_action == "deny":
                 denied_calls.append((name, perm_reason or "denied by permission config"))

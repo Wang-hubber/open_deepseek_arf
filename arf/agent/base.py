@@ -466,6 +466,8 @@ class BaseAgent:
             promotion=self._build_promotion(adv) if adv else None,
             session_mode_manager=session_mode_manager,
             main_permissions=adv.guardrails.permissions if adv and adv.guardrails else None,
+            main_permission_lists=self._main_permission_lists,
+            main_agent_policy=self._main_agent_policy,
             action_runner=ActionRunner() if adv else None,
             **override_protocols,
         )
