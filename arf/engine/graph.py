@@ -1325,7 +1325,7 @@ class GraphEngine:
         tool_calls = self._pars_tool_calls(resp)
         if not tool_calls:
             content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
-            if self._content_guard:
+            if getattr(self, '_content_guard', None):
                 cleaned, _ = self._content_guard.redact_sensitive(content)
                 if cleaned is not None:
                     content = cleaned
@@ -1335,7 +1335,7 @@ class GraphEngine:
 
         # Append assistant message with tool_calls
         response_text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
-        if self._content_guard and response_text:
+        if getattr(self, '_content_guard', None) and response_text:
             response_text, _ = self._content_guard.redact_sensitive(response_text)
         assistant_tool_calls = [
             {"id": tc.get("id", ""), "type": "function",
@@ -1469,7 +1469,7 @@ class GraphEngine:
                     content = await self.compaction.summarize_tool_output(
                         tc.get("name", "unknown"), content, turn
                     )
-                if self._content_guard:
+                if getattr(self, '_content_guard', None):
                     cleaned, _ = self._content_guard.redact_sensitive(content)
                     if cleaned is not None:
                         content = cleaned
