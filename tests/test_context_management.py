@@ -323,61 +323,62 @@ class TestEngineIntegration:
     def test_compaction_in_invoke_method(self):
         """Doc: compaction.should_compact() called in GraphEngine.invoke()."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "compaction.should_compact" in src
         assert "compaction.compact" in src
 
     def test_compaction_in_astream_method(self):
         """Doc: compaction.should_compact() also called in astream()."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "compaction.should_compact" in src
         assert "compaction.compact" in src
 
     def test_compaction_after_routing_order_invoke(self):
         """Doc: 路由之后、模型调用之前 — routing before compaction."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         route_pos = src.find("model_router.route")
         compact_pos = src.find("compaction.should_compact")
-        model_call_pos = src.find("self._call_model")
+        # Find the ACTUAL model call (call_model(msgs,...), not the guard check)
+        model_call_pos = src.find("_call_model(msgs, model, tools=tools)")
         assert route_pos < compact_pos < model_call_pos, (
             f"Expected routing({route_pos}) < compaction({compact_pos}) < model_call({model_call_pos})"
         )
 
     def test_compaction_after_routing_order_astream(self):
-        """Doc: same ordering in astream()."""
+        """Doc: same ordering in astream — now unified in _step_call_model."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
+        src = inspect.getsource(GraphEngine._step_call_model)
         route_pos = src.find("model_router.route")
         compact_pos = src.find("compaction.should_compact")
         assert route_pos > 0 and compact_pos > 0
         assert route_pos < compact_pos, (
-            f"Routing({route_pos}) must come before compaction({compact_pos}) in astream"
+            f"Routing({route_pos}) must come before compaction({compact_pos}) in _step_call_model"
         )
 
     def test_tool_output_summarization_called_after_success(self):
         """Doc: 工具执行成功后调用 compaction.summarize_tool_output()."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_execute_tools)
         assert "summarize_tool_output" in src
 
     def test_engine_guards_compaction_with_none_check(self):
         """Engine checks `if self.compaction:` before calling compaction methods."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "if self.compaction" in src
 
     def test_window_size_from_model_windows(self):
         """Doc 2.3: 引擎从 _model_windows[model] 获取窗口大小."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "_model_windows" in src
 
     def test_fallback_window_size_uses_default_constant(self):
         """When _model_windows is missing, engine falls back to DEFAULT_WINDOW_SIZE."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "DEFAULT_WINDOW_SIZE" in src, (
             "Engine should use DEFAULT_WINDOW_SIZE constant as fallback"
         )
@@ -385,20 +386,20 @@ class TestEngineIntegration:
     def test_compaction_emits_events(self):
         """Doc: engine emits compaction_start and compaction_end events."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert '"compaction_start"' in src
         assert '"compaction_end"' in src
 
     def test_context_summary_propagated_to_system_prompt(self):
         """Doc: context_summary 通过 {{MEMORY}} 注入 system prompt."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "context_summary" in src
 
     def test_last_token_usage_updated_after_model_call(self):
         """Doc: 以上一轮模型调用返回的 usage.total_tokens 为信号."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         assert "last_token_usage" in src
         assert "total_tokens" in src
 
@@ -459,7 +460,7 @@ class TestProactiveRepairBeforeModelCall:
     def test_repair_before_msgs_in_invoke(self):
         """_repair_messages must be called right before building msgs in invoke()."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
+        src = inspect.getsource(GraphEngine._step_call_model)
         repair_pos = src.find("_repair_messages(state)")
         msgs_pos = src.find('msgs = [{"role": "system"')
         assert repair_pos > 0, "_repair_messages(state) not found in invoke()"
@@ -472,7 +473,7 @@ class TestProactiveRepairBeforeModelCall:
     def test_repair_before_msgs_in_astream(self):
         """_repair_messages must be called right before building msgs in astream()."""
         from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
+        src = inspect.getsource(GraphEngine._step_call_model)
         repair_pos = src.find("_repair_messages(state)")
         msgs_pos = src.find('msgs = [{"role": "system"')
         assert repair_pos > 0, "_repair_messages(state) not found in astream()"

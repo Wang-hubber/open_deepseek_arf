@@ -1186,12 +1186,12 @@ class GraphEngine:
                          turn=turn, session_id=session_id)
 
         stream_usage: dict = {}
-        if self._stream_model:
+        if getattr(self, '_stream_model', None):
             full_text = ""
             full_reasoning = ""
             stream_tool_calls: list[dict] = []
             try:
-                async for chunk in self._stream_model(msgs, model, tools=tools):
+                async for chunk in getattr(self, '_stream_model', None)(msgs, model, tools=tools):
                     if chunk.get("type") == "chunk":
                         full_text += chunk.get("content", "")
                         reasoning = chunk.get("reasoning", "")
@@ -1351,7 +1351,7 @@ class GraphEngine:
         """Shared execute_tools step — handles guard, approval, execution, handoff."""
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
-        is_streaming = self._stream_model is not None
+        is_streaming = getattr(self, '_stream_model', None) is not None
 
         tool_calls = state.pop("_pending_tool_calls", [])
         if not tool_calls:
@@ -1592,17 +1592,19 @@ class GraphEngine:
             if step == "call_model":
                 async for event in self._step_call_model(state):
                     yield event
+                # Retry after 400 repair — restart call_model without breaking
+                if state.pop("_retry_after_repair", False):
+                    state["current_turn"] = state.get("current_turn", 1) - 1
+                    await self.state_store.put(session_id, state)
+                    continue
+                # Text-only response (no tool_calls) → done
+                if not state.get("_pending_tool_calls"):
+                    break
             elif step == "execute_tools":
                 async for event in self._step_execute_tools(state):
                     yield event
             else:
                 break
-
-            # Retry after 400 repair in streaming mode
-            if state.pop("_retry_after_repair", False):
-                state["current_turn"] = state.get("current_turn", 1) - 1
-                await self.state_store.put(session_id, state)
-                continue
 
             if self.loop_strategy.should_break(state):
                 break
