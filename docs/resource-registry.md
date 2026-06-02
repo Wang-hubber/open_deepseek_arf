@@ -1,6 +1,6 @@
 # Resource Registration & Discovery — 文件系统即真相源
 
-ARF 将资源（工具/技能/模型）的注册与发现视为操作系统中的注册表与服务管理器——约定优于配置，文件系统是真相源，内核只读、动态热加载。
+ARF 将资源（工具/技能）的注册与发现视为操作系统中的注册表与服务管理器——约定优于配置，文件系统是真相源，内核只读、动态热加载。模型在 `agent.yaml` 中内联定义（`model_defs`），不经过文件系统扫描。
 
 ---
 
@@ -95,8 +95,7 @@ FileWatcher（inotify / 轮询） —— 对标 udev
 ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
     │
     ├─ ToolProvider.invalidate_dynamic()
-    ├─ SkillProvider.invalidate_dynamic()
-    └─ ModelProvider.invalidate_dynamic()
+    └─ SkillProvider.invalidate_dynamic()
            │
            ▼
     ResourceCache.dynamic.clear()
@@ -115,12 +114,12 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 
 | 层级 | 组件 | OS 对标 | 职责 |
 |------|------|---------|------|
-| **监听层** | `FileWatcher` | udev | inotify/轮询双轨检测 tools/skills/models 目录下的文件变更 |
-| **解析层** | `ToolProvider` / `SkillProvider` / `ModelProvider` | 规则文件匹配 | 扫描各自目录，解析 YAML，`importlib` 动态加载 function.py |
+| **监听层** | `FileWatcher` | udev | inotify/轮询双轨检测 tools/skills 目录下的文件变更 |
+| **解析层** | `ToolProvider` / `SkillProvider` | 规则文件匹配 | 扫描各自目录，解析 YAML，`importlib` 动态加载 function.py |
 | **缓存层** | `ResourceCache`（kernel + dynamic 分离） | systemd unit 缓存 | kernel 冻结不可变，dynamic 可失效重载 |
 | **合并层** | `ResourceResolver` | 注册表查询 | 合并文件系统定义与 agent.yaml 覆盖，dump 完整配置 |
 
-### 2.2 三个 Provider
+### 2.2 两个 Provider
 
 每个 Provider 遵循相同接口：`list_kernel()` / `list_dynamic()` / `invalidate_dynamic()`。
 
@@ -128,15 +127,15 @@ ResourceResolver.reload_dynamic() —— 对标 systemctl daemon-reload
 
 **SkillProvider**（`arf/resources/providers/skill_provider.py`）扫描 `skills/*.yaml`。每个文件一个 SkillConfig。纯声明——无函数加载。
 
-**ModelProvider**（`arf/resources/providers/model_provider.py`）扫描 `models/*.yaml`。每个文件一个 ModelConfig。`activation` 字段用于内核/动态分离。
+两者并行启动，互不依赖。各 Provider 接受各自目录参数（`tools_dir`/`skills_dir`），可在测试中覆盖。
 
-三者并行启动，互不依赖。各 Provider 接受各自目录参数（`tools_dir`/`skills_dir`/`models_dir`），可在测试中覆盖。
+> **模型**不再经文件系统扫描。模型定义在 `agent.yaml` 顶部的 `model_defs` 中内联声明，通过 `ModelRegistry` 解析和校验。详见 [`prompt-assembly.md`](prompt-assembly.md) 和 agent.yaml 的 `models_defs` 字段。
 
 此外，**PluginProvider**（`arf/resources/providers/plugin_provider.py`）扩展了上述架构，支持从插件目录加载工具和技能。每个插件是 `plugins/{name}/` 子目录，内部结构与应用层一致：`tools/{name}/tool.yaml + function.py` 和 `skills/*.yaml`。BaseAgent 在检测到 `agent.yaml` 配置了 `plugins` 字段时自动装配 PluginProvider——这是多源 Provider 架构的第一个实际案例，证明文件系统扫描契约可以无侵入地扩展到第三方来源。
 
 ### 2.3 内核/动态分离
 
-`activation: kernel` 标记框架内置资源——对标编译进内核的驱动（`[*]` in menuconfig）或 systemd 的 `WantedBy=multi-user.target` 默认服务。工具如 `file_reader`、`web_search`，技能如 `code_review`、`debug`，模型如 `quick`、`deep`。这些在 BaseAgent 初始化时加载，之后冻结。
+`activation: kernel` 标记框架内置资源——对标编译进内核的驱动（`[*]` in menuconfig）或 systemd 的 `WantedBy=multi-user.target` 默认服务。工具如 `file_reader`、`web_search`，技能如 `code_review`、`debug`。这些在 BaseAgent 初始化时加载，之后冻结。
 
 ```python
 # arf/resources/cache.py
@@ -159,7 +158,7 @@ class _FrozenDict(dict):
 
 ### 2.4 ResourceResolver — 覆盖合并与配置生成
 
-`ResourceResolver`（`arf/resources/resolver.py`）封装三个 Provider，是所有资源查询的统一入口——对标注册表的查询 API。
+`ResourceResolver`（`arf/resources/resolver.py`）封装两个 Provider，是所有资源查询的统一入口——对标注册表的查询 API。
 
 ```
 优先级：agent.yaml 覆盖 > 文件系统字段 > Pydantic 默认值
@@ -169,7 +168,7 @@ class _FrozenDict(dict):
 
 ```python
 class ResourceResolver:
-    def __init__(self, tool_provider, skill_provider, model_provider, agent_yaml_overrides):
+    def __init__(self, tool_provider, skill_provider, agent_yaml_overrides):
         ...
 
     async def get_tool_definitions(self, ...) -> list[ToolDefinition]:
@@ -180,7 +179,6 @@ class ResourceResolver:
         """对标 systemctl daemon-reload。"""
         self._tool_provider.invalidate_dynamic()
         self._skill_provider.invalidate_dynamic()
-        self._model_provider.invalidate_dynamic()
 
     def generate_config(self) -> dict:
         """对标 regedit /export 或 dpkg -l。扫描文件系统 dump 完整 agent.yaml。"""
@@ -204,21 +202,19 @@ class ResourceResolver:
 agent.yaml 资源段现为可选——省略时完全由文件系统决定。声明时提供字段级覆盖：
 
 ```yaml
-# 文件系统定义（models/quick.yaml）—— 对标 .service 单元文件
-type: quick
-model: deepseek-v4-flash
-api_base: https://api.deepseek.com
-api_key_env: DEEPSEEK_API_KEY
-context_window: 800000
-activation: kernel
-kwargs:
-  reasoning_effort: high
-  temperature: 0.7
+# 文件系统定义（tools/my_tool/tool.yaml）—— 对标 .service 单元文件
+name: file_reader
+description: Read file contents
+parameters:
+  type: object
+  properties:
+    path: {type: string}
+  required: [path]
 
 # agent.yaml 覆盖（可选单字段微调）—— 对标 systemctl edit 的 drop-in 片段
-models:
-  - type: quick
-    temperature: 0.3  # 仅覆盖此字段，其余保持文件系统值
+tools:
+  - name: file_reader
+    activation: kernel  # 仅覆盖此字段，其余保持文件系统值
 ```
 
 ```yaml
