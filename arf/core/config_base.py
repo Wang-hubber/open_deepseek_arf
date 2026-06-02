@@ -169,6 +169,14 @@ class PathCheckFlags(BaseModel):
 
 class SandboxConfig(BaseModel):
     checks: PathCheckFlags = Field(default_factory=PathCheckFlags)
+    blacklist: list[str] = Field(
+        default_factory=lambda: [".git", "__pycache__", "logs", ".env"],
+        description="Paths excluded from sandbox copy"
+    )
+    auto_destroy: bool = Field(
+        default=False,
+        description="Auto-delete sandbox on session end"
+    )
 
 
 class ToolRetrievalConfig(BaseModel):
