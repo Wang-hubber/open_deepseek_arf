@@ -21,12 +21,10 @@ class ResourceResolver:
         self,
         tool_provider,
         skill_provider=None,
-        model_provider=None,
         agent_yaml_overrides: dict | None = None,
     ):
         self._tool_provider = tool_provider
         self._skill_provider = skill_provider
-        self._model_provider = model_provider
         self._overrides = agent_yaml_overrides or {}
         self._plugin_provider = None
 
@@ -89,15 +87,6 @@ class ResourceResolver:
         overrides = self._overrides.get("skills", [])
         return self._merge_configs(skills, overrides, SkillConfig)
 
-    # -- models --
-
-    def get_model_definitions(self) -> list[ModelConfig]:
-        if self._model_provider is None:
-            return []
-        models = self._model_provider.list()
-        overrides = self._overrides.get("models", [])
-        return self._merge_configs(models, overrides, ModelConfig, key_field="type")
-
     # -- cache --
 
     async def reload_dynamic(self) -> None:
@@ -106,8 +95,6 @@ class ResourceResolver:
             self._tool_provider.invalidate_dynamic()
         if self._skill_provider and hasattr(self._skill_provider, "invalidate_dynamic"):
             self._skill_provider.invalidate_dynamic()
-        if self._model_provider and hasattr(self._model_provider, "invalidate_dynamic"):
-            self._model_provider.invalidate_dynamic()
 
     # -- override merge --
 
@@ -155,8 +142,6 @@ class ResourceResolver:
             config["tools"] = [t.model_dump(exclude_none=True) for t in tools]
         if self._skill_provider:
             config["skills"] = [s.model_dump(exclude_none=True) for s in self._skill_provider.list()]
-        if self._model_provider:
-            config["models"] = [m.model_dump(exclude_none=True) for m in self._model_provider.list()]
         return config
 
 

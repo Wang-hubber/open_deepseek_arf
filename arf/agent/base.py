@@ -88,10 +88,8 @@ class BaseAgent:
             "models_dir", ctx.models_dir if ctx else Path("./models")
         )
 
-        # ModelProvider stays in BaseAgent (models not in MCP scope)
-        from arf.resources.providers.model_provider import ModelProvider
-        model_provider = ModelProvider(models_dir)
-        self._merge_models(config, model_provider)
+        # Models — resolved from config.model_defs (new format) or config.models (legacy)
+        # ModelProvider (filesystem scanning) has been removed.
 
         # Resolve plugins_dir
         _plugins_dir_raw = override_protocols.pop("plugins_dir", None)
@@ -148,7 +146,7 @@ class BaseAgent:
             state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
             files_dir=str(ctx.files_dir) if ctx else "./data/files",
-            system_model=adv.system_model if adv else "quick",
+            system_model="quick",
             model_configs={
                 m.type: {
                     "api_base": m.api_base,
@@ -160,84 +158,17 @@ class BaseAgent:
         )
         memory_store = override_protocols.pop("memory_store", FileMemoryStore(_mem_dir))
 
-        # Build system model adapter for all background tasks (memory, routing, compaction).
-        # Uses advanced.system_model if set, otherwise falls back to the first configured model.
+        # System model adapter — removed (each Plugin now configures its own model).
         _system_model_call = None
-        system_model_name = adv.system_model if adv else None
-        if not system_model_name and config.models:
-            system_model_name = config.models[0].type
-
-        if system_model_name:
-            import os as _os2, asyncio as _aio2
-            from arf.core.model_adapter import ModelAdapter as _SystemAdapter
-            system_model_cfg = next(
-                (m for m in config.models if m.type == system_model_name),
-                None,
-            )
-            if system_model_cfg:
-                _system_adapter = _SystemAdapter({
-                    "base_url": system_model_cfg.api_base,
-                    "api_key": _os2.environ.get(system_model_cfg.api_key_env, ""),
-                    "model_name": system_model_cfg.model,
-                    "temperature": 0.3,
-                    "thinking_enabled": False,
-                    "max_tokens": 1024,
-                })
-
-                async def _system_model_call(prompt: str) -> str:
-                    """Call the system model with a simple prompt, return text content."""
-                    msg = await _system_adapter.chat_complete(
-                        [{"role": "user", "content": prompt}],
-                        tools=None,
-                        max_tokens=1024,
-                    )
-                    return msg.content or ""
 
         # Memory extraction moved to arf/plugins/memory/ plugin.
         # Framework no longer constructs or holds a writer/retriever.
         memory_writer = override_protocols.pop("memory_writer", None)
         memory_retriever = override_protocols.pop("memory_retriever", None)
 
-        # 3.5 Compaction — sliding window when context exceeds threshold
+        # Compaction — moved to CompactionPlugin (round_end hook).
+        # Framework no longer constructs SlidingWindowCompactor inline.
         compaction = override_protocols.pop("compaction", None)
-        cmp_cfg = (adv.compaction or AdvancedConfig.default().compaction) if adv else None
-        if cmp_cfg and cmp_cfg.strategy != "none" and not compaction:
-            from arf.compaction.sliding_window import SlidingWindowCompactor
-            _summarizer = None
-            if _system_model_call:
-                async def _summarize(msgs: list[dict]) -> str:
-                    text = "\n".join(
-                        f"[{m.get('role', '?')}] {m.get('content', '')[:300]}"
-                        for m in msgs[-30:]  # last 30 messages for context
-                    )
-                    prompt = (
-                        "You are compacting conversation history to free context space.\n"
-                        "Write a structured summary that preserves the essential state:\n\n"
-                        "<conversation>\n{text}\n</conversation>\n\n"
-                        "Output a concise summary with these sections (omit empty ones):\n"
-                        "- Completed: tasks finished, problems solved\n"
-                        "- In Progress: current task, remaining TODO items\n"
-                        "- Files Modified: paths and what was changed\n"
-                        "- Decisions: architectural choices, agreed approaches\n"
-                        "- Facts & Preferences: user info, likes/dislikes, constraints\n"
-                        "- Errors & Debugging: error messages, stack traces, hypotheses\n"
-                        "- Next Steps: what should happen next\n\n"
-                        "Rules:\n"
-                        "- Be specific: include file paths, function names, error messages verbatim\n"
-                        "- Be concise: each bullet one line, 3-8 bullets per section\n"
-                        "- Preserve reasoning: why decisions were made, not just what\n"
-                        "- Keep user facts intact: name, location, preferences, skills\n\n"
-                        "Summary:"
-                    ).replace("{text}", text)
-                    try:
-                        return (await _system_model_call(prompt)).strip()
-                    except Exception:
-                        return "(conversation summary unavailable)"
-                _summarizer = _summarize
-            compaction = SlidingWindowCompactor(
-                threshold=cmp_cfg.threshold,
-                summarizer=_summarizer,
-            )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
         _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
@@ -399,7 +330,6 @@ class BaseAgent:
         if config.handover and config.handover.rules:
             handoff_manager = HandoffManager(
                 rules=config.handover.rules,
-                system_model_call=_system_model_call,
             )
 
         # 10. Build system prompt via provider (prefix only — inventory via MCP)
@@ -427,47 +357,9 @@ class BaseAgent:
         if resident_memory:
             system_prompt = system_prompt.replace("$MEMORY", resident_memory)
 
-        # Auto-create model router if routing config is set (LLM classifier by default)
+        # Model routing — deprecated TwoTierRouter removed.
+        # Use model_defs + agent_models degradation instead.
         model_router = None
-        if adv and adv.routing and len(config.models) > 1:
-            from arf.routing.two_tier import TwoTierRouter
-            if adv.routing.strategy == "static":
-                # static: always use default model, no classification
-                model_router = TwoTierRouter(
-                    config=adv.routing,
-                    models=[m.type for m in config.models],
-                )
-            elif _system_model_call:
-                from arf.routing.two_tier import keyword_classify
-
-                async def _classify(query: str) -> str:
-                    # Fast keyword heuristic first (E2E Bug 3.4)
-                    kw_result = keyword_classify(query)
-                    if kw_result is not None:
-                        return kw_result
-                    # Ambiguous — fallback to LLM classifier
-                    prompt = (
-                        "Classify this task as 'medium' or 'complex'. "
-                        "medium = simple chat, file I/O, single tool call. "
-                        "complex = multi-step reasoning, many tool calls, code generation, planning. "
-                        "Return ONLY one word (medium or complex).\n\n"
-                        f"Task: {query[:300]}"
-                    )
-                    try:
-                        result = (await _system_model_call(prompt)).strip().lower()
-                        return result if result in ("medium", "complex") else "medium"
-                    except Exception:
-                        return "medium"
-                model_router = TwoTierRouter(
-                    config=adv.routing,
-                    models=[m.type for m in config.models],
-                    classifier_call=_classify,
-                )
-            else:
-                model_router = TwoTierRouter(
-                    config=adv.routing,
-                    models=[m.type for m in config.models],
-                )
 
         self._engine = GraphEngine(
             loop_strategy=loop_strategy,
@@ -578,19 +470,17 @@ class BaseAgent:
         )
 
     def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
-                                   model_provider, tools_dir, skills_dir, models_dir,
+                                   tools_dir, skills_dir, models_dir,
                                    watch_enabled: bool, reload_cfg, override_protocols: dict[str, Any]):
         """Build ResourceResolver with override merge and optional FileWatcher."""
         from arf.resources.file_watcher import FileWatcher
         overrides = {
             "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
             "skills": [s.model_dump(exclude_none=True) for s in (config.skills or [])],
-            "models": [m.model_dump(exclude_none=True) for m in (config.models or [])],
         }
         resource_resolver = override_protocols.pop("tool_resolver", ResourceResolver(
             tool_provider=tool_provider,
             skill_provider=skill_provider,
-            model_provider=model_provider,
             agent_yaml_overrides=overrides,
         ))
         file_watcher = None
@@ -605,23 +495,6 @@ class BaseAgent:
                 if path.exists():
                     file_watcher.add_watch(path, _on_fs_change)
         return resource_resolver, file_watcher
-
-    def _merge_models(self, config: AgentConfig, model_provider) -> None:
-        """Merge filesystem models with agent.yaml overrides into config.models."""
-        fs_models = model_provider.list()
-        agent_models = {m.type: m for m in (config.models or [])}
-        merged_models: list = []
-        for fm in fs_models:
-            if fm.type in agent_models:
-                merged_models.append(
-                    fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
-                )
-            else:
-                merged_models.append(fm)
-        for t, am in agent_models.items():
-            if not any(m.type == t for m in merged_models):
-                merged_models.append(am)
-        config.models = merged_models
 
     def _inject_model_calls(self, config) -> None:
         """Create ModelAdapter for each configured model and inject call_model into engine."""

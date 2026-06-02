@@ -81,11 +81,6 @@ def skills_dir():
 
 
 @pytest.fixture
-def models_dir():
-    return APP_DIR / "models"
-
-
-@pytest.fixture
 def tool_provider(tools_dir):
     from arf.resources.providers.tool_provider import ToolProvider
     return ToolProvider(tools_dir)
@@ -98,15 +93,9 @@ def skill_provider(skills_dir):
 
 
 @pytest.fixture
-def model_provider(models_dir):
-    from arf.resources.providers.model_provider import ModelProvider
-    return ModelProvider(models_dir)
-
-
-@pytest.fixture
-def resolver(tool_provider, skill_provider, model_provider):
+def resolver(tool_provider, skill_provider):
     from arf.resources.resolver import ResourceResolver
-    return ResourceResolver(tool_provider, skill_provider, model_provider)
+    return ResourceResolver(tool_provider, skill_provider)
 
 
 @pytest.fixture

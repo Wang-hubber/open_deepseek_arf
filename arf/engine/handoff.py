@@ -7,38 +7,26 @@ logger = logging.getLogger("arf.engine.handoff")
 
 
 class HandoffManager:
-    def __init__(self, rules: list[HandoverRuleConfig], system_model_call=None):
+    def __init__(self, rules: list[HandoverRuleConfig]):
         self._rules: dict[str, list[HandoverRuleConfig]] = {}
         for r in rules:
             self._rules.setdefault(r.from_agent, []).append(r)
-        self._system_model_call = system_model_call
 
     # ---- detection ----
 
     def detect(self, tool_results: dict) -> dict | None:
-        """Scan tool results for {"handoff": True}. Return the first match.
-
-        Handles:
-        - ToolResult objects (via .data attribute)
-        - Plain dicts with nested 'data' key (from state["tool_results"])
-        - Plain dicts without nested 'data' key (direct tool return dicts)
-        - FunctionBackend wraps returns in {"result": ...}, check that too
-        """
+        """Scan tool results for {"handoff": True}. Return the first match."""
         for tc_id, result in tool_results.items():
-            # ToolResult object
             if hasattr(result, "data") and not isinstance(result, dict):
                 data = getattr(result, "data", None)
-            # Dict with nested 'data' key (state["tool_results"] format)
             elif isinstance(result, dict) and "data" in result:
                 data = result["data"]
-            # Plain dict (direct tool return)
             else:
                 data = result
 
             if not isinstance(data, dict):
                 continue
 
-            # FunctionBackend wraps return in {"result": ...}
             if "handoff" not in data and "result" in data and isinstance(data["result"], dict):
                 inner = data["result"]
                 if inner.get("handoff"):
@@ -56,95 +44,47 @@ class HandoffManager:
             return ""
         if len(candidates) == 1:
             return candidates[0].to_agent
-
-        # Multiple candidates — LLM match trigger against task description
-        task = handoff_data.get("task", "")
-        if self._system_model_call:
-            try:
-                prompt = (
-                    "Select the best matching rule for this handoff task.\n\n"
-                    "Task: {task}\n\n"
-                    "Rules:\n{rules}\n\n"
-                    "Return ONLY the rule index (0-{max_idx})."
-                ).format(
-                    task=task[:300],
-                    rules="\n".join(
-                        f"[{i}] trigger: {r.trigger} → to: {r.to_agent}"
-                        for i, r in enumerate(candidates)
-                    ),
-                    max_idx=len(candidates) - 1,
-                )
-                idx = int((await self._system_model_call(prompt)).strip()[0])
-                if 0 <= idx < len(candidates):
-                    return candidates[idx].to_agent
-            except Exception:
-                pass
-
-        # Fallback: first exact trigger keyword match
-        for r in candidates:
-            if any(w in task for w in r.trigger.split()):
-                return r.to_agent
-        return candidates[0].to_agent
-
-    def get_rule(self, from_agent: str, to_agent: str) -> HandoverRuleConfig | None:
-        """Get the matching handover rule for the given agent pair."""
-        for r in self._rules.get(from_agent, []):
-            if r.to_agent == to_agent:
-                return r
-        return None
-
-    # ---- context building ----
-
-    def build_target_context(
-        self,
-        from_state: AgentState,
-        rule: HandoverRuleConfig,
-        handoff_data: dict,
-        target_system_prompt: str,
-    ) -> list[dict]:
-        """Build target agent's initial messages."""
-        ctx_cfg = rule.context
-        messages = [{"role": "system", "content": target_system_prompt}]
-
-        # Raw context: last N turns of conversation (user + clean assistant only)
-        if ctx_cfg.raw_turns != 0:
-            all_msgs = from_state.get("messages", [])
-            # Keep only user messages + assistant messages without tool_calls.
-            # Skip tool messages (no matching tool_calls in truncated context)
-            # and assistant messages with tool_calls (orphaned without results).
-            conv_msgs = [
-                m for m in all_msgs
-                if m.get("role") == "user"
-                or (m.get("role") == "assistant" and not m.get("tool_calls"))
-            ]
-            if ctx_cfg.raw_turns > 0:
-                take = min(len(conv_msgs), ctx_cfg.raw_turns * 2)
-                raw_context = conv_msgs[-take:]
-            else:
-                raw_context = conv_msgs  # -1 = all
-            messages.extend(raw_context)
-
-        # Task summary placeholder (populated by engine after LLM call)
-        if ctx_cfg.task_summary:
-            messages.append({
-                "role": "system",
-                "content": "__TASK_SUMMARY_PLACEHOLDER__",
-            })
-
-        # Handoff user message
-        task = handoff_data.get("task", "")
-        ctx_val = handoff_data.get("context", "")
-        messages.append({
-            "role": "user",
-            "content": (
-                f"[Handoff: {rule.from_agent} → {rule.to_agent}]\n"
-                f"Task: {task}\n"
-                f"Context: {ctx_val}"
-            ),
-        })
-
-        return messages
+        return candidates[0].to_agent if candidates else ""
 
     @property
     def has_rules(self) -> bool:
-        return len(self._rules) > 0
+        return bool(self._rules)
+
+    # ---- context builder ----
+
+    def build_target_context(
+        self, state: AgentState, from_agent: str, to_agent: str,
+        handoff_data: dict,
+    ) -> list[dict]:
+        """Build initial messages for the target agent."""
+        rule = self._resolve_rule(from_agent, to_agent)
+        if not rule:
+            return [{"role": "user", "content": handoff_data.get("task", "")}]
+
+        messages: list[dict] = []
+
+        if rule.context.raw_turns > 0:
+            all_msgs = state.get("messages", [])
+            n = min(rule.context.raw_turns * 2, len(all_msgs))
+            messages.extend(all_msgs[-n:])
+        elif rule.context.raw_turns == -1:
+            messages.extend(state.get("messages", []))
+
+        task = handoff_data.get("task", "")
+        ctx = handoff_data.get("context", "")
+        content = f"[Handoff from {from_agent}]\nTask: {task}"
+        if ctx:
+            content += f"\nContext: {ctx}"
+        if rule.context.task_summary:
+            summary = state.get("context_summary", "")
+            if summary:
+                content += f"\nSummary: {summary}"
+
+        messages.append({"role": "user", "content": content})
+        return messages
+
+    def _resolve_rule(self, from_agent: str, to_agent: str) -> HandoverRuleConfig | None:
+        for rule in self._rules.get(from_agent, []):
+            if rule.to_agent == to_agent:
+                return rule
+        return None

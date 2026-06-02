@@ -5,7 +5,7 @@ from typing import Literal
 import yaml
 from arf.core.config_base import (
     McpServerConfig, ModelConfig, SkillConfig, ToolConfig, HookDefinition,
-    RoutingConfig, CompactionConfig, MemoryConfig,
+    CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
     ProtectionConfig, ObservabilityConfig, PromotionConfig,
@@ -27,13 +27,10 @@ class AdvancedConfig(BaseModel):
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
     max_turns: int = 50
     max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
-    system_model: str | None = None  # model name for background tasks (memory, routing, compaction)
-    routing: RoutingConfig | None = None
     compaction: CompactionConfig | None = None
     memory: MemoryConfig | None = None
     guardrails: GuardrailsConfig | None = None
     errors: ErrorConfig | None = None
-    # human_loop removed — approval now integrated into permissions.ask + permissions.approval
     tool_retrieval: ToolRetrievalConfig | None = None
     concurrency: ConcurrencyConfig | None = None
     sandbox: SandboxConfig | None = None
@@ -52,8 +49,6 @@ class AdvancedConfig(BaseModel):
         adv = cls.default()
         if tools_count > 20:
             adv.tool_retrieval = ToolRetrievalConfig(enabled=True, top_k=10)
-        if models_count > 1:
-            adv.routing = RoutingConfig(strategy="two_tier")
         return adv
 
 
@@ -152,25 +147,8 @@ class AgentConfig(BaseModel):
         if version not in {"1.0", "0.0"}:
             raise ValueError(f"Unsupported schema version: {version}")
         config = cls(**raw)
-        # Auto-load models from filesystem (filesystem is source of truth,
-        # agent.yaml overrides are merged on top).
-        models_dir = Path(path).parent / "models"
-        if models_dir.exists():
-            from arf.resources.providers.model_provider import ModelProvider
-            fs_models = ModelProvider(models_dir).list()
-            agent_models = {m.type: m for m in config.models}
-            merged: list[ModelConfig] = []
-            for fm in fs_models:
-                if fm.type in agent_models:
-                    merged.append(
-                        fm.model_copy(update=agent_models[fm.type].model_dump(exclude_none=True))
-                    )
-                else:
-                    merged.append(fm)
-            for t, am in agent_models.items():
-                if not any(m.type == t for m in merged):
-                    merged.append(am)
-            config.models = merged
+        # Models are defined inline in agent.yaml via model_defs (new format)
+        # or models (legacy format). Filesystem ModelProvider is removed.
         return config
 
     def to_yaml(self, directory: str | Path) -> None:

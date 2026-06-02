@@ -528,26 +528,9 @@ class GraphEngine:
                 target_system_prompt=target_prompt,
             )
 
-            # Generate task summary (if configured)
-            if rule.context.task_summary and self._handoff_manager._system_model_call:
-                try:
-                    summary = await self._handoff_manager._system_model_call(
-                        f"Summarize this handoff task in one sentence (Chinese):\n"
-                        f"Task: {handoff_data.get('task', '')}\n"
-                        f"Context: {handoff_data.get('context', '')}"
-                    )
-                    for i, m in enumerate(new_messages):
-                        if m.get("content") == "__TASK_SUMMARY_PLACEHOLDER__":
-                            new_messages[i] = {
-                                "role": "system",
-                                "content": f"[Task Summary] {summary.strip()}",
-                            }
-                except Exception:
-                    new_messages = [m for m in new_messages
-                                    if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
-            else:
-                new_messages = [m for m in new_messages
-                                if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
+            # Task summary — deferred (requires per-agent model config wiring)
+            new_messages = [m for m in new_messages
+                            if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
 
             state["messages"] = new_messages
             state["current_turn"] = 0

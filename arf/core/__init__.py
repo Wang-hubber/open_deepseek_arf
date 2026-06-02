@@ -8,7 +8,7 @@ from arf.core.results import (
 )
 from arf.core.config_base import (
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
-    RoutingConfig, CompactionConfig, MemoryConfig,
+    CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, PermissionsConfig, ApprovalConfig,
     SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverRuleConfig, HandoverConfig, SupervisorConfig,
@@ -19,7 +19,7 @@ __all__ = [
     "GuardResult", "ToolResult", "HookResult",
     "ApprovalRequest", "ApprovalResponse", "ErrorAction",
     "ModelConfig", "SkillConfig", "ToolConfig", "HookDefinition",
-    "RoutingConfig", "CompactionConfig", "MemoryConfig",
+    "CompactionConfig", "MemoryConfig",
     "GuardrailsConfig", "ErrorConfig", "PermissionsConfig", "ApprovalConfig",
     "SandboxConfig", "ToolRetrievalConfig",
     "ReloadConfig", "HandoverRuleConfig", "HandoverConfig", "SupervisorConfig",

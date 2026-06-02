@@ -2,7 +2,6 @@
 from pathlib import Path
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.resources.providers.skill_provider import SkillProvider
-from arf.resources.providers.model_provider import ModelProvider
 from arf.resources.providers.plugin_provider import PluginProvider
 from arf.resources.file_watcher import FileWatcher
 from arf.mcp.remote_client import McpRemoteClient
@@ -27,7 +26,7 @@ class ArfLocalMcpServer:
     ) -> None:
         self._tool_provider = ToolProvider(tools_dir)
         self._skill_provider = SkillProvider(skills_dir)
-        self._model_provider = ModelProvider(models_dir)
+        # ModelProvider removed — models now resolved via config.model_defs
         self._plugin_provider = (
             PluginProvider(plugins_dir, plugin_names) if plugin_names else None
         )

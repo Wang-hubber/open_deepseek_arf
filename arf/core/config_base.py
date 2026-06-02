@@ -50,14 +50,6 @@ class HookDefinition(BaseModel):
     timeout: str = "30s"
 
 
-class RoutingConfig(BaseModel):
-    strategy: Literal["two_tier", "static"] = "two_tier"
-    default: str = ""
-    classify: dict[str, str] = Field(default_factory=dict)
-    background: str | None = None
-    fallback: dict[str, str] = Field(default_factory=dict)
-
-
 class CompactionConfig(BaseModel):
     strategy: Literal["sliding_window", "none"] = "sliding_window"
     threshold: float = Field(default=0.75, ge=0.0, le=1.0)
