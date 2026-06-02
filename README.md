@@ -66,7 +66,7 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 | 3 | **[Context Management →](docs/context-management.md)**<br>Context window compaction | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. Long tool outputs summarized to disk. | Semantic-unit compaction; adaptive threshold; cross-session summary reuse; off-session compaction (parent-child node summary, RAG-style) |
 | 4 | **[Interrupt & Recovery →](docs/interrupt.md)**<br>Cancel + undo + rollback | Hardware interrupt (ISR) + signals | `asyncio.Event` cancellation token checked each turn. `RoundManager` — configurable snapshot window (default 3), state + file rollback across handoff boundaries. `FunctionBackend` rollback — tools export optional `rollback()` called on `execute()` exception. `SubprocessHookRunner` exit-code 2 → message injection. | Pause/redirect vectors; idle timeout; interrupt priority levels |
 | 5 | **[A2A Communication →](docs/a2a-communication.md)**<br>Agent-to-agent interaction | IPC (pipe/signal/shared memory/message queue) | `HandoffManager` signal-based agent switching in invoke/astream loop. `InMemoryAgentBus` — asyncio.Queue message routing (broadcast, targeted, capability discovery). `PeerAgent` — P2P negotiate/handoff/discover. `DictWorkspace` shared memory. `InMemoryLock` synchronisation. `MajorityVoteConsensus`. Protocol layer for AgentBus/Supervisor/Consensus. `SkillPipeline` — tool execution order with explicit dependencies. `ConcurrentToolExecutor` parallel execution. | Network A2A (gRPC); pub/sub agent discovery; DAG multi-agent scheduling |
-| 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
+| 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. MCP-based unified resource interface via local MCP Server subprocess (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
 | 7 | **[Security & Sandbox →](docs/tool-sandbox.md)**<br>Access control + path safety | Protection rings (Ring 0-3) + ACL | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ToolPermissionChecker` deny→ask→allow enforcement. `HumanLoop` approval channel with SSE push + 60s timeout. `GuardDefaults` three-line defense (PathCheck/Regex/None). | Per-invocation sandbox; MCP protocol; OAuth-scoped permissions |
 | 8 | **[Observability →](docs/trace.md)**<br>Event tracing + metrics | syslog / dtrace / perf | `EventType` Literal covering the full lifecycle. `InMemoryEventBus` → `FileTraceStore` (per-session JSON). `UsageTracker` token accounting. Standalone HTML trace viewer. Vue SPA waterfall grouped by interaction round. `SseStream` for real-time events. | SQLite trace DB; OpenTelemetry export; Prometheus metrics |
 | 9 | **[Plugin System →](docs/api-protection.md)**<br>Plugin framework | OS bundled software (coreutils, Notepad) | `arf/plugins/` directory — `agent.yaml` `plugins:` field activates by name. `PluginProvider` scans `tools/`, `skills/`, and `hooks/` per plugin. `ResourceResolver` merges into tool/skill lists. P0 plugins: `planner` (task decomposition), `todo` (task list), `undo` (round rollback), [`memory`](docs/plugins/memory.md) (long-term memory extraction). App-layer overrides plugin tools (app > plugin). | P1: bash, code_interpreter, file_ops; P2: web_search, web_fetch, resource_loader; community plugin registry |
@@ -118,6 +118,20 @@ skills:
 ### Progressive Disclosure
 
 Only essential kernel tools are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. The agent pays only for what it actually uses.
+
+### MCP Unified Resources
+
+Tools and skills are accessed through a single MCP (Model Context Protocol) interface. A local MCP Server subprocess aggregates local filesystem resources (`tools/`, `skills/`, `plugins/`) with optional external MCP connections:
+
+```yaml
+# agent.yaml — optional external MCP servers
+mcp_servers:
+  - name: search
+    transport: sse
+    url: http://localhost:9000/sse
+```
+
+The agent communicates via stdio JSON-RPC. The app layer is source-agnostic — tool origins (local, plugin, remote) are transparent.
 
 ### Memory — Automatic Extraction & Retrieval
 

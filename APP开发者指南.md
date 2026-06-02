@@ -291,7 +291,34 @@ kwargs:
 
 > 深入阅读：[`docs/app/models.md`](docs/app/models.md)
 
-### 4.4 工具声明
+### 4.4 MCP 统一资源接口
+
+ARF 使用 MCP（Model Context Protocol）统一管理工具和技能的发现与执行。架构：
+
+```
+Agent → McpClientManager (stdio) → Local MCP Server (子进程)
+                                       ├── ToolProvider + SkillProvider (本地)
+                                       └── McpRemoteClient × N (外部)
+```
+
+**工具命名空间**：所有工具带 `{source}__` 前缀，`arf__` 为本地/插件，外部以 `{server_name}__` 标识。
+
+**配置外部 MCP**（`agent.yaml`）：
+
+```yaml
+mcp_servers:
+  - name: search
+    transport: sse
+    url: http://localhost:9000/sse
+  - name: ci
+    transport: http
+    url: http://localhost:9001
+    api_key_env: MCP_CI_KEY
+```
+
+**SystemPromptProvider 简化**：Provider 只组装 prefix（role + critical_rules），suffix 中的 `$INVENTORY` 由 MCP 在启动时填充并缓存，工具变更时通过 `resources/updated` 通知触发刷新。
+
+### 4.5 工具声明
 
 agent.yaml 中只需按 name 引用工具，框架从 `tools/<name>/tool.yaml` 自动发现完整 Schema。
 
@@ -326,7 +353,7 @@ tools:
 
 > 深入阅读：[`docs/app/tools.md`](docs/app/tools.md)
 
-### 4.5 高级配置 — advanced 段
+### 4.6 高级配置 — advanced 段
 
 `advanced:` 控制框架所有子系统的行为。以下为参考 App 的完整配置，逐段解释。
 
