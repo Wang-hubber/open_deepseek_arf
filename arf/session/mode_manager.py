@@ -49,10 +49,15 @@ class SessionModeManager:
         # global is ASK — agent policy takes effect
         if agent_policy is None:
             return SessionMode.ASK  # follow global
-        return SessionMode(agent_policy.value)
+        # Explicit mapping avoids fragile implicit conversion
+        return {
+            AgentPolicy.AUTO: SessionMode.AUTO,
+            AgentPolicy.ASK: SessionMode.ASK,
+            AgentPolicy.PLAN: SessionMode.PLAN,
+        }[agent_policy]
 
 
-def has_side_effect(tool_name: str, params: dict | None = None) -> bool:
+def has_side_effect(tool_name: str) -> bool:
     """Return True if the tool is known to have side effects.
 
     Used in PLAN mode to block write/exec tools.
@@ -63,12 +68,12 @@ def has_side_effect(tool_name: str, params: dict | None = None) -> bool:
                        python_exec, bash, resource_registrar, resource_scaffold,
                        md2pdf, any tool starting with 'mcp__' (unknown)
     """
-    READONLY = {
+    READ_ONLY = {
         "file_reader", "glob", "grep", "web_search", "web_fetch",
         "memory_store", "memory_extract", "resource_loader",
         "planner", "todo", "handoff", "model_switch", "undo",
     }
-    if tool_name in READONLY:
+    if tool_name in READ_ONLY:
         return False
     WRITE_TOOLS = {
         "file_writer", "file_deleter", "file_download",
