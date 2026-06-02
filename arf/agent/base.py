@@ -265,14 +265,27 @@ class BaseAgent:
                 allow_escape=sandbox_cfg.allow_escape if sandbox_cfg else False,
                 checks=checks,
             )
-        # Permissions config: deny → ask → allow pipeline
+        # Session mode manager + PermissionRegistry (unified permission system)
+        from arf.session import SessionModeManager, SessionMode, PermissionRegistry, PermissionLists, AgentPolicy
+        global_mode = SessionMode(config.session_mode) if config.session_mode else SessionMode.ASK
+        session_mode_manager = SessionModeManager(global_mode=global_mode)
+        permission_registry = PermissionRegistry()
+
+        # Main agent permission lists
         perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else None
-        permission_checker = ToolPermissionChecker(config=perm_cfg)
+        main_permission_lists = PermissionLists.from_config(perm_cfg)
+
+        # Main agent policy from permissions config
+        main_policy_raw = gr_cfg.permissions.policy if gr_cfg and gr_cfg.permissions else None
+        self._main_agent_policy = AgentPolicy(main_policy_raw) if main_policy_raw else None
+        self._main_permission_lists = main_permission_lists
+
         guard_runner = override_protocols.pop("guard_runner", DefaultGuardRunner(
             input_guard=input_guard,
             output_guard=output_guard,
             tool_guard=tool_guard,
-            permission_checker=permission_checker,
+            permission_registry=permission_registry,
+            permission_lists=main_permission_lists,
         ))
 
         # 5. Error + Transaction
@@ -325,17 +338,21 @@ class BaseAgent:
                     if m.max_token is not None:
                         sub_adapter_cfg["max_tokens"] = m.max_token
                     sub_adapters[m.type] = _SubModelAdapter(sub_adapter_cfg)
-                # Per-agent permission checker
+                # Per-agent permission lists
                 sub_adv = sub_cfg.effective_advanced()
                 sub_perms = sub_adv.guardrails.permissions if sub_adv.guardrails else None
-                sub_perm_checker = ToolPermissionChecker(
-                    config=sub_perms.model_dump() if sub_perms else None
+                sub_perm_lists = PermissionLists.from_config(
+                    sub_perms.model_dump() if sub_perms else None
                 )
+                # Store per-agent policy for session mode resolution
+                sub_policy_raw = sub_perms.policy if sub_perms else None
+                sub_policy = AgentPolicy(sub_policy_raw) if sub_policy_raw else None
                 self._sub_agent_configs[sub_cfg.name] = {
                     "config": sub_cfg,
                     "system_prompt": sub_prompt,
                     "adapters": sub_adapters,
-                    "permission_checker": sub_perm_checker,
+                    "permission_lists": sub_perm_lists,
+                    "agent_policy": sub_policy,
                 }
 
         # 4.6 Handoff manager — from config.handover rules
@@ -442,6 +459,7 @@ class BaseAgent:
             memory_workspace=_mem_dir,
             workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
             promotion=self._build_promotion(adv) if adv else None,
+            session_mode_manager=session_mode_manager,
             main_permissions=adv.guardrails.permissions if adv and adv.guardrails else None,
             action_runner=ActionRunner() if adv else None,
             **override_protocols,

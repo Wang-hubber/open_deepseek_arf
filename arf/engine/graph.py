@@ -126,6 +126,7 @@ class GraphEngine:
         promotion: "Promotion | None" = None,
         main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
+        session_mode_manager=None,
     ):
         self.loop_strategy = loop_strategy
         self.approval_enabled = approval_enabled
@@ -158,6 +159,7 @@ class GraphEngine:
         self._workspace_dir = workspace_dir
         self._promotion = promotion
         self._action_runner = action_runner
+        self._session_mode_manager = session_mode_manager
         self._main_permissions = main_permissions  # persisted for restore on handoff return
         # Recovery config with safe defaults
         if recovery_config is not None:
