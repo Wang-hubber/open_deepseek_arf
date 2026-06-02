@@ -1165,7 +1165,9 @@ class GraphEngine:
                 session_id=session_id, interaction_round=self._interaction_round)
             yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
                              turn=turn, session_id=session_id)
-            h_results = await self.hook_runner.fire("pre_model_call", {"messages": msgs})
+            h_results = await self.hook_runner.fire("pre_model_call", {
+                "messages": msgs, "model": model, "messages_count": len(msgs),
+                "session_id": session_id})
             yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
                              "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
                              "failed": sum(1 for r in h_results if r.exit_code != 0)},
@@ -1389,6 +1391,20 @@ class GraphEngine:
             })
             logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
 
+        # Post-permission hook — fires after guard check, before tool execution
+        # HumanLoop plugin mount point
+        if self.hook_runner:
+            yield self._make_event(type="hook_start", data={"event": "post_permission", "turn": turn},
+                             turn=turn, session_id=session_id)
+            pp_results = await self.hook_runner.fire("post_permission", {
+                "tool_calls": valid_calls, "denied": denied_calls,
+                "session_id": session_id, "turn": turn})
+            yield self._make_event(type="hook_end", data={"event": "post_permission", "turn": turn,
+                             "count": len(pp_results), "passed": sum(1 for r in pp_results if r.exit_code == 0),
+                             "failed": sum(1 for r in pp_results if r.exit_code != 0)},
+                             turn=turn, session_id=session_id)
+            self._inject_hook_messages(pp_results, state)
+
         # Pre-tool-exec hooks
         if self.hook_runner:
             self.hook_runner.update_runtime(
@@ -1494,6 +1510,14 @@ class GraphEngine:
             for k, v in results.items()
         }
         state = self._close_tool_calls(state)
+
+        # Sandbox persist hook — fires after tool results saved, before next round
+        # UNDO plugin mount point (round-level undo with sandbox data)
+        if self.hook_runner:
+            self.hook_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await self.hook_runner.fire("sandbox_persist", {
+                "session_id": session_id, "turn": turn})
 
         # ErrorPolicy circuit-breaker
         executed_failures = sum(1 for v in results.values() if not v.success)
