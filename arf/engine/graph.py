@@ -210,6 +210,11 @@ class GraphEngine:
             return True
         return False
 
+    def approve_changes(self, session_id: str, approved_paths: list[str]) -> None:
+        """Persist approved sandbox changes to workspace."""
+        if getattr(self, '_sandbox_manager', None):
+            self._sandbox_manager.persist(session_id, approved_paths)
+
     def undo(self, steps: int = 1, workspace_dir: str = "",
              session_id: str = "") -> AgentState | None:
         """Pop N rounds and restore state from the target checkpoint.
@@ -1584,6 +1589,10 @@ class GraphEngine:
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
 
+        if getattr(self, '_sandbox_manager', None) and session_id:
+            self._sandbox_manager.init_session(session_id)
+            self._current_session_id = session_id
+
         while self.loop_strategy.should_continue(state):
             if self._cancelled():
                 yield self._make_event(type="session_end",
@@ -1614,6 +1623,21 @@ class GraphEngine:
             else:
                 break
 
+            if getattr(self, '_sandbox_manager', None) and session_id:
+                diff = self._sandbox_manager.diff(session_id)
+                if diff.total > 0:
+                    yield self._make_event(
+                        type="sandbox_changes",
+                        data={
+                            "added": [{"path": c.path, "type": c.type} for c in diff.added],
+                            "modified": [{"path": c.path, "type": c.type} for c in diff.modified],
+                            "deleted": [{"path": c.path, "type": c.type} for c in diff.deleted],
+                            "total": diff.total,
+                        },
+                        turn=state.get("current_turn", 0),
+                        session_id=session_id,
+                    )
+
             if self.loop_strategy.should_break(state):
                 break
 
@@ -1622,6 +1646,26 @@ class GraphEngine:
                 session_id=session_id, interaction_round=self._interaction_round)
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id, "round": self._interaction_round})
+        if getattr(self, '_sandbox_manager', None):
+            pending = self._sandbox_manager.pending_changes(session_id)
+            if pending:
+                yield self._make_event(
+                    type="session_ending",
+                    data={
+                        "session_id": session_id,
+                        "sandbox_path": str(self._sandbox_manager.sandbox_path(session_id)),
+                        "pending_changes": len(pending),
+                        "warning": (
+                            f"Sandbox contains {len(pending)} unpersisted file(s). "
+                            f"The sandbox at sandbox/{session_id} will be destroyed "
+                            f"unless the app explicitly preserves it."
+                        ),
+                        "files": [{"path": c.path, "type": c.type} for c in pending],
+                    },
+                    session_id=session_id,
+                )
+            if self._sandbox_manager.auto_destroy:
+                self._sandbox_manager.destroy(session_id)
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)
