@@ -185,12 +185,6 @@ class TestPathCheckToolGuard:
         assert result.allowed is False
         assert "absolute" in result.reason.lower()
 
-    def test_allow_escape_bypasses_all_checks(self):
-        from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp", allow_escape=True)
-        result = asyncio.run(guard.check("test", {"file": "../etc/passwd"}))
-        assert result.allowed is True
-
     def test_allows_relative_safe_path(self):
         import tempfile, os
         from arf.guardrails.path_check import PathCheckToolGuard
@@ -467,8 +461,8 @@ class TestGuardConfigWiring:
     def test_sandbox_config_fields(self):
         from arf.core.config_base import SandboxConfig
         cfg = SandboxConfig()
-        assert cfg.allow_escape is False
-        assert cfg.writable_dirs == []
+        assert cfg.checks is not None
+        assert cfg.checks.path_traversal is True
 
     def test_tool_permission_checker_accepts_config_dict(self):
         from arf.session import PermissionLists

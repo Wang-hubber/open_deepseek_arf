@@ -142,8 +142,6 @@ class PathCheckFlags(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    allow_escape: bool = False
-    writable_dirs: list[str] = Field(default_factory=list)
     checks: PathCheckFlags = Field(default_factory=PathCheckFlags)
 
 

@@ -187,8 +187,6 @@ advanced:
         timeout: 60s
 # human_loop removed — approval now integrated into permissions.ask + permissions.approval
   sandbox:
-    allow_escape: false
-    writable_dirs: []
     checks:
       path_traversal: true
       absolute_path: true
