@@ -276,6 +276,10 @@ class BaseAgent:
                 name = getattr(tdef, 'name', '')
                 if allowed_dir and name:
                     tool_boundaries[name] = DirectoryBoundary(allowed_dir)
+        # ContentGuard — dangerous behavior + sensitive info filtering
+        from arf.guardrails.content_guard import ContentGuard
+        cg_cfg = gr_cfg.content_guard.model_dump() if gr_cfg and gr_cfg.content_guard else None
+        content_guard = ContentGuard(config=cg_cfg)
         # Session mode manager + PermissionRegistry (unified permission system)
         from arf.session import SessionModeManager, SessionMode, PermissionRegistry, PermissionLists, AgentPolicy
         global_mode = SessionMode(config.session_mode) if config.session_mode else SessionMode.ASK
@@ -297,6 +301,7 @@ class BaseAgent:
             tool_guard=tool_guard,
             permission_registry=permission_registry,
             permission_lists=main_permission_lists,
+            content_guard=content_guard,
         ))
 
         # 5. Error + Transaction
@@ -326,6 +331,7 @@ class BaseAgent:
                 tool_guard=tool_guard,
                 tool_boundaries=tool_boundaries,
                 default_boundary=default_boundary,
+                content_guard=content_guard,
             ),
         )
 
@@ -485,6 +491,7 @@ class BaseAgent:
             main_permission_lists=self._main_permission_lists,
             main_agent_policy=self._main_agent_policy,
             action_runner=ActionRunner() if adv else None,
+            content_guard=content_guard,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions

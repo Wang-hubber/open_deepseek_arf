@@ -19,7 +19,8 @@ class DefaultGuardRunner:
     def __init__(self, input_guard=None, output_guard=None, tool_guard=None,
                  permission_registry: PermissionRegistry | None = None,
                  permission_lists: PermissionLists | None = None,
-                 output_patterns: list[tuple[str, str]] | None = None) -> None:
+                 output_patterns: list[tuple[str, str]] | None = None,
+                 content_guard=None) -> None:
         self._input = input_guard or NoneInputGuard()
         if output_guard is not None:
             self._output = output_guard
@@ -30,6 +31,7 @@ class DefaultGuardRunner:
         self._tool = tool_guard
         self._permission_registry = permission_registry or PermissionRegistry()
         self._permission_lists = permission_lists or PermissionLists()
+        self._content_guard = content_guard
 
     async def check_input(self, message: str, context: dict) -> GuardResult:
         return await self._input.check(message, context)
