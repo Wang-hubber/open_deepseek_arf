@@ -127,6 +127,7 @@ class GraphEngine:
         main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
         session_mode_manager=None,
+        sandbox_manager=None,
         content_guard=None,
         main_permission_lists=None,
         main_agent_policy=None,
@@ -163,6 +164,7 @@ class GraphEngine:
         self._promotion = promotion
         self._action_runner = action_runner
         self._session_mode_manager = session_mode_manager
+        self._sandbox_manager = sandbox_manager
         self._content_guard = content_guard
         self._main_permissions = main_permissions  # persisted for restore on handoff return
         self._main_permission_lists = main_permission_lists

@@ -280,6 +280,16 @@ class BaseAgent:
         from arf.guardrails.content_guard import ContentGuard
         cg_cfg = gr_cfg.content_guard.model_dump() if gr_cfg and gr_cfg.content_guard else None
         content_guard = ContentGuard(config=cg_cfg)
+
+        # SandboxManager — session-level isolation
+        from arf.sandbox.sandbox_manager import SandboxManager
+        sandbox_cfg = adv.sandbox if adv else None
+        sandbox_manager = SandboxManager(
+            workspace_root=_workspace_root,
+            blacklist=(sandbox_cfg.blacklist if sandbox_cfg else None),
+            auto_destroy=(sandbox_cfg.auto_destroy if sandbox_cfg else False),
+        )
+
         # Session mode manager + PermissionRegistry (unified permission system)
         from arf.session import SessionModeManager, SessionMode, PermissionRegistry, PermissionLists, AgentPolicy
         global_mode = SessionMode(config.session_mode) if config.session_mode else SessionMode.ASK
@@ -332,6 +342,7 @@ class BaseAgent:
                 tool_boundaries=tool_boundaries,
                 default_boundary=default_boundary,
                 content_guard=content_guard,
+                sandbox_manager=sandbox_manager,
             ),
         )
 
@@ -492,6 +503,7 @@ class BaseAgent:
             main_agent_policy=self._main_agent_policy,
             action_runner=ActionRunner() if adv else None,
             content_guard=content_guard,
+            sandbox_manager=sandbox_manager,
             **override_protocols,
         )
         # Pass model context windows to engine for compaction decisions

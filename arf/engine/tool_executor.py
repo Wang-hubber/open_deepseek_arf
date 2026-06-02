@@ -15,6 +15,7 @@ class ConcurrentToolExecutor:
         tool_boundaries: dict[str, DirectoryBoundary] | None = None,
         default_boundary: DirectoryBoundary | None = None,
         content_guard=None,
+        sandbox_manager=None,
     ) -> None:
         self._resolver = tool_resolver
         self._strategy = strategy
@@ -23,6 +24,7 @@ class ConcurrentToolExecutor:
         self._tool_boundaries = tool_boundaries or {}
         self._default_boundary = default_boundary
         self._content_guard = content_guard
+        self._sandbox_manager = sandbox_manager
 
     async def execute(
         self,
