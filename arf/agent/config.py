@@ -6,7 +6,6 @@ import yaml
 from arf.core.config_base import (
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
-    PipelineSection,
     GuardrailsConfig, ErrorConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
     ReloadConfig, HandoverConfig, SupervisorConfig,
     ProtectionConfig, ObservabilityConfig, PromotionConfig,
@@ -58,14 +57,26 @@ class AdvancedConfig(BaseModel):
         return adv
 
 
-class SystemPromptConfig(BaseModel):
-    """System prompt template with critical rules.
-    Supports {{PLACEHOLDERS}} filled by engine at runtime.
-    When pipeline is configured, sections are assembled in priority order;
-    otherwise falls back to simple placeholder replacement."""
-    template: str = ""
+class PrefixConfig(BaseModel):
+    """Stable prefix content — role definition and critical rules.
+
+    Framework guarantees ordering: role → critical_rules.
+    Both are highly stable to maximize API prompt cache hits.
+    """
+    role: str = ""
     critical_rules: str = ""
-    pipeline: list[PipelineSection] = Field(default_factory=list)
+
+
+class SystemPromptConfig(BaseModel):
+    """System prompt configuration with prefix/suffix separation.
+
+    prefix — role + critical_rules (stable, cache target)
+    suffix — template string with $INVENTORY, $MEMORY, $WORKSPACE etc.
+
+    Placeholders use $VAR syntax (Python string.Template).
+    """
+    prefix: PrefixConfig = Field(default_factory=PrefixConfig)
+    suffix: str = ""
 
 
 class AgentConfig(BaseModel):

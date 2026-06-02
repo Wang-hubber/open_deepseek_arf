@@ -7,7 +7,6 @@ from arf.core.results import (
     ErrorAction,
 )
 from arf.core.config_base import (
-    PipelineSection,
     ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     RoutingConfig, CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, PermissionsConfig, ApprovalConfig,
@@ -19,7 +18,6 @@ __all__ = [
     "AgentEvent", "EventType", "AgentState", "TurnContext",
     "GuardResult", "ToolResult", "HookResult",
     "ApprovalRequest", "ApprovalResponse", "ErrorAction",
-    "PipelineSection",
     "ModelConfig", "SkillConfig", "ToolConfig", "HookDefinition",
     "RoutingConfig", "CompactionConfig", "MemoryConfig",
     "GuardrailsConfig", "ErrorConfig", "PermissionsConfig", "ApprovalConfig",

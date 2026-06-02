@@ -3,13 +3,6 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 
-class PipelineSection(BaseModel):
-    """A named section in the system prompt pipeline, ordered by priority."""
-    priority: int
-    section: str  # workspace | memory | critical_rules | inventory | language
-    description: str = ""
-
-
 class ModelConfig(BaseModel):
     type: Literal["quick", "deep"]
     api_type: Literal["openai", "anthropic", "custom"] = "openai"
