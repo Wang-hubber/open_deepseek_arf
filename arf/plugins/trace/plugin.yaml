@@ -1,0 +1,14 @@
+name: trace
+hooks:
+  - session_start
+  - session_end
+  - pre_model_call
+  - pre_tool
+  - post_tool
+  - pre_output
+  - post_permission
+  - round_end
+  - sandbox_persist
+enabled: true
+config:
+  trace_dir: ./data/traces

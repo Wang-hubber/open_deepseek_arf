@@ -106,6 +106,7 @@ class GraphEngine:
         error_policy: ErrorPolicy | None = None,
         model_router: ModelRouter | None = None,
         compaction: CompactionStrategy | None = None,
+        plugin_runner: "InProcessHookRunner | None" = None,  # NEW: in-process plugin runner
         call_model: Callable | None = None,
         stream_model: Callable | None = None,
         cancel_event: asyncio.Event | None = None,
@@ -127,8 +128,6 @@ class GraphEngine:
         main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
         session_mode_manager=None,
-        sandbox_manager=None,
-        content_guard=None,
         main_permission_lists=None,
         main_agent_policy=None,
     ):
@@ -151,6 +150,7 @@ class GraphEngine:
         self.error_policy = error_policy
         self.model_router = model_router
         self.compaction = compaction
+        self.plugin_runner = plugin_runner
         self._call_model = call_model
         self._stream_model = stream_model
         self._system_prompt = system_prompt
@@ -164,8 +164,6 @@ class GraphEngine:
         self._promotion = promotion
         self._action_runner = action_runner
         self._session_mode_manager = session_mode_manager
-        self._sandbox_manager = sandbox_manager
-        self._content_guard = content_guard
         self._main_permissions = main_permissions  # persisted for restore on handoff return
         self._main_permission_lists = main_permission_lists
         self._main_agent_policy = main_agent_policy
@@ -209,16 +207,6 @@ class GraphEngine:
             evt.set()
             return True
         return False
-
-    async def approve_changes(self, session_id: str, approved_paths: list[str]) -> None:
-        """Persist approved sandbox changes to workspace."""
-        if getattr(self, '_sandbox_manager', None):
-            # Fire sandbox_persist hook before persistence
-            if self.hook_runner:
-                await self.hook_runner.fire("sandbox_persist", {
-                    "session_id": session_id,
-                })
-            self._sandbox_manager.persist(session_id, approved_paths)
 
     def undo(self, steps: int = 1, workspace_dir: str = "",
              session_id: str = "") -> AgentState | None:
@@ -1180,11 +1168,8 @@ class GraphEngine:
             yield self._make_event(type="hook_start", data={"event": "pre_model_call", "turn": turn},
                              turn=turn, session_id=session_id)
             h_results = await self.hook_runner.fire("pre_model_call", {
-                "messages": msgs,
-                "model": state.get("current_model", ""),
-                "messages_count": len(state.get("messages", [])),
-                "session_id": session_id,
-            })
+                "messages": msgs, "model": model, "messages_count": len(msgs),
+                "session_id": session_id})
             yield self._make_event(type="hook_end", data={"event": "pre_model_call", "turn": turn,
                              "count": len(h_results), "passed": sum(1 for r in h_results if r.exit_code == 0),
                              "failed": sum(1 for r in h_results if r.exit_code != 0)},
@@ -1342,18 +1327,12 @@ class GraphEngine:
         tool_calls = self._pars_tool_calls(resp)
         if not tool_calls:
             content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
-            if getattr(self, '_content_guard', None):
-                cleaned, _ = self._content_guard.redact_sensitive(content)
-                if cleaned is not None:
-                    content = cleaned
             state["messages"].append({"role": "assistant", "content": content})
             await self.state_store.put(session_id, state)
             return
 
         # Append assistant message with tool_calls
         response_text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
-        if getattr(self, '_content_guard', None) and response_text:
-            response_text, _ = self._content_guard.redact_sensitive(response_text)
         assistant_tool_calls = [
             {"id": tc.get("id", ""), "type": "function",
              "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
@@ -1414,14 +1393,26 @@ class GraphEngine:
             })
             logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
 
-        # Fire post_permission hook after permission check passes, before tool execution
-        if self.hook_runner and valid_calls:
-            self.hook_runner.update_runtime(
+        # Post-permission hook — fires after guard check, before tool execution
+        # HumanLoop plugin mount point
+        if self.hook_runner:
+            yield self._make_event(type="hook_start", data={"event": "post_permission", "turn": turn},
+                             turn=turn, session_id=session_id)
+            pp_results = await self.hook_runner.fire("post_permission", {
+                "tool_calls": valid_calls, "denied": denied_calls,
+                "session_id": session_id, "turn": turn})
+            yield self._make_event(type="hook_end", data={"event": "post_permission", "turn": turn,
+                             "count": len(pp_results), "passed": sum(1 for r in pp_results if r.exit_code == 0),
+                             "failed": sum(1 for r in pp_results if r.exit_code != 0)},
+                             turn=turn, session_id=session_id)
+            self._inject_hook_messages(pp_results, state)
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
                 session_id=session_id, interaction_round=self._interaction_round)
-            await self.hook_runner.fire("post_permission", {
-                "tool_calls": valid_calls,
-                "session_id": session_id,
-            })
+            await plugin_runner.fire("post_permission", {
+                "tool_calls": valid_calls, "denied": denied_calls,
+                "session_id": session_id, "turn": turn})
 
         # Pre-tool-exec hooks
         if self.hook_runner:
@@ -1495,10 +1486,6 @@ class GraphEngine:
                     content = await self.compaction.summarize_tool_output(
                         tc.get("name", "unknown"), content, turn
                     )
-                if getattr(self, '_content_guard', None):
-                    cleaned, _ = self._content_guard.redact_sensitive(content)
-                    if cleaned is not None:
-                        content = cleaned
                 state["messages"].append({"role": "tool", "tool_call_id": tc["id"], "content": content})
 
         # Rollback summary
@@ -1532,6 +1519,20 @@ class GraphEngine:
             for k, v in results.items()
         }
         state = self._close_tool_calls(state)
+
+        # Sandbox persist hook — fires after tool results saved, before next round
+        # UNDO plugin mount point (round-level undo with sandbox data)
+        if self.hook_runner:
+            self.hook_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await self.hook_runner.fire("sandbox_persist", {
+                "session_id": session_id, "turn": turn})
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await plugin_runner.fire("sandbox_persist", {
+                "session_id": session_id, "turn": turn})
 
         # ErrorPolicy circuit-breaker
         executed_failures = sum(1 for v in results.values() if not v.success)
@@ -1595,14 +1596,6 @@ class GraphEngine:
                 await self.state_store.put(session_id, state)
                 return
 
-        # Fire sandbox_persist hook after tool execution, before final state write
-        if self.hook_runner:
-            self.hook_runner.update_runtime(
-                session_id=session_id, interaction_round=self._interaction_round)
-            await self.hook_runner.fire("sandbox_persist", {
-                "session_id": session_id,
-            })
-
         self._reset_recovery_state(state)
         await self.state_store.put(session_id, state)
 
@@ -1615,10 +1608,6 @@ class GraphEngine:
         state["interaction_round"] = self._interaction_round
         yield self._make_event(type="session_start", data={"session_id": session_id},
                          session_id=session_id)
-
-        if getattr(self, '_sandbox_manager', None) and session_id:
-            self._sandbox_manager.init_session(session_id)
-            self._current_session_id = session_id
 
         while self.loop_strategy.should_continue(state):
             if self._cancelled():
@@ -1650,21 +1639,6 @@ class GraphEngine:
             else:
                 break
 
-            if getattr(self, '_sandbox_manager', None) and session_id:
-                diff = self._sandbox_manager.diff(session_id)
-                if diff.total > 0:
-                    yield self._make_event(
-                        type="sandbox_changes",
-                        data={
-                            "added": [{"path": c.path, "type": c.type} for c in diff.added],
-                            "modified": [{"path": c.path, "type": c.type} for c in diff.modified],
-                            "deleted": [{"path": c.path, "type": c.type} for c in diff.deleted],
-                            "total": diff.total,
-                        },
-                        turn=state.get("current_turn", 0),
-                        session_id=session_id,
-                    )
-
             if self.loop_strategy.should_break(state):
                 break
 
@@ -1673,26 +1647,15 @@ class GraphEngine:
                 session_id=session_id, interaction_round=self._interaction_round)
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id, "round": self._interaction_round})
-        if getattr(self, '_sandbox_manager', None):
-            pending = self._sandbox_manager.pending_changes(session_id)
-            if pending:
-                yield self._make_event(
-                    type="session_ending",
-                    data={
-                        "session_id": session_id,
-                        "sandbox_path": str(self._sandbox_manager.sandbox_path(session_id)),
-                        "pending_changes": len(pending),
-                        "warning": (
-                            f"Sandbox contains {len(pending)} unpersisted file(s). "
-                            f"The sandbox at sandbox/{session_id} will be destroyed "
-                            f"unless the app explicitly preserves it."
-                        ),
-                        "files": [{"path": c.path, "type": c.type} for c in pending],
-                    },
-                    session_id=session_id,
-                )
-            if self._sandbox_manager.auto_destroy:
-                self._sandbox_manager.destroy(session_id)
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await plugin_runner.fire("round_end", {
+                "session_id": session_id, "round": self._interaction_round,
+                "messages_count": len(state.get("messages", [])),
+                "last_token_usage": state.get("last_token_usage", 0),
+            })
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)

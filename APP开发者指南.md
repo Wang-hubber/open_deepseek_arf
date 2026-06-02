@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界、内容安全引擎、会话沙箱隔离
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评
 
 ---
 
@@ -113,7 +113,7 @@ models:
     temperature: 0.3   # 只写要覆盖的字段，其余从 models/quick.yaml 继承
 ```
 
-框架自动完成模型适配器注入、EventBus 创建、状态管理、上下文压缩——app 层不需要管这些。参考 app 在此基础上增加了 SSE streaming、undo、trace API、双 Agent 路由、权限审批等。
+框架自动完成模型适配器注入（ModelAdapter）、状态管理（StateStore）、Hook 系统（控制平面骨架）。压缩（CompactionPlugin）、Trace（TracePlugin）、路由（ModelRouterPlugin）等能力通过 Plugin 挂载在生命周期 Hook 上——框架无 Plugin 也能运行，Plugin 添加预置能力。
 
 ---
 
@@ -142,20 +142,49 @@ my_app/
 
 ### 3.1b 框架 Plugins
 
-`arf/plugins/` 提供框架内置的能力包，通过 `agent.yaml` 的 `plugins:` 字段激活：
+**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发。框架无 Plugin 也能运行（6 骨架足够）；Plugin 添加预置或自定义能力。
+
+每个 Plugin 一个目录，含 `plugin.yaml`（声明 name + hooks + config）和 `plugin.py`（实现 `PluginProtocol` 接口）：
 
 ```yaml
-plugins:
-  - planner    # 任务规划
-  - todo       # 任务追踪
-  - undo       # 对话回退
+# arf/plugins/compaction/plugin.yaml
+name: compaction
+hooks:
+  - round_end
+enabled: true
+config:
+  threshold: 0.75
 ```
 
-Plugin 内部结构与 App 层工具/技能约定一致（`tools/` + `skills/` 子目录）。
-框架启动时 `PluginProvider` 扫描激活的 plugin 目录，`ResourceResolver` 自动合并到工具/技能列表。
-App 层同名工具覆盖 plugin 版本（app > plugin）。
+```python
+# arf/plugins/compaction/plugin.py
+class CompactionPlugin:
+    @property
+    def name(self) -> str:
+        return "compaction"
 
-社区贡献的 plugin 放在 `arf/plugins/` 目录下即可被框架发现。
+    @property
+    def hooks(self) -> list[str]:
+        return ["round_end"]
+
+    async def on_hook(self, hook_name: str, context: PluginContext) -> None:
+        # 在 round_end 时触发压缩逻辑
+        ...
+```
+
+**内置 Plugin 清单**：
+
+| Plugin | Hook | 功能 |
+|--------|------|------|
+| `compaction` | `round_end` | Token 感知上下文压缩 |
+| `checkpoint` | `round_end`, `session_end` | 会话状态快照 + 归档 |
+| `trace` | 全部 hook（跨切面） | JSONL 事件记录 |
+| `eval` | 离线 | Trace 回放 + 指标计算 |
+| `memory` | `round_end` | 长期记忆提取 |
+| `todo` | `round_start`, `round_end` | 任务追踪 + 提醒 |
+| `undo` | `round_end`, `sandbox_persist` | Round 级回滚 |
+
+`PluginLoader` 自动扫描 `arf/plugins/` 目录下的 `plugin.yaml`，`InProcessHookRunner` 在 Hook 触发时执行已注册的 Plugin。
 
 ### 3.2 AppContext — 单一路径源
 
@@ -423,67 +452,6 @@ ARF 提供三种会话权限模式，控制 Agent 对工具和系统操作的访
 > `approval_required` 事件通过 EventBus 发射（astream 路径同时 `yield` 给 SSE）。
 > App 层可通过 `event_bus.subscribe()` 自行推送到前端（WebSocket/轮询），
 > 收到审批后调用 `engine.approve()` 解除阻塞。SSE 路径已内置支持。
-
-**沙箱边界 — 工具的白名单目录**：
-
-每次工具调用前，`PathCheckToolGuard` 对参数中的路径进行六项安全校验（路径穿越阻断、绝对路径阻断、深度限制、数量限制、符号链接检测、白名单包含性检测）。校验使用的白名单边界分为两层：
-
-- **全局默认边界**：`workspace_root`（`memory/` 目录），作为所有工具的 fallback 边界
-- **Per-tool 提升边界**：在 `tool.yaml` 中声明 `allowed_dir` 字段，工具可以声明其安全目录范围
-
-```yaml
-# tools/my_tool/tool.yaml
-name: my_tool
-description: 操作 /tmp 目录的工具
-allowed_dir: /tmp          # <-- 此工具的白名单目录（可超出 workspace_root）
-```
-
-**继承规则**：
-- 未配置 `allowed_dir` → 自动继承全局 `workspace_root` 边界
-- 配置了 `allowed_dir` → 以此目录作为白名单，可以超出 `workspace_root` 范围
-
-> `allowed_dir` 是**提升（elevation）语义**——工具主动声明"我需要访问这个目录"。路径安全性仍由 `PathCheckToolGuard` 的六项检查统一保障。
-
-**ContentGuard — 危险行为与敏感信息过滤**：
-
-`ContentGuard` 是框架统一的内容安全引擎，在工具调用前后对内容进行检测与过滤。包含两种规则类型和三个检查点。
-
-**两种规则类型**：
-
-| 规则类型 | 匹配后行为 | 检查时机 | 典型用途 |
-|----------|-----------|---------|---------|
-| `dangerous_patterns` | 阻断（block） | 工具执行前 | 防止危险命令（pipe to shell、eval、rm -rf /） |
-| `sensitive_patterns` | 替换（redact） | 工具执行后 + 输出前 | 脱敏 API Key、电话号码等敏感信息 |
-
-**三个检查点**：
-
-1. **pre-exec** — 调用前对 `tool_name + params` 做危险模式匹配，匹配则阻断工具执行
-2. **post-exec** — 工具结果写入对话前对 content 做敏感信息脱敏
-3. **pre-output** — 助理消息（含 tool_calls 的响应文本）写入前做敏感信息脱敏
-
-**配置示例**（在 `advanced.guardrails.content_guard` 中声明）：
-
-```yaml
-advanced:
-  guardrails:
-    content_guard:
-      enabled: true
-      dangerous_patterns:
-        - name: docker_rm_f
-          pattern: "docker\\s+rm\\s+-f"
-          description: "Prevent force-remove containers"
-      sensitive_patterns:
-        - name: email
-          pattern: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
-          replacement: "[REDACTED_EMAIL]"
-```
-
-**内置默认规则**：
-
-- `dangerous_patterns`：pipe_to_shell（`curl|wget ... | sh|bash|python`）、eval_exec（`eval(`）、rm_rf_root（`rm -rf /`）
-- `sensitive_patterns`：openai_key（`sk-...` 格式 API Key）、phone_cn（中国大陆手机号）
-
-**合并策略**：App 配置与内置规则按 name 合并——同名覆盖，异名追加。如需关闭所有检查，设置 `enabled: false`。
 
 **Memory — 长期记忆**：
 
@@ -929,20 +897,22 @@ pipeline:
 
 ## 7. 生命周期 Hook
 
-Hook 是独立子进程脚本，在 Agent 的八个生命周期事件点触发。通过 `SubprocessHookRunner` 以 `asyncio.create_subprocess_shell` 并行启动。
+ARF 提供 **9 个 Hook 注入点**，覆盖完整的 Agent 生命周期。框架 Plugin 通过 `InProcessHookRunner` 挂载在这些 Hook 点上；外部脚本通过 `SubprocessHookRunner` 以子进程方式执行。
 
-### 7.1 八个事件点
+### 7.1 九个事件点
 
-| 事件 | 触发时机 | 典型用途 |
-|------|---------|---------|
-| `session_start` | 会话开始时 | 初始化日志、加载外部配置 |
-| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 |
-| `pre_model_call` | 每次调用模型前 | 消息预处理、敏感词过滤 |
-| `post_model_call` | 每次模型响应后 | 响应审计、内容归档 |
-| `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 |
-| `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 |
-| `round_end` | 每轮用户交互结束时 | 记忆提取、状态持久化 |
-| `session_end` | 会话结束时 | 清理临时文件、发送通知 |
+| 事件 | 触发时机 | 典型用途 | Plugin 挂载 |
+|------|---------|---------|-----------|
+| `session_start` | 会话开始时 | 初始化日志、加载外部配置 | — |
+| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 | TODO |
+| `pre_model_call` | 每次调用模型前 | 消息预处理、模型路由 | Model Routing |
+| `post_model_call` | 每次模型响应后 | 响应审计、内容归档 | — |
+| `post_permission` | 权限检查后、工具执行前 | 人工审批确认 | Human Loop |
+| `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 | Human Loop |
+| `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 | — |
+| `sandbox_persist` | 工具结果保存后、下一轮前 | 沙箱数据快照 | UNDO |
+| `round_end` | 每轮用户交互结束时 | 状态持久化、记忆提取、上下文压缩 | Memory, TODO, UNDO, Compaction, Checkpoint |
+| `session_end` | 会话结束时 | 清理临时文件、会话归档 | Checkpoint |
 
 ### 7.2 配置与退出码
 
@@ -1078,9 +1048,10 @@ def _load_dotenv() -> None:
 > 参考 `arf/agent/base.py:449-455`。
 
 > **框架自动注入的能力（App 无需编写）：**
-> FileTraceStore（事件追踪）、UsageTracker（用量统计）、
-> call_model / stream_model（模型 API 注入）、
-> SlidingWindowCompactor（上下文压缩）、TwoTierRouter（模型调度）。
+> UsageTracker（用量统计）、call_model / stream_model（模型 API 注入）、
+> StateStore（状态管理）、Hook 系统（9 个注入点）。
+> 压缩（CompactionPlugin）、Trace（TracePlugin）、路由（ModelRouterPlugin）等
+> 通过 Plugin 挂载在 Hook 上——框架无 Plugin 也能运行，Plugin 添加预置能力。
 > App 层只需关注 agent.yaml 配置 + server 胶水代码。
 
 ### 8.3 SSE 流式响应
@@ -1606,47 +1577,60 @@ advanced:
 
 ### 12.3 框架模块概览
 
-了解框架模块有助于理解运行时行为，通常不需要修改：
+ARF 框架由 **6 个骨架**（最小运行单元）和 **Plugin 体系**（可选能力扩展）组成。
 
 ```
 arf/
-├── agent/          # BaseAgent — 组装所有协议实现，自动注入 call_model
-├── engine/         # GraphEngine — 主循环：memory→route→compact→call→guard→execute
-├── resources/      # 资源系统：三个 Provider + ResourceResolver + FileWatcher
-├── memory/         # FileMemoryStore、LLMMemoryWriter、LLMMemoryRetriever
-├── compaction/     # SlidingWindowCompactor — token 感知窗口压缩
-├── routing/        # TwoTierRouter — 快慢模型调度
-├── guardrails/     # PathCheckToolGuard（路径安全）+ ContentGuard（内容安全）；regex_clean.py 已废弃
-├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
-├── hooks/          # SubprocessHookRunner — 六个生命周期事件
-├── sandbox/        # DirectoryBoundary — 白名单目录边界；PathSandbox — 轻量路径解析；SandboxManager — 会话隔离与变更管理
-├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
+├── agent/          # BaseAgent — DI 组装全部 Protocol 实现，自动注入 call_model
+├── engine/         # 控制平面 — GraphEngine 主循环 + LoopStrategy + State 管理 + Hook 系统
+├── core/           # 协议定义（Protocol）、Pydantic 配置模型、事件类型、ModelAdapter、PluginContext
+│
+├── resources/      # [骨架 2] 资源注册 — Provider + ResourceResolver + FileWatcher
+├── guardrails/     # [骨架 3+4] 权限控制 + 安全审核 — PermissionRegistry + ContentGuard
+├── sandbox/        # [骨架 5] 执行器 — SandboxManager per-session 隔离
+├── session/        # [骨架 3] 会话权限 — SessionModeManager + PermissionLists
+│
+├── hooks/          # Hook 执行 — SubprocessHookRunner + InProcessHookRunner
+├── plugins/        # Plugin 目录 — compaction, checkpoint, trace, eval, memory, todo, undo, ...
+│   ├── plugin_loader.py  # 自动扫描 plugin.yaml，加载 PluginProtocol 实现
+│   ├── compaction/       # CompactionPlugin — round_end token 感知压缩
+│   ├── checkpoint/       # CheckpointPlugin — round_end/session_end 状态归档
+│   ├── trace/            # TracePlugin — 全生命周期 JSONL 事件记录
+│   ├── eval/             # EvalPlugin — 离线 trace 回放 + 指标
+│   ├── memory/           # MemoryPlugin — 长期记忆提取
+│   ├── todo/             # TodoPlugin — 任务追踪
+│   └── undo/             # UndoPlugin — round 级回滚
+│
+├── routing/        # ModelRouterPlugin — 快慢模型调度
+├── human_loop/     # HumanLoopPlugin — SSE 审批通道
+├── observability/  # UsageTracker、trace_viewer.html（Trace 记录已移至 TracePlugin）
+├── evaluation/     # EvalRunner、BenchmarkBuilder（测评已移至 EvalPlugin）
+├── compaction/     # SlidingWindowCompactor（压缩已移至 CompactionPlugin）
+├── protection/     # TokenBucket + CircuitBreaker（API 保护）
+│
+├── errors/         # DefaultErrorPolicy + FunctionBackend rollback
 ├── skills/         # SkillPipeline — 工具依赖执行时序
-├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
-├── evaluation/     # EvalRunner、BenchmarkBuilder、EvalComparator — 回归测评
-├── streaming/      # SseStream — Server-Sent Events 传输
-├── communication/  # InMemoryAgentBus、PeerAgent — 多 Agent 通信
-├── errors/         # DefaultErrorPolicy
-├── concurrency/    # SequentialScheduler
-├── evaluation/     # EvalRunner、Metrics
+├── streaming/      # SseStream — SSE 事件流
+├── communication/  # [已弃用] A2A 通信 — 先聚焦 agent+subagent
+├── concurrency/    # [已弃用] TaskScheduler — 仅单 Agent 执行
 ├── testing/        # InMemory* test doubles
-└── core/           # 协议定义、Pydantic 配置模型、事件类型、ModelAdapter
+└── action_runner/  # Promotion + ResourceScheduler
 ```
 
 ### 框架自动化能力
 
 以下能力由 BaseAgent 自动注入，App 只需在 agent.yaml 中配置即可：
 
-| 能力 | 机制 | agent.yaml 字段 |
-|------|------|----------------|
-| 工具/技能/模型发现 | FileWatcher + Provider + ResourceResolver | `tools:`, `models/`, `skills/` 目录约定 |
-| 状态持久化 | FileStateStore | 自动，每轮 engine turn 后 put() |
-| Trace 记录 | FileTraceStore | `advanced.observability.trace_dir` |
-| Token 用量追踪 | UsageTracker | 自动 |
-| 上下文压缩 | SlidingWindowCompactor | `advanced.compaction` |
-| 模型路由 | TwoTierRouter | `advanced.routing` |
-| Plugin 注入 | PluginProvider | `plugins:` |
-| 模型 API 注入 | ModelAdapter + call_model | `models/*.yaml` |
+| 能力 | 机制 | 所属 |
+|------|------|------|
+| 工具/技能/模型发现 | FileWatcher + Provider + ResourceResolver | 骨架 2 — 资源注册 |
+| 状态持久化 | FileStateStore（骨架）+ CheckpointPlugin | 骨架 6 + Plugin |
+| Trace 记录 | TracePlugin（JSONL 事件记录） | Plugin |
+| Token 用量追踪 | UsageTracker | 基础设施 |
+| 上下文压缩 | CompactionPlugin（挂载 round_end） | Plugin |
+| 模型路由 | ModelRouterPlugin（挂载 pre_model_call） | Plugin |
+| Plugin 注入 | PluginLoader + InProcessHookRunner | 基础设施 |
+| 模型 API 注入 | ModelAdapter + call_model | 基础设施 |
 
 ### 12.4 回归测评
 
@@ -1828,435 +1812,6 @@ if (evt.type === 'guard_block') {
 ```
 
 审批弹窗仅在 `session_mode=ask` 且工具命中 `ask` 列表时触发，前端收到 `approval_required` 事件后展示确认对话框。
-
----
-
-### 12.6 工具目录边界 (Tool Directory Boundary)
-
-ARF 的目录边界系统在 `PathCheckToolGuard` 执行路径安全校验时使用 `DirectoryBoundary` 对象进行白名单包含性检查。系统采用**两层白名单模型**，兼顾安全与灵活性。
-
-#### 两层白名单模型
-
-```
-workspace_root (memory/) ---- 全局 fallback 边界
-    ├── tool_a（无 allowed_dir）→ 使用全局边界
-    ├── tool_b（allowed_dir: /tmp）→ 使用 /tmp 边界（提升）
-    └── tool_c（allowed_dir: /var/data）→ 使用 /var/data 边界（提升）
-```
-
-- **第一层（全局默认）**：`workspace_root`（通常为 `memory/`），所有未声明 `allowed_dir` 的工具自动继承
-- **第二层（Per-tool 提升）**：在 `tool.yaml` 的 `allowed_dir` 字段声明，允许工具访问 `workspace_root` 之外的目录
-
-#### DirectoryBoundary 类
-
-`arf/sandbox/directory_boundary.py` 提供白名单边界实现。三个主要方法：
-
-| 方法 | 签名 | 说明 |
-|------|------|------|
-| `contains` | `(path_str: str) -> bool` | 检查路径是否在边界内（拒绝 `..` 穿越） |
-| `has_symlink` | `(path_str: str) -> bool` | 检查路径任意段是否为符号链接 |
-| `resolve` | `(path_str: str) -> Path` | 将相对路径解析为边界内的绝对路径 |
-
-核心逻辑：
-```python
-def contains(self, path_str: str) -> bool:
-    if ".." in Path(path_str).parts:
-        return False
-    resolved = (self._root / path_str).resolve()
-    return resolved.is_relative_to(self._root)
-```
-
-#### 边界解析流程
-
-`ConcurrentToolExecutor._check_params()` 中执行边界查找：
-```python
-boundary = self._tool_boundaries.get(tool_name, self._default_boundary)
-```
-
-1. 从 `tool_boundaries` dict 中按工具名查找 per-tool 边界
-2. 未找到 → 使用 `default_boundary`（全局 `workspace_root`）
-3. 两者均不存在 → 跳过路径检查
-
-#### PathCheckToolGuard 重构
-
-`PathCheckToolGuard` 不再持有全局 workspace_root 状态。边界由执行器在每次调用时传入：
-```python
-async def check(
-    self, tool_name: str, params: dict, boundary: DirectoryBoundary
-) -> GuardResult:
-```
-
-六项顺序检查：路径穿越 → 绝对路径 → 深度限制 → 数量限制 → 符号链接 → 白名单包含性。
-
-#### 配置示例
-
-**tool.yaml — 默认继承 workspace_root**：
-```yaml
-name: file_reader
-description: Read file contents or list directory entries
-# 未声明 allowed_dir → 自动使用 workspace_root (memory/)
-```
-
-**tool.yaml — 提升边界**：
-```yaml
-name: file_download
-description: Download file from URL and save to disk
-allowed_dir: /tmp           # 此工具可以操作 /tmp 目录
-```
-
-**agent.yaml — 沙箱配置（控制 PathCheckToolGuard 检查开关与 SandboxManager 行为）**：
-```yaml
-advanced:
-  sandbox:
-    blacklist:                    # 复制 workspace 到 sandbox 时排除的路径
-      - .git
-      - __pycache__
-      - logs
-      - .env
-    auto_destroy: false           # 会话结束时自动销毁 sandbox 目录
-    checks:
-      path_traversal: true
-      absolute_path: true
-      workspace_containment: true
-      symlink: true
-```
-
-#### Subagent 安全继承
-
-子 Agent 执行器自动继承父 Agent 的 `tool_guard` 和 `tool_boundaries`，确保安全性一致性：
-```python
-# arf/plugins/subagent/tools/subagent/function.py
-parent_executor = getattr(_engine, 'tool_executor', None)
-if parent_executor is not None:
-    tool_guard = getattr(parent_executor, '_tool_guard', None)
-    tool_boundaries = getattr(parent_executor, '_tool_boundaries', {})
-    default_boundary = getattr(parent_executor, '_default_boundary', None)
-```
-
-此修复填补了子 Agent 缺少路径安全检查的安全缺口。
-
-#### 关注点分离
-
-目录边界系统与权限授权系统职责明确：
-
-| 系统 | 模块 | 职责 |
-|------|------|------|
-| **安全 (Safety)** | `DirectoryBoundary` + `PathCheckToolGuard` | 路径合法性校验：阻断穿越、绝对路径、符号链接逃逸 |
-| **授权 (Auth)** | `SessionModeManager` + `PermissionRegistry` | 权限授权："谁可以用什么工具"，deny/ask/allow 列表 |
-
-两者在工具执行链路中互补，共同构成 ARF 的安全防线。
-
----
-
-### 12.7 内容安全引擎 (ContentGuard)
-
-ARF 的内容安全引擎 `ContentGuard` 是一个独立的安全层，专注于检测危险行为和脱敏敏感信息。它在工具执行管道的三个检查点介入，与 `PathCheckToolGuard`（路径安全）和 `PermissionRegistry`（权限授权）共同构成 ARF 的三道独立安全防线。
-
-#### 架构概览
-
-`ContentGuard` 在 `BaseAgent` 初始化时通过 `advanced.guardrails.content_guard` 配置创建，注入到 `DefaultGuardRunner` 和 `GraphEngine` 中：
-
-```
-BaseAgent init
-  └── ContentGuard(config)  ← 从 agent.yaml 读取
-        ├── 传入 DefaultGuardRunner  → 用于 pre-exec 检查点
-        └── 传入 GraphEngine         → 用于 post-exec + pre-output 检查点
-```
-
-#### 三种规则类型
-
-| 类型 | Pydantic 模型 | 行为 | 检查点 | 配置字段 |
-|------|-------------|------|--------|---------|
-| `dangerous_patterns` | `DangerousPatternConfig` | 阻断（block） | pre-exec | `name` + `pattern` + `description` |
-| `sensitive_patterns` | `SensitivePatternConfig` | 替换（redact） | post-exec + pre-output | `name` + `pattern` + `replacement` |
-
-**DangerousPatternConfig** 字段：
-- `name`: 规则名称，用于合并识别
-- `pattern`: 正则表达式，匹配时阻断
-- `description`: 阻断原因描述（可选，会出现在阻断消息中）
-
-**SensitivePatternConfig** 字段：
-- `name`: 规则名称，用于合并识别
-- `pattern`: 正则表达式，匹配时替换
-- `replacement`: 替换文本，默认 `[REDACTED]`
-
-#### 三个检查点详解
-
-**检查点 1 — pre-exec（工具执行前）**
-
-位于 `ConcurrentToolExecutor._check_params()` 中，在 `PathCheckToolGuard` 的六项路径安全校验之后执行。对 `tool_name + json.dumps(params)` 做危险模式匹配：
-
-```python
-# tool_executor.py — 简化逻辑
-params_str = json.dumps(params, ensure_ascii=False) if params else ""
-dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
-if not dr.allowed:
-    return ToolResult(success=False, error=f"[ContentGuard] {dr.reason}", blocked=True)
-```
-
-检查的内容包含工具名称和所有参数——LLM 构造的危险命令在到达操作系统前就被阻断。阻断结果通过 `guard_block` 类型 SSE 事件推送到前端。
-
-**检查点 2 — post-exec（工具执行后）**
-
-位于 `GraphEngine._step_execute_tools()` 中，工具结果写入 `state["messages"]` 前执行。对工具返回的 content 做敏感信息脱敏：
-
-```python
-# graph.py — 简化逻辑
-if getattr(self, '_content_guard', None):
-    cleaned, _ = self._content_guard.redact_sensitive(content)
-    if cleaned is not None:
-        content = cleaned
-```
-
-**检查点 3 — pre-output（模型输出前）**
-
-位于 `GraphEngine._step_process_response()` 中，助理消息（含 tool_calls 的响应文本）写入 `state["messages"]` 前执行。分两种情况：
-
-1. 纯文本响应（无 tool_calls）：对 `resp.content` 做脱敏
-2. 含 tool_calls 的响应：对 `response_text`（assistant 消息的 content 字段）做脱敏
-
-```python
-# graph.py — 纯文本路径
-if getattr(self, '_content_guard', None):
-    cleaned, _ = self._content_guard.redact_sensitive(content)
-    if cleaned is not None:
-        content = cleaned
-
-# graph.py — tool_calls 路径
-if getattr(self, '_content_guard', None) and response_text:
-    response_text, _ = self._content_guard.redact_sensitive(response_text)
-```
-
-#### 内置默认规则
-
-`ContentGuard` 内置两组默认规则，App 启动时自动加载：
-
-**dangerous_patterns 内置规则**：
-
-| name | pattern | 说明 |
-|------|---------|------|
-| `pipe_to_shell` | `(curl\|wget).*\|.*(sh\|bash\|python)` | 阻止下载内容管道到 shell |
-| `eval_exec` | `\beval\s*\(` | 阻止 eval() 动态执行 |
-| `rm_rf_root` | `rm\s+-rf\s+/` | 阻止递归删除根目录 |
-
-**sensitive_patterns 内置规则**：
-
-| name | pattern | replacement | 说明 |
-|------|---------|-------------|------|
-| `openai_key` | `sk-[-a-zA-Z0-9]{20,}` | `[REDACTED_API_KEY]` | OpenAI 格式 API Key |
-| `phone_cn` | `\b1[3-9]\d{9}\b` | `[REDACTED_PHONE]` | 中国大陆手机号 |
-
-#### 配置示例
-
-**基础配置 — 追加自定义规则**：
-
-```yaml
-advanced:
-  guardrails:
-    content_guard:
-      enabled: true
-      dangerous_patterns:
-        - name: encoded_shell
-          pattern: "base64.*\\|.*(?:sh|bash)"
-          description: "Prevent base64-encoded shell commands"
-      sensitive_patterns:
-        - name: aws_key
-          pattern: "AKIA[0-9A-Z]{16}"
-          replacement: "[REDACTED_AWS_KEY]"
-```
-
-App 定义的 `name` 与内置规则同名时覆盖内置规则，异名时追加。例如上面的 `encoded_shell` 和 `aws_key` 是新增规则，不会影响内置的 `pipe_to_shell` 或 `openai_key`。
-
-**覆盖内置规则**：
-
-```yaml
-advanced:
-  guardrails:
-    content_guard:
-      dangerous_patterns:
-        - name: rm_rf_root
-          pattern: "rm\\s+-rf\\s+[\\w/]"   # 更精确的匹配，减少误报
-          description: "Prevent recursive deletion"
-```
-
-此处 `rm_rf_root` 与内置规则同名，App 的 pattern 覆盖内置版本。
-
-**禁用 ContentGuard**：
-
-```yaml
-advanced:
-  guardrails:
-    content_guard:
-      enabled: false
-```
-
-设置 `enabled: false` 后，`check_dangerous()` 始终返回 `allowed=True`，`redact_sensitive()` 直接返回原始内容。
-
-#### 合并策略 (Merge Strategy)
-
-`ContentGuard` 在 `__init__` 中使用 `_merge_rules` 静态方法合并内置规则和 App 配置：
-
-```python
-@staticmethod
-def _merge_rules(builtins: list[dict], app_rules: list[dict]) -> list[dict]:
-    merged: dict[str, dict] = {}
-    for r in builtins:
-        merged[r["name"]] = dict(r)
-    for r in app_rules:
-        merged[r["name"]] = dict(r)
-    return list(merged.values())
-```
-
-策略：**按 name 做 dict merge**，App 规则后写入，同名覆盖，异名追加。
-
-| App 是否定义 name | 内置规则同名 | 结果 |
-|------------------|-------------|------|
-| 新 name | — | 追加到合并列表 |
-| 与内置同名 | 存在 | App 的 pattern/replacement 覆盖内置 |
-| 与内置同名 | 不存在 | 视为新规则追加 |
-
-#### 三层安全防线对比
-
-| 安全层 | 模块 | 职责 | 触发时机 |
-|--------|------|------|---------|
-| **路径安全** | `PathCheckToolGuard` + `DirectoryBoundary` | 路径合法性校验：阻断穿越、绝对路径、符号链接逃逸 | 工具执行前 |
-| **内容安全** | `ContentGuard` | 危险行为检测（block）+ 敏感信息脱敏（redact） | pre-exec + post-exec + pre-output |
-| **权限授权** | `SessionModeManager` + `PermissionRegistry` | 权限授权：deny/ask/allow 列表，会话模式控制 | 工具执行前 |
-
-三者独立运作、互补覆盖，共同构成 ARF 的纵深防御体系。`ContentGuard` 负责的"内容安全"区域是此前框架的空白——`regex_clean.py` 仅覆盖了输出脱敏且没有配置合并机制，现在由 `ContentGuard` 统一替代。
-
-#### 与 regex_clean.py 的关系
-
-`arf/guardrails/regex_clean.py` 中的 `RegexOutputGuard` 是早期实现，仅支持输出阶段的敏感信息替换，缺少危险行为检测和配置合并能力。**`regex_clean.py` 已废弃**，所有内容安全能力由 `ContentGuard` 统一提供。
-
----
-
-### 12.8 会话沙箱隔离 (SandboxManager)
-
-SandboxManager 在文件操作安全的三道防线（路径安全 → 内容安全 → 权限授权）之上引入第四层——**会话级沙箱隔离**。它将非白名单工具的文件操作限制在 `sandbox/{session_id}/` 隔离目录中，变更需经审批后才能写入持久化 `workspace/` 目录。
-
-#### 两层目录模型
-
-```
-workspace/                      ← 持久化层：稳定状态
-    ├── tools/
-    ├── skills/
-    ├── memory/
-    └── sandbox/
-        └── {session_id}/       ← 隔离层：会话操作在此进行
-            ├── tools/
-            ├── skills/
-            └── memory/
-```
-
-- **`workspace/`**：App 的真实持久化目录，工具的白名单目录边界基于此
-- **`sandbox/{session_id}/`**：框架在会话开始时自动从 `workspace/` 拷贝（排除 `blacklist` 路径），非白名单工具的文件操作在此隔离执行
-- **白名单工具**：声明了 `allowed_dir` 的工具（如 resource_loader）直接操作 `workspace/`，不受沙箱约束
-
-#### 生命周期
-
-**`init_session` → 工具运行 → `diff` → `approve` / `reject` → `persist` → `destroy`**
-
-| 阶段 | 触发时机 | 行为 |
-|------|---------|------|
-| `init_session` | `_execute()` 开始，`session_start` 事件后 | 拷贝 `workspace/` 到 `sandbox/{session_id}/`，排除 `blacklist` 路径 |
-| 工具执行 | 每轮 `execute_tools` | 非白名单工具以 `sandbox/{session_id}/` 为执行边界 |
-| `diff` | 每轮工具执行后 | 对比 sandbox vs workspace，生成变更清单（added / modified / deleted） |
-| `sandbox_changes` 事件 | diff 有变更时 | 引擎 yield `sandbox_changes` 事件，携带完整变更清单 |
-| 用户审批 | App 层收到 `sandbox_changes` 后 | 用户决定 approve/reject 每个变更 |
-| `persist` | 审批通过后调用 | 将批准的变更从 sandbox 拷贝回 `workspace/` |
-| `session_ending` 事件 | 会话结束时 | 如果还有未 persist 的变更，引擎 yield `session_ending` 事件，携带未持久化文件数量和强烈警告 |
-| `destroy` | `auto_destroy=true` 或 App 层主动调用 | 删除 `sandbox/{session_id}/` 目录 |
-
-#### 轮次结束审批流
-
-每轮工具执行完成后，引擎自动调用 `sandbox_manager.diff(session_id)`。如果 sandbox 中存在变更，通过 `sandbox_changes` 事件推送给 App 层：
-
-```python
-# Engine 在 _execute() 中 yield 的事件
-yield self._make_event(
-    type="sandbox_changes",
-    data={
-        "added": [{"path": "new_file.txt", "type": "added"}],
-        "modified": [{"path": "config.json", "type": "modified"}],
-        "deleted": [{"path": "old.txt", "type": "deleted"}],
-        "total": 3,
-    },
-    session_id=session_id,
-)
-```
-
-App 层（如 `server.py` 的 SSE 端点）转发到前端，前端展示审批界面。用户确认后调用 `sandbox_manager.persist(session_id, approved_paths)` 将变更写入 `workspace/`，或丢弃（`destroy` 后自动丢失）。
-
-#### 会话结束警告
-
-当会话结束（正常结束或用户取消）且 sandbox 中仍有未持久化的变更时，引擎 yield `session_ending` 事件：
-
-```python
-yield self._make_event(
-    type="session_ending",
-    data={
-        "session_id": session_id,
-        "sandbox_path": "sandbox/{session_id}",
-        "pending_changes": 3,
-        "warning": "Sandbox contains 3 unpersisted file(s). "
-                   "The sandbox at sandbox/{session_id} will be destroyed "
-                   "unless the app explicitly preserves it.",
-        "files": [{"path": "new_file.txt", "type": "added"}, ...],
-    },
-    session_id=session_id,
-)
-```
-
-前端应展示此警告，提示用户有未保存的变更。如果 `auto_destroy: true`，框架自动调用 `destroy()` 清理 sandbox 目录；否则 App 层负责决定何时清理。
-
-#### 工具执行边界
-
-`ConcurrentToolExecutor._check_params()` 中按以下优先级解析工具的执行边界：
-
-1. 工具声明了 `allowed_dir` → 使用该白名单目录（直接操作 `workspace/`）
-2. 工具未声明 `allowed_dir` 且 SandboxManager 可用 → 使用 `sandbox/{session_id}/` 作为执行边界
-3. 两者均不可用 → 使用全局默认边界 `workspace_root`
-
-```python
-# tool_executor.py — 简化逻辑
-if tool_name in self._tool_boundaries:
-    boundary = self._tool_boundaries[tool_name]           # 白名单工具
-elif self._sandbox_manager is not None and session_id:
-    boundary = DirectoryBoundary(
-        str(self._sandbox_manager.sandbox_path(session_id))  # 沙箱隔离
-    )
-else:
-    boundary = self._default_boundary                       # 回退
-```
-
-#### 配置
-
-```yaml
-advanced:
-  sandbox:
-    blacklist:                    # 复制时排除的路径（不进入沙箱）
-      - .git
-      - __pycache__
-      - logs
-      - .env
-    auto_destroy: false           # 会话结束时是否自动清理 sandbox 目录
-```
-
-`blacklist` 默认值：`[".git", "__pycache__", "logs", ".env"]`。这些路径不会被复制到 `sandbox/{session_id}/`，避免敏感数据泄漏和元数据污染。
-
-`auto_destroy` 默认 `false`——App 层在收到 `session_ending` 事件后应决定是否保留 sandbox 目录供调试。
-
-#### 与现有安全层的关系
-
-| 安全层 | 模块 | 职责 | 时机 |
-|--------|------|------|------|
-| **授权 (Auth)** | `SessionModeManager` + `PermissionRegistry` | "谁可以用什么工具" deny/ask/allow | 工具执行前 |
-| **路径安全 (Safety)** | `PathCheckToolGuard` + `DirectoryBoundary` | 路径穿越/绝对路径/符号链接阻断 | 工具执行前 |
-| **内容安全 (Content)** | `ContentGuard` | 危险行为检测 + 敏感信息脱敏 | pre-exec/post-exec/pre-output |
-| **会话隔离 (Isolation)** | `SandboxManager` | 工具操作在 sandbox 隔离区执行，变更需审批才持久化 | 全生命周期 |
-
-四层独立运作、互补覆盖：PermissionRegistry 决定"能不能用"，PathCheckToolGuard 保证"路径不越界"，ContentGuard 负责"内容不危险"，SandboxManager 确保"变更不失控"。
 
 ---
 

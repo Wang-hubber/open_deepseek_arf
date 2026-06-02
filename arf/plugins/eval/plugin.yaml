@@ -1,0 +1,6 @@
+name: eval
+hooks: []  # offline, not hook-mounted
+enabled: true
+config:
+  trace_dir: ./data/traces
+  eval_dir: ./data/eval
