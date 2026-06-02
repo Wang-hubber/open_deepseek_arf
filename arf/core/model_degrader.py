@@ -27,20 +27,18 @@ class ModelDegrader:
         return list(self._adapters)
 
     async def chat_complete(self, messages: list[dict], tools=None,
-                            max_tokens=None) -> dict:
+                            max_tokens=None):
         """Try adapters in order. On transient failure, fall through to next.
         Client errors (4xx) are raised immediately without retry.
+
+        Returns the raw message object from the adapter (has .content,
+        .tool_calls, .usage, .reasoning_content, .finish_reason).
         """
         last_error = None
         for i, adapter in enumerate(self._adapters):
             try:
-                result = await adapter.chat_complete(
+                return await adapter.chat_complete(
                     messages, tools=tools, max_tokens=max_tokens)
-                return {
-                    "content": result.content,
-                    "tool_calls": getattr(result, 'tool_calls', None),
-                    "usage": getattr(result, 'usage', None),
-                }
             except Exception as e:
                 last_error = e
                 if i < len(self._adapters) - 1 and self._should_degrade(e):

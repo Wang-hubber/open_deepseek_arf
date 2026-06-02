@@ -90,6 +90,9 @@ class AgentConfig(BaseModel):
     description: str = ""
     system_prompt: SystemPromptConfig = Field(default_factory=SystemPromptConfig)
     models: list[ModelConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
+    model_defs: list[dict] = Field(default_factory=list)      # NEW: top-level model definitions {model, api_base, api_key_env, kwargs}
+    agent_models: list[dict] = Field(default_factory=list)    # NEW: agent model refs [{model: x}, {model: y, kwargs: {}}]
+    plugins_config: dict = Field(default_factory=dict)        # NEW: plugin configs with model refs
     skills: list[SkillConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
     tools: list[ToolConfig] = Field(default_factory=list)    # optional — filesystem is source of truth
     plugins: list[str] = Field(default_factory=list)  # plugin names to activate from arf/plugins/
@@ -99,6 +102,42 @@ class AgentConfig(BaseModel):
     agents: list["AgentConfig"] | None = None
     handover: HandoverConfig | None = None
     supervisor: SupervisorConfig | None = None
+
+    def get_model_registry(self):
+        """Build a ModelRegistry from model_defs (new format).
+
+        Returns None if model_defs is empty (old format / filesystem mode).
+        """
+        if not self.model_defs:
+            return None
+        from arf.core.model_registry import ModelRegistry
+        return ModelRegistry(self.model_defs)
+
+    def get_agent_model_configs(self) -> list | None:
+        """Resolve agent model refs from the registry. Returns None if no model_defs."""
+        registry = self.get_model_registry()
+        if not registry:
+            return None
+        refs = self.agent_models or [{"model": n} for n in registry.list_names()]
+        return registry.resolve_list(refs)
+
+    def get_plugin_model_config(self, plugin_name: str) -> dict | None:
+        """Resolve a plugin's model reference. Returns resolved config dict or None."""
+        registry = self.get_model_registry()
+        if not registry:
+            return None
+        plugin_cfg = self.plugins_config.get(plugin_name, {})
+        if isinstance(plugin_cfg, dict) and "model" in plugin_cfg:
+            name = plugin_cfg["model"]
+            overrides = {k: v for k, v in plugin_cfg.items() if k != "model"}
+            cfg = registry.resolve(name)
+            return {
+                "model": cfg.model,
+                "api_base": overrides.get("api_base", cfg.api_base),
+                "api_key_env": overrides.get("api_key_env", cfg.api_key_env),
+                "kwargs": {**cfg.kwargs, **overrides.get("kwargs", {})},
+            }
+        return None
 
     def effective_advanced(self) -> AdvancedConfig:
         if self.advanced is not None:

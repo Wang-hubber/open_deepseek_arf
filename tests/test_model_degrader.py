@@ -37,14 +37,14 @@ class TestModelDegrader:
         adapter = FakeAdapter("pro")
         degrader = ModelDegrader([adapter])
         result = asyncio.run(degrader.chat_complete([{"role": "user", "content": "hi"}]))
-        assert "pro" in result["content"]
+        assert "pro" in result.content
 
     def test_falls_back_on_first_failure(self):
         bad = FakeAdapter("bad", should_fail=True)
         good = FakeAdapter("good")
         degrader = ModelDegrader([bad, good])
         result = asyncio.run(degrader.chat_complete([{"role": "user", "content": "hi"}]))
-        assert "good" in result["content"]
+        assert "good" in result.content
 
     def test_raises_after_all_fail(self):
         a1 = FakeAdapter("a1", should_fail=True)
@@ -67,14 +67,14 @@ class TestModelDegrader:
         good = FakeAdapter("good")
         degrader = ModelDegrader([bad, good])
         result = asyncio.run(degrader.chat_complete([{"role": "user", "content": "hi"}]))
-        assert "good" in result["content"]
+        assert "good" in result.content
 
     def test_degrades_on_429(self):
         bad = FakeAdapter("bad", should_fail=True, status_code=429)
         good = FakeAdapter("good")
         degrader = ModelDegrader([bad, good])
         result = asyncio.run(degrader.chat_complete([{"role": "user", "content": "hi"}]))
-        assert "good" in result["content"]
+        assert "good" in result.content
 
     def test_empty_adapters_raises(self):
         with pytest.raises(ValueError, match="At least one"):

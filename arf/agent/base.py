@@ -628,6 +628,26 @@ class BaseAgent:
         import os as _os, json as _json, asyncio as _asyncio
         from arf.core.model_adapter import ModelAdapter
 
+        # NEW: ModelRegistry-based flow (when model_defs is populated)
+        _model_degrader = None
+        model_registry = config.get_model_registry()
+        if model_registry is not None:
+            model_registry.validate()
+            agent_models = config.get_agent_model_configs()
+            if agent_models:
+                _deg_adapters = []
+                for mcfg in agent_models:
+                    _api_key = _os.environ.get(mcfg.api_key_env, "")
+                    _deg_adapters.append(ModelAdapter({
+                        "base_url": mcfg.api_base,
+                        "api_key": _api_key,
+                        "model_name": mcfg.model,
+                        **mcfg.kwargs,
+                    }))
+                from arf.core.model_degrader import ModelDegrader
+                _model_degrader = ModelDegrader(_deg_adapters)
+
+        # Legacy flow (old ModelConfig format, filesystem-based)
         adapters: dict[str, ModelAdapter] = {}
         for m in config.models:
             api_key = _os.environ.get(m.api_key_env, "")
@@ -696,8 +716,12 @@ class BaseAgent:
             return result
 
         async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
-            adapter = adapters.get(model_name, adapters[default_name])
-            msg = await adapter.chat_complete(messages, tools=_to_openai_tools(tools))
+            if _model_degrader is not None:
+                msg = await _model_degrader.chat_complete(
+                    messages, tools=_to_openai_tools(tools))
+            else:
+                adapter = adapters.get(model_name, adapters[default_name])
+                msg = await adapter.chat_complete(messages, tools=_to_openai_tools(tools))
             tool_calls = []
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
