@@ -696,28 +696,14 @@ class GraphEngine:
         return self._close_tool_calls(state)
 
     async def _resolve_tools_for_agent(self, state: AgentState, active: dict[str, object]) -> list[dict[str, object]]:
-        """Get tool definitions for the active agent, merging config tools with resolver (plugins)."""
+        """Get tool definitions from MCP — already aggregated and namespaced."""
         result: list[dict[str, object]] = []
         seen: set[str] = set()
 
-        # 1. Static tools from agent config / _main_agent_tools
-        active_tools = active.get("tools", [])
-        for t in active_tools:
-            d = t.model_dump() if hasattr(t, "model_dump") else t
-            name = d.get("name", "") if isinstance(d, dict) else getattr(t, "name", "")
-            if name and name not in seen:
-                seen.add(name)
-                result.append({
-                    "name": name,
-                    "description": d.get("description", "") if isinstance(d, dict) else getattr(t, "description", ""),
-                    "parameters": d.get("parameters", {}) if isinstance(d, dict) else getattr(t, "parameters", {}),
-                })
-
-        # 2. Plugin tools from resolver (subagent, todo, etc.)
         if self.tool_resolver:
             try:
                 for td in await self.tool_resolver.get_tool_definitions(
-                    self._last_user_message(state), top_k=20
+                    self._last_user_message(state), top_k=50
                 ):
                     td_name = td.get("name", "") if isinstance(td, dict) else getattr(td, "name", "")
                     if td_name and td_name not in seen:
