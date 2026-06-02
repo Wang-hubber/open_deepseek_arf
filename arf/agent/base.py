@@ -255,15 +255,27 @@ class BaseAgent:
             output_guard = RegexOutputGuard()  # built-in defaults
         if gr_cfg and gr_cfg.tool_params == "none":
             tool_guard = None
+            default_boundary = None
+            tool_boundaries: dict = {}
         else:
             sandbox_cfg = adv.sandbox if adv else None
             checks = sandbox_cfg.checks.model_dump() if sandbox_cfg and sandbox_cfg.checks else None
-            tool_guard = PathCheckToolGuard(
-                workspace_root=_workspace_root,
-                writable_dirs=sandbox_cfg.writable_dirs if sandbox_cfg else None,
-                allow_escape=sandbox_cfg.allow_escape if sandbox_cfg else False,
-                checks=checks,
-            )
+            tool_guard = PathCheckToolGuard(checks=checks)
+
+            # Build per-tool directory boundaries from tool.yaml allowed_dir
+            from arf.sandbox.directory_boundary import DirectoryBoundary
+            default_boundary = DirectoryBoundary(_workspace_root)
+            tool_boundaries: dict[str, DirectoryBoundary] = {}
+            all_tool_defs = []
+            try:
+                all_tool_defs = mcp_manager.get_tool_definitions_sync()
+            except Exception:
+                pass
+            for tdef in all_tool_defs:
+                allowed_dir = getattr(tdef, 'allowed_dir', None)
+                name = getattr(tdef, 'name', '')
+                if allowed_dir and name:
+                    tool_boundaries[name] = DirectoryBoundary(allowed_dir)
         # Session mode manager + PermissionRegistry (unified permission system)
         from arf.session import SessionModeManager, SessionMode, PermissionRegistry, PermissionLists, AgentPolicy
         global_mode = SessionMode(config.session_mode) if config.session_mode else SessionMode.ASK
@@ -312,6 +324,8 @@ class BaseAgent:
                 strategy=cc_cfg.strategy,
                 max_concurrency=cc_cfg.max_concurrency,
                 tool_guard=tool_guard,
+                tool_boundaries=tool_boundaries,
+                default_boundary=default_boundary,
             ),
         )
 
@@ -357,6 +371,9 @@ class BaseAgent:
                     "adapters": sub_adapters,
                     "permission_lists": sub_perm_lists,
                     "agent_policy": sub_policy,
+                    "tool_guard": tool_guard,
+                    "tool_boundaries": tool_boundaries,
+                    "default_boundary": default_boundary,
                 }
 
         # 4.6 Handoff manager — from config.handover rules
