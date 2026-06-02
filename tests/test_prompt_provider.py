@@ -36,11 +36,7 @@ class TestDefaultSystemPromptProvider:
                 suffix="$INVENTORY",
             ),
         )
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=[],
-            skill_definitions=[],
-        )
+        provider = DefaultSystemPromptProvider(config=config)
         sp = provider.build()
         assert isinstance(sp, SystemPrompt)
         assert "You are a test assistant." in sp.prefix
@@ -48,7 +44,8 @@ class TestDefaultSystemPromptProvider:
         # prefix: role comes before critical_rules
         assert sp.prefix.index("test assistant") < sp.prefix.index("Rule 1")
 
-    def test_inventory_includes_kernel_tools(self):
+    def test_suffix_passed_through_as_is(self):
+        """Provider no longer builds inventory — suffix is pass-through."""
         config = AgentConfig(
             name="test",
             system_prompt=SystemPromptConfig(
@@ -56,60 +53,12 @@ class TestDefaultSystemPromptProvider:
                 suffix="$INVENTORY",
             ),
         )
-        tool_defs = [
-            {"name": "bash", "description": "Run bash commands", "activation": "kernel"},
-        ]
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=tool_defs,
-            skill_definitions=[],
-        )
+        provider = DefaultSystemPromptProvider(config=config)
         sp = provider.build()
-        assert "Available Tools" in sp.suffix
-        assert "bash" in sp.suffix
-        assert "Run bash commands" in sp.suffix
+        assert sp.suffix == "$INVENTORY"
 
-    def test_inventory_includes_discoverable_tools(self):
-        config = AgentConfig(
-            name="test",
-            system_prompt=SystemPromptConfig(
-                prefix=PrefixConfig(role="Role.", critical_rules="Rules."),
-                suffix="$INVENTORY",
-            ),
-        )
-        tool_defs = [
-            {"name": "python_exec", "description": "Run Python code", "activation": "discoverable"},
-        ]
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=tool_defs,
-            skill_definitions=[],
-        )
-        sp = provider.build()
-        assert "Discoverable Tools" in sp.suffix
-        assert "python_exec" in sp.suffix
-
-    def test_inventory_includes_skills(self):
-        config = AgentConfig(
-            name="test",
-            system_prompt=SystemPromptConfig(
-                prefix=PrefixConfig(role="Role.", critical_rules="Rules."),
-                suffix="$INVENTORY",
-            ),
-        )
-        skill_defs = [
-            {"name": "debug", "description": "Debug errors", "activation": "discoverable"},
-        ]
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=[],
-            skill_definitions=skill_defs,
-        )
-        sp = provider.build()
-        assert "Available Skills" in sp.suffix
-        assert "debug" in sp.suffix
-
-    def test_per_turn_placeholders_left_untouched(self):
+    def test_placeholders_left_untouched(self):
+        """$INVENTORY, $MEMORY etc. pass through — filled by MCP/engine."""
         config = AgentConfig(
             name="test",
             system_prompt=SystemPromptConfig(
@@ -123,15 +72,11 @@ $MEMORY
 $WORKSPACE""",
             ),
         )
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=[],
-            skill_definitions=[],
-        )
+        provider = DefaultSystemPromptProvider(config=config)
         sp = provider.build()
-        assert "$MEMORY" in sp.suffix, "Per-turn placeholder should remain for engine"
-        assert "$WORKSPACE" in sp.suffix, "Per-turn placeholder should remain for engine"
-        assert "$INVENTORY" not in sp.suffix, "INVENTORY should be replaced"
+        assert "$MEMORY" in sp.suffix, "Per-turn placeholder should remain"
+        assert "$WORKSPACE" in sp.suffix, "Per-turn placeholder should remain"
+        assert "$INVENTORY" in sp.suffix, "INVENTORY passed through, filled by MCP"
 
     def test_empty_prefix_critical_rules(self):
         config = AgentConfig(
@@ -141,11 +86,7 @@ $WORKSPACE""",
                 suffix="Suffix only.",
             ),
         )
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=[],
-            skill_definitions=[],
-        )
+        provider = DefaultSystemPromptProvider(config=config)
         sp = provider.build()
         assert sp.prefix == "Role only."
 
@@ -157,10 +98,6 @@ $WORKSPACE""",
                 suffix="Suffix.",
             ),
         )
-        provider = DefaultSystemPromptProvider(
-            config=config,
-            tool_definitions=[],
-            skill_definitions=[],
-        )
+        provider = DefaultSystemPromptProvider(config=config)
         sp = provider.build()
         assert sp.prefix == "Only rules."

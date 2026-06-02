@@ -1,7 +1,4 @@
-"""DefaultSystemPromptProvider — assembles SystemPrompt from config and resources."""
-from string import Template
-from typing import Any
-
+"""DefaultSystemPromptProvider — assembles SystemPrompt from config."""
 from arf.agent.config import AgentConfig
 from arf.agent.prompt import SystemPrompt
 
@@ -9,23 +6,14 @@ from arf.agent.prompt import SystemPrompt
 class DefaultSystemPromptProvider:
     """Default implementation of SystemPromptProvider.
 
-    Reads PrefixConfig (role + critical_rules) for the stable prefix,
-    builds inventory (tools + skills) for the suffix, and uses
-    string.Template for placeholder substitution.
-
-    Per-turn placeholders ($MEMORY, $WORKSPACE, $TURN_BUDGET, $LANGUAGE)
-    are left as-is in the suffix — the engine replaces them at runtime.
+    Reads PrefixConfig (role + critical_rules) for the stable prefix.
+    Suffix is passed through as-is — inventory ($INVENTORY) is filled
+    by the MCP manager at startup, and per-turn placeholders ($MEMORY,
+    $WORKSPACE, $TURN_BUDGET) are replaced by the engine at runtime.
     """
 
-    def __init__(
-        self,
-        config: AgentConfig,
-        tool_definitions: list[dict[str, Any]],
-        skill_definitions: list[dict[str, Any]],
-    ) -> None:
+    def __init__(self, config: AgentConfig) -> None:
         self._config = config
-        self._tool_definitions = tool_definitions
-        self._skill_definitions = skill_definitions
 
     def build(self) -> SystemPrompt:
         sp = self._config.system_prompt
@@ -39,47 +27,7 @@ class DefaultSystemPromptProvider:
             prefix_parts.append(pc.critical_rules.strip())
         prefix = "\n\n".join(prefix_parts)
 
-        # Suffix: substitute $INVENTORY, leave $MEMORY etc. for engine
-        inventory = self._build_inventory()
-        suffix = Template(sp.suffix).safe_substitute(INVENTORY=inventory)
+        # Suffix: $INVENTORY left as-is for MCP to fill at startup
+        suffix = sp.suffix
 
         return SystemPrompt(prefix=prefix, suffix=suffix)
-
-    def _build_inventory(self) -> str:
-        kernel_tools = [
-            t for t in self._tool_definitions
-            if t.get("activation", "discoverable") == "kernel"
-        ]
-        discoverable_tools = [
-            t for t in self._tool_definitions
-            if t.get("activation", "discoverable") == "discoverable"
-        ]
-        lines: list[str] = []
-
-        if kernel_tools:
-            lines.append("## Available Tools\n")
-            for t in kernel_tools:
-                lines.append(f"- `{t['name']}`: {t.get('description', '')}")
-
-        if discoverable_tools:
-            lines.append("\n## Discoverable Tools\n")
-            lines.append(
-                "These tools are available on demand. "
-                "Use `resource_loader` to activate them:\n"
-            )
-            for t in discoverable_tools:
-                lines.append(f"- `{t['name']}`: {t.get('description', '')}")
-
-        if self._skill_definitions:
-            lines.append("\n## Available Skills\n")
-            lines.append(
-                "Skills are loaded on demand. "
-                "Read a skill's full instructions via `file_reader`:\n"
-            )
-            for s in self._skill_definitions:
-                lines.append(
-                    f"- `{s['name']}`: {s.get('description', '(no description)')}"
-                    f"  → read `skills/{s['name']}.yaml`"
-                )
-
-        return "\n".join(lines) if lines else ""
