@@ -113,10 +113,36 @@ class RegexPatternConfig(BaseModel):
     replacement: str
 
 
+class DangerousPatternConfig(BaseModel):
+    """A dangerous behavior pattern — matched pre-execution, blocked if found."""
+    name: str
+    pattern: str
+    description: str = ""
+
+
+class SensitivePatternConfig(BaseModel):
+    """A sensitive info pattern — matched post-execution and pre-output, redacted."""
+    name: str
+    pattern: str
+    replacement: str = "[REDACTED]"
+
+
+class ContentGuardConfig(BaseModel):
+    """Content safety configuration — dangerous behavior + sensitive info patterns.
+
+    App config appends to framework built-in defaults. App can override a
+    built-in rule by using the same 'name'.
+    """
+    enabled: bool = True
+    dangerous_patterns: list[DangerousPatternConfig] = Field(default_factory=list)
+    sensitive_patterns: list[SensitivePatternConfig] = Field(default_factory=list)
+
+
 class GuardrailsConfig(BaseModel):
     input: Literal["none", "regex_block", "llm_classifier"] = "none"
     output: Literal["none", "regex_clean", "llm_classifier"] = "regex_clean"
     tool_params: Literal["none", "path_check", "command_check"] = "path_check"
+    content_guard: ContentGuardConfig = Field(default_factory=ContentGuardConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     output_patterns: list[RegexPatternConfig] = Field(
         default_factory=list,
