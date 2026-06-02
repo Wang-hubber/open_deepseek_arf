@@ -210,9 +210,14 @@ class GraphEngine:
             return True
         return False
 
-    def approve_changes(self, session_id: str, approved_paths: list[str]) -> None:
+    async def approve_changes(self, session_id: str, approved_paths: list[str]) -> None:
         """Persist approved sandbox changes to workspace."""
         if getattr(self, '_sandbox_manager', None):
+            # Fire sandbox_persist hook before persistence
+            if self.hook_runner:
+                await self.hook_runner.fire("sandbox_persist", {
+                    "session_id": session_id,
+                })
             self._sandbox_manager.persist(session_id, approved_paths)
 
     def undo(self, steps: int = 1, workspace_dir: str = "",
@@ -1403,6 +1408,15 @@ class GraphEngine:
                 "content": f"[Blocked] {matched}",
             })
             logger.warning("Tool %s (%s) denied: %s", name, tc_id, matched)
+
+        # Fire post_permission hook after permission check passes, before tool execution
+        if self.hook_runner and valid_calls:
+            self.hook_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await self.hook_runner.fire("post_permission", {
+                "tool_calls": valid_calls,
+                "session_id": session_id,
+            })
 
         # Pre-tool-exec hooks
         if self.hook_runner:

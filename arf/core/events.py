@@ -26,6 +26,9 @@ EventType = Literal[
     "circuit_half_open",    # CircuitBreaker → HALF_OPEN (probing)
     "circuit_closed",       # CircuitBreaker → CLOSED (recovered)
     "breaker_blocked",      # CircuitBreaker OPEN blocked a request
+    "pre_model_call",       # before model API call
+    "sandbox_persist",      # before sandbox data persistence
+    "post_permission",      # after permission check, before tool exec
 ]
 
 @dataclass
