@@ -83,6 +83,8 @@ class SandboxManager:
             if ws_file.is_dir():
                 continue
             rel = str(ws_file.relative_to(self._workspace))
+            if ws_file.is_relative_to(self._sandbox_root):
+                continue
             sb_file = sandbox / rel
             if not sb_file.exists() and rel not in persisted:
                 result.deleted.append(FileChange(path=rel, type="deleted"))
