@@ -63,9 +63,10 @@ GraphEngine（权限判断 — auth）
     │       approval_required 事件 → 前端确认 → 恢复/拒绝执行
     │
     ├─ [5] tool_executor.execute()
-    │       ├─ 解析 DirectoryBoundary（per-tool 白名单边界）
-    │       │    优先使用 tool.yaml 中声明的 allowed_dir
-    │       │    未配置则使用全局 workspace_root 作为默认边界
+    │       ├─ 解析 DirectoryBoundary（SandboxManager 决议）
+    │       │    优先使用 tool.yaml 中声明的 allowed_dir（whitelist 工具）
+    │       │    未配置 allowed_dir 但有 SandboxManager → sandbox/{session_id}/
+    │       │    均未配置 → 全局 workspace_root（传统模式）
     │       ├─ PathCheckToolGuard.check(tool_name, params, boundary)
     │       │   （硬阻断，安全 — are params safe?）
     │       │   两层白名单：全局 workspace_root + per-tool allowed_dir 提权
@@ -366,7 +367,110 @@ Hook 作为独立子进程运行（`SubprocessHookRunner`），通过退出码�
 
 Hook 不是安全机制（子进程行为不可信），而是框架与外部脚本的协作接口。安全边界由 `PathCheckToolGuard` 和权限配置强制保证。
 
-### 2.8 配置
+### 2.8 SandboxManager — 会话沙箱隔离
+
+SandboxManager（`arf/sandbox/sandbox_manager.py`）是 ARF 的会话级沙箱隔离组件，为每个 Agent 会话创建独立的工作目录，实现工具执行的文件系统隔离。
+
+#### 双目录模型
+
+SandboxManager 采用"持久工作区 + 隔离沙箱"的双目录模型：
+
+| 目录 | 用途 | 持久性 |
+|------|------|--------|
+| `workspace/` | 持久工作区，会话间共享 | 长期保留 |
+| `sandbox/{session_id}/` | 当前会话的隔离副本 | 随会话销毁 |
+
+会话启动时，SandboxManager 将 `workspace/` 内容复制到 `sandbox/{session_id}/`（排除黑名单路径）。所有非 whitelist 工具在此隔离目录中执行，避免对持久工作区的意外影响。
+
+#### 生命周期
+
+```
+init_session()                  # 创建 sandbox/{session_id}/，复制 workspace 内容
+    │
+tools run in sandbox/           # 非 whitelist 工具读写 sandbox/，不触及 workspace/
+    │
+diff()                          # 计算 sandbox/ 与 workspace/ 的差异
+    │
+sandbox_changes 事件             # 将变更列表（added/modified/deleted）推送给用户审批
+    │
+user approve                    # 用户确认变更
+    │
+persist()                       # 将 sandbox/ 变更同步到 workspace/
+    │
+destroy()                       # 清理 sandbox/{session_id}/
+```
+
+#### 黑名单（blacklist）
+
+`SandboxConfig.blacklist` 指定不复制到沙箱的路径（按名称匹配，覆盖 `.git`、`__pycache__`、`logs`、`.env` 等框架默认值）：
+
+```yaml
+advanced:
+  sandbox:
+    blacklist:
+      - "*.log"
+      - "*.tmp"
+      - "node_modules/"
+      - "secrets/"
+```
+
+黑名单路径在 `init_session()` 时被跳过，不会出现在隔离沙箱中，工具也无法通过 sandbox 访问这些路径。
+
+#### 工具边界决议
+
+SandboxManager 不直接暴露 `resolve_boundary()` 方法，而是由 `ConcurrentToolExecutor._check_params()` 集成边界决议逻辑：
+
+1. **Whitelist 工具**（`tool_name` 在 `tool_boundaries` 映射中，即 `tool.yaml` 配置了 `allowed_dir`）：直接使用该工具声明的 `DirectoryBoundary`，不经过沙箱隔离。适用于已知安全的、需要访问特定资源的工具（如文件阅读器、模板管理器）
+2. **有 SandboxManager 且存在 session_id**：使用 `sandbox/{session_id}/` 作为 `DirectoryBoundary` 的根目录，所有路径操作被限制在沙箱内
+3. **回退**：使用全局 `workspace_root` 作为默认边界（传统模式，无隔离）
+
+决议在工具参数检查之前执行，确保 `PathCheckToolGuard` 始终使用正确的目录边界进行白名单验证。
+
+#### 轮次结束审批流程
+
+当 Agent 完成一轮工具调用后，GraphEngine 调用 `SandboxManager.diff()` 生成 `sandbox_changes` 事件，包含变更摘要：
+
+```python
+{
+    "event": "sandbox_changes",
+    "session_id": "...",
+    "added": ["file1.txt", "dir/new_file.md"],
+    "modified": ["config.yaml"],
+    "deleted": ["old.tmp"]
+}
+```
+
+变更列表通过 SSE 推送给前端。用户审批通过后调用 `engine.approve()` → `SandboxManager.persist()` 将变更写入 workspace，或通过 `SandboxManager.destroy()` 丢弃变更。
+
+#### 会话结束警告
+
+当会话结束时（用户关闭连接或超时），GraphEngine 调用 `SandboxManager.pending_changes()` 获取未持久化变更，生成 `session_ending` 事件：
+
+```python
+{
+    "event": "session_ending",
+    "session_id": "...",
+    "pending_changes": 12,
+    "warning": "当前会话有 12 个未保存的文件变更。如果结束会话，这些变更将丢失。请先审批或手动保存重要变更。"
+}
+```
+
+`auto_destroy` 配置控制会话结束时是否自动清理沙箱。默认 `false`——保留沙箱状态直到用户确认；设为 `true` 时自动调用 `destroy()` 清理隔离目录。
+
+#### 与现有安全体系的关系
+
+SandboxManager 不是替代 `PathCheckToolGuard` 或 `ContentGuard`，而是在更上层增加一层文件系统隔离：
+
+| 防护层 | 职责 | 机制 |
+|--------|------|------|
+| SandboxManager | 会话级文件系统隔离 | 目录复制 + 路径重定向 |
+| DirectoryBoundary | 白名单路径校验 | 路径解析 + 白名单验证 |
+| PathCheckToolGuard | 工具参数安全检查 | 路径穿越/绝对路径/symlink 检测 |
+| ContentGuard | 危险行为 + 敏感信息 | 模式匹配 + 脱敏替换 |
+
+四层防护协同工作：SandboxManager 将非 whitelist 工具限制到隔离目录，DirectoryBoundary 验证路径在白名单内，PathCheckToolGuard 检测路径攻击，ContentGuard 检测危险行为模式。
+
+### 2.9 配置
 
 ```yaml
 # 顶层：会话级全局权限模式
@@ -417,6 +521,19 @@ advanced:
       allow: [file_reader, web_search, web_fetch, …]
       deny_patterns: ["rm -rf", "sudo", "chmod 777"]
 
+  # 沙箱配置（会话级文件系统隔离）
+  sandbox:
+    blacklist:
+      - "*.log"
+      - "*.tmp"
+      - "node_modules/"
+    auto_destroy: false          # 会话结束时自动清理沙箱（默认 false）
+    checks:
+      path_traversal: true       # 目录穿越（..）
+      absolute_path: true        # 绝对路径（/）
+      workspace_containment: true # 工作区逃逸（白名单）
+      symlink: true              # 符号链接检测
+
   # 代理级策略覆盖（仅当 session_mode=ask 时生效）
   # 每个子代理可在其配置中指定 permissions.policy:
   #   policy: auto       # 该代理全部放行
@@ -431,7 +548,7 @@ advanced:
     timeout: 60s
 ```
 
-**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig.checks` 通过 `AdvancedConfig.sandbox.checks` → `PathCheckToolGuard` 完整接入。`allowed_dir` 在 `tool.yaml` 中声明，由 `BaseAgent` 装配时收集并构建 `tool_boundaries` 映射。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。`ContentGuard` 通过 `BaseAgent` → `ContentGuard(config)` 装配，通过 `DefaultGuardRunner` → `ConcurrentToolExecutor`（CP1）和 `GraphEngine`（CP2/CP3）接入引擎。配置通过 `GuardrailsConfig.content_guard` → `ContentGuardConfig` 完整接入。
+**事实校验**：`session_mode` 通过 `BaseAgent._session_mode_manager` → `SessionModeManager` 完整接入。`PermissionsConfig` 通过 `PermissionLists.from_config()` → `PermissionRegistry` 完整接入。`HumanLoopConfig` 通过 `base.py` → `GraphEngine.approval_enabled` 完整接入。`SandboxConfig`（`checks`、`blacklist`、`auto_destroy`）通过 `AdvancedConfig.sandbox` → `SandboxManager` + `PathCheckToolGuard` 完整接入。`allowed_dir` 在 `tool.yaml` 中声明，由 `BaseAgent` 装配时收集并构建 `tool_boundaries` 映射。`PermissionLists` 热替换在 Agent handoff 时通过 `DefaultGuardRunner.swap_lists()` 完成。`ContentGuard` 通过 `BaseAgent` → `ContentGuard(config)` 装配，通过 `DefaultGuardRunner` → `ConcurrentToolExecutor`（CP1）和 `GraphEngine`（CP2/CP3）接入引擎。配置通过 `GuardrailsConfig.content_guard` → `ContentGuardConfig` 完整接入。
 
 ---
 

@@ -67,7 +67,7 @@
 | 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
 | 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于统一 `_execute` 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
 | 6 | **[资源管理器 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。MCP 统一资源接口 — 本地 MCP Server 子进程（stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
-| 7 | **[安全与沙箱 →](docs/tool-sandbox.md)**<br>访问控制 + 路径安全 | 保护环 (Ring 0-3) + ACL | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`DirectoryBoundary` — 两层白名单（全局 `workspace_root` + 工具级 `allowed_dir`）。`SessionModeManager` + `PermissionRegistry` — `session_mode` (auto/ask/plan) 全局模式 + deny→ask→allow 权限列表。`HumanLoop` SSE 推送审批 + 60s 超时。`GuardDefaults` 三道防线（PathCheck/Regex/None）。`ContentGuard` — 危险行为阻断 + 敏感信息脱敏（3 个检查点）。 | 逐次调用沙箱；MCP 协议；OAuth 范围权限 |
+| 7 | **[安全与沙箱 →](docs/tool-sandbox.md)**<br>访问控制 + 路径安全 | 保护环 (Ring 0-3) + ACL | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`DirectoryBoundary` — 两层白名单（全局 `workspace_root` + 工具级 `allowed_dir`）。`SessionModeManager` + `PermissionRegistry` — `session_mode` (auto/ask/plan) 全局模式 + deny→ask→allow 权限列表。`HumanLoop` SSE 推送审批 + 60s 超时。`GuardDefaults` 三道防线（PathCheck/Regex/None）。`ContentGuard` — 危险行为阻断 + 敏感信息脱敏（3 个检查点）。`SandboxManager` — 会话级沙箱隔离，`sandbox/` 目录拷贝隔离，轮次结束 diff + 审批门，持久化回工作区。 | 逐次调用沙箱；MCP 协议；OAuth 范围权限 |
 | 8 | **[可观测性 →](docs/trace.md)**<br>事件追踪 + 指标 | syslog / dtrace / perf | `EventType` Literal 覆盖完整生命周期。`InMemoryEventBus` → `FileTraceStore`（每会话 JSON）。`UsageTracker` token 统计。独立 HTML trace viewer。Vue SPA 瀑布流按交互轮次分组。Streamable HTTP (NDJSON) 实时事件。 | SQLite trace 数据库；OpenTelemetry 导出；Prometheus 指标 |
 | 9 | **[插件系统 →](docs/api-protection.md)**<br>插件框架 | OS 内置软件 (coreutils, Notepad) | `arf/plugins/` 目录 — `agent.yaml` 的 `plugins:` 字段按名激活。`PluginProvider` 扫描 `tools/`、`skills/`、`hooks/` 三个子目录。`ResourceResolver` 合并到工具/技能列表。P0 插件：`planner`（任务分解）、`todo`（任务列表）、`undo`（轮次回滚）、[`memory`](docs/plugins/memory.md)（长期记忆提取）。App 层可覆盖插件工具（app > plugin）。 | P1：bash、code_interpreter、file_ops；P2：web_search、web_fetch、resource_loader；社区插件仓库 |
 | 10 | **[质量保证 →](docs/eval-benchmark.md)**<br>回归测试 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告。198 个单元/功能测试。 | CLI 集成；HTML 可视化报告；语义相似度指标；CI 流水线 |
@@ -80,7 +80,7 @@
 | | **LLM 调度** | `TwoTierRouter` 快/慢分发、`ModelAdapter` 指数退避重试、`TokenBucket` 按端点限流、`CircuitBreaker` 按模型故障隔离、`ModelCallProtector` 装饰器模式注入 |
 | | **上下文管理** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`_load_resident_memory()`（启动时加载 `memory.md`，注入 `{{MEMORY}}` 占位符） |
 | | **资源系统** | `ResourceResolver`（统一解析）、`ToolProvider`/`SkillProvider`/`ModelProvider`、`PluginProvider`（扫描 `arf/plugins/`）、`ResourceCache`（kernel/dynamic）、`FileWatcher`（inotify/轮询热加载） |
-| | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`DirectoryBoundary` 白名单提升、`SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线、`ContentGuard` dangerous_patterns (block) + sensitive_patterns (redact) |
+| | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`DirectoryBoundary` 白名单提升、`SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线、`ContentGuard` dangerous_patterns (block) + sensitive_patterns (redact)、`SandboxManager`（会话级沙箱隔离） |
 | | **可观测性** | `InMemoryEventBus`、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
 | | **基础设施** | `SubprocessHookRunner`（退出码契约）、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`EvalRunner`/`BenchmarkBuilder`/`EvalComparator`（会话回放与回归） |
 | | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`CompactionStrategy`、`LoopStrategy` 等全部抽象接口 |
@@ -218,6 +218,15 @@ advanced:
         - type: api_key
           pattern: "(?i)(api[_-]?key|secret|token)\\s*[:=]\\s*['\"]?[\\w-]{16,}"
           action: redact
+```
+
+`SandboxManager` 提供会话级工作区隔离。会话启动时将工作区拷贝到 `sandbox/{session_id}`（排除黑名单路径）。工具在沙箱拷贝中执行；轮次结束时 diff 展示所有文件变更，审批通过后持久化回工作区。沙箱目录可通过 `auto_destroy` 自动清理或手动删除。
+
+```yaml
+advanced:
+  sandbox:
+    blacklist: [.git, __pycache__, logs, .env]
+    auto_destroy: false
 ```
 
 工具可通过 `tool.yaml` 中的 `allowed_dir` 声明自己的目录作用域，超越默认的 workspace_root 边界：

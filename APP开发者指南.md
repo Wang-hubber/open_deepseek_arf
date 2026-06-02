@@ -19,7 +19,7 @@ ARF 提供 Agent 运行所需的全部基础设施——资源发现与热加载
 9. [搭建前端](#9-搭建前端) — Vue 3 SPA + SSE 客户端
 10. [双 Agent 架构](#10-双-agent-架构) — User Agent + System Agent
 11. [CLI 工具](#11-cli-工具) — 命令行管理界面
-12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界、内容安全引擎
+12. [进阶主题](#12-进阶主题) — 热加载、配置生成、框架模块、会话权限模式、回归测评、工具目录边界、内容安全引擎、会话沙箱隔离
 
 ---
 
@@ -1619,7 +1619,7 @@ arf/
 ├── guardrails/     # PathCheckToolGuard（路径安全）+ ContentGuard（内容安全）；regex_clean.py 已废弃
 ├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
 ├── hooks/          # SubprocessHookRunner — 六个生命周期事件
-├── sandbox/        # DirectoryBoundary — 白名单目录边界；PathSandbox — 轻量路径解析
+├── sandbox/        # DirectoryBoundary — 白名单目录边界；PathSandbox — 轻量路径解析；SandboxManager — 会话隔离与变更管理
 ├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
 ├── skills/         # SkillPipeline — 工具依赖执行时序
 ├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
@@ -1904,10 +1904,16 @@ description: Download file from URL and save to disk
 allowed_dir: /tmp           # 此工具可以操作 /tmp 目录
 ```
 
-**agent.yaml — 沙箱配置（控制 PathCheckToolGuard 检查开关）**：
+**agent.yaml — 沙箱配置（控制 PathCheckToolGuard 检查开关与 SandboxManager 行为）**：
 ```yaml
 advanced:
   sandbox:
+    blacklist:                    # 复制 workspace 到 sandbox 时排除的路径
+      - .git
+      - __pycache__
+      - logs
+      - .env
+    auto_destroy: false           # 会话结束时自动销毁 sandbox 目录
     checks:
       path_traversal: true
       absolute_path: true
@@ -2122,6 +2128,135 @@ def _merge_rules(builtins: list[dict], app_rules: list[dict]) -> list[dict]:
 #### 与 regex_clean.py 的关系
 
 `arf/guardrails/regex_clean.py` 中的 `RegexOutputGuard` 是早期实现，仅支持输出阶段的敏感信息替换，缺少危险行为检测和配置合并能力。**`regex_clean.py` 已废弃**，所有内容安全能力由 `ContentGuard` 统一提供。
+
+---
+
+### 12.8 会话沙箱隔离 (SandboxManager)
+
+SandboxManager 在文件操作安全的三道防线（路径安全 → 内容安全 → 权限授权）之上引入第四层——**会话级沙箱隔离**。它将非白名单工具的文件操作限制在 `sandbox/{session_id}/` 隔离目录中，变更需经审批后才能写入持久化 `workspace/` 目录。
+
+#### 两层目录模型
+
+```
+workspace/                      ← 持久化层：稳定状态
+    ├── tools/
+    ├── skills/
+    ├── memory/
+    └── sandbox/
+        └── {session_id}/       ← 隔离层：会话操作在此进行
+            ├── tools/
+            ├── skills/
+            └── memory/
+```
+
+- **`workspace/`**：App 的真实持久化目录，工具的白名单目录边界基于此
+- **`sandbox/{session_id}/`**：框架在会话开始时自动从 `workspace/` 拷贝（排除 `blacklist` 路径），非白名单工具的文件操作在此隔离执行
+- **白名单工具**：声明了 `allowed_dir` 的工具（如 resource_loader）直接操作 `workspace/`，不受沙箱约束
+
+#### 生命周期
+
+**`init_session` → 工具运行 → `diff` → `approve` / `reject` → `persist` → `destroy`**
+
+| 阶段 | 触发时机 | 行为 |
+|------|---------|------|
+| `init_session` | `_execute()` 开始，`session_start` 事件后 | 拷贝 `workspace/` 到 `sandbox/{session_id}/`，排除 `blacklist` 路径 |
+| 工具执行 | 每轮 `execute_tools` | 非白名单工具以 `sandbox/{session_id}/` 为执行边界 |
+| `diff` | 每轮工具执行后 | 对比 sandbox vs workspace，生成变更清单（added / modified / deleted） |
+| `sandbox_changes` 事件 | diff 有变更时 | 引擎 yield `sandbox_changes` 事件，携带完整变更清单 |
+| 用户审批 | App 层收到 `sandbox_changes` 后 | 用户决定 approve/reject 每个变更 |
+| `persist` | 审批通过后调用 | 将批准的变更从 sandbox 拷贝回 `workspace/` |
+| `session_ending` 事件 | 会话结束时 | 如果还有未 persist 的变更，引擎 yield `session_ending` 事件，携带未持久化文件数量和强烈警告 |
+| `destroy` | `auto_destroy=true` 或 App 层主动调用 | 删除 `sandbox/{session_id}/` 目录 |
+
+#### 轮次结束审批流
+
+每轮工具执行完成后，引擎自动调用 `sandbox_manager.diff(session_id)`。如果 sandbox 中存在变更，通过 `sandbox_changes` 事件推送给 App 层：
+
+```python
+# Engine 在 _execute() 中 yield 的事件
+yield self._make_event(
+    type="sandbox_changes",
+    data={
+        "added": [{"path": "new_file.txt", "type": "added"}],
+        "modified": [{"path": "config.json", "type": "modified"}],
+        "deleted": [{"path": "old.txt", "type": "deleted"}],
+        "total": 3,
+    },
+    session_id=session_id,
+)
+```
+
+App 层（如 `server.py` 的 SSE 端点）转发到前端，前端展示审批界面。用户确认后调用 `sandbox_manager.persist(session_id, approved_paths)` 将变更写入 `workspace/`，或丢弃（`destroy` 后自动丢失）。
+
+#### 会话结束警告
+
+当会话结束（正常结束或用户取消）且 sandbox 中仍有未持久化的变更时，引擎 yield `session_ending` 事件：
+
+```python
+yield self._make_event(
+    type="session_ending",
+    data={
+        "session_id": session_id,
+        "sandbox_path": "sandbox/{session_id}",
+        "pending_changes": 3,
+        "warning": "Sandbox contains 3 unpersisted file(s). "
+                   "The sandbox at sandbox/{session_id} will be destroyed "
+                   "unless the app explicitly preserves it.",
+        "files": [{"path": "new_file.txt", "type": "added"}, ...],
+    },
+    session_id=session_id,
+)
+```
+
+前端应展示此警告，提示用户有未保存的变更。如果 `auto_destroy: true`，框架自动调用 `destroy()` 清理 sandbox 目录；否则 App 层负责决定何时清理。
+
+#### 工具执行边界
+
+`ConcurrentToolExecutor._check_params()` 中按以下优先级解析工具的执行边界：
+
+1. 工具声明了 `allowed_dir` → 使用该白名单目录（直接操作 `workspace/`）
+2. 工具未声明 `allowed_dir` 且 SandboxManager 可用 → 使用 `sandbox/{session_id}/` 作为执行边界
+3. 两者均不可用 → 使用全局默认边界 `workspace_root`
+
+```python
+# tool_executor.py — 简化逻辑
+if tool_name in self._tool_boundaries:
+    boundary = self._tool_boundaries[tool_name]           # 白名单工具
+elif self._sandbox_manager is not None and session_id:
+    boundary = DirectoryBoundary(
+        str(self._sandbox_manager.sandbox_path(session_id))  # 沙箱隔离
+    )
+else:
+    boundary = self._default_boundary                       # 回退
+```
+
+#### 配置
+
+```yaml
+advanced:
+  sandbox:
+    blacklist:                    # 复制时排除的路径（不进入沙箱）
+      - .git
+      - __pycache__
+      - logs
+      - .env
+    auto_destroy: false           # 会话结束时是否自动清理 sandbox 目录
+```
+
+`blacklist` 默认值：`[".git", "__pycache__", "logs", ".env"]`。这些路径不会被复制到 `sandbox/{session_id}/`，避免敏感数据泄漏和元数据污染。
+
+`auto_destroy` 默认 `false`——App 层在收到 `session_ending` 事件后应决定是否保留 sandbox 目录供调试。
+
+#### 与现有安全层的关系
+
+| 安全层 | 模块 | 职责 | 时机 |
+|--------|------|------|------|
+| **授权 (Auth)** | `SessionModeManager` + `PermissionRegistry` | "谁可以用什么工具" deny/ask/allow | 工具执行前 |
+| **路径安全 (Safety)** | `PathCheckToolGuard` + `DirectoryBoundary` | 路径穿越/绝对路径/符号链接阻断 | 工具执行前 |
+| **内容安全 (Content)** | `ContentGuard` | 危险行为检测 + 敏感信息脱敏 | pre-exec/post-exec/pre-output |
+| **会话隔离 (Isolation)** | `SandboxManager` | 工具操作在 sandbox 隔离区执行，变更需审批才持久化 | 全生命周期 |
+
+四层独立运作、互补覆盖：PermissionRegistry 决定"能不能用"，PathCheckToolGuard 保证"路径不越界"，ContentGuard 负责"内容不危险"，SandboxManager 确保"变更不失控"。
 
 ---
 
