@@ -1,0 +1,5 @@
+name: undo
+hooks:
+  - round_end
+  - sandbox_persist
+enabled: true

@@ -1,0 +1,7 @@
+name: memory
+hooks:
+  - round_end
+enabled: true
+config:
+  interval: 5
+  max_memory_size: 300
