@@ -25,8 +25,9 @@ class TestGuardModules:
         assert PathCheckToolGuard is not None
 
     def test_tool_permission_checker_exists(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        assert ToolPermissionChecker is not None
+        from arf.session import PermissionRegistry, PermissionLists
+        assert PermissionRegistry is not None
+        assert PermissionLists is not None
 
     def test_regex_output_guard_exists(self):
         from arf.guardrails.regex_clean import RegexOutputGuard
@@ -282,65 +283,74 @@ class TestToolPermissionChecker:
     """Doc §2.5: deny → ask → allow pipeline."""
 
     def test_permission_checker_exists(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        assert ToolPermissionChecker is not None
+        from arf.session import PermissionRegistry, PermissionLists
+        assert PermissionRegistry is not None
+        assert PermissionLists is not None
 
     def test_deny_by_pattern(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker()
-        result = checker.check("file_writer", {"command": "sudo rm -rf /"})
-        assert result == "deny"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({})
+        result = registry.evaluate("file_writer", {"command": "sudo rm -rf /"}, lists)
+        assert result.action == "deny"
 
     def test_deny_by_config_list(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"deny": ["python_exec"]})
-        result = checker.check("python_exec", {})
-        assert result == "deny"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"deny": ["python_exec"]})
+        result = registry.evaluate("python_exec", {}, lists)
+        assert result.action == "deny"
 
     def test_ask_by_config_list(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"ask": ["file_writer"], "allow": []})
-        result = checker.check("file_writer", {})
-        assert result == "ask"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"ask": ["file_writer"], "allow": []})
+        result = registry.evaluate("file_writer", {}, lists)
+        assert result.action == "ask"
 
     def test_allow_by_config_list(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"allow": ["file_reader"]})
-        result = checker.check("file_reader", {})
-        assert result == "allow"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"allow": ["file_reader"]})
+        result = registry.evaluate("file_reader", {}, lists)
+        assert result.action == "allow"
 
     def test_default_is_ask(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"allow": []})
-        result = checker.check("unknown_tool", {})
-        assert result == "ask"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"allow": []})
+        result = registry.evaluate("unknown_tool", {}, lists)
+        assert result.action == "ask"
 
     def test_deny_priority_over_ask(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"deny": ["file_writer"], "ask": ["file_writer"]})
-        result = checker.check("file_writer", {})
-        assert result == "deny"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"deny": ["file_writer"], "ask": ["file_writer"]})
+        result = registry.evaluate("file_writer", {}, lists)
+        assert result.action == "deny"
 
     def test_deny_priority_over_allow(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"deny": ["file_reader"], "allow": ["file_reader"]})
-        result = checker.check("file_reader", {})
-        assert result == "deny"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"deny": ["file_reader"], "allow": ["file_reader"]})
+        result = registry.evaluate("file_reader", {}, lists)
+        assert result.action == "deny"
 
     def test_ask_priority_over_allow(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        checker = ToolPermissionChecker({"ask": ["file_reader"], "allow": ["file_reader"]})
-        result = checker.check("file_reader", {})
-        assert result == "ask"
+        from arf.session import PermissionRegistry, PermissionLists
+        registry = PermissionRegistry()
+        lists = PermissionLists.from_config({"ask": ["file_reader"], "allow": ["file_reader"]})
+        result = registry.evaluate("file_reader", {}, lists)
+        assert result.action == "ask"
 
     def test_default_allow_tools(self):
-        from arf.guardrails.permissions import _DEFAULT_ALLOW_TOOLS
+        from arf.session.permissions import _DEFAULT_ALLOW_TOOLS
         assert "file_reader" in _DEFAULT_ALLOW_TOOLS
         assert "web_search" in _DEFAULT_ALLOW_TOOLS
         assert len(_DEFAULT_ALLOW_TOOLS) == 7
 
     def test_builtin_deny_patterns(self):
-        from arf.guardrails.permissions import _BUILTIN_DENY_PATTERNS
+        from arf.session.permissions import _BUILTIN_DENY_PATTERNS
         assert len(_BUILTIN_DENY_PATTERNS) == 6
         assert "sudo " in _BUILTIN_DENY_PATTERNS
         assert "rm -rf /" in _BUILTIN_DENY_PATTERNS
@@ -461,9 +471,9 @@ class TestGuardConfigWiring:
         assert cfg.writable_dirs == []
 
     def test_tool_permission_checker_accepts_config_dict(self):
-        from arf.guardrails.permissions import ToolPermissionChecker
-        sig = inspect.signature(ToolPermissionChecker.__init__)
-        assert "config" in sig.parameters
+        from arf.session import PermissionLists
+        lists = PermissionLists.from_config({"deny": ["python_exec"]})
+        assert "python_exec" in lists.deny
 
     # -- configurability: patterns are NOT hardcoded (2026-05-29 audit) --
 
