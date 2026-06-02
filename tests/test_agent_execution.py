@@ -60,13 +60,9 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
 
         defaults["call_model"] = _wrap_call
 
-    if "stream_model" not in overrides:
-
-        async def _wrap_stream(messages, model_name="", tools=None):
-            async for chunk in fake_model.chat_stream_full(messages, tools=tools):
-                yield chunk
-
-        defaults["stream_model"] = _wrap_stream
+    # stream_model is opt-in — only set if explicitly passed via overrides
+    if "stream_model" in overrides:
+        defaults["stream_model"] = overrides.pop("stream_model")
 
     return GraphEngine(**defaults)
 
@@ -1033,28 +1029,25 @@ class TestEngineCheckpointBehavior:
         )
 
     def test_invoke_and_astream_checkpoint_consistent(self):
-        """invoke and astream both save checkpoint after appending tool_calls,
-        before executing tools — no asymmetry."""
+        """Shared _step_call_model saves checkpoint after appending tool_calls,
+        before executing tools — no asymmetry between invoke/astream."""
         import inspect
         from arf.engine.graph import GraphEngine
 
-        invoke_src = inspect.getsource(GraphEngine.invoke)
-        astream_src = inspect.getsource(GraphEngine.astream)
+        src = inspect.getsource(GraphEngine._step_call_model)
 
-        # Both must NOT have the old NOTE about skipping put
-        for name, src in [("invoke", invoke_src), ("astream", astream_src)]:
-            assert "do NOT state_store.put() here" not in src, (
-                f"Outdated NOTE should be removed from {name}()"
-            )
+        # Must NOT have the old NOTE about skipping put
+        assert "do NOT state_store.put() here" not in src, (
+            "Outdated NOTE should be removed from _step_call_model()"
+        )
 
-        # Both paths have the pattern: append assistant_msg → put
-        for name, src in [("invoke", invoke_src), ("astream", astream_src)]:
-            lines = src.split("\n")
-            append_line = next(i for i, l in enumerate(lines) if 'append(assistant_msg)' in l)
-            put_found = any("state_store.put" in l for l in lines[append_line:append_line + 5])
-            assert put_found, (
-                f"{name}() must call state_store.put() after appending assistant_msg"
-            )
+        # Pattern: append assistant_msg → put
+        lines = src.split("\n")
+        append_line = next(i for i, l in enumerate(lines) if 'append(assistant_msg)' in l)
+        put_found = any("state_store.put" in l for l in lines[append_line:append_line + 5])
+        assert put_found, (
+            "_step_call_model() must call state_store.put() after appending assistant_msg"
+        )
 
 
 # ---------------------------------------------------------------------------

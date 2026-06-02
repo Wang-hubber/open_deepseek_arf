@@ -1243,7 +1243,8 @@ class GraphEngine:
                             recovery, state, msgs, exc)
                         if should_continue:
                             await self.state_store.put(session_id, state)
-                            return  # _execute loop will re-enter call_model
+                            state["_retry_call_model"] = True
+                            return
                     except Exception:
                         pass
                 msgs, repaired = await self._try_repair_400(exc, state, msgs, system_prompt,
@@ -1274,6 +1275,7 @@ class GraphEngine:
                             recovery, state, msgs, exc)
                         if should_continue:
                             await self.state_store.put(session_id, state)
+                            state["_retry_call_model"] = True
                             return
                     except Exception:
                         pass
@@ -1306,7 +1308,8 @@ class GraphEngine:
                 recovery, state, msgs, None)
             if should_continue:
                 await self.state_store.put(session_id, state)
-                return  # _execute loop will re-enter call_model
+                state["_retry_call_model"] = True
+                return
 
         yield self._make_event(type="model_call_end",
                          data={"model": model, "turn": turn,
@@ -1592,8 +1595,8 @@ class GraphEngine:
             if step == "call_model":
                 async for event in self._step_call_model(state):
                     yield event
-                # Retry after 400 repair — restart call_model without breaking
-                if state.pop("_retry_after_repair", False):
+                # Retry: 400 repair, recovery continue, or backoff — restart call_model
+                if state.pop("_retry_after_repair", False) or state.pop("_retry_call_model", False):
                     state["current_turn"] = state.get("current_turn", 1) - 1
                     await self.state_store.put(session_id, state)
                     continue
