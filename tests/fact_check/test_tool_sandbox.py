@@ -170,29 +170,36 @@ class TestPathCheckToolGuard:
         params = list(sig.parameters.keys())
         assert "tool_name" in params
         assert "params" in params
+        assert "boundary" in params
 
     def test_blocks_path_traversal(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"path_traversal": True, "workspace_containment": True})
-        result = asyncio.run(guard.check("test", {"file": "../etc/passwd"}))
+        from arf.sandbox.directory_boundary import DirectoryBoundary
+        guard = PathCheckToolGuard(checks={"path_traversal": True})
+        boundary = DirectoryBoundary("/tmp")
+        result = asyncio.run(guard.check("test", {"file": "../etc/passwd"}, boundary))
         assert result.allowed is False
         assert "traversal" in result.reason.lower()
 
     def test_blocks_absolute_path(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"absolute_path": True, "workspace_containment": True})
-        result = asyncio.run(guard.check("test", {"file": "/etc/passwd"}))
+        from arf.sandbox.directory_boundary import DirectoryBoundary
+        guard = PathCheckToolGuard(checks={"absolute_path": True})
+        boundary = DirectoryBoundary("/tmp")
+        result = asyncio.run(guard.check("test", {"file": "/etc/passwd"}, boundary))
         assert result.allowed is False
         assert "absolute" in result.reason.lower()
 
     def test_allows_relative_safe_path(self):
         import tempfile, os
         from arf.guardrails.path_check import PathCheckToolGuard
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         with tempfile.TemporaryDirectory() as td:
-            guard = PathCheckToolGuard(workspace_root=td)
+            boundary = DirectoryBoundary(td)
             safe = os.path.join(td, "safe.txt")
             Path(safe).write_text("hello")
-            result = asyncio.run(guard.check("test", {"file": "safe.txt"}))
+            guard = PathCheckToolGuard()
+            result = asyncio.run(guard.check("test", {"file": "safe.txt"}, boundary))
             assert result.allowed is True
 
     def test_walk_strings_recursive_dict(self):
@@ -234,18 +241,22 @@ class TestPathCheckToolGuard:
 
     def test_depth_quota_exceeded(self):
         from arf.guardrails.path_check import PathCheckToolGuard, ResourceQuota
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         quota = ResourceQuota(max_path_depth=2)
-        guard = PathCheckToolGuard(workspace_root="/tmp", quota=quota)
-        result = asyncio.run(guard.check("test", {"file": "a/b/c/d.txt"}))
+        guard = PathCheckToolGuard(quota=quota)
+        boundary = DirectoryBoundary("/tmp")
+        result = asyncio.run(guard.check("test", {"file": "a/b/c/d.txt"}, boundary))
         assert result.allowed is False
         assert "depth" in result.reason.lower()
 
     def test_count_quota_exceeded(self):
         from arf.guardrails.path_check import PathCheckToolGuard, ResourceQuota
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         quota = ResourceQuota(max_path_count=1)
-        guard = PathCheckToolGuard(workspace_root="/tmp", quota=quota)
+        guard = PathCheckToolGuard(quota=quota)
+        boundary = DirectoryBoundary("/tmp")
         # Two path strings exceed max_path_count=1
-        result = asyncio.run(guard.check("test", {"a": "x.txt", "b": "y.txt"}))
+        result = asyncio.run(guard.check("test", {"a": "x.txt", "b": "y.txt"}, boundary))
         assert result.allowed is False
         assert "count" in result.reason.lower()
 
@@ -255,16 +266,20 @@ class TestQuotaCheckOrder:
 
     def test_check_order_traversal_before_absolute(self):
         from arf.guardrails.path_check import PathCheckToolGuard
-        guard = PathCheckToolGuard(workspace_root="/tmp", checks={"path_traversal": True, "absolute_path": True, "workspace_containment": True})
-        result = asyncio.run(guard.check("test", {"file": "../etc"}))
+        from arf.sandbox.directory_boundary import DirectoryBoundary
+        guard = PathCheckToolGuard(checks={"path_traversal": True, "absolute_path": True, "workspace_containment": True})
+        boundary = DirectoryBoundary("/tmp")
+        result = asyncio.run(guard.check("test", {"file": "../etc"}, boundary))
         assert result.allowed is False
         assert "traversal" in result.reason.lower()
 
     def test_check_order_absolute_before_depth(self):
         from arf.guardrails.path_check import PathCheckToolGuard, ResourceQuota
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         quota = ResourceQuota(max_path_depth=0)
-        guard = PathCheckToolGuard(workspace_root="/tmp", quota=quota, checks={"absolute_path": True, "workspace_containment": True})
-        result = asyncio.run(guard.check("test", {"file": "/a"}))
+        guard = PathCheckToolGuard(quota=quota, checks={"absolute_path": True, "workspace_containment": True})
+        boundary = DirectoryBoundary("/tmp")
+        result = asyncio.run(guard.check("test", {"file": "/a"}, boundary))
         assert result.allowed is False
         assert "absolute" in result.reason.lower()
 
@@ -388,28 +403,28 @@ class TestPathSandbox:
 
     def test_validate_path_blocks_traversal(self):
         import tempfile
-        from arf.sandbox.path_sandbox import PathSandbox
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         with tempfile.TemporaryDirectory() as td:
-            sandbox = PathSandbox(workspace_root=td)
-            assert sandbox.validate_path("../escape") is False
+            boundary = DirectoryBoundary(td)
+            assert boundary.contains("../escape") is False
 
     def test_validate_path_allows_safe_path(self):
         import tempfile, os
-        from arf.sandbox.path_sandbox import PathSandbox
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         with tempfile.TemporaryDirectory() as td:
             safe = os.path.join(td, "ok.txt")
             Path(safe).write_text("hello")
-            sandbox = PathSandbox(workspace_root=td)
-            assert sandbox.validate_path("ok.txt") is True
+            boundary = DirectoryBoundary(td)
+            assert boundary.contains("ok.txt") is True
 
     def test_has_symlink_detection(self):
         import tempfile
-        from arf.sandbox.path_sandbox import PathSandbox
+        from arf.sandbox.directory_boundary import DirectoryBoundary
         with tempfile.TemporaryDirectory() as td:
-            sandbox = PathSandbox(workspace_root=td)
+            boundary = DirectoryBoundary(td)
             f = Path(td) / "regular.txt"
             f.write_text("hello")
-            assert sandbox.has_symlink("regular.txt") is False
+            assert boundary.has_symlink("regular.txt") is False
 
     def test_validate_command_exists(self):
         from arf.sandbox.path_sandbox import PathSandbox
@@ -420,8 +435,8 @@ class TestPathSandbox:
         assert hasattr(PathSandbox, "resolve_path")
 
     def test_allowed_dirs_exists(self):
-        from arf.sandbox.path_sandbox import PathSandbox
-        assert hasattr(PathSandbox, "allowed_dirs")
+        from arf.sandbox.directory_boundary import DirectoryBoundary
+        assert hasattr(DirectoryBoundary, "contains")
 
     def test_root_property_exists(self):
         import tempfile
@@ -535,7 +550,7 @@ class TestDefaultGuardRunner:
         runner = DefaultGuardRunner()
         assert runner._input is not None
         assert runner._output is not None
-        assert runner._tool is not None
+        assert runner._tool is None
         assert runner._permission_registry is not None
         assert runner._permission_lists is not None
 
