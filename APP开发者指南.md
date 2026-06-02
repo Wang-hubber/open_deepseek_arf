@@ -68,9 +68,14 @@ activation: kernel
 name: my_agent
 description: 我的第一个 ARF Agent
 system_prompt:
-  template: |
-    You are {{AGENT_NAME}}, a helpful assistant.
-    {{INVENTORY}}
+  prefix:
+    role: |
+      You are my_agent, a helpful assistant.
+    critical_rules: |
+      ### R1: Verify, then answer
+      Never state file contents from memory. Call the relevant tool first.
+  suffix: |
+    $INVENTORY
 ```
 
 **server.py** — 最小 FastAPI 封装：
@@ -198,43 +203,56 @@ description: >
   作为主 Agent 与用户交互，资源创建等系统操作移交给 SysAgent。
 ```
 
-### 4.2 System Prompt 模板
+### 4.2 System Prompt 配置
 
-框架支持 Jinja2 风格模板变量。`{{INVENTORY}}` 自动填充当前可用工具列表，`{{CRITICAL_RULES}}` 注入行为约束。
+系统提示词采用 **prefix/suffix 分层结构**。Framework 使用 `SystemPromptProvider` 组装，`string.Template` 渲染占位符（`$VARIABLE` 语法）。
+
+| 字段 | 作用 | 缓存策略 |
+|------|------|----------|
+| `prefix.role` | 角色定义 | 极稳定 → 命中 API 缓存 |
+| `prefix.critical_rules` | 硬规则 | 极稳定 → 命中 API 缓存 |
+| `suffix` | 动态内容模板 | 包含 `$INVENTORY` 等可变占位符 |
+
+**prefix 内顺序由框架保证**：`role` → `critical_rules`，用户无需手动写占位符。
+
+**per-turn 占位符**（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）由引擎在每轮运行时替换，不在 Provider 编译期处理。
 
 ```yaml
 system_prompt:
-  template: |
-    You are {{AGENT_NAME}}, an AI assistant.
+  prefix:
+    role: |
+      You are my_agent, an AI assistant.
 
-    ## Capabilities
-    You help users accomplish tasks through natural language conversation.
-    You can read and write files, browse the web, manage memory, and process documents.
+      ## Capabilities
+      You help users accomplish tasks through natural language conversation.
+      You can read and write files, browse the web, manage memory, and process documents.
+    critical_rules: |
+      ### R1: Verify, then answer
+      Never state file contents, current model, or any runtime state from memory.
+      Call the relevant tool FIRST, then answer from the tool result.
 
-    {{INVENTORY}}
+      ### R2: Tool calls produce action, not text
+      Saying "switched to X" or "created Y" without calling the tool is a violation.
 
-    ## Critical Rules
-    {{CRITICAL_RULES}}
+      ### R3: Verify after action
+      After calling a tool that changes state, verify the result.
 
-  critical_rules: |
-    ### R1: Verify, then answer
-    Never state file contents, current model, or any runtime state from memory.
-    Call the relevant tool FIRST, then answer from the tool result.
+      ### R4: Handoff for privileged operations
+      Call `handoff` when the user asks to create/modify/delete a tool,
+      skill, or model, or needs to write to tools/, skills/, models/ paths.
 
-    ### R2: Tool calls produce action, not text
-    Saying "switched to X" or "created Y" without calling the tool is a violation.
-
-    ### R3: Verify after action
-    After calling a tool that changes state, verify the result.
-
-    ### R4: Handoff for privileged operations
-    Call `handoff` when the user asks to create/modify/delete a tool,
-    skill, or model, or needs to write to tools/, skills/, models/ paths.
-
-    ### R5: Progressive skill loading
-    Skills are loaded on demand. When a skill matches intent, read its
-    full instructions via `file_reader` before executing.
+      ### R5: Progressive skill loading
+      Skills are loaded on demand. When a skill matches intent, read its
+      full instructions via `file_reader` before executing.
+  suffix: |
+    $INVENTORY
 ```
+
+**关键变更**（v1.0 → v1.1）：
+- `template` + `critical_rules` 字段合并为 `prefix`（`role` + `critical_rules`）+ `suffix`
+- 占位符语法从 `{{PLACEHOLDER}}` 迁移为 `$PLACEHOLDER`（Python `string.Template`）
+- 删除 `pipeline` 字段（`PipelineSection` 未使用）
+- `SystemPromptProvider` Protocol 支持依赖注入覆盖
 
 ### 4.3 模型声明
 
@@ -1234,20 +1252,20 @@ agents:
     task: 资源创建、模型配置、工具/技能生成等系统级操作
     description: 处理资源创建、模型配置、工具/技能生成等系统级操作
     system_prompt:
-      template: |
-        You are the ARF System Engineer.
-        {{INVENTORY}}
-        ## Critical Rules
-        {{CRITICAL_RULES}}
-      critical_rules: |
-        ### Gate 1 — Design
-        先设计方案，等待用户确认（"go ahead"、"yes"、"确认"）
-        ### Gate 2 — Write
-        确认后才调用 file_writer 创建文件
-        ### Gate 3 — Validate
-        读取验证规范并检查
-        ### Gate 4 — Activate
-        调用 resource_loader 激活新资源
+      prefix:
+        role: |
+          You are the ARF System Engineer.
+        critical_rules: |
+          ### Gate 1 — Design
+          先设计方案，等待用户确认（"go ahead"、"yes"、"确认"）
+          ### Gate 2 — Write
+          确认后才调用 file_writer 创建文件
+          ### Gate 3 — Validate
+          读取验证规范并检查
+          ### Gate 4 — Activate
+          调用 resource_loader 激活新资源
+      suffix: |
+        $INVENTORY
 
     models:
       - type: deep

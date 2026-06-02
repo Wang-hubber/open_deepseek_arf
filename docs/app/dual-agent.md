@@ -46,23 +46,23 @@ agents:
     description: 处理系统级操作
 
     system_prompt:
-      template: |
-        You are the ARF System Engineer.
-        {{INVENTORY}}
-        ## Critical Rules
-        {{CRITICAL_RULES}}
-      critical_rules: |
-        ### Gate 1 — Design
-        先设计方案，等待用户确认（"go ahead"、"yes"、"确认"）
+      prefix:
+        role: |
+          You are the ARF System Engineer.
+        critical_rules: |
+          ### Gate 1 — Design
+          先设计方案，等待用户确认（"go ahead"、"yes"、"确认"）
 
-        ### Gate 2 — Write
-        确认后才调用 file_writer 创建文件
+          ### Gate 2 — Write
+          确认后才调用 file_writer 创建文件
 
-        ### Gate 3 — Validate
-        读取验证规范并检查
+          ### Gate 3 — Validate
+          读取验证规范并检查
 
-        ### Gate 4 — Activate
-        调用 resource_loader 激活新资源
+          ### Gate 4 — Activate
+          调用 resource_loader 激活新资源
+      suffix: |
+        $INVENTORY
 
     models:
       - type: deep

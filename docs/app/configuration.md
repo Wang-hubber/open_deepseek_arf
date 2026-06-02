@@ -164,47 +164,56 @@ activation: kernel
 
 ---
 
-## SystemPrompt：提示词模板
+## SystemPrompt：系统提示词
 
-**定义**: `arf/agent/config.py:61`
+**定义**: `arf/agent/config.py`
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `template` | `str` | `""` | Jinja2 风格模板，支持 {{PLACEHOLDER}} |
-| `critical_rules` | `str` | `""` | 关键规则，注入到 `{{CRITICAL_RULES}}` |
-| `pipeline` | `list[PipelineSection]` | `[]` | Pipeline 模式：按 priority 排序注入 section |
+| `prefix` | `PrefixConfig` | `PrefixConfig()` | 稳定前缀（角色定义 + 硬规则），目标 API 缓存命中 |
+| `prefix.role` | `str` | `""` | 角色定义，排在 prefix 最前面 |
+| `prefix.critical_rules` | `str` | `""` | 硬规则，紧随 role 之后 |
+| `suffix` | `str` | `""` | 动态内容模板，含 `$INVENTORY` 等可变占位符 |
 
-### 支持占位符
+### 占位符
 
-| 占位符 | 填充时机 | 来源 |
-|--------|---------|------|
-| `{{AGENT_NAME}}` | 初始化 | `config.name` |
-| `{{AGENT_ROLE}}` | 初始化 | `config.role` |
-| `{{AGENT_TASK}}` | 初始化 | `config.task` |
-| `{{CRITICAL_RULES}}` | 初始化 | `config.system_prompt.critical_rules` |
-| `{{INVENTORY}}` | 初始化 | 内核工具 + 可发现工具 + 技能列表（自动生成） |
-| `{{MEMORY}}` | 初始化 | resident memory 文件内容 |
-| `{{WORKSPACE}}` | 运行时 | 引擎填充 |
-| `{{LANGUAGE}}` | 运行时 | 引擎填充 |
+使用 Python `string.Template` 语法（`$VAR` 或 `${VAR}`）：
 
-### Pipeline 模式 vs Legacy 模式
+| 占位符 | 填充时机 | 负责组件 |
+|--------|---------|---------|
+| `$INVENTORY` | 初始化 | `DefaultSystemPromptProvider._build_inventory()` — kernel tools + discoverable tools + skills 列表 |
+| `$MEMORY` | 会话启动 + 每轮 | `BaseAgent.__init__()` 替换 resident memory → `GraphEngine.invoke()` 替换 context summary |
+| `$WORKSPACE` | 每轮 | `GraphEngine.invoke()` 替换 workspace 目录路径 |
+| `$TURN_BUDGET` | 每轮 | `GraphEngine.invoke()` 替换剩余轮次预算 |
 
-**Pipeline 模式** (`pipeline` 不为空): Section 按 `priority` 排序注入，精确控制 prompt 结构。
+### Prefix/Suffix 分层
+
+框架保证 prefix 内顺序：`role` → `critical_rules`，用户无需手动写占位符。prefix 极稳定 → 可缓存；suffix 含可变 inventory → 工具变更时只需重新计算 suffix。
 
 ```yaml
 system_prompt:
-  template: |
-    You are {{AGENT_NAME}}.
-    {{RULES}}
-    {{TOOLS}}
-  pipeline:
-    - priority: 0
-      section: rules
-    - priority: 1
-      section: tools
+  prefix:
+    role: |
+      You are my_agent, an AI assistant.
+    critical_rules: |
+      ### R1: Verify, then answer
+      Call the relevant tool FIRST, then answer from the tool result.
+  suffix: |
+    ## Available Tools
+    $INVENTORY
 ```
 
-**Legacy 模式**: 简单占位符替换，向后兼容。
+### SystemPromptProvider
+
+框架通过 `SystemPromptProvider` Protocol 组装提示词。`DefaultSystemPromptProvider` 读取 `SystemPromptConfig`，构建 inventory，使用 `string.Template.safe_substitute()` 渲染 suffix。可通过 `BaseAgent(**override_protocols)` 注入自定义 Provider：
+
+```python
+class MyPromptProvider:
+    def build(self) -> SystemPrompt:
+        return SystemPrompt(prefix="...", suffix="...")
+
+agent = BaseAgent(config=cfg, system_prompt_provider=MyPromptProvider())
+```
 
 ---
 
@@ -618,7 +627,7 @@ Hook 子进程注入以下环境变量：
 
 子 Agent 定义在 `agent.yaml` 的 `agents:` 数组中。每个子 Agent 拥有自己的：
 
-- `system_prompt`（模板 + 规则）
+- `system_prompt`（prefix.role + prefix.critical_rules + suffix）
 - `models`（独立模型列表，覆盖主 Agent 配置）
 - `tools`（工具列表，独立权限）
 - `skills`（技能列表）
