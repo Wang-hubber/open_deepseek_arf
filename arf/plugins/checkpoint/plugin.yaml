@@ -1,0 +1,7 @@
+name: checkpoint
+hooks:
+  - round_end
+  - session_end
+enabled: true
+config:
+  state_dir: ./memory/state
