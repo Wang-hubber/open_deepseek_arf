@@ -106,6 +106,7 @@ class GraphEngine:
         error_policy: ErrorPolicy | None = None,
         model_router: ModelRouter | None = None,
         compaction: CompactionStrategy | None = None,
+        plugin_runner: "InProcessHookRunner | None" = None,  # NEW: in-process plugin runner
         call_model: Callable | None = None,
         stream_model: Callable | None = None,
         cancel_event: asyncio.Event | None = None,
@@ -149,6 +150,7 @@ class GraphEngine:
         self.error_policy = error_policy
         self.model_router = model_router
         self.compaction = compaction
+        self.plugin_runner = plugin_runner
         self._call_model = call_model
         self._stream_model = stream_model
         self._system_prompt = system_prompt
@@ -1404,6 +1406,13 @@ class GraphEngine:
                              "failed": sum(1 for r in pp_results if r.exit_code != 0)},
                              turn=turn, session_id=session_id)
             self._inject_hook_messages(pp_results, state)
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await plugin_runner.fire("post_permission", {
+                "tool_calls": valid_calls, "denied": denied_calls,
+                "session_id": session_id, "turn": turn})
 
         # Pre-tool-exec hooks
         if self.hook_runner:
@@ -1517,6 +1526,12 @@ class GraphEngine:
             self.hook_runner.update_runtime(
                 session_id=session_id, interaction_round=self._interaction_round)
             await self.hook_runner.fire("sandbox_persist", {
+                "session_id": session_id, "turn": turn})
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await plugin_runner.fire("sandbox_persist", {
                 "session_id": session_id, "turn": turn})
 
         # ErrorPolicy circuit-breaker
@@ -1632,6 +1647,15 @@ class GraphEngine:
                 session_id=session_id, interaction_round=self._interaction_round)
             await self.hook_runner.fire("round_end", {
                 "session_id": session_id, "round": self._interaction_round})
+        plugin_runner = getattr(self, 'plugin_runner', None)
+        if plugin_runner:
+            plugin_runner.update_runtime(
+                session_id=session_id, interaction_round=self._interaction_round)
+            await plugin_runner.fire("round_end", {
+                "session_id": session_id, "round": self._interaction_round,
+                "messages_count": len(state.get("messages", [])),
+                "last_token_usage": state.get("last_token_usage", 0),
+            })
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)
