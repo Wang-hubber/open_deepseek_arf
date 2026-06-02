@@ -532,7 +532,8 @@ class TestDefaultGuardRunner:
         assert runner._input is not None
         assert runner._output is not None
         assert runner._tool is not None
-        assert runner._permissions is not None
+        assert runner._permission_registry is not None
+        assert runner._permission_lists is not None
 
     def test_check_tool_params_method(self):
         from arf.guardrails.runner import DefaultGuardRunner

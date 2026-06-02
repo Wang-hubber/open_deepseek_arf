@@ -5,21 +5,21 @@ from arf.core.results import GuardResult
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
-from arf.guardrails.permissions import ToolPermissionChecker
+from arf.session import PermissionLists, PermissionRegistry
 
 
 class DefaultGuardRunner:
     """Unified guard + permission interface for the engine.
 
     Tool execution path:
-        1. check_tool_params() — path sandbox (hard block)
-        2. check_tool_permission() — deny/ask/allow (config-driven)
-        3. If 'ask' → engine yields to approval channel (not yet implemented)
-        4. If 'deny' → tool call blocked
+        1. Engine resolves effective mode via SessionModeManager
+        2. If ASK mode → PermissionRegistry evaluates deny/ask/allow
+        3. PathCheckToolGuard runs in executor (not here), as pre-execution check
     """
 
     def __init__(self, input_guard=None, output_guard=None, tool_guard=None,
-                 permission_checker: ToolPermissionChecker | None = None,
+                 permission_registry: PermissionRegistry | None = None,
+                 permission_lists: PermissionLists | None = None,
                  output_patterns: list[tuple[str, str]] | None = None) -> None:
         self._input = input_guard or NoneInputGuard()
         if output_guard is not None:
@@ -29,7 +29,8 @@ class DefaultGuardRunner:
         else:
             self._output = RegexOutputGuard()
         self._tool = tool_guard or PathCheckToolGuard()
-        self._permissions = permission_checker or ToolPermissionChecker()
+        self._permission_registry = permission_registry or PermissionRegistry()
+        self._permission_lists = permission_lists or PermissionLists()
 
     async def check_input(self, message: str, context: dict) -> GuardResult:
         return await self._input.check(message, context)
@@ -38,9 +39,18 @@ class DefaultGuardRunner:
         return await self._output.check(message, context)
 
     async def check_tool_params(self, tool_name: str, params: dict) -> GuardResult:
-        """Hard guard: path sandbox, command injection, etc."""
+        """Hard guard: path sandbox, command injection, etc.
+
+        Called from tool executor as pre-execution check, NOT from
+        the engine permission pipeline.
+        """
         return await self._tool.check(tool_name, params)
 
     def check_tool_permission(self, tool_name: str, params: dict) -> str:
-        """Soft guard: deny/ask/allow based on config rules."""
-        return self._permissions.check(tool_name, params)
+        """Soft guard: deny/ask/allow based on permission lists."""
+        result = self._permission_registry.evaluate(tool_name, params, self._permission_lists)
+        return result.action
+
+    def swap_lists(self, lists: PermissionLists) -> None:
+        """Hot-swap permission lists at runtime (e.g. during agent handoff)."""
+        self._permission_lists = lists
