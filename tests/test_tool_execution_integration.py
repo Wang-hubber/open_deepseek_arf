@@ -88,17 +88,14 @@ class TestEngineToolExecution:
 
 
 class TestSystemPromptInventory:
-    """Verify system prompt inventory includes all expected sections.
+    """Verify system prompt inventory includes all expected sections
+    via DefaultSystemPromptProvider."""
 
-    Mirrors BaseAgent's pattern: merge filesystem data via the resolver first,
-    then feed back into config.tools/config.skills before building sections.
-    """
-
-    _sections = None
+    _suffix = None
 
     @pytest.fixture(autouse=True)
     def _build_inventory(self, resolver, agent_config):
-        """Mirrors BaseAgent.__init__ merge at lines 196-215."""
+        """Mirrors BaseAgent init: merge tool/skill defs, then build."""
         merged_specs = resolver.get_tool_definitions_sync()
         if merged_specs:
             from arf.core.config_base import ToolConfig as _ToolConfig
@@ -120,33 +117,48 @@ class TestSystemPromptInventory:
         if merged_skills:
             agent_config.skills = merged_skills
 
-        from arf.agent.base import _build_prompt_sections
-        self._sections = _build_prompt_sections(agent_config)
+        from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
+        provider = DefaultSystemPromptProvider(
+            config=agent_config,
+            tool_definitions=[
+                t.model_dump() if hasattr(t, "model_dump") else t
+                for t in agent_config.tools
+            ],
+            skill_definitions=[
+                s.model_dump() if hasattr(s, "model_dump") else s
+                for s in agent_config.skills
+            ],
+        )
+        sp = provider.build()
+        self._suffix = sp.suffix
 
     def test_inventory_contains_available_tools(self):
         """System prompt should contain Available Tools section."""
-        assert "Available Tools" in self._sections["inventory"], (
+        assert "Available Tools" in self._suffix, (
             "Missing Available Tools section"
         )
 
     def test_inventory_contains_discoverable_tools_section(self):
         """System prompt should contain Discoverable Tools section."""
-        assert "Discoverable Tools" in self._sections["inventory"], (
+        assert "Discoverable Tools" in self._suffix, (
             "Missing Discoverable Tools section"
         )
 
     def test_inventory_contains_available_skills(self):
         """System prompt should contain Available Skills section."""
-        assert "Available Skills" in self._sections["inventory"], (
+        assert "Available Skills" in self._suffix, (
             "Missing Available Skills section"
         )
 
     def test_inventory_tool_descriptions_are_present(self):
         """Tool descriptions from tool.yaml should appear in the inventory."""
-        assert "- `file_writer`:" in self._sections["inventory"]
-        assert "Create" in self._sections["inventory"] or "file" in self._sections["inventory"].lower()
+        assert "`file_writer`:" in self._suffix
+        assert (
+            "Create" in self._suffix
+            or "file" in self._suffix.lower()
+        )
 
     def test_inventory_skill_descriptions_are_present(self):
         """Skill descriptions from skills/*.yaml should appear in the inventory."""
-        assert "code_review" in self._sections["inventory"]
-        assert "debug" in self._sections["inventory"]
+        assert "code_review" in self._suffix
+        assert "debug" in self._suffix
