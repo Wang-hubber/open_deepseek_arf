@@ -127,6 +127,7 @@ class GraphEngine:
         main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
         session_mode_manager=None,
+        content_guard=None,
         main_permission_lists=None,
         main_agent_policy=None,
     ):
@@ -162,6 +163,7 @@ class GraphEngine:
         self._promotion = promotion
         self._action_runner = action_runner
         self._session_mode_manager = session_mode_manager
+        self._content_guard = content_guard
         self._main_permissions = main_permissions  # persisted for restore on handoff return
         self._main_permission_lists = main_permission_lists
         self._main_agent_policy = main_agent_policy
@@ -1323,12 +1325,18 @@ class GraphEngine:
         tool_calls = self._pars_tool_calls(resp)
         if not tool_calls:
             content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            if self._content_guard:
+                cleaned, _ = self._content_guard.redact_sensitive(content)
+                if cleaned is not None:
+                    content = cleaned
             state["messages"].append({"role": "assistant", "content": content})
             await self.state_store.put(session_id, state)
             return
 
         # Append assistant message with tool_calls
         response_text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+        if self._content_guard and response_text:
+            response_text, _ = self._content_guard.redact_sensitive(response_text)
         assistant_tool_calls = [
             {"id": tc.get("id", ""), "type": "function",
              "function": {"name": tc.get("name", ""), "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)}}
@@ -1461,6 +1469,10 @@ class GraphEngine:
                     content = await self.compaction.summarize_tool_output(
                         tc.get("name", "unknown"), content, turn
                     )
+                if self._content_guard:
+                    cleaned, _ = self._content_guard.redact_sensitive(content)
+                    if cleaned is not None:
+                        content = cleaned
                 state["messages"].append({"role": "tool", "tool_call_id": tc["id"], "content": content})
 
         # Rollback summary
