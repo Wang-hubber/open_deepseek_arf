@@ -21,7 +21,6 @@ from arf.guardrails.runner import DefaultGuardRunner
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
-from arf.guardrails.permissions import ToolPermissionChecker
 from arf.errors.retry import DefaultErrorPolicy
 
 

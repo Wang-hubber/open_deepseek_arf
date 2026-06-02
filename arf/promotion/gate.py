@@ -1,45 +1,39 @@
-"""Promotion gate — entry point for permission evaluation."""
+"""Promotion gate — thin compatibility wrapper.
 
+Delegates to the unified arf.session system.
+Kept for existing code that references Promotion; will be removed in a future cleanup.
+"""
 from __future__ import annotations
 
 from typing import Any
-
 from arf.core.execution import Decision, Executable
-from arf.promotion.strategies import AutoStrategy, AskStrategy, PlanStrategy
+from arf.session import PermissionLists, PermissionRegistry
 
 
 class Promotion:
-    """Permission gate that wraps engine's interaction with executables.
-
-    Promotion.evaluate() is called before ActionRunner.execute() for each
-    executable. It returns allow/deny/ask — Engine decides how to handle each.
-    """
+    """Deprecated — use SessionModeManager + PermissionRegistry directly."""
 
     def __init__(self, strategy: str = "ask", **kwargs: Any) -> None:
-        strategy_map = {
-            "auto": AutoStrategy,
-            "ask": AskStrategy,
-            "plan": PlanStrategy,
-        }
-        strategy_cls = strategy_map.get(strategy, AskStrategy)
-        self._strategy = strategy_cls(**kwargs)
+        self._strategy_name = strategy
+        self._registry = PermissionRegistry()
+        self._lists = PermissionLists(
+            deny=set(kwargs.get("deny", [])),
+            ask=set(kwargs.get("ask", [])),
+            allow=set(kwargs.get("allow", [])),
+            deny_patterns=kwargs.get("deny_patterns", []),
+        )
 
     def evaluate(self, executable: Executable, **context: Any) -> Decision:
-        return self._strategy.evaluate(executable, **context)
+        params = context.get("params", {})
+        result = self._registry.evaluate(executable.name, params, self._lists)
+        return Decision(action=result.action, reason=result.reason)
 
     def reconfigure(self, *, deny=None, ask=None, allow=None, deny_patterns=None) -> None:
-        """Hot-swap permission lists at runtime (e.g. during agent handoff).
-
-        Only effective for AskStrategy; auto/plan strategies are no-ops.
-        """
-        from arf.promotion.strategies import AskStrategy
-        if not isinstance(self._strategy, AskStrategy):
-            return
         if deny is not None:
-            self._strategy.deny_list = set(deny)
+            self._lists.deny = set(deny)
         if ask is not None:
-            self._strategy.ask_list = set(ask)
+            self._lists.ask = set(ask)
         if allow is not None:
-            self._strategy.allow_list = set(allow)
+            self._lists.allow = set(allow)
         if deny_patterns is not None:
-            self._strategy._deny_patterns = list(deny_patterns)
+            self._lists.deny_patterns = list(deny_patterns)
