@@ -1,4 +1,36 @@
 # arf_version: 1.0
+# ============================================================================
+# 模型定义区 — 全文件唯一真相源
+# model 字段即唯一标识，下游通过 model 名引用
+# ============================================================================
+model_defs:
+  - model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      reasoning_effort: max
+  - model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      temperature: 0.7
+
+# ============================================================================
+# Agent 模型引用 — 按序降级：pro 挂了 → flash
+# ============================================================================
+agent_models:
+  - model: deepseek-v4-pro
+  - model: deepseek-v4-flash
+
+# ============================================================================
+# Plugin 模型引用 — 各插件指定使用的模型
+# ============================================================================
+plugins_config:
+  compaction:
+    model: deepseek-v4-flash
+  memory:
+    model: deepseek-v4-flash
+
 # --------------------------------------------------------------------
 # session_mode — session-level global permission mode
 #   auto:  ignore all agent permission configs, all tools execute directly
