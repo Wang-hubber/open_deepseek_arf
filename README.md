@@ -79,7 +79,7 @@ ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton 
 | **Memory** | `round_end` | DONE | Long-term memory extraction via system model, atomic write to `memory.md` |
 | **TODO** | `round_start`, `round_end` | DONE | Task list tracking with reminder injection |
 | **UNDO** | `round_end`, `sandbox_persist` | DONE | Round-level state + file rollback |
-| **Model Routing** | `pre_model_call` | DONE | `TwoTierRouter` — cheap LLM classifies simple→flash, complex→pro |
+| ~~**Model Routing**~~ | `pre_model_call` | **DEPRECATED** | `TwoTierRouter` — cheap LLM classifies simple→flash, complex→pro. Deprecated in favor of direct model configuration. |
 | **Human Loop** | `post_permission`, `pre_tool_exec` | DONE | SSE approval channel with 60s timeout |
 | **Compaction** | `round_end` | DONE | `CompactionPlugin` — token-aware, 75% threshold, keeps last 8 msgs + LLM summary |
 | **Checkpoint** | `round_end`, `session_end` | DONE | `CheckpointPlugin` — round snapshots + session archiving for undo/restore |
@@ -341,7 +341,7 @@ cd app/web && npm install && npm run dev
 | P-5 | ✅ `memory` | DONE | `round_end` | Long-term memory extraction via system model, atomic write to `memory.md` |
 | P-6 | ✅ `todo` | DONE | `round_start`, `round_end` | Task list tracking with reminder injection |
 | P-7 | ✅ `undo` | DONE | `round_end`, `sandbox_persist` | Round-level state + file rollback |
-| P-8 | ✅ `model_router` | DONE | `pre_model_call` | TwoTierRouter fast/slow dispatch |
+| ~~P-8~~ | ~~`model_router`~~ | **DEPRECATED** | `pre_model_call` | TwoTierRouter fast/slow dispatch — deprecated |
 | P-9 | ✅ `human_loop` | DONE | `post_permission` | SSE approval channel with 60s timeout |
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell executor, community-audited injection safety |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python sandbox |

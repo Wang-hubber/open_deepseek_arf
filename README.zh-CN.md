@@ -79,7 +79,7 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | **Memory** | `round_end` | DONE | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
 | **TODO** | `round_start`, `round_end` | DONE | 任务列表追踪 + 提醒注入 |
 | **UNDO** | `round_end`, `sandbox_persist` | DONE | Round 级状态 + 文件回滚 |
-| **Model Routing** | `pre_model_call` | DONE | `TwoTierRouter` — 廉价 LLM 分类：简单→flash，复杂→pro |
+| ~~**Model Routing**~~ | `pre_model_call` | **已弃用** | `TwoTierRouter` — 廉价 LLM 分类：简单→flash，复杂→pro。已弃用，改用直接模型配置。 |
 | **Human Loop** | `post_permission`, `pre_tool_exec` | DONE | SSE 审批通道，60s 超时 |
 | **Compaction** | `round_end` | DONE | `CompactionPlugin` — token 感知，75% 阈值，保留 8 条 + LLM 摘要 |
 | **Checkpoint** | `round_end`, `session_end` | DONE | `CheckpointPlugin` — round 快照 + session 归档，支持 undo/restore |
@@ -340,7 +340,7 @@ cd app/web && npm install && npm run dev
 | P-5 | ✅ `memory` | DONE | `round_end` | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
 | P-6 | ✅ `todo` | DONE | `round_start`, `round_end` | 任务列表追踪 + 提醒注入 |
 | P-7 | ✅ `undo` | DONE | `round_end`, `sandbox_persist` | Round 级状态 + 文件回滚 |
-| P-8 | ✅ `model_router` | DONE | `pre_model_call` | TwoTierRouter 快/慢分发 |
+| ~~P-8~~ | ~~`model_router`~~ | **已弃用** | `pre_model_call` | TwoTierRouter 快/慢分发 — 已弃用 |
 | P-9 | ✅ `human_loop` | DONE | `post_permission` | SSE 审批通道，60s 超时 |
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
