@@ -113,7 +113,7 @@ models:
     temperature: 0.3   # 只写要覆盖的字段，其余从 models/quick.yaml 继承
 ```
 
-框架自动完成模型适配器注入、EventBus 创建、状态管理、上下文压缩——app 层不需要管这些。参考 app 在此基础上增加了 SSE streaming、undo、trace API、双 Agent 路由、权限审批等。
+框架自动完成模型适配器注入（ModelAdapter）、状态管理（StateStore）、Hook 系统（控制平面骨架）。压缩（CompactionPlugin）、Trace（TracePlugin）、路由（ModelRouterPlugin）等能力通过 Plugin 挂载在生命周期 Hook 上——框架无 Plugin 也能运行，Plugin 添加预置能力。
 
 ---
 
@@ -142,20 +142,49 @@ my_app/
 
 ### 3.1b 框架 Plugins
 
-`arf/plugins/` 提供框架内置的能力包，通过 `agent.yaml` 的 `plugins:` 字段激活：
+**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发。框架无 Plugin 也能运行（6 骨架足够）；Plugin 添加预置或自定义能力。
+
+每个 Plugin 一个目录，含 `plugin.yaml`（声明 name + hooks + config）和 `plugin.py`（实现 `PluginProtocol` 接口）：
 
 ```yaml
-plugins:
-  - planner    # 任务规划
-  - todo       # 任务追踪
-  - undo       # 对话回退
+# arf/plugins/compaction/plugin.yaml
+name: compaction
+hooks:
+  - round_end
+enabled: true
+config:
+  threshold: 0.75
 ```
 
-Plugin 内部结构与 App 层工具/技能约定一致（`tools/` + `skills/` 子目录）。
-框架启动时 `PluginProvider` 扫描激活的 plugin 目录，`ResourceResolver` 自动合并到工具/技能列表。
-App 层同名工具覆盖 plugin 版本（app > plugin）。
+```python
+# arf/plugins/compaction/plugin.py
+class CompactionPlugin:
+    @property
+    def name(self) -> str:
+        return "compaction"
 
-社区贡献的 plugin 放在 `arf/plugins/` 目录下即可被框架发现。
+    @property
+    def hooks(self) -> list[str]:
+        return ["round_end"]
+
+    async def on_hook(self, hook_name: str, context: PluginContext) -> None:
+        # 在 round_end 时触发压缩逻辑
+        ...
+```
+
+**内置 Plugin 清单**：
+
+| Plugin | Hook | 功能 |
+|--------|------|------|
+| `compaction` | `round_end` | Token 感知上下文压缩 |
+| `checkpoint` | `round_end`, `session_end` | 会话状态快照 + 归档 |
+| `trace` | 全部 hook（跨切面） | JSONL 事件记录 |
+| `eval` | 离线 | Trace 回放 + 指标计算 |
+| `memory` | `round_end` | 长期记忆提取 |
+| `todo` | `round_start`, `round_end` | 任务追踪 + 提醒 |
+| `undo` | `round_end`, `sandbox_persist` | Round 级回滚 |
+
+`PluginLoader` 自动扫描 `arf/plugins/` 目录下的 `plugin.yaml`，`InProcessHookRunner` 在 Hook 触发时执行已注册的 Plugin。
 
 ### 3.2 AppContext — 单一路径源
 
@@ -868,20 +897,22 @@ pipeline:
 
 ## 7. 生命周期 Hook
 
-Hook 是独立子进程脚本，在 Agent 的八个生命周期事件点触发。通过 `SubprocessHookRunner` 以 `asyncio.create_subprocess_shell` 并行启动。
+ARF 提供 **9 个 Hook 注入点**，覆盖完整的 Agent 生命周期。框架 Plugin 通过 `InProcessHookRunner` 挂载在这些 Hook 点上；外部脚本通过 `SubprocessHookRunner` 以子进程方式执行。
 
-### 7.1 八个事件点
+### 7.1 九个事件点
 
-| 事件 | 触发时机 | 典型用途 |
-|------|---------|---------|
-| `session_start` | 会话开始时 | 初始化日志、加载外部配置 |
-| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 |
-| `pre_model_call` | 每次调用模型前 | 消息预处理、敏感词过滤 |
-| `post_model_call` | 每次模型响应后 | 响应审计、内容归档 |
-| `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 |
-| `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 |
-| `round_end` | 每轮用户交互结束时 | 记忆提取、状态持久化 |
-| `session_end` | 会话结束时 | 清理临时文件、发送通知 |
+| 事件 | 触发时机 | 典型用途 | Plugin 挂载 |
+|------|---------|---------|-----------|
+| `session_start` | 会话开始时 | 初始化日志、加载外部配置 | — |
+| `round_start` | 每轮用户交互开始时 | 轮次计数、上下文准备 | TODO |
+| `pre_model_call` | 每次调用模型前 | 消息预处理、模型路由 | Model Routing |
+| `post_model_call` | 每次模型响应后 | 响应审计、内容归档 | — |
+| `post_permission` | 权限检查后、工具执行前 | 人工审批确认 | Human Loop |
+| `pre_tool_exec` | 工具执行前 | 参数校验、权限二次检查 | Human Loop |
+| `post_tool_exec` | 工具执行后 | 工具调用日志、结果归档 | — |
+| `sandbox_persist` | 工具结果保存后、下一轮前 | 沙箱数据快照 | UNDO |
+| `round_end` | 每轮用户交互结束时 | 状态持久化、记忆提取、上下文压缩 | Memory, TODO, UNDO, Compaction, Checkpoint |
+| `session_end` | 会话结束时 | 清理临时文件、会话归档 | Checkpoint |
 
 ### 7.2 配置与退出码
 
@@ -1017,9 +1048,10 @@ def _load_dotenv() -> None:
 > 参考 `arf/agent/base.py:449-455`。
 
 > **框架自动注入的能力（App 无需编写）：**
-> FileTraceStore（事件追踪）、UsageTracker（用量统计）、
-> call_model / stream_model（模型 API 注入）、
-> SlidingWindowCompactor（上下文压缩）、TwoTierRouter（模型调度）。
+> UsageTracker（用量统计）、call_model / stream_model（模型 API 注入）、
+> StateStore（状态管理）、Hook 系统（9 个注入点）。
+> 压缩（CompactionPlugin）、Trace（TracePlugin）、路由（ModelRouterPlugin）等
+> 通过 Plugin 挂载在 Hook 上——框架无 Plugin 也能运行，Plugin 添加预置能力。
 > App 层只需关注 agent.yaml 配置 + server 胶水代码。
 
 ### 8.3 SSE 流式响应
@@ -1545,47 +1577,60 @@ advanced:
 
 ### 12.3 框架模块概览
 
-了解框架模块有助于理解运行时行为，通常不需要修改：
+ARF 框架由 **6 个骨架**（最小运行单元）和 **Plugin 体系**（可选能力扩展）组成。
 
 ```
 arf/
-├── agent/          # BaseAgent — 组装所有协议实现，自动注入 call_model
-├── engine/         # GraphEngine — 主循环：memory→route→compact→call→guard→execute
-├── resources/      # 资源系统：三个 Provider + ResourceResolver + FileWatcher
-├── memory/         # FileMemoryStore、LLMMemoryWriter、LLMMemoryRetriever
-├── compaction/     # SlidingWindowCompactor — token 感知窗口压缩
-├── routing/        # TwoTierRouter — 快慢模型调度
-├── guardrails/     # PathCheckToolGuard（路径穿越阻断，已移至 executor 层）
-├── session/        # SessionModeManager、PermissionRegistry、PermissionLists
-├── hooks/          # SubprocessHookRunner — 六个生命周期事件
-├── sandbox/        # PathSandbox — 路径合法性校验
-├── observability/  # FileTraceStore、UsageTracker、trace_viewer.html
+├── agent/          # BaseAgent — DI 组装全部 Protocol 实现，自动注入 call_model
+├── engine/         # 控制平面 — GraphEngine 主循环 + LoopStrategy + State 管理 + Hook 系统
+├── core/           # 协议定义（Protocol）、Pydantic 配置模型、事件类型、ModelAdapter、PluginContext
+│
+├── resources/      # [骨架 2] 资源注册 — Provider + ResourceResolver + FileWatcher
+├── guardrails/     # [骨架 3+4] 权限控制 + 安全审核 — PermissionRegistry + ContentGuard
+├── sandbox/        # [骨架 5] 执行器 — SandboxManager per-session 隔离
+├── session/        # [骨架 3] 会话权限 — SessionModeManager + PermissionLists
+│
+├── hooks/          # Hook 执行 — SubprocessHookRunner + InProcessHookRunner
+├── plugins/        # Plugin 目录 — compaction, checkpoint, trace, eval, memory, todo, undo, ...
+│   ├── plugin_loader.py  # 自动扫描 plugin.yaml，加载 PluginProtocol 实现
+│   ├── compaction/       # CompactionPlugin — round_end token 感知压缩
+│   ├── checkpoint/       # CheckpointPlugin — round_end/session_end 状态归档
+│   ├── trace/            # TracePlugin — 全生命周期 JSONL 事件记录
+│   ├── eval/             # EvalPlugin — 离线 trace 回放 + 指标
+│   ├── memory/           # MemoryPlugin — 长期记忆提取
+│   ├── todo/             # TodoPlugin — 任务追踪
+│   └── undo/             # UndoPlugin — round 级回滚
+│
+├── routing/        # ModelRouterPlugin — 快慢模型调度
+├── human_loop/     # HumanLoopPlugin — SSE 审批通道
+├── observability/  # UsageTracker、trace_viewer.html（Trace 记录已移至 TracePlugin）
+├── evaluation/     # EvalRunner、BenchmarkBuilder（测评已移至 EvalPlugin）
+├── compaction/     # SlidingWindowCompactor（压缩已移至 CompactionPlugin）
+├── protection/     # TokenBucket + CircuitBreaker（API 保护）
+│
+├── errors/         # DefaultErrorPolicy + FunctionBackend rollback
 ├── skills/         # SkillPipeline — 工具依赖执行时序
-├── human_loop/     # ApprovalPoint、ConsoleChannel — 人机审批
-├── evaluation/     # EvalRunner、BenchmarkBuilder、EvalComparator — 回归测评
-├── streaming/      # SseStream — Server-Sent Events 传输
-├── communication/  # InMemoryAgentBus、PeerAgent — 多 Agent 通信
-├── errors/         # DefaultErrorPolicy
-├── concurrency/    # SequentialScheduler
-├── evaluation/     # EvalRunner、Metrics
+├── streaming/      # SseStream — SSE 事件流
+├── communication/  # [已弃用] A2A 通信 — 先聚焦 agent+subagent
+├── concurrency/    # [已弃用] TaskScheduler — 仅单 Agent 执行
 ├── testing/        # InMemory* test doubles
-└── core/           # 协议定义、Pydantic 配置模型、事件类型、ModelAdapter
+└── action_runner/  # Promotion + ResourceScheduler
 ```
 
 ### 框架自动化能力
 
 以下能力由 BaseAgent 自动注入，App 只需在 agent.yaml 中配置即可：
 
-| 能力 | 机制 | agent.yaml 字段 |
-|------|------|----------------|
-| 工具/技能/模型发现 | FileWatcher + Provider + ResourceResolver | `tools:`, `models/`, `skills/` 目录约定 |
-| 状态持久化 | FileStateStore | 自动，每轮 engine turn 后 put() |
-| Trace 记录 | FileTraceStore | `advanced.observability.trace_dir` |
-| Token 用量追踪 | UsageTracker | 自动 |
-| 上下文压缩 | SlidingWindowCompactor | `advanced.compaction` |
-| 模型路由 | TwoTierRouter | `advanced.routing` |
-| Plugin 注入 | PluginProvider | `plugins:` |
-| 模型 API 注入 | ModelAdapter + call_model | `models/*.yaml` |
+| 能力 | 机制 | 所属 |
+|------|------|------|
+| 工具/技能/模型发现 | FileWatcher + Provider + ResourceResolver | 骨架 2 — 资源注册 |
+| 状态持久化 | FileStateStore（骨架）+ CheckpointPlugin | 骨架 6 + Plugin |
+| Trace 记录 | TracePlugin（JSONL 事件记录） | Plugin |
+| Token 用量追踪 | UsageTracker | 基础设施 |
+| 上下文压缩 | CompactionPlugin（挂载 round_end） | Plugin |
+| 模型路由 | ModelRouterPlugin（挂载 pre_model_call） | Plugin |
+| Plugin 注入 | PluginLoader + InProcessHookRunner | 基础设施 |
+| 模型 API 注入 | ModelAdapter + call_model | 基础设施 |
 
 ### 12.4 回归测评
 

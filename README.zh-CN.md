@@ -51,39 +51,60 @@
 
 操作系统的经典抽象——虚拟内存、缓存层次、系统调用、保护环——直接映射到每个智能体工程师日常面对的问题。ARF 不发明新抽象，而是将经过数十年验证的 OS 模式适配到 Token 时代。
 
-### Harness 即内核——问题域架构
+### Harness 即内核——6 骨架架构
 
 > **Model + Harness = Agent。CPU + Kernel = Computer。**
 >
 > Token 是指令。Agent 会话是进程。工具调用是系统调用。
 
-*点击第一列的问题名称可查看深度设计文档。*
+ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对应一个 Protocol。框架可以只用这 6 个骨架运行 Agent；其余一切都是挂载在生命周期 Hook 点上的 **Plugin**。
 
-| # | 问题 | OS 类比 | 当前实现 | 演进方向 |
+*点击第一列的名称可查看深度设计文档。*
+
+| # | 骨架 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
-| 1 | **[Agent 执行 →](docs/agent-execution.md)**<br>生命周期 + 循环控制 | 进程管理 (fork/exec/scheduler) | `GraphEngine` 统一 `_execute` 路径驱动 invoke/astream。`BaseAgent` DI 组装全部协议。`LoopStrategy` ReAct 模式。`max_turns` 会话断路器。 | 多 Agent DAG 编排；暂停/恢复/检查点；plan-execute 循环策略 |
-| 2 | **[LLM 调度 →](docs/model-routing.md)**<br>模型分发 + API 保护 | CPU 调度 (big.LITTLE/CFS) + 进程监管 | `TwoTierRouter` — LLM 分类器分发简单→flash、复杂→pro。Router/Engine 两层降级链。`system_model` 后台任务专用。`TokenBucket` 按 API 端点限流（可配置 rps + burst）。`CircuitBreaker` 按模型指数冷却熔断——连续失败后熔断，HALF_OPEN 探测，自动恢复。`ModelAdapter` 指数退避重试。 | 三级分类器（light/medium/complex）；连续负载跟踪（PELT 风格）；自适应阈值；优先级队列 |
-| 3 | **[上下文管理 →](docs/context-management.md)**<br>上下文窗口压缩 | 虚拟内存 (paging/swapping) | `SlidingWindowCompactor` — token 感知，75% 阈值触发，保留最近 4 条 + LLM 摘要。长工具输出摘要写入磁盘。 | 语义单元压缩；自适应阈值；跨会话摘要复用；会话外压缩（父子节点摘要，RAG 风格） |
-| 4 | **[中断与恢复 →](docs/interrupt.md)**<br>取消 + 回退 + 回滚 | 硬件中断 (ISR) + 信号 | `asyncio.Event` 取消令牌每轮检查。`RoundManager` — 可配置快照窗口（默认 3），状态 + 文件跨 handoff 回滚。`FunctionBackend` 回滚——工具可选导出 `rollback()`，`execute()` 异常时自动调用。`SubprocessHookRunner` 退出码 2 → 消息注入。 | 暂停/重定向向量；空闲超时；中断优先级 |
-| 5 | **[A2A 通信 →](docs/a2a-communication.md)**<br>Agent 间交互 | IPC (管道/信号/共享内存/消息队列) | `HandoffManager` 信号驱动 Agent 切换，集成于统一 `_execute` 循环。`InMemoryAgentBus` — asyncio.Queue 消息路由（广播、定向、能力发现）。`PeerAgent` — P2P 协商/切换/发现。`DictWorkspace` 共享内存。`InMemoryLock` 同步。`MajorityVoteConsensus`。AgentBus/Supervisor/Consensus 协议层。`SkillPipeline` — 工具执行依赖声明。`ConcurrentToolExecutor` 并行执行。 | 网络 A2A (gRPC)；发布/订阅 Agent 发现；DAG 多 Agent 调度 |
-| 6 | **[资源管理器 →](docs/resource-registry.md)**<br>工具/技能/模型发现 | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。kernel/dynamic 分离 + 一次性冻结。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并 + `generate_config()` 导出。MCP 统一资源接口 — 本地 MCP Server 子进程（stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
-| 7 | **[安全与沙箱 →](docs/tool-sandbox.md)**<br>访问控制 + 路径安全 | 保护环 (Ring 0-3) + ACL | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`SessionModeManager` + `PermissionRegistry` — `session_mode` (auto/ask/plan) 全局模式 + deny→ask→allow 权限列表。`HumanLoop` SSE 推送审批 + 60s 超时。`GuardDefaults` 三道防线（PathCheck/Regex/None）。 | 逐次调用沙箱；MCP 协议；OAuth 范围权限 |
-| 8 | **[可观测性 →](docs/trace.md)**<br>事件追踪 + 指标 | syslog / dtrace / perf | `EventType` Literal 覆盖完整生命周期。`InMemoryEventBus` → `FileTraceStore`（每会话 JSON）。`UsageTracker` token 统计。独立 HTML trace viewer。Vue SPA 瀑布流按交互轮次分组。Streamable HTTP (NDJSON) 实时事件。 | SQLite trace 数据库；OpenTelemetry 导出；Prometheus 指标 |
-| 9 | **[插件系统 →](docs/api-protection.md)**<br>插件框架 | OS 内置软件 (coreutils, Notepad) | `arf/plugins/` 目录 — `agent.yaml` 的 `plugins:` 字段按名激活。`PluginProvider` 扫描 `tools/`、`skills/`、`hooks/` 三个子目录。`ResourceResolver` 合并到工具/技能列表。P0 插件：`planner`（任务分解）、`todo`（任务列表）、`undo`（轮次回滚）、[`memory`](docs/plugins/memory.md)（长期记忆提取）。App 层可覆盖插件工具（app > plugin）。 | P1：bash、code_interpreter、file_ops；P2：web_search、web_fetch、resource_loader；社区插件仓库 |
-| 10 | **[质量保证 →](docs/eval-benchmark.md)**<br>回归测试 | CI 测试套件 + 会话回放 | `BenchmarkBuilder` 从真实会话 trace 创建测试用例。`EvalRunner` 通过 `agent.chat()` 重放，`EventBus.events_since()` 采集。4 个内置指标（成功率、工具准确率、轮次效率、输出包含）。`EvalComparator` 对比运行报告。198 个单元/功能测试。 | CLI 集成；HTML 可视化报告；语义相似度指标；CI 流水线 |
+| 1 | **[Prompt 组装](docs/agent-execution.md)** | 程序加载器 (execve) | `SystemPromptProvider` — prefix（role + critical_rules）+ suffix（`$INVENTORY` 模板）。`string.Template` 占位符（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）。引擎每轮替换。 | 多 Agent prompt 组合；基于角色的模板分发 |
+| 2 | **[资源注册 (MCP)](docs/resource-registry.md)** | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并。MCP 统一接口（本地 MCP Server 子进程，stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
+| 3 | **[权限控制](docs/tool-sandbox.md)** | ACL + 能力位 | `SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow 执行。Per-agent `policy` 覆盖。`deny_patterns` 正则匹配。 | OAuth 范围权限；基于角色的访问控制 |
+| 4 | **[安全审核](docs/tool-sandbox.md)** | 保护环 (Ring 0-3) | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ContentGuard` — 执行前/后 + 输出前基于规则的筛查。`GuardDefaults` 三道防线。 | 逐次调用沙箱；内容感知扫描 |
+| 5 | **[执行器 (沙箱)](docs/tool-sandbox.md)** | 进程隔离 (chroot/namespace) | `SandboxManager` — 每会话隔离工作区，可配置黑名单，自动销毁。`ConcurrentToolExecutor` 并行执行。`FunctionBackend` 可选 `rollback()`。 | 容器级沙箱；资源配额 |
+| 6 | **[控制平面](docs/agent-execution.md)** | 进程调度器 + 信号 | `GraphEngine` 统一 `_execute` 路径。`LoopStrategy` ReAct 模式 + TODO 追踪。State 管理（运行时会话状态）。9 个 Hook 注入点（`session_start`、`round_start`、`pre_model_call`、`post_model_call`、`post_permission`、`pre_tool_exec`、`post_tool_exec`、`sandbox_persist`、`round_end`、`session_end`）。 | Plan-Execute 循环策略；暂停/恢复/检查点；多 Agent DAG |
+
+### Plugin 体系
+
+**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。
+
+| Plugin | Hook | 状态 | 描述 |
+|--------|------|------|------|
+| **Memory** | `round_end` | DONE | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
+| **TODO** | `round_start`, `round_end` | DONE | 任务列表追踪 + 提醒注入 |
+| **UNDO** | `round_end`, `sandbox_persist` | DONE | Round 级状态 + 文件回滚 |
+| **Model Routing** | `pre_model_call` | DONE | `TwoTierRouter` — 廉价 LLM 分类：简单→flash，复杂→pro |
+| **Human Loop** | `post_permission`, `pre_tool_exec` | DONE | SSE 审批通道，60s 超时 |
+| **Compaction** | `round_end` | DONE | `CompactionPlugin` — token 感知，75% 阈值，保留 8 条 + LLM 摘要 |
+| **Checkpoint** | `round_end`, `session_end` | DONE | `CheckpointPlugin` — round 快照 + session 归档，支持 undo/restore |
+| **Trace** | 全部 hook（跨切面） | DONE | `TracePlugin` — JSONL 事件记录，用于调试、回放、评估 |
+| **Evaluation** | 离线 | DONE | `EvalPlugin` — 重放 trace、计算指标、diff 报告 |
+| Planner | (延后) | P1 | 任务分解，system model 驱动 |
+| bash | (延后) | P1 | Shell 执行器，注入安全审计 |
+| code_interpreter | (延后) | P1 | Python 沙箱 |
+
+### 弃用/延后
+
+| 模块 | 处理 | 原因 |
+|------|------|------|
+| A2A 通信 (`arf/communication/`) | 弃用 | 先聚焦 agent+subagent |
+| TaskScheduler (`arf/concurrency/`) | 弃用 | 仅单 Agent 执行 |
+| Plan-Execute 策略 | 延后 | ReAct + TODO 当前足够 |
 
 **边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
 
 | 层级 | 范畴 | 能力 |
 |------|------|------|
-| **框架** (`arf/`) | **Agent 执行** | `GraphEngine`（统一 `_execute` 路径）、`BaseAgent` DI 组装、`LoopStrategy` ReAct、`RoundManager` checkpoint/undo、`HandoffManager` 多 Agent 切换、`ConcurrentToolExecutor` 并行执行、`SkillPipeline` 依赖排序 |
-| | **LLM 调度** | `TwoTierRouter` 快/慢分发、`ModelAdapter` 指数退避重试、`TokenBucket` 按端点限流、`CircuitBreaker` 按模型故障隔离、`ModelCallProtector` 装饰器模式注入 |
-| | **上下文管理** | `SlidingWindowCompactor`（75% 阈值 + LLM 摘要）、`_load_resident_memory()`（启动时加载 `memory.md`，注入 `{{MEMORY}}` 占位符） |
-| | **资源系统** | `ResourceResolver`（统一解析）、`ToolProvider`/`SkillProvider`/`ModelProvider`、`PluginProvider`（扫描 `arf/plugins/`）、`ResourceCache`（kernel/dynamic）、`FileWatcher`（inotify/轮询热加载） |
-| | **安全** | `PathCheckToolGuard`（..、符号链接、深度/数量）、`SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow、`HumanLoop` SSE 审批 + 60s 超时、`GuardDefaults` 三道防线 |
-| | **可观测性** | `InMemoryEventBus`、`FileTraceStore`（每会话 JSON）、`UsageTracker`（token 统计）、独立 HTML trace viewer、Vue SPA 瀑布流 |
-| | **基础设施** | `SubprocessHookRunner`（退出码契约）、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`EvalRunner`/`BenchmarkBuilder`/`EvalComparator`（会话回放与回归） |
-| | **协议层** | Protocol 类（`core/protocols/`）——定义 `MemoryStore`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter`、`CompactionStrategy`、`LoopStrategy` 等全部抽象接口 |
+| **框架** (`arf/`) | **6 骨架** | **Prompt 组装** — `SystemPromptProvider`（prefix + suffix + `$INVENTORY` 模板）。**资源注册** — MCP 统一接口、`ResourceResolver`、`FileWatcher` 热加载。**权限控制** — `SessionModeManager` + `PermissionRegistry` deny→ask→allow。**安全审核** — `PathCheckToolGuard`、`ContentGuard` 规则筛查。**执行器** — `SandboxManager` 每会话隔离、`ConcurrentToolExecutor` 并行执行。**控制平面** — `GraphEngine`+`LoopStrategy` ReAct、State 管理、9 个 Hook 注入点。 |
+| | **Plugins** | `InProcessHookRunner` 在生命周期 Hook 上执行 `PluginProtocol` 实例。内置：`CompactionPlugin`（token 感知滑动窗口）、`CheckpointPlugin`（round 快照 + session 归档）、`TracePlugin`（JSONL 事件记录）、`EvalPlugin`（离线 trace 回放 + 指标）、`MemoryPlugin`（长期记忆提取）、`TodoPlugin`（任务追踪）、`UndoPlugin`（round 回滚）、`ModelRouterPlugin`（快/慢分发）、`HumanLoopPlugin`（SSE 审批）。 |
+| | **基础设施** | `ModelAdapter` 指数退避 + 重试、`TokenBucket` 限流、`CircuitBreaker` 故障隔离、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`SubprocessHookRunner` 外部 Hook 脚本、`SkillPipeline` 依赖排序 |
+| | **协议层** | Protocol 类（`core/protocols/`）——定义 `LoopStrategy`、`StateStore`、`ToolExecutor`、`PluginProtocol`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter` 等全部抽象接口 |
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + Streamable HTTP (NDJSON)、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / config |
@@ -148,20 +169,21 @@ advanced:
 
 ### 压缩——Token 感知的上下文管理
 
-`SlidingWindowCompactor` 监控上一轮的 token 用量。达到模型上下文窗口 75% 时触发：保留最近 4 条消息，旧轮次通过 LLM 生成 7 维结构化摘要存入 `context_summary`。长工具输出（>2000 字符）落盘，上下文保留摘要指针——无 system model 时静默退化到纯截断。
+`CompactionPlugin`（挂载在 `round_end` hook）监控上一轮的 token 用量。达到模型上下文窗口 75% 时触发：保留最近 8 条消息，旧轮次通过 LLM 生成摘要存入 `context_summary`。长工具输出（>2000 字符）落盘，上下文保留摘要指针。通过 `plugin.yaml` 配置：
 
 ```yaml
-advanced:
-  compaction:
-    strategy: sliding_window    # sliding_window | none
-    threshold: 0.75
+# arf/plugins/compaction/plugin.yaml
+config:
+  threshold: 0.75
+  window_size: 131072
+  keep_count: 8
 ```
 
 [设计文档 →](docs/context-management.md)
 
 ### 模型路由——快慢分流
 
-`TwoTierRouter` 通过廉价 LLM 对每次用户查询分类：简单 → `quick`（flash），复杂 → `deep`（pro）。Router/Engine 两层降级链确保每请求都有模型可用。后台任务（压缩、分类、handoff）共用 `system_model`。每轮动态切换。
+`ModelRouterPlugin`（挂载在 `pre_model_call` hook）通过廉价 LLM 对每次用户查询分类：简单 → `quick`（flash），复杂 → `deep`（pro）。Router/Engine 两层降级链确保每请求都有模型可用。后台任务共用 `system_model`。
 
 ```yaml
 models:
@@ -227,7 +249,7 @@ Skill 可声明工具流水线与显式依赖。引擎强制执行顺序——�
 
 ### Trace——全链路可观测
 
-引擎在 invoke + astream 双路径中 emit 全部事件类型 → `FileTraceStore`（JSON）+ `UsageTracker`（token 统计）。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`/trace-viewer` 提供独立 HTML 查看器。
+`TracePlugin`（跨切面，挂载在全部 9 个 hook 点）将每个生命周期事件记录为 JSONL trace 文件。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`UsageTracker` 提供 token 统计。`/trace-viewer` 提供独立 HTML 查看器。
 
 [设计文档 →](docs/trace.md)
 
@@ -307,21 +329,21 @@ cd app/web && npm install && npm run dev
 | 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | ~~LLM API 调用无速率限制、无断路器保护。~~ → `ModelCallProtector` 组合 `TokenBucket`（按 api_base）+ `CircuitBreaker`（按模型，指数冷却）。在 `BaseAgent._inject_model_calls()` 中以 decorator 模式包装 `_call_model`/`_stream_model`。5 种事件通过 EventBus → trace viewer 可观测。移除了 `DefaultErrorPolicy` 中的 engine 级重试。GraphEngine/ModelAdapter 零侵入。参见 [`docs/api-protection.md`](docs/api-protection.md)。 |
 | 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。文档丰富但缺乏外部贡献的流程指引。**风险**：潜在贡献者不知道提交标准；无 changelog 则用户无法评估升级影响 |
 
-**Plugins** — 框架能力包，通过 `agent.yaml` 的 `plugins:` 字段激活。`PluginProvider` 扫描 `arf/plugins/{name}/`。社区可贡献。
+**Plugins** — 挂载在 Hook 点上的能力包。每个 Plugin 包含 `plugin.yaml`（name + hooks + config）和 `plugin.py`（PluginProtocol 实现）。`PluginLoader` 扫描 `arf/plugins/{name}/`。社区可贡献。Plugin ≠ Tool — Plugin 在生命周期 Hook 自动触发，Tool 是 Agent 主动调用的 MCP 资源。
 
-| # | Plugin | 状态 | 描述 |
-|---|--------|------|------|
-| P-1 | ✅ `planner` | DONE | 通过 system_model 做任务分解，替代空的 PromptBasedPlanner |
-| P-2 | ✅ `todo` | DONE | 任务列表管理（添加/勾选/列表/清除），读写 `todo.md` |
-| P-3 | ✅ `undo` 迁移 | DONE | 从 `app/tools/` → `arf/plugins/undo/` |
-| P-4 | ✅ `plugin_provider` | DONE | PluginProvider 扫描插件目录，`agent.yaml` `plugins:` 字段 |
-| P-5 | `bash` | P1 | Shell 执行器，社区审计注入安全 |
-| P-6 | `code_interpreter` | P1 | Python 沙箱，替代 `app/tools/python_exec` |
-| P-7 | `file_ops` | P1 | 读/写/列/删，从 app 工具合并到插件 |
-| P-8 | `web_search` | P2 | DuckDuckGo 搜索，从 app 迁移到插件 |
-| P-9 | `web_fetch` | P2 | HTTP 抓取，从 app 迁移到插件 |
-| P-10 | `resource_loader` | P2 | 热加载资源，从 app 迁移到插件 |
-| P-11 | ✅ `memory` | DONE | **[长期记忆提取 →](docs/plugins/memory.md)** — 基于 subprocess 的非阻塞提取，通过 sysmodel 驱动。按轮次间隔触发（默认 10 轮）。原子写入 `memory.md`（≤300KB），会话启动时加载。双触发路径：`round_end` hook + `memory_extract` 工具 |
+| # | Plugin | 状态 | Hook | 描述 |
+|---|--------|------|------|------|
+| P-1 | ✅ `compaction` | DONE | `round_end` | Token 感知上下文压缩，75% 阈值 + LLM 摘要 |
+| P-2 | ✅ `checkpoint` | DONE | `round_end`, `session_end` | Round 快照 + session 归档，支持恢复 |
+| P-3 | ✅ `trace` | DONE | 全部 9 个 hook | JSONL 事件记录，用于调试、回放、评估 |
+| P-4 | ✅ `eval` | DONE | 离线 | Trace 回放 + 指标计算 + diff 报告 |
+| P-5 | ✅ `memory` | DONE | `round_end` | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
+| P-6 | ✅ `todo` | DONE | `round_start`, `round_end` | 任务列表追踪 + 提醒注入 |
+| P-7 | ✅ `undo` | DONE | `round_end`, `sandbox_persist` | Round 级状态 + 文件回滚 |
+| P-8 | ✅ `model_router` | DONE | `pre_model_call` | TwoTierRouter 快/慢分发 |
+| P-9 | ✅ `human_loop` | DONE | `post_permission` | SSE 审批通道，60s 超时 |
+| P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
+| P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
 
 ### 演进方向
 

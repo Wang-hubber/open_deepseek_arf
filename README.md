@@ -51,26 +51,51 @@ A model is raw compute — powerful, but not a computer. It needs memory managem
 
 The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the problems every agent engineer faces. ARF does not invent new abstractions. It adapts proven OS patterns to the token era.
 
-### Harness as Kernel — Problem-Domain Architecture
+### Harness as Kernel — 6-Skeleton Architecture
 
 > **Model + Harness = Agent. CPU + Kernel = Computer.**
 >
 > Token is the instruction. Agent session is the process. Tool call is the system call.
 
-*Click any problem name for the full design document.*
+ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton maps to a Protocol. The framework can run an Agent with only these 6; everything else is a **Plugin** mounted on lifecycle Hook points.
 
-| # | Problem | OS Analogy | Current | Evolution |
-|---|---------|------------|---------|-----------|
-| 1 | **[Agent Execution →](docs/agent-execution.md)**<br>Lifecycle + loop control | Process management (fork/exec/scheduler) | `GraphEngine` single `_execute` path driving invoke/astream thin wrappers. `BaseAgent` DI assembly of all protocols. `LoopStrategy` ReAct pattern. `max_turns` per-session circuit breaker. | Multi-agent DAG orchestration; pause/resume/checkpoint; plan-execute loop strategy |
-| 2 | **[LLM Scheduling →](docs/model-routing.md)**<br>Model dispatch + API protection | CPU scheduling (big.LITTLE/CFS) + process supervision | `TwoTierRouter` — LLM classifier dispatches simple→flash, complex→pro. Router/Engine two-layer degradation chain. `system_model` for background tasks. `TokenBucket` per-endpoint rate limiting (configurable rps + burst). `CircuitBreaker` per-model with exponential cooldown — trips after consecutive failures, probes via HALF_OPEN, auto-recovers. `ModelAdapter` exponential backoff retry. | Three-tier classifier (light/medium/complex); continuous load tracking (PELT-style history); adaptive thresholds (history-based failure_threshold); priority queuing (system vs user requests) |
-| 3 | **[Context Management →](docs/context-management.md)**<br>Context window compaction | Virtual memory (paging/swapping) | `SlidingWindowCompactor` — token-aware, triggers at 75% threshold, keeps last 4 msgs + LLM summary. Long tool outputs summarized to disk. | Semantic-unit compaction; adaptive threshold; cross-session summary reuse; off-session compaction (parent-child node summary, RAG-style) |
-| 4 | **[Interrupt & Recovery →](docs/interrupt.md)**<br>Cancel + undo + rollback | Hardware interrupt (ISR) + signals | `asyncio.Event` cancellation token checked each turn. `RoundManager` — configurable snapshot window (default 3), state + file rollback across handoff boundaries. `FunctionBackend` rollback — tools export optional `rollback()` called on `execute()` exception. `SubprocessHookRunner` exit-code 2 → message injection. | Pause/redirect vectors; idle timeout; interrupt priority levels |
-| 5 | **[A2A Communication →](docs/a2a-communication.md)**<br>Agent-to-agent interaction | IPC (pipe/signal/shared memory/message queue) | `HandoffManager` signal-based agent switching in unified `_execute` loop. `InMemoryAgentBus` — asyncio.Queue message routing (broadcast, targeted, capability discovery). `PeerAgent` — P2P negotiate/handoff/discover. `DictWorkspace` shared memory. `InMemoryLock` synchronisation. `MajorityVoteConsensus`. Protocol layer for AgentBus/Supervisor/Consensus. `SkillPipeline` — tool execution order with explicit dependencies. `ConcurrentToolExecutor` parallel execution. | Network A2A (gRPC); pub/sub agent discovery; DAG multi-agent scheduling |
-| 6 | **[Resource System →](docs/resource-registry.md)**<br>Tool/skill/model discovery | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. kernel/dynamic split with freeze-once semantics. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge + `generate_config()` dump. MCP-based unified resource interface via local MCP Server subprocess (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
-| 7 | **[Security & Sandbox →](docs/tool-sandbox.md)**<br>Access control + path safety | Protection rings (Ring 0-3) + ACL | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `SessionModeManager` (auto/ask/plan) — global session mode with per-agent policy override. `PermissionRegistry` deny→ask→allow enforcement. `HumanLoop` approval channel with SSE push + 60s timeout. `GuardDefaults` three-line defense (PathCheck/Regex/None). | Per-invocation sandbox; MCP protocol; OAuth-scoped permissions |
-| 8 | **[Observability →](docs/trace.md)**<br>Event tracing + metrics | syslog / dtrace / perf | `EventType` Literal covering the full lifecycle. `InMemoryEventBus` → `FileTraceStore` (per-session JSON). `UsageTracker` token accounting. Standalone HTML trace viewer. Vue SPA waterfall grouped by interaction round. Streamable HTTP (NDJSON) for real-time events. | SQLite trace DB; OpenTelemetry export; Prometheus metrics |
-| 9 | **[Plugin System →](docs/api-protection.md)**<br>Plugin framework | OS bundled software (coreutils, Notepad) | `arf/plugins/` directory — `agent.yaml` `plugins:` field activates by name. `PluginProvider` scans `tools/`, `skills/`, and `hooks/` per plugin. `ResourceResolver` merges into tool/skill lists. P0 plugins: `planner` (task decomposition), `todo` (task list), `undo` (round rollback), [`memory`](docs/plugins/memory.md) (long-term memory extraction). App-layer overrides plugin tools (app > plugin). | P1: bash, code_interpreter, file_ops; P2: web_search, web_fetch, resource_loader; community plugin registry |
-| 10 | **[Quality Assurance →](docs/eval-benchmark.md)**<br>Regression testing | CI test suite + session replay | `BenchmarkBuilder` creates test cases from real session traces. `EvalRunner` replays via `agent.chat()`, captures via `EventBus.events_since()`. 4 built-in metrics (success rate, tool accuracy, turn efficiency, output contains). `EvalComparator` diffs reports. 198 unit/functional tests. | CLI integration; HTML visual report; semantic similarity metric; CI pipeline |
+*Click any skeleton name for the full design document.*
+
+| # | Skeleton | OS Analogy | Current | Evolution |
+|---|----------|------------|---------|-----------|
+| 1 | **[Prompt Assembly](docs/agent-execution.md)** | Program loader (execve) | `SystemPromptProvider` — prefix (role + critical_rules) + suffix (`$INVENTORY` template). `string.Template` placeholders (`$MEMORY`, `$WORKSPACE`, `$TURN_BUDGET`). Per-turn replacement by engine. | Multi-agent prompt composition; role-based template dispatch |
+| 2 | **[Resource Registry (MCP)](docs/resource-registry.md)** | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge. MCP-based unified interface via local MCP Server (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
+| 3 | **[Permission Control](docs/tool-sandbox.md)** | ACL + capability bits | `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow enforcement. Per-agent `policy` override. `deny_patterns` regex matching. | OAuth-scoped permissions; role-based access control |
+| 4 | **[Security Audit](docs/tool-sandbox.md)** | Protection rings (Ring 0-3) | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ContentGuard` — pre/post execution + pre-output rule-based screening. `GuardDefaults` three-line defense. | Per-invocation sandbox; content-aware scanning |
+| 5 | **[Executor (Sandbox)](docs/tool-sandbox.md)** | Process isolation (chroot/namespace) | `SandboxManager` — per-session isolated workspace, configurable blacklist, auto-destroy. `ConcurrentToolExecutor` parallel execution. `FunctionBackend` with optional `rollback()`. | Container-based sandbox; resource quotas |
+| 6 | **[Control Plane](docs/agent-execution.md)** | Process scheduler + signals | `GraphEngine` single `_execute` path. `LoopStrategy` ReAct pattern + TODO tracking. State management (runtime session state). 9 Hook injection points (`session_start`, `round_start`, `pre_model_call`, `post_model_call`, `post_permission`, `pre_tool_exec`, `post_tool_exec`, `sandbox_persist`, `round_end`, `session_end`). | Plan-Execute loop strategy; pause/resume/checkpoint; multi-agent DAG |
+
+### Plugin System
+
+**Plugin ≠ Tool.** Tools are MCP-managed function resources the Agent calls. Plugins are behaviors mounted on Hook points — they fire automatically at framework lifecycle events. The framework runs without plugins; plugins add preset or custom capabilities.
+
+| Plugin | Hook | Status | Description |
+|--------|------|--------|-------------|
+| **Memory** | `round_end` | DONE | Long-term memory extraction via system model, atomic write to `memory.md` |
+| **TODO** | `round_start`, `round_end` | DONE | Task list tracking with reminder injection |
+| **UNDO** | `round_end`, `sandbox_persist` | DONE | Round-level state + file rollback |
+| **Model Routing** | `pre_model_call` | DONE | `TwoTierRouter` — cheap LLM classifies simple→flash, complex→pro |
+| **Human Loop** | `post_permission`, `pre_tool_exec` | DONE | SSE approval channel with 60s timeout |
+| **Compaction** | `round_end` | DONE | `CompactionPlugin` — token-aware, 75% threshold, keeps last 8 msgs + LLM summary |
+| **Checkpoint** | `round_end`, `session_end` | DONE | `CheckpointPlugin` — round snapshots + session archiving for undo/restore |
+| **Trace** | all hooks (cross-cutting) | DONE | `TracePlugin` — JSONL event recording for debugging, replay, evaluation |
+| **Evaluation** | offline | DONE | `EvalPlugin` — replay traces, compute metrics, diff reports |
+| Planner | (deferred) | P1 | Task decomposition via system model |
+| bash | (deferred) | P1 | Shell executor with injection safety |
+| code_interpreter | (deferred) | P1 | Python sandbox |
+
+### Deprecated / Deferred
+
+| Module | Action | Reason |
+|--------|--------|--------|
+| A2A Communication (`arf/communication/`) | Deprecated | Focus on agent+subagent first |
+| TaskScheduler (`arf/concurrency/`) | Deprecated | Single-agent execution only |
+| Plan-Execute strategy | Deferred | ReAct + TODO sufficient for now |
 
 ### Framework vs. Application
 
@@ -78,14 +103,10 @@ The primitives of operating systems — virtual memory, cache hierarchies, syste
 
 | Layer | Scope | Capabilities |
 |-------|-------|-------------|
-| **Framework** (`arf/`) | **Agent Execution** | `GraphEngine` (single `_execute` path), `BaseAgent` DI assembly, `LoopStrategy` ReAct, `RoundManager` checkpoint/undo, `HandoffManager` multi-agent switching, `ConcurrentToolExecutor` parallel execution, `SkillPipeline` dependency ordering |
-| | **LLM Scheduling** | `TwoTierRouter` fast/slow dispatch, `ModelAdapter` exponential backoff retry, `TokenBucket` per-endpoint rate limiting, `CircuitBreaker` per-model fault isolation, `ModelCallProtector` decorator-pattern injection |
-| | **Context Management** | `SlidingWindowCompactor` (75% threshold + LLM summary), `_load_resident_memory()` (loads `memory.md` at startup, injects into `{{MEMORY}}` placeholder) |
-| | **Resource System** | `ResourceResolver` (unified resolution), `ToolProvider`/`SkillProvider`/`ModelProvider`, `PluginProvider` (scans `arf/plugins/`), `ResourceCache` (kernel/dynamic), `FileWatcher` (inotify/polling hot reload) |
-| | **Security** | `PathCheckToolGuard` (.., symlink, depth/count), `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow, `HumanLoop` SSE approval + 60s timeout, `GuardDefaults` three-line defense |
-| | **Observability** | `InMemoryEventBus`, `FileTraceStore` (per-session JSON), `UsageTracker` (token accounting), standalone HTML trace viewer, Vue SPA waterfall |
-| | **Infrastructure** | `SubprocessHookRunner` (exit-code contract), `DefaultErrorPolicy`/`FunctionBackend` rollback, `EvalRunner`/`BenchmarkBuilder`/`EvalComparator` (session replay & regression) |
-| | **Protocols** | Protocol classes (`core/protocols/`) — defines `MemoryStore`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, `CompactionStrategy`, `LoopStrategy` and all other abstract interfaces |
+| **Framework** (`arf/`) | **6 Skeletons** | **Prompt Assembly** — `SystemPromptProvider` (prefix + suffix + `$INVENTORY` template). **Resource Registry** — MCP-based unified interface, `ResourceResolver`, `FileWatcher` hot reload. **Permission Control** — `SessionModeManager` + `PermissionRegistry` deny→ask→allow. **Security Audit** — `PathCheckToolGuard`, `ContentGuard` rule-based screening. **Executor** — `SandboxManager` per-session isolation, `ConcurrentToolExecutor` parallel exec. **Control Plane** — `GraphEngine`+`LoopStrategy` ReAct, State management, 9 Hook injection points. |
+| | **Plugins** | `InProcessHookRunner` executes `PluginProtocol` instances on lifecycle hooks. Built-in: `CompactionPlugin` (token-aware sliding window), `CheckpointPlugin` (round snapshots + session archive), `TracePlugin` (JSONL event recording), `EvalPlugin` (offline trace replay + metrics), `MemoryPlugin` (long-term extraction), `TodoPlugin` (task tracking), `UndoPlugin` (round rollback), `ModelRouterPlugin` (fast/slow dispatch), `HumanLoopPlugin` (SSE approval). |
+| | **Infrastructure** | `ModelAdapter` exponential backoff + retry, `TokenBucket` rate limiting, `CircuitBreaker` fault isolation, `DefaultErrorPolicy`/`FunctionBackend` rollback, `SubprocessHookRunner` for external hook scripts, `SkillPipeline` dependency ordering |
+| | **Protocols** | Protocol classes (`core/protocols/`) — defines `LoopStrategy`, `StateStore`, `ToolExecutor`, `PluginProtocol`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, and all other abstract interfaces |
 | **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and other components |
 | | **HTTP Service** | FastAPI + Uvicorn + Streamable HTTP (NDJSON), REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
 | | **CLI** | init / start / stop / chat / list / validate / config |
@@ -150,20 +171,21 @@ advanced:
 
 ### Compaction — Token-Aware Context Management
 
-The `SlidingWindowCompactor` monitors the previous turn's token usage. At 75% of the model's context window, it triggers: keeps the last 4 messages, summarizes older turns via LLM (7-dimension structured summary), and appends to `context_summary`. Long tool outputs (>2000 chars) are written to disk with a summary pointer in context — degrades gracefully to truncation when no system model.
+`CompactionPlugin` (mounted on `round_end` hook) monitors the previous turn's token usage. At 75% of the model's context window, it triggers: keeps the last 8 messages, summarizes older turns via LLM, and appends to `context_summary`. Long tool outputs (>2000 chars) are written to disk with a summary pointer in context. Configurable via `plugin.yaml`:
 
 ```yaml
-advanced:
-  compaction:
-    strategy: sliding_window    # sliding_window | none
-    threshold: 0.75
+# arf/plugins/compaction/plugin.yaml
+config:
+  threshold: 0.75
+  window_size: 131072
+  keep_count: 8
 ```
 
 [Design doc →](docs/context-management.md)
 
 ### Model Routing — Fast/Slow Dispatch
 
-`TwoTierRouter` classifies each user query via a cheap LLM: simple → `quick` (flash), complex → `deep` (pro). A two-layer degradation chain (Router → Engine) ensures every request has a model. Background tasks (compaction, classification, handoff) share a dedicated `system_model`. Per-turn dynamic switching.
+`ModelRouterPlugin` (mounted on `pre_model_call` hook) classifies each user query via a cheap LLM: simple → `quick` (flash), complex → `deep` (pro). A two-layer degradation chain (Router → Engine) ensures every request has a model. Background tasks (compaction, classification, handoff) share a dedicated `system_model`.
 
 ```yaml
 models:
@@ -230,7 +252,7 @@ Skills can declare tool pipelines with explicit dependencies. The engine enforce
 
 ### Trace — Full Pipeline Visibility
 
-Events emitted by engine across invoke + astream dual paths → `FileTraceStore` (JSON) + `UsageTracker` (token stats). Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. Standalone HTML viewer at `/trace-viewer`.
+`TracePlugin` (cross-cutting, mounted on all 9 hook points) records every lifecycle event to JSONL trace files. Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. `UsageTracker` provides token stats. Standalone HTML viewer at `/trace-viewer`.
 
 [Design doc →](docs/trace.md)
 
@@ -273,7 +295,7 @@ Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
 **Building apps on ARF**: See the [APP Developer Guide](./APP开发者指南.md) — start from a minimal `agent.yaml`, configure models/tools/skills/hooks, launch the server.
 
-**Hacking on the framework**: Check the [TODO](#todo) section for pending fixes and evolution directions. Framework code lives in `arf/`, with dependency injection allowing you to replace any default implementation.
+**Hacking on the framework**: The framework is built on **6 skeletons** that run without plugins. Each skeleton maps to a Protocol. Plugins mount on lifecycle Hooks to extend functionality. Check the [TODO](#todo) section for pending fixes and evolution directions.
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
@@ -308,21 +330,21 @@ cd app/web && npm install && npm run dev
 | 10 | ~~No rate limiting / circuit breaker~~ → **FIXED** | `arf/protection/` | Process Scheduling | Framework | ~~LLM API calls had no rate limiting or circuit breaker protection.~~ → `ModelCallProtector` with `TokenBucket` (per api_base) + `CircuitBreaker` (per model, exponential cooldown). Wraps `_call_model`/`_stream_model` closures in `BaseAgent._inject_model_calls()`. Five event types emitted via EventBus → trace viewers. Engine-level retry removed from `DefaultErrorPolicy`. Zero changes to GraphEngine/ModelAdapter. See [`docs/api-protection.md`](docs/api-protection.md). |
 | 11 | Missing open-source infrastructure | — | Distribution | Framework | No `CONTRIBUTING.md`, PR/Issue templates, `CHANGELOG.md`, or versioned release process. Documentation is rich but there's no guidance for external contributions. **Risk**: Potential contributors don't know submission standards; users can't assess upgrade impact without changelog |
 
-**Plugins** — Framework-capability bundles, activated by `agent.yaml` `plugins:` field. `PluginProvider` scans `arf/plugins/{name}/`. Community-contributable.
+**Plugins** — Hook-mounted capability bundles. Each plugin has `plugin.yaml` (name + hooks + config) and `plugin.py` (PluginProtocol impl). `PluginLoader` scans `arf/plugins/{name}/`. Community-contributable. Plugin ≠ Tool — plugins fire on lifecycle hooks, tools are Agent-called MCP resources.
 
-| # | Plugin | Status | Description |
-|---|--------|--------|-------------|
-| P-1 | ✅ `planner` | DONE | Task decomposition via system_model, replaces empty PromptBasedPlanner |
-| P-2 | ✅ `todo` | DONE | Task list management (add/check/list/clear), reads/writes `todo.md` |
-| P-3 | ✅ `undo` migration | DONE | Move from `app/tools/` → `arf/plugins/undo/` |
-| P-4 | ✅ `plugin_provider` | DONE | PluginProvider scans plugin dirs, `agent.yaml` `plugins:` field |
-| P-5 | `bash` | P1 | Shell executor, community-audited injection safety |
-| P-6 | `code_interpreter` | P1 | Python sandbox, replaces `app/tools/python_exec` |
-| P-7 | `file_ops` | P1 | Read/write/list/delete consolidated from app tools |
-| P-8 | `web_search` | P2 | DuckDuckGo search, move from app to plugin |
-| P-9 | `web_fetch` | P2 | HTTP fetch, move from app to plugin |
-| P-10 | `resource_loader` | P2 | Hot-reload resources, move from app to plugin |
-| P-11 | ✅ `memory` | DONE | **[Long-term memory extraction →](docs/plugins/memory.md)** — subprocess-based extraction via sysmodel. Round-interval trigger (default 10). Atomic write to `memory.md` (≤300KB), loaded at session startup. Two trigger paths: `round_end` hook + `memory_extract` tool |
+| # | Plugin | Status | Hook | Description |
+|---|--------|--------|------|-------------|
+| P-1 | ✅ `compaction` | DONE | `round_end` | Token-aware context compaction, 75% threshold + LLM summary |
+| P-2 | ✅ `checkpoint` | DONE | `round_end`, `session_end` | Round snapshots + session archiving, restore support |
+| P-3 | ✅ `trace` | DONE | all 9 hooks | JSONL event recording for debug, replay, evaluation |
+| P-4 | ✅ `eval` | DONE | offline | Trace replay + metric computation + diff reports |
+| P-5 | ✅ `memory` | DONE | `round_end` | Long-term memory extraction via system model, atomic write to `memory.md` |
+| P-6 | ✅ `todo` | DONE | `round_start`, `round_end` | Task list tracking with reminder injection |
+| P-7 | ✅ `undo` | DONE | `round_end`, `sandbox_persist` | Round-level state + file rollback |
+| P-8 | ✅ `model_router` | DONE | `pre_model_call` | TwoTierRouter fast/slow dispatch |
+| P-9 | ✅ `human_loop` | DONE | `post_permission` | SSE approval channel with 60s timeout |
+| P-10 | `bash` | P1 | `pre_tool_exec` | Shell executor, community-audited injection safety |
+| P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python sandbox |
 
 ### Evolution
 
