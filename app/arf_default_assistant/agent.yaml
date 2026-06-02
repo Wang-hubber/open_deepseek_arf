@@ -13,6 +13,12 @@ plugins:
   - undo
   - memory
 
+# External MCP servers — uncomment and configure as needed
+# mcp_servers:
+#   - name: search
+#     transport: sse
+#     url: http://localhost:9000/sse
+
 system_prompt:
   prefix:
     role: |
