@@ -64,7 +64,7 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | # | 骨架 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
 | 1 | **[Prompt 组装](docs/agent-execution.md)** | 程序加载器 (execve) | `SystemPromptProvider` — prefix（role + critical_rules）+ suffix（`$INVENTORY` 模板）。`string.Template` 占位符（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）。引擎每轮替换。 | 多 Agent prompt 组合；基于角色的模板分发 |
-| 2 | **[资源注册 (MCP)](docs/resource-registry.md)** | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`，`models/*.yaml`。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并。MCP 统一接口（本地 MCP Server 子进程，stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
+| 2 | **[资源注册 (MCP)](docs/resource-registry.md)** | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`。模型在 `agent.yaml` 中内联定义（`model_defs`）。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并。MCP 统一接口（本地 MCP Server 子进程，stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
 | 3 | **[权限控制](docs/tool-sandbox.md)** | ACL + 能力位 | `SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow 执行。Per-agent `policy` 覆盖。`deny_patterns` 正则匹配。 | OAuth 范围权限；基于角色的访问控制 |
 | 4 | **[安全审核](docs/tool-sandbox.md)** | 保护环 (Ring 0-3) | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ContentGuard` — 执行前/后 + 输出前基于规则的筛查。`GuardDefaults` 三道防线。 | 逐次调用沙箱；内容感知扫描 |
 | 5 | **[执行器 (沙箱)](docs/tool-sandbox.md)** | 进程隔离 (chroot/namespace) | `SandboxManager` — 每会话隔离工作区，可配置黑名单，自动销毁。`ConcurrentToolExecutor` 并行执行。`FunctionBackend` 可选 `rollback()`。 | 容器级沙箱；资源配额 |
@@ -108,7 +108,7 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
 | | **HTTP 服务** | FastAPI + Uvicorn + Streamable HTTP (NDJSON)、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
 | | **CLI 工具** | init / start / stop / chat / list / validate / config |
-| | **配置与数据** | `agent.yaml` — agent 行为 + `plugins:` 激活 + 路由 + 记忆 + 压缩、`models/deep.yaml` + `models/quick.yaml`、自定义 `tools/`（file_*, web_*, python_exec …）、自定义 `skills/`、自定义 `hooks/`、DeepSeek API key 管理 |
+| | **配置与数据** | `agent.yaml` — 模型定义（`model_defs`）+ agent/subagent 模型引用（`agent_models`）+ plugin 配置（`plugins_config`），自定义 `tools/`（file_*, web_*, python_exec …）、自定义 `skills/`、自定义 `hooks/`、DeepSeek API key 管理 |
 
 <br/>
 
@@ -154,15 +154,14 @@ Agent 通过 stdio JSON-RPC 通信。应用层无需关心工具来源——本�
 
 ### 记忆——自动抽取与检索
 
-应用**不实现**自己的记忆系统。框架的记忆提取位于 [`memory` 插件](docs/plugins/memory.md)（`arf/plugins/memory/`）——基于 subprocess 的异步提取器，通过 system model 按可配置轮次间隔触发。提取的事实、偏好和决策原子写入 `memory.md`（≤300KB），会话启动时加载并注入系统提示。
+应用**不实现**自己的记忆系统。框架的记忆提取位于 [`memory` 插件](docs/plugins/memory.md)（`arf/plugins/memory/`）——挂载在 `round_end` hook，通过 `plugins_config.memory.model` 指定独立模型。提取的事实、偏好和决策原子写入 `memory.md`（≤300KB），会话启动时加载并注入系统提示。
 
 ```yaml
-advanced:
-  system_model: quick     # 系统后台模型 — 记忆、路由分类、压缩共用
+plugins_config:
   memory:
-    store: file           # 存储后端
-    resident_file: memory.md
-    max_size_kb: 300
+    model: deepseek-v4-flash        # 引用 model_defs 中定义的模型
+    interval: 5                      # 每 5 轮提取一次
+    max_memory_size: 300             # memory.md 的 KB 上限
 ```
 
 [设计文档 →](docs/plugins/memory.md)
@@ -181,28 +180,41 @@ config:
 
 [设计文档 →](docs/context-management.md)
 
-### 模型路由——快慢分流
+### 模型配置——统一定义与引用
 
-`ModelRouterPlugin`（挂载在 `pre_model_call` hook）通过廉价 LLM 对每次用户查询分类：简单 → `quick`（flash），复杂 → `deep`（pro）。Router/Engine 两层降级链确保每请求都有模型可用。后台任务共用 `system_model`。
+模型在 `agent.yaml` 顶部内联定义，通过 `model` 字段作为唯一标识。Agent 和 SubAgent 按名引用并支持有序降级；Plugin 引用单个模型。
 
 ```yaml
-models:
-  - type: quick
-    model: deepseek-v4-flash
-    context_window: 800000
-  - type: deep
-    model: deepseek-v4-pro
-    context_window: 1000000
+model_defs:                          # 顶部全局定义
+  - model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY    # 环境变量的变量名，非 Key 值
+    kwargs: {reasoning_effort: max}
+  - model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs: {temperature: 0.7}
 
-advanced:
-  routing:
-    strategy: two_tier
-    default: quick
-    classify: {medium: quick, complex: deep}
-    fallback: {deep: quick}
+agent_models:                        # Agent: 有序降级 [pro → flash]
+  - model: deepseek-v4-pro
+  - model: deepseek-v4-flash
+
+plugins_config:                      # Plugin: 单模型引用
+  compaction:
+    model: deepseek-v4-flash
+  memory:
+    model: deepseek-v4-flash
 ```
 
-[设计文档 →](docs/model-routing.md)
+引用时支持部分覆盖（未写字段从定义区继承）：
+```yaml
+agent_models:
+  - model: deepseek-v4-pro
+  - model: deepseek-v4-flash
+    kwargs: {temperature: 0.0}      # 仅覆盖 temperature
+```
+
+降级触发：5xx、429、网络错误。客户端错误（4xx）不降级。
 
 ### 沙箱与权限
 
@@ -262,9 +274,8 @@ agents:
   - name: sys_agent
     role: 系统工程师
     task: 资源创建、模型配置、工具/技能生成
-    routing:
-      strategy: static
-      default: deep
+    models:
+      - model: deepseek-v4-pro
 ```
 
 <br/>
@@ -347,16 +358,15 @@ cd app/web && npm install && npm run dev
 
 ### 演进方向
 
-参见各模块设计文档第三章：
-- [上下文管理](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用、会话外压缩（父子节点摘要，RAG 风格）
-- [Memory 插件](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
-- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪（PELT 风格）、基于负载的自动路由
-- [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
-- [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
-- [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离
-- [A2A 通讯](docs/a2a-communication.md) — 网络 A2A（gRPC）、发布/订阅 Agent 发现、DAG 多 Agent 调度
-- [Interrupt](docs/interrupt.md#3-演进方向) — 暂停/重定向、空闲超时
-- [Trace](docs/trace.md#3-演进方向) — SQLite Trace DB、OpenTelemetry 导出
+参见各模块设计文档：
+- [上下文管理](docs/context-management.md) — 语义单元压缩、自适应阈值、跨会话摘要复用
+- [Memory 插件](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板
+- [资源注册](docs/resource-registry.md) — 层次化覆盖合并、MCP 多源 Provider
+- [工具沙箱](docs/tool-sandbox.md) — Per-invocation sandbox、内容感知扫描
+- [Skill Pipeline](docs/skill-pipeline.md) — 多 Agent DAG、Worktree 隔离
+- [中断](docs/interrupt.md) — 暂停/重定向、空闲超时
+- [Trace](docs/trace.md) — SQLite Trace DB、OpenTelemetry 导出
+- [回归测评](docs/eval-benchmark.md) — CLI 集成、语义相似度指标
 
 <br/>
 

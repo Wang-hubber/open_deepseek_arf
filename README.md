@@ -64,7 +64,7 @@ ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton 
 | # | Skeleton | OS Analogy | Current | Evolution |
 |---|----------|------------|---------|-----------|
 | 1 | **[Prompt Assembly](docs/agent-execution.md)** | Program loader (execve) | `SystemPromptProvider` — prefix (role + critical_rules) + suffix (`$INVENTORY` template). `string.Template` placeholders (`$MEMORY`, `$WORKSPACE`, `$TURN_BUDGET`). Per-turn replacement by engine. | Multi-agent prompt composition; role-based template dispatch |
-| 2 | **[Resource Registry (MCP)](docs/resource-registry.md)** | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`, `models/*.yaml`. `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge. MCP-based unified interface via local MCP Server (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
+| 2 | **[Resource Registry (MCP)](docs/resource-registry.md)** | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`. Models defined inline in `agent.yaml` (`model_defs`). `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge. MCP-based unified interface via local MCP Server (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
 | 3 | **[Permission Control](docs/tool-sandbox.md)** | ACL + capability bits | `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow enforcement. Per-agent `policy` override. `deny_patterns` regex matching. | OAuth-scoped permissions; role-based access control |
 | 4 | **[Security Audit](docs/tool-sandbox.md)** | Protection rings (Ring 0-3) | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ContentGuard` — pre/post execution + pre-output rule-based screening. `GuardDefaults` three-line defense. | Per-invocation sandbox; content-aware scanning |
 | 5 | **[Executor (Sandbox)](docs/tool-sandbox.md)** | Process isolation (chroot/namespace) | `SandboxManager` — per-session isolated workspace, configurable blacklist, auto-destroy. `ConcurrentToolExecutor` parallel execution. `FunctionBackend` with optional `rollback()`. | Container-based sandbox; resource quotas |
@@ -110,7 +110,7 @@ ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton 
 | **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and other components |
 | | **HTTP Service** | FastAPI + Uvicorn + Streamable HTTP (NDJSON), REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
 | | **CLI** | init / start / stop / chat / list / validate / config |
-| | **Config & Data** | `agent.yaml` — agent behavior + `plugins:` activation + routing + memory + compaction, `models/deep.yaml` + `models/quick.yaml`, custom `tools/` (file_*, web_*, python_exec …), custom `skills/`, custom `hooks/`, DeepSeek API key management |
+| | **Config & Data** | `agent.yaml` — model definitions (`model_defs`) + agent/subagent model refs (`agent_models`) + plugin config (`plugins_config`), custom `tools/` (file_*, web_*, python_exec …), custom `skills/`, custom `hooks/`, DeepSeek API key management |
 
 <br/>
 
@@ -156,15 +156,14 @@ The agent communicates via stdio JSON-RPC. The app layer is source-agnostic — 
 
 ### Memory — Automatic Extraction & Retrieval
 
-The app **does not** implement its own memory. Framework memory extraction lives in the [`memory` plugin](docs/plugins/memory.md) (`arf/plugins/memory/`) — a subprocess-based extractor that runs asynchronously via system model at configurable round intervals. Extracted facts, preferences, and decisions are written atomically to `memory.md` (≤300KB), loaded at session startup and injected into the system prompt.
+The app **does not** implement its own memory. Framework memory extraction lives in the [`memory` plugin](docs/plugins/memory.md) (`arf/plugins/memory/`) — mounted on `round_end` hook, configured with its own model via `plugins_config.memory.model`. Extracted facts, preferences, and decisions are written atomically to `memory.md` (≤300KB), loaded at session startup and injected into the system prompt.
 
 ```yaml
-advanced:
-  system_model: quick     # system model shared by memory, routing, compaction
+plugins_config:
   memory:
-    store: file           # storage backend
-    resident_file: memory.md
-    max_size_kb: 300
+    model: deepseek-v4-flash        # model ref from model_defs
+    interval: 5                      # extract every 5 rounds
+    max_memory_size: 300             # KB limit for memory.md
 ```
 
 [Design doc →](docs/plugins/memory.md)
@@ -183,28 +182,41 @@ config:
 
 [Design doc →](docs/context-management.md)
 
-### Model Routing — Fast/Slow Dispatch
+### Model Configuration
 
-`ModelRouterPlugin` (mounted on `pre_model_call` hook) classifies each user query via a cheap LLM: simple → `quick` (flash), complex → `deep` (pro). A two-layer degradation chain (Router → Engine) ensures every request has a model. Background tasks (compaction, classification, handoff) share a dedicated `system_model`.
+Models are defined inline at the top of `agent.yaml`. The `model` field is the unique identifier. Agent and SubAgent reference models by name with ordered fallback; Plugins reference a single model.
 
 ```yaml
-models:
-  - type: quick
-    model: deepseek-v4-flash
-    context_window: 800000
-  - type: deep
-    model: deepseek-v4-pro
-    context_window: 1000000
+model_defs:                          # top-level definitions
+  - model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY    # env var name, not the key value
+    kwargs: {reasoning_effort: max}
+  - model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs: {temperature: 0.7}
 
-advanced:
-  routing:
-    strategy: two_tier
-    default: quick
-    classify: {medium: quick, complex: deep}
-    fallback: {deep: quick}
+agent_models:                        # agent: ordered fallback [pro → flash]
+  - model: deepseek-v4-pro
+  - model: deepseek-v4-flash
+
+plugins_config:                      # plugins: single model ref
+  compaction:
+    model: deepseek-v4-flash
+  memory:
+    model: deepseek-v4-flash
 ```
 
-[Design doc →](docs/model-routing.md)
+Reference with partial override (inherits from definition, overrides specified fields):
+```yaml
+agent_models:
+  - model: deepseek-v4-pro
+  - model: deepseek-v4-flash
+    kwargs: {temperature: 0.0}      # override just temperature
+```
+
+Fallback triggers on 5xx, 429, and network errors. Client errors (4xx) do not trigger fallback.
 
 ### Sandbox & Permissions
 
@@ -265,9 +277,8 @@ agents:
   - name: sys_agent
     role: 系统工程师
     task: 资源创建、模型配置、工具/技能生成
-    routing:
-      strategy: static
-      default: deep
+    models:
+      - model: deepseek-v4-pro
 ```
 
 <br/>
@@ -348,18 +359,15 @@ cd app/web && npm install && npm run dev
 
 ### Evolution
 
-### 演进方向
-
-参见各模块设计文档第三章：
-- [Context Management](docs/context-management.md#3-演进方向) — 语义单元压缩、自适应阈值、跨会话摘要复用、会话外压缩（父子节点摘要，RAG 风格）
-- [Memory Plugin](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板、社区贡献
-- [Model Routing](docs/model-routing.md#3-演进方向) — 三级分类器、连续负载跟踪（PELT 风格）、基于负载的自动路由
-- [Resource Registry](docs/resource-registry.md#3-演进方向) — 层次化覆盖合并、MCP 多源 Provider
-- [Tool Sandbox](docs/tool-sandbox.md#3-演进方向) — Per-invocation sandbox、MCP 协议
-- [Skill Pipeline](docs/skill-pipeline.md#3-演进方向) — 多 Agent DAG 分析、Worktree 隔离
-- [A2A Communication](docs/a2a-communication.md) — 网络 A2A（gRPC）、发布/订阅 Agent 发现、DAG 多 Agent 调度
-- [Interrupt](docs/interrupt.md#3-演进方向) — 暂停/重定向、空闲超时
-- [Trace](docs/trace.md#3-演进方向) — SQLite Trace DB、OpenTelemetry 导出
+See per-module design documents for evolution directions:
+- [Context Management](docs/context-management.md) — semantic-unit compaction, adaptive threshold, cross-session summary reuse
+- [Memory Plugin](docs/plugins/memory.md) — multi-round trigger, custom prompt templates
+- [Resource Registry](docs/resource-registry.md) — hierarchical override merge, MCP multi-source Provider
+- [Tool Sandbox](docs/tool-sandbox.md) — per-invocation sandbox, content-aware scanning
+- [Skill Pipeline](docs/skill-pipeline.md) — multi-agent DAG, worktree isolation
+- [Interrupt](docs/interrupt.md) — pause/redirect, idle timeout
+- [Trace](docs/trace.md) — SQLite trace DB, OpenTelemetry export
+- [Eval Benchmark](docs/eval-benchmark.md) — CLI integration, semantic similarity metrics
 
 <br/>
 
