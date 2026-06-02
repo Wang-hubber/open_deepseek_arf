@@ -14,6 +14,7 @@ class ConcurrentToolExecutor:
         tool_guard=None,
         tool_boundaries: dict[str, DirectoryBoundary] | None = None,
         default_boundary: DirectoryBoundary | None = None,
+        content_guard=None,
     ) -> None:
         self._resolver = tool_resolver
         self._strategy = strategy
@@ -21,6 +22,7 @@ class ConcurrentToolExecutor:
         self._tool_guard = tool_guard
         self._tool_boundaries = tool_boundaries or {}
         self._default_boundary = default_boundary
+        self._content_guard = content_guard
 
     async def execute(
         self,
@@ -98,4 +100,17 @@ class ConcurrentToolExecutor:
                 error=f"[PathCheck] {gr.reason}",
                 blocked=True,
             )
+
+        # ContentGuard: dangerous behavior check
+        if self._content_guard:
+            import json as _json
+            params_str = _json.dumps(params, ensure_ascii=False) if params else ""
+            dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
+            if not dr.allowed:
+                return ToolResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=f"[ContentGuard] {dr.reason}",
+                    blocked=True,
+                )
         return None
