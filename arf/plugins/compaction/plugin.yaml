@@ -1,0 +1,8 @@
+name: compaction
+hooks:
+  - round_end
+enabled: true
+config:
+  threshold: 0.75
+  window_size: 131072
+  keep_count: 8
