@@ -62,99 +62,6 @@ def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
     return text
 
 
-def _build_system_prompt(config: AgentConfig) -> str:
-    """Build system prompt from AgentConfig.system_prompt template.
-
-    Supports placeholders filled at init or runtime:
-      {{AGENT_NAME}}      → config.name
-      {{AGENT_ROLE}}      → config.role
-      {{AGENT_TASK}}      → config.task
-      {{CRITICAL_RULES}}  → config.system_prompt.critical_rules
-      {{INVENTORY}}       → kernel tools + skills (progressive disclosure)
-      {{MEMORY}}          → filled by engine at runtime (context_summary)
-      {{WORKSPACE}}       → filled by engine at runtime
-      {{LANGUAGE}}        → filled by engine at runtime
-
-    When system_prompt.pipeline is configured, sections are assembled in
-    priority order. Otherwise falls back to simple placeholder replacement.
-    """
-    sp = config.system_prompt
-    template = sp.template.strip()
-    if not template:
-        lines = [f"You are {config.name}, an AI assistant."]
-        if config.role:
-            lines.append(f"Role: {config.role}")
-        if config.task:
-            lines.append(f"Task: {config.task}")
-        if config.description:
-            lines.append(f"\n## Capabilities\n{config.description}")
-        template = "\n".join(lines) + "\n\n"
-
-    # Build section contents
-    sections = _build_prompt_sections(config)
-
-    prompt = template
-    # Always replace agent identity (not pipeline-controlled)
-    prompt = prompt.replace("{{AGENT_NAME}}", config.name)
-    prompt = prompt.replace("{{AGENT_ROLE}}", config.role or "")
-    prompt = prompt.replace("{{AGENT_TASK}}", config.task or "")
-
-    # Static sections — always replace (even empty), avoid raw placeholders
-    _static_sections = {"critical_rules", "inventory", "language"}
-    pipeline = sp.pipeline
-    if pipeline:
-        # Pipeline mode: sort by priority, inject sections in order
-        for ps in sorted(pipeline, key=lambda s: s.priority):
-            content = sections.get(ps.section, "")
-            placeholder = "{{" + ps.section.upper() + "}}"
-            if content or ps.section in _static_sections:
-                prompt = prompt.replace(placeholder, content)
-    else:
-        # Legacy mode: simple replace (backward compatible)
-        prompt = prompt.replace("{{CRITICAL_RULES}}", sp.critical_rules or "")
-        prompt = prompt.replace("{{INVENTORY}}", sections.get("inventory", ""))
-
-    return prompt
-
-
-def _build_prompt_sections(config: AgentConfig) -> dict[str, str]:
-    """Build content for each prompt section.
-
-    Static sections are filled now; dynamic sections (memory, workspace,
-    language) return empty string — the engine fills them at runtime.
-    """
-    sp = config.system_prompt
-
-    # inventory: kernel tools + discoverable tools + skills
-    kernel_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "kernel"]
-    discoverable_tools = [t for t in config.tools if getattr(t, "activation", "discoverable") == "discoverable"]
-    skills = config.skills
-    inv_lines = []
-    if kernel_tools:
-        inv_lines.append("## Available Tools\n")
-        for t in kernel_tools:
-            inv_lines.append(f"- `{t.name}`: {t.description}")
-    if discoverable_tools:
-        inv_lines.append("\n## Discoverable Tools\n")
-        inv_lines.append("These tools are available on demand. Use `resource_loader` to activate them:\n")
-        for t in discoverable_tools:
-            inv_lines.append(f"- `{t.name}`: {t.description}")
-    if skills:
-        inv_lines.append("\n## Available Skills\n")
-        inv_lines.append("Skills are loaded on demand. Read a skill's full instructions via `file_reader`:\n")
-        for s in skills:
-            inv_lines.append(f"- `{s.name}`: {s.description or '(no description)'}  → read `skills/{s.name}.yaml`")
-    inventory = "\n".join(inv_lines) if inv_lines else ""
-
-    return {
-        "critical_rules": sp.critical_rules or "",
-        "inventory": inventory,
-        "memory": "",       # filled by engine at runtime
-        "workspace": "",    # filled by engine at runtime
-        "language": "",     # filled by engine at runtime
-    }
-
-
 class BaseAgent:
     def __init__(self, config: AgentConfig, app_context: AppContext | None = None, **override_protocols) -> None:
         self.config = config
@@ -194,7 +101,7 @@ class BaseAgent:
         self._resource_resolver = resource_resolver
 
         # Feed back merged tool definitions (descriptions from tool.yaml)
-        # into config.tools so _build_prompt_sections can build proper inventory.
+        # into config.tools so SystemPromptProvider can build proper inventory.
         merged_specs = resource_resolver.get_tool_definitions_sync()
         if merged_specs:
             from arf.core.config_base import ToolConfig as _ToolConfig
@@ -211,7 +118,7 @@ class BaseAgent:
             config.tools = merged_tools
 
         # Feed back merged skill definitions (from skills/*.yaml + plugins)
-        # into config.skills so _build_prompt_sections can build proper inventory.
+        # into config.skills so SystemPromptProvider can build proper inventory.
         merged_skills = resource_resolver.get_skill_definitions_sync()
         if merged_skills:
             config.skills = merged_skills
@@ -404,7 +311,21 @@ class BaseAgent:
             import os as _os3
             from arf.core.model_adapter import ModelAdapter as _SubModelAdapter
             for sub_cfg in config.agents:
-                sub_prompt = _build_system_prompt(sub_cfg)
+                from arf.agent.default_prompt_provider import DefaultSystemPromptProvider as _SubProvider
+                sub_tool_defs = [
+                    t.model_dump() if hasattr(t, "model_dump") else t
+                    for t in (sub_cfg.tools or [])
+                ]
+                sub_skill_defs = [
+                    s.model_dump() if hasattr(s, "model_dump") else s
+                    for s in (sub_cfg.skills or [])
+                ]
+                sub_provider = _SubProvider(
+                    config=sub_cfg,
+                    tool_definitions=sub_tool_defs,
+                    skill_definitions=sub_skill_defs,
+                )
+                sub_prompt = sub_provider.build().full_text
                 sub_adapters = {}
                 for m in (sub_cfg.models or []):
                     sub_adapter_cfg: dict[str, Any] = {
@@ -438,10 +359,26 @@ class BaseAgent:
                 system_model_call=_system_model_call,
             )
 
-        # 10. Build engine
-        system_prompt = _build_system_prompt(config)
+        # 10. Build system prompt via provider
+        from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
+        prompt_provider = override_protocols.pop(
+            "system_prompt_provider",
+            DefaultSystemPromptProvider(
+                config=config,
+                tool_definitions=[
+                    t.model_dump() if hasattr(t, "model_dump") else t
+                    for t in config.tools
+                ],
+                skill_definitions=[
+                    s.model_dump() if hasattr(s, "model_dump") else s
+                    for s in config.skills
+                ],
+            ),
+        )
+        system_prompt_obj = prompt_provider.build()
+        system_prompt = system_prompt_obj.full_text
 
-        # Load resident memory — injected into {{MEMORY}} once at session start
+        # Load resident memory — injected into $MEMORY once at session start
         from arf.core.config_base import MemoryConfig
         _mem_cfg = (adv.memory or MemoryConfig()) if adv else MemoryConfig()
         resident_memory = _load_resident_memory(
@@ -449,8 +386,8 @@ class BaseAgent:
             resident_file=_mem_cfg.resident_file,
             max_size_bytes=_mem_cfg.max_size_kb * 1024,
         )
-        if "{{MEMORY}}" in system_prompt:
-            system_prompt = system_prompt.replace("{{MEMORY}}", resident_memory)
+        if resident_memory:
+            system_prompt = system_prompt.replace("$MEMORY", resident_memory)
 
         # Auto-create model router if routing config is set (LLM classifier by default)
         model_router = None
