@@ -1,104 +1,85 @@
-"""SubprocessHookRunner — execute hooks as subprocesses with parallel launch."""
+"""SubprocessHookRunner — executes side plugins as fire-and-forget subprocesses."""
 import asyncio
 import json
+import logging
 import os
-from arf.core.config_base import HookDefinition
-from arf.core.results import HookResult
+from arf.core.plugin_context import PluginContext
+from arf.core.protocols.plugin import PluginProtocol
+
+logger = logging.getLogger("arf.hooks.subprocess")
 
 
 class SubprocessHookRunner:
-    def __init__(self, hooks: list[HookDefinition], plugin_runtime=None) -> None:
+    """Fires side hooks as subprocesses concurrently. Does not block the engine.
+
+    Side hooks are fire-and-forget: launched in a task, failure is logged.
+    Used for trace, metrics, and other observability plugins.
+    Also supports external hook scripts registered via HookDefinition.
+    """
+
+    def __init__(self, plugins: list[PluginProtocol] | None = None,
+                 hook_defs: list | None = None,
+                 plugin_runtime=None) -> None:
         from arf.core.plugin_runtime import PluginRuntime
-        self._hooks: dict[str, list[HookDefinition]] = {}
-        self._order: dict[str, list[str]] = {}
+        self._plugins: dict[str, list[PluginProtocol]] = {}
         self._runtime: PluginRuntime | None = plugin_runtime
-        for h in hooks:
-            self._hooks.setdefault(h.type, []).append(h)
+        self._hook_defs: dict[str, list] = {}
+        if plugins:
+            for p in plugins:
+                self.register(p)
+        if hook_defs:
+            for h in hook_defs:
+                self._hook_defs.setdefault(h.type, []).append(h)
 
-    def update_runtime(self, session_id: str | None = None,
-                       interaction_round: int | None = None) -> None:
-        if self._runtime is None:
-            return
-        if session_id is not None:
-            self._runtime.session_id = session_id
-        if interaction_round is not None:
-            self._runtime.interaction_round = interaction_round
+    def register(self, plugin: PluginProtocol) -> None:
+        for hook_name, mode in plugin.hooks.items():
+            if mode == "side":
+                self._plugins.setdefault(hook_name, []).append(plugin)
+        logger.debug("Registered side plugin '%s' on hooks: %s",
+                     plugin.name, [h for h, m in plugin.hooks.items() if m == "side"])
 
-    def set_order(self, event_type: str, hook_names: list[str]) -> None:
-        self._order[event_type] = hook_names
+    def update_runtime(self, **kwargs) -> None:
+        if self._runtime:
+            for k, v in kwargs.items():
+                setattr(self._runtime, k, v)
 
-    def get_definitions(self) -> list[HookDefinition]:
-        return [h for hooks in self._hooks.values() for h in hooks]
+    async def fire(self, event_type: str, ctx: PluginContext) -> None:
+        """Fire all side plugins concurrently. Never blocks, never throws."""
+        plugins = self._plugins.get(event_type, [])
+        hook_defs = self._hook_defs.get(event_type, [])
 
-    async def fire(self, event_type: str, context: dict) -> list[HookResult]:
-        hooks = self._hooks.get(event_type, [])
-        ordered = self._order.get(event_type, [])
-        if ordered:
-            name_map = {h.name: h for h in hooks}
-            resolved = [name_map[n] for n in ordered if n in name_map]
-            remaining = [h for h in hooks if h.name not in ordered]
-            hooks = resolved + remaining
+        # Subprocess-based external hooks
+        for hd in hook_defs:
+            asyncio.ensure_future(self._run_subprocess_hook(hd, ctx))
 
-        all_results: list[HookResult] = []
+        # In-process side plugins
+        for plugin in plugins:
+            asyncio.ensure_future(self._safe_fire_in_process(plugin, event_type, ctx))
 
-        async def _run_hook(hook: HookDefinition) -> HookResult:
-            results: list[HookResult] = []
-            for cmd in hook.run:
-                env_vars = {**os.environ}
-                # Inject PluginRuntime env vars (all event types)
-                runtime_dict = self._runtime.to_dict() if self._runtime else {}
-                if runtime_dict:
-                    env_vars["ARF_RUNTIME"] = json.dumps(runtime_dict)
-                    env_vars["ARF_SESSION_ID"] = runtime_dict.get("session_id", "default")
-                    env_vars["ARF_ROUND"] = str(runtime_dict.get("interaction_round", 0))
-                    env_vars["ARF_MEMORY_DIR"] = runtime_dict.get("memory_dir", "./memory")
-                    env_vars["ARF_WORKSPACE"] = runtime_dict.get("workspace_dir", "./workspace")
-                    env_vars["ARF_TRACE_DIR"] = runtime_dict.get("trace_dir", "./traces")
-                    env_vars["ARF_SYSTEM_MODEL"] = runtime_dict.get("system_model", "quick")
-                merge_dict = dict(runtime_dict)
-                merge_dict.update(context)
-                for k, v in (hook.env or {}).items():
-                    for mk, mv in merge_dict.items():
-                        v = v.replace(f"$ARF_{mk.upper()}", str(mv))
-                    env_vars[k] = v
-                try:
-                    proc = await asyncio.create_subprocess_shell(
-                        cmd, env=env_vars,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    tout = _pars_timeout(hook.timeout)
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=tout)
-                    rc = proc.returncode or 0
-                    hr = HookResult(
-                        hook_name=hook.name, exit_code=rc,
-                        stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
-                        stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
-                        injected_message=stdout.decode("utf-8", errors="replace") if rc == 2 and stdout else None,
-                    )
-                    results.append(hr)
-                    if rc != 0:
-                        break
-                except asyncio.TimeoutError:
-                    if proc:
-                        proc.kill()
-                    results.append(HookResult(hook_name=hook.name, exit_code=-1, stderr="timeout"))
-                    break
-            return results[-1] if results else HookResult(hook_name=hook.name, exit_code=0)
+    async def _safe_fire_in_process(self, plugin, event_type, ctx):
+        try:
+            await plugin.on_hook(event_type, ctx)
+        except Exception:
+            logger.exception("Side plugin '%s' failed on hook '%s'", plugin.name, event_type)
 
-        tasks = [_run_hook(h) for h in hooks]
-        resolved_list = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in resolved_list:
-            if isinstance(r, HookResult):
-                all_results.append(r)
-            elif isinstance(r, Exception):
-                all_results.append(HookResult(hook_name="unknown", exit_code=-1, stderr=str(r)))
-        return all_results
-
-
-def _pars_timeout(s: str) -> float:
-    s = s.strip().lower()
-    for suffix, mult in [("s", 1), ("m", 60), ("h", 3600)]:
-        if s.endswith(suffix):
-            return float(s[:-1]) * mult
-    return 30.0
+    async def _run_subprocess_hook(self, hook_def, ctx):
+        try:
+            env_vars = {**os.environ}
+            runtime_dict = self._runtime.to_dict() if self._runtime else {}
+            merge_dict = dict(runtime_dict)
+            merge_dict.update(ctx.hook_data)
+            if runtime_dict:
+                env_vars["ARF_RUNTIME"] = json.dumps(runtime_dict)
+            for k, v in (getattr(hook_def, 'env', {}) or {}).items():
+                for mk, mv in merge_dict.items():
+                    v = v.replace(f"$ARF_{mk.upper()}", str(mv))
+                env_vars[k] = v
+            for cmd in getattr(hook_def, 'run', []):
+                proc = await asyncio.create_subprocess_shell(
+                    cmd, env=env_vars,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+        except Exception:
+            logger.exception("Subprocess hook '%s' failed", getattr(hook_def, 'name', 'unknown'))
