@@ -1,0 +1,6 @@
+name: approval
+enabled: true
+description: "Human-in-the-loop tool approval"
+config:
+  timeout: 60.0
+  ask_list: []

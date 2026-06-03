@@ -1,0 +1,1 @@
+"""Approval plugin — human-in-the-loop tool approval."""
