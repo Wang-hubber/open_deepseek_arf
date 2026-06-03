@@ -1,22 +1,35 @@
-"""PluginContext — read-only context passed to plugin hooks."""
+"""PluginContext — full-visibility context passed to plugin hooks."""
 from dataclasses import dataclass, field
+from arf.core.state import AgentState
 
 
 @dataclass
 class PluginContext:
-    """Read-only context for plugin hook invocation.
+    """Full read/write context for plugin hook invocation.
 
-    Contains runtime info (session, round, dirs) plus hook-specific data.
+    Plugin has complete visibility into state, messages, tool definitions,
+    and runtime directories. Blocking plugins can mutate state; side plugins
+    should treat it as read-only (convention, not enforced).
     """
 
-    # Runtime
+    # Runtime identifiers
     session_id: str = "default"
     interaction_round: int = 0
-    memory_dir: str = "./memory"
+    turn: int = 0
+    current_step: str = ""              # "call_model" | "execute_tools"
+
+    # Core data — full visibility
+    state: AgentState = field(default_factory=dict)
+    messages: list[dict] = field(default_factory=list)  # shortcut to state["messages"]
+    tool_definitions: list[dict] = field(default_factory=list)
+    system_prompt: str = ""
+    model: str = ""
+
+    # Directories
     workspace_dir: str = "."
+    memory_dir: str = "./memory"
     state_dir: str = "./data/state"
     trace_dir: str = "./data/traces"
-    system_model: str = "quick"
 
     # Hook-specific payload
     hook_data: dict = field(default_factory=dict)
@@ -28,11 +41,14 @@ class PluginContext:
         return {
             "session_id": self.session_id,
             "interaction_round": self.interaction_round,
-            "memory_dir": self.memory_dir,
+            "turn": self.turn,
+            "current_step": self.current_step,
+            "model": self.model,
             "workspace_dir": self.workspace_dir,
+            "memory_dir": self.memory_dir,
             "state_dir": self.state_dir,
             "trace_dir": self.trace_dir,
-            "system_model": self.system_model,
+            "system_model": self.model,
             **self.hook_data,
             **self.plugin_config,
         }

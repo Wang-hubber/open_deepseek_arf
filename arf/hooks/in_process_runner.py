@@ -55,7 +55,7 @@ class InProcessHookRunner:
             workspace_dir=self._runtime.get("workspace_dir", "."),
             state_dir=self._runtime.get("state_dir", "./data/state"),
             trace_dir=self._runtime.get("trace_dir", "./data/traces"),
-            system_model=self._runtime.get("system_model", "quick"),
+            model=self._runtime.get("system_model", "quick"),
             hook_data=hook_data,
         )
 
