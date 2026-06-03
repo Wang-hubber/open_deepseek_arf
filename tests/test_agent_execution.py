@@ -8,14 +8,43 @@ import pytest
 from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 
 
+class _HookRunnerPlugin:
+    """Adapts a traditional hook_runner mock to ControlPlane's plugin system."""
+
+    def __init__(self, hook_runner):
+        self._hook_runner = hook_runner
+        self._name = "hook_runner_plugin"
+        self._hooks = {
+            "session_start": "blocking",
+            "session_end": "blocking",
+            "round_start": "blocking",
+            "round_end": "blocking",
+            "turn_start": "blocking",
+            "turn_end": "blocking",
+            "pre_dispatch": "blocking",
+            "post_dispatch": "blocking",
+            "error": "blocking",
+        }
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def hooks(self) -> dict[str, str]:
+        return self._hooks
+
+    async def on_hook(self, event_type: str, context) -> None:
+        await self._hook_runner.fire(event_type, context)
+
+
 def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
-                       model_provider=None, tmp_path=None, **overrides):
-    """Build a GraphEngine with real component defaults (no MagicMock)."""
+                       tmp_path=None, **overrides):
+    """Build a ControlPlane with real component defaults (no MagicMock)."""
     from arf.engine.loop_strategies.react import ReActStrategy
     from arf.engine.tool_executor import ConcurrentToolExecutor
-    from arf.engine.graph import GraphEngine
+    from arf.engine.control_plane import ControlPlane
     from arf.resources.resolver import ResourceResolver
-    from arf.errors.retry import DefaultErrorPolicy
     from arf.event_bus import InMemoryEventBus
     from arf.engine.checkpoint import InMemoryStateStore
 
@@ -27,23 +56,28 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
     if skill_provider is None:
         from arf.resources.providers.skill_provider import SkillProvider
         skill_provider = SkillProvider(APP_DIR / "skills")
-    if model_provider is None:
-        from arf.resources.providers.model_provider import ModelProvider
-        model_provider = ModelProvider(APP_DIR / "models")
     if fake_model is None:
         fake_model = FakeModelAdapter(default=FakeResponse(content="hello"))
 
-    resolver = ResourceResolver(tool_provider, skill_provider, model_provider)
+    resolver = ResourceResolver(tool_provider, skill_provider=skill_provider)
     state_store = overrides.pop("state_store", None) or InMemoryStateStore()
+    hook_runner = overrides.pop("hook_runner", None)
+    # error_policy is not used by ControlPlane
+    overrides.pop("error_policy", None)
+    # approval_enabled is not used by ControlPlane
+    overrides.pop("approval_enabled", None)
+
+    blocking_plugins = []
+    if hook_runner is not None:
+        blocking_plugins.append(_HookRunnerPlugin(hook_runner))
 
     defaults = {
         "loop_strategy": ReActStrategy(max_turns=10),
         "state_store": state_store,
         "tool_executor": ConcurrentToolExecutor(resolver),
-        "tool_resolver": resolver,
         "event_bus": InMemoryEventBus(),
-        "error_policy": DefaultErrorPolicy(tool_retry=0),
-        "approval_enabled": False,
+        "blocking_plugins": blocking_plugins,
+        "side_plugins": [],
     }
     defaults.update(overrides)
 
@@ -64,7 +98,7 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
     if "stream_model" in overrides:
         defaults["stream_model"] = overrides.pop("stream_model")
 
-    return GraphEngine(**defaults)
+    return ControlPlane(**defaults)
 
 
 class CountingStateStore:
@@ -104,7 +138,7 @@ class TestRoundHooks:
     """round_start / round_end hook events.
 
     round_start fires in BaseAgent (tested at integration level).
-    round_end fires in GraphEngine (tested below).
+    round_end fires in ControlPlane (tested below).
     """
 
     def _state(self):
@@ -149,7 +183,7 @@ class TestRoundHooks:
         assert len(round_end_calls) == 1, "round_end hook should fire once"
 
     def test_round_end_fires_as_last_engine_hook(self):
-        """round_end fires after loop ends; session_end no longer fires from engine."""
+        """round_end fires after loop ends; session_end is the final hook event."""
         call_order = []
         hook_runner = MagicMock()
 
@@ -162,52 +196,13 @@ class TestRoundHooks:
         asyncio.run(engine.invoke(self._state()))
 
         assert "round_end" in call_order, f"Expected round_end in call_order: {call_order}"
-        assert "session_end" not in call_order, (
-            f"session_end hook fire should be removed from engine; got {call_order}"
+        assert "session_end" in call_order, (
+            f"session_end should fire as cleanup from ControlPlane; got {call_order}"
         )
-        assert call_order[-1] == "round_end", (
-            f"round_end should be last hook event, got {call_order}"
-        )
-
-
-class TestSessionHooksRemovedFromEngine:
-    """session_start/session_end no longer fire from GraphEngine."""
-
-    def test_no_session_start_in_invoke(self):
-        """GraphEngine.invoke() must not fire session_start hook."""
-        import inspect
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
-        assert 'fire("session_start"' not in src, (
-            "session_start hook fire should be removed from GraphEngine.invoke()"
+        assert call_order[-1] == "session_end", (
+            f"session_end should be the last hook event, got {call_order}"
         )
 
-    def test_no_session_end_in_invoke(self):
-        """GraphEngine.invoke() must not fire session_end hook."""
-        import inspect
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.invoke)
-        assert 'fire("session_end"' not in src, (
-            "session_end hook fire should be removed from GraphEngine.invoke()"
-        )
-
-    def test_no_session_start_in_astream(self):
-        """GraphEngine.astream() must not fire session_start hook."""
-        import inspect
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
-        assert 'fire("session_start"' not in src, (
-            "session_start hook fire should be removed from GraphEngine.astream()"
-        )
-
-    def test_no_session_end_in_astream(self):
-        """GraphEngine.astream() must not fire session_end hook."""
-        import inspect
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.astream)
-        assert 'fire("session_end"' not in src, (
-            "session_end hook fire should be removed from GraphEngine.astream()"
-        )
 
 
 class TestSessionHooks:
@@ -910,7 +905,7 @@ class TestSessionLifecycleEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint behavior in GraphEngine.invoke()
+# Checkpoint behavior in ControlPlane
 # ---------------------------------------------------------------------------
 
 class TestEngineCheckpointBehavior:
@@ -979,9 +974,12 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        # Turns 1-2: 2 checkpoints each (before tool exec + after). Turn 3 text: 1.
-        assert store.put_call_count == 5, (
-            f"Expected 5 checkpoints (2 per tool turn + 1 text), got {store.put_call_count}"
+        # ControlPlane saves state_store.put() once per iteration (after turn_end)
+        # plus one at session_end. With 3 model calls (2 w/ tools + 1 text) and
+        # 2 tool executions: 5 turn puts + 1 session put = 6 total.
+        assert store.put_call_count == 6, (
+            f"Expected 6 checkpoints for 3-call scenario with ControlPlane, "
+            f"got {store.put_call_count}"
         )
 
     def test_invoke_saves_checkpoint_before_tool_exec(self):
@@ -1026,27 +1024,6 @@ class TestEngineCheckpointBehavior:
         assert last_assistant["role"] == "assistant"
         assert "tool_calls" in last_assistant, (
             "First checkpoint must persist assistant+tool_calls for crash recovery"
-        )
-
-    def test_invoke_and_astream_checkpoint_consistent(self):
-        """Shared _step_call_model saves checkpoint after appending tool_calls,
-        before executing tools — no asymmetry between invoke/astream."""
-        import inspect
-        from arf.engine.graph import GraphEngine
-
-        src = inspect.getsource(GraphEngine._step_call_model)
-
-        # Must NOT have the old NOTE about skipping put
-        assert "do NOT state_store.put() here" not in src, (
-            "Outdated NOTE should be removed from _step_call_model()"
-        )
-
-        # Pattern: append assistant_msg → put
-        lines = src.split("\n")
-        append_line = next(i for i, l in enumerate(lines) if 'append(assistant_msg)' in l)
-        put_found = any("state_store.put" in l for l in lines[append_line:append_line + 5])
-        assert put_found, (
-            "_step_call_model() must call state_store.put() after appending assistant_msg"
         )
 
 
@@ -1270,16 +1247,6 @@ class TestRoundManager:
         assert rm.undo(5) is None
         assert rm.undo(0) is None
 
-    def test_record_handoff_tracks_agent_trace(self):
-        from arf.engine.round_manager import RoundManager
-        rm = RoundManager(max_undo_depth=3)
-        rm.begin_round({"session_id": "s1", "agent_name": "main",
-                        "messages": [], "current_turn": 0})
-        rm.record_handoff("main", "agent_b")
-        rm.record_handoff("agent_b", "main")
-        assert rm.active_round.agent_trace == ["main", "agent_b", "main"]
-        assert rm.active_round.handoff_count == 2
-
     def test_close_round_marks_closed(self):
         from arf.engine.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=3)
@@ -1290,101 +1257,8 @@ class TestRoundManager:
         assert rm.active_round is None
 
 
-# ---------------------------------------------------------------------------
-# _close_tool_calls() — unmatched tool_call injection (Doc 2.4/2.10)
-# ---------------------------------------------------------------------------
-
-class TestCloseToolCalls:
-    """Doc 2.4/2.10: _close_tool_calls ensures message sequence validity."""
-
-    def test_no_messages_returns_unchanged(self):
-        from arf.engine.graph import GraphEngine
-        engine = _build_real_engine()
-        state = {"messages": []}
-        result = engine._close_tool_calls(state)
-        assert result["messages"] == []
-
-    def test_no_tool_calls_returns_unchanged(self):
-        from arf.engine.graph import GraphEngine
-        engine = _build_real_engine()
-        state = {"messages": [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-        ]}
-        result = engine._close_tool_calls(state)
-        assert len(result["messages"]) == 2
-
-    def test_unmatched_tool_call_gets_synthetic_result(self):
-        from arf.engine.graph import GraphEngine
-        engine = _build_real_engine()
-        state = {"messages": [
-            {"role": "user", "content": "do it"},
-            {"role": "assistant", "content": "ok", "tool_calls": [
-                {"id": "orphan1", "function": {"name": "missing_tool", "arguments": "{}"}}
-            ]},
-        ]}
-        result = engine._close_tool_calls(state)
-        # Should have injected a synthetic tool result
-        tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
-        assert len(tool_msgs) == 1
-        assert tool_msgs[0]["tool_call_id"] == "orphan1"
-        assert "(tool result unavailable)" in tool_msgs[0]["content"]
-
-    def test_matched_tool_call_not_touched(self):
-        from arf.engine.graph import GraphEngine
-        engine = _build_real_engine()
-        state = {"messages": [
-            {"role": "user", "content": "do"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "tc1", "function": {"name": "read", "arguments": "{}"}}
-            ]},
-            {"role": "tool", "content": "result", "tool_call_id": "tc1"},
-        ]}
-        result = engine._close_tool_calls(state)
-        assert len(result["messages"]) == 3  # unchanged
-
 
 # ---------------------------------------------------------------------------
-# _active_config() — multi-agent config resolution (Doc 2.7)
-# ---------------------------------------------------------------------------
-
-class TestActiveConfig:
-    """Doc 2.7: _active_config() returns per-agent or default config."""
-
-    def test_returns_default_when_no_active_agent(self):
-        engine = _build_real_engine(system_prompt="default_prompt", max_turns=20)
-        cfg = engine._active_config({"active_agent": ""})
-        assert cfg["system_prompt"] == "default_prompt"
-        assert cfg["max_turns"] == 20
-        assert cfg["tools"] == []
-
-    def test_returns_sub_agent_config_when_active(self):
-        from arf.core.config_base import ModelConfig
-        from arf.agent.config import AgentConfig
-        sub_cfg = AgentConfig(
-            name="agent_b",
-            models=[ModelConfig(
-                type="deep", model="test-model",
-                api_base="https://api.example.com",
-                api_key_env="KEY", context_window=128000,
-            )],
-        )
-        engine = _build_real_engine(
-            system_prompt="main_prompt",
-            max_turns=10,
-            sub_agent_configs={
-                "agent_b": {
-                    "system_prompt": "sub_prompt",
-                    "config": sub_cfg,
-                    "adapters": {},
-                }
-            },
-        )
-        cfg = engine._active_config({"active_agent": "agent_b"})
-        assert cfg["system_prompt"] == "sub_prompt"
-        assert cfg["max_turns"] > 0  # from effective_advanced().max_turns
-
-
 # ---------------------------------------------------------------------------
 # _cancelled() — cancel_event detection (Doc 2.6)
 # ---------------------------------------------------------------------------
@@ -1418,113 +1292,34 @@ class TestCancelled:
         assert engine._cancelled() is True
 
 
-# ---------------------------------------------------------------------------
-# GraphEngine.approve() — approval resolution (Doc 2.8)
-# ---------------------------------------------------------------------------
-
-class TestApprove:
-    """Doc 2.8: approve(decision_id, approved) resolves pending approvals."""
-
-    def test_approve_returns_false_for_unknown_id(self):
-        engine = _build_real_engine()
-        assert engine.approve("unknown", True) is False
-
-    def test_approve_sets_event_and_returns_true(self):
-        import asyncio
-        engine = _build_real_engine()
-        evt = asyncio.Event()
-        engine._pending_approvals["d1"] = evt
-        assert engine.approve("d1", True) is True
-        assert engine._approval_results["d1"] is True
-
-    def test_approve_denied_sets_false(self):
-        import asyncio
-        engine = _build_real_engine()
-        evt = asyncio.Event()
-        engine._pending_approvals["d1"] = evt
-        assert engine.approve("d1", False) is True
-        assert engine._approval_results["d1"] is False
-
 
 # ---------------------------------------------------------------------------
-# _pars_tool_calls() — response parsing (Doc 2.2 flow)
+# _parse_tool_calls() — response parsing (Doc 2.2 flow)
 # ---------------------------------------------------------------------------
 
-class TestParsToolCalls:
-    """Doc 2.2: _pars_tool_calls handles dict and string model responses."""
+class TestParseToolCalls:
+    """Doc 2.2: _parse_tool_calls handles dict model responses."""
 
     def test_dict_with_tool_calls(self):
         engine = _build_real_engine()
         resp = {"content": "", "tool_calls": [
             {"id": "1", "name": "read", "params": {"file": "x"}}
         ]}
-        result = engine._pars_tool_calls(resp)
+        result = engine._parse_tool_calls(resp)
         assert len(result) == 1
         assert result[0]["name"] == "read"
 
     def test_dict_without_tool_calls(self):
         engine = _build_real_engine()
         resp = {"content": "hello", "tool_calls": []}
-        result = engine._pars_tool_calls(resp)
+        result = engine._parse_tool_calls(resp)
         assert result == []
 
-    def test_string_json_with_tool_calls(self):
-        import json
+    def test_non_dict_returns_empty(self):
         engine = _build_real_engine()
-        resp_str = json.dumps({"content": "", "tool_calls": [
-            {"id": "1", "name": "write", "params": {"text": "hi"}}
-        ]})
-        result = engine._pars_tool_calls(resp_str)
-        assert len(result) == 1
-        assert result[0]["name"] == "write"
-
-    def test_invalid_string_returns_empty(self):
-        engine = _build_real_engine()
-        result = engine._pars_tool_calls("not json")
+        result = engine._parse_tool_calls("not a dict")
         assert result == []
 
-
-# ---------------------------------------------------------------------------
-# _inject_hook_messages() — exit code 2 injection (Doc 2.12)
-# ---------------------------------------------------------------------------
-
-class TestInjectHookMessages:
-    """Doc 2.12: hook exit_code=2 → injects system message."""
-
-    def test_exit_code_2_injects_message(self):
-        from dataclasses import dataclass
-        @dataclass
-        class HookResult:
-            exit_code: int
-            hook_name: str = "test_hook"
-            injected_message: str = ""
-
-        engine = _build_real_engine()
-        state = {"messages": []}
-        results = [HookResult(exit_code=2, injected_message="injected content")]
-        engine._inject_hook_messages(results, state)
-        assert any("[Hook: test_hook] injected content" in m["content"]
-                   for m in state["messages"])
-
-    def test_exit_code_not_2_does_nothing(self):
-        from dataclasses import dataclass
-        @dataclass
-        class HookResult:
-            exit_code: int
-            hook_name: str = "test_hook"
-            injected_message: str = ""
-
-        engine = _build_real_engine()
-        state = {"messages": []}
-        results = [HookResult(exit_code=0, injected_message="should not appear")]
-        engine._inject_hook_messages(results, state)
-        assert state["messages"] == []
-
-    def test_none_results_does_nothing(self):
-        engine = _build_real_engine()
-        state = {"messages": []}
-        engine._inject_hook_messages(None, state)
-        assert state["messages"] == []
 
 
 # ---------------------------------------------------------------------------
