@@ -33,8 +33,8 @@ class CheckpointPlugin:
         return "checkpoint"
 
     @property
-    def hooks(self) -> list[str]:
-        return ["round_end", "session_end"]
+    def hooks(self) -> dict[str, str]:
+        return {"round_end": "blocking", "session_end": "blocking"}
 
     def set_state_store(self, store) -> None:
         self._state_store = store

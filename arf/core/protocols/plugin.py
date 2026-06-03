@@ -1,5 +1,5 @@
 """PluginProtocol — interface for hook-mounted plugins."""
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 from arf.core.plugin_context import PluginContext
 
 
@@ -18,14 +18,21 @@ class PluginProtocol(Protocol):
         ...
 
     @property
-    def hooks(self) -> list[str]:
-        """Hook point names this plugin subscribes to.
-        e.g. ['round_end'], ['pre_model_call', 'round_end']
+    def hooks(self) -> dict[str, Literal["blocking", "side"]]:
+        """Hook point names → execution mode.
+
+        "blocking": engine awaits this hook; exception → error flow.
+        "side": engine fires and forgets; exception swallowed silently.
+
+        e.g. {"round_start": "blocking", "session_end": "side"}
         """
         ...
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         """Called by HookRunner when a subscribed hook fires.
+
+        For "blocking" hooks: exception propagates to ErrorHandler.
+        For "side" hooks: exception is logged and discarded.
 
         Args:
             hook_name: the hook point name (e.g. 'round_end')

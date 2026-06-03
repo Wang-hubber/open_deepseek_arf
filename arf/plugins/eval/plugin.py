@@ -28,8 +28,8 @@ class EvalPlugin:
         return "eval"
 
     @property
-    def hooks(self) -> list[str]:
-        return []  # offline — not hook-mounted
+    def hooks(self) -> dict[str, str]:
+        return {}  # offline — not hook-mounted
 
     async def on_hook(self, hook_name: str, context) -> None:
         pass  # no-op for offline plugin

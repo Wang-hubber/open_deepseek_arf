@@ -37,8 +37,8 @@ class CompactionPlugin:
         return "compaction"
 
     @property
-    def hooks(self) -> list[str]:
-        return ["round_end"]
+    def hooks(self) -> dict[str, str]:
+        return {"round_start": "blocking", "post_dispatch": "blocking"}
 
     def set_summarizer(self, summarizer) -> None:
         self._summarizer = summarizer

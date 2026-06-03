@@ -31,16 +31,17 @@ class TracePlugin:
         return "trace"
 
     @property
-    def hooks(self) -> list[str]:
-        return [
-            "session_start", "session_end",
-            "pre_model_call",
-            "pre_tool", "post_tool",
-            "pre_output",
-            "post_permission",
-            "round_end",
-            "sandbox_persist",
-        ]
+    def hooks(self) -> dict[str, str]:
+        return {
+            "session_start": "side",
+            "session_end": "side",
+            "round_start": "side",
+            "turn_start": "side",
+            "pre_dispatch": "side",
+            "post_dispatch": "side",
+            "turn_end": "side",
+            "round_end": "side",
+        }
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         if not self._enabled:
