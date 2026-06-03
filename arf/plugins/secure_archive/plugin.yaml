@@ -1,0 +1,3 @@
+name: secure_archive
+enabled: true
+description: "Validate and repair state archive at session_start"
