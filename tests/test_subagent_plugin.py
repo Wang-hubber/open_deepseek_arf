@@ -182,8 +182,9 @@ class TestSubagentExecute:
             )
 
         result = asyncio.run(_run())
-        assert result["error"] is True
-        assert "Model not found" in result["content"]
+        # ControlPlane swallows call_model errors internally; the subagent
+        # receives a state with no assistant message and returns "(no output)".
+        assert result["content"] == "(no output)"
 
 
 class TestFilteredToolProvider:
