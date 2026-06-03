@@ -8,14 +8,17 @@ from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
 class TestMinimalFramework:
     """Agent with only 6 skeletons (no plugins) should complete a simple turn."""
 
-    def test_engine_accepts_plugin_runner(self):
-        """GraphEngine should accept plugin_runner parameter."""
-        from arf.engine.graph import GraphEngine
+    def test_engine_accepts_plugins(self):
+        """ControlPlane should accept blocking and side plugins."""
+        from arf.engine.control_plane import ControlPlane
         from arf.hooks.in_process_runner import InProcessHookRunner
+        from arf.hooks.runner import SubprocessHookRunner
 
-        engine = GraphEngine.__new__(GraphEngine)
-        engine.plugin_runner = InProcessHookRunner([])
-        assert engine.plugin_runner is not None
+        engine = ControlPlane.__new__(ControlPlane)
+        engine._blocking = InProcessHookRunner([])
+        engine._side = SubprocessHookRunner([])
+        assert engine._blocking is not None
+        assert engine._side is not None
 
     def test_plugin_runner_fires_compaction_and_checkpoint(self):
         """CompactionPlugin + CheckpointPlugin should coexist on round_end."""

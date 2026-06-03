@@ -3,7 +3,7 @@ import time
 import yaml
 from pathlib import Path
 
-from arf.engine.graph import GraphEngine
+from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
@@ -54,13 +54,7 @@ async def execute(
     model_name = model or getattr(_engine, "_system_model_name", "") or "quick"
 
     # Build filtered tool infrastructure (handle both DefaultToolResolver and ResourceResolver)
-    resolver = _engine.tool_resolver
-    if hasattr(resolver, '_inner'):
-        parent_tool_provider = resolver._inner._tool_provider
-    else:
-        parent_tool_provider = resolver._tool_provider
-    filtered_provider = FilteredToolProvider(parent_tool_provider, _DEFAULT_ALLOWED)
-    sub_tool_resolver = ResourceResolver(tool_provider=filtered_provider)
+    resolver = getattr(_engine, 'tool_resolver', None)
     tool_guard = None
     tool_boundaries = {}
     default_boundary = None
@@ -70,6 +64,16 @@ async def execute(
         tool_guard = getattr(parent_executor, '_tool_guard', None)
         tool_boundaries = getattr(parent_executor, '_tool_boundaries', {})
         default_boundary = getattr(parent_executor, '_default_boundary', None)
+    if resolver is not None:
+        # Legacy GraphEngine path — wrap tool provider with filter
+        if hasattr(resolver, '_inner'):
+            parent_tool_provider = resolver._inner._tool_provider
+        else:
+            parent_tool_provider = resolver._tool_provider
+        filtered_provider = FilteredToolProvider(parent_tool_provider, _DEFAULT_ALLOWED)
+        sub_tool_resolver = ResourceResolver(tool_provider=filtered_provider)
+    else:
+        sub_tool_resolver = None
     sub_tool_executor = ConcurrentToolExecutor(
         tool_resolver=sub_tool_resolver,
         tool_guard=tool_guard,
@@ -82,16 +86,31 @@ async def execute(
     sub_state_store = InMemoryStateStore()
     sub_event_bus = InMemoryEventBus()
 
-    sub_engine = GraphEngine(
+    async def _sub_mcp_resolver(state):
+        """Resolve tools from filtered resolver for ControlPlane dispatch."""
+        if sub_tool_resolver:
+            try:
+                tools = await sub_tool_resolver.get_tool_definitions()
+                return [
+                    {
+                        "name": t.name if hasattr(t, "name") else t.get("name", ""),
+                        "description": t.description if hasattr(t, "description") else t.get("description", ""),
+                        "parameters": t.parameters if hasattr(t, "parameters") else t.get("parameters", {}),
+                    }
+                    for t in (tools or [])
+                ]
+            except Exception:
+                pass
+        return []
+
+    sub_engine = ControlPlane(
         loop_strategy=ReActStrategy(max_turns=10),
         state_store=sub_state_store,
         tool_executor=sub_tool_executor,
-        tool_resolver=sub_tool_resolver,
         event_bus=sub_event_bus,
-        error_policy=DefaultErrorPolicy(tool_retry=0),
         call_model=_engine._call_model,
-        approval_enabled=False,
         workspace_dir=_workspace,
+        mcp_tool_resolver=_sub_mcp_resolver,
     )
 
     state = {

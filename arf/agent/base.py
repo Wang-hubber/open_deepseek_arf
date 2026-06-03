@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 from arf.agent.config import AgentConfig, AdvancedConfig
 from arf.agent.app_context import AppContext
-from arf.engine.graph import GraphEngine
+from arf.engine.control_plane import ControlPlane
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
@@ -114,6 +114,22 @@ class BaseAgent:
             ),
         )
         self._mcp_manager = mcp_manager
+
+        # MCP tool resolver wrapper for ControlPlane
+        async def _mcp_tool_resolver(state):
+            """Resolve tool definitions from MCP for ControlPlane dispatch."""
+            try:
+                tools = await mcp_manager.get_tool_definitions(query_context="", top_k=50)
+                return [
+                    {
+                        "name": t.name if hasattr(t, "name") else t.get("name", ""),
+                        "description": t.description if hasattr(t, "description") else t.get("description", ""),
+                        "parameters": t.parameters if hasattr(t, "parameters") else t.get("parameters", {}),
+                    }
+                    for t in (tools or [])
+                ]
+            except Exception:
+                return []
 
         # Plugin system — for hooks only (tools/skills via MCP)
         self._plugin_provider = None
@@ -284,54 +300,6 @@ class BaseAgent:
         # 9. Planner (optional)
         planner = override_protocols.pop("planner", None)
 
-        # 4.5 Sub-agents — create from config.agents
-        self._sub_agent_configs: dict = {}
-        if config.agents:
-            import os as _os3
-            from arf.core.model_adapter import ModelAdapter as _SubModelAdapter
-            for sub_cfg in config.agents:
-                from arf.agent.default_prompt_provider import DefaultSystemPromptProvider as _SubProvider
-                sub_provider = _SubProvider(config=sub_cfg)
-                sub_prompt = sub_provider.build().full_text
-                sub_adapters = {}
-                for m in (sub_cfg.models or []):
-                    sub_adapter_cfg: dict[str, Any] = {
-                        "base_url": m.api_base,
-                        "api_key": _os3.environ.get(m.api_key_env, ""),
-                        "model_name": m.model,
-                        **m.kwargs,
-                    }
-                    if m.max_token is not None:
-                        sub_adapter_cfg["max_tokens"] = m.max_token
-                    sub_adapters[m.type] = _SubModelAdapter(sub_adapter_cfg)
-                # Per-agent permission lists
-                sub_adv = sub_cfg.effective_advanced()
-                sub_perms = sub_adv.guardrails.permissions if sub_adv.guardrails else None
-                sub_perm_lists = PermissionLists.from_config(
-                    sub_perms.model_dump() if sub_perms else None
-                )
-                # Store per-agent policy for session mode resolution
-                sub_policy_raw = sub_perms.policy if sub_perms else None
-                sub_policy = AgentPolicy(sub_policy_raw) if sub_policy_raw else None
-                self._sub_agent_configs[sub_cfg.name] = {
-                    "config": sub_cfg,
-                    "system_prompt": sub_prompt,
-                    "adapters": sub_adapters,
-                    "permission_lists": sub_perm_lists,
-                    "agent_policy": sub_policy,
-                    "tool_guard": tool_guard,
-                    "tool_boundaries": tool_boundaries,
-                    "default_boundary": default_boundary,
-                }
-
-        # 4.6 Handoff manager — from config.handover rules
-        from arf.engine.handoff import HandoffManager
-        handoff_manager = None
-        if config.handover and config.handover.rules:
-            handoff_manager = HandoffManager(
-                rules=config.handover.rules,
-            )
-
         # 10. Build system prompt via provider (prefix only — inventory via MCP)
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
         prompt_provider = override_protocols.pop(
@@ -359,51 +327,27 @@ class BaseAgent:
 
         # Model routing — deprecated TwoTierRouter removed.
         # Use model_defs + agent_models degradation instead.
-        model_router = None
 
-        self._engine = GraphEngine(
+
+        self._engine = ControlPlane(
             loop_strategy=loop_strategy,
             state_store=state_store,
             tool_executor=tool_executor,
-            tool_resolver=mcp_manager,
-            planner=planner,
-            memory_store=memory_store,
-            memory_retriever=memory_retriever,
-            memory_writer=memory_writer,
-            hook_runner=hook_runner,
-            guard_runner=guard_runner,
             event_bus=event_bus,
-            error_policy=error_policy,
-            model_router=model_router,
-            compaction=compaction,
-            memory_max_tokens=_mem_cfg.max_tokens if _mem_cfg else 2000,
-            memory_top_k=_mem_cfg.top_k if _mem_cfg else 5,
+            blocking_plugins=[],
+            side_plugins=[],
+            call_model=None,
+            stream_model=None,
+            cancel_event=None,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
-            max_undo_depth=(adv.max_undo_depth if adv else 3),
-            approval_enabled=(gr_cfg is not None and len(gr_cfg.permissions.ask) > 0) if gr_cfg else False,
-            approval_allowlist=(list(gr_cfg.permissions.ask) if gr_cfg and gr_cfg.permissions.ask else None),
-            approval_timeout=_parse_duration(gr_cfg.permissions.approval.timeout if gr_cfg and gr_cfg.permissions else "60s"),
-            sub_agent_configs=self._sub_agent_configs,
-            handoff_manager=handoff_manager,
-            memory_workspace=_mem_dir,
             workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
-            promotion=self._build_promotion(adv) if adv else None,
-            session_mode_manager=session_mode_manager,
-            main_permissions=adv.guardrails.permissions if adv and adv.guardrails else None,
-            main_permission_lists=self._main_permission_lists,
-            main_agent_policy=self._main_agent_policy,
-            action_runner=ActionRunner() if adv else None,
-            content_guard=content_guard,
-            sandbox_manager=sandbox_manager,
-            **override_protocols,
+            memory_dir=_mem_dir,
+            state_dir=str(ctx.state_dir) if ctx else "./data/state",
+            trace_dir=_trace_dir,
+            mcp_tool_resolver=_mcp_tool_resolver,
         )
-        # Pass model context windows to engine for compaction decisions
-        self._engine.set_model_windows(
-            {m.type: m.context_window for m in config.models}
-        )
-        # Store main agent's tools so _active_config doesn't fall back to resolver
-        self._engine._main_agent_tools = list(config.tools)
+        self._hook_runner = hook_runner
         self._state_store = state_store
         self._event_bus = event_bus
         self._memory_store = memory_store
@@ -667,7 +611,7 @@ class BaseAgent:
 
     @property
     def engine(self):
-        """GraphEngine — for cancel, undo, checkpoint introspection."""
+        """ControlPlane — execution loop for invoke/astream."""
         return self._engine
 
     @property
@@ -678,11 +622,6 @@ class BaseAgent:
     def trace_store(self):
         """FileTraceStore — auto-created by BaseAgent."""
         return self._trace_store
-
-    @property
-    def sub_agent_configs(self) -> dict:
-        """Return {agent_name: {config, system_prompt, adapters}} for all sub-agents."""
-        return self._sub_agent_configs
 
     async def start(self) -> None:
         """Start the FileWatcher (called once event loop is ready)."""
@@ -701,8 +640,8 @@ class BaseAgent:
                 if state:
                     state["session_active"] = False
                     await self._state_store.put(sid, state)
-                if self._engine.hook_runner:
-                    await self._engine.hook_runner.fire("session_end", {
+                if self._hook_runner:
+                    await self._hook_runner.fire("session_end", {
                         "session_id": sid,
                         "reason": "shutdown",
                     })
@@ -713,9 +652,6 @@ class BaseAgent:
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
         existing = await self._state_store.get(session_id)
-        if existing:
-            existing = self._engine._close_tool_calls(existing)
-            await self._state_store.put(session_id, existing)
 
         # Determine new session and crash recovery
         if session_id in self._active_sessions:
@@ -724,8 +660,8 @@ class BaseAgent:
         elif existing and existing.get("session_active"):
             # Found active state on disk but this agent hasn't tracked it — crash recovery
             is_new_session = True
-            if self._engine.hook_runner:
-                await self._engine.hook_runner.fire("session_end", {
+            if self._hook_runner:
+                await self._hook_runner.fire("session_end", {
                     "session_id": session_id,
                     "reason": "recovery",
                 })
@@ -743,17 +679,11 @@ class BaseAgent:
             summary = ""
             interaction = 0
 
-        # Route to currently active agent if handoff is in progress
-        active_agent = existing.get("active_agent", "") if existing else ""
-        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
-            agent_name = active_agent
-        else:
-            agent_name = self.config.name
+        agent_name = self.config.name
 
         state: AgentState = {
             "session_id": session_id,
             "agent_name": agent_name,
-            "active_agent": active_agent,
             "messages": messages,
             "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
@@ -765,23 +695,18 @@ class BaseAgent:
             "session_active": True,
         }
 
-        self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
 
-        # Restore sub-agent permissions if continuing a handoff
-        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
-            self._engine._activate_agent(active_agent)
+        if self._hook_runner:
+            self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
 
-        if self._engine.hook_runner:
-            self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
-
-        if is_new_session and self._engine.hook_runner:
-            await self._engine.hook_runner.fire("session_start", {
+        if is_new_session and self._hook_runner:
+            await self._hook_runner.fire("session_start", {
                 "session_id": session_id,
             })
 
-        if self._engine.hook_runner:
-            await self._engine.hook_runner.fire("round_start", {
+        if self._hook_runner:
+            await self._hook_runner.fire("round_start", {
                 "session_id": session_id,
                 "round": interaction,
             })
@@ -795,9 +720,6 @@ class BaseAgent:
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
         existing = await self._state_store.get(session_id)
-        if existing:
-            existing = self._engine._close_tool_calls(existing)
-            await self._state_store.put(session_id, existing)
 
         # Determine new session and crash recovery
         if session_id in self._active_sessions:
@@ -806,8 +728,8 @@ class BaseAgent:
         elif existing and existing.get("session_active"):
             # Found active state on disk but this agent hasn't tracked it — crash recovery
             is_new_session = True
-            if self._engine.hook_runner:
-                await self._engine.hook_runner.fire("session_end", {
+            if self._hook_runner:
+                await self._hook_runner.fire("session_end", {
                     "session_id": session_id,
                     "reason": "recovery",
                 })
@@ -825,17 +747,11 @@ class BaseAgent:
             summary = ""
             interaction = 0
 
-        # Route to currently active agent if handoff is in progress
-        active_agent = existing.get("active_agent", "") if existing else ""
-        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
-            agent_name = active_agent
-        else:
-            agent_name = self.config.name
+        agent_name = self.config.name
 
         state: AgentState = {
             "session_id": session_id,
             "agent_name": agent_name,
-            "active_agent": active_agent,
             "messages": messages,
             "current_model": self.config.models[0].type if self.config.models else "default",
             "current_turn": turn,
@@ -847,23 +763,18 @@ class BaseAgent:
             "session_active": True,
         }
 
-        self._engine._rounds.begin_round(state)
         self._active_sessions.add(session_id)
 
-        # Restore sub-agent permissions if continuing a handoff
-        if active_agent and active_agent in getattr(self._engine, '_sub_agent_configs', {}):
-            self._engine._activate_agent(active_agent)
+        if self._hook_runner:
+            self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
 
-        if self._engine.hook_runner:
-            self._engine.hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
-
-        if is_new_session and self._engine.hook_runner:
-            await self._engine.hook_runner.fire("session_start", {
+        if is_new_session and self._hook_runner:
+            await self._hook_runner.fire("session_start", {
                 "session_id": session_id,
             })
 
-        if self._engine.hook_runner:
-            await self._engine.hook_runner.fire("round_start", {
+        if self._hook_runner:
+            await self._hook_runner.fire("round_start", {
                 "session_id": session_id,
                 "round": interaction,
             })

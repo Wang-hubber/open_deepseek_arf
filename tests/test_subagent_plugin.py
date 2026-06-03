@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from arf.engine.graph import GraphEngine
+from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
@@ -58,16 +58,16 @@ class TestSubagentExecute:
         executor = ConcurrentToolExecutor(tool_resolver=resolver)
         state_store = InMemoryStateStore()
 
-        engine = GraphEngine(
+        engine = ControlPlane(
             loop_strategy=ReActStrategy(max_turns=10),
             state_store=state_store,
             tool_executor=executor,
-            tool_resolver=resolver,
             event_bus=InMemoryEventBus(),
-            error_policy=DefaultErrorPolicy(tool_retry=0),
             call_model=fake_call_model,
-            approval_enabled=False,
+            workspace_dir="/tmp/test",
+            mcp_tool_resolver=None,
         )
+        engine.tool_resolver = resolver  # For subagent FilteredToolProvider access
 
         async def _run():
             return await execute(
@@ -121,16 +121,16 @@ class TestSubagentExecute:
         executor = ConcurrentToolExecutor(tool_resolver=resolver)
         state_store = InMemoryStateStore()
 
-        engine = GraphEngine(
+        engine = ControlPlane(
             loop_strategy=ReActStrategy(max_turns=10),
             state_store=state_store,
             tool_executor=executor,
-            tool_resolver=resolver,
             event_bus=InMemoryEventBus(),
-            error_policy=DefaultErrorPolicy(tool_retry=0),
             call_model=fake_call_model,
-            approval_enabled=False,
+            workspace_dir="/tmp/test",
+            mcp_tool_resolver=None,
         )
+        engine.tool_resolver = resolver  # For subagent FilteredToolProvider access
 
         async def _run():
             return await execute(
@@ -161,16 +161,16 @@ class TestSubagentExecute:
         executor = ConcurrentToolExecutor(tool_resolver=resolver)
         state_store = InMemoryStateStore()
 
-        engine = GraphEngine(
+        engine = ControlPlane(
             loop_strategy=ReActStrategy(max_turns=10),
             state_store=state_store,
             tool_executor=executor,
-            tool_resolver=resolver,
             event_bus=InMemoryEventBus(),
-            error_policy=DefaultErrorPolicy(tool_retry=0),
             call_model=fake_call_model,
-            approval_enabled=False,
+            workspace_dir="/tmp/test",
+            mcp_tool_resolver=None,
         )
+        engine.tool_resolver = resolver  # For subagent FilteredToolProvider access
 
         async def _run():
             return await execute(

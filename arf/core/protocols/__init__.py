@@ -10,7 +10,6 @@ from arf.core.protocols.hooks import HookRunner
 from arf.core.protocols.guardrails import (
     GuardRunner, InputGuardrail, OutputGuardrail, ToolGuardrail,
 )
-from arf.core.protocols.routing import ModelRouter
 from arf.core.protocols.compaction import CompactionStrategy
 from arf.core.protocols.sandbox import ToolSandbox
 from arf.core.protocols.concurrency import TaskScheduler
@@ -46,7 +45,6 @@ __all__ = [
     "ToolResolver", "ToolProvider", "ToolRetriever", "ToolBackend", "ToolDefinition",
     "HookRunner",
     "GuardRunner", "InputGuardrail", "OutputGuardrail", "ToolGuardrail",
-    "ModelRouter",
     "CompactionStrategy",
     "ToolSandbox",
     "TaskScheduler",
