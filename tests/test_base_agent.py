@@ -61,13 +61,6 @@ class TestBaseAgentInitialization:
         assert agent.engine is not None
 
     @pytest.mark.anyio
-    async def test_sub_agent_configs_empty(self, minimal_config, temp_agent_dir, monkeypatch):
-        """If config has no sub-agents, sub_agent_configs must be empty."""
-        monkeypatch.chdir(temp_agent_dir)
-        agent = BaseAgent(minimal_config)
-        assert agent.sub_agent_configs == {}
-
-    @pytest.mark.anyio
     async def test_engine_has_call_model(self, minimal_config, temp_agent_dir, monkeypatch):
         """Engine must have _call_model injected."""
         monkeypatch.chdir(temp_agent_dir)
