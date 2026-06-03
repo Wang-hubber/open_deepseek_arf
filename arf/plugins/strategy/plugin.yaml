@@ -1,0 +1,3 @@
+name: strategy
+enabled: true
+description: "Select loop strategy at round_start"

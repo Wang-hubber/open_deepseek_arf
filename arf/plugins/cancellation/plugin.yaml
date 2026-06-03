@@ -1,0 +1,3 @@
+name: cancellation
+enabled: true
+description: "Check cancel_event before each turn"
