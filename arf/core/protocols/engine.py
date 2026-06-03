@@ -7,15 +7,25 @@ from arf.core.results import ToolResult, ErrorAction
 class LoopStrategy(Protocol):
     """Agent execution loop pattern — entry gate, exit gate, step dispatch.
 
-    Both gates consult the active agent's configuration so multi-agent
-    handoff scenarios use the correct per-agent limits.
-
     next_step() is reserved for plan_execute / multi-phase loop patterns;
     the current engine hardcodes the ReAct ordering (model → tools → model).
+
+    current_phase exposes the internal phase for monitoring/UI.
+    on_transition() is called at turn_end so the strategy can update
+    internal state based on what just happened.
     """
     def should_continue(self, state: AgentState) -> bool: ...
     def should_break(self, state: AgentState) -> bool: ...
     def next_step(self, state: AgentState) -> str: ...
+
+    @property
+    def current_phase(self) -> str:
+        """Read-only phase label for monitoring / UI."""
+        ...
+
+    def on_transition(self, event: str, ctx) -> None:
+        """Called by engine at turn_end. Strategy updates internal state."""
+        ...
 
 
 class StateStore(Protocol):

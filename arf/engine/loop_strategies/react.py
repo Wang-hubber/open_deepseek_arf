@@ -12,8 +12,20 @@ from arf.core.state import AgentState
 
 
 class ReActStrategy:
+    """ReActStrategy — think → act → observe loop.
+
+    Tracks phase via _phase:
+      "think" — about to call the model
+      "act"   — about to execute tools
+    """
+
     def __init__(self, max_turns: int = 50) -> None:
         self.max_turns = max_turns
+        self._phase = "think"
+
+    @property
+    def current_phase(self) -> str:
+        return self._phase
 
     def should_continue(self, state: AgentState) -> bool:
         """Entry gate — false means the loop body is skipped entirely."""
@@ -35,17 +47,23 @@ class ReActStrategy:
           model returns tool_calls → execute_tools (act)
           tool results  → call_model   (observe → think)
           model returns text → call_model → parse → break (no dispatch needed)
-
-        PlanExecuteStrategy would return "plan" / "execute" / "replan".
         """
         msgs = state.get("messages", [])
         if not msgs:
+            self._phase = "think"
             return "call_model"
         last = msgs[-1]
         role = last.get("role", "")
         if role in ("user", "system"):
+            self._phase = "think"
             return "call_model"
         if role == "assistant" and last.get("tool_calls"):
+            self._phase = "act"
             return "execute_tools"
         # tool result → think
+        self._phase = "think"
         return "call_model"
+
+    def on_transition(self, event: str, ctx) -> None:
+        """Called by engine at turn_end. ReAct has no complex state transitions."""
+        pass
