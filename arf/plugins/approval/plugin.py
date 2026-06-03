@@ -43,6 +43,14 @@ class ApprovalPlugin:
                 "params": tc.get("params", {}),
             })
 
+            # Check if approve() was already called before the hook ran
+            # (approval_required event is yielded before _fire_blocking).
+            pre_resolved = self._results.pop(decision_id, None)
+            if pre_resolved is not None:
+                if not pre_resolved:
+                    raise ApprovalDenied(f"User denied {name}")
+                continue  # already approved, skip waiting
+
             evt = asyncio.Event()
             self._pending[decision_id] = evt
             try:

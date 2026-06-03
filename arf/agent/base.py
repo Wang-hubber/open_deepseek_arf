@@ -329,12 +329,48 @@ class BaseAgent:
         # Use model_defs + agent_models degradation instead.
 
 
+        # --- Resolve tool names → namespaced names for permission lists ---
+        # Collect base_name → [namespaced_name] mapping from local sources.
+        _name_map: dict[str, list[str]] = {}
+        for t in config.tools:
+            ns = f"arf__{t.name}"
+            _name_map.setdefault(t.name, []).append(ns)
+        if self._plugin_provider:
+            for t in self._plugin_provider.list_tools():
+                ns = f"arf__{t.name}"
+                _name_map.setdefault(t.name, []).append(ns)
+        for srv in getattr(config, "mcp_servers", []):
+            _name_map.setdefault("", [])  # sentinel: external MCP namespace exists
+
+        def _resolve_perm_name(name: str) -> str:
+            """Resolve a permission-list name to a namespaced tool name."""
+            if "__" in name:
+                return name  # already namespaced
+            matches = _name_map.get(name, [])
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Tool '{name}' is ambiguous — it exists in multiple sources: "
+                    f"{matches}. Use the full namespaced name (e.g. arf__{name}) "
+                    f"in your permission lists."
+                )
+            if matches:
+                return matches[0]
+            return f"arf__{name}"  # unknown source, assume local
+
+        _namespaced_ask = [_resolve_perm_name(t) for t in main_permission_lists.ask]
+
+        # ApprovalPlugin: human-in-the-loop for tools in ask_list.
+        blocking_plugins: list = []
+        if _namespaced_ask:
+            from arf.plugins.approval.plugin import ApprovalPlugin
+            blocking_plugins.append(ApprovalPlugin({"ask_list": _namespaced_ask}))
+
         self._engine = ControlPlane(
             loop_strategy=loop_strategy,
             state_store=state_store,
             tool_executor=tool_executor,
             event_bus=event_bus,
-            blocking_plugins=[],
+            blocking_plugins=blocking_plugins,
             side_plugins=[],
             call_model=None,
             stream_model=None,
@@ -346,6 +382,7 @@ class BaseAgent:
             state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
             mcp_tool_resolver=_mcp_tool_resolver,
+            ask_list=_namespaced_ask,
         )
         self._hook_runner = hook_runner
         self._state_store = state_store
@@ -403,7 +440,9 @@ class BaseAgent:
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
 
-        Returns empty string if MCP is not available yet.
+        Returns empty string if MCP is not available yet. This runs during
+        __init__ before the event loop is ready — the real MCP connection
+        happens in start(). Check _mcp_manager.healthy after start().
         """
         try:
             tools = self._mcp_manager.get_tool_definitions_sync()
@@ -648,15 +687,19 @@ class BaseAgent:
         return self._trace_store
 
     async def start(self) -> None:
-        """Start the FileWatcher (called once event loop is ready)."""
+        """Start FileWatcher and MCP manager (called once event loop is ready)."""
         if self._file_watcher:
             import asyncio
             asyncio.create_task(self._file_watcher.start())
+        if self._mcp_manager:
+            await self._mcp_manager.start()
 
     async def stop(self) -> None:
-        """Stop the FileWatcher and close all active sessions."""
+        """Stop the FileWatcher, MCP manager, and close all active sessions."""
         if self._file_watcher:
             await self._file_watcher.stop()
+        if self._mcp_manager:
+            await self._mcp_manager.stop()
 
         for sid in list(self._active_sessions):
             try:
@@ -701,6 +744,7 @@ class BaseAgent:
             "plan": None,
             "metadata": {},
             "session_active": True,
+            "session_title": existing.get("session_title", "") if existing else "",
         }
 
         self._active_sessions.add(session_id)
@@ -753,6 +797,7 @@ class BaseAgent:
             "plan": None,
             "metadata": {},
             "session_active": True,
+            "session_title": existing.get("session_title", "") if existing else "",
         }
 
         self._active_sessions.add(session_id)

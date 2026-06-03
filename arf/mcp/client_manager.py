@@ -154,9 +154,17 @@ class McpClientManager:
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         """Execute a tool (MCP tools/call). Implements ToolResolver protocol."""
         try:
+            # _-prefixed params (_engine, _state_store, _workspace, etc.) are
+            # framework DI — ConcurrentToolExecutor injects them so local tools
+            # can access engine services without globals. They are not
+            # JSON-serializable and meaningless across a process boundary:
+            # the subprocess has no access to the parent's ControlPlane or
+            # StateStore. Tools that depend on these (undo, planner, subagent)
+            # must run in-process; pure tools work fine with them stripped.
+            clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
             result = await self._send_request("tools/call", {
                 "name": tool_name,
-                "arguments": params,
+                "arguments": clean_params,
             })
             return ToolResult(
                 tool_name=tool_name,

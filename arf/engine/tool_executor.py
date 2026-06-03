@@ -87,8 +87,17 @@ class ConcurrentToolExecutor:
             tasks = [_run(tc) for tc in tool_calls]
             resolved = await asyncio.gather(*tasks, return_exceptions=True)
             results: dict[str, ToolResult] = {}
-            for item in resolved:
+            for i, item in enumerate(resolved):
                 if isinstance(item, Exception):
+                    tc_id = tool_calls[i].get("id", f"error_{i}")
+                    import logging
+                    logger = logging.getLogger("arf.engine")
+                    logger.error("Tool execution crashed: %s (tool=%s)", item, tool_calls[i].get("name", "?"))
+                    results[tc_id] = ToolResult(
+                        tool_name=tool_calls[i].get("name", ""),
+                        success=False,
+                        error=f"(internal) {item}",
+                    )
                     continue
                 tid, tr = item
                 results[tid] = tr
@@ -118,10 +127,14 @@ class ConcurrentToolExecutor:
                     blocked=True,
                 )
 
-        # ContentGuard: dangerous behavior check
+        # ContentGuard: dangerous behavior check.
+        # Strip _-prefixed internal params (_engine, _state_store, etc.)
+        # before serialization — they are framework DI objects, not user
+        # input, and are not JSON-serializable.
         if getattr(self, '_content_guard', None):
             import json as _json
-            params_str = _json.dumps(params, ensure_ascii=False) if params else ""
+            clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
+            params_str = _json.dumps(clean_params, ensure_ascii=False) if clean_params else ""
             dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
             if not dr.allowed:
                 return ToolResult(

@@ -36,6 +36,7 @@ class ControlPlane:
         state_dir: str = "./data/state",
         trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
+        ask_list: list[str] | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.state_store = state_store
@@ -51,6 +52,7 @@ class ControlPlane:
         self._state_dir = state_dir
         self._trace_dir = trace_dir
         self._mcp_tool_resolver = mcp_tool_resolver
+        self._ask_list: set[str] = set(ask_list or [])
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -64,6 +66,13 @@ class ControlPlane:
 
     def set_cancel_event(self, event: asyncio.Event) -> None:
         self._cancel_event = event
+
+    def approve(self, decision_id: str, approved: bool = True) -> bool:
+        """Delegate approval decision to the ApprovalPlugin (blocking hook)."""
+        plugin = self._blocking.get_plugin("approval")
+        if plugin is None:
+            return False
+        return plugin.approve(decision_id, approved)
 
     # ==================================================================
     # Core execution loop
@@ -128,16 +137,71 @@ class ControlPlane:
                         break
                     continue
 
-                # --- pre_dispatch ---
-                try:
-                    await self._fire_blocking("pre_dispatch", ctx)
+                # --- pre_dispatch: approval-aware hook firing ---
+                # Collect tools that need approval so we can yield
+                # approval_required events WHILE the blocking hook waits.
+                approval_ids: list[str] = []
+                approval_names: dict[str, str] = {}
+                if step == "execute_tools" and self._ask_list:
+                    for tc in state.get("_pending_tool_calls", []):
+                        if tc.get("name", "") in self._ask_list:
+                            tool_name = tc.get("name", "")
+                            decision_id = f"{session_id}_{tool_name}_{id(tc)}"
+                            approval_ids.append(decision_id)
+                            approval_names[decision_id] = tool_name
+
+                if approval_ids:
+                    # Start blocking hooks concurrently so the ApprovalPlugin
+                    # creates its pending events BEFORE we yield to the stream.
+                    hook_task = asyncio.create_task(self._fire_blocking("pre_dispatch", ctx))
+                    await asyncio.sleep(0)  # let on_hook set up events
                     await self._fire_side("pre_dispatch", ctx)
-                except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    if decision.get("action") == "abort":
-                        break
-                    if decision.get("action") == "skip":
-                        continue
+
+                    for decision_id in approval_ids:
+                        yield self._make_event("approval_required", {
+                            "decision_id": decision_id,
+                            "tool_name": approval_names[decision_id],
+                            "params": next((tc.get("params", {}) for tc in state.get("_pending_tool_calls", []) if f"{session_id}_{tc.get('name','')}_{id(tc)}" == decision_id), {}),
+                        }, turn=turn, session_id=session_id)
+
+                    try:
+                        await hook_task
+                    except Exception as e:
+                        for decision_id in approval_ids:
+                            yield self._make_event("approval_resolved", {
+                                "decision_id": decision_id,
+                                "approved": False,
+                                "reason": str(e)[:200],
+                            }, turn=turn, session_id=session_id)
+                        for tc in state.get("_pending_tool_calls", []):
+                            state["messages"].append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": "User denied this operation.",
+                            })
+                        state["_pending_tool_calls"] = []
+                        await self.state_store.put(session_id, state)
+                        decision = await self._handle_error(e, ctx)
+                        if decision.get("action") == "abort":
+                            break
+                        if decision.get("action") == "skip":
+                            continue
+                    else:
+                        for decision_id in approval_ids:
+                            yield self._make_event("approval_resolved", {
+                                "decision_id": decision_id,
+                                "approved": True,
+                            }, turn=turn, session_id=session_id)
+                else:
+                    try:
+                        await self._fire_blocking("pre_dispatch", ctx)
+                        await self._fire_side("pre_dispatch", ctx)
+                    except Exception as e:
+                        decision = await self._handle_error(e, ctx)
+                        if decision.get("action") == "abort":
+                            break
+                        if decision.get("action") == "skip":
+                            continue
 
                 # --- dispatch ---
                 try:
@@ -245,9 +309,8 @@ class ControlPlane:
             except Exception:
                 pass
 
-        # Build messages
-        msgs = [{"role": "system", "content": self._system_prompt}]
-        msgs.extend(state.get("messages", []))
+        # Build messages — convert internal tool_calls format to API format
+        msgs = self._to_api_messages(self._system_prompt, state.get("messages", []))
 
         # Validate message contract (check-only, throw on invalid)
         self._validate_messages(state)
@@ -259,6 +322,7 @@ class ControlPlane:
         stream_usage: dict = {}
         if self._stream_model:
             full_text = ""
+            stream_tool_calls: list[dict] = []
             try:
                 async for chunk in self._stream_model(msgs, model, tools=tools):
                     if chunk.get("type") == "chunk":
@@ -272,20 +336,51 @@ class ControlPlane:
                                 {"content": text, "reasoning": reasoning},
                                 turn=turn, session_id=session_id,
                             )
+                    elif chunk.get("type") == "tool_call":
+                        stream_tool_calls.append({
+                            "id": chunk.get("id", ""),
+                            "name": chunk.get("name", ""),
+                            "params": json.loads(chunk.get("arguments", "{}")),
+                        })
+                    elif chunk.get("type") == "error":
+                        yield self._make_event("error", {
+                            "phase": "stream_model",
+                            "code": chunk.get("code", 0),
+                            "detail": chunk.get("detail", ""),
+                            "note": "API returned error via stream, falling back to non-streaming",
+                        }, turn=turn, session_id=session_id)
+                        resp = None  # force non-streaming fallback
+                        break
                     elif chunk.get("type") == "usage":
                         stream_usage = {
                             "prompt_tokens": chunk.get("prompt_tokens", 0),
                             "completion_tokens": chunk.get("completion_tokens", 0),
                             "total_tokens": chunk.get("total_tokens", 0),
                         }
-                resp = {"content": full_text, "tool_calls": [], "usage": stream_usage}
-            except Exception:
-                pass  # Fall through to non-streaming
+                if resp is None:
+                    pass  # errored mid-stream, skip building resp
+                else:
+                    resp = {
+                        "content": full_text,
+                        "tool_calls": stream_tool_calls,
+                        "usage": stream_usage,
+                    }
+            except Exception as e:
+                yield self._make_event("error", {
+                    "phase": "stream_model",
+                    "detail": str(e)[:200],
+                    "note": "Streaming crashed, falling back to non-streaming",
+                }, turn=turn, session_id=session_id)
 
         if resp is None and self._call_model:
             resp = await self._call_model(msgs, model, tools=tools)
 
         if resp is None:
+            yield self._make_event("error", {
+                "phase": "call_model",
+                "detail": "Both streaming and non-streaming model calls failed",
+                "model": model,
+            }, turn=turn, session_id=session_id)
             return
 
         if not stream_usage:
@@ -370,6 +465,33 @@ class ControlPlane:
             trace_dir=self._trace_dir,
         )
 
+    @staticmethod
+    def _to_api_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
+        """Convert internal message format to OpenAI API format.
+
+        Internal tool_calls use {id, name, params} for convenience.
+        API expects {id, type: "function", function: {name, arguments}}.
+        """
+        msgs = [{"role": "system", "content": system_prompt}]
+        for m in messages:
+            if m.get("role") == "assistant" and "tool_calls" in m:
+                converted = dict(m)
+                api_tcs = []
+                for tc in m["tool_calls"]:
+                    api_tcs.append({
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tc.get("name", ""),
+                            "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
+                        },
+                    })
+                converted["tool_calls"] = api_tcs
+                msgs.append(converted)
+            else:
+                msgs.append(m)
+        return msgs
+
     def _validate_messages(self, state: AgentState) -> None:
         """Check message contract. Throw on violation — ErrorHandler repairs."""
         msgs = state.get("messages", [])
@@ -392,9 +514,29 @@ class ControlPlane:
         ctx.hook_data["exception"] = exc
         try:
             await self._fire_blocking("error", ctx)
-        except Exception:
+        except Exception as hook_err:
+            self._emit_error_event(ctx, exc, f"error_hook_failed: {hook_err}")
             return {"action": "abort", "params": {"user_message": str(exc)}}
-        return ctx.hook_data.get("_recovery_decision", {"action": "abort"})
+        decision = ctx.hook_data.get("_recovery_decision", {})
+        if not decision:
+            self._emit_error_event(ctx, exc, "no_recovery_decision_defaulting_to_abort")
+            return {"action": "abort"}
+        return decision
+
+    def _emit_error_event(self, ctx: PluginContext, exc: Exception, detail: str) -> None:
+        """Emit an error event to the trace — does not affect control flow."""
+        event = AgentEvent(
+            type="error",
+            data={
+                "phase": ctx.current_step,
+                "exception": type(exc).__name__,
+                "detail": detail,
+                "message": str(exc)[:300],
+            },
+            session_id=ctx.session_id,
+        )
+        if self.event_bus:
+            self.event_bus.emit(event)
 
     async def _fire_blocking(self, event_type: str, ctx: PluginContext) -> None:
         self._blocking.update_runtime(

@@ -115,10 +115,12 @@ class ArfLocalMcpServer:
 
 if __name__ == "__main__":
     async def _main() -> None:
-        config_line = sys.stdin.readline()
-        if not config_line:
+        # Use buffer layer exclusively — mixing sys.stdin (TextIOWrapper)
+        # with sys.stdin.buffer steals pre-read bytes between the two buffers.
+        raw_line = sys.stdin.buffer.readline()
+        if not raw_line:
             raise RuntimeError("No config received on stdin")
-        cfg = json.loads(config_line)
+        cfg = json.loads(raw_line.decode())
 
         server = ArfLocalMcpServer(
             tools_dir=Path(cfg["tools_dir"]),
@@ -133,14 +135,15 @@ if __name__ == "__main__":
         loop = asyncio.get_event_loop()
         buffer = b""
         while True:
-            chunk = await loop.run_in_executor(None, sys.stdin.buffer.read, 4096)
+            chunk = await loop.run_in_executor(None, sys.stdin.buffer.read1, 4096)
             if not chunk:
                 break
             buffer += chunk
             payload = StdioFraming.decode(buffer)
             if not payload:
                 continue
-            buffer = buffer[0:0]  # clear after successful decode
+            consumed = buffer.find(payload.encode()) + len(payload.encode())
+            buffer = buffer[consumed:]  # keep leftover bytes for next frame
             req = json.loads(payload)
             req_id = req.get("id", 0)
             method = req.get("method", "")

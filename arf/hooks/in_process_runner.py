@@ -38,6 +38,14 @@ class InProcessHookRunner:
     def update_runtime(self, **kwargs) -> None:
         self._runtime.update(kwargs)
 
+    def get_plugin(self, name: str):
+        """Find a registered plugin by name. Returns None if not found."""
+        for plugins in self._plugins.values():
+            for p in plugins:
+                if p.name == name:
+                    return p
+        return None
+
     async def fire(self, event_type: str, ctx: PluginContext) -> None:
         """Fire all blocking plugins for this hook point sequentially.
 
