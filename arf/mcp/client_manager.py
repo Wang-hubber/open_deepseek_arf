@@ -39,6 +39,7 @@ class McpClientManager:
         self._plugin_names = plugin_names
         self._process: asyncio.subprocess.Process | None = None
         self._started = False
+        self._healthy = False
         self._request_id = 0
 
     async def start(self) -> None:
@@ -65,9 +66,9 @@ class McpClientManager:
             if self._process.stdin:
                 self._process.stdin.write(config_json.encode() + b"\n")
                 await self._process.stdin.drain()
+                self._healthy = True
         except (BrokenPipeError, ConnectionResetError, OSError):
-            # Subprocess may have exited prematurely if it lacks a __main__ block
-            pass
+            self._healthy = False
         self._started = True
 
     async def stop(self) -> None:
@@ -92,12 +93,16 @@ class McpClientManager:
         payload = req.model_dump_json(by_alias=True)
         framed = StdioFraming.encode(payload)
 
+        if not self._healthy:
+            return {}
+
         if self._process and self._process.stdin:
             try:
                 self._process.stdin.write(framed)
                 await self._process.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                self._healthy = False
+                return {}
 
         if self._process and self._process.stdout:
             buffer = b""
@@ -115,14 +120,16 @@ class McpClientManager:
                         if "result" in resp:
                             return resp["result"]
                         if "error" in resp:
-                            raise RuntimeError(
-                                resp["error"].get("message", "MCP error")
-                            )
+                            return {"error": resp["error"].get("message", "MCP error")}
                         break
             except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
-                pass
+                self._healthy = False
 
         return {}
+
+    @property
+    def healthy(self) -> bool:
+        return self._healthy
 
     # -- ToolResolver protocol --
 
@@ -163,10 +170,13 @@ class McpClientManager:
     # -- Sync wrappers for startup --
 
     def get_tool_definitions_sync(self) -> list[ToolDefinition]:
-        """Sync wrapper for tool list -- used at init time for inventory."""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.get_tool_definitions())
+        """Sync wrapper — safe to call from any context including async."""
+        from threading import Thread
+        result: list[ToolDefinition] = []
+        def _run() -> None:
+            nonlocal result
+            result = asyncio.run(self.get_tool_definitions())
+        t = Thread(target=_run)
+        t.start()
+        t.join()
+        return result

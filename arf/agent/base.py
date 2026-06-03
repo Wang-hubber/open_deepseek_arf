@@ -79,13 +79,13 @@ class BaseAgent:
         # McpClientManager replaces ToolProvider + SkillProvider +
         # PluginProvider + ResourceResolver quartet.
         tools_dir = override_protocols.pop(
-            "tools_dir", ctx.tools_dir if ctx else Path("./tools")
+            "tools_dir", ctx.tools_dir if ctx else Path.cwd() / "tools"
         )
         skills_dir = override_protocols.pop(
-            "skills_dir", ctx.skills_dir if ctx else Path("./skills")
+            "skills_dir", ctx.skills_dir if ctx else Path.cwd() / "skills"
         )
         models_dir = override_protocols.pop(
-            "models_dir", ctx.models_dir if ctx else Path("./models")
+            "models_dir", ctx.models_dir if ctx else Path.cwd() / "models"
         )
 
         # Models — resolved from config.model_defs (new format) or config.models (legacy)

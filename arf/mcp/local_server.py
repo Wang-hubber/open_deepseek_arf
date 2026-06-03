@@ -1,10 +1,14 @@
 """ArfLocalMcpServer -- local MCP server aggregating local + remote resources."""
+import asyncio
+import json
+import sys
 from pathlib import Path
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.resources.providers.skill_provider import SkillProvider
 from arf.resources.providers.plugin_provider import PluginProvider
 from arf.resources.file_watcher import FileWatcher
 from arf.mcp.remote_client import McpRemoteClient
+from arf.mcp.protocol import StdioFraming
 from arf.core.config_base import McpServerConfig
 
 
@@ -107,3 +111,53 @@ class ArfLocalMcpServer:
                 d["uri"] = f"skills/{d['name']}.yaml"
                 results.append(d)
         return results
+
+
+if __name__ == "__main__":
+    async def _main() -> None:
+        config_line = sys.stdin.readline()
+        if not config_line:
+            raise RuntimeError("No config received on stdin")
+        cfg = json.loads(config_line)
+
+        server = ArfLocalMcpServer(
+            tools_dir=Path(cfg["tools_dir"]),
+            skills_dir=Path(cfg["skills_dir"]),
+            models_dir=Path(cfg["models_dir"]),
+            plugins_dir=Path(cfg["plugins_dir"]),
+            plugin_names=cfg.get("plugin_names", []),
+            remote_servers=[McpServerConfig(**s) for s in cfg.get("remote_servers", [])],
+        )
+        await server.start()
+
+        loop = asyncio.get_event_loop()
+        buffer = b""
+        while True:
+            chunk = await loop.run_in_executor(None, sys.stdin.buffer.read, 4096)
+            if not chunk:
+                break
+            buffer += chunk
+            payload = StdioFraming.decode(buffer)
+            if not payload:
+                continue
+            buffer = buffer[0:0]  # clear after successful decode
+            req = json.loads(payload)
+            req_id = req.get("id", 0)
+            method = req.get("method", "")
+            params = req.get("params", {})
+
+            if method == "tools/list":
+                result = {"tools": server.list_tools_sync()}
+            elif method == "tools/call":
+                result = await server.call_tool(
+                    params.get("name", ""), params.get("arguments", {}))
+            elif method == "resources/list":
+                result = {"resources": server.list_resources_sync()}
+            else:
+                result = {"error": f"Unknown method: {method}"}
+
+            resp = json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result})
+            sys.stdout.buffer.write(StdioFraming.encode(resp))
+            sys.stdout.buffer.flush()
+
+    asyncio.run(_main())
