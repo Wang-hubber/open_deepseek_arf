@@ -112,6 +112,8 @@ class ModelAdapter:
             src.pop(ck, None)
         # Translate thinking_enabled + reasoning_effort -> DeepSeek thinking
         thinking_enabled = src.pop("thinking_enabled", None)
+        if thinking_enabled is None and "reasoning_effort" in src:
+            thinking_enabled = True
         if thinking_enabled is not None:
             if thinking_enabled:
                 effort = src.pop("reasoning_effort", "high")

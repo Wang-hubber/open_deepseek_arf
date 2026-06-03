@@ -49,6 +49,11 @@ class ModelDegrader:
                 raise
         raise last_error  # unreachable
 
+    @staticmethod
+    def _is_degradable_status(status_code: int) -> bool:
+        """Return True if status_code should trigger model degradation."""
+        return status_code >= 500 or status_code == 429
+
     def _should_degrade(self, error: Exception) -> bool:
         """Check if this error should trigger degradation to the next model.
 
@@ -62,8 +67,46 @@ class ModelDegrader:
             or getattr(error, 'http_status', None)
         )
         if status is not None:
-            if 400 <= status < 500 and status != 429:
-                return False  # client error, don't degrade
-            return True  # 5xx or 429
+            return self._is_degradable_status(status)
         # No HTTP status → assume transient (network/timeout/etc), degrade
         return True
+
+    async def chat_stream_full(self, messages: list[dict], tools=None,
+                               max_tokens=None):
+        """Stream with ordered fallback on connection failure.
+
+        Degrades only when the stream fails before producing any content.
+        Once chunks start flowing, we commit to that adapter — mid-stream
+        failures are not recovered.
+        """
+        last_error = None
+        for i, adapter in enumerate(self._adapters):
+            started = False
+            try:
+                async for chunk in adapter.chat_stream_full(
+                    messages, tools=tools, max_tokens=max_tokens,
+                ):
+                    if chunk.get("type") == "error":
+                        if not started and i < len(self._adapters) - 1:
+                            code = chunk.get("code", 0)
+                            if self._is_degradable_status(code):
+                                logger.warning(
+                                    "Model adapter %d/%d stream errored, degrading: %s",
+                                    i + 1, len(self._adapters), code)
+                                break  # exit inner loop, try next adapter
+                        yield chunk
+                        return
+                    started = True
+                    yield chunk
+                else:
+                    return  # stream completed normally
+            except Exception as e:
+                if not started and i < len(self._adapters) - 1 and self._should_degrade(e):
+                    last_error = e
+                    logger.warning(
+                        "Model adapter %d/%d stream failed, degrading: %s",
+                        i + 1, len(self._adapters), e)
+                    continue
+                raise
+        if last_error:
+            raise last_error

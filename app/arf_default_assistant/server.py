@@ -58,10 +58,21 @@ async def lifespan(app: FastAPI):
     cfg = AgentConfig.from_yaml(str(app_context.config_path))
     state._agent = create_agent(config=cfg, app_context=app_context)
 
-    # Restore state
-    s = await state._agent.state_store.get("default")
-    if s:
-        logger.info(f"Restored state: {len(s.get('messages', []))} messages, turn {s.get('current_turn', 0)}")
+    # Restore persisted sessions
+    adv = cfg.effective_advanced()
+    sess_cfg = adv.session if adv else None
+    if sess_cfg and sess_cfg.enabled:
+        sids = await state._agent.state_store.list_sessions()
+        for sid in sids:
+            s = await state._agent.state_store.get(sid)
+            if s:
+                logger.info(f"Found persisted session '{sid}': "
+                            f"{len(s.get('messages', []))} messages, "
+                            f"active={s.get('session_active', False)}")
+    else:
+        s = await state._agent.state_store.get("default")
+        if s:
+            logger.info(f"Restored state: {len(s.get('messages', []))} messages, turn {s.get('current_turn', 0)}")
 
     logger.info(f"Agent '{cfg.name}' ready")
     await state._agent.start()

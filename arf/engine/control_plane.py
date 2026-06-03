@@ -262,7 +262,16 @@ class ControlPlane:
             try:
                 async for chunk in self._stream_model(msgs, model, tools=tools):
                     if chunk.get("type") == "chunk":
-                        full_text += chunk.get("content", "")
+                        text = chunk.get("content", "")
+                        reasoning = chunk.get("reasoning", "")
+                        if text:
+                            full_text += text
+                        if text or reasoning:
+                            yield self._make_event(
+                                "thinking_delta",
+                                {"content": text, "reasoning": reasoning},
+                                turn=turn, session_id=session_id,
+                            )
                     elif chunk.get("type") == "usage":
                         stream_usage = {
                             "prompt_tokens": chunk.get("prompt_tokens", 0),

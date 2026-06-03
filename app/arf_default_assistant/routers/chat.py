@@ -19,13 +19,15 @@ class ChatReq(BaseModel):
     stream: bool = False
     history: list[dict] | None = None
     new_session: bool = False
+    session_id: str = ""
 
 
 @router.post("/api/chat")
 async def chat(req: ChatReq):
+    sid = req.session_id or ""
     if req.stream:
         return StreamingResponse(
-            _ndjson_stream(req.message),
+            _ndjson_stream(req.message, sid),
             media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -33,18 +35,18 @@ async def chat(req: ChatReq):
             },
         )
     try:
-        result = await state._agent.chat(req.message)
-        return JSONResponse({"content": result})
+        result = await state._agent.chat(req.message, session_id=sid)
+        return JSONResponse({"content": result, "session_id": sid or "default"})
     except Exception as e:
         return JSONResponse({"content": "", "error": str(e)}, status_code=500)
 
 
-async def _ndjson_stream(message: str):
+async def _ndjson_stream(message: str, session_id: str = ""):
     """Stream agent events as NDJSON (application/x-ndjson).
     Each line is a complete JSON object terminated by \\n.
     Cancellation via asyncio.CancelledError propagation."""
     try:
-        async for event in state._agent.astream(message):
+        async for event in state._agent.astream(message, session_id=session_id):
             line = json.dumps({
                 "type": event.type,
                 **event.data,
@@ -75,17 +77,17 @@ async def approve_tool_call(req: ApproveReq):
 
 
 @router.post("/api/chat/undo")
-async def undo_chat(steps: int = 1):
+async def undo_chat(steps: int = 1, session_id: str = "default"):
     if steps < 1:
         return JSONResponse({"error": "steps must be >= 1"}, status_code=400)
     engine = state._agent.engine
     available = engine.checkpoint_count()
     if available < steps:
         return JSONResponse({"status": "insufficient_checkpoints", "available": available, "requested": steps})
-    restored = engine.undo(steps, session_id="default")
+    restored = engine.undo(steps, session_id=session_id)
     if restored is None:
         return JSONResponse({"status": "no_checkpoints"})
-    await state._agent.state_store.put("default", restored)
+    await state._agent.state_store.put(session_id, restored)
     msg_count = len(restored.get("messages", []))
     remaining = engine.checkpoint_count()
     logger.info(f"Undo {steps} round(s): restored to {msg_count} messages, {remaining} checkpoints remain")

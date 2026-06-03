@@ -369,6 +369,37 @@ class BaseAgent:
         # ---- Active session tracking ----
         self._active_sessions: set[str] = set()
 
+    async def _resolve_session(self, session_id: str) -> tuple[str, dict | None, bool]:
+        """Resolve session_id, auto-generating UUID if configured.
+
+        Returns (resolved_session_id, existing_state, is_new_session).
+        """
+        adv = self.config.effective_advanced()
+        sess_cfg = adv.session if adv else None
+
+        if not session_id or session_id.strip() == "":
+            if sess_cfg and sess_cfg.enabled and sess_cfg.generate_id:
+                import uuid
+                session_id = str(uuid.uuid4())
+            else:
+                session_id = "default"
+
+        existing = await self._state_store.get(session_id)
+
+        if session_id in self._active_sessions:
+            is_new_session = False
+        elif existing and existing.get("session_active"):
+            is_new_session = True
+            if self._hook_runner:
+                await self._hook_runner.fire("session_end", {
+                    "session_id": session_id,
+                    "reason": "recovery",
+                })
+        else:
+            is_new_session = True
+
+        return session_id, existing, is_new_session
+
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
 
@@ -438,7 +469,7 @@ class BaseAgent:
         import os as _os, json as _json, asyncio as _asyncio
         from arf.core.model_adapter import ModelAdapter
 
-        # NEW: ModelRegistry-based flow (when model_defs is populated)
+        # Build ModelDegrader from new format (model_defs) or legacy (config.models)
         _model_degrader = None
         model_registry = config.get_model_registry()
         if model_registry is not None:
@@ -457,20 +488,21 @@ class BaseAgent:
                 from arf.core.model_degrader import ModelDegrader
                 _model_degrader = ModelDegrader(_deg_adapters)
 
-        # Legacy flow (old ModelConfig format, filesystem-based)
-        adapters: dict[str, ModelAdapter] = {}
-        for m in config.models:
-            api_key = _os.environ.get(m.api_key_env, "")
-            adapter_cfg: dict[str, Any] = {
-                "base_url": m.api_base,
-                "api_key": api_key,
-                "model_name": m.model,
-                **m.kwargs,
-            }
-            if m.max_token is not None:
-                adapter_cfg["max_tokens"] = m.max_token
-            adapters[m.type] = ModelAdapter(adapter_cfg)
-        default_name = config.models[0].type if config.models else ""
+        if _model_degrader is None and config.models:
+            from arf.core.model_degrader import ModelDegrader
+            _deg_adapters = []
+            for m in config.models:
+                api_key = _os.environ.get(m.api_key_env, "")
+                adapter_cfg: dict[str, Any] = {
+                    "base_url": m.api_base,
+                    "api_key": api_key,
+                    "model_name": m.model,
+                    **m.kwargs,
+                }
+                if m.max_token is not None:
+                    adapter_cfg["max_tokens"] = m.max_token
+                _deg_adapters.append(ModelAdapter(adapter_cfg))
+            _model_degrader = ModelDegrader(_deg_adapters)
 
         # --- Protection layer (TODO #10) ---
         adv = config.effective_advanced()
@@ -526,12 +558,8 @@ class BaseAgent:
             return result
 
         async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
-            if _model_degrader is not None:
-                msg = await _model_degrader.chat_complete(
-                    messages, tools=_to_openai_tools(tools))
-            else:
-                adapter = adapters.get(model_name, adapters[default_name])
-                msg = await adapter.chat_complete(messages, tools=_to_openai_tools(tools))
+            msg = await _model_degrader.chat_complete(
+                messages, tools=_to_openai_tools(tools))
             tool_calls = []
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -548,9 +576,9 @@ class BaseAgent:
             return {"content": msg.content or "", "tool_calls": tool_calls, "usage": usage, "reasoning": reasoning, "finish_reason": finish_reason}
 
         async def _stream_model(messages: list[dict], model_name: str = "", tools=None):
-            """Token-level streaming via ModelAdapter.chat_stream_full."""
-            adapter = adapters.get(model_name, adapters[default_name])
-            async for chunk in adapter.chat_stream_full(messages, tools=_to_openai_tools(tools)):
+            """Token-level streaming via ModelDegrader."""
+            async for chunk in _model_degrader.chat_stream_full(
+                messages, tools=_to_openai_tools(tools)):
                 yield chunk
 
         # --- Apply protection wrapper ---
@@ -564,10 +592,6 @@ class BaseAgent:
                 detail = str(exc)
                 if "400" not in detail or "tool" not in detail.lower():
                     return None
-                # The engine repairs its own internal state; we rebuild externally
-                import logging
-                logger = logging.getLogger("arf.agent")
-                logger.info("Protection: 400 tool error detected, attempting repair")
                 return None  # engine handles repair internally in model_call step
 
             async def _protected_call(messages, model_name="", tools=None):
@@ -651,23 +675,7 @@ class BaseAgent:
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
-        existing = await self._state_store.get(session_id)
-
-        # Determine new session and crash recovery
-        if session_id in self._active_sessions:
-            # Already started, just continuing
-            is_new_session = False
-        elif existing and existing.get("session_active"):
-            # Found active state on disk but this agent hasn't tracked it — crash recovery
-            is_new_session = True
-            if self._hook_runner:
-                await self._hook_runner.fire("session_end", {
-                    "session_id": session_id,
-                    "reason": "recovery",
-                })
-        else:
-            # New session (no state, or state without active flag)
-            is_new_session = True
+        session_id, existing, is_new_session = await self._resolve_session(session_id)
 
         turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:
@@ -719,23 +727,7 @@ class BaseAgent:
 
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
-        existing = await self._state_store.get(session_id)
-
-        # Determine new session and crash recovery
-        if session_id in self._active_sessions:
-            # Already started, just continuing
-            is_new_session = False
-        elif existing and existing.get("session_active"):
-            # Found active state on disk but this agent hasn't tracked it — crash recovery
-            is_new_session = True
-            if self._hook_runner:
-                await self._hook_runner.fire("session_end", {
-                    "session_id": session_id,
-                    "reason": "recovery",
-                })
-        else:
-            # New session (no state, or state without active flag)
-            is_new_session = True
+        session_id, existing, is_new_session = await self._resolve_session(session_id)
 
         turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:

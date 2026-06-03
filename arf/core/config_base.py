@@ -186,27 +186,6 @@ class ReloadConfig(BaseModel):
     signals: list[str] = Field(default_factory=lambda: ["SIGHUP"])
 
 
-class HandoverContextConfig(BaseModel):
-    """Context strategy for handoff between agents.
-
-    raw_turns: number of recent conversation turns to include (-1 = all, 0 = none)
-    task_summary: whether to generate an LLM task summary
-    """
-    raw_turns: int = Field(default=5, ge=-1)
-    task_summary: bool = True
-
-
-class HandoverRuleConfig(BaseModel):
-    from_agent: str
-    to_agent: str
-    trigger: str
-    context: HandoverContextConfig = Field(default_factory=HandoverContextConfig)
-
-
-class HandoverConfig(BaseModel):
-    rules: list[HandoverRuleConfig] = Field(default_factory=list)
-
-
 class SupervisorConfig(BaseModel):
     type: Literal["round_robin", "llm_router", "custom"] = "round_robin"
     llm_model: str | None = None
@@ -232,6 +211,18 @@ class ProtectionConfig(BaseModel):
     enabled: bool = True
     rate_limit: ProtectionRateLimitConfig = Field(default_factory=ProtectionRateLimitConfig)
     circuit_breaker: ProtectionCircuitBreakerConfig = Field(default_factory=ProtectionCircuitBreakerConfig)
+
+
+class SessionConfig(BaseModel):
+    """Multi-session lifecycle configuration.
+
+    When disabled (default), the framework uses the legacy "default"
+    single-session mode for backward compatibility.
+    """
+    enabled: bool = False
+    auto_create: bool = True
+    generate_id: bool = True
+    max_sessions: int = 10
 
 
 class ObservabilityConfig(BaseModel):

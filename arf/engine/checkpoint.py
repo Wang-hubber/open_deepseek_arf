@@ -26,6 +26,9 @@ class InMemoryStateStore:
     async def delete(self, session_id: str) -> None:
         self._store.pop(session_id, None)
 
+    async def list_sessions(self) -> list[str]:
+        return list(self._store.keys())
+
     def reset(self) -> None:
         self._store.clear()
         self.snapshots.clear()
@@ -72,3 +75,6 @@ class FileStateStore:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    async def list_sessions(self) -> list[str]:
+        return sorted(p.stem for p in self._dir.glob("*.json"))

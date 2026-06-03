@@ -7,8 +7,8 @@ from arf.core.config_base import (
     McpServerConfig, ModelConfig, SkillConfig, ToolConfig, HookDefinition,
     CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, ConcurrencyConfig, SandboxConfig, ToolRetrievalConfig,
-    ReloadConfig, HandoverConfig, SupervisorConfig,
-    ProtectionConfig, ObservabilityConfig, PromotionConfig,
+    ReloadConfig, SupervisorConfig,
+    ProtectionConfig, ObservabilityConfig, PromotionConfig, SessionConfig,
 )
 
 
@@ -39,6 +39,7 @@ class AdvancedConfig(BaseModel):
     recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
     promotion: PromotionConfig | None = None
     observability: ObservabilityConfig | None = None
+    session: SessionConfig | None = None
 
     @classmethod
     def default(cls) -> "AdvancedConfig":
@@ -94,8 +95,6 @@ class AgentConfig(BaseModel):
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     hooks: list[HookDefinition] = Field(default_factory=list)
     advanced: AdvancedConfig | None = None
-    agents: list["AgentConfig"] | None = None
-    handover: HandoverConfig | None = None
     supervisor: SupervisorConfig | None = None
 
     def get_model_registry(self):

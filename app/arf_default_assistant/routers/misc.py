@@ -71,40 +71,86 @@ async def usage_models_pricing():
     return JSONResponse([])
 
 
-# ---- Session stubs ----
-from datetime import datetime, timezone
+# ---- Session endpoints ----
+import uuid as _uuid
 
 
-def _session_defaults():
-    state_file = app_context.state_dir / "default.json"
-    created_at = datetime.fromtimestamp(state_file.stat().st_mtime, tz=timezone.utc).isoformat() if state_file.exists() else datetime.now(timezone.utc).isoformat()
-    return {"id": "default", "session_id": "default", "created_at": created_at}
+def _default_title(state_data: dict | None) -> str:
+    """Derive a title from the first user message, or return empty string."""
+    if not state_data:
+        return ""
+    msgs = state_data.get("messages", [])
+    for m in msgs:
+        if m.get("role") == "user":
+            text = m.get("content", "")
+            if text:
+                return text[:10] + ("..." if len(text) > 10 else "")
+    return ""
+
+
+def _session_info(state_data: dict | None, session_id: str) -> dict:
+    """Build a session info dict from state data."""
+    title = ""
+    if state_data:
+        title = state_data.get("session_title", "") or _default_title(state_data)
+        return {
+            "id": session_id,
+            "session_id": session_id,
+            "title": title,
+            "message_count": len(state_data.get("messages", [])),
+            "active": state_data.get("session_active", False),
+        }
+    return {"id": session_id, "session_id": session_id,
+            "title": "", "message_count": 0, "active": False}
 
 
 @router.get("/api/sessions")
 async def sessions_list():
-    return JSONResponse([])
+    sids = await state._agent.state_store.list_sessions()
+    sessions = []
+    for sid in sids:
+        data = await state._agent.state_store.get(sid)
+        sessions.append(_session_info(data, sid))
+    return JSONResponse(sessions)
 
 
 @router.post("/api/sessions")
 async def sessions_create():
-    state_data = await state._agent.state_store.get("default")
-    messages = state_data.get("messages", []) if state_data else []
-    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
+    sid = str(_uuid.uuid4())
+    return JSONResponse({"id": sid, "session_id": sid,
+                         "title": "", "message_count": 0, "active": False})
 
 
 @router.get("/api/sessions/active")
 async def sessions_active():
-    state_data = await state._agent.state_store.get("default")
-    messages = state_data.get("messages", []) if state_data else []
-    return JSONResponse({**_session_defaults(), "message_count": len(messages)})
+    return JSONResponse(list(state._agent._active_sessions))
 
 
-@router.get("/api/sessions/active/messages")
-async def sessions_active_messages():
-    state_data = await state._agent.state_store.get("default")
-    messages = state_data.get("messages", []) if state_data else []
-    return JSONResponse(messages)
+@router.get("/api/sessions/{session_id}/messages")
+async def sessions_messages(session_id: str):
+    data = await state._agent.state_store.get(session_id)
+    if data is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return JSONResponse(data.get("messages", []))
+
+
+@router.patch("/api/sessions/{session_id}")
+async def sessions_update(session_id: str, req: dict):
+    """Update session metadata (e.g. title)."""
+    data = await state._agent.state_store.get(session_id)
+    if data is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    if "title" in req:
+        data["session_title"] = req["title"]
+        await state._agent.state_store.put(session_id, data)
+    return JSONResponse(_session_info(data, session_id))
+
+
+@router.delete("/api/sessions/{session_id}")
+async def sessions_delete(session_id: str):
+    await state._agent.state_store.delete(session_id)
+    state._agent._active_sessions.discard(session_id)
+    return JSONResponse({"status": "deleted", "session_id": session_id})
 
 
 @router.websocket("/ws")
