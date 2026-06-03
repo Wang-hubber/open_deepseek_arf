@@ -24,6 +24,7 @@ class TestMinimalFramework:
         from arf.plugins.checkpoint.plugin import CheckpointPlugin
         from arf.plugins.trace.plugin import TracePlugin
         from arf.testing import InMemoryStateStore
+        from arf.core.plugin_context import PluginContext
 
         store = InMemoryStateStore()
         compaction = CompactionPlugin({"threshold": 0.99})  # high threshold
@@ -42,11 +43,15 @@ class TestMinimalFramework:
             "last_token_usage": 100,  # below threshold
             "current_turn": 1,
         }))
-        runner.update_runtime(session_id="test", interaction_round=1)
-        asyncio.run(runner.fire("round_end", {
-            "session_id": "test", "round": 1,
-            "messages_count": 1, "last_token_usage": 100,
-        }))
+        ctx = PluginContext(
+            session_id="test",
+            interaction_round=1,
+            hook_data={
+                "session_id": "test", "round": 1,
+                "messages_count": 1, "last_token_usage": 100,
+            },
+        )
+        asyncio.run(runner.fire("round_end", ctx))
 
         # No exceptions = success
         assert True

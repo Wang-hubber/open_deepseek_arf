@@ -15,8 +15,8 @@ class FakeMemoryPlugin:
         return self._name
 
     @property
-    def hooks(self) -> list[str]:
-        return ["round_end"]
+    def hooks(self) -> dict[str, str]:
+        return {"round_end": "blocking"}
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         self.invocations.append((hook_name, context))
@@ -32,8 +32,8 @@ class FakeRouterPlugin:
         return "model_router"
 
     @property
-    def hooks(self) -> list[str]:
-        return ["pre_model_call"]
+    def hooks(self) -> dict[str, str]:
+        return {"pre_model_call": "blocking"}
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         self.routed_to = context.hook_data.get("model", "unknown")
@@ -46,11 +46,28 @@ class CrashingPlugin:
         return "crasher"
 
     @property
-    def hooks(self) -> list[str]:
-        return ["round_end"]
+    def hooks(self) -> dict[str, str]:
+        return {"round_end": "blocking"}
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         raise RuntimeError("boom")
+
+
+class _SidePlugin:
+    """Plugin that only subscribes with 'side' mode."""
+    def __init__(self):
+        self.fired = False
+
+    @property
+    def name(self) -> str:
+        return "side_only"
+
+    @property
+    def hooks(self) -> dict[str, str]:
+        return {"round_end": "side"}
+
+    async def on_hook(self, hook_name: str, context: PluginContext) -> None:
+        self.fired = True
 
 
 class TestInProcessHookRunner:
@@ -62,7 +79,7 @@ class TestInProcessHookRunner:
         router = FakeRouterPlugin()
         runner = InProcessHookRunner(plugins=[memory, router])
 
-        asyncio.run(runner.fire("round_end", {"session_id": "test"}))
+        asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
 
         assert len(memory.invocations) == 1
         assert memory.invocations[0][0] == "round_end"
@@ -76,7 +93,7 @@ class TestInProcessHookRunner:
         p2 = FakeMemoryPlugin("p2")
         runner = InProcessHookRunner(plugins=[p1, p2])
 
-        asyncio.run(runner.fire("round_end", {}))
+        asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
 
         assert len(p1.invocations) == 1
         assert len(p2.invocations) == 1
@@ -88,20 +105,25 @@ class TestInProcessHookRunner:
         router = FakeRouterPlugin()
         runner = InProcessHookRunner(plugins=[router])
 
-        asyncio.run(runner.fire("pre_model_call", {"model": "deep", "messages_count": 42}))
+        ctx = PluginContext(
+            session_id="test",
+            hook_data={"model": "deep", "messages_count": 42},
+        )
+        asyncio.run(runner.fire("pre_model_call", ctx))
 
         assert router.routed_to == "deep"
 
-    def test_plugin_error_does_not_block_others(self):
-        """One plugin's exception should not prevent other plugins from firing."""
+    def test_plugin_error_propagates_to_caller(self):
+        """One plugin's exception should propagate and skip remaining plugins."""
         from arf.hooks.in_process_runner import InProcessHookRunner
 
         memory = FakeMemoryPlugin()
         runner = InProcessHookRunner(plugins=[CrashingPlugin(), memory])
 
-        asyncio.run(runner.fire("round_end", {}))  # should not raise
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
 
-        assert len(memory.invocations) == 1  # memory still fired
+        assert len(memory.invocations) == 0  # crasher fired first, memory skipped
 
     def test_runner_unregister(self):
         """Unregistered plugin should not fire."""
@@ -111,7 +133,7 @@ class TestInProcessHookRunner:
         runner = InProcessHookRunner(plugins=[memory])
         runner.unregister("memory")
 
-        asyncio.run(runner.fire("round_end", {}))
+        asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
 
         assert len(memory.invocations) == 0
 
@@ -123,5 +145,16 @@ class TestInProcessHookRunner:
         memory = FakeMemoryPlugin()
         runner.register(memory)
 
-        assert "round_end" in runner._plugins
-        assert runner._plugins["round_end"][0] is memory
+        # Use a public method to verify — fire and check invocation
+        asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
+        assert len(memory.invocations) == 1
+
+    def test_side_plugins_ignored(self):
+        """Plugins with only 'side' hooks should not be registered."""
+        from arf.hooks.in_process_runner import InProcessHookRunner
+
+        side_plugin = _SidePlugin()
+        runner = InProcessHookRunner(plugins=[side_plugin])
+
+        asyncio.run(runner.fire("round_end", PluginContext(session_id="test")))
+        assert not side_plugin.fired

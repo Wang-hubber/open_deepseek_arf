@@ -14,6 +14,7 @@ from arf.core.protocols import (
     ToolResolver, MemoryStore, MemoryRetriever, MemoryWriter, HookRunner,
     GuardRunner, EventBus, ErrorPolicy, ModelRouter, CompactionStrategy,
 )
+from arf.core.plugin_context import PluginContext
 from arf.core.state import AgentState, TurnContext
 from arf.core.events import AgentEvent
 from arf.compaction.sliding_window import DEFAULT_WINDOW_SIZE
@@ -118,14 +119,10 @@ class GraphEngine:
         approval_enabled: bool = False,
         approval_allowlist: list[str] | None = None,
         approval_timeout: float = 60.0,
-        # Multi-agent support
-        sub_agent_configs: dict | None = None,
-        handoff_manager=None,
         memory_workspace: str = "./memory",
         workspace_dir: str = "",
         recovery_config: "RecoveryConfig | None" = None,
         promotion: "Promotion | None" = None,
-        main_permissions: "PermissionsConfig | None" = None,
         action_runner: "ActionRunner | None" = None,
         session_mode_manager=None,
         main_permission_lists=None,
@@ -164,7 +161,6 @@ class GraphEngine:
         self._promotion = promotion
         self._action_runner = action_runner
         self._session_mode_manager = session_mode_manager
-        self._main_permissions = main_permissions  # persisted for restore on handoff return
         self._main_permission_lists = main_permission_lists
         self._main_agent_policy = main_agent_policy
         # Recovery config with safe defaults
@@ -173,14 +169,9 @@ class GraphEngine:
         else:
             from arf.agent.config import RecoveryConfig
             self._recovery_config = RecoveryConfig()
-        # Round-level checkpoint manager (replaces per-agent checkpoint stacks)
+        # Round-level checkpoint manager
         from arf.engine.round_manager import RoundManager
         self._rounds = RoundManager(max_undo_depth=max_undo_depth)
-        # Multi-agent
-        self._sub_agent_configs: dict = sub_agent_configs or {}
-        self._handoff_manager = handoff_manager
-        self._active_agent: str = ""
-        self._agent_states: dict[str, AgentState] = {}
         # Tool progress streaming — tools write chunks here, SSE loop reads them
         import asyncio as _asyncio_queue
         self._tool_progress_queue: _asyncio_queue.Queue = _asyncio_queue.Queue()
@@ -420,250 +411,7 @@ class GraphEngine:
         """Check if execution has been cancelled (non-blocking)."""
         return self._cancel_event is not None and self._cancel_event.is_set()
 
-    # ---- multi-agent support ----
-
-    def _activate_agent(self, agent_name: str) -> None:
-        """Swap permission lists to the named agent's (lists + approval allowlist)."""
-        if not self.guard_runner:
-            return
-
-        if agent_name and agent_name in self._sub_agent_configs:
-            sub = self._sub_agent_configs[agent_name]
-            lists = sub.get("permission_lists")
-            if lists and hasattr(self.guard_runner, "swap_lists"):
-                self.guard_runner.swap_lists(lists)
-            ask_list = lists.ask if lists else set()
-        else:
-            main_lists = getattr(self, '_main_permission_lists', None)
-            if main_lists and hasattr(self.guard_runner, "swap_lists"):
-                self.guard_runner.swap_lists(main_lists)
-            ask_list = main_lists.ask if main_lists else set()
-
-        self._approval_allowlist = ask_list
-        self.approval_enabled = len(ask_list) > 0
-
-    def _active_config(self, state: AgentState) -> dict:
-        """Return config for the currently active agent."""
-        agent_name = state.get("active_agent", "")
-        if agent_name and agent_name in self._sub_agent_configs:
-            sub = self._sub_agent_configs[agent_name]
-            cfg = sub["config"]
-            return {
-                "system_prompt": sub.get("system_prompt", ""),
-                "tools": cfg.tools,
-                "skills": cfg.skills,
-                "max_turns": cfg.effective_advanced().max_turns,
-                "hooks": cfg.hooks,
-                "adapters": sub.get("adapters", {}),
-            }
-
-        return {
-            "system_prompt": self._system_prompt,
-            "tools": getattr(self, '_main_agent_tools', []),
-            "skills": [],
-            "max_turns": self._max_turns,
-            "hooks": [],
-            "adapters": {},
-        }
-
-    async def _execute_handoff(self, state: AgentState, handoff_data: dict[str, object],
-                                current_model: str) -> AgentState:
-        """Execute forward handoff: save agent state → resolve → build context → swap."""
-        session_id = state.get("session_id", "default")
-        from_agent = (
-            state.get("active_agent", "")
-            or state.get("agent_name", "")
-            or self._active_agent
-            or ""
-        )
-
-        # 1. Save current agent state (persist for later resume)
-        await self.state_store.put(
-            f"{session_id}/{from_agent}" if from_agent else session_id,
-            state,
-        )
-
-        # 2. Resolve target
-        to_agent = await self._handoff_manager.resolve(from_agent, handoff_data)
-        if not to_agent:
-            state["handoff_error"] = f"No handover rule matches from '{from_agent}'"
-            return state
-
-        rule = self._handoff_manager.get_rule(from_agent, to_agent)
-        if not rule:
-            state["handoff_error"] = f"No rule for {from_agent} → {to_agent}"
-            return state
-
-        # 3. Record agent switch in the current round (no new checkpoint)
-        self._rounds.record_handoff(from_agent or "main", to_agent)
-
-        # Capture sub-agent's result before state swap (for return handoffs)
-        sub_agent_result = ""
-        for m in reversed(state.get("messages", [])):
-            if m.get("role") == "assistant":
-                sub_agent_result = m.get("content", "")
-                break
-
-        # 4. Try to load existing target agent state, or build fresh context
-        existing_target = await self.state_store.get(f"{session_id}/{to_agent}")
-        if existing_target:
-            # Save sub-agent's final state before switching back (E2E Bug 3.3)
-            if from_agent:
-                await self.state_store.put(f"{session_id}/{from_agent}", state)
-            # Resume: restore target agent's previous state
-            state.update(existing_target)
-            # For return handoffs: replace raw tool result with sub-agent's actual response
-            if sub_agent_result:
-                msgs = state.get("messages", [])
-                if msgs and msgs[-1].get("role") == "tool":
-                    msgs[-1]["content"] = sub_agent_result
-        else:
-            # First time: build target context from handoff data
-            target_cfg = self._sub_agent_configs.get(to_agent, {})
-            target_prompt = target_cfg.get("system_prompt", "")
-            new_messages = self._handoff_manager.build_target_context(
-                from_state=state,
-                rule=rule,
-                handoff_data=handoff_data,
-                target_system_prompt=target_prompt,
-            )
-
-            # Task summary — deferred (requires per-agent model config wiring)
-            new_messages = [m for m in new_messages
-                            if m.get("content") != "__TASK_SUMMARY_PLACEHOLDER__"]
-
-            state["messages"] = new_messages
-            state["current_turn"] = 0
-            state["tool_results"] = {}
-
-        # 5. Swap active agent — save source for later auto-return
-        state["handoff_from_agent"] = from_agent
-        state["active_agent"] = to_agent
-        state["handoff_task"] = handoff_data.get("task", "")
-
-        # 6. Emit agent_switch (event_bus / trace)
-        self._emit("agent_switch", {
-            "from": from_agent,
-            "to": to_agent,
-            "task": handoff_data.get("task", ""),
-        }, session_id=session_id, agent_name=to_agent)
-
-        logging.getLogger("arf.engine").info(
-            "Handoff: %s → %s, task: %.80s", from_agent, to_agent,
-            handoff_data.get("task", "")
-        )
-        return state
-
-    async def _restore_from_handoff(self, state: AgentState,
-                                      handoff_data: dict[str, object]) -> AgentState:
-        """Restore original agent after sub-agent handoff back."""
-        session_id = state.get("session_id", "default")
-        current_agent = state.get("active_agent", "")
-        target_agent = self._active_agent or state.get("agent_name", "main")
-
-        # Get sub-agent's last assistant message as result
-        result_content = ""
-        for m in reversed(state.get("messages", [])):
-            if m.get("role") == "assistant":
-                result_content = m.get("content", "")
-                break
-
-        if not result_content:
-            result_content = "(handoff completed, no response)"
-
-        # Save sub-agent's final state
-        if current_agent:
-            await self.state_store.put(f"{session_id}/{current_agent}", state)
-
-        # Load main agent's state from store (saved by _execute_handoff)
-        from_state = await self.state_store.get(f"{session_id}/{target_agent}")
-        if from_state:
-            messages = from_state.get("messages", [])
-            # Replace the original handoff tool result with sub-agent's response
-            if messages and messages[-1].get("role") == "tool":
-                messages[-1]["content"] = result_content
-        else:
-            messages = state.get("messages", [])
-
-        # Record the return switch in the current round
-        self._rounds.record_handoff(current_agent, target_agent)
-
-        # Emit agent_switch back
-        self._emit("agent_switch", {
-            "from": current_agent,
-            "to": target_agent,
-            "task": "handoff complete",
-        }, session_id=session_id, agent_name=target_agent)
-
-        # Swap state back to original agent
-        state["messages"] = messages
-        state["active_agent"] = target_agent
-        state["tool_results"] = {}
-        state.pop("handoff_task", None)
-        state = self._close_tool_calls(state)
-
-        return state
-
-    async def _auto_return_from_handoff(self, state: AgentState,
-                                          current_agent: str,
-                                          session_id: str) -> AgentState:
-        """Auto-restore calling agent when sub-agent finishes without handoff back.
-
-        Called when a sub-agent produces a text-only response (no tool_calls).
-        Saves sub-agent state, loads parent state, injects result.
-        """
-        target_agent = (
-            state.get("handoff_from_agent", "")
-            or state.get("agent_name", "")
-            or "main"
-        )
-
-        # Capture sub-agent's final response
-        result = ""
-        for m in reversed(state.get("messages", [])):
-            if m.get("role") == "assistant":
-                result = m.get("content", "")
-                break
-        if not result:
-            result = "(handoff completed, no response)"
-
-        # Save sub-agent's final state to its per-agent key
-        if current_agent:
-            await self.state_store.put(f"{session_id}/{current_agent}", state)
-
-        # Load parent agent's state (saved by _execute_handoff)
-        parent = await self.state_store.get(f"{session_id}/{target_agent}")
-        if parent:
-            msgs = parent.get("messages", [])
-            # Replace handoff tool result with sub-agent's actual response
-            if msgs and msgs[-1].get("role") == "tool":
-                msgs[-1]["content"] = (
-                    f"[{current_agent} handoff complete]\n{result}"
-                )
-        else:
-            msgs = state.get("messages", [])
-
-        self._rounds.record_handoff(current_agent, target_agent)
-
-        self._emit("agent_switch", {
-            "from": current_agent,
-            "to": target_agent,
-            "task": "handoff complete (auto-return)",
-        }, session_id=session_id, agent_name=target_agent)
-
-        # Restore parent state, reset sub-agent metadata
-        state["messages"] = msgs
-        state["active_agent"] = target_agent
-        state["tool_results"] = {}
-        state.pop("handoff_task", None)
-        state.pop("handoff_from_agent", None)
-
-        # Restore parent agent's permissions
-        self._activate_agent(target_agent)
-
-        return self._close_tool_calls(state)
-
-    async def _resolve_tools_for_agent(self, state: AgentState, active: dict[str, object]) -> list[dict[str, object]]:
+    async def _resolve_tools_for_agent(self, state: AgentState) -> list[dict[str, object]]:
         """Get tool definitions from MCP — already aggregated and namespaced."""
         result: list[dict[str, object]] = []
         seen: set[str] = set()
@@ -934,12 +682,7 @@ class GraphEngine:
                         continue
 
             # --- Unified permission check via SessionModeManager ---
-            agent_name = state.get("active_agent", "")
-            agent_policy = None
-            if agent_name and agent_name in self._sub_agent_configs:
-                agent_policy = self._sub_agent_configs[agent_name].get("agent_policy")
-            elif hasattr(self, '_main_agent_policy'):
-                agent_policy = self._main_agent_policy
+            agent_policy = getattr(self, '_main_agent_policy', None)
 
             from arf.session import SessionMode, has_side_effect
             effective_mode = SessionMode.ASK
@@ -1111,12 +854,11 @@ class GraphEngine:
                                  turn=turn, session_id=session_id)
 
         # Tool resolution
-        active = self._active_config(state)
-        self.loop_strategy.max_turns = active["max_turns"]
-        tools = await self._resolve_tools_for_agent(state, active)
+        tools = await self._resolve_tools_for_agent(state)
+        self.loop_strategy.max_turns = self._max_turns
 
         # System prompt with per-turn placeholders
-        system_prompt = active["system_prompt"]
+        system_prompt = self._system_prompt
         summary = state.get("context_summary", "")
         if summary:
             if "$MEMORY" in system_prompt:
@@ -1138,7 +880,7 @@ class GraphEngine:
                 f"{max(0, remaining)} remaining. "
                 "Plan your work within this budget. "
                 "When running low, compress: skip non-essentials, "
-                "summarize partial progress, and handoff."
+                "summarize partial progress."
             )
 
         state = self._repair_messages(state)
@@ -1329,7 +1071,7 @@ class GraphEngine:
         state["_pending_tool_calls"] = tool_calls
 
     async def _step_execute_tools(self, state: AgentState):
-        """Shared execute_tools step — handles guard, approval, execution, handoff."""
+        """Execute tools step — handles guard, approval, and execution."""
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
         is_streaming = getattr(self, '_stream_model', None) is not None
@@ -1391,11 +1133,17 @@ class GraphEngine:
             self._inject_hook_messages(pp_results, state)
         plugin_runner = getattr(self, 'plugin_runner', None)
         if plugin_runner:
-            plugin_runner.update_runtime(
-                session_id=session_id, interaction_round=self._interaction_round)
-            await plugin_runner.fire("post_permission", {
-                "tool_calls": valid_calls, "denied": denied_calls,
-                "session_id": session_id, "turn": turn})
+            pp_ctx = PluginContext(
+                session_id=session_id,
+                interaction_round=self._interaction_round,
+                state=state,
+                messages=state.get("messages", []),
+                workspace_dir=getattr(self, '_workspace_dir', '.'),
+                memory_dir=getattr(self, '_memory_dir', './memory'),
+                hook_data={"tool_calls": valid_calls, "denied": denied_calls,
+                           "turn": turn},
+            )
+            await plugin_runner.fire("post_permission", pp_ctx)
 
         # Pre-tool-exec hooks
         if self.hook_runner:
@@ -1420,13 +1168,12 @@ class GraphEngine:
                                    "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False)},
                              turn=turn, session_id=session_id)
 
-        agent_mode = state.get("active_agent", "")
         # Execute tools — with progress polling in streaming mode
         if is_streaming:
             self._tool_progress_queue = asyncio.Queue()
             tool_task = asyncio.ensure_future(
                 self.tool_executor.execute(
-                    valid_calls, agent_mode=agent_mode,
+                    valid_calls, agent_mode="",
                     engine=self, state_store=self.state_store,
                     workspace_dir=getattr(self, '_workspace_dir', ''),
                 )
@@ -1443,7 +1190,7 @@ class GraphEngine:
             results = await tool_task
         else:
             results = await self.tool_executor.execute(
-                valid_calls, agent_mode=agent_mode,
+                valid_calls, agent_mode="",
                 engine=self, state_store=self.state_store,
                 workspace_dir=getattr(self, '_workspace_dir', ''),
             )
@@ -1512,10 +1259,16 @@ class GraphEngine:
                 "session_id": session_id, "turn": turn})
         plugin_runner = getattr(self, 'plugin_runner', None)
         if plugin_runner:
-            plugin_runner.update_runtime(
-                session_id=session_id, interaction_round=self._interaction_round)
-            await plugin_runner.fire("sandbox_persist", {
-                "session_id": session_id, "turn": turn})
+            sp_ctx = PluginContext(
+                session_id=session_id,
+                interaction_round=self._interaction_round,
+                state=state,
+                messages=state.get("messages", []),
+                workspace_dir=getattr(self, '_workspace_dir', '.'),
+                memory_dir=getattr(self, '_memory_dir', './memory'),
+                hook_data={"turn": turn},
+            )
+            await plugin_runner.fire("sandbox_persist", sp_ctx)
 
         # ErrorPolicy circuit-breaker
         executed_failures = sum(1 for v in results.values() if not v.success)
@@ -1538,46 +1291,6 @@ class GraphEngine:
                         turn=turn, session_id=session_id)
                     return
 
-        # Handoff detection
-        if self._handoff_manager and self._handoff_manager.has_rules:
-            handoff_signal = self._handoff_manager.detect(state["tool_results"])
-            if handoff_signal:
-                state = await self._execute_handoff(state, handoff_signal, state["current_model"])
-                if state.get("handoff_error"):
-                    msgs = state["messages"]
-                    if msgs and msgs[-1].get("role") == "tool":
-                        msgs[-1]["content"] = f"Handoff failed: {state['handoff_error']}"
-                    del state["handoff_error"]
-                    if is_streaming:
-                        yield self._make_event(type="error",
-                                         data={"detail": f"Handoff failed: {state.get('handoff_error', '')}"},
-                                         turn=turn, session_id=session_id)
-                else:
-                    self.loop_strategy.max_turns = self._active_config(state)["max_turns"]
-                    target = state.get("active_agent", "")
-                    if self.hook_runner:
-                        await self.hook_runner.fire("round_end", {
-                            "session_id": session_id, "reason": "handoff",
-                            "round": state.get("interaction_round", 0)})
-                    self._active_agent = target
-                    self._activate_agent(target)
-                    state.pop("_pending_tool_calls", None)
-                    state["tool_results"] = {}
-                    state["interaction_round"] = state.get("interaction_round", 0) + 1
-                    state["current_turn"] = 0
-                    yield self._make_event("round_end",
-                        {"reason": "handoff", "round": state["interaction_round"] - 1},
-                        turn=turn, session_id=session_id)
-                    yield self._make_event("agent_switch",
-                        {"from": self._active_agent, "to": target},
-                        turn=turn, session_id=session_id, emit=False)
-                    if self.hook_runner:
-                        self.hook_runner.update_runtime(
-                            session_id=session_id, interaction_round=state["interaction_round"])
-                        await self.hook_runner.fire("round_start", {
-                            "session_id": session_id, "round": state["interaction_round"]})
-                await self.state_store.put(session_id, state)
-                return
 
         self._reset_recovery_state(state)
         await self.state_store.put(session_id, state)
@@ -1632,13 +1345,20 @@ class GraphEngine:
                 "session_id": session_id, "round": self._interaction_round})
         plugin_runner = getattr(self, 'plugin_runner', None)
         if plugin_runner:
-            plugin_runner.update_runtime(
-                session_id=session_id, interaction_round=self._interaction_round)
-            await plugin_runner.fire("round_end", {
-                "session_id": session_id, "round": self._interaction_round,
-                "messages_count": len(state.get("messages", [])),
-                "last_token_usage": state.get("last_token_usage", 0),
-            })
+            re_ctx = PluginContext(
+                session_id=session_id,
+                interaction_round=self._interaction_round,
+                state=state,
+                messages=state.get("messages", []),
+                workspace_dir=getattr(self, '_workspace_dir', '.'),
+                memory_dir=getattr(self, '_memory_dir', './memory'),
+                hook_data={
+                    "round": self._interaction_round,
+                    "messages_count": len(state.get("messages", [])),
+                    "last_token_usage": state.get("last_token_usage", 0),
+                },
+            )
+            await plugin_runner.fire("round_end", re_ctx)
         state = self._close_tool_calls(state)
         yield self._make_event(type="session_end", data={"session_id": session_id},
                          session_id=session_id)
