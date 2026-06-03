@@ -1,7 +1,5 @@
 name: checkpoint
-hooks:
-  - round_end
-  - session_end
 enabled: true
+description: "Round-level checkpoint and undo via RoundManager"
 config:
-  state_dir: ./memory/state
+  max_undo_depth: 3
