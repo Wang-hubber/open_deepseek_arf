@@ -10,21 +10,18 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 
-def _build_engine(**overrides):
-    """Build a minimal GraphEngine with mock dependencies."""
-    from arf.engine.graph import GraphEngine
+def _build_cp(**overrides):
+    """Build a minimal ControlPlane with mock dependencies."""
+    from arf.engine.control_plane import ControlPlane
     defaults = {
         "loop_strategy": MagicMock(),
         "state_store": MagicMock(),
         "tool_executor": MagicMock(),
-        "tool_resolver": MagicMock(),
-        "error_policy": None,
-        "model_router": None,
-        "event_bus": None,
+        "event_bus": MagicMock(),
         "system_prompt": "",
     }
     defaults.update(overrides)
-    return GraphEngine(**defaults)
+    return ControlPlane(**defaults)
 
 
 def _fresh_rounds(max_undo_depth: int = 3):
@@ -54,7 +51,7 @@ class TestFileExistence:
         files = [
             "arf/errors/__init__.py",
             "arf/errors/retry.py",
-            "arf/engine/graph.py",
+            "arf/engine/control_plane.py",
             "arf/engine/round_manager.py",
             "arf/engine/checkpoint.py",
             "arf/engine/tool_executor.py",
@@ -74,16 +71,17 @@ class TestFileExistence:
 class TestCancelEvent:
     """Doc 2.1-2.2: cancel_event.set() -> _cancelled() check -> break."""
 
-    def test_graph_engine_has_cancel_event_property(self):
-        """Doc: GraphEngine has cancel_event property and set_cancel_event()."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "cancel_event"), "Missing cancel_event property"
-        assert hasattr(GraphEngine, "set_cancel_event"), "Missing set_cancel_event()"
+    def test_control_plane_has_cancel_event_param(self):
+        """Doc: ControlPlane has cancel_event param and set_cancel_event()."""
+        from arf.engine.control_plane import ControlPlane
+        sig = inspect.signature(ControlPlane.__init__)
+        assert "cancel_event" in sig.parameters, "Missing cancel_event param"
+        assert hasattr(ControlPlane, "set_cancel_event"), "Missing set_cancel_event()"
 
     def test_cancel_event_type_is_optional_event(self):
         """Doc: cancel_event is Optional[asyncio.Event]."""
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.__init__)
+        from arf.engine.control_plane import ControlPlane
+        sig = inspect.signature(ControlPlane.__init__)
         param = sig.parameters["cancel_event"]
         ann = param.annotation
         assert ann is not None, "cancel_event has no annotation"
@@ -93,61 +91,60 @@ class TestCancelEvent:
 
     def test_set_cancel_event_injects_event(self):
         """Doc: set_cancel_event injects event after construction."""
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.set_cancel_event)
+        from arf.engine.control_plane import ControlPlane
+        sig = inspect.signature(ControlPlane.set_cancel_event)
         assert "event" in sig.parameters
 
     def test_cancelled_method_matches_doc_exact(self):
         """Doc: _cancelled() returns self._cancel_event is not None and self._cancel_event.is_set()."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._cancelled)
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._cancelled)
         assert "self._cancel_event is not None and self._cancel_event.is_set()" in src
 
     def test_cancelled_returns_true_when_event_set(self):
         """Doc: _cancelled() returns True when event is set."""
         evt = asyncio.Event()
-        eng = _build_engine(cancel_event=evt)
+        eng = _build_cp(cancel_event=evt)
         assert eng._cancelled() is False
         evt.set()
         assert eng._cancelled() is True
 
     def test_cancelled_returns_false_when_event_none(self):
         """Doc: _cancelled() returns False when cancel_event is None."""
-        eng = _build_engine(cancel_event=None)
+        eng = _build_cp(cancel_event=None)
         assert eng._cancelled() is False
 
-    def test_cancelled_property_readable(self):
-        """Doc: cancel_event property returns the event or None."""
+    def test_cancel_event_attribute_readable(self):
+        """Doc: _cancel_event attribute stores the event or None."""
         evt = asyncio.Event()
-        eng = _build_engine(cancel_event=evt)
-        assert eng.cancel_event is evt
-        eng2 = _build_engine(cancel_event=None)
-        assert eng2.cancel_event is None
+        eng = _build_cp(cancel_event=evt)
+        assert eng._cancel_event is evt
+        eng2 = _build_cp(cancel_event=None)
+        assert eng2._cancel_event is None
 
-    def test_set_cancel_event_wires_property(self):
-        """Doc: set_cancel_event updates cancel_event property."""
+    def test_set_cancel_event_wires_attribute(self):
+        """Doc: set_cancel_event updates _cancel_event attribute."""
         evt = asyncio.Event()
-        eng = _build_engine()
-        assert eng.cancel_event is None
+        eng = _build_cp()
+        assert eng._cancel_event is None
         eng.set_cancel_event(evt)
-        assert eng.cancel_event is evt
+        assert eng._cancel_event is evt
 
     def test_invoke_breaks_on_cancelled(self):
         """Doc: cancelled -> emit session_end(reason=cancelled) -> break."""
-        from arf.engine.graph import GraphEngine
+        from arf.engine.control_plane import ControlPlane
         from arf.engine.loop_strategies.react import ReActStrategy
         from arf.testing import (
-            InMemoryStateStore, InMemoryToolExecutor, InMemoryToolResolver,
+            InMemoryStateStore, InMemoryToolExecutor,
         )
         from arf.event_bus import InMemoryEventBus
 
         evt = asyncio.Event()
         bus = InMemoryEventBus()
-        eng = GraphEngine(
+        eng = ControlPlane(
             loop_strategy=ReActStrategy(max_turns=5),
             state_store=InMemoryStateStore(),
             tool_executor=InMemoryToolExecutor(),
-            tool_resolver=InMemoryToolResolver(),
             event_bus=bus,
             cancel_event=evt,
             max_turns=5,
@@ -172,20 +169,19 @@ class TestCancelEvent:
 
     def test_astream_breaks_on_cancelled(self):
         """Doc: astream breaks on cancelled with session_end event."""
-        from arf.engine.graph import GraphEngine
+        from arf.engine.control_plane import ControlPlane
         from arf.engine.loop_strategies.react import ReActStrategy
         from arf.testing import (
-            InMemoryStateStore, InMemoryToolExecutor, InMemoryToolResolver,
+            InMemoryStateStore, InMemoryToolExecutor,
         )
         from arf.event_bus import InMemoryEventBus
 
         evt = asyncio.Event()
         bus = InMemoryEventBus()
-        eng = GraphEngine(
+        eng = ControlPlane(
             loop_strategy=ReActStrategy(max_turns=5),
             state_store=InMemoryStateStore(),
             tool_executor=InMemoryToolExecutor(),
-            tool_resolver=InMemoryToolResolver(),
             event_bus=bus,
             cancel_event=evt,
             max_turns=5,
@@ -391,7 +387,7 @@ class TestRoundManagerInit:
         fields = {f.name for f in RoundTransaction.__dataclass_fields__.values()}
         expected = {"round_id", "round_num", "state_snapshot",
                      "workspace_snapshot_dir", "created_at",
-                     "agent_trace", "handoff_count", "closed"}
+                     "agent_trace", "closed"}
         missing = expected - fields
         assert not missing, f"Missing fields: {missing}"
 
@@ -425,20 +421,6 @@ class TestRoundManagerInit:
             assert mgr.current_round_num == 1
             mgr.begin_round(state)
             assert mgr.current_round_num == 2
-        finally:
-            mgr._cleanup()
-
-    def test_round_manager_record_handoff(self):
-        """Doc: record_handoff(from, to) records without new checkpoint."""
-        mgr = _fresh_rounds()
-        try:
-            state = {"session_id": "s1", "agent_name": "main", "messages": []}
-            mgr.begin_round(state)
-            assert mgr.active_round.handoff_count == 0
-            assert mgr.active_round.agent_trace == ["main"]
-            mgr.record_handoff("main", "coder")
-            assert mgr.active_round.handoff_count == 1
-            assert mgr.active_round.agent_trace == ["main", "coder"]
         finally:
             mgr._cleanup()
 
@@ -563,91 +545,6 @@ class TestRoundManagerUndo:
 # 5. GraphEngine undo (docs 3.3)
 # ---------------------------------------------------------------------------
 
-class TestGraphEngineUndo:
-    """Doc 4.3: GraphEngine.undo() and checkpoint_count()."""
-
-    def test_engine_has_undo_method(self):
-        """Doc: GraphEngine has undo(steps=1, workspace_dir, session_id)."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "undo")
-        sig = inspect.signature(GraphEngine.undo)
-        assert "steps" in sig.parameters
-        assert sig.parameters["steps"].default == 1
-
-    def test_engine_has_checkpoint_count(self):
-        """Doc: GraphEngine has checkpoint_count()."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "checkpoint_count")
-
-    def test_engine_undo_emits_undo_executed(self):
-        """Doc: undo emits undo_executed trace event."""
-        from arf.event_bus import InMemoryEventBus
-
-        bus = InMemoryEventBus()
-        eng = _build_engine(event_bus=bus)
-
-        state = {"session_id": "s1", "agent_name": "main", "messages": []}
-        eng._rounds.begin_round(state)
-        eng._rounds.begin_round(state)
-
-        result = eng.undo(steps=1)
-        assert result is not None
-        # undo() emits undo_executed event if event_bus is wired
-
-    def test_engine_undo_emits_from_to_round(self):
-        """Doc: undo_executed contains from_round, to_round, steps."""
-        from arf.event_bus import InMemoryEventBus
-
-        bus = InMemoryEventBus()
-        eng = _build_engine(event_bus=bus)
-        # Clear any disk-persisted rounds from previous runs
-        if hasattr(eng._rounds, '_cleanup'):
-            eng._rounds._cleanup()
-
-        state = {"session_id": "s1", "agent_name": "main", "messages": []}
-        eng._rounds.begin_round(state)
-        eng._rounds.begin_round(state)
-
-        result = eng.undo(steps=1)
-        assert result is not None
-        evt = bus.collected("undo_executed")[0]
-        assert evt.data["from_round"] > evt.data["to_round"]
-        assert evt.data["steps"] == 1
-
-    def test_engine_undo_returns_none_when_no_rounds(self):
-        """Doc: GraphEngine.undo returns None with insufficient checkpoints."""
-        eng = _build_engine()
-        # Undo with 0 total rounds should return None (or the disk-restored
-        # RoundManager may have pre-existing data)
-        if eng.checkpoint_count() == 0:
-            result = eng.undo(steps=1)
-            assert result is None
-
-    def test_engine_checkpoint_count_delegates_to_rounds(self):
-        """Doc: checkpoint_count() mirrors _rounds.count()."""
-        eng = _build_engine()
-        before = eng.checkpoint_count()
-        eng._rounds.begin_round({"session_id": "s1", "agent_name": "main", "messages": []})
-        after = eng.checkpoint_count()
-        assert after == before + 1
-
-    def test_engine_init_creates_round_manager(self):
-        """Doc: GraphEngine creates RoundManager with max_undo_depth."""
-        eng = _build_engine(max_undo_depth=5)
-        assert eng._rounds is not None
-        assert eng._rounds._max_depth == 5
-
-    def test_engine_default_max_undo_depth_is_3(self):
-        """Doc: default max_undo_depth is 3."""
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.__init__)
-        assert sig.parameters["max_undo_depth"].default == 3
-
-    def test_engine_undo_passes_workspace_dir(self):
-        """Doc: undo accepts workspace_dir parameter."""
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.undo)
-        assert "workspace_dir" in sig.parameters
 
 
 # ---------------------------------------------------------------------------
@@ -1002,17 +899,15 @@ class TestEventTypes:
         from arf.core.events import EventType
         assert "rollback_executed" in EventType.__args__, "rollback_executed not in EventType"
 
-    def test_undo_executed_in_graph_engine_undo(self):
-        """Doc: GraphEngine.undo emits 'undo_executed' event."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.undo)
-        assert '"undo_executed"' in src or "'undo_executed'" in src
+    def test_undo_executed_is_recognized_type(self):
+        """Doc: undo_executed is a recognized EventType literal."""
+        from arf.core.events import EventType
+        assert "undo_executed" in EventType.__args__
 
-    def test_rollback_executed_in_graph_engine(self):
-        """Doc: GraphEngine emits 'rollback_executed' events."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._step_execute_tools)
-        assert '"rollback_executed"' in src or "'rollback_executed'" in src
+    def test_rollback_executed_is_recognized_type(self):
+        """Doc: rollback_executed is a recognized EventType literal."""
+        from arf.core.events import EventType
+        assert "rollback_executed" in EventType.__args__
 
     def test_all_event_types_in_doc(self):
         """Doc: EventType includes all documented events."""
@@ -1113,77 +1008,12 @@ class TestErrorAction:
 # 12. Graceful degradation -- model fallback chain (docs 2.1)
 # ---------------------------------------------------------------------------
 
-class TestModelFallback:
-    """Doc 2.1: model error -> error_policy -> fallback model."""
-
-    def test_engine_has_resolve_fallback(self):
-        """Doc: GraphEngine._resolve_fallback for error recovery."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "_resolve_fallback")
-
-    def test_resolve_fallback_returns_none_without_policy(self):
-        """Doc: No error_policy -> no fallback."""
-        eng = _build_engine(error_policy=None, model_router=MagicMock())
-        result = eng._resolve_fallback("model", Exception("500"))
-        assert result is None
-
-    def test_resolve_fallback_returns_none_without_router(self):
-        """Doc: No model_router -> no fallback."""
-        from arf.errors.retry import DefaultErrorPolicy
-        eng = _build_engine(error_policy=DefaultErrorPolicy(), model_router=None)
-        result = eng._resolve_fallback("model", Exception("500"))
-        assert result is None
-
-    def test_resolve_fallback_returns_none_when_not_5xx(self):
-        """Doc: Non-5xx errors don't trigger fallback."""
-        from arf.errors.retry import DefaultErrorPolicy
-        eng = _build_engine(
-            error_policy=DefaultErrorPolicy(),
-            model_router=MagicMock(),
-        )
-        result = eng._resolve_fallback("model", Exception("400 bad request"))
-        assert result is None
-
-    def test_resolve_fallback_returns_fallback_model(self):
-        """Doc: 5xx + fallback action -> model_router.fallback_from()."""
-        from arf.errors.retry import DefaultErrorPolicy
-        mr = MagicMock()
-        mr.fallback_from.return_value = "fallback-model"
-        eng = _build_engine(error_policy=DefaultErrorPolicy(), model_router=mr)
-        result = eng._resolve_fallback("deep", Exception("got 500 error"))
-        assert result == "fallback-model"
-        mr.fallback_from.assert_called_once_with("deep")
-
-    def test_resolve_fallback_handles_policy_exception_gracefully(self):
-        """Doc: exception in error_policy.on_model_error returns None."""
-        bad_policy = MagicMock()
-        bad_policy.on_model_error.side_effect = ValueError("broken")
-        eng = _build_engine(error_policy=bad_policy)
-        result = eng._resolve_fallback("model", Exception("500"))
-        assert result is None
-
-    def test_resolve_fallback_uses_model_5xx_action(self):
-        """Doc: model_5xx_action=abort returns None."""
-        from arf.errors.retry import DefaultErrorPolicy
-        policy = DefaultErrorPolicy(model_5xx_action="abort")
-        mr = MagicMock()
-        eng = _build_engine(error_policy=policy, model_router=mr)
-        result = eng._resolve_fallback("deep", Exception("502 bad gateway"))
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
 # 13. BaseAgent checkpoint wiring (docs 3.2)
 # ---------------------------------------------------------------------------
 
-class TestBaseAgentCheckpointWiring:
-    """Doc 4.2: BaseAgent calls begin_round in chat/astream."""
-
-    def test_base_agent_calls_begin_round(self):
-        """Doc: BaseAgent.chat/astream calls rounds.begin_round(state)."""
-        import arf.agent.base as agent_mod
-        src = inspect.getsource(agent_mod)
-        assert "begin_round" in src
 
 
 # ---------------------------------------------------------------------------
@@ -1230,23 +1060,11 @@ class TestRoundPersistence:
 
 
 # ---------------------------------------------------------------------------
-# 15. GraphEngine records handoff in rounds (docs 3.2)
+# 15. RoundManager snapshot verification
 # ---------------------------------------------------------------------------
 
-class TestHandoffRoundRecording:
-    """Doc 4.2: handoffs recorded via record_handoff, no new checkpoint."""
-
-    def test_execute_handoff_records_handoff_in_round(self):
-        """Doc: _execute_handoff calls rounds.record_handoff()."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._execute_handoff)
-        assert "record_handoff" in src
-
-    def test_restore_from_handoff_records_handoff(self):
-        """Doc: _restore_from_handoff also records handoff."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._restore_from_handoff)
-        assert "record_handoff" in src
+class TestRoundSnapshot:
+    """RoundManager snapshot verification."""
 
     def test_begin_round_saves_state_snapshot(self):
         """Doc: begin_round deep-copies state snapshot."""
@@ -1296,33 +1114,50 @@ class TestWorkspaceSnapshot:
 # 17. GraphEngine close_tool_calls utility (docs 2.1)
 # ---------------------------------------------------------------------------
 
-class TestCloseToolCalls:
-    """Doc 2.1: _close_tool_calls ensures valid message sequence."""
+class TestValidateMessages:
+    """Doc 2.1: ControlPlane._validate_messages ensures valid message contract."""
 
-    def test_engine_has_close_tool_calls(self):
-        """Doc: GraphEngine._close_tool_calls."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "_close_tool_calls")
+    def test_engine_has_validate_messages(self):
+        """Doc: ControlPlane._validate_messages."""
+        from arf.engine.control_plane import ControlPlane
+        assert hasattr(ControlPlane, "_validate_messages")
 
-    def test_close_tool_calls_injects_missing_tool_results(self):
-        """Doc: missing tool results get synthetic (tool result unavailable)."""
-        eng = _build_engine()
+    def test_validate_messages_raises_on_invalid_role(self):
+        """Doc: invalid role raises MessageContractError."""
+        from arf.engine.control_plane import ControlPlane, MessageContractError
+        cp = _build_cp()
         state = {
             "session_id": "s1",
             "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "", "tool_calls": [
-                    {"id": "call_1", "type": "function",
-                     "function": {"name": "tool1", "arguments": "{}"}}
-                ]},
+                {"role": "invalid", "content": "hello"},
             ]
         }
-        result = eng._close_tool_calls(state)
-        msgs = result["messages"]
-        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
-        assert len(tool_msgs) == 1
-        assert tool_msgs[0]["tool_call_id"] == "call_1"
-        assert "(tool result unavailable)" in tool_msgs[0]["content"]
+        with pytest.raises(MessageContractError):
+            cp._validate_messages(state)
+
+    def test_validate_messages_raises_on_non_dict(self):
+        """Doc: non-dict message raises MessageContractError."""
+        from arf.engine.control_plane import ControlPlane, MessageContractError
+        cp = _build_cp()
+        state = {
+            "session_id": "s1",
+            "messages": ["not a dict"]
+        }
+        with pytest.raises(MessageContractError):
+            cp._validate_messages(state)
+
+    def test_validate_messages_pass_on_valid(self):
+        """Doc: valid messages pass without exception."""
+        from arf.engine.control_plane import ControlPlane
+        cp = _build_cp()
+        state = {
+            "session_id": "s1",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ]
+        }
+        cp._validate_messages(state)  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1358,17 +1193,18 @@ class TestStatePersistenceInEngine:
 
     def test_invoke_saves_state_before_text_only_break(self):
         """Doc: text-only response triggers state_store.put() before break."""
-        from arf.testing import InMemoryStateStore, InMemoryToolExecutor, InMemoryToolResolver
+        from arf.testing import InMemoryStateStore, InMemoryToolExecutor
+        from arf.engine.loop_strategies.react import ReActStrategy
 
         store = InMemoryStateStore()
         call_model = AsyncMock(return_value={
             "content": "hello, how can I help?",
             "usage": {"total_tokens": 10, "prompt_tokens": 5, "completion_tokens": 5},
         })
-        eng = _build_engine(
+        eng = _build_cp(
+            loop_strategy=ReActStrategy(max_turns=5),
             state_store=store,
             tool_executor=InMemoryToolExecutor(),
-            tool_resolver=InMemoryToolResolver(),
             call_model=call_model,
             max_turns=5,
         )

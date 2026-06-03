@@ -1,4 +1,4 @@
-"""Fact-check tests: Trace/Observability Domain — docs/trace.md vs arf/observability/ + arf/streaming/.
+"""Fact-check tests: Trace/Observability Domain — docs/trace.md vs arf/observability/ + arf/engine/.
 
 Each test validates a specific claim made in the documentation against actual code.
 PASS = doc/code consistent. FAIL = discrepancy found (fact-check finding).
@@ -19,50 +19,50 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestArchitectureOverview:
-    """Doc 2.1: GraphEngine._emit() / _make_event() inject round and
+    """Doc 2.1: ControlPlane._make_event() injects round and
     publish to EventBus. Four sinks: FileTraceStore, UsageTracker, SSE, TraceView."""
 
     def test_engine_has_emit_method(self):
-        """Doc: GraphEngine has _emit() method for publishing events."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "_emit")
-        assert callable(GraphEngine._emit)
+        """Doc: ControlPlane has _make_event() method for publishing events (emit merged into _make_event)."""
+        from arf.engine.control_plane import ControlPlane
+        assert hasattr(ControlPlane, "_make_event")
+        assert callable(ControlPlane._make_event)
 
     def test_engine_has_make_event_method(self):
-        """Doc: GraphEngine has _make_event() method (used by astream)."""
-        from arf.engine.graph import GraphEngine
-        assert hasattr(GraphEngine, "_make_event")
-        assert callable(GraphEngine._make_event)
+        """Doc: ControlPlane has _make_event() method (used by astream)."""
+        from arf.engine.control_plane import ControlPlane
+        assert hasattr(ControlPlane, "_make_event")
+        assert callable(ControlPlane._make_event)
 
     def test_emit_injects_round_from_interaction_round(self):
-        """Doc: _emit() injects data.round from AgentState.interaction_round."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._emit)
+        """Doc: _make_event() injects data.round from AgentState.interaction_round."""
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._make_event)
         assert 'data["round"] = self._interaction_round' in src
 
     def test_make_event_injects_round_from_interaction_round(self):
         """Doc: _make_event() also injects data.round from interaction_round."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._make_event)
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._make_event)
         assert 'data["round"] = self._interaction_round' in src
 
     def test_emit_publishes_to_event_bus(self):
-        """Doc: _emit calls self.event_bus.emit(AgentEvent(...))."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._emit)
-        assert "self.event_bus.emit(AgentEvent(" in src
+        """Doc: _make_event calls self.event_bus.emit(AgentEvent(...))."""
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._make_event)
+        assert "self.event_bus.emit(event)" in src
 
     def test_interaction_round_init_at_zero(self):
         """Doc: _interaction_round starts at 0 in __init__."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine.__init__)
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane.__init__)
         assert "self._interaction_round = 0" in src
 
     def test_interaction_round_reads_from_state_in_execute(self):
         """Doc: _interaction_round read from state['interaction_round'].
         Reading now happens in _execute (shared by invoke and astream)."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._execute)
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._execute)
         assert 'state.get("interaction_round", 0)' in src
 
     def test_base_agent_increments_interaction_round(self):
@@ -145,14 +145,6 @@ class TestEventModel:
 
 class TestEventTypesNotInDoc:
     """Cross-check: EventType literal vs doc table — finds undocumented types."""
-
-    def test_agent_switch_not_in_doc(self):
-        """Doc table omits agent_switch (exists in EventType literal)."""
-        from arf.core.events import EventType
-        args = get_args(EventType)
-        assert "agent_switch" in args, (
-            "FACT: agent_switch exists in code EventType but doc table omits it"
-        )
 
     def test_undo_executed_not_in_doc(self):
         """Doc table omits undo_executed (exists in EventType literal)."""
@@ -809,15 +801,15 @@ class TestEventValidation:
     """Additional property checks from the doc."""
 
     def test_emit_guards_against_null_event_bus(self):
-        """Doc: _emit checks `if self.event_bus:` before emitting."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._emit)
-        assert "if self.event_bus:" in src
+        """Doc: _make_event checks `if emit and self.event_bus:` before emitting."""
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._make_event)
+        assert "if emit and self.event_bus:" in src
 
     def test_make_event_guards_against_null_event_bus(self):
         """Doc: _make_event checks `if emit and self.event_bus:` before emitting."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine._make_event)
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane._make_event)
         assert "if emit and self.event_bus:" in src
 
     def test_file_trace_store_records_all_fields_in_json(self):

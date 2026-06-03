@@ -365,30 +365,6 @@ class TestToolPermissionChecker:
         assert "rm -rf /" in _BUILTIN_DENY_PATTERNS
 
 
-class TestApprovalDowngradeBehavior:
-    """Doc §2.5: 'ask' with no approval channel.
-    Design intent: approval_enabled=False = YOLO mode, tools pass through.
-    Doc updated to reflect this."""
-
-    def test_graph_engine_class_has_approval_attr(self):
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.__init__)
-        assert "approval_enabled" in sig.parameters
-
-    def test_approval_enabled_defaults_false(self):
-        from arf.engine.graph import GraphEngine
-        sig = inspect.signature(GraphEngine.__init__)
-        default = sig.parameters["approval_enabled"].default
-        assert default is False
-
-    def test_graph_engine_yolo_mode_bypasses_approval(self):
-        """When approval_enabled=False (YOLO mode), 'ask' → allow.
-        The code skips the approval block and falls through to valid_calls."""
-        from arf.engine.graph import GraphEngine
-        source = inspect.getsource(GraphEngine._step_classify_tool_calls)
-        assert "needs_approval" in source
-        # needs_approval=False skips approval → valid_calls (design intent)
-
 
 # ============================================================
 # Section 2.3 — PathSandbox
