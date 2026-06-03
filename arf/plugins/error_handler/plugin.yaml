@@ -1,0 +1,9 @@
+name: error_handler
+enabled: true
+description: "5-action recovery: abort, fallback, retry, skip, rollback"
+config:
+  max_continuation: 3
+  max_compaction: 2
+  max_transport_retry: 3
+  backoff_base: 1.0
+  backoff_max: 30.0
