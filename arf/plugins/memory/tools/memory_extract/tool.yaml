@@ -10,6 +10,9 @@ parameters:
     memory_dir:
       type: string
       default: "./data/memory"
+    state_dir:
+      type: string
+      default: "./data/state"
     force:
       type: boolean
       default: false

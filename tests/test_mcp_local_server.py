@@ -86,7 +86,7 @@ class TestArfLocalMcpServerToolPrefixing:
         )
         tools = server.list_tools_sync()
         names = [t["name"] for t in tools]
-        assert "arf__bash" in names
+        assert "user__bash" in names
         assert "bash" not in names
 
     def test_unknown_source_call_tool_returns_error(self, tmp_path):

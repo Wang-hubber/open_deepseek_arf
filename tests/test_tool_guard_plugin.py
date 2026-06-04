@@ -27,7 +27,7 @@ async def test_sandbox_blocks_path_traversal():
         current_step="execute_tools",
     )
 
-    with pytest.raises(SandboxViolation, match="suspicious path"):
+    with pytest.raises(SandboxViolation, match="sandbox violation"):
         await plugin.on_hook("pre_dispatch", ctx)
 
 

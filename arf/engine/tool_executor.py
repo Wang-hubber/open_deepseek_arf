@@ -94,6 +94,8 @@ class ConcurrentToolExecutor:
                 session_id = ""
                 if engine is not None:
                     session_id = getattr(engine, '_current_session_id', '')
+                if session_id:
+                    params["session_id"] = session_id
 
                 guard_blocked = await self._check_params(tc["name"], params, session_id)
                 if guard_blocked:
@@ -120,6 +122,8 @@ class ConcurrentToolExecutor:
                 session_id = ""
                 if engine is not None:
                     session_id = getattr(engine, '_current_session_id', '')
+                if session_id:
+                    params["session_id"] = session_id
                 async with sem:
                     guard_blocked = await self._check_params(tc["name"], params, session_id)
                     if guard_blocked:

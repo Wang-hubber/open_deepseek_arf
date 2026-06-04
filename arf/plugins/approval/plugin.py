@@ -108,9 +108,7 @@ class ApprovalPlugin:
                     "content": "[blocked]",
                 })
             ctx.state["_pending_tool_calls"] = []
-            raise ApprovalDenied(
-                f"User denied {', '.join(tc.get('name', '?') for tc in denied)}"
-            )
+            raise ApprovalDenied("Tool execution denied by user")
 
     def approve(self, decision_id: str, approved: bool = True) -> bool:
         self._results[decision_id] = approved

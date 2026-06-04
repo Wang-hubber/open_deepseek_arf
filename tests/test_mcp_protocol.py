@@ -18,10 +18,10 @@ class TestJsonRpcRequest:
         req = JsonRpcRequest(
             id=2,
             method="tools/call",
-            params={"name": "arf__bash", "arguments": {"command": "ls"}},
+            params={"name": "user__bash", "arguments": {"command": "ls"}},
         )
         d = req.model_dump(by_alias=True)
-        assert d["params"]["name"] == "arf__bash"
+        assert d["params"]["name"] == "user__bash"
 
 
 class TestJsonRpcResponse:

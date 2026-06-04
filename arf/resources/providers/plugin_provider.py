@@ -149,6 +149,16 @@ class PluginProvider:
             self._load()
         return list(self._scanned_tools)
 
+    def list_tools_with_plugin(self) -> list[tuple[str, ToolConfig]]:
+        """Return (plugin_name, ToolConfig) pairs for namespace-aware listing."""
+        if not self._loaded:
+            self._load()
+        result: list[tuple[str, ToolConfig]] = []
+        for pname, tp in self._tool_providers.items():
+            for t in tp.list():
+                result.append((pname, t))
+        return result
+
     def list_skills(self) -> list[SkillConfig]:
         if not self._loaded:
             self._load()
@@ -167,7 +177,7 @@ class PluginProvider:
         return list(self._scanned_plugins)
 
     async def execute(self, name: str, params: dict) -> ToolResult | None:
-        """Try to execute a plugin tool. Returns None if not found."""
+        """Try to execute a plugin tool across all providers. Returns None if not found."""
         if not self._loaded:
             self._load()
         for tp in self._tool_providers.values():
@@ -175,3 +185,16 @@ class PluginProvider:
             if cfg is not None:
                 return await tp.execute(name, params)
         return None
+
+    async def execute_plugin_tool(self, plugin_name: str, tool_name: str,
+                                  params: dict) -> ToolResult | None:
+        """Execute a tool from a specific plugin by namespace."""
+        if not self._loaded:
+            self._load()
+        tp = self._tool_providers.get(plugin_name)
+        if tp is None:
+            return None
+        cfg = await tp.resolve(tool_name)
+        if cfg is None:
+            return None
+        return await tp.execute(tool_name, params)

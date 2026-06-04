@@ -1,0 +1,9 @@
+name: memory_load
+description: Load resident memory (memory.md) to recall long-term context about the user
+activation: kernel
+parameters:
+  type: object
+  properties:
+    memory_dir:
+      type: string
+      default: "./data/memory"

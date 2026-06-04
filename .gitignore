@@ -48,9 +48,9 @@ zhihu_article*.md
 # Runtime logs
 logs/
 
-# Memory & traces (framework-generated at runtime)
-memory/
-traces/
+# Memory & traces (framework-generated at runtime, root-level only)
+/memory/
+/traces/
 
 # App-specific runtime data
 app/arf_default_assistant/memory/

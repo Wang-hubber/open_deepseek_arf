@@ -16,7 +16,8 @@ class ArfLocalMcpServer:
     """Local MCP server that aggregates local providers + external MCP connections.
 
     Runs as a subprocess with stdio JSON-RPC transport.
-    All tools are namespaced: arf__ for local, {server}__ for remote.
+    Tool namespace: user__{tool} for app tools, {plugin}__{tool} for plugin tools,
+    {server}__{tool} for remote MCP servers.
     """
 
     def __init__(
@@ -52,43 +53,61 @@ class ArfLocalMcpServer:
     # -- tools/list --
 
     def list_tools_sync(self) -> list[dict]:
-        """Synchronous tool listing -- uses existing ToolProvider API."""
+        """Synchronous tool listing with namespace prefixes.
+
+        Namespace scheme:
+          user__{tool}       — app-level tools (tools/ directory)
+          {plugin}__{tool}   — plugin tools (arf/plugins/{plugin}/tools/)
+          {server}__{tool}   — remote MCP servers
+        """
         results: list[dict] = []
+        # App tools: user__ namespace
         for t in self._tool_provider.list():
             d = t.model_dump() if hasattr(t, "model_dump") else t
-            d["name"] = f"arf__{d['name']}"
+            d["name"] = f"user__{d['name']}"
             results.append(d)
+        # Plugin tools: {plugin}__ namespace
         if self._plugin_provider:
-            for t in self._plugin_provider.list_tools():
+            for pname, t in self._plugin_provider.list_tools_with_plugin():
                 d = t.model_dump() if hasattr(t, "model_dump") else t
-                d["name"] = f"arf__{d['name']}"
+                d["name"] = f"{pname}__{d['name']}"
                 results.append(d)
         return results
 
     # -- tools/call --
 
     async def call_tool(self, name: str, params: dict) -> dict:
-        """Execute a tool by namespaced name (async, uses existing Provider APIs).
+        """Execute a tool by namespaced name.
 
-        Namespaced format: arf__tool_name or server_name__tool_name.
+        Namespace scheme:
+          user__{tool}       → app ToolProvider
+          {plugin}__{tool}   → PluginProvider for that plugin
+          {server}__{tool}   → remote MCP client
         """
-        source, local_name = name.split("__", 1)
+        parts = name.split("__", 1)
+        if len(parts) != 2:
+            return {"success": False, "error": f"Tool '{name}' missing namespace prefix"}
 
-        if source == "arf":
+        source, local_name = parts
+
+        # App tools
+        if source == "user":
             result = await self._tool_provider.execute(local_name, params)
             if result.success:
                 return {"success": True, "data": result.data}
-            if self._plugin_provider:
-                plugin_result = await self._plugin_provider.execute(
-                    local_name, params
-                )
-                if plugin_result and plugin_result.success:
-                    return {"success": True, "data": plugin_result.data}
-            return {
-                "success": False,
-                "error": f"Tool '{local_name}' not found: {result.error}",
-            }
+            return {"success": False, "error": f"Tool '{local_name}' not found"}
 
+        # Plugin tools
+        if self._plugin_provider:
+            plugin_result = await self._plugin_provider.execute_plugin_tool(
+                source, local_name, params
+            )
+            if plugin_result is not None:
+                if plugin_result.success:
+                    return {"success": True, "data": plugin_result.data}
+                return {"success": False, "error": plugin_result.error}
+
+        # Remote MCP servers
         client = self._remote_clients.get(source)
         if client:
             remote_result = await client.call_tool(local_name, params)

@@ -71,6 +71,7 @@ class ControlPlane:
 
     async def _execute(self, state: AgentState):
         session_id = state.get("session_id", "default")
+        self._current_session_id = session_id
         self._interaction_round = state.get("interaction_round", 0) + 1
         state["interaction_round"] = self._interaction_round
         self.loop_strategy.max_turns = self._max_turns

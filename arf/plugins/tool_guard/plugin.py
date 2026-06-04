@@ -76,7 +76,7 @@ class ToolGuardPlugin:
                         "content": "[blocked]",
                     })
                 ctx.state["_pending_tool_calls"] = []
-                raise PermissionDenied(f"Tool '{name}' denied: {result.reason}")
+                raise PermissionDenied(f"Tool '{name}' denied")
 
             # Layer 2: Security check (path traversal, injection)
             if self._sandbox:
@@ -94,6 +94,4 @@ class ToolGuardPlugin:
                                 "content": "[blocked]",
                             })
                         ctx.state["_pending_tool_calls"] = []
-                        raise SandboxViolation(
-                            f"Tool '{name}' param '{key}' contains suspicious path: {value}"
-                        )
+                        raise SandboxViolation(f"Tool '{name}' sandbox violation")

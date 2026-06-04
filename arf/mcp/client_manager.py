@@ -15,6 +15,18 @@ from arf.core.protocols.resources import ToolDefinition, ToolResolver
 from arf.core.results import ToolResult
 
 
+def _filter_serializable(params: dict) -> dict:
+    """Keep only JSON-serializable values; strip DI objects like _engine, _state_store."""
+    clean: dict = {}
+    for k, v in params.items():
+        try:
+            json.dumps(v)
+            clean[k] = v
+        except (TypeError, ValueError):
+            pass
+    return clean
+
+
 class McpClientManager:
     """Manages a local MCP server subprocess via stdio JSON-RPC.
 
@@ -154,11 +166,9 @@ class McpClientManager:
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         """Execute a tool (MCP tools/call). Implements ToolResolver protocol."""
         try:
-            # Strip non-serializable framework DI objects (_engine, _state_store).
-            # Serializable _-prefixed params (_workspace, _agent_mode) are kept
-            # — they are plain data meaningful across process boundaries.
-            _NON_SERIALIZABLE_DI = frozenset({"_engine", "_state_store"})
-            clean_params = {k: v for k, v in params.items() if k not in _NON_SERIALIZABLE_DI}
+            # Filter non-serializable values (DI objects like _engine, _state_store)
+            # rather than hardcoding a blacklist — serializable params pass through.
+            clean_params = _filter_serializable(params)
             result = await self._send_request("tools/call", {
                 "name": tool_name,
                 "arguments": clean_params,
