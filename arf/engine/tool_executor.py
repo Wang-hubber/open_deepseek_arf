@@ -128,12 +128,12 @@ class ConcurrentToolExecutor:
                 )
 
         # ContentGuard: dangerous behavior check.
-        # Strip _-prefixed internal params (_engine, _state_store, etc.)
-        # before serialization — they are framework DI objects, not user
-        # input, and are not JSON-serializable.
+        # Strip non-serializable framework DI objects before json.dumps.
+        # Serializable _-prefixed params (_workspace, _agent_mode) are kept.
         if getattr(self, '_content_guard', None):
             import json as _json
-            clean_params = {k: v for k, v in params.items() if not k.startswith("_")}
+            _NON_SERIALIZABLE_DI = frozenset({"_engine", "_state_store"})
+            clean_params = {k: v for k, v in params.items() if k not in _NON_SERIALIZABLE_DI}
             params_str = _json.dumps(clean_params, ensure_ascii=False) if clean_params else ""
             dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
             if not dr.allowed:
