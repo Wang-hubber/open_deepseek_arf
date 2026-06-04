@@ -66,14 +66,14 @@ class ToolGuardPlugin:
                         "id": tc_cleanup.get("id", ""),
                         "success": False,
                         "blocked": True,
-                        "error": f"Tool denied by security policy: {result.reason}",
+                        "error": "Blocked: permission denied",
                     })
                 msgs = ctx.state.setdefault("messages", [])
                 for tc_cleanup in tool_calls:
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc_cleanup.get("id", ""),
-                        "content": "Blocked by security policy.",
+                        "content": "[blocked]",
                     })
                 ctx.state["_pending_tool_calls"] = []
                 raise PermissionDenied(f"Tool '{name}' denied: {result.reason}")
@@ -91,7 +91,7 @@ class ToolGuardPlugin:
                             msgs.append({
                                 "role": "tool",
                                 "tool_call_id": tc_cleanup.get("id", ""),
-                                "content": "Blocked by security policy.",
+                                "content": "[blocked]",
                             })
                         ctx.state["_pending_tool_calls"] = []
                         raise SandboxViolation(

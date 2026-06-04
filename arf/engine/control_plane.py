@@ -32,7 +32,7 @@ class ControlPlane:
         system_prompt: str = "",
         max_turns: int = 50,
         workspace_dir: str = "",
-        memory_dir: str = "./memory",
+        memory_dir: str = "./data/memory",
         state_dir: str = "./data/state",
         trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
@@ -481,7 +481,7 @@ class ControlPlane:
 
     async def _handle_error(self, exc: Exception, ctx: PluginContext) -> dict:
         """Fire error hook on blocking runner."""
-        ctx.hook_data["exception"] = exc
+        ctx.hook_data["exception"] = f"{type(exc).__name__}: {exc}"
         try:
             await self._fire_blocking("error", ctx)
         except Exception as hook_err:

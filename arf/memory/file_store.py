@@ -16,7 +16,7 @@ class FileMemoryStore:
     O(n) and fine for hundreds of entries; no indexing is performed.
     """
 
-    def __init__(self, workspace: str | Path = "./memory") -> None:
+    def __init__(self, workspace: str | Path = "./data/memory") -> None:
         self._dir = Path(workspace)
         self._dir.mkdir(parents=True, exist_ok=True)
 

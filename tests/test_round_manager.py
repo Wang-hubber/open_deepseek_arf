@@ -1,4 +1,4 @@
-"""Tests for RoundManager — checkpoint, undo, handoff tracking, persistence."""
+"""Tests for RoundManager — checkpoint, undo, persistence."""
 import json
 import time
 from pathlib import Path
@@ -70,10 +70,10 @@ class TestRoundManagerBeginRound:
         assert len(tx.state_snapshot["messages"]) == 1
         assert tx.state_snapshot["current_turn"] == 0
 
-    def test_begin_round_uses_active_agent_for_trace(self, tmp_path, clean_round_manager):
+    def test_begin_round_uses_agent_name_for_trace(self, tmp_path, clean_round_manager):
         rm = clean_round_manager()
         tx = rm.begin_round(
-            _state(active_agent="sys_agent"),
+            _state(agent_name="sys_agent"),
             workspace_dir=str(tmp_path),
         )
         assert tx.agent_trace == ["sys_agent"]
@@ -180,31 +180,6 @@ class TestRoundManagerUndo:
         rm.begin_round(_state(), workspace_dir=str(ws))
         # .git files should not be snapshotted or restored
         assert rm.count() == 1
-
-
-class TestRoundManagerHandoff:
-    """Handoff tracking within a round."""
-
-    def test_record_handoff_updates_trace(self, tmp_path, clean_round_manager):
-        rm = clean_round_manager()
-        rm.begin_round(_state(), workspace_dir=str(tmp_path))
-        rm.record_handoff("main", "sys_agent")
-
-        assert rm.active_round.agent_trace == ["main", "sys_agent"]
-        assert rm.active_round.handoff_count == 1
-
-    def test_record_handoff_multiple_switches(self, tmp_path, clean_round_manager):
-        rm = clean_round_manager()
-        rm.begin_round(_state(), workspace_dir=str(tmp_path))
-        rm.record_handoff("main", "sys_agent")
-        rm.record_handoff("sys_agent", "main")
-
-        assert rm.active_round.agent_trace == ["main", "sys_agent", "main"]
-        assert rm.active_round.handoff_count == 2
-
-    def test_record_handoff_noop_without_active_round(self, clean_round_manager):
-        rm = clean_round_manager()
-        rm.record_handoff("a", "b")  # Should not raise
 
 
 class TestRoundManagerCloseRound:
@@ -340,7 +315,6 @@ class TestRoundTransactionDefaults:
             state_snapshot={"session_id": "s1"},
         )
         assert tx.agent_trace == []
-        assert tx.handoff_count == 0
         assert tx.closed is False
         assert tx.workspace_snapshot_dir is None
         assert tx.created_at > 0

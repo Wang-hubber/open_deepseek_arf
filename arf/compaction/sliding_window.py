@@ -28,7 +28,7 @@ class SlidingWindowCompactor:
     """
 
     def __init__(self, threshold: float = 0.75, summarizer: callable | None = None,
-                 window_size: int = DEFAULT_WINDOW_SIZE, workspace: str | Path = "./memory",
+                 window_size: int = DEFAULT_WINDOW_SIZE, workspace: str | Path = "./data/state",
                  keep_count: int = 8) -> None:
         self._threshold = threshold
         self._summarize = summarizer

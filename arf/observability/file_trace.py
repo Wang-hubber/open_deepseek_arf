@@ -5,6 +5,21 @@ from pathlib import Path
 from arf.core.events import AgentEvent
 
 
+def _sanitize_for_json(obj):
+    """Convert non-JSON-serializable values to strings."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, Exception):
+        return f"{type(obj).__name__}: {obj}"
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        return str(obj)
+
+
 class FileTraceStore:
     """订阅 EventBus，将事件按 session 追加写入 JSON 文件。
 
@@ -12,11 +27,11 @@ class FileTraceStore:
     每个 session 一个文件，session 结束后完整轨迹可被 /trace/{id} 查询。
 
     用法:
-        store = FileTraceStore(agent.event_bus, dir="./memory/traces")
+        store = FileTraceStore(agent.event_bus, dir="./data/traces")
         # 自动开始消费，无需手动管理生命周期
     """
 
-    def __init__(self, bus, dir: str | Path = "./memory/traces") -> None:
+    def __init__(self, bus, dir: str | Path = "./data/traces") -> None:
         self._dir = Path(dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._task = asyncio.create_task(self._consume(bus))
@@ -40,7 +55,7 @@ class FileTraceStore:
                 records = []
         records.append({
             "type": event.type,
-            "data": event.data,
+            "data": _sanitize_for_json(event.data),
             "turn": event.turn,
             "timestamp": event.timestamp,
             "trace_id": event.trace_id,

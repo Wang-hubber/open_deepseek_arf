@@ -54,11 +54,8 @@ async def preferences():
 
 @router.get("/api/usage/summary")
 async def usage_summary(period: str = "month"):
-    return JSONResponse({
-        **state._agent.usage_tracker.summary(),
-        "sessions": 1,
-        "period": period,
-    })
+    return JSONResponse({"total_tokens": 0, "total_calls": 0,
+                         "by_model": [], "sessions": 1, "period": period})
 
 
 @router.get("/api/usage/detail")

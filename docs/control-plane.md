@@ -1,6 +1,6 @@
 # ARF Control Plane Architecture
 
-> 完整控制平面：从 Agent 初始化到每次 invoke 的控制流全景，涵盖组装、调度、Hook、中断、Handoff 全部环节。
+> 完整控制平面：从 Agent 初始化到每次 invoke 的控制流全景，涵盖组装、调度、Hook、中断全部环节。
 
 ## 1. 架构分层
 
@@ -9,7 +9,7 @@
 | 层 | 文件 | 职责 |
 |----|------|------|
 | **组装层** | `arf/agent/base.py`, `arf/agent/config.py` | DI 装配全部 Protocol 实现，`agent.yaml` → 运行实例 |
-| **引擎层** | `arf/engine/graph.py`, `arf/engine/round_manager.py`, `arf/engine/handoff.py`, `arf/engine/tool_executor.py` | invoke/astream 主循环，状态机转换，Handoff 调度 |
+| **引擎层** | `arf/engine/graph.py`, `arf/engine/round_manager.py`, `arf/engine/tool_executor.py` | invoke/astream 主循环，状态机转换 |
 | **横切层** | `arf/hooks/`, `arf/guardrails/`, `arf/errors/`, `arf/protection/`, `arf/compaction/`, `arf/memory/` | Hook 生命周期、安全守卫、错误恢复、API 保护、窗口压缩 |
 | **传输层** | `arf/observability/`, `arf/event_bus.py`, `arf/streaming/` | 事件总线、追踪、用量统计、SSE 流 |
 
@@ -231,20 +231,7 @@ _step_execute_tools(state)  (graph.py:1355-1580)
 7. ErrorPolicy 断路器:
    连续 _tool_failures >= 5 → abort session
 
-8. HandoffManager.detect(tool_results):
-   ├─ 检测到 {"handoff": True} → _execute_handoff():
-   │   1. 保存当前 agent state → state_store["{sid}/{from_agent}"]
-   │   2. HandoffManager.resolve(from, handoff_data) → to_agent
-   │   3. RoundManager.record_handoff() (不创建新检查点)
-   │   4. 加载或构建目标 agent state
-   │   5. 交换 state["active_agent"], state["handoff_from_agent"]
-   │   6. _activate_agent(name) → 热交换权限列表
-   │   7. emit agent_switch 事件
-   │   8. 重置 turn counter
-   └─ 子 Agent 纯文本响应 → _auto_return_from_handoff():
-       自动切回父 Agent, 恢复原权限
-
-9. _reset_recovery_state() → 清空恢复计数器
+8. _reset_recovery_state() → 清空恢复计数器
 ```
 
 ### 2.5 中断与恢复
@@ -298,12 +285,10 @@ BaseAgent.__init__(AgentConfig, AppContext, **override_protocols)
   13. Hooks            → SubprocessHookRunner(config_hooks + plugin_hooks)
   14. ToolExecutor     → ConcurrentToolExecutor(strategy, max_concurrency)
   15. LoopStrategy     → ReActStrategy(max_turns)
-  16. Sub-agent configs → 每个 config.agents[] 独立构建
-  17. HandoffManager   → 从 config.handover.rules 构建
-  18. SystemPrompt     → DefaultSystemPromptProvider.build()
-  19. $INVENTORY       → 从 MCP 工具清单填充
-  20. $MEMORY          → 从 memory.md 加载
-  21. Model Calls      → _inject_model_calls(config):
+  16. SystemPrompt     → DefaultSystemPromptProvider.build()
+  17. $INVENTORY       → 从 MCP 工具清单填充
+  18. $MEMORY          → 从 memory.md 加载
+  19. Model Calls      → _inject_model_calls(config):
        ├─ ModelRegistry → ModelAdapter 列表
        ├─ ModelDegrader → 有序降级包装
        └─ ModelCallProtector → TokenBucket + CircuitBreaker 包装
@@ -341,10 +326,6 @@ BaseAgent.__init__(AgentConfig, AppContext, **override_protocols)
 | `_compaction_cooldown` | `int` | 压缩系统 | 递减计数器 (初始2), 防止连续触发压缩 |
 | `_recovery_state` | `dict` | `_apply_recovery` | `{continuation_attempts, compact_attempts, transport_attempts}` |
 | `_pending_tool_calls` | `list[dict]` | `_step_call_model` | 跨步骤暂存: 待执行的 tool_calls |
-| `active_agent` | `str` | `_execute_handoff` | 多 Agent 切换: 当前活跃 agent 名 |
-| `handoff_from_agent` | `str` | `_execute_handoff` | 多 Agent 切换: 来源 agent 名 |
-| `handoff_task` | `str` | `_execute_handoff` | 多 Agent 切换: 任务描述 |
-| `handoff_error` | `str \| None` | `_execute_handoff` | 多 Agent 切换: 失败原因 |
 | `active_pipeline` | `dict` | Skill 系统 | `{step_name: status}`, 流水线依赖跟踪 |
 | `session_active` | `bool` | BaseAgent | 会话是否活跃 |
 | `_tool_failures` | `int` | `_step_execute_tools` | 连续工具失败计数 (断路器, 阈值5) |
@@ -361,7 +342,6 @@ state_snapshot: AgentState  # deepcopy 的完整状态
 workspace_snapshot_dir: str  # data/checkpoints/{round_num}/
 created_at: float       # 时间戳
 agent_trace: list[str]  # 经过的 agent 名称列表
-handoff_count: int      # 本轮的 handoff 次数
 closed: bool            # 是否已关闭
 ```
 
@@ -395,8 +375,7 @@ reason: str
   引擎循环中每一处 state[key] = value (就地修改)
   + StateStore.put(session_id, state) 在关键检查点:
     - 纯文本响应后
-    - 工具执行完成后 (如果无 handoff)
-    - handoff 前 (保存当前 agent state 到 {sid}/{agent_name} 键)
+    - 工具执行完成后
     - 异常/取消时
 
 清理:
@@ -405,26 +384,6 @@ reason: str
 恢复:
   引擎启动时 RoundManager 从 data/checkpoints/rounds.json 重建滚动窗口
   崩溃恢复: BaseAgent 扫描 data/state/ 找活跃但未跟踪的 session
-```
-
-### 3.4 State 多 Agent 路由
-
-```
-FileStateStore 键约定:
-  主 Agent: "{session_id}"
-  子 Agent: "{session_id}/{agent_name}"
-
-Handoff 时的 State 流转:
-  父 State → StateStore.put("{sid}/parent_agent", parent_state)
-           → 构建或加载子 State
-           → state["active_agent"] = "child"
-           → state["handoff_from_agent"] = "parent"
-           → 引擎循环使用子 State
-
-  子完成 → 自动返回:
-           → StateStore.put("{sid}/child", child_state)
-           → StateStore.get("{sid}") 恢复父 State
-           → state["active_agent"] = "main"
 ```
 
 ---
@@ -443,7 +402,7 @@ Handoff 时的 State 流转:
 | 6 | `pre_tool_exec` | `engine/graph.py:1406` | `{tool_calls, turn}` | Subprocess | 工具调用拦截、参数修改 |
 | 7 | `post_tool_exec` | `engine/graph.py:1491` | `{tool_calls, results, turn}` | Subprocess | 结果后处理、数据管道 |
 | 8 | `sandbox_persist` | `engine/graph.py:1511,1517` | `{session_id, turn}` | **Subprocess + InProcess** | **UNDO/Checkpoint 挂载点** |
-| 9 | `round_end` | `engine/graph.py:1559,1631,1637` | `{session_id, round}` (+ `reason` if handoff) | **Subprocess + InProcess** | **Memory 提取/Compaction 挂载点** |
+| 9 | `round_end` | `engine/graph.py:1559,1631,1637` | `{session_id, round}` | **Subprocess + InProcess** | **Memory 提取/Compaction 挂载点** |
 
 | 0 | `session_end` | `agent/base.py:705,728,810` | `{session_id, reason}` | Subprocess | 关闭/崩溃恢复/取消清理 |
 
@@ -493,7 +452,7 @@ plugin_runner.fire("post_permission", ...) → 进程内 plugin
 | `MemoryPlugin` | `arf/plugins/memory/hooks/round_end.py` | `round_end` (每 N 轮) | LLM 提取记忆 → memory.md |
 | `UNDO Plugin` | `arf/plugins/undo/` | `sandbox_persist` | 工具执行后保存工作区快照供撤销 |
 
-### 4.5 AgentEvent 事件类型全集 (30+)
+### 4.5 AgentEvent 事件类型全集 (28)
 
 **定义位置:** `arf/core/events.py`
 
@@ -504,7 +463,6 @@ Model:      thinking_delta, model_call_start, model_call_end
 Tool:       tool_call_start, tool_call_end, tool_call_result
 Compaction: compaction_start, compaction_end
 Approval:   approval_required, approval_resolved
-Agent:      agent_switch
 Guards:     guard_block, guard_pass
 Hooks:      hook_start, hook_end
 Recovery:   undo_executed, rollback_executed
@@ -523,7 +481,6 @@ Error:      error
 | 引擎主循环 | `arf/engine/graph.py` | GraphEngine - 全部执行逻辑 |
 | 轮次管理 | `arf/engine/round_manager.py` | RoundManager - 检查点/撤销 |
 | 工具执行 | `arf/engine/tool_executor.py` | ConcurrentToolExecutor |
-| Handoff | `arf/engine/handoff.py` | HandoffManager - 多 Agent 切换 |
 | Agent 组装 | `arf/agent/base.py` | BaseAgent - DI 装配 + 公共 API |
 | 配置模型 | `arf/agent/config.py` | AgentConfig + AdvancedConfig |
 | State 定义 | `arf/core/state.py` | AgentState + TurnContext |
@@ -561,6 +518,7 @@ Error:      error
 ### 当前约束
 - State 是可变 dict (非不可变), 就地修改, 无并发保护
 - TwoTierRouter 已移除, 路由现由 ModelDegrader 降级链替代
+- HandoffManager (多 Agent 切换) 已移除, `arf/engine/handoff.py` 已删除
 - `arf/concurrency/` (SequentialScheduler) 和 `arf/skills/` (SkillPipeline) 已删除
 - `arf/communication/` 的协议 (AgentBus, PeerAgent, Supervisor 等) 仅有接口定义, 无实现
 - ApprovalPoint/ApprovalChannel 协议存在但 HumanLoop 未通过 Hook 系统连接 (集成在引擎内联)

@@ -11,7 +11,7 @@ from arf.core.config_base import (
     CompactionConfig, MemoryConfig,
     GuardrailsConfig, ErrorConfig, PermissionsConfig, ApprovalConfig,
     SandboxConfig, ToolRetrievalConfig,
-    ReloadConfig, HandoverRuleConfig, HandoverConfig, SupervisorConfig,
+    ReloadConfig, SupervisorConfig,
 )
 
 __all__ = [
@@ -22,5 +22,5 @@ __all__ = [
     "CompactionConfig", "MemoryConfig",
     "GuardrailsConfig", "ErrorConfig", "PermissionsConfig", "ApprovalConfig",
     "SandboxConfig", "ToolRetrievalConfig",
-    "ReloadConfig", "HandoverRuleConfig", "HandoverConfig", "SupervisorConfig",
+    "ReloadConfig", "SupervisorConfig",
 ]

@@ -1,4 +1,4 @@
-"""RoundManager — round-level checkpoint and undo for multi-agent scenarios."""
+"""RoundManager — round-level checkpoint and undo."""
 import copy
 import json
 import logging
@@ -17,8 +17,7 @@ logger = logging.getLogger("arf.engine.rounds")
 class RoundTransaction:
     """Full state snapshot for one user interaction round.
 
-    A round may span multiple agent handoffs. This snapshot captures
-    the state at the beginning of the round. Undo restores to this point.
+    Captures state at the beginning of the round. Undo restores to this point.
     """
 
     round_id: str                       # "session_id/round_num"
@@ -26,17 +25,15 @@ class RoundTransaction:
     state_snapshot: dict                # deepcopy(AgentState) at round start
     workspace_snapshot_dir: str | None = None  # data/checkpoints/{round_num}/
     created_at: float = field(default_factory=time.time)
-    agent_trace: list[str] = field(default_factory=list)  # ["main","sys","main"]
-    handoff_count: int = 0
+    agent_trace: list[str] = field(default_factory=list)  # agent names visited
     closed: bool = False
 
 
 class RoundManager:
     """Round-level checkpoint manager.
 
-    Each round is a transaction: begin_round() pushes a snapshot;
-    handoffs within the round are recorded via record_handoff() but
-    do NOT create new checkpoints.  undo(N) restores to round-N ago.
+    Each round is a transaction: begin_round() pushes a snapshot.
+    undo(N) restores to round-N ago.
     """
 
     _PERSIST_FILE = Path("data/checkpoints/rounds.json")
@@ -53,7 +50,7 @@ class RoundManager:
     def begin_round(self, state: AgentState, workspace_dir: str = "") -> RoundTransaction:
         """Snapshot *state* and workspace files.  Returns the new transaction."""
         self._current_round += 1
-        agent = state.get("active_agent") or state.get("agent_name", "main")
+        agent = state.get("agent_name", "main")
         snapshot = copy.deepcopy(dict(state))
         tx = RoundTransaction(
             round_id=f"{state.get('session_id', 'default')}/{self._current_round}",
@@ -70,12 +67,6 @@ class RoundManager:
         self._active = tx
         self._save_rounds()
         return tx
-
-    def record_handoff(self, from_agent: str, to_agent: str) -> None:
-        """Record an agent switch within the active round (no new checkpoint)."""
-        if self._active:
-            self._active.agent_trace.append(to_agent)
-            self._active.handoff_count += 1
 
     def close_round(self) -> None:
         """Mark the active round as complete."""
@@ -195,7 +186,6 @@ class RoundManager:
                     "round_id": tx.round_id,
                     "round_num": tx.round_num,
                     "agent_trace": tx.agent_trace,
-                    "handoff_count": tx.handoff_count,
                     "created_at": tx.created_at,
                     "workspace_snapshot_dir": tx.workspace_snapshot_dir,
                     "closed": tx.closed,
@@ -244,7 +234,6 @@ class RoundManager:
                 workspace_snapshot_dir=entry.get("workspace_snapshot_dir"),
                 created_at=entry.get("created_at", time.time()),
                 agent_trace=entry.get("agent_trace", []),
-                handoff_count=entry.get("handoff_count", 0),
                 closed=entry.get("closed", False),
             )
             self._rounds.append(tx)

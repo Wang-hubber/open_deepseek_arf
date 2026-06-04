@@ -8,12 +8,12 @@ from arf.core.events import AgentEvent, EventType
 class TestAgentEvent:
     def test_construct_with_type_and_data(self):
         event = AgentEvent(
-            type="agent_switch",
-            data={"from": "arf_assistant", "to": "sys_agent", "task": "create tool"},
+            type="error",
+            data={"detail": "test error", "code": 500},
         )
-        assert event.type == "agent_switch"
-        assert event.data["from"] == "arf_assistant"
-        assert event.data["to"] == "sys_agent"
+        assert event.type == "error"
+        assert event.data["detail"] == "test error"
+        assert event.data["code"] == 500
 
     def test_defaults_are_set(self):
         event = AgentEvent(type="error", data={"msg": "boom"})
@@ -27,10 +27,6 @@ class TestAgentEvent:
 
 
 class TestEventType:
-    def test_contains_agent_switch(self):
-        types = get_args(EventType)
-        assert "agent_switch" in types
-
     def test_contains_session_lifecycle(self):
         types = get_args(EventType)
         assert "session_start" in types
@@ -49,7 +45,7 @@ class TestEventType:
     def test_event_type_count(self):
         """Break-glass: if new event types are added, trace_viewer must be updated."""
         types = get_args(EventType)
-        assert len(types) == 29   # +tool_call_result +pre_model_call +post_permission +sandbox_persist
+        assert len(types) == 28   # +tool_call_result +pre_model_call +post_permission +sandbox_persist, -agent_switch (deprecated)
 
     def test_contains_protection_events(self):
         types = get_args(EventType)

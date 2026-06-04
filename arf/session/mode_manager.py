@@ -63,7 +63,7 @@ def has_side_effect(tool_name: str) -> bool:
     Used in PLAN mode to block write/exec tools.
     Read-only tools: file_reader, glob, grep, web_search, web_fetch,
                      memory_store (append-only), resource_loader, planner,
-                     todo, handoff, model_switch, undo
+                     todo, model_switch, undo
     Side-effect tools: file_writer, file_deleter, file_download,
                        python_exec, bash, resource_registrar, resource_scaffold,
                        md2pdf, any tool starting with 'mcp__' (unknown)
@@ -71,7 +71,7 @@ def has_side_effect(tool_name: str) -> bool:
     READ_ONLY = {
         "file_reader", "glob", "grep", "web_search", "web_fetch",
         "memory_store", "memory_extract", "resource_loader",
-        "planner", "todo", "handoff", "model_switch", "undo",
+        "planner", "todo", "model_switch", "undo",
     }
     if tool_name in READ_ONLY:
         return False

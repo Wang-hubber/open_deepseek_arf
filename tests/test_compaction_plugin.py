@@ -9,7 +9,7 @@ class TestCompactionPlugin:
         from arf.plugins.compaction.plugin import CompactionPlugin
         plugin = CompactionPlugin()
         assert plugin.name == "compaction"
-        assert plugin.hooks == ["round_end"]
+        assert plugin.hooks == {"round_end": "blocking"}
 
     def test_skips_when_under_threshold(self):
         """Should not compact when token usage is below threshold."""

@@ -1036,12 +1036,12 @@ class TestConfigPaths:
         )
 
     def test_traces_path_in_config(self):
-        """Doc: memory/traces/ for FileTraceStore output."""
+        """Doc: data/traces/ for FileTraceStore output."""
         from arf.observability.file_trace import FileTraceStore
         sig = inspect.signature(FileTraceStore.__init__)
         default_dir = sig.parameters["dir"].default
-        assert str(default_dir) == "./memory/traces", (
-            f"Default should be ./memory/traces, got {default_dir}"
+        assert str(default_dir) == "./data/traces", (
+            f"Default should be ./data/traces, got {default_dir}"
         )
 
 
@@ -1269,7 +1269,7 @@ class TestFindingsEvalPathFixes:
     """eval-benchmark.md 残留旧路径 memory/sessions/."""
 
     def test_eval_doc_all_paths_use_memory_traces(self):
-        """FIXED 2026-05-29: 所有路径已修正为 memory/traces/."""
+        """FIXED 2026-05-29: 所有路径已修正为 data/traces/."""
         doc_path = Path(__file__).parent.parent.parent / "docs" / "eval-benchmark.md"
         content = doc_path.read_text(encoding="utf-8")
         assert ("./memory/sessions" not in content

@@ -226,11 +226,9 @@ class SessionConfig(BaseModel):
 
 
 class ObservabilityConfig(BaseModel):
-    """Trace, usage tracking, replay, and telemetry — all auto-wired by BaseAgent."""
-    trace_dir: str = "./memory/traces"
-    usage_dir: str = "./memory"
+    """Trace, replay, and telemetry — all auto-wired by BaseAgent."""
+    trace_dir: str = "./data/traces"
     trace_enabled: bool = True
-    otel_exporter: Literal["none", "console", "otlp"] = "none"
 
 
 class PromotionConfig(BaseModel):

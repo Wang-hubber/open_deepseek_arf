@@ -58,5 +58,5 @@ class DefaultGuardRunner:
         return result.action
 
     def swap_lists(self, lists: PermissionLists) -> None:
-        """Hot-swap permission lists at runtime (e.g. during agent handoff)."""
+        """Hot-swap permission lists at runtime."""
         self._permission_lists = lists

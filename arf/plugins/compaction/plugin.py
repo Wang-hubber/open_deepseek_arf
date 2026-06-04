@@ -29,7 +29,7 @@ class CompactionPlugin:
         self.keep_count: int = cfg.get("keep_count", 8)
         self._summarizer = None
         self._state_store = None
-        self._workspace = Path(cfg.get("workspace", "./memory"))
+        self._workspace = Path(cfg.get("workspace", "./data/state"))
         self._cooldown: dict[str, int] = {}
 
     @property
@@ -38,7 +38,7 @@ class CompactionPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"round_start": "blocking", "post_dispatch": "blocking"}
+        return {"round_end": "blocking"}
 
     def set_summarizer(self, summarizer) -> None:
         self._summarizer = summarizer

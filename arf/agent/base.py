@@ -420,13 +420,9 @@ class BaseAgent:
         self._event_bus = event_bus
         self._memory_store = memory_store
         self._tool_resolver = mcp_manager
-        # Auto-create usage tracker (framework default)
-        from arf.observability.usage_tracker import UsageTracker
-        usage_dir = _obs_cfg.usage_dir if _obs_cfg else "./memory"
-        self._usage_tracker = UsageTracker(event_bus, dir=usage_dir)
 
         # Auto-create trace store (framework default)
-        trace_dir = str(ctx.trace_dir) if ctx else (_obs_cfg.trace_dir if _obs_cfg else "./memory/traces")
+        trace_dir = str(ctx.trace_dir) if ctx else (_obs_cfg.trace_dir if _obs_cfg else "./data/traces")
         from arf.observability import FileTraceStore
         self._trace_store = FileTraceStore(event_bus, dir=trace_dir)
 
@@ -706,10 +702,6 @@ class BaseAgent:
     def engine(self):
         """ControlPlane — execution loop for invoke/astream."""
         return self._engine
-
-    @property
-    def usage_tracker(self):
-        return self._usage_tracker
 
     @property
     def trace_store(self):

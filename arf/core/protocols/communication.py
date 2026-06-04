@@ -8,7 +8,7 @@ from typing import Literal
 class AgentMessage:
     sender: str
     receiver: str | None
-    type: Literal["task_delegate", "info", "query", "handoff"]
+    type: Literal["task_delegate", "info", "query"]
     payload: dict
     reply_to: str | None = None
     correlation_id: str = ""

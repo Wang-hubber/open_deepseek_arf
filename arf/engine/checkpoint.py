@@ -41,7 +41,7 @@ class FileStateStore:
     Atomically writes to a temp file then renames to avoid corruption.
     """
 
-    def __init__(self, state_dir: str | Path = "./memory/state") -> None:
+    def __init__(self, state_dir: str | Path = "./data/state") -> None:
         self._dir = Path(state_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 

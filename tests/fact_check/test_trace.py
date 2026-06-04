@@ -20,7 +20,7 @@ import pytest
 
 class TestArchitectureOverview:
     """Doc 2.1: ControlPlane._make_event() injects round and
-    publish to EventBus. Four sinks: FileTraceStore, UsageTracker, SSE, TraceView."""
+    publish to EventBus. Four sinks: FileTraceStore, FileTraceStore, SSE, TraceView."""
 
     def test_engine_has_emit_method(self):
         """Doc: ControlPlane has _make_event() method for publishing events (emit merged into _make_event)."""
@@ -179,13 +179,13 @@ class TestFileTraceStoreInit:
         assert FileTraceStore is not None
 
     def test_init_takes_bus_and_dir_with_default(self):
-        """Doc: FileTraceStore(bus, dir) with default dir='./memory/traces'."""
+        """Doc: FileTraceStore(bus, dir) with default dir='./data/traces'."""
         from arf.observability.file_trace import FileTraceStore
         sig = inspect.signature(FileTraceStore.__init__)
         params = sig.parameters
         assert "bus" in params
         assert "dir" in params
-        assert params["dir"].default == "./memory/traces"
+        assert params["dir"].default == "./data/traces"
 
     def test_init_uses_asyncio_create_task(self):
         """Doc: Uses asyncio.create_task to subscribe to EventBus."""
@@ -334,123 +334,6 @@ class TestFileTraceStoreMethods:
 
 
 # ---------------------------------------------------------------------------
-# 2.4 UsageTracker
-# ---------------------------------------------------------------------------
-
-class TestUsageTracker:
-    """Doc 2.4: UsageTracker in arf/observability/usage_tracker.py."""
-
-    def test_usage_tracker_exists(self):
-        """Doc: arf/observability/usage_tracker.py contains UsageTracker."""
-        from arf.observability.usage_tracker import UsageTracker
-        assert UsageTracker is not None
-
-    def test_init_takes_bus_and_dir_with_default(self):
-        """Doc: UsageTracker(bus, dir='./memory')."""
-        from arf.observability.usage_tracker import UsageTracker
-        sig = inspect.signature(UsageTracker.__init__)
-        params = sig.parameters
-        assert "bus" in params
-        assert "dir" in params
-        assert params["dir"].default == "./memory"
-
-    def test_persists_to_usage_json(self):
-        """Doc: persists to memory/usage.json (code: {dir}/usage.json)."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker.__init__)
-        assert '"usage.json"' in src or "'usage.json'" in src
-
-    def test_subscribes_to_model_call_end(self):
-        """Doc: subscribes to model_call_end events."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker._consume)
-        assert '"model_call_end"' in src
-
-    def test_accumulates_prompt_tokens(self):
-        """Doc: accumulates prompt_tokens from usage data."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker._consume)
-        assert '"prompt_tokens"' in src
-
-    def test_accumulates_completion_tokens(self):
-        """Doc: accumulates completion_tokens from usage data."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker._consume)
-        assert '"completion_tokens"' in src
-
-    def test_accumulates_total_tokens(self):
-        """Doc: accumulates total_tokens from usage data."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker._consume)
-        assert '"total_tokens"' in src
-
-    def test_accumulates_calls(self):
-        """Doc: tracks per-model call count."""
-        from arf.observability.usage_tracker import UsageTracker
-        src = inspect.getsource(UsageTracker._consume)
-        assert '"calls"' in src
-
-    def test_summary_returns_dict_with_three_keys(self):
-        """Doc: summary() returns total_tokens, total_calls, by_model."""
-        from arf.observability.usage_tracker import UsageTracker
-        sig = inspect.signature(UsageTracker.summary)
-        ret = """UsageTracker(...).summary()"""  # Can't call without bus
-        # We can verify the method exists and its source
-        src = inspect.getsource(UsageTracker.summary)
-        assert "total_tokens" in src
-        assert "total_calls" in src
-        assert "by_model" in src
-
-    def test_save_load_roundtrip(self):
-        """Doc: usage.json loaded on startup, survives restarts."""
-        import asyncio, tempfile, time
-        from arf.observability.usage_tracker import UsageTracker
-        from arf.core.events import AgentEvent
-
-        async def run():
-            with tempfile.TemporaryDirectory() as d:
-                # Manually create persisted state
-                Path(d, "usage.json").write_text(json.dumps({
-                    "models": {"deep": {"prompt_tokens": 100, "completion_tokens": 50,
-                                          "total_tokens": 150, "calls": 2}},
-                    "total_calls": 2,
-                    "updated_at": time.time(),
-                }), encoding="utf-8")
-                # Create tracker without event bus
-                tracker = object.__new__(UsageTracker)
-                tracker._dir = Path(d)
-                tracker._path = Path(d) / "usage.json"
-                tracker._models = {}
-                tracker._total_calls = 0
-                tracker._load()
-                assert tracker.total_calls == 2
-                assert tracker.total_tokens == 150
-                assert tracker.by_model[0]["model_name"] == "deep"
-
-        asyncio.run(run())
-
-    def test_base_agent_auto_creates_usage_tracker(self):
-        """Doc: BaseAgent自动创建UsageTracker."""
-        from arf.agent.base import BaseAgent
-        src = inspect.getsource(BaseAgent.__init__)
-        assert "UsageTracker" in src
-        assert "self._usage_tracker = UsageTracker(event_bus" in src
-
-    def test_usage_tracker_exported_from_observability(self):
-        """Doc: UsageTracker is importable from arf.observability."""
-        from arf.observability import UsageTracker
-        assert UsageTracker is not None
-
-    def test_by_model_returns_list_with_four_tracking_fields(self):
-        """Doc: per-model stats include prompt_tokens, completion_tokens,
-        total_tokens, calls."""
-        from arf.observability.usage_tracker import UsageTracker
-        # Check the by_model property
-        src = inspect.getsource(UsageTracker.by_model.fget)
-        for field in ("prompt_tokens", "completion_tokens", "total_tokens", "calls"):
-            assert f'"{field}"' in src or f"'{field}'" in src
-
-
 # ---------------------------------------------------------------------------
 # 2.8 FileReplayController
 # ---------------------------------------------------------------------------
@@ -564,49 +447,6 @@ class TestReplayController:
 
 
 # ---------------------------------------------------------------------------
-# 2.9 OpenTelemetry Module
-# ---------------------------------------------------------------------------
-
-class TestOtelTracer:
-    """Doc 2.9: arf/observability/otel.py — framework code only, not connected to EventBus."""
-
-    def test_otel_file_exists(self):
-        """Doc: arf/observability/otel.py exists."""
-        from arf.observability.otel import OtelTracer
-        assert OtelTracer is not None
-
-    def test_otel_has_consume(self):
-        """Doc: OtelTracer has consume(events) method."""
-        from arf.observability.otel import OtelTracer
-        sig = inspect.signature(OtelTracer.consume)
-        assert "events" in sig.parameters
-
-    def test_otel_has_flush(self):
-        """Doc: OtelTracer has flush() method."""
-        from arf.observability.otel import OtelTracer
-        assert hasattr(OtelTracer, "flush")
-
-    def test_otel_not_connected_to_event_bus(self):
-        """Doc: otel.py is NOT connected to EventBus (framework code only).
-        Verify no EventBus import or subscription exists in the file."""
-        otel_path = Path(__file__).parent.parent.parent / "arf" / "observability" / "otel.py"
-        content = otel_path.read_text(encoding="utf-8")
-        # Should NOT import EventBus or set up subscription
-        assert "EventBus" not in content, (
-            "OtelTracer should NOT reference EventBus (doc says framework code only)"
-        )
-        assert "subscribe" not in content, (
-            "OtelTracer should NOT subscribe to EventBus"
-        )
-
-    def test_otel_uses_otel_exporter_env(self):
-        """Doc: OtelTracer reads OTEL_EXPORTER environment variable."""
-        from arf.observability.otel import OtelTracer
-        src = inspect.getsource(OtelTracer.__init__)
-        assert '"OTEL_EXPORTER"' in src or "'OTEL_EXPORTER'" in src
-
-
-# ---------------------------------------------------------------------------
 # 2.6 Trace API Endpoints
 # ---------------------------------------------------------------------------
 
@@ -708,7 +548,7 @@ class TestTraceViewer:
 # ---------------------------------------------------------------------------
 
 class TestTraceConfig:
-    """Doc 2.10: FileTraceStore created in server.py; UsageTracker by BaseAgent."""
+    """Doc 2.10: FileTraceStore created in server.py; FileTraceStore by BaseAgent."""
 
     def test_file_trace_store_not_created_in_server_anymore(self):
         """FIXED 2026-05-29: FileTraceStore 改由 BaseAgent 自动创建,
@@ -775,9 +615,7 @@ class TestTraceModuleFiles:
         root = Path(__file__).parent.parent.parent
         files = [
             "arf/observability/file_trace.py",
-            "arf/observability/usage_tracker.py",
             "arf/observability/replay.py",
-            "arf/observability/otel.py",
             "arf/observability/__init__.py",
             "arf/core/events.py",
             "arf/core/protocols/event_bus.py",
@@ -889,29 +727,18 @@ class TestFindingsWiringGaps:
             "FIX VERIFIED: FileTraceStore is now auto-created in BaseAgent."
         )
 
-    def test_usage_tracker_auto_created_in_base_agent(self):
-        """对比: UsageTracker 在 BaseAgent.__init__ 中自动创建 ✓."""
+    def test_trace_store_auto_created_in_base_agent(self):
+        """FileTraceStore 在 BaseAgent.__init__ 中自动创建."""
         from arf.agent.base import BaseAgent
         src = inspect.getsource(BaseAgent.__init__)
-        assert "UsageTracker(event_bus" in src
+        assert "FileTraceStore(event_bus" in src
 
     def test_observability_config_now_in_config_base(self):
-        """FIXED 2026-05-29: ObservabilityConfig 已添加到 config_base.py.
-        包含 trace_dir, usage_dir, trace_enabled, otel_exporter 配置项."""
+        """FIXED 2026-05-29: ObservabilityConfig 已添加到 config_base.py."""
         from arf.core.config_base import ObservabilityConfig
         cfg = ObservabilityConfig()
-        assert cfg.trace_dir == "./memory/traces"
-        assert cfg.usage_dir == "./memory"
+        assert cfg.trace_dir == "./data/traces"
         assert cfg.trace_enabled is True
-        assert cfg.otel_exporter == "none"
-
-    def test_otel_tracer_not_wired_to_event_bus(self):
-        """OtelTracer 有 consume() 方法但未接入 EventBus. 文档正确描述为 '预留扩展点'."""
-        from arf.observability.otel import OtelTracer
-        from arf.event_bus import InMemoryEventBus
-        src = inspect.getsource(OtelTracer)
-        assert "subscribe" not in src
-        assert "EventBus" not in src
 
     def test_tui_dashboard_removed(self):
         """TuiDashboard 已于 2026-05-29 移除. 不再需要 wiring."""
@@ -972,12 +799,12 @@ class TestFindingsFileTraceDefault:
     """原则1: FileTraceStore 默认路径与文档不符."""
 
     def test_default_dir_now_matches_doc(self):
-        """FIXED 2026-05-29: FileTraceStore 默认路径改为 ./memory/traces, 与文档一致."""
+        """FIXED 2026-05-29: FileTraceStore 默认路径改为 ./data/traces, 与文档一致."""
         from arf.observability.file_trace import FileTraceStore
         sig = inspect.signature(FileTraceStore.__init__)
         default = sig.parameters["dir"].default
-        assert default == "./memory/traces", (
-            f"FIX VERIFIED: Default is '{default}', matches doc claim 'memory/traces/'."
+        assert default == "./data/traces", (
+            f"FIX VERIFIED: Default is '{default}', matches doc claim 'data/traces/'."
         )
 
 
@@ -1078,7 +905,7 @@ class TestFindingsBehavioralEdgeCases:
     """L3-L5: 行为级和边界条件测试."""
 
     def test_emit_publishes_to_all_subscribers_behavior(self):
-        """L3: _emit 应该同时推送事件到 FileTraceStore 和 UsageTracker 等所有订阅者."""
+        """L3: _emit 应该同时推送事件到 FileTraceStore 和 FileTraceStore 等所有订阅者."""
         import asyncio
         from arf.event_bus import InMemoryEventBus
         from arf.core.events import AgentEvent

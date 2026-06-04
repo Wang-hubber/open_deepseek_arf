@@ -53,9 +53,20 @@ class TracePlugin:
             "session_id": context.session_id,
             "turn": context.interaction_round,
             "timestamp": time.time(),
-            "data": context.hook_data,
+            "data": self._sanitize(context.hook_data),
         }
         self._write_event(context.session_id, event)
+
+    @staticmethod
+    def _sanitize(obj):
+        """Convert non-JSON-serializable values (Exception, etc.) to strings."""
+        if isinstance(obj, dict):
+            return {k: TracePlugin._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [TracePlugin._sanitize(v) for v in obj]
+        if isinstance(obj, Exception):
+            return f"{type(obj).__name__}: {obj}"
+        return obj
 
     def _write_event(self, session_id: str, event: dict) -> None:
         trace_file = self._trace_dir / f"{session_id}.jsonl"

@@ -28,7 +28,7 @@ class PluginContext:
 
     # Directories
     workspace_dir: str = "."
-    memory_dir: str = "./memory"
+    memory_dir: str = "./data/memory"
     state_dir: str = "./data/state"
     trace_dir: str = "./data/traces"
 

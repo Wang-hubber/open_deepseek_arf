@@ -10,11 +10,20 @@ _PATH_PARAM_NAMES = frozenset({
     "path", "file_path", "file", "output_dir", "input_dir", "cwd",
 })
 
+# Framework directory params that should NOT be resolved relative to workspace.
+# These refer to infrastructure dirs (data/memory, data/state, data/traces),
+# not user workspace files.
+_FRAMEWORK_DIR_PARAMS = frozenset({
+    "memory_dir", "state_dir", "trace_dir", "files_dir",
+})
+
 
 def _is_path_param(name: str) -> bool:
     """Return True if a parameter name indicates a workspace-relative path."""
     if name in _PATH_PARAM_NAMES:
         return True
+    if name in _FRAMEWORK_DIR_PARAMS:
+        return False
     return name.endswith(("_path", "_file", "_dir"))
 
 

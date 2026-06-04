@@ -9,7 +9,7 @@ parameters:
       default: "default"
     memory_dir:
       type: string
-      default: "./memory"
+      default: "./data/memory"
     force:
       type: boolean
       default: false

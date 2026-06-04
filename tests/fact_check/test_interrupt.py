@@ -220,11 +220,11 @@ class TestStatePersistence:
         assert hasattr(FileStateStore, "get")
 
     def test_file_state_store_default_dir(self):
-        """Doc: default state_dir is './memory/state'."""
+        """Doc: default state_dir is './data/state'."""
         from arf.engine.checkpoint import FileStateStore
         sig = inspect.signature(FileStateStore.__init__)
         default = sig.parameters["state_dir"].default
-        assert "memory/state" in str(default), f"Expected memory/state, got {default}"
+        assert "data/state" in str(default), f"Expected data/state, got {default}"
 
     def test_file_state_store_persists_json(self):
         """Doc: state written as JSON file under memory/state/{session_id}.json."""

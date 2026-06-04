@@ -351,12 +351,12 @@ class TestProtectionObservability:
 # ---------------------------------------------------------------------------
 
 class TestArchitectureZeroInvasion:
-    """Doc: GraphEngine and ModelAdapter zero invasion."""
+    """Doc: ControlPlane and ModelAdapter zero invasion."""
 
-    def test_no_protection_code_in_graph_engine(self):
-        """Doc: GraphEngine 零侵入."""
-        from arf.engine.graph import GraphEngine
-        src = inspect.getsource(GraphEngine)
+    def test_no_protection_code_in_control_plane(self):
+        """Doc: ControlPlane 零侵入 (GraphEngine 已废弃，替换为 ControlPlane)."""
+        from arf.engine.control_plane import ControlPlane
+        src = inspect.getsource(ControlPlane)
         assert "TokenBucket" not in src
         assert "CircuitBreaker" not in src
         assert "ModelCallProtector" not in src
