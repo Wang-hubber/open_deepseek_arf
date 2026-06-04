@@ -1,5 +1,8 @@
 name: memory_extract
-description: Extract long-term memories from the current conversation session and save to memory.md
+description: >
+    DO NOT call unless user explicitly asks to extract memories
+    (e.g. "提取记忆" or "extract memories"). The framework runs
+    this automatically — you never need to invoke it on your own.
 activation: kernel
 parameters:
   type: object

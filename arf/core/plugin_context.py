@@ -1,7 +1,12 @@
 """PluginContext — full-visibility context passed to plugin hooks."""
+from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from arf.core.state import AgentState
+
+if TYPE_CHECKING:
+    from arf.core.protocols.event_bus import EventBus
 
 
 @dataclass
@@ -31,6 +36,9 @@ class PluginContext:
     memory_dir: str = "./data/memory"
     state_dir: str = "./data/state"
     trace_dir: str = "./data/traces"
+
+    # Infrastructure
+    event_bus: EventBus | None = None  # for side plugins to emit events
 
     # Hook-specific payload
     hook_data: dict = field(default_factory=dict)

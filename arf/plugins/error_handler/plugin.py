@@ -69,8 +69,15 @@ class ErrorHandlerPlugin:
             }
             return
 
-        # 4. Default -> abort
+        # 4. Guard/approval denials -> skip (model sees tool_result, responds)
+        exc_name = type(exc).__name__ if type(exc).__name__ != "type" else str(type(exc))
+        if exc_name in ("PermissionDenied", "ApprovalDenied",
+                        "SandboxViolation", "ApprovalTimeout"):
+            ctx.hook_data["_recovery_decision"] = {"action": "skip"}
+            return
+
+        # 5. Default -> abort
         ctx.hook_data["_recovery_decision"] = {
-            "action": "abort", "reason": str(exc),
-            "params": {"user_message": f"Error: {exc}"},
+            "action": "abort", "reason": "internal error",
+            "params": {"user_message": "An internal error occurred"},
         }

@@ -434,6 +434,7 @@ class ControlPlane:
             memory_dir=self._memory_dir,
             state_dir=self._state_dir,
             trace_dir=self._trace_dir,
+            event_bus=self.event_bus,
         )
 
     @staticmethod
@@ -482,7 +483,7 @@ class ControlPlane:
 
     async def _handle_error(self, exc: Exception, ctx: PluginContext) -> dict:
         """Fire error hook on blocking runner."""
-        ctx.hook_data["exception"] = f"{type(exc).__name__}: {exc}"
+        ctx.hook_data["exception"] = exc
         try:
             await self._fire_blocking("error", ctx)
         except Exception as hook_err:

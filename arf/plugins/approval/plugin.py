@@ -105,7 +105,7 @@ class ApprovalPlugin:
                 ctx.state["messages"].append({
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": "[blocked]",
+                    "content": "[blocked] user denied",
                 })
             ctx.state["_pending_tool_calls"] = []
             raise ApprovalDenied("Tool execution denied by user")

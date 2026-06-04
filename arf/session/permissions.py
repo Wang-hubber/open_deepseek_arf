@@ -74,21 +74,22 @@ class PermissionRegistry:
         # 1. deny_patterns — params content safety
         for pattern in lists.deny_patterns:
             if re.search(pattern, params_str, re.IGNORECASE):
-                logger.warning("Tool '%s' denied by pattern '%s'", tool_name, pattern)
-                return PermissionResult(action="deny", reason=f"matched deny pattern: {pattern}")
+                logger.info("Tool '%s' blocked (pattern)", tool_name)
+                logger.debug("Deny pattern: %s", pattern)
+                return PermissionResult(action="deny", reason="blocked by security policy")
 
         # 2. deny list
         if tool_name in lists.deny:
-            logger.warning("Tool '%s' denied by config", tool_name)
-            return PermissionResult(action="deny", reason=f"'{tool_name}' is in deny list")
+            logger.info("Tool '%s' blocked (deny_list)", tool_name)
+            return PermissionResult(action="deny", reason="blocked by security policy")
 
         # 3. ask list
         if tool_name in lists.ask:
-            return PermissionResult(action="ask", reason=f"'{tool_name}' requires approval")
+            return PermissionResult(action="ask", reason="")
 
         # 4. allow list
         if tool_name in lists.allow:
-            return PermissionResult(action="allow", reason=f"'{tool_name}' is in allow list")
+            return PermissionResult(action="allow", reason="")
 
         # 5. default: ask
-        return PermissionResult(action="ask", reason=f"'{tool_name}' is unknown, requires approval")
+        return PermissionResult(action="ask", reason="")

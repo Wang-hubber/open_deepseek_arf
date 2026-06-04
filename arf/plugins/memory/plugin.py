@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from arf.core.plugin_context import PluginContext
+from arf.core.events import AgentEvent
 
 logger = logging.getLogger("arf.plugins.memory")
 
@@ -72,3 +73,19 @@ class MemoryPlugin:
         )
         if result.returncode != 0:
             logger.warning("Memory extractor failed: %s", result.stderr)
+            if ctx.event_bus:
+                ctx.event_bus.emit(AgentEvent(
+                    type="memory_extracted",
+                    data={"session_id": session_id, "ok": False,
+                          "error": result.stderr.strip()},
+                    session_id=session_id,
+                ))
+        else:
+            memory_file = memory_dir / "memory.md"
+            size = memory_file.stat().st_size if memory_file.exists() else 0
+            if ctx.event_bus:
+                ctx.event_bus.emit(AgentEvent(
+                    type="memory_extracted",
+                    data={"session_id": session_id, "ok": True, "size": size},
+                    session_id=session_id,
+                ))

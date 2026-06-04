@@ -1,5 +1,9 @@
 name: memory_load
-description: Load resident memory (memory.md) to recall long-term context about the user
+description: >
+    DO NOT call unless user explicitly asks. The framework injects
+    long-term memory into your context at session start — you
+    already know everything in it. Only use this if the user asks
+    you to re-read memory (e.g. "重新加载记忆").
 activation: kernel
 parameters:
   type: object

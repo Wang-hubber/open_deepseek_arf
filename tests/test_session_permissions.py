@@ -15,7 +15,7 @@ class TestPermissionRegistry:
         )
         result = self.registry.evaluate("shell", {"cmd": "rm -rf /"}, lists)
         assert result.action == "deny"
-        assert "rm -rf" in result.reason
+        assert result.reason == "blocked by security policy"
 
     def test_deny_list_takes_priority(self):
         lists = PermissionLists(
