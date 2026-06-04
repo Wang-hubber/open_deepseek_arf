@@ -1,14 +1,15 @@
 """glob — find files by pattern matching."""
 from pathlib import Path
 
-WORKSPACE = Path("workspace/default")
 MAX_RESULTS = 200
 DEFAULT_EXCLUDES = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".pytest_cache"}
 
 
 async def execute(pattern: str, path: str = ".", _workspace: str = "") -> dict:
-    ws = Path(_workspace) if _workspace else WORKSPACE
-    search_root = ws / path
+    # path is pre-resolved to absolute by executor. _workspace is kept
+    # only for relative_to() below — no path joining happens here.
+    search_root = Path(path)
+    ws = Path(_workspace) if _workspace else search_root
     if not search_root.exists():
         return {"ok": False, "error": f"Directory not found: {path}"}
     if not search_root.is_dir():

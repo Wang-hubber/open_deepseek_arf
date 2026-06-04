@@ -2,7 +2,6 @@
 import base64
 from pathlib import Path
 
-WORKSPACE = Path("workspace/default")
 MAX_LINES = 2000
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -12,10 +11,8 @@ async def execute(
     file_path: str,
     offset: int = 1,
     limit: int | None = None,
-    _workspace: str = "",
 ) -> dict:
-    ws = Path(_workspace) if _workspace else WORKSPACE
-    p = ws / file_path
+    p = Path(file_path)
     try:
         if not p.exists():
             return {"ok": False, "error": f"File not found: {file_path}"}

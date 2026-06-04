@@ -1,14 +1,14 @@
 """file_download -- generate download URL for a workspace file."""
 from pathlib import Path
 
-WORKSPACE = Path("workspaces/default")
-
 
 async def execute(path: str, label: str = "", _workspace: str = "") -> dict:
-    ws = Path(_workspace) if _workspace else WORKSPACE
-    p = (ws / path).resolve()
+    # path is pre-resolved to absolute. _workspace kept for containment
+    # check and relative_to() — no path joining happens here.
+    p = Path(path).resolve()
+    ws = Path(_workspace).resolve() if _workspace else p.parent
 
-    if not str(p).startswith(str(ws.resolve())):
+    if not str(p).startswith(str(ws)):
         return {"error": f"Path escapes workspace: {path}"}
 
     if not p.exists():

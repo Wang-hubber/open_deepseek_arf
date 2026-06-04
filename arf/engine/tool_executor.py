@@ -1,8 +1,43 @@
 """ConcurrentToolExecutor — execute tool_calls in parallel/sequential mode."""
 import asyncio
+from pathlib import Path
 from arf.core.protocols import ToolResolver
 from arf.core.results import ToolResult
 from arf.sandbox.directory_boundary import DirectoryBoundary
+
+# Parameter names that are treated as filesystem paths relative to workspace.
+_PATH_PARAM_NAMES = frozenset({
+    "path", "file_path", "file", "output_dir", "input_dir", "cwd",
+})
+
+
+def _is_path_param(name: str) -> bool:
+    """Return True if a parameter name indicates a workspace-relative path."""
+    if name in _PATH_PARAM_NAMES:
+        return True
+    return name.endswith(("_path", "_file", "_dir"))
+
+
+def _resolve_path_params(params: dict, workspace_dir: str) -> None:
+    """Resolve relative path params in-place against workspace_dir.
+
+    Absolute paths and empty strings are left as-is (security validation
+    is done separately by PathCheckToolGuard).
+    """
+    if not workspace_dir:
+        return
+    ws = Path(workspace_dir)
+    for key, value in params.items():
+        if not _is_path_param(key):
+            continue
+        if isinstance(value, str):
+            if value and not value.startswith("/"):
+                params[key] = str((ws / value).resolve())
+        elif isinstance(value, list):
+            params[key] = [
+                str((ws / v).resolve()) if (isinstance(v, str) and v and not v.startswith("/")) else v
+                for v in value
+            ]
 
 
 class ConcurrentToolExecutor:
@@ -58,6 +93,7 @@ class ConcurrentToolExecutor:
                     results[tc["id"]] = guard_blocked
                     continue
 
+                _resolve_path_params(params, workspace_dir)
                 results[tc["id"]] = await self._resolver.execute(
                     tc["name"], params
                 )
@@ -81,6 +117,7 @@ class ConcurrentToolExecutor:
                     guard_blocked = await self._check_params(tc["name"], params, session_id)
                     if guard_blocked:
                         return tc["id"], guard_blocked
+                    _resolve_path_params(params, workspace_dir)
                     return tc["id"], await self._resolver.execute(
                         tc["name"], params
                     )

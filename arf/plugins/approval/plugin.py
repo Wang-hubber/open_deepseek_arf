@@ -32,6 +32,8 @@ class ApprovalPlugin:
             return
 
         tool_calls = ctx.state.get("_pending_tool_calls", [])
+        denied: list[dict] = []
+
         for tc in tool_calls:
             name = tc.get("name", "")
             if name not in self._ask_list:
@@ -43,13 +45,18 @@ class ApprovalPlugin:
                 "params": tc.get("params", {}),
             })
 
-            # Check if approve() was already called before the hook ran
-            # (approval_required event is yielded before _fire_blocking).
+            # Check if approve() was already called (defensive, should be rare)
             pre_resolved = self._results.pop(decision_id, None)
             if pre_resolved is not None:
                 if not pre_resolved:
-                    raise ApprovalDenied(f"User denied {name}")
-                continue  # already approved, skip waiting
+                    denied.append(tc)
+                continue
+
+            ctx.emit("approval_required", {
+                "decision_id": decision_id,
+                "tool_name": name,
+                "params": tc.get("params", {}),
+            })
 
             evt = asyncio.Event()
             self._pending[decision_id] = evt
@@ -57,10 +64,41 @@ class ApprovalPlugin:
                 await asyncio.wait_for(evt.wait(), timeout=self._timeout)
             except asyncio.TimeoutError:
                 self._pending.pop(decision_id, None)
-                raise ApprovalTimeout(f"Approval timed out for {name}")
+                denied.append(tc)
+                ctx.emit("approval_resolved", {
+                    "decision_id": decision_id,
+                    "approved": False,
+                    "reason": "timeout",
+                })
+                continue
+
             approved = self._results.pop(decision_id, False)
-            if not approved:
-                raise ApprovalDenied(f"User denied {name}")
+            if approved:
+                ctx.emit("approval_resolved", {
+                    "decision_id": decision_id,
+                    "approved": True,
+                })
+            else:
+                denied.append(tc)
+                ctx.emit("approval_resolved", {
+                    "decision_id": decision_id,
+                    "approved": False,
+                    "reason": "user_denied",
+                })
+
+        # Clean up state for denied/timed-out tool calls so the API message
+        # format stays valid (tool_calls must be followed by tool messages).
+        if denied:
+            for tc in denied:
+                ctx.state["messages"].append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": "User denied this operation.",
+                })
+            ctx.state["_pending_tool_calls"] = []
+            raise ApprovalDenied(
+                f"User denied {', '.join(tc.get('name', '?') for tc in denied)}"
+            )
 
     def approve(self, decision_id: str, approved: bool = True) -> bool:
         self._results[decision_id] = approved

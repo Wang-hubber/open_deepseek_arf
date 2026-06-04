@@ -1,4 +1,5 @@
 """PluginContext — full-visibility context passed to plugin hooks."""
+import asyncio
 from dataclasses import dataclass, field
 from arf.core.state import AgentState
 
@@ -36,6 +37,24 @@ class PluginContext:
 
     # Plugin configuration (from plugin.yaml)
     plugin_config: dict = field(default_factory=dict)
+
+    # --- Hook → engine event channel ---
+    # Hooks push events here via emit(); engine drains and yields them.
+    _pending_events: list = field(default_factory=list)
+    _event_ready: asyncio.Event | None = None  # created in engine
+
+    def emit(self, event_type: str, data: dict) -> None:
+        """Push an event into the stream from within a hook.
+
+        The engine drains this queue after each hook fires, yielding
+        events in the same astream() flow as engine-generated events.
+        """
+        from arf.core.events import AgentEvent
+        self._pending_events.append(
+            AgentEvent(type=event_type, data=data, session_id=self.session_id)
+        )
+        if self._event_ready:
+            self._event_ready.set()
 
     def to_dict(self) -> dict:
         return {

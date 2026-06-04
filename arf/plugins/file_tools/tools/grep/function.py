@@ -3,11 +3,6 @@ import fnmatch
 import re
 from pathlib import Path
 
-WORKSPACE = Path("workspace/default")
-
-
-def _resolve_workspace(workspace: str) -> Path:
-    return Path(workspace) if workspace else WORKSPACE
 DEFAULT_EXCLUDES = [".git", "__pycache__", "node_modules", ".venv", "*.pyc", "*.pyo"]
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
@@ -45,8 +40,10 @@ async def execute(
     max_results: int = 50,
     _workspace: str = "",
 ) -> dict:
-    ws = _resolve_workspace(_workspace)
-    search_root = ws / path
+    # path is pre-resolved to absolute by executor. _workspace kept
+    # only for relative_to() below.
+    search_root = Path(path)
+    ws = Path(_workspace) if _workspace else search_root
     if not search_root.exists():
         return {"ok": False, "error": f"Directory not found: {path}"}
     if not search_root.is_dir():

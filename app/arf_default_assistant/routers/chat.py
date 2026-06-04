@@ -67,7 +67,7 @@ class ApproveReq(BaseModel):
 
 @router.post("/api/chat/approve")
 async def approve_tool_call(req: ApproveReq):
-    ok = state._agent.engine.approve(req.decision_id, req.approved)
+    ok = state._agent.approve(req.decision_id, req.approved)
     if not ok:
         # Already resolved (double-click or timeout) — return 200 so frontend doesn't error
         logger.info(f"Approval {req.decision_id}: already resolved (duplicate or timeout)")

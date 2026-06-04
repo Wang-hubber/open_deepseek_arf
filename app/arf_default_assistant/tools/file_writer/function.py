@@ -1,15 +1,10 @@
 """file_writer -- async write file with content."""
 from pathlib import Path
 
-WORKSPACE = Path("data/files")
 USER_RESTRICTED_PREFIXES = ("/tools/", "/skills/", "/models/")
 
 
-def _resolve_workspace(workspace: str) -> Path:
-    return Path(workspace) if workspace else WORKSPACE
-
-
-async def execute(path: str, content: str, _agent_mode: str = "sys", _workspace: str = "") -> dict:
+async def execute(path: str, content: str, _agent_mode: str = "sys") -> dict:
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
@@ -21,8 +16,7 @@ async def execute(path: str, content: str, _agent_mode: str = "sys", _workspace:
                     )
                 }
 
-    ws = _resolve_workspace(_workspace)
-    p = ws / path
+    p = Path(path)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
@@ -42,14 +36,13 @@ async def execute(path: str, content: str, _agent_mode: str = "sys", _workspace:
         return {"error": str(e)}
 
 
-async def rollback(path: str, content: str = "", _agent_mode: str = "sys", _workspace: str = "") -> dict:
+async def rollback(path: str, content: str = "", _agent_mode: str = "sys") -> dict:
     """Undo file_writer: delete the file that was (possibly) created/overwritten."""
     if _agent_mode == "user":
         for prefix in USER_RESTRICTED_PREFIXES:
             if prefix in path or path.lstrip("/").startswith(prefix.strip("/") + "/"):
                 return {"ok": False, "error": f"User Agent cannot rollback {path}"}
-    ws = _resolve_workspace(_workspace)
-    p = ws / path
+    p = Path(path)
     try:
         if p.exists():
             p.unlink()

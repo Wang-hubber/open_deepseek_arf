@@ -7,7 +7,7 @@ from arf.core.plugin_context import PluginContext
 
 @pytest.mark.anyio
 async def test_deny_list_blocks_tool():
-    plugin = ToolGuardPlugin({"deny_list": ["rm", "shell_exec"]})
+    plugin = ToolGuardPlugin({"deny": ["rm", "shell_exec"]})
     ctx = PluginContext(
         session_id="test",
         state={"_pending_tool_calls": [{"name": "rm", "params": {"path": "file.txt"}}]},

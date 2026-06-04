@@ -36,7 +36,6 @@ class ControlPlane:
         state_dir: str = "./data/state",
         trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
-        ask_list: list[str] | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.state_store = state_store
@@ -52,7 +51,6 @@ class ControlPlane:
         self._state_dir = state_dir
         self._trace_dir = trace_dir
         self._mcp_tool_resolver = mcp_tool_resolver
-        self._ask_list: set[str] = set(ask_list or [])
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -66,13 +64,6 @@ class ControlPlane:
 
     def set_cancel_event(self, event: asyncio.Event) -> None:
         self._cancel_event = event
-
-    def approve(self, decision_id: str, approved: bool = True) -> bool:
-        """Delegate approval decision to the ApprovalPlugin (blocking hook)."""
-        plugin = self._blocking.get_plugin("approval")
-        if plugin is None:
-            return False
-        return plugin.approve(decision_id, approved)
 
     # ==================================================================
     # Core execution loop
@@ -137,66 +128,11 @@ class ControlPlane:
                         break
                     continue
 
-                # --- pre_dispatch: approval-aware hook firing ---
-                # Collect tools that need approval so we can yield
-                # approval_required events WHILE the blocking hook waits.
-                approval_ids: list[str] = []
-                approval_names: dict[str, str] = {}
-                if step == "execute_tools" and self._ask_list:
-                    for tc in state.get("_pending_tool_calls", []):
-                        if tc.get("name", "") in self._ask_list:
-                            tool_name = tc.get("name", "")
-                            decision_id = f"{session_id}_{tool_name}_{id(tc)}"
-                            approval_ids.append(decision_id)
-                            approval_names[decision_id] = tool_name
-
-                if approval_ids:
-                    # Start blocking hooks concurrently so the ApprovalPlugin
-                    # creates its pending events BEFORE we yield to the stream.
-                    hook_task = asyncio.create_task(self._fire_blocking("pre_dispatch", ctx))
-                    await asyncio.sleep(0)  # let on_hook set up events
-                    await self._fire_side("pre_dispatch", ctx)
-
-                    for decision_id in approval_ids:
-                        yield self._make_event("approval_required", {
-                            "decision_id": decision_id,
-                            "tool_name": approval_names[decision_id],
-                            "params": next((tc.get("params", {}) for tc in state.get("_pending_tool_calls", []) if f"{session_id}_{tc.get('name','')}_{id(tc)}" == decision_id), {}),
-                        }, turn=turn, session_id=session_id)
-
-                    try:
-                        await hook_task
-                    except Exception as e:
-                        for decision_id in approval_ids:
-                            yield self._make_event("approval_resolved", {
-                                "decision_id": decision_id,
-                                "approved": False,
-                                "reason": str(e)[:200],
-                            }, turn=turn, session_id=session_id)
-                        for tc in state.get("_pending_tool_calls", []):
-                            state["messages"].append({
-                                "role": "tool",
-                                "tool_call_id": tc.get("id", ""),
-                                "content": "User denied this operation.",
-                            })
-                        state["_pending_tool_calls"] = []
-                        await self.state_store.put(session_id, state)
-                        decision = await self._handle_error(e, ctx)
-                        if decision.get("action") == "abort":
-                            break
-                        if decision.get("action") == "skip":
-                            continue
-                    else:
-                        for decision_id in approval_ids:
-                            yield self._make_event("approval_resolved", {
-                                "decision_id": decision_id,
-                                "approved": True,
-                            }, turn=turn, session_id=session_id)
-                else:
-                    try:
-                        await self._fire_blocking("pre_dispatch", ctx)
-                        await self._fire_side("pre_dispatch", ctx)
-                    except Exception as e:
+                # --- pre_dispatch ---
+                try:
+                    async for event in self._fire_and_drain("pre_dispatch", ctx):
+                        yield event
+                except Exception as e:
                         decision = await self._handle_error(e, ctx)
                         if decision.get("action") == "abort":
                             break
@@ -447,6 +383,40 @@ class ControlPlane:
     # ==================================================================
     # Helpers
     # ==================================================================
+
+    async def _fire_and_drain(self, step: str, ctx: PluginContext):
+        """Fire blocking hook, yielding events as they are emitted by hooks.
+
+        Hooks call ctx.emit() to push events into the stream. While the
+        hook is blocked (e.g. waiting for approval), we wait. Drained
+        events are emitted to both stream (yield) and trace (event_bus).
+        """
+        import asyncio
+        ctx._event_ready = asyncio.Event()
+        hook_task = asyncio.ensure_future(self._blocking.fire(step, ctx))
+
+        while not hook_task.done():
+            evt_wait = asyncio.ensure_future(ctx._event_ready.wait())
+            await asyncio.wait(
+                [hook_task, evt_wait], return_when=asyncio.FIRST_COMPLETED)
+            evt_wait.cancel()
+            while ctx._pending_events:
+                evt = ctx._pending_events.pop(0)
+                if self.event_bus:
+                    self.event_bus.emit(evt)
+                yield evt
+            ctx._event_ready.clear()
+
+        while ctx._pending_events:
+            evt = ctx._pending_events.pop(0)
+            if self.event_bus:
+                self.event_bus.emit(evt)
+            yield evt
+
+        if hook_task.exception():
+            raise hook_task.exception()
+
+        await self._fire_side(step, ctx)
 
     def _make_ctx(self, state, session_id, turn, step) -> PluginContext:
         return PluginContext(

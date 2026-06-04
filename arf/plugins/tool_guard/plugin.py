@@ -27,9 +27,9 @@ class ToolGuardPlugin:
     def __init__(self, config: dict | None = None):
         cfg = config or {}
         self._lists = PermissionLists(
-            deny=cfg.get("deny_list", []),
-            ask=cfg.get("ask_list", []),
-            allow=cfg.get("allow_list", []),
+            deny=cfg.get("deny", []),
+            ask=cfg.get("ask", []),
+            allow=cfg.get("allow", []),
         )
         self._registry = PermissionRegistry()
         self._sandbox = PathSandbox() if cfg.get("sandbox_check", True) else None

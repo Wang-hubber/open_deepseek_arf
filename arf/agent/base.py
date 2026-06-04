@@ -357,10 +357,21 @@ class BaseAgent:
                 return matches[0]
             return f"arf__{name}"  # unknown source, assume local
 
+        _namespaced_deny = [_resolve_perm_name(t) for t in main_permission_lists.deny]
         _namespaced_ask = [_resolve_perm_name(t) for t in main_permission_lists.ask]
+        _namespaced_allow = [_resolve_perm_name(t) for t in main_permission_lists.allow]
 
-        # ApprovalPlugin: human-in-the-loop for tools in ask_list.
+        # Blocking plugins run in registration order:
+        # 1. ToolGuardPlugin — deny (immediate rejection) + allow (bypass)
+        # 2. ApprovalPlugin — ask (human-in-the-loop wait)
         blocking_plugins: list = []
+        if _namespaced_deny or _namespaced_allow:
+            from arf.plugins.tool_guard.plugin import ToolGuardPlugin
+            blocking_plugins.append(ToolGuardPlugin({
+                "deny": _namespaced_deny,
+                "allow": _namespaced_allow,
+                "sandbox_check": False,  # PathCheckToolGuard handles this
+            }))
         if _namespaced_ask:
             from arf.plugins.approval.plugin import ApprovalPlugin
             blocking_plugins.append(ApprovalPlugin({"ask_list": _namespaced_ask}))
@@ -382,7 +393,6 @@ class BaseAgent:
             state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
             mcp_tool_resolver=_mcp_tool_resolver,
-            ask_list=_namespaced_ask,
         )
         self._hook_runner = hook_runner
         self._state_store = state_store
@@ -715,6 +725,13 @@ class BaseAgent:
             except Exception:
                 pass
         self._active_sessions.clear()
+
+    def approve(self, decision_id: str, approved: bool = True) -> bool:
+        """Delegate approval to the ApprovalPlugin (if registered)."""
+        plugin = self._engine._blocking.get_plugin("approval")
+        if plugin is None:
+            return False
+        return plugin.approve(decision_id, approved)
 
     async def chat(self, user_message: str, session_id: str = "default") -> str:
         from arf.core.state import AgentState
