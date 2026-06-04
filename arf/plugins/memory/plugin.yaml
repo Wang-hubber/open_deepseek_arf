@@ -5,3 +5,4 @@ enabled: true
 config:
   interval: 5
   max_memory_size: 300
+  extract_on_session_end: false

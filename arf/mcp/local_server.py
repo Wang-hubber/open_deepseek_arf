@@ -27,13 +27,15 @@ class ArfLocalMcpServer:
         models_dir: Path,
         plugins_dir: Path,
         plugin_names: list[str],
-        remote_servers: list[McpServerConfig],
+        plugin_configs: dict | None = None,
+        remote_servers: list[McpServerConfig] | None = None,
     ) -> None:
         self._tool_provider = ToolProvider(tools_dir)
         self._skill_provider = SkillProvider(skills_dir)
         # ModelProvider removed — models now resolved via config.model_defs
         self._plugin_provider = (
-            PluginProvider(plugins_dir, plugin_names) if plugin_names else None
+            PluginProvider(plugins_dir, plugin_names, plugin_configs)
+            if plugin_names else None
         )
         self._file_watcher = FileWatcher()
         self._remote_clients: dict[str, McpRemoteClient] = {}
@@ -147,6 +149,7 @@ if __name__ == "__main__":
             models_dir=Path(cfg["models_dir"]),
             plugins_dir=Path(cfg["plugins_dir"]),
             plugin_names=cfg.get("plugin_names", []),
+            plugin_configs=cfg.get("plugin_configs", {}),
             remote_servers=[McpServerConfig(**s) for s in cfg.get("remote_servers", [])],
         )
         await server.start()

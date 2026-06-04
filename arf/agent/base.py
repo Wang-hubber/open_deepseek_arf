@@ -111,6 +111,7 @@ class BaseAgent:
                 plugins_dir=_plugins_dir,
                 mcp_servers=getattr(config, "mcp_servers", []),
                 plugin_names=config.plugins,
+                plugin_configs=config.plugins_config,
             ),
         )
         self._mcp_manager = mcp_manager
@@ -135,7 +136,8 @@ class BaseAgent:
         self._plugin_provider = None
         if config.plugins:
             from arf.resources.providers.plugin_provider import PluginProvider
-            self._plugin_provider = PluginProvider(_plugins_dir, config.plugins)
+            self._plugin_provider = PluginProvider(_plugins_dir, config.plugins,
+                                                   config.plugins_config)
 
         # FileWatcher
         reload_cfg = adv.reload if adv else None

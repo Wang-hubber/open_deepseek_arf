@@ -15,6 +15,13 @@ from arf.core.results import ToolResult
 logger = logging.getLogger("arf.plugins.discovery")
 
 
+def _merge_plugin_config(base: dict, overrides: dict) -> dict:
+    """Merge agent.yaml per-plugin overrides into plugin.yaml base config."""
+    if not overrides:
+        return base
+    return {**base, **overrides}
+
+
 class PluginProvider:
     """Scans plugin directories for tools, skills, hooks, and plugin classes.
 
@@ -26,9 +33,11 @@ class PluginProvider:
       plugin.py   — plugin class (in-process, auto-discovered)
     """
 
-    def __init__(self, plugins_dir: str | Path, enabled: list[str] | None = None):
+    def __init__(self, plugins_dir: str | Path, enabled: list[str] | None = None,
+                 plugin_configs: dict | None = None):
         self._root = Path(plugins_dir)
         self._enabled = set(enabled or [])
+        self._plugin_configs = plugin_configs or {}
         self._tool_providers: dict[str, ToolProvider] = {}
         self._skill_providers: dict[str, SkillProvider] = {}
         self._scanned_tools: list[ToolConfig] = []
@@ -73,7 +82,10 @@ class PluginProvider:
                                 and hasattr(obj, "name")
                                 and hasattr(obj, "hooks")
                                 and attr.endswith("Plugin")):
-                            cfg = plugin_config.get("config", {})
+                            cfg = _merge_plugin_config(
+                                plugin_config.get("config", {}),
+                                self._plugin_configs.get(plugin_dir.name, {}),
+                            )
                             instance = obj(cfg)
                             self._scanned_plugins.append(instance)
                             logger.info("Loaded plugin '%s' from %s",
@@ -126,7 +138,10 @@ class PluginProvider:
                                 and hasattr(obj, "name")
                                 and hasattr(obj, "hooks")
                                 and attr.endswith("Plugin")):
-                            cfg = plugin_config.get("config", {})
+                            cfg = _merge_plugin_config(
+                                plugin_config.get("config", {}),
+                                self._plugin_configs.get(plugin_dir.name, {}),
+                            )
                             instance = obj(cfg)
                             self._scanned_plugins.append(instance)
                             logger.info("Loaded plugin '%s' from %s",

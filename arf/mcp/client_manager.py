@@ -42,6 +42,7 @@ class McpClientManager:
         plugins_dir: Path,
         mcp_servers: list[McpServerConfig],
         plugin_names: list[str],
+        plugin_configs: dict | None = None,
     ) -> None:
         self._tools_dir = tools_dir
         self._skills_dir = skills_dir
@@ -49,6 +50,7 @@ class McpClientManager:
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
         self._plugin_names = plugin_names
+        self._plugin_configs = plugin_configs or {}
         self._process: asyncio.subprocess.Process | None = None
         self._started = False
         self._healthy = False
@@ -65,6 +67,7 @@ class McpClientManager:
             "models_dir": str(self._models_dir),
             "plugins_dir": str(self._plugins_dir),
             "plugin_names": self._plugin_names,
+            "plugin_configs": self._plugin_configs,
             "remote_servers": [s.model_dump() for s in self._mcp_servers],
         })
 

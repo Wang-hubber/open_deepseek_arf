@@ -19,6 +19,7 @@ class MemoryPlugin:
         cfg = config or {}
         self._interval: int = cfg.get("interval", 5)
         self._max_memory_size: int = cfg.get("max_memory_size", 300)
+        self._extract_on_session_end: bool = cfg.get("extract_on_session_end", False)
 
     @property
     def name(self) -> str:
@@ -26,15 +27,20 @@ class MemoryPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"round_end": "side"}
+        h: dict[str, str] = {"round_end": "side"}
+        if self._extract_on_session_end:
+            h["session_end"] = "side"
+        return h
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
-        if hook_name != "round_end":
+        if hook_name not in ("round_end", "session_end"):
             return
 
-        current_round = ctx.interaction_round
-        if current_round <= 0 or current_round % self._interval != 0:
-            return
+        # session_end always extracts; round_end is gated by interval
+        if hook_name == "round_end":
+            current_round = ctx.interaction_round
+            if current_round <= 0 or current_round % self._interval != 0:
+                return
 
         messages = ctx.state.get("messages", [])
         if not messages:
