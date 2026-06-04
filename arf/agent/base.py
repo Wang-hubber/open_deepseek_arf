@@ -223,11 +223,6 @@ class BaseAgent:
                 name = getattr(tdef, 'name', '')
                 if allowed_dir and name:
                     tool_boundaries[name] = DirectoryBoundary(allowed_dir)
-        # ContentGuard — dangerous behavior + sensitive info filtering
-        from arf.guardrails.content_guard import ContentGuard
-        cg_cfg = gr_cfg.content_guard.model_dump() if gr_cfg and gr_cfg.content_guard else None
-        content_guard = ContentGuard(config=cg_cfg)
-
         # SandboxManager — session-level isolation
         from arf.sandbox.sandbox_manager import SandboxManager
         sandbox_cfg = adv.sandbox if adv else None
@@ -258,7 +253,6 @@ class BaseAgent:
             tool_guard=tool_guard,
             permission_registry=permission_registry,
             permission_lists=main_permission_lists,
-            content_guard=content_guard,
         ))
 
         # 5. Error + Transaction
@@ -288,7 +282,6 @@ class BaseAgent:
                 tool_guard=tool_guard,
                 tool_boundaries=tool_boundaries,
                 default_boundary=default_boundary,
-                content_guard=content_guard,
                 sandbox_manager=sandbox_manager,
             ),
         )
@@ -361,20 +354,48 @@ class BaseAgent:
         _namespaced_ask = [_resolve_perm_name(t) for t in main_permission_lists.ask]
         _namespaced_allow = [_resolve_perm_name(t) for t in main_permission_lists.allow]
 
+        # Merge deny_patterns from two config sources:
+        # 1. permissions.deny_patterns — string patterns from PermissionsConfig
+        # 2. content_guard.dangerous_patterns — structured rules from ContentGuardConfig
+        _all_deny_patterns = list(main_permission_lists.deny_patterns)
+        if gr_cfg and gr_cfg.content_guard:
+            for dp in gr_cfg.content_guard.dangerous_patterns:
+                _all_deny_patterns.append(dp.pattern)
+
         # Blocking plugins run in registration order:
         # 1. ToolGuardPlugin — deny (immediate rejection) + allow (bypass)
         # 2. ApprovalPlugin — ask (human-in-the-loop wait)
         blocking_plugins: list = []
-        if _namespaced_deny or _namespaced_allow:
+        if _namespaced_deny or _namespaced_allow or _all_deny_patterns:
             from arf.plugins.tool_guard.plugin import ToolGuardPlugin
             blocking_plugins.append(ToolGuardPlugin({
                 "deny": _namespaced_deny,
                 "allow": _namespaced_allow,
+                "deny_patterns": _all_deny_patterns,
                 "sandbox_check": False,  # PathCheckToolGuard handles this
             }))
         if _namespaced_ask:
             from arf.plugins.approval.plugin import ApprovalPlugin
             blocking_plugins.append(ApprovalPlugin({"ask_list": _namespaced_ask}))
+
+        # Auto-discovered framework plugins (blocking + side).
+        # tool_guard and approval are constructed separately with merged
+        # permission config — skip their auto-discovered instances.
+        _SPECIAL_PLUGINS = {"tool_guard", "approval"}
+        _obs_cfg = adv.observability if adv else None
+        side_plugins: list = []
+        if self._plugin_provider:
+            for p in self._plugin_provider.list_plugins():
+                if p.name in _SPECIAL_PLUGINS:
+                    continue
+                has_side = any(m == "side" for m in p.hooks.values())
+                has_blocking = any(m == "blocking" for m in p.hooks.values())
+                if has_blocking:
+                    blocking_plugins.append(p)
+                if has_side and not has_blocking:
+                    side_plugins.append(p)
+                if hasattr(p, "set_state_store"):
+                    p.set_state_store(state_store)
 
         self._engine = ControlPlane(
             loop_strategy=loop_strategy,
@@ -382,7 +403,7 @@ class BaseAgent:
             tool_executor=tool_executor,
             event_bus=event_bus,
             blocking_plugins=blocking_plugins,
-            side_plugins=[],
+            side_plugins=side_plugins,
             call_model=None,
             stream_model=None,
             cancel_event=None,
@@ -400,13 +421,12 @@ class BaseAgent:
         self._memory_store = memory_store
         self._tool_resolver = mcp_manager
         # Auto-create usage tracker (framework default)
-        obs_cfg = adv.observability if adv else None
         from arf.observability.usage_tracker import UsageTracker
-        usage_dir = obs_cfg.usage_dir if obs_cfg else "./memory"
+        usage_dir = _obs_cfg.usage_dir if _obs_cfg else "./memory"
         self._usage_tracker = UsageTracker(event_bus, dir=usage_dir)
 
         # Auto-create trace store (framework default)
-        trace_dir = str(ctx.trace_dir) if ctx else (obs_cfg.trace_dir if obs_cfg else "./memory/traces")
+        trace_dir = str(ctx.trace_dir) if ctx else (_obs_cfg.trace_dir if _obs_cfg else "./memory/traces")
         from arf.observability import FileTraceStore
         self._trace_store = FileTraceStore(event_bus, dir=trace_dir)
 

@@ -1,1 +1,0 @@
-"""Memory plugin hooks."""

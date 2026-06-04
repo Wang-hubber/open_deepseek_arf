@@ -30,6 +30,7 @@ class ToolGuardPlugin:
             deny=cfg.get("deny", []),
             ask=cfg.get("ask", []),
             allow=cfg.get("allow", []),
+            deny_patterns=cfg.get("deny_patterns", []),
         )
         self._registry = PermissionRegistry()
         self._sandbox = PathSandbox() if cfg.get("sandbox_check", True) else None
@@ -54,12 +55,45 @@ class ToolGuardPlugin:
             # Layer 1: Permission policy (deny/ask/allow)
             result = self._registry.evaluate(name, params, self._lists)
             if result.action == "deny":
+                for tc_cleanup in tool_calls:
+                    ctx.emit("tool_call_start", {
+                        "tool_name": tc_cleanup.get("name", ""),
+                        "id": tc_cleanup.get("id", ""),
+                        "arguments": tc_cleanup.get("params", {}),
+                    })
+                    ctx.emit("tool_call_end", {
+                        "tool_name": tc_cleanup.get("name", ""),
+                        "id": tc_cleanup.get("id", ""),
+                        "success": False,
+                        "blocked": True,
+                        "error": f"Tool denied by security policy: {result.reason}",
+                    })
+                msgs = ctx.state.setdefault("messages", [])
+                for tc_cleanup in tool_calls:
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc_cleanup.get("id", ""),
+                        "content": "Blocked by security policy.",
+                    })
+                ctx.state["_pending_tool_calls"] = []
                 raise PermissionDenied(f"Tool '{name}' denied: {result.reason}")
 
             # Layer 2: Security check (path traversal, injection)
             if self._sandbox:
                 for key, value in params.items():
                     if isinstance(value, str) and (".." in value or value.startswith("/")):
+                        ctx.emit("guard_block", {
+                            "tool_name": name,
+                            "reason": f"sandbox: {key} contains suspicious path",
+                        })
+                        msgs = ctx.state.setdefault("messages", [])
+                        for tc_cleanup in tool_calls:
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc_cleanup.get("id", ""),
+                                "content": "Blocked by security policy.",
+                            })
+                        ctx.state["_pending_tool_calls"] = []
                         raise SandboxViolation(
                             f"Tool '{name}' param '{key}' contains suspicious path: {value}"
                         )

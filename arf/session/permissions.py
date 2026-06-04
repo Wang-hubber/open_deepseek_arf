@@ -15,11 +15,8 @@ from typing import Literal
 
 logger = logging.getLogger("arf.session.permissions")
 
-# Built-in safety rules — always enforced
-_BUILTIN_DENY_PATTERNS = [
-    "rm -rf /", "sudo ", "chmod 777 /", "> /dev/sda",
-    "curl.*|.*sh", "wget.*|.*sh",
-]
+# Built-in safety rules — always merged into deny_patterns.
+_BUILTIN_DENY_PATTERNS: list[str] = []
 
 # Safe tools that auto-approve by default (when no explicit lists configured)
 _DEFAULT_ALLOW_TOOLS = [

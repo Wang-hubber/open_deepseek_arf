@@ -79,12 +79,10 @@ class TestPermissionLists:
         assert lists.allow == {"good"}
         assert "DANGER" in lists.deny_patterns
 
-    def test_from_config_preserves_builtin_patterns(self):
-        lists = PermissionLists.from_config({"deny_patterns": ["custom"]})
-        assert "custom" in lists.deny_patterns
-        # builtins still present
-        has_builtin = any("rm -rf /" in p for p in lists.deny_patterns)
-        assert has_builtin
+    def test_from_config_deny_patterns(self):
+        """User deny_patterns are included (no more builtins)."""
+        lists = PermissionLists.from_config({"deny_patterns": [r"rm\s+-rf\s+/"]})
+        assert any("rm" in p for p in lists.deny_patterns)
 
     def test_from_config_explicit_allow_does_not_get_defaults(self):
         """When user provides explicit lists, don't merge defaults."""

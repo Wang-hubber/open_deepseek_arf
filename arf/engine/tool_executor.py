@@ -49,7 +49,6 @@ class ConcurrentToolExecutor:
         tool_guard=None,
         tool_boundaries: dict[str, DirectoryBoundary] | None = None,
         default_boundary: DirectoryBoundary | None = None,
-        content_guard=None,
         sandbox_manager=None,
     ) -> None:
         self._resolver = tool_resolver
@@ -58,7 +57,6 @@ class ConcurrentToolExecutor:
         self._tool_guard = tool_guard
         self._tool_boundaries = tool_boundaries or {}
         self._default_boundary = default_boundary
-        self._content_guard = content_guard
         self._sandbox_manager = sandbox_manager
 
     async def execute(
@@ -161,23 +159,6 @@ class ConcurrentToolExecutor:
                     tool_name=tool_name,
                     success=False,
                     error=f"[PathCheck] {gr.reason}",
-                    blocked=True,
-                )
-
-        # ContentGuard: dangerous behavior check.
-        # Strip non-serializable framework DI objects before json.dumps.
-        # Serializable _-prefixed params (_workspace, _agent_mode) are kept.
-        if getattr(self, '_content_guard', None):
-            import json as _json
-            _NON_SERIALIZABLE_DI = frozenset({"_engine", "_state_store"})
-            clean_params = {k: v for k, v in params.items() if k not in _NON_SERIALIZABLE_DI}
-            params_str = _json.dumps(clean_params, ensure_ascii=False) if clean_params else ""
-            dr = self._content_guard.check_dangerous(f"{tool_name}: {params_str}")
-            if not dr.allowed:
-                return ToolResult(
-                    tool_name=tool_name,
-                    success=False,
-                    error=f"[ContentGuard] {dr.reason}",
                     blocked=True,
                 )
 

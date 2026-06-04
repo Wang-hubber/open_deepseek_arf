@@ -90,6 +90,18 @@ class ApprovalPlugin:
         # format stays valid (tool_calls must be followed by tool messages).
         if denied:
             for tc in denied:
+                ctx.emit("tool_call_start", {
+                    "tool_name": tc.get("name", ""),
+                    "id": tc.get("id", ""),
+                    "arguments": tc.get("params", {}),
+                })
+                ctx.emit("tool_call_end", {
+                    "tool_name": tc.get("name", ""),
+                    "id": tc.get("id", ""),
+                    "success": False,
+                    "blocked": True,
+                    "error": "User denied this operation.",
+                })
                 ctx.state["messages"].append({
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),

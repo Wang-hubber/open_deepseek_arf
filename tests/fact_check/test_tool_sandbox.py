@@ -299,7 +299,7 @@ class TestToolPermissionChecker:
     def test_deny_by_pattern(self):
         from arf.session import PermissionRegistry, PermissionLists
         registry = PermissionRegistry()
-        lists = PermissionLists.from_config({})
+        lists = PermissionLists.from_config({"deny_patterns": [r"sudo\s+rm"]})
         result = registry.evaluate("file_writer", {"command": "sudo rm -rf /"}, lists)
         assert result.action == "deny"
 
@@ -358,11 +358,10 @@ class TestToolPermissionChecker:
         assert "web_search" in _DEFAULT_ALLOW_TOOLS
         assert len(_DEFAULT_ALLOW_TOOLS) == 7
 
-    def test_builtin_deny_patterns(self):
+    def test_builtin_deny_patterns_clean(self):
+        """Built-in deny patterns are now empty — patterns come from config."""
         from arf.session.permissions import _BUILTIN_DENY_PATTERNS
-        assert len(_BUILTIN_DENY_PATTERNS) == 6
-        assert "sudo " in _BUILTIN_DENY_PATTERNS
-        assert "rm -rf /" in _BUILTIN_DENY_PATTERNS
+        assert _BUILTIN_DENY_PATTERNS == []
 
 
 

@@ -486,12 +486,23 @@ class ControlPlane:
             await self._fire_blocking("error", ctx)
         except Exception as hook_err:
             self._emit_error_event(ctx, exc, f"error_hook_failed: {hook_err}")
-            return {"action": "abort", "params": {"user_message": str(exc)}}
+            return self._default_error_action(exc)
         decision = ctx.hook_data.get("_recovery_decision", {})
         if not decision:
             self._emit_error_event(ctx, exc, "no_recovery_decision_defaulting_to_abort")
-            return {"action": "abort"}
+            return self._default_error_action(exc)
         return decision
+
+    @staticmethod
+    def _default_error_action(exc: Exception) -> dict:
+        """Default recovery decision based on exception type."""
+        name = type(exc).__name__
+        if name in ("PermissionDenied", "ApprovalDenied", "SandboxViolation",
+                     "ApprovalTimeout"):
+            # Guard/approval blocked the tool — model should see the
+            # tool_result and respond, not abort the turn.
+            return {"action": "skip"}
+        return {"action": "abort", "params": {"user_message": str(exc)}}
 
     def _emit_error_event(self, ctx: PluginContext, exc: Exception, detail: str) -> None:
         """Emit an error event to the trace — does not affect control flow."""
