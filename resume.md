@@ -6,7 +6,7 @@
 
 ---
 
-## 我在做什么：寻找 Agent 系统的脊椎
+## 我在做什么：探索并验证 Harness 与大模型的能力边界与分工
 
 这几年做 Agent 应用，我发现一个普遍现象——**Harness 在膨胀**。RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理……这些本该由模型承载的认知功能，正一块块往协调层里塞。每次模型能力不够，就在外面打一个补丁。
 
@@ -14,12 +14,12 @@
 
 我目前的假设是：**大模型是大脑，Harness 是脑干、脊椎与身体。** 借用生物学的分工来重新划定边界——
 
-- 大脑负责条件反射——接收编码后的感知，输出行为指令。知识、身份、长期记忆的固化，应该是模型后训练要解决的事，不该在 Harness 里用 prompt 和 RAG 凑合。
-- Harness 应该收敛为**零认知机械层**——固定感知编码、可靠行动执行、硬连线安全反射。它不思考，不追问，不澄清。它只是机械地编码、执行、门控。
+- **大模型·大脑**（条件反射·中枢）— 接收编码后的感知，输出行为指令。知识、身份、长期记忆的固化，应该是模型后训练要解决的事，不该在 Harness 里用 prompt 和 RAG 凑合。
+- **Harness·脑干脊椎与躯体**（非条件反射·系统）— 固定感知编码、可靠行动执行、硬连线安全反射。它不思考，不追问，不澄清。它只是本能地编码、执行、门控。
 
 这不是一个观点——它是一个**可验证的假设**。而我的计划很明确：把它做出来，然后做实验去验证。
 
-为此我写了 ARF 框架来搭"台架"，写了论文框架来理清思路，写了 7 单元教学课程来让这个思路对其他人也可理解、可复现。
+为此我写了论文框架来理清思路，搭建了 ARF 框架来作为实验"台架"，写了 7 单元教学课程来让这个思路对其他人也可理解、可复现。
 
 接下来是实验——固定状态接口 vs 传统提示、零认知 Harness 基准测试、在线 LoRA 记忆保持、后训练身份鲁棒性、内部上下文压缩。每一项都在这个台架上跑。详细的研究框架、ARF 映射关系和近期 TODO → https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md。
 
@@ -38,7 +38,7 @@ https://gitee.com/dalaydata/open_deepseek_arf
 ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。核心贡献：
 
 - **6 骨架架构**：Prompt 组装、资源注册（MCP）、权限控制、安全审核、沙箱执行器、控制平面——每个骨架对应一个 Protocol，依赖注入组装。框架无 Plugin 也能运行完整 Agent Loop。
-- **三层机械层**：固定感知编码器（ResourceRegistry + SystemPromptProvider）→ 可靠行动执行器（SandboxManager + FunctionBackend rollback）→ 非条件反射层（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应论文第 5 节设计准则的完整工程实现。
+- **三层机械层**：感知编码器·传递任务与环境信息（ResourceRegistry + SystemPromptProvider）→ 行动执行器·把决策落地（SandboxManager + FunctionBackend rollback）→ 非条件反射层·提供必要的安全防护（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应研究框架中第 5 节设计准则的完整工程实现。
 - **Plugin 体系**：9 个 Hook 挂载点。Memory、Compaction、Trace、HumanLoop、Checkpoint 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断。
 - **全链路可观测**：JSONL Trace、Token 统计、离线评估回放。
 - **安全三道防线**：deny_patterns 正则 > deny/ask/allow 列表 > PathCheckToolGuard 路径扫描——纯 YAML 声明式配置，模型不可绕过。
@@ -52,7 +52,7 @@ https://gitee.com/dalaydata/arf_app_021
 
 - 单元 1-7 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优
 - 每个单元包含完整可运行代码快照，严格"本单元只讲本单元"的边界约束
-- 用"良子与三胖子"的叙事串联安全概念——把枯燥的权限控制变成故事
+- 用"良子与焖子"的叙事串联安全概念——把枯燥的权限控制变成故事
 - 同时作为 ARF 框架的用户验收测试，在真实使用中验证 API 设计的完备性
 
 ---
@@ -95,22 +95,6 @@ https://gitee.com/dalaydata/arf_app_021
 - 从 0 到 1 搭建商用车车联网 APP，用户活跃度提升 70%
 - 持有整车公告及安全准入认证经验，具备跨部门项目管理与检测驻场能力
 - 技术栈：时序预测 · MLP · 数据产品 · Django · 用户增长
-
----
-
-## 技能
-
-**Agent 与 LLM 工程**：LangChain / LangGraph · Multi-Agent 编排 · RAG 检索增强 · Tool Calling · 提示词与上下文工程 · 模型路由与动态调度 · LLM-as-a-Judge · MCP 协议
-
-**编程语言**：Python（主力）· TypeScript / JavaScript · SQL
-
-**AI / ML**：PyTorch · PaddlePaddle · Transformer · LSTM · 时序预测 · 特征工程
-
-**数据工程**：Hadoop · Hive · HBase · Pandas · ECharts
-
-**后端与基础设施**：FastAPI · WebSocket · SSE · Docker · Git · Linux · Vue 3 · Vite · SQLite
-
-**语言**：英语（技术文献阅读 / 工作沟通）· 普通话（母语）
 
 ---
 
