@@ -178,6 +178,18 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell executor, community-audited injection safety |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python sandbox |
 
+### Evolution
+
+**Memory: From In-Context Learning to Parameterization.** Recent work (PEAM, TMEM) points to a paradigm shift — agent memory can move from prompt space to weight space. Key directions:
+
+- **Parameterized memory layer**: Pluggable LoRA adapters for system prompt, context compression, long-term memory, and domain knowledge — each with independent update strategies and supervision signals
+- **Capacity-aligned ablation**: Compare LoRA-based parameterization vs. text summarization under equal compute budgets; sweep rank r=1–8 to find the cost-quality sweet spot
+- **Async non-blocking updates**: Dual-buffer LoRA B-matrix — background SFT without blocking inference
+- **PV/STC for general agents**: Adapt PEAM's "what's worth remembering" scoring and self-triggered consolidation to general-purpose agents
+- **Preference vs. fact decoupling**: Separate LoRA adapters with self-supervised (preferences) vs. verifiable QA (facts) update strategies
+
+See [From In-Context Learning to Weight Updates](docs/paper/reading_summary/parameterized-memory.md) for the full analysis.
+
 ---
 
 <p align="center">

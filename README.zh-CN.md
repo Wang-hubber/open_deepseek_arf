@@ -178,6 +178,18 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
 
+### 演进方向
+
+**记忆：从 In-Context Learning 到参数化。** 近期工作（PEAM、TMEM）揭示了范式迁移的可能性——Agent 记忆可以从提示空间迁移到权重空间。主要方向：
+
+- **参数化记忆层**：系统提示词、上下文压缩、长期记忆、领域知识各自对应可插拔 LoRA 适配器，不同更新策略和监督信号
+- **容量对齐消融实验**：在总计算开销一致的前提下，对比 LoRA 参数化 vs 文本摘要；扫 r=1–8 找性价比最优
+- **异步非阻塞更新**：双缓冲 LoRA B 矩阵——后台 SFT 更新，不阻塞推理
+- **PV/STC 迁移到通用 Agent**：将 PEAM 的"什么值得记住"评分体系和自触发固化机制适配到通用 Agent 场景
+- **偏好与事实解耦**：偏好记忆用自监督、事实记忆用可校验 QA 对，分离 LoRA 适配器各自更新
+
+详见 [从 In-Context Learning 到 Weight Updates](docs/paper/reading_summary/parameterized-memory.md)。
+
 ---
 
 <p align="center">
