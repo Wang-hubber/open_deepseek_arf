@@ -21,7 +21,7 @@
 
 为此我写了 ARF 框架来搭"台架"，写了论文框架来理清思路，写了 7 单元教学课程来让这个思路对其他人也可理解、可复现。
 
-接下来是实验——固定状态接口 vs 传统提示、零认知 Harness 基准测试、在线 LoRA 记忆保持、后训练身份鲁棒性、内部上下文压缩。每一项都在这个台架上跑。详细的研究框架、ARF 映射关系和近期 TODO → [论文框架](https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md)。
+接下来是实验——固定状态接口 vs 传统提示、零认知 Harness 基准测试、在线 LoRA 记忆保持、后训练身份鲁棒性、内部上下文压缩。每一项都在这个台架上跑。详细的研究框架、ARF 映射关系和近期 TODO → https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md。
 
 **我想做 Harness 工程师。** 不是某个 Agent 应用的业务逻辑，而是所有 Agent 共享的信息基础设施——把它做薄，而不是做厚。
 
@@ -29,7 +29,9 @@
 
 ## 开源作品
 
-### [ARF — Agent Resources & Runtime Framework](https://gitee.com/dalaydata/open_deepseek_arf)
+### ARF — Agent Resources & Runtime Framework
+
+https://gitee.com/dalaydata/open_deepseek_arf
 
 **Harness 实验台架 · 验证"大脑-脊椎-身体"分工假设的工程工具**
 
@@ -42,7 +44,9 @@ ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Cla
 - **安全三道防线**：deny_patterns 正则 > deny/ask/allow 列表 > PathCheckToolGuard 路径扫描——纯 YAML 声明式配置，模型不可绕过。
 - 技术栈：Python 3.11+ · FastAPI · asyncio · Pydantic · Protocol 接口隔离 · MCP 协议
 
-### [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)
+### ARF App 教学项目
+
+https://gitee.com/dalaydata/arf_app_021
 
 **从 0 到 1 构建 ARF 应用的 7 单元渐进式教程**
 
