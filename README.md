@@ -49,11 +49,10 @@ ARF is the **engineering companion** to the research paper *"Finding the Spine o
 
 ## Reading Guide
 
-This document is organized in three parts plus research roadmap:
+This document is organized in two parts plus research roadmap:
 
 - **Part I — Framework**: The Brain-Spine-Body design model, the three mechanical layers, the 6-skeleton architecture, and the plugin system
-- **Part II — Reference App**: How the application layer consumes every framework capability, with config examples
-- **Part III — Research Roadmap**: Mapping the paper's five experiments to current ARF capabilities and extension points
+- **Part II — Research Roadmap**: Mapping the paper's five experiments to current ARF capabilities and extension points
 - **Bottom [TODO](#todo)**: Known issues and evolution directions
 
 New readers: scan the three mechanical layers first to understand the architecture thesis, then the 6-skeleton table for implementation details.
@@ -139,194 +138,6 @@ ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton 
 | TaskScheduler (`arf/concurrency/`) | Deprecated | Single-agent execution only |
 | Plan-Execute strategy | Deferred | ReAct + TODO sufficient for now |
 
-### Framework vs. Application
-
-**Boundary principle**: The framework provides the mechanism (how); the application decides what to do through configuration + instantiation. `agent.yaml` is the bridge — the framework reads it and auto-assembles all capabilities; the app declares "what to use" without needing to know "how to implement."
-
-| Layer | Scope | Capabilities |
-|-------|-------|-------------|
-| **Framework** (`arf/`) | **6 Skeletons** | **Prompt Assembly** — `SystemPromptProvider` (prefix + suffix + `$INVENTORY` template). **Resource Registry** — MCP-based unified interface, `ResourceResolver`, `FileWatcher` hot reload. **Permission Control** — `SessionModeManager` + `PermissionRegistry` deny→ask→allow. **Security Audit** — `PathCheckToolGuard`, `ContentGuard` rule-based screening. **Executor** — `SandboxManager` per-session isolation, `ConcurrentToolExecutor` parallel exec. **Control Plane** — `GraphEngine`+`LoopStrategy` ReAct, State management, 9 Hook injection points. |
-| | **Plugins** | `InProcessHookRunner` executes `PluginProtocol` instances on lifecycle hooks. Built-in: `CompactionPlugin` (token-aware sliding window), `CheckpointPlugin` (round snapshots + session archive), `TracePlugin` (JSONL event recording), `EvalPlugin` (offline trace replay + metrics), `MemoryPlugin` (long-term extraction), `TodoPlugin` (task tracking), `UndoPlugin` (round rollback), `ModelRouterPlugin` (fast/slow dispatch), `HumanLoopPlugin` (SSE approval). |
-| | **Infrastructure** | `ModelAdapter` exponential backoff + retry, `TokenBucket` rate limiting, `CircuitBreaker` fault isolation, `DefaultErrorPolicy`/`FunctionBackend` rollback, `SubprocessHookRunner` for external hook scripts, `SkillPipeline` dependency ordering |
-| | **Protocols** | Protocol classes (`core/protocols/`) — defines `LoopStrategy`, `StateStore`, `ToolExecutor`, `PluginProtocol`, `HookRunner`, `GuardRunner`, `EventBus`, `ModelRouter`, and all other abstract interfaces |
-| **Application** (`app/`) | **Frontend** | Vue 3 + TypeScript + Vite SPA, Pinia state management / VueRouter, ECharts charts / i18n (zh-CN + en-US), ChatPanel / TraceView / ResourcePanel and other components |
-| | **HTTP Service** | FastAPI + Uvicorn + Streamable HTTP (NDJSON), REST endpoints (chat / trace / resources / config / usage …), WebSocket endpoint, CORS / SPA fallback / StaticFiles |
-| | **CLI** | init / start / stop / chat / list / validate / config |
-| | **Config & Data** | `agent.yaml` — model definitions (`model_defs`) + agent/subagent model refs (`agent_models`) + plugin config (`plugins_config`), custom `tools/` (file_*, web_*, python_exec …), custom `skills/`, custom `hooks/`, DeepSeek API key management |
-
-<br/>
-
----
-
-## Part II — Reference App: How It Uses the Framework
-
-The reference app at `app/arf_default_assistant/` demonstrates how an application calls every framework capability. Each section below shows the application-layer design and links to the framework implementation.
-
-### Convention over Configuration
-
-Four entity types — **model**, **tool**, **skill**, **hook** — each following a predictable directory convention. The framework discovers; you don't register. A tool is two files: `tool.yaml` (schema) + `function.py` (logic). That's the entire API surface.
-
-Tools and skills live on the filesystem — `tool.yaml` + `function.py` per tool, `skills/*.yaml`. The framework discovers them automatically. `agent.yaml` only overrides specific fields when needed:
-
-```yaml
-tools:
-  - name: file_reader
-    activation: kernel   # override activation only; the rest from filesystem
-
-skills:
-  - name: code_review
-    activation: discoverable
-```
-
-### Progressive Disclosure
-
-Only essential kernel tools are always active. Everything else loads on demand via `resource_loader`, runs, and deactivates. The agent pays only for what it actually uses.
-
-### MCP Unified Resources
-
-Tools and skills are accessed through a single MCP (Model Context Protocol) interface. A local MCP Server subprocess aggregates local filesystem resources (`tools/`, `skills/`, `plugins/`) with optional external MCP connections:
-
-```yaml
-# agent.yaml — optional external MCP servers
-mcp_servers:
-  - name: search
-    transport: sse
-    url: http://localhost:9000/sse
-```
-
-The agent communicates via stdio JSON-RPC. The app layer is source-agnostic — tool origins (local, plugin, remote) are transparent.
-
-### Memory — Automatic Extraction & Retrieval
-
-The app **does not** implement its own memory. Framework memory extraction lives in the [`memory` plugin](docs/plugins/memory.md) (`arf/plugins/memory/`) — mounted on `round_end` hook, configured with its own model via `plugins_config.memory.model`. Extracted facts, preferences, and decisions are written atomically to `memory.md` (≤300KB), loaded at session startup and injected into the system prompt.
-
-```yaml
-plugins_config:
-  memory:
-    model: deepseek-v4-flash        # model ref from model_defs
-    interval: 5                      # extract every 5 rounds
-    max_memory_size: 300             # KB limit for memory.md
-```
-
-[Design doc →](docs/plugins/memory.md)
-
-### Compaction — Token-Aware Context Management
-
-`CompactionPlugin` (mounted on `round_end` hook) monitors the previous turn's token usage. At 75% of the model's context window, it triggers: keeps the last 8 messages, summarizes older turns via LLM, and appends to `context_summary`. Long tool outputs (>2000 chars) are written to disk with a summary pointer in context. Configurable via `plugin.yaml`:
-
-```yaml
-# arf/plugins/compaction/plugin.yaml
-config:
-  threshold: 0.75
-  window_size: 131072
-  keep_count: 8
-```
-
-[Design doc →](docs/context-management.md)
-
-### Model Configuration
-
-Models are defined inline at the top of `agent.yaml`. The `model` field is the unique identifier. Agent and SubAgent reference models by name with ordered fallback; Plugins reference a single model.
-
-```yaml
-model_defs:                          # top-level definitions
-  - model: deepseek-v4-pro
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY    # env var name, not the key value
-    kwargs: {reasoning_effort: max}
-  - model: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-    kwargs: {temperature: 0.7}
-
-agent_models:                        # agent: ordered fallback [pro → flash]
-  - model: deepseek-v4-pro
-  - model: deepseek-v4-flash
-
-plugins_config:                      # plugins: single model ref
-  compaction:
-    model: deepseek-v4-flash
-  memory:
-    model: deepseek-v4-flash
-```
-
-Reference with partial override (inherits from definition, overrides specified fields):
-```yaml
-agent_models:
-  - model: deepseek-v4-pro
-  - model: deepseek-v4-flash
-    kwargs: {temperature: 0.0}      # override just temperature
-```
-
-Fallback triggers on 5xx, 429, and network errors. Client errors (4xx) do not trigger fallback.
-
-### Sandbox & Permissions
-
-`PathCheckToolGuard` blocks path traversal and absolute paths before every tool call. `SessionModeManager` controls the global permission mode (`auto` / `ask` / `plan`), with optional per-agent `policy` overrides. `PermissionRegistry` enforces deny→ask→allow lists. Tools run in-process; the guard checks every invocation.
-
-Three session modes:
-- **auto** — all tools execute directly, ignores permission lists
-- **ask** — evaluate deny/ask/allow lists per tool; unknown tools require approval (default, recommended)
-- **plan** — global read-only; all write/exec tools are denied (security review)
-
-```yaml
-session_mode: ask                # global mode: auto | ask | plan
-
-advanced:
-  guardrails:
-    permissions:
-      policy: ask                # per-agent override (auto/ask/plan), only active in global ask mode
-      deny: []
-      ask: [python_exec, file_deleter]
-      allow: [file_reader, web_search, web_fetch]
-```
-
-[Design doc →](docs/tool-sandbox.md)
-
-### Interrupt — Cancel & Undo
-
-The engine checks an `asyncio.Event` cancellation token each turn. `POST /api/chat/cancel` or client disconnect stops the agent. `RoundManager` maintains 3 rolling round-level snapshots — undo restores state + files to the beginning of any recent round, even across agent handoff boundaries. The `undo_executed` trace event marks rollback boundaries without deleting history. Data-modifying tools can export an optional `rollback()` function — `FunctionBackend` calls it automatically when `execute()` throws, rolling back side effects at the individual tool level. Hook exit-code-2 messages are injected into the conversation.
-
-[Design doc →](docs/interrupt.md)
-
-### Skill Pipeline — Tool Execution Order
-
-Skills can declare tool pipelines with explicit dependencies. The engine enforces execution order — a tool step cannot run until all `depends_on` are completed.
-
-```yaml
-- name: resource_scaffold
-  tools: [file_writer, resource_loader]
-  pipeline:
-    - tool: file_writer
-    - tool: resource_loader
-      depends_on: [file_writer]
-```
-
-[Design doc →](docs/skill-pipeline.md)
-
-### Trace — Full Pipeline Visibility
-
-`TracePlugin` (cross-cutting, mounted on all 9 hook points) records every lifecycle event to JSONL trace files. Each event carries `round` (user interaction) and `turn` (internal iteration). The waterfall view at `/traces` groups by round with expandable iterations: model response → tool calls → hooks. `UsageTracker` provides token stats. Standalone HTML viewer at `/trace-viewer`.
-
-[Design doc →](docs/trace.md)
-
-### Dual-Agent Architecture
-
-User Agent handles your tasks. System Agent handles internal operations — resource creation, tool generation, validation. Separate execution, shared workspace. The user sees one assistant; the dual architecture is an implementation detail.
-
-```yaml
-agents:
-  - name: sys_agent
-    role: 系统工程师
-    task: 资源创建、模型配置、工具/技能生成
-    models:
-      - model: deepseek-v4-pro
-```
-
-<br/>
-
----
-
 ## Quick Start
 
 Requires Python ≥ 3.11.
@@ -342,28 +153,7 @@ python cli.py start    # launch service
 
 Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
 
-<br/>
-
-## Framework Dev / App Building
-
-**Building apps on ARF**: See the [APP Developer Guide](./APP开发者指南.md) — start from a minimal `agent.yaml`, configure models/tools/skills/hooks, launch the server.
-
-**Hacking on the framework**: The framework is built on **6 skeletons** that run without plugins. Each skeleton maps to a Protocol. Plugins mount on lifecycle Hooks to extend functionality. Check the [TODO](#todo) section for pending fixes and evolution directions.
-
-```bash
-git clone git@gitee.com:dalaydata/open_deepseek_arf.git
-cd open_deepseek_arf
-pip install -e .
-cd app/web && npm install && npm run dev
-```
-
-**Core stack:** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
-
-<br/>
-
----
-
-## Part III — Research Roadmap
+## Part II — Research Roadmap
 
 ARF is the testbed for all five experiments proposed in the paper. This section maps each experiment to current ARF capabilities and identifies what needs to be built.
 

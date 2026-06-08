@@ -49,11 +49,10 @@ ARF 是研究论文 **《寻找 Agent 系统的脊椎——大模型与 Harness 
 
 ## 阅读指引
 
-本文档分为三大部分加研究路线图：
+本文档分为两大部分加研究路线图：
 
 - **第一部分 — 框架**：大脑-脊椎-身体设计模型、三层机械层、6 骨架架构、Plugin 体系
-- **第二部分 — 参考应用**：展示应用层如何调用框架的每项能力，附配置示例
-- **第三部分 — 研究路线图**：论文五项实验在 ARF 中的当前状态与待建设内容
+- **第二部分 — 研究路线图**：论文五项实验在 ARF 中的当前状态与待建设内容
 - **底部 [TODO](#todo)**：已知问题与演进方向
 
 新读者建议先扫一遍三层机械层理解架构主张，再看 6 骨架表格深入实现细节。
@@ -139,193 +138,6 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | TaskScheduler (`arf/concurrency/`) | 弃用 | 仅单 Agent 执行 |
 | Plan-Execute 策略 | 延后 | ReAct + TODO 当前足够 |
 
-### 框架 vs. 应用
-
-**边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
-
-| 层级 | 范畴 | 能力 |
-|------|------|------|
-| **框架** (`arf/`) | **6 骨架** | **Prompt 组装** — `SystemPromptProvider`（prefix + suffix + `$INVENTORY` 模板）。**资源注册** — MCP 统一接口、`ResourceResolver`、`FileWatcher` 热加载。**权限控制** — `SessionModeManager` + `PermissionRegistry` deny→ask→allow。**安全审核** — `PathCheckToolGuard`、`ContentGuard` 规则筛查。**执行器** — `SandboxManager` 每会话隔离、`ConcurrentToolExecutor` 并行执行。**控制平面** — `GraphEngine`+`LoopStrategy` ReAct、State 管理、9 个 Hook 注入点。 |
-| | **Plugins** | `InProcessHookRunner` 在生命周期 Hook 上执行 `PluginProtocol` 实例。内置：`CompactionPlugin`（token 感知滑动窗口）、`CheckpointPlugin`（round 快照 + session 归档）、`TracePlugin`（JSONL 事件记录）、`EvalPlugin`（离线 trace 回放 + 指标）、`MemoryPlugin`（长期记忆提取）、`TodoPlugin`（任务追踪）、`UndoPlugin`（round 回滚）、`ModelRouterPlugin`（快/慢分发）、`HumanLoopPlugin`（SSE 审批）。 |
-| | **基础设施** | `ModelAdapter` 指数退避 + 重试、`TokenBucket` 限流、`CircuitBreaker` 故障隔离、`DefaultErrorPolicy`/`FunctionBackend` 回滚、`SubprocessHookRunner` 外部 Hook 脚本、`SkillPipeline` 依赖排序 |
-| | **协议层** | Protocol 类（`core/protocols/`）——定义 `LoopStrategy`、`StateStore`、`ToolExecutor`、`PluginProtocol`、`HookRunner`、`GuardRunner`、`EventBus`、`ModelRouter` 等全部抽象接口 |
-| **应用** (`app/`) | **前端** | Vue 3 + TypeScript + Vite SPA、Pinia 状态管理 / VueRouter 路由、ECharts 图表 / i18n 中英双语、ChatPanel / TraceView / ResourcePanel 等组件 |
-| | **HTTP 服务** | FastAPI + Uvicorn + Streamable HTTP (NDJSON)、REST 端点（chat / trace / resources / config / usage …）、WebSocket 端点、CORS / SPA fallback / StaticFiles |
-| | **CLI 工具** | init / start / stop / chat / list / validate / config |
-| | **配置与数据** | `agent.yaml` — 模型定义（`model_defs`）+ agent/subagent 模型引用（`agent_models`）+ plugin 配置（`plugins_config`），自定义 `tools/`（file_*, web_*, python_exec …）、自定义 `skills/`、自定义 `hooks/`、DeepSeek API key 管理 |
-
-<br/>
-
----
-
-## 第二部分 — 参考应用：如何调用框架能力
-
-参考应用 `app/arf_default_assistant/` 展示了一个应用如何调用框架的每一项能力。以下各节从应用层设计出发，链接到框架实现细节。
-
-### 约定大于配置
-
-四种实体类型——**model**、**tool**、**skill**、**hook**——每种遵循可预期的目录约定。框架自动发现，无需手动注册。一个工具就是两个文件：`tool.yaml`（Schema）+ `function.py`（逻辑）。
-
-工具和技能定义在文件系统——每个工具一个 `tool.yaml`+`function.py`，技能 `skills/*.yaml`。框架自动发现。`agent.yaml` 仅在需要时覆盖个别字段：
-
-```yaml
-tools:
-  - name: file_reader
-    activation: kernel   # 仅覆盖激活方式，其余来自文件系统
-
-skills:
-  - name: code_review
-    activation: discoverable
-```
-
-### 渐进式披露
-
-仅必备内核工具始终激活，其余按需通过 `resource_loader` 加载、执行、停用。智能体只为实际使用的能力付费。
-
-### MCP 统一资源接口
-
-工具和技能通过统一的 MCP（Model Context Protocol）接口访问。本地 MCP Server 子进程聚合本地文件系统资源（`tools/`、`skills/`、`plugins/`）与可选的外部 MCP 连接：
-
-```yaml
-# agent.yaml — 可选的外部 MCP 服务器
-mcp_servers:
-  - name: search
-    transport: sse
-    url: http://localhost:9000/sse
-```
-
-Agent 通过 stdio JSON-RPC 通信。应用层无需关心工具来源——本地工具、插件工具、远程工具对 Agent 透明。
-
-### 记忆——自动抽取与检索
-
-应用**不实现**自己的记忆系统。框架的记忆提取位于 [`memory` 插件](docs/plugins/memory.md)（`arf/plugins/memory/`）——挂载在 `round_end` hook，通过 `plugins_config.memory.model` 指定独立模型。提取的事实、偏好和决策原子写入 `memory.md`（≤300KB），会话启动时加载并注入系统提示。
-
-```yaml
-plugins_config:
-  memory:
-    model: deepseek-v4-flash        # 引用 model_defs 中定义的模型
-    interval: 5                      # 每 5 轮提取一次
-    max_memory_size: 300             # memory.md 的 KB 上限
-```
-
-[设计文档 →](docs/plugins/memory.md)
-
-### 压缩——Token 感知的上下文管理
-
-`CompactionPlugin`（挂载在 `round_end` hook）监控上一轮的 token 用量。达到模型上下文窗口 75% 时触发：保留最近 8 条消息，旧轮次通过 LLM 生成摘要存入 `context_summary`。长工具输出（>2000 字符）落盘，上下文保留摘要指针。通过 `plugin.yaml` 配置：
-
-```yaml
-# arf/plugins/compaction/plugin.yaml
-config:
-  threshold: 0.75
-  window_size: 131072
-  keep_count: 8
-```
-
-[设计文档 →](docs/context-management.md)
-
-### 模型配置——统一定义与引用
-
-模型在 `agent.yaml` 顶部内联定义，通过 `model` 字段作为唯一标识。Agent 和 SubAgent 按名引用并支持有序降级；Plugin 引用单个模型。
-
-```yaml
-model_defs:                          # 顶部全局定义
-  - model: deepseek-v4-pro
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY    # 环境变量的变量名，非 Key 值
-    kwargs: {reasoning_effort: max}
-  - model: deepseek-v4-flash
-    api_base: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-    kwargs: {temperature: 0.7}
-
-agent_models:                        # Agent: 有序降级 [pro → flash]
-  - model: deepseek-v4-pro
-  - model: deepseek-v4-flash
-
-plugins_config:                      # Plugin: 单模型引用
-  compaction:
-    model: deepseek-v4-flash
-  memory:
-    model: deepseek-v4-flash
-```
-
-引用时支持部分覆盖（未写字段从定义区继承）：
-```yaml
-agent_models:
-  - model: deepseek-v4-pro
-  - model: deepseek-v4-flash
-    kwargs: {temperature: 0.0}      # 仅覆盖 temperature
-```
-
-降级触发：5xx、429、网络错误。客户端错误（4xx）不降级。
-
-### 沙箱与权限
-
-`PathCheckToolGuard` 在每次工具调用前阻断路径穿越和绝对路径。`SessionModeManager` 解析全局会话模式 (`session_mode`) 与 per-agent policy 生成有效模式，`PermissionRegistry` 据此执行 deny→ask→allow 规则。工具在进程内执行，守卫检查每次调用。
-
-三种会话模式：
-- **auto**: 所有工具直接执行，忽略权限列表
-- **ask**: 按 agent 策略 + deny/ask/allow 列表裁决（推荐，默认）
-- **plan**: 全局只读，所有写/执行工具被拒绝（安全审查场景）
-
-```yaml
-session_mode: ask
-advanced:
-  guardrails:
-    permissions:
-      policy: ask   # per-agent 策略，仅 session_mode=ask 时生效
-      deny: []
-      ask: [python_exec, file_deleter]
-      allow: [file_reader, web_search, web_fetch]
-```
-
-[设计文档 →](docs/tool-sandbox.md)
-
-### 中断——取消与撤销
-
-引擎每轮检查 `asyncio.Event` 取消令牌。`POST /api/chat/cancel` 或客户端断开即可停止 Agent。`RoundManager` 维护 3 个 Round 级滚动快照——undo 恢复到任意最近轮次开始时的状态+文件，跨 agent handoff 边界也生效。`undo_executed` trace 事件标记回滚边界但不删除历史。数据修改类工具可导出可选的 `rollback()` 函数——`FunctionBackend` 在 `execute()` 抛出异常时自动调用，实现 Tool 级副作用回滚。Hook 退出码 2 的消息注入对话流。
-
-[设计文档 →](docs/interrupt.md)
-
-### 技能流水线——工具执行顺序
-
-Skill 可声明工具流水线与显式依赖。引擎强制执行顺序——依赖未满足的工具步骤无法执行。
-
-```yaml
-- name: resource_scaffold
-  tools: [file_writer, resource_loader]
-  pipeline:
-    - tool: file_writer
-    - tool: resource_loader
-      depends_on: [file_writer]
-```
-
-[设计文档 →](docs/skill-pipeline.md)
-
-### Trace——全链路可观测
-
-`TracePlugin`（跨切面，挂载在全部 9 个 hook 点）将每个生命周期事件记录为 JSONL trace 文件。每条事件携带 `round`（用户交互轮次）和 `turn`（内部迭代）。`/traces` 瀑布流按轮次分组，可展开查看：模型响应 → 工具调用 → Hook。`UsageTracker` 提供 token 统计。`/trace-viewer` 提供独立 HTML 查看器。
-
-[设计文档 →](docs/trace.md)
-
-### 双智能体架构
-
-User Agent 处理用户任务。System Agent 负责内部操作——资源创建、工具生成、校验。独立执行，共享工作区。用户看到一个连贯的助手；双智能体架构是实现细节。
-
-```yaml
-agents:
-  - name: sys_agent
-    role: 系统工程师
-    task: 资源创建、模型配置、工具/技能生成
-    models:
-      - model: deepseek-v4-pro
-```
-
-<br/>
-
----
-
 ## 快速开始
 
 需要 Python ≥ 3.11。
@@ -341,28 +153,7 @@ python cli.py start    # 启动服务
 
 浏览器打开 **http://127.0.0.1:8000**，输入 API 密钥即可开始。
 
-<br/>
-
-## 二次开发 / 框架应用
-
-**基于 ARF 构建 App**：详见 [APP 开发者指南](./APP开发者指南.md)——从零写一个 `agent.yaml`，配置模型、工具、技能、Hook，启动服务。
-
-**参与框架开发**：框架代码位于 `arf/`，依赖注入设计允许替换任意默认实现。参见底部 [TODO](#todo) 中的待修复问题和演进方向。
-
-```bash
-git clone git@gitee.com:dalaydata/open_deepseek_arf.git
-cd open_deepseek_arf
-pip install -e .
-cd app/web && npm install && npm run dev
-```
-
-**核心技术栈：** Python 3.11+ · FastAPI · Vue 3 · TypeScript · Vite
-
-<br/>
-
----
-
-## 第三部分 — 研究路线图
+## 第二部分 — 研究路线图
 
 ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。
 
