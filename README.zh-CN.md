@@ -127,29 +127,6 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 
 **Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。关键区分：当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。详见 [Plugin 总览](docs/plugins/overview.md)。
 
-| Plugin | Hook | 状态 | 描述 |
-|--------|------|------|------|
-| **Memory** | `round_end` | DONE | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
-| **TODO** | `round_start`, `round_end` | DONE | 任务列表追踪 + 提醒注入 |
-| **UNDO** | `round_end`, `sandbox_persist` | DONE | Round 级状态 + 文件回滚 |
-| ~~**Model Routing**~~ | `pre_model_call` | **已弃用** | `TwoTierRouter` — 廉价 LLM 分类：简单→flash，复杂→pro。已弃用，改用直接模型配置。 |
-| **Human Loop** | `post_permission`, `pre_tool_exec` | DONE | SSE 审批通道，60s 超时 |
-| **Compaction** | `round_end` | DONE | `CompactionPlugin` — token 感知，75% 阈值，保留 8 条 + LLM 摘要 |
-| **Checkpoint** | `round_end`, `session_end` | DONE | `CheckpointPlugin` — round 快照 + session 归档，支持 undo/restore |
-| **Trace** | 全部 hook（跨切面） | DONE | `TracePlugin` — JSONL 事件记录，用于调试、回放、评估 |
-| **Evaluation** | 离线 | DONE | `EvalPlugin` — 重放 trace、计算指标、diff 报告 |
-| Planner | (延后) | P1 | 任务分解，system model 驱动 |
-| bash | (延后) | P1 | Shell 执行器，注入安全审计 |
-| code_interpreter | (延后) | P1 | Python 沙箱 |
-
-### 弃用/延后
-
-| 模块 | 处理 | 原因 |
-|------|------|------|
-| A2A 通信 (`arf/communication/`) | 弃用 | 先聚焦 agent+subagent |
-| TaskScheduler (`arf/concurrency/`) | 弃用 | 仅单 Agent 执行 |
-| Plan-Execute 策略 | 延后 | ReAct + TODO 当前足够 |
-
 ## 第二部分 — 研究路线图
 
 ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。
