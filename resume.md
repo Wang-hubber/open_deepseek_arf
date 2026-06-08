@@ -69,7 +69,7 @@ https://gitee.com/dalaydata/arf_app_021
 
 完整榜单：https://aistudio.baidu.com/competition/detail/948/0/leaderboard
 
-### 大模型应用开发工程师 | 百度技术认证
+### 大模型应用开发工程师 | 百度技术认证 | 2025.02
 
 证书编号 AI0000560 · 有效期 2025.02 – 2029.02 · 深度学习技术及应用国家工程研究中心与百度文心大模型共同认证
 
