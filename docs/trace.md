@@ -37,7 +37,7 @@ eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——emit 和 subscr
 ### 2.1 架构总览
 
 ```
-GraphEngine._emit() / _make_event()
+ControlPlane._emit() / _make_event()
     │  自动注入 data.round（用户交互轮次）
     ▼
 EventBus.emit(AgentEvent)
@@ -45,9 +45,6 @@ EventBus.emit(AgentEvent)
     ├─ FileTraceStore → memory/traces/{session_id}.json
     │   （跳过 session_start, session_end, thinking_delta, tool_call_chunk；
     │    guard_block, guard_pass, approval_required, approval_resolved 落盘）
-    │
-    ├─ UsageTracker → memory/usage.json
-    │   （按模型累加 model_call_end.usage.total_tokens）
     │
     └─ 消费者（App 层按需构建）
         （SSE 流、WebSocket、Trace Viewer 等，
@@ -85,21 +82,17 @@ EventBus.emit(AgentEvent)
 | `hook_end` | Hook 执行结束 | event, passed, failed |
 | `error` | 执行错误 | detail, code |
 
-保护事件（`rate_limited`, `circuit_opened`, `circuit_half_open`, `circuit_closed`, `breaker_blocked`）已在 EventType 中预留，由 `arf/observability/protection.py` 在运行时使用。
+保护事件（`rate_limited`, `circuit_opened`, `circuit_half_open`, `circuit_closed`, `breaker_blocked`）已在 EventType 中预留，由保护组件在运行时使用。
 
 ### 2.3 FileTraceStore
 
-`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `memory/traces/{session_id}.json`（默认 `dir=./memory/traces`，可通过 `ObservabilityConfig.trace_dir` 配置）。过滤规则：`session_start`、`session_end`、`thinking_delta`、`tool_call_chunk` 不入磁盘——`model_call_end` 已包含完整响应，流式中间片段（文本增量、工具调用增量）仅通过 SSE 推送。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%（实测 4000+ → 7 条核心事件）。
+`arf/observability/file_trace.py`。通过 `asyncio.create_task` 订阅 EventBus，异步消费事件流写入 `traces/{session_id}.json`（默认 `dir=./data/traces`，可通过 `ObservabilityConfig.trace_dir` 配置）。过滤规则：`session_start`、`session_end`、`thinking_delta`、`tool_call_chunk` 不入磁盘——`model_call_end` 已包含完整响应，流式中间片段（文本增量、工具调用增量）仅通过 SSE 推送。`guard_block`、`guard_pass`、`approval_required`、`approval_resolved` 全部落盘，保证安全决策可回溯。过滤后文件体积减少约 75%（实测 4000+ → 7 条核心事件）。
 
-`BaseAgent` 在构造时自动创建 `FileTraceStore` 并订阅 `EventBus`。App 层可通过 `agent.trace_store` 属性访问实例，通过 `ObservabilityConfig.trace_dir` 配置存储路径（或通过 `AppContext.trace_dir` 自动推导）。
+`BaseAgent` 在构造时自动创建 `FileTraceStore` 并订阅 `EventBus`。App 层可通过 `agent.trace_store` 属性访问实例，通过 `ObservabilityConfig.trace_dir` 配置存储路径。
 
-### 2.4 UsageTracker
+### 2.4 交互轮次分组
 
-`arf/observability/usage_tracker.py`。订阅 `model_call_end` 事件，按模型累加 `prompt_tokens`、`completion_tokens`、`total_tokens`、`calls`。持久化到 `memory/usage.json`，启动时加载历史数据（重启不丢失）。`BaseAgent` 自动创建，应用层无需手动初始化。
-
-### 2.5 交互轮次分组
-
-`round` 字段由引擎自动注入到每条事件（`arf/engine/graph.py`）。值来自 `AgentState.interaction_round`，每轮用户消息 +1。App 层可通过 `round` 字段将事件按交互轮次分组展示：
+`round` 字段由引擎自动注入到每条事件。值来自 `AgentState.interaction_round`，每轮用户消息 +1。App 层可通过 `round` 字段将事件按交互轮次分组展示：
 
 ```
 Round 0 (3 次内部迭代)
@@ -120,7 +113,7 @@ Round 0 (3 次内部迭代)
     └── model_call_end: "你是 ARF 框架的创造者"
 ```
 
-### 2.6 框架级查询 API
+### 2.5 框架级查询 API
 
 `FileTraceStore` 提供三个查询方法，App 层可通过 `agent.trace_store` 调用：
 
@@ -128,34 +121,26 @@ Round 0 (3 次内部迭代)
 - `store.list_sessions() → list[str]` — 列出所有已记录的 session ID
 - `store._append(session_id, event)` — 追加单条事件（内部使用）
 
-`UsageTracker` 提供 `summary() → dict` 返回 `{total_tokens, total_calls, by_model}`。
-
 `EventBus.subscribe(event_types=None) → AsyncIterator[AgentEvent]` 逐事件流式消费，支持按类型过滤。App 层可基于此构建 SSE 流或 WebSocket 推送。
 
-### 2.7 Trace Viewer（App 层）
+### 2.6 Trace Viewer（App 层）
 
 `/trace-viewer` — 框架提供 `arf/observability/trace_viewer.html` 单文件 HTML，零外部依赖。App 层通过路由挂载该文件即可使用。支持折叠/展开、时间筛选、token 统计、guard/approval 事件渲染。
 
-### 2.8 回放控制器
+### 2.7 回放控制器
 
 `FileReplayController`（`arf/observability/replay.py`）提供录制和确定性回放能力。录制时将每轮模型输出和工具结果序列化为 JSON。回放时按 turn 顺序 yield `AgentEvent`，支持起始 turn 和断点（用于调试）。用于评估和回归测试——同一组输入的多次回放应产生完全一致的输出。
 
-### 2.9 OpenTelemetry 模块
+### 2.8 配置
 
-`arf/observability/otel.py` 文件存在但当前仅包含框架代码，未接入 EventBus。是预留的 OTLP 导出扩展点——未来可将 AgentEvent 转换为 OpenTelemetry Span 并导出到 Jaeger/Tempo/Prometheus。
-
-### 2.10 配置
-
-`ObservabilityConfig`（`arf/core/config_base.py`）定义可观测性全部配置项，`BaseAgent` 自动根据配置或 `AppContext` 创建 `FileTraceStore` 和 `UsageTracker`。
+`ObservabilityConfig`（`arf/core/config_base.py`）定义可观测性全部配置项，`BaseAgent` 自动根据配置创建 `FileTraceStore`。
 
 ```yaml
 # agent.yaml (全部字段可选，有合理默认值)
 advanced:
   observability:
-    trace_dir: ./memory/traces     # FileTraceStore 存储路径
-    usage_dir: ./memory            # UsageTracker 存储路径
-    trace_enabled: true            # 是否启用 FileTraceStore
-    otel_exporter: none            # none | console | otlp
+    trace_dir: ./data/traces      # FileTraceStore 存储路径
+    trace_enabled: true           # 是否启用 FileTraceStore
 ```
 
 `interaction_round` 通过 `FileStateStore`（`agent.state_store`）持久化，每轮用户消息自动 +1，重启不丢失。
@@ -172,7 +157,7 @@ advanced:
 
 ### 3.2 OpenTelemetry 导出
 
-将 `otel.py` 模块接入 EventBus，将 AgentEvent 转换：每个 tool_call → Span（parent 为 model_call span），session → Trace。通过 OTLP 导出到 Jaeger（本地）、Tempo（生产）或 Prometheus（指标）。使 ARF 的可观测性融入现有基础设施，而非独立体系。
+将 AgentEvent 转换为 OpenTelemetry Span 并导出：每个 tool_call → Span（parent 为 model_call span），session → Trace。通过 OTLP 导出到 Jaeger（本地）、Tempo（生产）或 Prometheus（指标）。使 ARF 的可观测性融入现有基础设施，而非独立体系。
 
 ### 3.3 探索性方向
 

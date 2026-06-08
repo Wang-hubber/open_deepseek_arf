@@ -42,7 +42,7 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
 |---------|----------|------|
 | PTE present 位 → Page Fault | `should_compact()` — 当 `last_token_usage > threshold × window` 触发压缩 | 缺页类比令牌压力，触发置换 |
 | kswapd 水位线 (low/min) | threshold 0.75 — 低于水位线压缩，低于 min 激进压缩 | Linux 异步回收 inactive 页面 → 压缩旧轮次 |
-| LRU 双链表 (active/inactive) | context_summary (摘要) + messages[-4:] (活跃) | 冷热分离：旧消息压缩进摘要，最近消息保持原文 |
+| LRU 双链表 (active/inactive) | context_summary (摘要) + messages[-N:] (活跃) | 冷热分离：旧消息压缩进摘要，最近消息保持原文 |
 | mmap + Page Cache | `summarize_tool_output()` — 长输出写 disk，上下文留摘要指针 | 不全部加载，按需映射 |
 
 ---
@@ -56,20 +56,18 @@ OS 用虚拟内存解决"内存不够"的思路——换出不常用的页面、
 ```
 每个用户交互轮次
     │
-    ├─ [1] 路由 — TwoTierRouter 选定模型 → 获取该模型的 context_window
-    │
-    ├─ [2] 压缩判断 — SlidingWindowCompactor.should_compact()
+    ├─ [1] 压缩判断 — SlidingWindowCompactor.should_compact()
     │       last_token_usage > threshold × context_window ?
     │       ├─ No  → 继续
     │       └─ Yes → compact()
     │                  ├─ 过滤 tool 消息（仅保留 user/assistant）
-    │                  ├─ 保留最近 4 条 user/assistant 消息
+    │                  ├─ 保留最近 N 条 user/assistant 消息
     │                  ├─ 旧消息 → LLM 结构化摘要 → 追加到 context_summary
     │                  └─ 返回精简 state
     │
-    ├─ [3] 模型调用 → 响应 + usage.total_tokens
+    ├─ [2] 模型调用 → 响应 + usage.total_tokens
     │
-    └─ [4] 工具输出摘要 — summarize_tool_output()
+    └─ [3] 工具输出摘要 — summarize_tool_output()
             长输出（>2000 chars）→ 写 disk + LLM 摘要 → 上下文保留摘要指针
 ```
 
@@ -88,6 +86,8 @@ def should_compact(self, state, window_size=None):
     return last_usage > self._threshold * w
 ```
 
+默认压缩比为 75%（`threshold=0.75`），即 token 用量超过窗口的 75% 时触发。压缩后跳过 2 轮冷却期（`_compaction_cooldown`），避免大轮次的 residual token usage 导致假重触发。
+
 ### 2.3 协议
 
 `CompactionStrategy` 协议（`arf/core/protocols/compaction.py`）：
@@ -102,14 +102,14 @@ class CompactionStrategy(Protocol):
 
 ### 2.4 窗口跟随模型
 
-路由先于压缩执行（`graph.py`）。不同模型的 `context_window` 由模型配置文件定义（参考值：flash ~800k, pro ~1M），引擎通过 `_model_windows` 字典查找当前模型的窗口大小并传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
+引擎在每轮 turn 结束时将 `usage.total_tokens` 写入 state。不同模型的 `context_window` 由模型适配器配置携带（`ModelAdapter.context_window`），引擎通过模型窗口信息传入 `should_compact`。切换到更小窗口的模型时，阈值自动收紧。
 
-当 `_model_windows` 未设置或当前模型不在字典中时，引擎回退到 `DEFAULT_WINDOW_SIZE`（131_072）。
+当模型窗口信息未设置时，引擎回退到 `DEFAULT_WINDOW_SIZE`（131_072）。
 
 ### 2.5 压缩行为
 
-- **消息过滤**：压缩时仅保留 `user` 和 `assistant` 角色的消息，`tool` 消息（工具调用结果）被丢弃。工具执行结果属于瞬时上下文，保留会破坏消息序列完整性（tool message 必须紧跟其对应的 assistant(tool_calls)，压缩截断后产生孤儿消息导致 API 400）
-- 保留最近 4 条 user/assistant 消息
+- **消息过滤**：压缩时保留最近 N 条 user/assistant 消息及其关联的 tool 消息。旧消息中的 tool 消息（工具调用结果）被视为瞬时上下文被丢弃，因为 tool message 必须紧跟其对应的 assistant(tool_calls)，压缩截断后产生孤儿消息导致 API 400
+- 默认保留最近 8 条 user/assistant 消息（`keep_count: int = 8`，可通过构造函数配置）
 - 旧消息通过 LLM 生成结构化摘要，追加 `[Earlier]` 标记到 `context_summary`
 - 摘要叠加而非覆盖：连续多轮压缩时，每轮生成的摘要累积保留，避免历史信息丢失
 - 失败静默降级：summarizer 调用异常时仅记录日志，丢弃旧消息继续执行
@@ -142,18 +142,13 @@ async def _summarize(msgs: list[dict]) -> str:
 
 ### 2.7 工具输出摘要
 
-工具输出超过 2000 字符时，原文写入 `memory/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入上下文，按需映射即可。
+工具输出超过 2000 字符时，原文写入 `workspace/tool_outputs/turn_{N}_{tool_name}.txt`，上下文保留 LLM 摘要 + 文件路径指针。短输出原样保留。类似 mmap 的思路——大文件不需要全部读入上下文，按需映射即可。
 
 无 system model 时静默退化：长输出仅截断保留前 2000 字符 + 磁盘路径（`[Tool output truncated — full at ...]`），不生成 LLM 摘要。退化路径与压缩摘要一致：`if self._summarize:` 模式检查，不存在时跳过 LLM 调用。
 
 ### 2.8 引擎集成
 
-`invoke()` 和 `astream()` 中压缩逻辑一致，均在以下节点触发：
-
-1. **路由之后、模型调用之前**：`compaction.should_compact()` → `compaction.compact()`，并 emit `compaction_start` / `compaction_end` 事件
-2. **工具执行成功后**：`compaction.summarize_tool_output()`
-
-路由先于压缩执行，确保使用正确模型的窗口大小。引擎通过 `if self.compaction:` 守卫检查压缩器是否存在——未配置压缩时跳过所有压缩流程。
+压缩逻辑在 `ControlPlane` 的 `_dispatch` 循环中触发，位置在模型调用之前。引擎通过 `if self.compaction:` 守卫检查压缩器是否存在——未配置压缩时跳过所有压缩流程。
 
 ### 2.9 配置
 
@@ -196,7 +191,7 @@ advanced:
 
 **注入机制**：框架通过 `PluginRuntime` 对象向 hook 子进程注入运行环境——API keys、模型配置、应用路径、会话上下文——序列化为 `ARF_RUNTIME` JSON 环境变量。Hook 脚本一行 `json.loads(os.environ["ARF_RUNTIME"])` 获取全部上下文。
 
-**Trigger chain**: `Engine.round_end → hook_runner.fire("round_end") → ARF_RUNTIME env → round_end.py → subprocess.run(extractor.py) → system model → memory.md`
+**Trigger chain**: `ControlPlane.round_end → hook_runner.fire("round_end") → ARF_RUNTIME env → round_end.py → subprocess.run(extractor.py) → system model → memory.md`
 
 参见 [`arf/plugins/memory/`](../../arf/plugins/memory/) 和 [`PluginRuntime`](../../arf/core/plugin_runtime.py)。
 
@@ -225,7 +220,7 @@ advanced:
 
 | 维度 | 会话内 | 会话外 |
 |------|--------|--------|
-| 窗口 | 最近 4 条消息 | 完整会话回溯 |
+| 窗口 | 最近 N 条消息 | 完整会话回溯 |
 | 模型 | system model (flash) | 可配置 |
 | 时机 | 同步（模型调用前） | 异步（会话非活跃） |
 | 粒度 | 固定 7 维模板 | 主题驱动的父子分层 |
@@ -233,6 +228,6 @@ advanced:
 
 ### 3.5 探索性方向
 
-**选择性保留**：当前"保留最近 4 条"是固定窗口。可以改为按消息重要性保留——模型标记哪些消息对后续推理关键，压缩时优先保留关键消息而非简单按时间。
+**选择性保留**：当前"保留最近 N 条"是固定窗口。可以改为按消息重要性保留——模型标记哪些消息对后续推理关键，压缩时优先保留关键消息而非简单按时间。
 
 **压缩预算协商**：当 memory 插件需要更多 token 注入长期记忆时，与压缩器协商 system prompt 预算分配。类似 OS 的 cgroup 内存配额。

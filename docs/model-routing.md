@@ -1,6 +1,6 @@
-# Model Routing — Multi-Model Scheduling & KV Cache
+# Model Routing — Ordered Fallback Chain & KV Cache
 
-ARF 将 OS 的多级缓存层次和异构调度策略适配到多模型场景：廉价模型处理简单任务，强大模型处理复杂任务，框架后台任务走专用 system model 通道。
+ARF 将 OS 的多级缓存层次和异构调度策略适配到多模型场景：廉价模型处理简单任务，强大模型处理复杂任务，框架后台任务走专用 system model 通道。模型选择通过有序降级链实现——主模型失败时自动切换到备用模型。
 
 ---
 
@@ -35,20 +35,20 @@ CPU 遇到分支指令时，**分支预测器**根据历史模式猜测方向，
 
 ### 1.4 对 ARF 的启发
 
-缓存层次启示了任务分级：不是所有请求都需要最强模型。big.LITTLE 启示了异构调度：后台任务跑专用廉价模型，用户任务按复杂度路由。分支预测启示了分类器：快速猜测任务复杂度并路由，猜错的代价（降级到廉价模型）远小于每次都上最强模型的浪费。
+缓存层次启示了任务分级：不是所有请求都需要最强模型。big.LITTLE 启示了异构降级：主模型不可用时切换到备用模型，而不是直接报错。分支预测启示了退化成本可控：降级到更强模型的成本低于降级到更弱模型的重试成本。
 
 **OS → ARF 概念映射**：
 
 | OS 概念 | ARF 映射 | 说明 |
 |---------|----------|------|
 | L1/L2/L3 Cache | KV Cache | OS 权衡时间成本（~1ns vs ~100ns），Agent 权衡推理成本 |
-| big.LITTLE (HMP) | quick/deep 双模型 + TwoTierRouter | 动态调度，按任务复杂度分配计算资源 |
+| big.LITTLE (HMP) | 有序降级链 `ModelDegrader` | 按配置顺序尝试模型，失败时自动降级 |
 
 ---
 
 ## 2. ARF 当前实现
 
-模型调度分为两条路径：**用户任务路由**（按复杂度选择模型）和**框架任务分配**（固定使用 system model）。两者共享同一个廉价模型实例，不额外增加 API 连接。
+模型调度分为两条路径：**用户任务**（通过有序降级链调用）和**框架任务**（固定使用 system model）。
 
 ### 2.1 架构总览
 
@@ -56,18 +56,23 @@ CPU 遇到分支指令时，**分支预测器**根据历史模式猜测方向，
 用户消息进入
     │
     ▼
-TwoTierRouter.classify(query)
-    │  LLM 分类器（复用 system model, deepseek-v4-flash, thinking disabled）
-    │  返回 "medium" 或 "complex"
+ControlPlane 调用 _call_model / _stream_model
     │
-    ├─ medium  → quick  (deepseek-v4-flash)
-    │            简单聊天、单工具调用、文件 I/O
+    ▼
+ModelDegrader.chat_complete(messages, tools)
     │
-    └─ complex → deep   (deepseek-v4-pro)
-                   多步推理、代码生成、规划任务
+    ├─ 适配器 0 (deepseek-v4-pro)     ← 首选
+    │   ├─ 成功 → 返回结果
+    │   └─ 失败 (5xx/429/网络错误) → 降级到下一个
+    │
+    ├─ 适配器 1 (deepseek-v4-flash)   ← 备用
+    │   ├─ 成功 → 返回结果
+    │   └─ 失败 → 持续降级
+    │
+    └─ ... 全部失败 → 抛出异常，ErrorPolicy 处理
 
 框架后台任务（上下文压缩、任务分类、Agent 间调度）
-    │  不走 TwoTierRouter
+    │  不走 ModelDegrader
     │  直接使用 system model（配置为 quick）
     │  thinking_enabled: false, temperature: 0.3
     ▼
@@ -78,120 +83,26 @@ TwoTierRouter.classify(query)
 
 | 调度层 | 负责内容 | 模型选择方式 | 配置位置 |
 |--------|----------|-------------|----------|
-| **用户任务路由** | 每 turn 根据 query 复杂度选模型 | `TwoTierRouter` + LLM 分类器 | `advanced.routing` |
+| **用户任务调用** | 每 turn 根据有序降级链调用模型 | `ModelDegrader` — 按 `agent_models` 顺序尝试 | `agent_models` / `model_defs` |
 | **框架任务分配** | 压缩、分类、handoff 等后台操作 | 固定 system model | `advanced.system_model` |
 
-### 2.3 协议
+### 2.3 ModelAdapter
 
-`ModelRouter` 协议（`arf/core/protocols/routing.py`）：
-
-```python
-class ModelRouter(Protocol):
-    async def route(self, query: str, history: list[dict]) -> str: ...
-    async def classify(self, query: str) -> str: ...
-    def fallback_from(self, model_name: str) -> str | None: ...
-```
-
-### 2.4 TwoTierRouter 实现
-
-`arf/routing/two_tier.py`。核心逻辑是将 LLM 分类结果映射到模型名：
+`arf/core/model_adapter.py`。统一的 OpenAI 兼容端点封装，单个适配器实例对应一个模型端点：
 
 ```python
-class TwoTierRouter:
-    def __init__(self, config: RoutingConfig, models: list[str],
-                 classifier_call: Callable | None = None) -> None:
-        ...
-
-    async def route(self, query: str, history: list[dict]) -> str:
-        level = await self.classify(query)          # "medium" | "complex"
-        return self._cfg.classify.get(level, self._cfg.default)
-
-    async def classify(self, query: str) -> str:
-        if self._classify:
-            return await self._classify(query)
-        return "medium"  # 无分类器时的安全默认
-
-    def fallback_from(self, model_name: str) -> str | None:
-        return self._cfg.fallback.get(model_name)
+class ModelAdapter:
+    def __init__(self, config: dict, context_window: int = 1048576):
+        self.client = AsyncOpenAI(
+            base_url=config.get("base_url"),
+            api_key=config.get("api_key", "") or "sk-placeholder",
+        )
+        self.model_name = config.get("model_name", "")
+        self.context_window = ...
 ```
 
-`classifier_call` 为 `None` 时，`classify()` 始终返回 `"medium"`，等价于 static 策略——全部走默认模型。该参数由 BaseAgent 根据 `advanced.routing.strategy` 决定是否注入 LLM 分类器。
+**功能**：
 
-### 2.5 LLM 分类器
-
-分类器在 `base.py` 定义为闭包，复用 system model（deepseek-v4-flash, thinking disabled, temp 0.3）：
-
-```python
-async def _classify(query: str) -> str:
-    prompt = (
-        "Classify this task as 'medium' or 'complex'. "
-        "medium = simple chat, file I/O, single tool call. "
-        "complex = multi-step reasoning, many tool calls, code generation, planning. "
-        "Return ONLY one word (medium or complex).\n\n"
-        f"Task: {query[:300]}"
-    )
-    try:
-        result = (await _system_model_call(prompt)).strip().lower()
-        return result if result in ("medium", "complex") else "medium"
-    except Exception:
-        return "medium"
-```
-
-输入截断至 300 字符，分类失败或异常一律返回 `"medium"` → quick，不阻塞主流程。
-
-### 2.6 引擎集成
-
-在 `GraphEngine` 的每次 turn 调用模型前执行路由（`graph.py`）：
-
-```python
-model = state["current_model"]
-if self.model_router:
-    model = await self.model_router.route(
-        self._last_user_message(state), state.get("messages", [])
-    )
-    state["current_model"] = model
-```
-
-路由在压缩之前执行（`graph.py`），确保压缩使用正确模型的窗口大小。每次 turn 之间可无缝切换模型。
-
-Engine 层通过 `model = routed or model` 提供降级链的最后一层兜底：当 Router 的 `config.default` 为空导致 `route()` 返回空字符串时，Engine 保持 `state["current_model"]` 不变，确保始终有一个有效模型可用。
-
-### 2.7 自动推导
-
-`AdvancedConfig.auto_derive()`（`arf/agent/config.py`）在满足以下条件时自动启用 two_tier 策略：
-
-- `len(config.models) > 1` — 至少配置了两个模型
-- `agent.yaml` 中未显式声明 `advanced` 块 — 显式 `AdvancedConfig` 会跳过 auto_derive
-
-触发入口是 `AgentConfig.effective_advanced()`：该方法在 `advanced` 为 `None` 时调用 `auto_derive()`，否则直接返回用户配置。这意味着一旦用户在 `agent.yaml` 中显式写了 `advanced:`（哪怕是空块），auto_derive 不再介入，用户需手动配置 `routing`。
-
-### 2.8 降级链
-
-降级链跨 Router 和 Engine 两层协作完成，每层负责不同的安全兜底：
-
-| 层级 | 触发条件 | 行为 | 负责层 |
-|------|----------|------|--------|
-| LLM 分类器异常 | `_classify()` 模型调用失败 | 返回 `"medium"` → quick | **Router** — classifier closure 内置 try/except |
-| classify 映射缺失 | 分类结果不在 `classify` dict 中 | 使用 `config.default` | **Router** — `dict.get(level, default)` 字典兜底 |
-| default 为空 | 路由配置缺失 `default` | 回退到 `state["current_model"]` | **Engine** — `model = routed or model` |
-| fallback 映射 | 模型调用失败（5xx / 网络错误） | `error_policy.on_model_error()` → `model_router.fallback_from()` → 重试 | **Engine** — `_resolve_fallback()` |
-
-**Router 层**（前两层）：TwoTierRouter 内部处理。分类失败或结果异常时，Router 自身消化，不向上抛异常。策略是安全降级——宁可走廉价模型，也不阻塞用户。
-
-**Engine 层**（后两层）：GraphEngine 在 Router 返回后做最终兜底。`routed or model` 保证 Router 即使返回空字符串也有模型可用；`_resolve_fallback()` 串联 error_policy 和 model_router，在模型调用真正失败时切换到 fallback 模型重试。
-
-### 2.9 KV Cache — 框架有意不介入
-
-KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓存生命周期。理由：
-- 命中缓存率很高，算力成本支出已经不需要严格的管控
-- 框架侧介入需感知推理引擎内部状态，增加耦合
-- Token 感知的压缩策略已在前端减少了发送到 API 的上下文量
-
-如果未来需要框架侧 KV cache 管理，可能的介入点：跨 turn 复用 system prompt 部分的 KV cache（prompt 不变时不重复编码），或多 session 间共享缓存前缀。
-
-### 2.10 ModelAdapter — 重试与容错
-
-`arf/core/model_adapter.py`。统一的 OpenAI 兼容端点封装：
 - **指数退避重试**：429/5xx 等瞬时错误自动重试（默认 3 次，退避基数 1.5x）
 - **DeepSeek thinking 翻译**：`thinking_enabled` → `extra_body["thinking"]` 的 enabled/disabled 格式
 - **流式支持**：`chat_stream_full()` 产出以下四种事件：
@@ -204,48 +115,92 @@ KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓�
 | `error` | `type`, `code`, `detail` | API 调用失败时产出（status_code + message） |
 
 - **空 key 保护**：`api_key` 为空时使用 `"sk-placeholder"` 防止 OpenAI SDK 拒绝 falsy 值
+- **参数翻译**：config 中的 `thinking_enabled`、`reasoning_effort` 等 provider 特有参数自动映射到 `extra_body`
 
-### 2.11 配置
+### 2.4 ModelDegrader — 有序降级链
 
-```yaml
-models:
-  - type: quick
-    model: deepseek-v4-flash
-    context_window: 800000
-  - type: deep
-    model: deepseek-v4-pro
-    context_window: 1000000
+`arf/core/model_degrader.py`。将多个 `ModelAdapter` 包装为有序降级链：
 
-advanced:
-  routing:
-    strategy: two_tier      # two_tier | static
-    default: quick
-    classify:
-      medium: quick
-      complex: deep
-    fallback:
-      deep: quick
-    # background: null      # 预留字段 — 未来用于更细粒度的后台任务模型配置
-
-  system_model: quick      # 系统后台模型，框架任务共用
+```python
+class ModelDegrader:
+    def __init__(self, adapters: list) -> None:
+        if not adapters:
+            raise ValueError("At least one model adapter required")
+        self._adapters = adapters
 ```
 
-### 2.12 策略对比
+**降级逻辑**：
 
-| 策略 | 行为 | 实现 | 适用场景 |
-|------|------|------|----------|
-| `two_tier` | LLM 分类器动态判断，每次 turn 可切换模型 | `TwoTierRouter(classifier_call=_classify)` | 主 Agent，面向用户任务 |
-| `static` | 始终使用 `default`，不分类 | `TwoTierRouter(classifier_call=None)` — `classify()` 始终返回 `"medium"` | SysAgent，所有任务都是确定性系统操作 |
+```
+ModelDegrader.chat_complete()
+    │
+    ├─ adapter[0] → 成功？ → 返回
+    │     └─ 失败 (5xx/429/网络错误) → degrade
+    │
+    ├─ adapter[1] → 成功？ → 返回
+    │     └─ 失败 → degrade
+    │
+    └─ ... 全部失败 → 抛出最后一次异常
+```
 
-static 策略下 Router 实例仍然存在（不是 None），只是不注入 LLM 分类器。`classify()` 固定返回 `"medium"`，`route()` 将其映射到 `classify` dict 或 `default`，结果始终是一致的模型。
+**降级触发条件**：
+- HTTP 5xx（服务端错误）
+- HTTP 429（速率限制）
+- 无 HTTP 状态码的错误（网络超时、连接失败）
+- 不降级：4xx 客户端错误（参数错误、认证失败等）
 
-### 2.13 System Model — 框架后台任务的专用模型
+```python
+def _should_degrade(self, error: Exception) -> bool:
+    status = (
+        getattr(error, 'status_code', None)
+        or getattr(error, 'status', None)
+        or getattr(error, 'http_status', None)
+    )
+    if status is not None:
+        return status >= 500 or status == 429
+    # No HTTP status → assume transient (network/timeout/etc), degrade
+    return True
+```
+
+**流式降级**：`chat_stream_full()` 也支持降级，但仅在流产生任何内容之前降级。一旦第一个 chunk 发出，就锁定该适配器，中游失败不恢复。
+
+**退化行为**：当所有适配器全部失败时，异常向上抛出到引擎层，由 `ErrorPolicy`（`DefaultErrorPolicy`）决定处理策略。
+
+### 2.5 引擎集成
+
+在 `BaseAgent.init()` 中构建 `ModelDegrader`（`base.py`）：
+
+```python
+# Build ModelDegrader from agent_models config
+agent_models = config.get_agent_model_configs()
+if agent_models:
+    for mcfg in agent_models:
+        _deg_adapters.append(ModelAdapter({
+            "model_name": mcfg.model,
+            "api_key": ...,
+            "base_url": ...,
+            **mcfg.kwargs,
+        }))
+    _model_degrader = ModelDegrader(_deg_adapters)
+```
+
+组装后，`_call_model` 和 `_stream_model` 闭包包装 `_model_degrader` 的调用，注入到 `ControlPlane`：
+
+```python
+async def _call_model(messages: list[dict], model_name: str = "", tools=None) -> dict:
+    msg = await _model_degrader.chat_complete(messages, tools=tools)
+    ...
+```
+
+`ControlPlane` 通过 `set_call_model` / `set_stream_model` 接收这些闭包，在 `_dispatch` 阶段调用。
+
+### 2.6 System Model — 框架后台任务的专用模型
 
 框架运行时会触发一系列后台操作——上下文压缩、路由分类、Agent 间调度（handoff）。这些操作对质量要求不高（分类错了只是多用一次 deep，摘要差点也能继续对话），但对延迟和成本敏感（每次 turn 都要跑）。如果走用户模型通道，这些隐形消耗会大幅推高 token 用量。
 
 > **注意**：记忆抽取/检索原为 system model 消费者，现已迁移到 `arf/plugins/memory/` 插件架构。插件以 subprocess 方式运行，内部自行构造 ModelAdapter（不共享 Agent 的 `_system_model_call`）。详见 `arf/plugins/memory/tools/memory_extract/extractor.py`。
 
-ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**，称为 system model。它与用户任务模型共享同一个适配器池，不额外增加 API 连接。
+ARF 的方案是：**框架后台任务统一由一个廉价模型实例执行**，称为 system model。它与用户任务模型共享同一个 API key（`api_key_env`），不单独认证。
 
 **定义流程**（`base.py`）：
 
@@ -267,7 +222,7 @@ advanced.system_model: quick → lookup by name → quick → _system_model_call
 
 | 功能 | 有 system_model | 无 system_model（退化） |
 |------|----------------|----------------------|
-| **压缩摘要** | `_summarize` — LLM 将旧轮次压缩为结构化摘要（7 个维度），追加到 `context_summary` | `_summarizer = None` — 旧消息直接丢弃，不生成摘要 |
+| **压缩摘要** | `_summarize` — LLM 将旧轮次压缩为结构化摘要（7 个维度），追加到 `context_summary` | `_summarize = None` — 旧消息直接丢弃，不生成摘要 |
 | **路由分类** | `_classify` — LLM 判断 query 复杂度（medium / complex） | `classify()` 始终返回 `"medium"` — 全部走 quick 模型 |
 | **Handoff 分类** | `HandoffManager` — LLM 判断 handoff 目标 Agent | handoff 规则仍基于 `trigger` 字段匹配生效，但无 LLM 辅助判断 |
 
@@ -284,6 +239,72 @@ advanced:
 - system model 与用户模型共享同一个 API key（`api_key_env`），不单独认证
 - system model 在 BaseAgent 初始化时创建一次，生命周期与 Agent 相同
 - 不存在时不报错——框架静默退化到规则方案，面向无 LLM 环境
+
+### 2.7 降级链
+
+降级链跨 ModelDegrader 和 ErrorPolicy 两层协作完成：
+
+| 层级 | 触发条件 | 行为 | 负责层 |
+|------|----------|------|--------|
+| ModelAdapter 重试 | 429/5xx/网络错误 | 指数退避重试（默认 3 次） | **ModelAdapter** — `_call_with_retry()` |
+| ModelDegrader 降级 | 重试耗尽后仍失败 | 切换到下一个适配器 | **ModelDegrader** — `chat_complete()` 循环 |
+| 全部适配器失败 | 所有适配器均不可用 | 向上抛出异常 | **ModelDegrader** — 抛出 `last_error` |
+| ErrorPolicy 处理 | ModelDegrader 抛出异常 | 根据 `model_5xx_action` 决定 abort/retry/fallback | **ErrorPolicy** — `on_model_error()` |
+
+**退化链示例**：
+
+```
+deepseek-v4-pro (首选) → 503 Service Unavailable
+    → ModelAdapter 重试 3 次 → 仍然 503
+    → ModelDegrader 降级到下一个适配器
+    → deepseek-v4-flash (备用) → 成功
+    → 对话继续，用户无感知
+```
+
+如果所有模型都失败，错误上升到 `ControlPlane` 层，由 `_handle_error` 和 `ErrorPolicy` 共同决定是否终止会话。
+
+### 2.8 KV Cache — 框架有意不介入
+
+KV cache 由推理侧（DeepSeek API）在服务端管理，框架不操作缓存生命周期。理由：
+- 命中缓存率很高，算力成本支出已经不需要严格的管控
+- 框架侧介入需感知推理引擎内部状态，增加耦合
+- Token 感知的压缩策略已在前端减少了发送到 API 的上下文量
+
+如果未来需要框架侧 KV cache 管理，可能的介入点：跨 turn 复用 system prompt 部分的 KV cache（prompt 不变时不重复编码），或多 session 间共享缓存前缀。
+
+### 2.9 配置
+
+```yaml
+model_defs:                                     # 模型定义（新格式）
+  - model: deepseek-v4-pro
+    api_base: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      temperature: 0.0
+      max_tokens: 8192
+
+  - model: deepseek-v4-flash
+    api_base: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    kwargs:
+      temperature: 0.0
+      max_tokens: 4096
+
+agent_models:                                   # 降级链顺序（按配置先后）
+  - model: deepseek-v4-pro                      # 首选
+  - model: deepseek-v4-flash                    # 备用
+
+advanced:
+  system_model: deepseek-v4-flash               # 系统后台模型，框架任务共用
+```
+
+`agent_models` 数组的顺序决定了降级链的优先级。列表中的第一个模型是首选，后续模型是降级备用。
+
+### 2.10 引擎集成
+
+在 `ControlPlane` 的每次 turn 中，`_dispatch` 阶段调用 `self._call_model` / `self._stream_model` 闭包。这些闭包由 `BaseAgent.init()` 创建，内部使用 `ModelDegrader` 实现有序降级。
+
+每次模型调用后，引擎将 `usage.total_tokens` 存储到 state 中，供 `SlidingWindowCompactor` 在下一轮判断压缩时机。
 
 ---
 

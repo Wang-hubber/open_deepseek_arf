@@ -1,476 +1,675 @@
-# Agent Execution — Session / Round / Turn 生命周期
+# Agent Execution -- Control Plane Architecture
 
-ARF 将 OS 进程管理的三个核心机制——fork/exec（进程创建）、scheduler（调度）、IPC（进程间通讯）——适配到 Agent 运行时：Agent 是进程，Session 是地址空间，Tool Call 是系统调用，Handoff 是 IPC。
+> A pure-skeleton execution loop. All behavior is plugin-injected.
 
-本文档描述当前实现的全部行为。所有引用标注了源文件位置。
+## 1. Process Management Analogy
+
+This chapter describes how an OS manages process lifecycle and scheduling, providing the conceptual foundation for ARF's execution architecture. The comparisons are illustrative -- conceptual inspiration, not implementation parity.
+
+### 1.1 Process Lifecycle
+
+A Unix process follows a well-defined lifecycle: `fork()` creates a copy of the current process (duplicating address space, file descriptors, signal handlers), `exec()` replaces the address space with a new program image. Between fork and exec lies a critical window where the child can modify its environment (redirect file descriptors, set resource limits) before the new program starts.
+
+The process terminates via `exit()` (voluntary) or `signal` (involuntary). The parent collects the exit status via `waitpid()`. Zombie processes are those that have exited but not yet been waited on.
+
+**ARF mapping**: A Session is ARF's process. `BaseAgent.__init__` is the fork-exec gap -- dependency injection assembles all Protocol implementations before execution begins. `chat()/astream()` is the exec -- the session becomes active. `session_end` is exit -- hooks clean up resources.
+
+### 1.2 Scheduling and Time Quantums
+
+The Completely Fair Scheduler (CFS, Linux 2.6.23) uses a red-black tree keyed by `vruntime`. Each scheduling tick selects the process with the smallest vruntime. When the current process exceeds its time quantum, the scheduler sets `TIF_NEED_RESCHED` and context-switches at the next opportunity (return to userspace).
+
+Cgroups add hierarchical CPU weight distribution -- a configuration abstraction over the scheduler.
+
+**ARF mapping**: The LoopStrategy is ARF's scheduler policy. `should_continue()` is the entry gate (equivalent to checking `TIF_NEED_RESCHED`). `should_break()` is the exit gate (equivalent to timeslice expiration). A Turn is a time quantum -- one model call plus its tool executions.
+
+### 1.3 Signals and Interrupts
+
+Unix signals (SIGINT, SIGTERM, SIGKILL) provide asynchronous notification. `SIGKILL` is uncatchable; `SIGINT` can be caught for graceful shutdown. Signal delivery to a running system call may cause `EINTR`.
+
+**ARF mapping**: `cancel_event` (an `asyncio.Event`) is ARF's signal mechanism. It is checked at loop boundaries, not in the middle of dispatch -- analogous to checking `TIF_NEED_RESCHED` on return to userspace rather than in the middle of a syscall.
+
+### 1.4 System Calls
+
+The kernel's syscall interface is the boundary between user mode and kernel mode. Syscalls are synchronous, privileged operations (open, read, write, ioctl) that transition through a gate (software interrupt or `sysenter`).
+
+**ARF mapping**: Tool calls are ARF's syscalls. The engine is kernel mode, tool call dispatch is the syscall gate. Guards (PathCheck, Permission, Approval) are the security checks performed before entering the kernel. Hook points are the tracepoints/kprobes that allow observability without modifying the syscall path.
+
+### 1.5 Mapping Table
+
+| OS Concept | ARF Equivalent | Location |
+|-----------|----------------|----------|
+| Process creation (fork+exec) | `BaseAgent.__init__` DI assembly | `arf/agent/base.py` |
+| Process (address space) | Session (message list + state) | `ControlPlane._execute()` |
+| Thread (lightweight sub-process) | Round (user interaction) | `BaseAgent.chat()` |
+| Scheduler timeslice | Turn (model call + tool exec) | `ReActStrategy` |
+| Context switch | Hook dispatch | `_fire_blocking()`, `_fire_side()` |
+| Signal (SIGINT) | `cancel_event` (asyncio.Event) | `_cancelled()` |
+| System call | Tool call | `_dispatch_execute_tools()` |
+| Security enforcement (SELinux) | Tool guards + approval | Plugins (ToolGuard, Approval) |
+| Tracepoints/kprobes | Hook points (9 lifecycle events) | `InProcessHookRunner` |
+| Process group | Round (transaction boundary) | `RoundManager` (see 2.9) |
+| /proc filesystem | AgentState (inspectable state) | `arf/core/state.py` |
+| Checkpoint/restart | StateStore + RoundManager | `arf/engine/checkpoint.py` |
 
 ---
 
-## 1. OS 方案演进
+## 2. Current Implementation
 
-> 本章描述 OS 如何处理进程生命周期与调度，帮助理解 ARF 设计动机。非技术实现对标。
+### 2.1 Architecture Overview
 
-### 1.1 进程创建：fork + exec
+The agent execution system has four layers:
 
-`fork()` 复制当前进程（文件描述符、地址空间、信号处理），`exec()` 用新程序镜像替换地址空间。核心价值在 **fork-exec 间隙**——子进程可在 exec 前修改环境（重定向 fd、设置 rlimit），修改对新程序透明。
+| Layer | Files | Responsibility |
+|-------|-------|---------------|
+| **Assembly** | `arf/agent/base.py`, `arf/agent/config.py` | DI assembly of all Protocol implementations, `agent.yaml` to running instance |
+| **Engine** | `arf/engine/control_plane.py`, `arf/engine/loop_strategies/react.py`, `arf/engine/checkpoint.py`, `arf/engine/round_manager.py`, `arf/engine/tool_executor.py` | Invoke/astream main loop, state machine transitions, dispatch, state persistence |
+| **Plugin (cross-cutting)** | `arf/hooks/`, `arf/plugins/` | 9 lifecycle hook points, blocking and side plugin runners |
+| **Transport** | `arf/event_bus.py`, `arf/observability/`, `arf/core/events.py` | EventBus, tracing, AgentEvent definitions |
 
-### 1.2 进程调度
+The `ControlPlane` class (`arf/engine/control_plane.py`) is a **pure-skeleton execution loop**. It provides the structural framework (session, round, turn boundaries) and dispatch (model calling, tool execution), but all domain-specific behavior -- permission checking, memory extraction, compaction, approval, error recovery -- is injected via plugins. This is a deliberate architectural shift -- the previous engine embedded those concerns inline; the ControlPlane delegates them to plugins.
 
-**CFS**（Linux 2.6.23）：红黑树，key 为 `vruntime`。每次调度选 vruntime 最小进程。时钟中断触发 `scheduler_tick()`，若当前进程 vruntime 超阈值则置 `TIF_NEED_RESCHED`，返回用户态前检查并调度。
+The loop is driven by a `LoopStrategy` protocol that tells the engine which step to execute next. The default implementation is `ReActStrategy` (think -> act -> observe), but the protocol is designed for alternative strategies such as plan-execute.
 
-**cgroup**：层级树组织进程，CPU 子系统按权重分配时间片——调度器的配置抽象层。
+### 2.2 Three-Tier Lifecycle: Session, Round, Turn
 
-### 1.3 IPC
+Agent execution is organized into three nested tiers, each with its own counter, hook events, and boundary semantics:
 
-管道（pipe，字节流，亲缘进程）、信号（signal，异步，SIGKILL 不可捕获）、共享内存（mmap MAP_SHARED，最快但需同步）、消息队列（POSIX mq，优先级出队）。每种机制在延迟/吞吐/耦合上的取舍对应 ARF 中 Agent 间通讯的多种模式。
+| Tier | Definition | Hook Events | Counter | Circuit Breaker |
+|------|-----------|-------------|---------|-----------------|
+| **Session** | One continuous user connection, spanning multiple rounds | `session_start`, `session_end` | `session_id: str` | -- |
+| **Round** | One `chat()` / `astream()` call boundary | `round_start`, `round_end` | `interaction_round: int` (monotonic across the agent's lifetime) | -- |
+| **Turn** | One model call + tool execution iteration | `turn_start`, `pre_dispatch`, `post_dispatch`, `turn_end` | `current_turn: int` (reset per round) | `max_turns` (per-round circuit breaker) |
 
-### 1.4 对 ARF 的映射
-
-| OS 概念 | ARF 对应 | 实现位置 |
-|---------|----------|---------|
-| fork + exec 间隙 | `BaseAgent.__init__` DI 组装——创建引擎→注入全部 Protocol→启动 | `arf/agent/base.py` |
-| CFS vruntime | `LoopStrategy.should_continue()`——每 turn 判断是否继续 | `arf/engine/graph.py` |
-| cgroup 配额 | `max_turns`——每轮断路器 | `arf/engine/graph.py`（默认值）→ `_active_config()` 解析 per-agent → `should_continue`/`should_break` 判定 |
-| 抢占标志 | `cancel_event` (asyncio.Event)——循环边界非阻塞检测 | `arf/engine/graph.py` |
-| IPC 管道/信号/共享内存 | HandoffManager / AgentBus / PeerAgent / DictWorkspace | `arf/engine/handoff.py` |
-
----
-
-## 2. 当前实现
-
-Agent 执行体系分三层：**引擎层**（GraphEngine，循环控制 + 工具编排）、**装配层**（BaseAgent，DI 组装全部 Protocol）、**多 Agent 层**（HandoffManager，Agent 切换 + 状态隔离）。
-
-### 2.1 执行边界：Session / Round / Turn
-
-三个嵌套层级，各有独立的计数器、hook 事件和边界语义：
-
-| 层级 | 定义 | 创建位置 | Hook 事件 | 计数器 | 断路器 |
-|------|------|---------|-----------|--------|--------|
-| **Session** | 客户端一次完整连接，可跨多轮对话 | `BaseAgent.__init__`（首次 `chat()` 时激活） | `session_start`（BaseAgent 触发 hook + GraphEngine emit EventBus 事件）、`session_end`（`stop()` 或 crash recovery） | `session_id: str` | — |
-| **Round** | 一次 `chat()`/`astream()` 调用边界 | `BaseAgent.chat()` / `astream()` 入口 | `round_start`（BaseAgent 触发）、`round_end`（GraphEngine 循环退出后触发） | `interaction_round: int`（单调递增） | — |
-| **Turn** | 模型调用→工具执行→模型再调用的单次迭代 | `while loop_strategy.should_continue()` 体内 | `pre/post_model_call`、`pre/post_tool_exec`（turn 内子事件，GraphEngine 触发） | `current_turn: int`（每 round 复位） | `max_turns`（每 round 断路器） |
-
-**时序关系**：
+**Sequence diagram**:
 
 ```
-Session  ──────────────────────────────────────────────────────►
-         │                                          │
-         ├─ Round 0 ─────────────►                   │
-         │  │  (turn 从 0 计数)    │                  │
-         │  ├─ Turn 0 ──►          │                  │
-         │  ├─ Turn 1 ──►          │                  │
-         │  └─ Turn 2 ──► [end]    │                  │
-         │                         │                  │
-         ├─ Round 1 ─────────────► │                  │
-         │  │  (turn 复位到 0)      │                  │
-         │  ├─ Turn 0 ──►          │                  │
-         │  └─ Turn 1 ──► [end]    │                  │
-         │                         │                  │
-         └─ Round 2 ...            └─ stop() ────────┤
-                                                      ▼
-                                                   CLOSED
+Session  --------------------------------------------------------->
+         |                                                    |
+         +-- Round 0 ------------------------------------->   |
+         |    |  (turn resets to 0)                         |   |
+         |    +-- Turn 0 --->                                |   |
+         |    +-- Turn 1 --->                                |   |
+         |    +-- Turn 2 ---> [end]                          |   |
+         |                                                   |   |
+         +-- Round 1 ------------------------------------->   |
+         |    |  (turn resets to 0)                         |   |
+         |    +-- Turn 0 --->                                |   |
+         |    +-- Turn 1 ---> [end]                          |   |
+         |                                                   |   |
+         +-- Round 2 ...            stop() ----------------->   |
+                                                              v
+                                                           CLOSED
 ```
 
-**Crash recovery**：`BaseAgent.chat()` 入口处检测（`arf/agent/base.py`）：
+**Crash recovery** (handled by `BaseAgent.chat()` / `astream()`):
 
-1. `session_id` 已在 `_active_sessions` → 续用已有 session，不触发任何 session 级 hook
-2. `session_id` 不在 `_active_sessions` 但磁盘 state 中 `session_active == True` → 进程被 kill，触发 `session_end(reason="recovery")` hook，然后作为新 session 触发 `session_start`
-3. 磁盘无 state 或 `session_active` 不存在 → 全新 session，触发 `session_start`
+1. `session_id` already in `_active_sessions` -> reuse existing session, no session-level hooks fired
+2. `session_id` not in `_active_sessions` but stored state has `session_active == True` -> process was killed, fire `session_end(reason="recovery")`, then proceed as new session
+3. No stored state or `session_active` absent -> brand new session, fire `session_start`
 
-### 2.2 执行流程
+### 2.3 ControlPlane Loop Flow
 
-```
-BaseAgent.chat() / astream()                      arf/agent/base.py
-│
-├─ state_store.get(session_id)                         # StateStore 加载 State快照（崩溃恢复）
-├─ crash recovery 判定 → [Hook] session_end(recovery)  # 仅在恢复场景
-├─ new session? → [Hook] session_start                 # BaseAgent 触发 hook
-├─ begin_round(深拷贝 + 工作区快照)                     # RoundManager Round检查点（undo 回滚）
-├─ [Hook] round_start                                  # BaseAgent 触发
-│
-▼
-GraphEngine.invoke() / astream()                     arf/engine/graph.py
-│
-├─ _close_tool_calls(state)                            # 保证消息序列完整性
-│
-├─ while LoopStrategy.should_continue(state):          # 入口门
-│   │
-│   ├─ step = LoopStrategy.next_step(state)            # 策略驱动分派
-│   │   │                                             # ReAct: "call_model" / "execute_tools"
-│   │
-│   │   ├─── call_model ───────────────────────────────────
-│   │   │
-│   │   ├─ turn = current_turn + 1                     # turn 从 0 起步
-│   │   ├─ [取消检查] / [EventBus] "user_input"
-│   │   ├─ [模型路由] / [压缩判断] / [Hook] pre_model_call
-│   │   ├─ [模型调用] _call_model / _stream_model       # 含 fallback chain
-│   │   ├─ [Hook] post_model_call / [输出检查]
-│   │   ├─ [工具解析] _pars_tool_calls()
-│   │   │   ├─ 无 tool_calls → [State快照] state_store.put() → break
-│   │   │   └─ 有 tool_calls → [State快照] assistant+tool_calls（崩溃恢复）
-│   │   │                     暂存 _pending_tool_calls
-│   │   │
-│   │   ├─── execute_tools ────────────────────────────────
-│   │   │
-│   │   ├─ [工具守卫] _step_classify_tool_calls()
-│   │   ├─ 被拒工具 → 注入 "[Blocked]" tool 消息
-│   │   ├─ [Hook] pre_tool_exec
-│   │   ├─ [工具执行] ConcurrentToolExecutor.execute()
-│   │   ├─ [工具输出摘要] / [Hook] post_tool_exec
-│   │   ├─ _close_tool_calls(state)                     # 兜底：孤儿 tool_calls 注入合成结果
-│   │   ├─ [Handoff 检测] → _execute_handoff() → continue
-│   │   ├─ [State快照] state_store.put()
-│   │   └─ LoopStrategy.should_break(state)? → break
-│   │   │
-│   │   └─── 未知 step → 默认 fallback 到 call_model ────
-│
-├─ [Hook] round_end                                     # GraphEngine 触发
-└─ [EventBus] "session_end"                             # GraphEngine emit 事件
-```
+The engine's core loop is `_execute()`, an async generator that yields `AgentEvent` instances. It contains the nested session -> round -> turn structure with hook points at each boundary.
 
-### 2.3 状态机：Session → Round → Turn
-
-每个层级有明确的状态转移。当前 Turn 受三层约束：
+**Top-level flow**:
 
 ```
-Session 状态：  [INACTIVE] ──chat()──► [ACTIVE] ──stop()──► [CLOSED]
-                     ▲                      │
-                     └── crash recovery ────┘ (session_end(recovery) → session_start)
-
-Round 流转：   begin_round() → [round_start hook] → Engine Loop → [round_end hook] → close_round()
-
-Turn 流转：    should_continue? → next_step() → dispatch
-               call_model: turn++ → route → compact → pre_model → model_call
-               → post_model → guard → parse → (text? break) → State快照 assistant+tool_calls
-               execute_tools: guard → execute → close_tool_calls → handoff? → State快照 → should_break?
+_execute(state)
+  |
+  +-- session_id = state.get("session_id")
+  +-- interaction_round = state.get("interaction_round", 0) + 1
+  +-- yield session_start event
+  |
+  +-- [Hook] session_start (blocking + side)
+  |
+  +-- while loop_strategy.should_continue(state):
+  |     |
+  |     +-- check _cancelled() -> yield session_end and break
+  |     +-- interaction_round++
+  |     +-- [Hook] round_start (blocking + side)
+  |     +-- check strategy_override from round_start hook
+  |     |
+  |     +-- while loop_strategy.should_continue(state):
+  |     |     |
+  |     |     +-- turn = current_turn + 1
+  |     |     +-- step = loop_strategy.next_step(state)
+  |     |     +-- [Hook] turn_start (blocking + side)
+  |     |     +-- [Hook] pre_dispatch (fire_and_drain -- hooks emit events)
+  |     |     +-- _dispatch(step, state, ctx)  -- inline execution
+  |     |     +-- [Hook] post_dispatch (blocking + side)
+  |     |     +-- [Hook] turn_end (blocking + side)
+  |     |     +-- loop_strategy.on_transition("turn_end", ctx)
+  |     |     +-- state_store.put(session_id, state)
+  |     |     +-- should_break? -> break inner loop
+  |     |     +-- text-only response (step=="call_model", no pending tools) -> break inner loop
+  |     |
+  |     +-- [Hook] round_end (blocking + side)
+  |     +-- should_break? -> break outer loop
+  |     +-- last message is not user -> break outer loop
+  |
+  +-- [Hook] session_end (blocking catches exception; side always fires)
+  +-- state_store.put(session_id, state)
+  +-- yield session_end event
 ```
 
-### 2.4 双模主循环：invoke / astream
+**Loop termination conditions**:
 
-`GraphEngine` 提供两条执行路径（`arf/engine/graph.py`），共享同一个 Agent Loop 逻辑骨架：
+1. `should_continue()` returns False (entry gate blocked)
+2. `_cancelled()` is True (user interrupt)
+3. An error handler returns `action: "abort"`
+4. Model returns pure text with no tool_calls (round complete)
+5. `should_break()` returns True (exit gate triggered)
+6. No new user input after round completion
+7. `max_turns` reached (per-round circuit breaker)
 
-| 方法 | 返回 | 适用场景 |
-|------|------|---------|
-| `invoke()` | `AgentState`（同步返回） | CLI、评测回放、后台任务 |
-| `astream()` | `AsyncGenerator[AgentEvent]` | SSE 流式、实时 UI |
+**Error handler actions within the loop**:
 
-**共享的核心方法**：
-- `_close_tool_calls()`（消息序列完整性保证，在进入循环前调用）
-- `_active_config()`（多 Agent 配置解析）
-- `_resolve_tools_for_agent()`（工具定义获取）
-- `_step_classify_tool_calls()`（Guard + Pipeline + Permission + Approval）
-- `_execute_handoff()` / `_restore_from_handoff()`
-- `_inject_hook_messages()`（退出码 2 消息注入）
-- `_resolve_fallback()`（模型降级链）
+| Context | Possible Actions | Effect |
+|---------|-----------------|--------|
+| `round_start` | `abort` | Break outer loop |
+| | `continue` (default) | Skip to next round |
+| `turn_start` | `abort` | Break inner loop |
+| | `continue` (default) | Skip to next turn |
+| `pre_dispatch` | `abort` | Break inner loop |
+| | `skip` | Continue to next iteration |
+| `dispatch` | `abort` | Break inner loop |
+| | `retry` | Decrement turn, re-enter same turn |
+| | `skip` | Continue to next iteration |
+| | `fallback` | Save state, continue |
+| | `rollback` | Break inner loop |
+| `post_dispatch` | `abort` | Break inner loop |
+| | `continue` (default) | Continue to turn_end |
+| `turn_end` | `abort` | Break inner loop |
+| | `continue` (default) | Continue normally |
+| `round_end` | `abort` | Break outer loop |
+| | `continue` (default) | Continue to next round |
 
-**差异**：
-- 模型调用层：`astream` 使用 `_stream_model` 逐 token 产出 `thinking_delta` 事件；`invoke` 使用 `_call_model` 一次性获取。
-- 两条路径的 StateStore State快照行为一致：均在 appending assistant+tool_calls 后立即State快照（崩溃恢复——若进程在工具执行期间被 kill，下次启动从该状态继续），工具执行+handoff 后再次写 State快照。
+### 2.4 Dispatch
 
-### 2.5 循环策略
+The `_dispatch()` method routes execution based on the step name returned by `LoopStrategy.next_step()`. There are two dispatch targets:
 
-`LoopStrategy` 协议（`arf/core/protocols/engine.py`）定义三个门控方法：
+**`call_model`** -- model invocation (`_dispatch_call_model`):
+
+1. Resolve tool definitions via MCP tool resolver (if configured)
+2. Convert internal message format to OpenAI API format (`_to_api_messages`): wraps system prompt, converts internal `{id, name, params}` tool_calls to API `{id, type, function: {name, arguments}}`
+3. Validate message contract (`_validate_messages`): checks all messages are dicts, roles are valid ("user", "assistant", "tool"), sequence starts with user role
+4. Emit `model_call_start` event
+5. Streaming path (preferred):
+   - Iterate over `_stream_model` async generator
+   - Emit `thinking_delta` events for text/reasoning chunks
+   - Accumulate streamed tool_calls and usage
+   - On stream error: emit error event, fall through to non-streaming
+6. Non-streaming path (fallback):
+   - Call `_call_model` and await the complete response
+7. Both paths failed -> emit error event with `"Both streaming and non-streaming model calls failed"`
+8. Emit `model_call_end` event with content and usage
+9. Append assistant message to state (with tool_calls if any)
+10. Store pending tool_calls in `state["_pending_tool_calls"]`
+
+**`execute_tools`** -- tool execution (`_dispatch_execute_tools`):
+
+1. Pop `state["_pending_tool_calls"]`
+2. If none, return immediately
+3. Emit `tool_call_start` events (one per tool call)
+4. Execute via `ConcurrentToolExecutor.execute()` (parallel or sequential)
+5. Emit `tool_call_end` events (one per tool call, with success/duration/result/error)
+6. Append tool result messages to state
+7. Store `state["tool_results"]` for hook inspection
+
+### 2.5 The 9 Hook Points
+
+The ControlPlane fires hooks at 9 lifecycle points. Each point has two hook runners: **blocking** (in-process, sequential, error-propagating) and **side** (fire-and-forget, concurrent, error-tolerant).
+
+| # | Hook Point | When | Fire Mechanism | Context Payload | Design Purpose |
+|---|-----------|------|---------------|-----------------|---------------|
+| 1 | `session_start` | Beginning of `_execute()` | blocking + side | session_id, full AgentState | Session initialization, resource allocation |
+| 2 | `round_start` | Each round iteration start | blocking + side | full PluginContext | Round initialization; can inject `strategy_override` via `ctx.hook_data["strategy"]` |
+| 3 | `turn_start` | Each turn iteration start | blocking + side | full PluginContext with current step | Turn-level initialization |
+| 4 | `pre_dispatch` | Before `_dispatch()` call | fire_and_drain (blocking hooks emit events into stream) + side | full PluginContext | Intercept/modify dispatch; emit approval events |
+| 5 | `post_dispatch` | After `_dispatch()` returns | blocking + side | full PluginContext with updated state | Post-execution processing |
+| 6 | `turn_end` | End of each turn (after dispatch + state_store.put) | blocking + side | full PluginContext | Turn-level teardown, state checks |
+| 7 | `round_end` | After inner loop exits | blocking + side | full PluginContext | Round-level teardown, memory extraction, compaction |
+| 8 | `session_end` | Before final state save | blocking (errors caught) + side (always fires) | full PluginContext | Session teardown, resource cleanup |
+| 9 | `error` | When any hook or dispatch throws | blocking only | PluginContext with `ctx.hook_data["exception"]` | Error recovery; sets `ctx.hook_data["_recovery_decision"]` |
+
+**Special characteristics**:
+
+- `pre_dispatch` uses `_fire_and_drain` instead of `_fire_blocking`. This runs the blocking plugin in a background task while the engine drains events emitted by the hook via `ctx.emit()`. This allows hooks (e.g., ApprovalPlugin) to emit approval_required events into the stream without blocking the entire loop.
+- `session_end` blocking hook errors are silently caught (`pass` on exception) so that session teardown cannot be prevented by a failing hook.
+- `error` fires only on the blocking runner. The error hook sets `ctx.hook_data["_recovery_decision"]` to a dict with an `"action"` key. If no decision is set, the engine falls back to default actions based on exception type.
+
+### 2.6 Plugin System
+
+The engine uses two parallel hook runners:
+
+**InProcessHookRunner** (`arf/hooks/in_process_runner.py`) -- for blocking plugins:
+
+- Registers plugins that declare `hook_mode == "blocking"` for specific hook types
+- Runs plugins sequentially in registration order
+- On first plugin exception: subsequent plugins in the same `fire()` call are skipped, exception propagates to the engine's error handler
+- Used for plugins that must execute before the engine can continue (ToolGuardPlugin, ApprovalPlugin)
+- Provides `get_plugin(name)` for direct plugin access (e.g., `BaseAgent.approve()` delegates to ApprovalPlugin)
+
+**SubprocessHookRunner** (`arf/hooks/runner.py`) -- for side plugins:
+
+- Registers plugins that declare `hook_mode == "side"` and external `HookDefinition` scripts
+- Fires plugins concurrently via `asyncio.ensure_future` -- fire-and-forget
+- Never blocks the engine, never throws (exceptions are logged)
+- External hook scripts receive runtime environment variables: `ARF_RUNTIME` (JSON), `ARF_SESSION_ID`, `ARF_ROUND`, `ARF_MEMORY_DIR`, `ARF_WORKSPACE`, `ARF_TRACE_DIR`, `ARF_SYSTEM_MODEL`
+- Hook commands support `$ARF_{KEY}` placeholder substitution from runtime + context merged dict
+
+**PluginContext** (`arf/core/plugin_context.py`):
+
+The context object passed to every hook invocation. It provides:
+
+- `session_id`, `interaction_round`, `turn`, `current_step` -- execution identifiers
+- `state` -- the full mutable AgentState (blocking plugins may mutate it; side plugins treat as read-only by convention)
+- `messages` -- shortcut to `state["messages"]`
+- `tool_definitions`, `system_prompt`, `model` -- execution context
+- `workspace_dir`, `memory_dir`, `state_dir`, `trace_dir` -- runtime directories
+- `event_bus` -- for emitting events
+- `hook_data: dict` -- arbitrary key-value store for cross-hook data passing
+- `plugin_config: dict` -- per-plugin configuration from plugin.yaml
+- `emit(event_type, data)` -- push an AgentEvent into the engine's output stream (used by blocking plugins in `pre_dispatch` to inject approval events)
+
+### 2.7 Loop Strategy
+
+**LoopStrategy protocol** (`arf/core/protocols/engine.py`):
 
 ```python
 class LoopStrategy(Protocol):
     def should_continue(self, state: AgentState) -> bool: ...
     def should_break(self, state: AgentState) -> bool: ...
     def next_step(self, state: AgentState) -> str: ...
+
+    @property
+    def current_phase(self) -> str: ...
+
+    def on_transition(self, event: str, ctx) -> None: ...
 ```
 
-- `should_continue`：**入口门**——`False` 时跳过循环体，不进入下一 turn
-- `should_break`：**出口门**——`True` 时退出循环，本轮是最后一 turn
-- `next_step`：**分派门**——返回当前应执行的操作（`"call_model"` 或 `"execute_tools"`）
+Three gates control the loop:
 
-两个方法使用 `self.max_turns`。引擎在每 turn 从 `_active_config()` 获取当前活跃 Agent 的 `max_turns` 并同步到 `self.loop_strategy.max_turns`——单 Agent 和多 Agent 场景统一了取值路径。Handoff 切换 Agent 后立即刷新。
+- `should_continue(state) -> bool`: Entry gate. False means the loop body (the entire round) is skipped.
+- `should_break(state) -> bool`: Exit gate. True means exit the loop after this turn completes.
+- `next_step(state) -> str`: Dispatch gate. Returns the step name for the current iteration. The engine dispatches to `call_model` or `execute_tools`.
 
-当前唯一实现是 `ReActStrategy`（`arf/engine/loop_strategies/react.py`）：
+Additional protocol methods:
+
+- `current_phase`: Read-only property exposing the internal phase for monitoring/UI
+- `on_transition(event, ctx)`: Called at turn_end so the strategy can update internal state
+
+The `max_turns` value is set by the engine from `_max_turns` (default 50) and synchronized to the strategy before the loop starts.
+
+**ReActStrategy** (`arf/engine/loop_strategies/react.py`) -- the only current implementation:
+
+Implements the think -> act -> observe cycle with two phases tracked by `_phase`:
+
+```
+Phase flow:
+  user message   -> next_step() -> "call_model"   (_phase = "think")
+  model returns tool_calls -> next_step() -> "execute_tools" (_phase = "act")
+  tool results   -> next_step() -> "call_model"   (_phase = "think")
+  model returns text -> next_step() -> "call_model" (next round)
+                        should_continue checks -> break if no new input
+```
+
+The `next_step` logic reads the last message role:
+
+- Empty messages or last role is "user"/"system" -> `"call_model"`
+- Last role is "assistant" with tool_calls -> `"execute_tools"`
+- Last role is "tool" -> `"call_model"` (observe -> think)
+
+Both `should_continue` and `should_break` currently only monitor `current_turn` against `max_turns`. The strategy can be swapped at runtime via `strategy_override` from the `round_start` hook (see section 2.5, hook point 2).
+
+### 2.8 State Management
+
+**StateStore protocol** (`arf/core/protocols/engine.py`):
 
 ```python
-class ReActStrategy:
-    def __init__(self, max_turns: int = 50) -> None:
-        self.max_turns = max_turns
-
-    def should_continue(self, state: AgentState) -> bool:
-        return state.get("current_turn", 0) < self.max_turns
-
-    def should_break(self, state: AgentState) -> bool:
-        return state.get("current_turn", 0) >= self.max_turns
-
-    def next_step(self, state: AgentState) -> str:
-        # 引擎每轮调用：user/system → call_model；assistant+tool_calls → execute_tools
-        # tool result → call_model（observe → think）
-        msgs = state.get("messages", [])
-        if not msgs:
-            return "call_model"
-        last = msgs[-1]
-        role = last.get("role", "")
-        if role in ("user", "system"):
-            return "call_model"
-        if role == "assistant" and last.get("tool_calls"):
-            return "execute_tools"
-        return "call_model"
+class StateStore(Protocol):
+    async def put(self, session_id: str, state: AgentState) -> None: ...
+    async def get(self, session_id: str) -> AgentState | None: ...
+    async def delete(self, session_id: str) -> None: ...
+    async def list_sessions(self) -> list[str]: ...
 ```
 
-循环终止条件（四个独立路径）：
+Two implementations exist:
 
-1. `should_continue()` 返回 `False`（入口阻断）
-2. 模型返回纯文本，`break`（正常完成）
-3. `should_break()` 返回 `True`（出口断路器触发）
-4. `_cancelled()` 为 `True`，`break`（用户中断）
+**FileStateStore** (`arf/engine/checkpoint.py`):
 
-### 2.6 取消机制
+- Persists state to `<state_dir>/<session_id>.json`
+- Atomic writes: writes to a `.tmp` file first, then `rename()` to the target path
+- **`tool_results` is stripped before persistence** (`data.pop("tool_results", None)`) -- tool results are ephemeral and should not survive restarts
+- Recovery from corruption: returns None on JSON decode error, logs a warning
+- Survives process restarts
 
-`asyncio.Event` 作为取消信号（`arf/engine/graph.py`）：
+**InMemoryStateStore** (`arf/engine/checkpoint.py`):
+
+- Dict-backed, fast but lost on process restart
+- Maintains a `snapshots: list[dict]` recording every `put()` call for testing
+- `reset()` clears all data
+- **Does NOT strip `tool_results`** -- as a test double, it preserves full state
+
+**Where StateStore.put() is called in the engine**:
+
+1. After dispatch (during error recovery for `retry` / `fallback` actions)
+2. At the end of every turn (`turn_end` hook fires first, then `put()`)
+3. At session end (before yielding `session_end` event)
+
+**AgentState structure** (`arf/core/state.py`, `AgentState` is a `TypedDict` with `total=False`):
+
+Public fields:
+
+| Field | Type | Set By | Description |
+|-------|------|--------|-------------|
+| `session_id` | `str` | BaseAgent.chat() | Session unique identifier |
+| `agent_name` | `str` | BaseAgent.chat() | Currently active agent name |
+| `messages` | `list[dict]` | Engine (each turn) | OpenAI-format message list |
+| `current_model` | `str` | Init + ModelDegrader | Current model name |
+| `current_turn` | `int` | Engine loop | Turn counter (model + tool exec) |
+| `interaction_round` | `int` | Engine loop | Monotonic round counter |
+| `context_summary` | `str` | Compaction | Compacted history summary |
+| `tool_results` | `dict[str, dict]` | Post-execution | tool_call_id -> ToolResult (ephemeral, not persisted) |
+| `plan` | `dict \| None` | Planner (reserved) | Execution plan |
+| `metadata` | `dict` | App/user | Free-form extension metadata |
+| `session_active` | `bool` | BaseAgent | Session liveness flag |
+
+Engine-internal fields (not publicly documented, subject to change):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_token_usage` | `int` | Total tokens from last API call, used by compaction |
+| `_pending_tool_calls` | `list[dict]` | Cross-step: tool_calls awaiting execution |
+| `_compaction_cooldown` | `int` | Decreasing counter preventing consecutive compactions |
+| `session_title` | `str` | Optional session title |
+
+### 2.9 RoundManager -- Checkpoint and Undo
+
+`RoundManager` (`arf/engine/round_manager.py`) provides round-level snapshot and undo capability. It is **defined but not yet wired** into BaseAgent or ControlPlane -- the class exists with full implementation, but no code currently calls `begin_round()` or `undo()`.
+
+**`RoundTransaction`** -- one user-interaction round's snapshot:
 
 ```python
-def _cancelled(self) -> bool:
-    return self._cancel_event is not None and self._cancel_event.is_set()
+@dataclass
+class RoundTransaction:
+    round_id: str                       # "session_id/round_num"
+    round_num: int                      # monotonic
+    state_snapshot: dict                # deepcopy(AgentState) at round start
+    workspace_snapshot_dir: str | None  # data/checkpoints/{round_num}/
+    created_at: float
+    agent_trace: list[str]              # agent names visited in this round
+    closed: bool
 ```
 
-每次 `while` 循环迭代开始前检测。`cancel_event` 通过 `set_cancel_event()` 注入（支持延迟绑定）。取消在循环边界安全退出——当前 turn 的模型调用和工具执行不会被中途打断。
+**Key behaviors**:
 
-### 2.7 会话断路器
+- `begin_round(state, workspace_dir)` -> deepcopies AgentState + snapshots workspace files to `data/checkpoints/{round_num}/`. Also writes `state.json` for crash-safe undo recovery.
+- `undo(steps)` -> pops N transactions, restores workspace files from the oldest popped snapshot, returns deepcopy of that state. Cleans up checkpoint directories >= the target round number.
+- `close_round()` -> marks active transaction as closed.
+- `max_undo_depth` -> default 3, uses `deque(maxlen=N)` for automatic oldest-eviction.
+- Persistence: `rounds.json` (metadata only, not full state) is written to `data/checkpoints/`. `_restore_from_disk()` on construction reads this file and re-attaches state snapshots from checkpoint dirs, enabling undo across process restarts.
 
-`max_turns` 是每轮的硬限制。默认 50（`GraphEngine.__init__`）。`current_turn` 每 round 在 `BaseAgent.chat()/astream()` 中复位到 0（`arf/agent/base.py`）。
+| Component | StateStore | RoundManager (not yet wired) |
+|-----------|-----------|------------------------------|
+| Trigger | Engine loop (turn_end, session_end) | Each chat()/astream() entry |
+| Granularity | Multiple times per turn | Once per round |
+| Contents | AgentState (excluding tool_results) | Deepcopied AgentState + workspace files |
+| Purpose | Crash recovery | Undo/rollback |
+| Restoration path | `StateStore.get()` | `RoundManager.undo(N)` |
 
-多 Agent 场景：`_active_config()` 返回子 Agent 的 `max_turns`（通过 `cfg.effective_advanced().max_turns`），引擎在 turn 边界使用该值判定。子 Agent 的 turn 在 `_execute_handoff()` 中 reset 为 0（`arf/engine/graph.py`）。返回主 Agent 时，从 StateStore 恢复主 Agent 的消息历史（`_restore_from_handoff()`），turn 计数随之恢复。
+### 2.10 Tool Execution
 
-### 2.8 工具执行
+**ConcurrentToolExecutor** (`arf/engine/tool_executor.py`) executes tool calls with configurable concurrency.
 
-`ConcurrentToolExecutor`（`arf/engine/tool_executor.py`）：
+**Execution strategies**:
 
-| 策略 | 实现 |
-|------|------|
-| `parallel` | `asyncio.gather` + `Semaphore(max_concurrency)` |
-| `sequential` | `for` 循环逐个 `await` |
+| Strategy | Implementation |
+|----------|---------------|
+| `"parallel"` (default) | `asyncio.gather` with `Semaphore(max_concurrency=5)` |
+| `"sequential"` | `for` loop awaiting each tool |
 
-工具 params 中自动注入 `_agent_mode`（当前 active_agent 名称）、`_engine`（GraphEngine 引用）、`_state_store`（StateStore 引用）。工具可通过这些引用访问引擎能力。
+**Automatic parameter injection**: Each tool call's params dict receives:
+- `_agent_mode` -- current active agent name (when `agent_mode != ""`)
+- `_engine` -- ControlPlane reference (for tools that need to interact with the engine)
+- `_state_store` -- StateStore reference
+- `_workspace` -- workspace directory path
+- `session_id` -- current session ID
 
-工具执行结果（`ToolResult`）含 `success/data/error/duration_ms/rolled_back/rollback_error`。引擎在注入消息历史前，若配置了 compaction，会调用 `compaction.summarize_tool_output()` 截断超长输出。
+**Path parameter resolution** (`_resolve_path_params`): Parameter names ending in `_path`, `_file`, `_dir`, or matching the set of known path names (`path`, `file_path`, `file`, `output_dir`, `input_dir`, `cwd`) are resolved relative to the workspace directory. Framework directory params (`memory_dir`, `state_dir`, `trace_dir`, `files_dir`) are NOT resolved. Absolute paths are left as-is (security validation is handled by PathCheckToolGuard upstream).
 
-`_step_classify_tool_calls()` 的工具守卫流水线（`arf/engine/graph.py`）：
-1. **Pipeline**：检查 `SkillPipeline.can_execute()`，确保工具依赖顺序
-2. **PathCheckToolGuard**：检查路径参数合法性（拒绝 `..` 穿越和绝对路径）
-3. **ToolPermissionChecker**：deny → ask → allow 三级判定
-4. **Approval**：`perm == "ask"` 且 `approval_enabled` 时，等待用户审批（60s 超时自动拒）
+**Guard check** (`_check_params`, before execution):
 
-被拒工具注入 `"[Blocked] reason"` 作为 tool 消息，引擎继续循环（不会因单个工具被拒而中止）。
+1. Resolve directory boundary: tool-specific boundary (from `tool_boundaries` dict) -> sandbox boundary (from `SandboxManager`) -> default boundary (workspace root)
+2. Run `PathCheckToolGuard.check()` if both `tool_guard` and `boundary` are configured
+3. If guard blocks: return `ToolResult(blocked=True, error="[PathCheck] reason")`
+4. If guard passes: execute the tool via `ToolResolver.execute()`
 
-### 2.9 BaseAgent 装配
+**ToolResult structure** (from `arf/core/results.py`):
 
-`BaseAgent.__init__()`（`arf/agent/base.py`）按固定顺序初始化子系统：
-
-| 步骤 | 子系统 | 默认实现 | Protocol |
-|------|--------|----------|----------|
-| 1 | EventBus | `InMemoryEventBus` | `EventBus` |
-| 2 | StateStore | `FileStateStore`（JSON 文件，原子写入） | `StateStore` |
-| 3 | Resources | `ToolProvider` + `SkillProvider` + `ModelProvider` → `ResourceResolver` | `ToolResolver` |
-| 4 | Memory | `FileMemoryStore`（writer/retriever 移至 plugins） | `MemoryStore` |
-| 5 | Compaction | `SlidingWindowCompactor`（token 感知窗口压缩，`threshold=0.75`） | `CompactionStrategy` |
-| 6 | Guardrails | `DefaultGuardRunner`（PathCheck + Permission + RegexOutput） | `GuardRunner` |
-| 7 | Error Policy | `DefaultErrorPolicy`（tool_retry=2, model_5xx=fallback） | `ErrorPolicy` |
-| 8 | Hooks | `SubprocessHookRunner`（子进程并行执行） | `HookRunner` |
-| 9 | Tool Executor | `ConcurrentToolExecutor`（parallel/sequential） | `ToolExecutor` |
-| 10 | Loop Strategy | `ReActStrategy`（max_turns=50） | `LoopStrategy` |
-
-额外装配：
-- **Planner**（可选）：协议已定义（`arf/core/protocols/engine.py`），但引擎侧尚未集成——`plan_execute` 循环策略未实现
-- **Sub-agents**：遍历 `config.agents`，为每个子 Agent 创建独立 system prompt 和 ModelAdapter
-- **HandoffManager**：从 `config.handover.rules` 构建规则表
-- **ModelAdapter**：`_inject_model_calls()` 为每个模型配置创建适配器，注入 `_call_model` / `_stream_model` 闭包；可选包裹 `ModelCallProtector`（`arf/protection/protector.py`，rate limit + circuit breaker）
-- **ModelRouter**：`TwoTierRouter`（LLM 分类器或 static），在每 turn 选择模型
-- **UsageTracker**：监听 EventBus，累计 token 用量
-
-所有 Protocol 通过 `**override_protocols` 可替换，支持测试注入 `InMemory*` doubles。
-
-### 2.10 Handoff（多 Agent 切换）
-
-`HandoffManager`（`arf/engine/handoff.py`）实现会话内 Agent 切换。
-
-**检测**（`detect()`）：扫描 `state["tool_results"]`，查找 `{"handoff": true}` 信号。支持格式：`ToolResult.data` 嵌套、`FunctionBackend` 的 `{"result": {...}}` 包装、扁平 dict。
-
-**Forward 流程**（`GraphEngine._execute_handoff()`，`arf/engine/graph.py`）：
-1. 保存当前 Agent 状态到 `StateStore`（key: `{session_id}/{from_agent}`）
-2. `HandoffManager.resolve()` 解析目标——单规则直接匹配，多规则 LLM 分类（fallback: 关键词匹配）
-3. `RoundManager.record_handoff()` 记录切换（不创建新 checkpoint）
-4. 加载目标 Agent 持久化状态（存在则恢复），否则 `HandoffManager.build_target_context()` 构建初始上下文
-5. 上下文构建：截取最近 N 轮对话（默认 `raw_turns: 5`，可配置；过滤掉 tool_calls 和 tool 消息，只保留 user + 纯 assistant 消息）+ 可选 task_summary（system model 生成）
-6. 重置 `current_turn = 0`，清除 `tool_results`，设置 `active_agent`
-7. Emit `AgentEvent(type="agent_switch")` + log
-
-**Return 流程**（`_restore_from_handoff()`，`arf/engine/graph.py`）：
-1. 提取子 Agent 最后一条 assistant 消息作为结果
-2. 保存子 Agent 最终状态
-3. 从 StateStore 恢复主 Agent 消息历史
-4. 替换原始 handoff 工具结果（role: "tool"）为子 Agent 的响应文本
-5. 清除 `handoff_task` 字段，调用 `_close_tool_calls()` 保证消息完整性
-
-### 2.11 持久化与回滚
-
-ARF 有两套独立的持久化机制：Round检查点（undo 回滚）和 State快照（崩溃恢复），服务不同目的：
-
-#### StateStore — State快照（崩溃恢复）
-
-`arf/engine/checkpoint.py`，在引擎循环内多处调用 `put()`：
-
-- `FileStateStore`：写入 `<state_dir>/<session_id>.json`，原子写入（tmp 文件 + rename）。**`tool_results` 不持久化**——`FileStateStore.put()` 调用 `data.pop("tool_results", None)`，因为工具结果是瞬态的。注意 `InMemoryStateStore` 不执行此过滤（测试 double，保留完整状态）。
-- `InMemoryStateStore`：dict + deepcopy，用于测试。`snapshots` 列表记录每次 `put()` 调用。
-- 用途：进程重启后从磁盘恢复会话状态。`_close_tool_calls()` 在 `invoke()/astream()` 入口保证消息序列完整性。
-- 频率：每个 turn 至少一次（text-only）；有工具执行的 turn 两次（装配 assistant+tool_calls 后 + 工具执行完毕后）。
-
-#### RoundManager — Round检查点（undo 回滚）
-
-`arf/engine/round_manager.py`，在 `BaseAgent.chat()/astream()` 入口调用 `begin_round()`：
-
-- `begin_round()`：深拷贝 AgentState + 快照 workspace 文件到 `memory/checkpoints/{round_num}/`。**每 round 一次**。
-- `record_handoff()`：记录切换不创建新Round检查点——同一 round 内多次 handoff，undo 一次回退整个 round
-- `undo(steps)`：pop N 个 round，返回 oldest popped 的 state_snapshot，恢复 workspace 文件
-- 持久化：`rounds.json` 索引 + 每个检查点的 `state.json`。`_restore_from_disk()` 在 RoundManager 构造时重放，**支持跨进程重启后 undo**
-- `max_undo_depth`：默认 3，deque 自动淘汰最旧 round
-
-`GraphEngine.undo()`（`arf/engine/graph.py`）封装 RoundManager.undo，额外 emit `undo_executed` 事件。
-
-#### 两者关系
-
-| | StateStore（State快照） | RoundManager（Round检查点） |
-|------|---------|------|
-| 触发时机 | 引擎循环内多处 | 每个 `chat()/astream()` 入口 |
-| 粒度 | 每 turn 多次 | **每 round 一次** |
-| 持久化内容 | 会话状态（不含 tool_results） | 状态深拷贝 + 工作区文件快照 |
-| 用途 | 崩溃恢复 | undo 回滚 |
-| 恢复路径 | `StateStore.get()` + `_close_tool_calls()` | `RoundManager.undo()` |
-
-两者独立运作：undo 回到 round 起点（从 RoundManager 快照恢复状态和文件），崩溃恢复从上次 `StateStore.put()` 的磁盘状态继续会话。
-
-### 2.12 Hook 系统
-
-`SubprocessHookRunner`（`arf/hooks/runner.py`）执行生命周期钩子。8 种事件类型（`arf/core/config_base.py`）：
-
-| Hook 事件 | 触发位置 | Payload |
-|-----------|---------|---------|
-| `session_start` | `BaseAgent.chat()/astream()` | `{"session_id": ...}` |
-| `round_start` | `BaseAgent.chat()/astream()` | `{"session_id": ..., "round": ...}` |
-| `pre_model_call` | `GraphEngine.invoke()/astream()` | `{"messages": ...}` |
-| `post_model_call` | `GraphEngine.invoke()/astream()` | `{"response": ...}` |
-| `pre_tool_exec` | `GraphEngine.invoke()/astream()` | `{"tool_calls": ..., "turn": ...}` |
-| `post_tool_exec` | `GraphEngine.invoke()/astream()` | `{"tool_calls": ..., "results": ..., "turn": ...}` |
-| `round_end` | `GraphEngine.invoke()/astream()`（循环退出后） | `{"session_id": ..., "round": ...}` |
-| `session_end` | `BaseAgent.stop()` 或 crash recovery 路径 | `{"session_id": ..., "reason": ...}` |
-
-Hook 行为：
-- 同事件类型的 hook **并行执行**（`asyncio.gather`）
-- 超时杀死子进程，返回 `exit_code=-1`
-- 退出码 2 + stdout 内容 → `injected_message`，引擎调用 `_inject_hook_messages()` 将 `[Hook: name] msg` 作为 system 消息注入 state
-- 单 hook 失败不影响其他 hook
-- `set_order()` 控制同事件类型的执行顺序
-- 所有 hook 子进程自动获得运行时环境变量：`ARF_RUNTIME`（JSON）、`ARF_SESSION_ID`、`ARF_ROUND`、`ARF_MEMORY_DIR`、`ARF_WORKSPACE`、`ARF_TRACE_DIR`、`ARF_SYSTEM_MODEL`
-- `$ARF_{KEY}` 占位符从 `runtime_dict + context` 合并字典替换（context key 优先级更高）
-
-### 2.13 EventBus 事件目录
-
-引擎在执行过程中 emit 以下 `AgentEvent`（定义在 `arf/core/events.py`）：
-
-| 事件 | 含义 | Emit 时机 |
-|------|------|----------|
-| `session_start` | Session 进入循环（EventBus 层面） | invoke/astream 入口 |
-| `session_end` | Session 循环退出 | invoke/astream 出口 / cancel |
-| `user_input` | 本 turn 的用户消息 | 每 turn 开始 |
-| `model_call_start` | 模型调用开始 | 调用前（含 fallback_from 字段） |
-| `model_call_end` | 模型调用结束 | 调用后（含 usage/content） |
-| `thinking_delta` | 流式 token | astream 每个 chunk |
-| `tool_call_start` | 工具执行开始 | pre_tool_exec hook 后 |
-| `tool_call_end` | 工具执行完成 | 含 success/duration/result/rolled_back |
-| `compaction_start/end` | 压缩执行 | 压缩前后 |
-| `approval_required` | 需要用户审批 | 工具 perm=="ask" 时 |
-| `approval_resolved` | 审批完成 | approved/denied/timeout |
-| `agent_switch` | Agent 切换 | handoff 执行 |
-| `guard_block` | 工具被守卫阻止 | pipeline/path/permission/approval |
-| `guard_pass` | 工具通过守卫 | 所有检查通过 |
-| `hook_start/end` | Hook 执行 | 每个 hook 事件类型前后 |
-| `undo_executed` | Undo 完成 | `GraphEngine.undo()` |
-| `rollback_executed` | 工具回滚完成 | 工具执行后（如有回滚） |
-| `error` | 错误 | streaming 错误、handoff 失败 |
-| `rate_limited` | 限流触发 | `ModelCallProtector` |
-| `circuit_opened/half_open/closed` | 断路器状态转移 | `ModelCallProtector` |
-| `breaker_blocked` | 断路器拦截请求 | `ModelCallProtector` |
-
-### 2.14 配置
-
-```yaml
-# agent.yaml — Agent 执行相关字段
-models:
-  - type: quick
-    model: deepseek-v4-flash
-    context_window: 800000
-  - type: deep
-    model: deepseek-v4-pro
-    context_window: 1000000
-
-advanced:
-  loop_strategy: react        # 仅 "react" 实现（plan_execute 未实现）
-  max_turns: 50               # 每轮断路器
-  max_undo_depth: 3           # undo 检查点窗口大小
-  concurrency:
-    strategy: parallel         # parallel | sequential
-    max_concurrency: 5
-
-# 多 Agent 配置（可选）
-agents:
-  - name: agent_b
-    role: 工作 Agent
-    task: 资源创建、模型配置、工具/技能生成
-
-handover:
-  rules:
-    - from_agent: agent_a
-      to_agent: agent_b
-      trigger: "创建工具 生成技能 配置模型"
-      context:
-        raw_turns: 4
-        task_summary: true
-    - from_agent: agent_b
-      to_agent: agent_a
-      trigger: "完成 返回"
-      context:
-        raw_turns: 4
-        task_summary: true
 ```
+success: bool        -- execution succeeded
+data: Any            -- result data (if success)
+error: str           -- error message (if not success)
+duration_ms: float   -- execution wall-clock time
+blocked: bool        -- true if blocked by guard (not executed)
+rolled_back: bool    -- true if rollback was attempted
+rollback_error: str  -- rollback failure message
+```
+
+### 2.11 Error Handling
+
+The `_handle_error()` method (`control_plane.py:484`) is called when any hook or dispatch operation throws an exception.
+
+**Flow**:
+
+1. Sets `ctx.hook_data["exception"]` to the exception
+2. Fires the `error` blocking hook
+3. If the error hook itself fails: emits an error event, returns `_default_error_action(exc)`
+4. If the error hook succeeded: reads `ctx.hook_data["_recovery_decision"]`
+5. If no recovery decision was set: emits an error event, returns default action
+6. Returns the decision dict to the caller, which acts on it (see the table in 2.3)
+
+**Default error actions by exception type**:
+
+| Exception Type | Default Action |
+|---------------|----------------|
+| `PermissionDenied`, `ApprovalDenied`, `SandboxViolation`, `ApprovalTimeout` | `{"action": "skip"}` -- guard/approval blocked the tool, let the model see the tool_result |
+| All others | `{"action": "abort", "params": {"user_message": str(exc)}}` |
+
+**Error events**: The engine emits an `AgentEvent(type="error")` via the event bus when:
+- A hook fails during error handling (the error hook itself crashed)
+- No recovery decision was returned by the error hook
+- Streaming model calls fail (caught by `_dispatch_call_model`)
+
+### 2.12 BaseAgent -- Assembly and Public API
+
+`BaseAgent.__init__()` (`arf/agent/base.py`) assembles all Protocol implementations in a fixed order. Each can be overridden via `**override_protocols`:
+
+| Step | Component | Default Implementation |
+|------|-----------|----------------------|
+| 1 | EventBus | `InMemoryEventBus` |
+| 2 | StateStore | `FileStateStore(state_dir)` |
+| 3 | MCP Manager | `McpClientManager(tools/skills/models/plugins dirs)` |
+| 4 | Plugin Provider | `PluginProvider` (from plugins directory) |
+| 5 | FileWatcher | `FileWatcher` (optional, disabled if config says so) |
+| 6 | Memory | `FileMemoryStore(memory_dir)` |
+| 7 | PluginRuntime | `PluginRuntime(memory/workspace/state/trace dirs)` |
+| 8 | Guardrails | `DefaultGuardRunner(NoneInputGuard, RegexOutputGuard, PathCheckToolGuard)` |
+| 9 | Permission System | `SessionModeManager + PermissionRegistry` |
+| 10 | ErrorPolicy | `DefaultErrorPolicy(tool_retry=2, model_5xx_action="fallback")` |
+| 11 | Hooks | `SubprocessHookRunner(config hooks + plugin hooks)` |
+| 12 | ToolExecutor | `ConcurrentToolExecutor(strategy, max_concurrency, tool_guard, boundaries)` |
+| 13 | LoopStrategy | `ReActStrategy(max_turns=50)` |
+| 14 | System Prompt | `DefaultSystemPromptProvider.build()` with `$INVENTORY` (MCP) and `$MEMORY` (resident) filled |
+| 15 | Model Calls | `_inject_model_calls()`: ModelDegrader + optional ModelCallProtector |
+| 16 | Plugins | `ToolGuardPlugin` (blocking, deny/allow/deny_patterns) and `ApprovalPlugin` (blocking, ask list) |
+| 17 | ControlPlane | Constructed with all assembled dependencies |
+
+**Model call injection** (`_inject_model_calls`):
+
+1. Build `ModelDegrader` from `model_defs` (new format) or `config.models` (legacy): ordered list of `ModelAdapter` instances for fallback
+2. Optionally wrap with `ModelCallProtector` (rate limiting + circuit breaker, TODO #10)
+3. Inject via `engine.set_call_model()` and `engine.set_stream_model()`
+4. Internal `_call_model` and `_stream_model` closures handle message formatting, tool schema conversion, response parsing
+
+**Blocking plugins constructed from permission config**:
+
+- `ToolGuardPlugin`: Handles `deny` (immediate rejection), `allow` (bypass), and `deny_patterns` (dangerous content check)
+- `ApprovalPlugin`: Handles `ask` (human-in-the-loop wait), registered on `pre_dispatch` hook to emit approval_required events
+- Auto-discovered plugins from `PluginProvider` are appended after these two (with special plugins `tool_guard` and `approval` skipped to avoid duplication)
+
+**Public API**:
+
+- `chat(user_message, session_id)` -> `str`: Sync invocation. Manages session lifecycle (recovery, hooks), builds state, calls `engine.invoke(state)`, returns the last assistant message text.
+- `astream(user_message, session_id)` -> `AsyncGenerator[AgentEvent]`: Streaming variant. Same lifecycle management, delegates to `engine.astream(state)`.
+- `start()`: Start FileWatcher and MCP manager (must be called after the event loop is running).
+- `stop()`: Stop FileWatcher, MCP manager, close all active sessions (fires `session_end(reason="shutdown")` hooks).
+- `approve(decision_id, approved)`: Delegate approval to the ApprovalPlugin (if registered).
+- `reconfigure(**overrides)`: Update config at runtime.
+- `evaluate(benchmark)`: Run an EvalBenchmark against this agent.
+
+**External hook system**: BaseAgent also maintains its own `SubprocessHookRunner` (separate from ControlPlane's side runner) which fires:
+- `session_start` (if new session, before engine invoke)
+- `round_start` (before engine invoke)
+- `session_end` (on stop/shutdown)
+
+These are subprocess hooks defined in `agent.yaml`, used for logging, metrics, and external integrations. They receive a simpler context dict (not a PluginContext) and fire before the engine-internal hooks.
+
+### 2.13 Event Types
+
+**AgentEvent** (`arf/core/events.py`):
+
+```python
+@dataclass
+class AgentEvent:
+    type: EventType       # literal string from the union
+    data: dict            # event-specific payload
+    timestamp: float      # auto-set to time.time()
+    trace_id: str         # distributed tracing
+    span_id: str
+    parent_span_id: str | None
+    session_id: str
+    agent_name: str
+    turn: int
+```
+
+**EventType union** (31 literal values):
+
+Events emitted by the engine (ControlPlane):
+
+| Event | When | Data Payload |
+|-------|------|-------------|
+| `session_start` | _execute begins | `{session_id}` |
+| `session_end` | _execute exits | `{session_id, reason?}` |
+| `model_call_start` | Before model API call | `{model, turn}` |
+| `thinking_delta` | Each streamed chunk | `{content, reasoning}` |
+| `model_call_end` | After model API call | `{model, turn, content, usage}` |
+| `tool_call_start` | Tool execution starts | `{tool_name, turn, id, arguments}` |
+| `tool_call_end` | Tool execution finishes | `{tool_name, turn, id, success, duration_ms, result, error}` |
+| `error` | Error during dispatch | `{phase, exception, detail, message}` |
+
+Events available for plugins to emit via `ctx.emit()` or the EventBus (defined in the type union but not emitted by the engine itself):
+
+| Event | Purpose |
+|-------|---------|
+| `user_input` | User message received |
+| `compaction_start` / `compaction_end` | Context compression |
+| `approval_required` / `approval_resolved` | Human-in-the-loop approval |
+| `guard_block` / `guard_pass` | Guard check results |
+| `hook_start` / `hook_end` | Hook execution trace |
+| `undo_executed` | Undo boundary marker |
+| `rollback_executed` | Tool rollback completed |
+| `rate_limited` | Rate limit hit (protection) |
+| `circuit_opened` / `circuit_half_open` / `circuit_closed` | Circuit breaker transitions |
+| `breaker_blocked` | Breaker blocked a request |
+| `pre_model_call` | Before model call (plugin mount point) |
+| `post_permission` | After permission check (plugin mount point) |
+| `sandbox_persist` | Before sandbox persistence (plugin mount point) |
+| `tool_call_result` | Tool result (used by ReplayController) |
+
+Note: `hook_start`, `hook_end`, and `undo_executed` are defined in the type union but are **not emitted** by the current engine. They exist for future use or for plugin-emitting.
+
+### 2.14 Dual Hook System
+
+The ControlPlane and BaseAgent maintain separate hook systems that fire at overlapping points:
+
+| Hook Point | BaseAgent (SubprocessHookRunner) | ControlPlane Blocking (InProcessHookRunner) | ControlPlane Side (SubprocessHookRunner) |
+|-----------|--------------------------------|---------------------------------------------|------------------------------------------|
+| `session_start` | Yes (if new session, before invoke) | Yes | Yes |
+| `round_start` | Yes (before invoke) | Yes | Yes |
+| `turn_start` | -- | Yes | Yes |
+| `pre_dispatch` | -- | Yes (fire_and_drain, can emit events) | Yes (after blocking) |
+| `post_dispatch` | -- | Yes | Yes |
+| `turn_end` | -- | Yes | Yes |
+| `round_end` | -- | Yes | Yes |
+| `session_end` | Yes (on stop/shutdown) | Yes (errors silently caught) | Yes |
+| `error` | -- | Yes | -- |
+
+This dual system is a deliberate separation of concerns:
+
+- **BaseAgent hooks** (`self._hook_runner`): External subprocess scripts defined in `agent.yaml`. Session lifecycle notifications for external systems (logging, metrics, monitoring).
+- **ControlPlane blocking hooks** (`self._blocking`): In-process Python plugins that can block execution, mutate state, and interact with the event stream. Permission checking, approval, memory extraction, compaction.
+- **ControlPlane side hooks** (`self._side`): Fire-and-forget subprocess and in-process hooks for observability, tracing, and non-blocking side effects.
 
 ---
 
-## 3. 演进方向
+## 3. Evolution Directions
 
-以下为已识别但**尚未实现**的方向。按优先级排列，部分已有协议定义或插件骨架但未集成到引擎主循环。
+The following directions are identified but **not yet implemented**. They are ordered by estimated priority.
 
-### 3.1 plan-execute 循环策略
+### 3.1 Plan-Execute Loop Strategy
 
-**状态**：`Planner` 协议已定义（`arf/core/protocols/engine.py`），`arf/plugins/planner/` 目录存在但只含 `skills/` 和 `tools/` 骨架，无 Python 代码。`PlanExecuteStrategy` 未实现，`agent.yaml` 中 `loop_strategy: plan_execute` 选项不存在。
+**Status**: The `Planner` protocol is defined in `arf/core/protocols/engine.py` (with `generate_plan`, `update_progress`, `detect_divergence`, `revise` methods). No `PlanExecuteStrategy` implementation exists.
 
-实现要点：
-- Plan 阶段：system model 生成步骤化执行计划
-- Execute 阶段：按计划推进，每步检查偏离（divergence detection）
-- Replan 阈值：偏离超阈值时重新 plan
+The plan-execute pattern would add a new LoopStrategy implementation:
 
-### 3.2 多 Agent DAG 编排
+- **Plan phase**: The planner generates a step-by-step execution plan from the user's task
+- **Execute phase**: The engine executes plan steps, with divergence detection between expected and observed outcomes
+- **Replan threshold**: When divergence exceeds a threshold, the planner revises the plan
+- The `next_step()` method would dispatch to plan, execute_step, or revise based on the current phase
 
-**状态**：未实现。当前 handoff 是链式的（主 Agent ↔ 子 Agent）。
+### 3.2 Multi-Agent DAG Orchestration
 
-目标：主 Agent 分解任务后同时 handoff 到多个子 Agent（fork），子 Agent 并行执行，主 Agent 收集结果（waitpid），合并后继续。
+**Status**: Not implemented. The previous handoff infrastructure has been removed. No replacement exists.
 
-### 3.3 抢占式中断
+The vision is DAG-style orchestration where a supervisor agent decomposes a task and dispatches sub-tasks to multiple child agents concurrently (fork), then collects results (waitpid/join). The current architecture would implement this through:
 
-**状态**：未实现。当前取消在循环边界响应（`_cancelled()` 在 while 循环开始处检测）。若模型调用耗时长，用户需等待当前 turn 完成。
+- A plugin attached to `round_start` that inspects state and creates sub-agents
+- The `strategy_override` mechanism (already present in `round_start` hook) to swap execution strategy
+- State isolation via separate session IDs or namespaced state keys
 
-目标：收到取消信号后立即中止 HTTP 请求（`httpx` / `openai` 支持 `cancel()`），不等完整响应。
+### 3.3 Preemptive Cancellation
 
-### 3.4 暂停/恢复/检查点
+**Status**: Current cancellation is cooperative -- the `cancel_event` is checked only at loop boundaries (before each turn begins). If a model call is in progress, the user must wait for it to complete.
 
-**状态**：目前是round级别的检查点。当前round过程中某个turn的取消是"终止型"的——只能从最近的round检查点开始重新会话，本round内已执行的操作会被回滚（丢失，但是保证了round级别的事务一致性）。
+Future: Cancel in-flight HTTP requests to the model API. This requires API client support (`httpx`/`openai` client cancellation). The `_cancelled()` check could be augmented with a background task that forcefully cancels the current dispatch when the event is set.
 
-可能方向：在当前循环边界安全停止，完整序列化 engine 状态（含 pending approvals、active pipelines、handoff 中间态），支持turn级别的更细粒度恢复。需要这么细节的回滚吗？空间换时间需要找到平衡点
+### 3.4 Turn-Level Checkpointing
 
-### 3.6 循环控制抽象的更多默认实现：should_continue / should_break
+**Status**: The `RoundManager` class exists (full implementation with state snapshot, workspace snapshot, disk persistence, and restore) but is **not wired** into BaseAgent. Beginning a round's checkpoint and restoring on undo are not connected.
 
-**状态**：`should_continue(state) → bool`（入口）和 `should_break(state) → bool`（末尾）两个协议方法，统一由 `LoopStrategy` 实现，从当前活跃 Agent 的配置动态取值，当前仅监控 turn 计数。
-目标：扩展更多循环控制的默认实现——token 预算、时间预算、工具调用次数上限等。
+Short-term: Wire `RoundManager.begin_round()` / `close_round()` into `BaseAgent.chat()` / `astream()`. This enables undo functionality.
+
+Medium-term: Add `undo` event emission (the `undo_executed` event type is already defined). Expose undo through the agent's public API.
+
+Long-term: Consider turn-level checkpointing for finer-grained recovery, balancing storage cost against recovery granularity.
+
+### 3.5 Extended Loop Controls
+
+**Status**: Both `should_continue()` and `should_break()` currently only monitor `current_turn` against `max_turns`.
+
+Future extensions to the LoopStrategy protocol:
+
+- **Token budget**: Stop when accumulated token usage exceeds a threshold
+- **Time budget**: Stop when wall-clock time exceeds a limit
+- **Tool call count**: Stop after N tool calls in a round
+- **Error count**: Stop after consecutive model or tool failures
+
+These would be additive -- the strategy combines all active constraints with logical OR (any gate triggers termination).
+
+### 3.6 Dynamic Strategy Switching
+
+**Status**: The `strategy_override` mechanism in the `round_start` hook is minimal -- a hook can replace the strategy instance, but there is no framework support for phased execution (e.g., plan -> react -> reflect).
+
+Future: A meta-strategy that delegates to sub-strategies based on phase, allowing complex multi-phase agent behaviors without changing the engine.
