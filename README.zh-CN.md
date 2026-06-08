@@ -178,20 +178,6 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
 
-### 演进方向
-
-参见各模块设计文档：
-- [上下文管理](docs/context-management.md) — 语义单元压缩、自适应阈值、跨会话摘要复用
-- [Memory 插件](docs/plugins/memory.md) — 多轮次触发、自定义 prompt 模板
-- [资源注册](docs/resource-registry.md) — 层次化覆盖合并、MCP 多源 Provider
-- [工具沙箱](docs/tool-sandbox.md) — Per-invocation sandbox、内容感知扫描
-- [Skill Pipeline](docs/skill-pipeline.md) — 多 Agent DAG、Worktree 隔离
-- [中断](docs/interrupt.md) — 暂停/重定向、空闲超时
-- [Trace](docs/trace.md) — SQLite Trace DB、OpenTelemetry 导出
-- [回归测评](docs/eval-benchmark.md) — CLI 集成、语义相似度指标
-
-<br/>
-
 ---
 
 <p align="center">

@@ -178,20 +178,6 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell executor, community-audited injection safety |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python sandbox |
 
-### Evolution
-
-See per-module design documents for evolution directions:
-- [Context Management](docs/context-management.md) — semantic-unit compaction, adaptive threshold, cross-session summary reuse
-- [Memory Plugin](docs/plugins/memory.md) — multi-round trigger, custom prompt templates
-- [Resource Registry](docs/resource-registry.md) — hierarchical override merge, MCP multi-source Provider
-- [Tool Sandbox](docs/tool-sandbox.md) — per-invocation sandbox, content-aware scanning
-- [Skill Pipeline](docs/skill-pipeline.md) — multi-agent DAG, worktree isolation
-- [Interrupt](docs/interrupt.md) — pause/redirect, idle timeout
-- [Trace](docs/trace.md) — SQLite trace DB, OpenTelemetry export
-- [Eval Benchmark](docs/eval-benchmark.md) — CLI integration, semantic similarity metrics
-
-<br/>
-
 ---
 
 <p align="center">
