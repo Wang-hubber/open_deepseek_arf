@@ -1,4 +1,4 @@
-# From Context Windows to Weight Updates — The Case for Parameterized Agent Memory
+# From In-Context Learning to Weight Updates — The Case for Parameterized Agent Memory
 
 > 基于 PEAM、TMEM 两篇论文的阅读，加上个人的综合分析与实验设想。
 
