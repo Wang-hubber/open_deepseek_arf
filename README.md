@@ -147,6 +147,29 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 
 ---
 
+## Evolution
+
+### Short-term: Literature Review & Theory Validation
+
+Compute-constrained for now. Short-term focus on literature survey and theoretical framework refinement:
+
+- **Parameterized memory literature tracking**: Follow up on PEAM, TMEM, and related work on online LoRA, memory tokens, and parametric memory
+- **Capacity-aligned ablation design**: Finalize experimental design for E3/E5 — variable control, evaluation benchmarks, and metrics — ready to launch when compute becomes available
+- **PV/STC generalization**: Theoretically adapt PEAM's "what's worth remembering" scoring and self-triggered consolidation from code generation to general-purpose agents
+
+See [reading notes](docs/paper/reading_summary/parameterized-memory.md).
+
+### Medium/Long-term: Parameterized Memory Engineering
+
+When compute is available:
+
+- Unified parameterized storage framework (pluggable LoRA adapters + router)
+- Capacity-aligned ablation (parameterization vs. summarization, sweep r=1–8)
+- Async non-blocking updates (dual-buffer LoRA B-matrix)
+- Preference vs. fact decoupling (self-supervised vs. verifiable QA, separate adapters)
+
+---
+
 <p align="center">
   <sub>MIT — see <a href="./LICENSE">LICENSE</a></sub>
   <br/>
