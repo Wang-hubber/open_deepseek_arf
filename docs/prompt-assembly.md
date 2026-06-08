@@ -1,43 +1,43 @@
-# Prompt Assembly — System Prompt Assembly
+# Prompt 组装 — 系统提示词装配
 
-## 1. OS Evolution
+## 1. OS 方案演进
 
-### 1.1 Analogy: Program Loader (execve / ELF Loader)
+### 1.1 类比：程序加载器（execve / ELF Loader）
 
-The operating system performs three tasks during `execve()`:
-1. **Read the ELF header** — validate format, extract segment descriptors
-2. **Map memory** — text (read-only, executable) + data (read-write) + bss (zero-initialized)
-3. **Pass environment** — argc/argv/envp/auxv injected into the process address space
+操作系统在 `execve()` 时完成三件事：
+1. **读取 ELF 头** — 校验格式，提取段描述符
+2. **映射内存** — text（只读可执行）+ data（读写）+ bss（零初始化）
+3. **传递环境** — argc/argv/envp/auxv 注入进程地址空间
 
-Prompt assembly is the Agent's execve:
-1. **Read configuration** — `system_prompt.prefix` (role + critical_rules) + `system_prompt.suffix`
-2. **Layered concatenation** — prefix (stable, targets API cache) + suffix (dynamic template)
-3. **Placeholder substitution** — `$INVENTORY` (tool listing), `$MEMORY` (long-term resident memory), `$WORKSPACE` (workspace path, planned), `$TURN_BUDGET` (remaining turns, planned)
+Prompt 组装就是 Agent 的 execve：
+1. **读取配置** — `system_prompt.prefix`（role + critical_rules）+ `system_prompt.suffix`
+2. **分层拼接** — prefix（稳定，命中 API 缓存）+ suffix（动态模板）
+3. **占位符替换** — `$INVENTORY`（工具列表）、`$MEMORY`（长期记忆）、`$WORKSPACE`（工作区路径，规划中）、`$TURN_BUDGET`（剩余轮次，规划中）
 
-### 1.2 Why Stable Content Comes First
+### 1.2 稳定内容为何在前
 
-ELF places `.text` at the front and `.data`/`.bss` at the back. The same logic applies: LLM API prompt caching matches on prefix. `role` and `critical_rules` rarely change, so they always hit cache. The `suffix` contains `$INVENTORY` which changes when tools are updated — it sits in the second half, leaving the prefix cacheable.
+ELF 将 `.text` 放在前、`.data`/`.bss` 放在后。同样的逻辑：LLM API 的 prompt cache 按前缀匹配。`role` 和 `critical_rules` 极少变动，始终命中缓存。`suffix` 包含 `$INVENTORY`，工具更新时变化——它在后半部分，不影响前缀缓存。
 
-| Component | ELF Analogy | Cache Behavior |
-|-----------|-------------|----------------|
-| `prefix.role` | `.text` (read-only, stable) | Always cached |
-| `prefix.critical_rules` | `.rodata` (read-only data) | Always cached |
-| `suffix` | `.data` / `.bss` (mutable) | Changes per-session, no cache |
+| 组件 | ELF 类比 | 缓存行为 |
+|------|---------|---------|
+| `prefix.role` | `.text`（只读，稳定） | 始终命中缓存 |
+| `prefix.critical_rules` | `.rodata`（只读数据） | 始终命中缓存 |
+| `suffix` | `.data` / `.bss`（可变） | 随会话变化，不缓存 |
 
-### 1.3 Evolution Stages
+### 1.3 演进阶段
 
-| Stage | Problem | Solution |
-|-------|---------|----------|
-| v0.1 | Ad-hoc string concatenation | Bare `template` + `critical_rules` fields, no layering |
-| v0.2 | No inversion of control | `SystemPromptProvider` Protocol supports DI override |
-| v1.0 (current) | prefix/suffix layering + `string.Template` placeholders | `role` to `critical_rules` ordering guarantee, cache optimization |
-| v1.1 (planned) | Multi-agent prompt composition, role-based template dispatch | See Section 3 |
+| 阶段 | 问题 | 方案 |
+|------|------|------|
+| v0.1 | 临时字符串拼接 | 裸 `template` + `critical_rules` 字段，无分层 |
+| v0.2 | 无控制反转 | `SystemPromptProvider` Protocol 支持 DI 覆盖 |
+| v1.0（当前） | prefix/suffix 分层 + `string.Template` 占位符 | `role` → `critical_rules` 顺序保证，缓存优化 |
+| v1.1（规划） | 多 Agent prompt 组合，基于角色的模板分发 | 见第 3 节 |
 
 ---
 
-## 2. Current Implementation
+## 2. 当前实现
 
-### 2.1 Configuration Models
+### 2.1 配置模型
 
 ```yaml
 # agent.yaml
@@ -66,26 +66,26 @@ class SystemPromptConfig(BaseModel):
     suffix: str = ""
 ```
 
-**Field semantics:**
+**字段语义：**
 
-| Field | Cache Strategy | Content |
-|-------|---------------|---------|
-| `prefix.role` | Very stable | Role definition (who you are, capability boundaries) |
-| `prefix.critical_rules` | Very stable | Hard rules (R1/R2/...), never to be violated |
-| `suffix` | Variable | `$INVENTORY` / `$MEMORY` placeholder template |
+| 字段 | 缓存策略 | 内容 |
+|------|---------|------|
+| `prefix.role` | 极稳定 | 角色定义（你是谁，能力边界） |
+| `prefix.critical_rules` | 极稳定 | 硬规则（R1/R2/...），不可违反 |
+| `suffix` | 可变 | `$INVENTORY` / `$MEMORY` 占位符模板 |
 
-### 2.2 Assembly Flow
+### 2.2 组装流程
 
 ```
 agent.yaml                    DefaultSystemPromptProvider       BaseAgent
 ─────────                     ─────────────────────────         ─────────
-system_prompt.prefix ───────→ build() ──→ SystemPrompt ──────→ $INVENTORY → MCP tool listing
-       .role                        │         .prefix             $MEMORY    → resident memory (memory.md)
+system_prompt.prefix ───────→ build() ──→ SystemPrompt ──────→ $INVENTORY → MCP 工具列表
+       .role                        │         .prefix             $MEMORY    → 长期记忆（memory.md）
        .critical_rules              │         .suffix
        .suffix                      │
                                      │
-                                     └── prefix: role + "\n\n" + critical_rules (ordering guarantee)
-                                         suffix: passed through as-is (placeholders filled by BaseAgent)
+                                     └── prefix: role + "\n\n" + critical_rules（顺序保证）
+                                         suffix: 原样透传（占位符由 BaseAgent 填充）
 ```
 
 ### 2.3 DefaultSystemPromptProvider
@@ -111,18 +111,18 @@ class DefaultSystemPromptProvider:
         return SystemPrompt(prefix=prefix, suffix=suffix)
 ```
 
-**Ordering guarantee:** `role` then `critical_rules`. The join is independent of field ordering in the YAML file.
+**顺序保证**：`role` 在前，`critical_rules` 在后。拼接顺序不依赖 YAML 文件中字段的书写顺序。
 
-### 2.4 SystemPrompt Value Object
+### 2.4 SystemPrompt 值对象
 
 ```python
 # arf/agent/prompt.py
 @dataclass
 class SystemPrompt:
-    """Assembled system prompt with prefix/suffix separation.
+    """组装后的系统提示词，prefix/suffix 分离。
 
-    prefix — role + critical_rules (stable, target API cache)
-    suffix — inventory + per-turn placeholders
+    prefix — role + critical_rules（稳定，命中 API 缓存）
+    suffix — inventory + 每轮占位符
     """
     prefix: str
     suffix: str
@@ -132,61 +132,61 @@ class SystemPrompt:
         return self.prefix + self.suffix
 ```
 
-### 2.5 Placeholder Mechanism
+### 2.5 占位符机制
 
-Uses Python `string.Template` syntax (`$VAR`). Two-stage replacement — both stages occur during `BaseAgent.__init__`:
+使用 Python `string.Template` 语法（`$VAR`）。两阶段替换——均在 `BaseAgent.__init__` 期间完成：
 
-| Placeholder | Replacement Timing | Replaced By | Cache Impact |
-|-------------|-------------------|-------------|-------------|
-| `$INVENTORY` | Session startup, after MCP connected | `BaseAgent.__init__` via `_build_inventory_from_mcp()` | Tool update triggers `resources/updated` notification |
-| `$MEMORY` | Session startup, after resident memory loaded | `BaseAgent.__init__` via `_load_resident_memory()` | Should not change frequently (memory written at turn boundaries) |
-| `$WORKSPACE` | Not yet implemented | — | Planned for ControlPlane per-turn replacement |
-| `$TURN_BUDGET` | Not yet implemented | — | Planned for ControlPlane per-turn replacement |
+| 占位符 | 替换时机 | 替换者 | 缓存影响 |
+|--------|---------|--------|---------|
+| `$INVENTORY` | 会话启动，MCP 连接后 | `BaseAgent.__init__` 通过 `_build_inventory_from_mcp()` | 工具更新触发 `resources/updated` 通知 |
+| `$MEMORY` | 会话启动，长期记忆加载后 | `BaseAgent.__init__` 通过 `_load_resident_memory()` | 不应频繁变动（轮次边界写入） |
+| `$WORKSPACE` | 尚未实现 | — | 规划由 ControlPlane 每轮替换 |
+| `$TURN_BUDGET` | 尚未实现 | — | 规划由 ControlPlane 每轮替换 |
 
-**Why `string.Template`:**
-- `$VAR` is shorter than `{{VAR}}`, reducing token consumption
-- `$$` escapes to literal `$`
-- Safer than `str.replace()` — `Template.safe_substitute()` does not raise on undefined variables
+**为什么用 `string.Template`：**
+- `$VAR` 比 `{{VAR}}` 更短，减少 token 消耗
+- `$$` 转义为字面量 `$`
+- 比 `str.replace()` 更安全——`Template.safe_substitute()` 对未定义变量不抛异常
 
-Current implementation uses simple `str.replace()` for startup-only placeholders. The `suffix` may contain `$WORKSPACE` and `$TURN_BUDGET` tokens that are not yet wired — they remain as literal text in the prompt until per-turn replacement is implemented in `ControlPlane` (see Section 3.3).
+当前实现中，启动期占位符使用简单的 `str.replace()`。`suffix` 中可能包含 `$WORKSPACE` 和 `$TURN_BUDGET` 标记，在每轮替换实现前它们保留为字面文本。
 
-**Actual replacements in `BaseAgent.__init__`:**
+**`BaseAgent.__init__` 中的实际替换：**
 
-1. `$INVENTORY` — filled by `_build_inventory_from_mcp()` (base.py:468-484). Queries `McpClientManager` for all available tool definitions and formats them as a Markdown list under `## Available Tools`. Returns empty string if MCP is not ready yet.
+1. `$INVENTORY` — 由 `_build_inventory_from_mcp()` 填充（`base.py:468-484`）。查询 `McpClientManager` 获取所有可用工具定义，格式化为 `## Available Tools` 下的 Markdown 列表。MCP 未就绪时返回空字符串。
 
-2. `$MEMORY` — filled by `_load_resident_memory()` (base.py:39-61). Reads `memory.md` from the workspace memory directory. Content is capped at `max_size_kb` (default 300 KB), with line-preserving truncation. Returns empty string if the file does not exist.
+2. `$MEMORY` — 由 `_load_resident_memory()` 填充（`base.py:39-61`）。从工作区 memory 目录读取 `memory.md`。内容上限 `max_size_kb`（默认 300 KB），按行截断保留完整行。文件不存在时返回空字符串。
 
-### 2.6 Protocol Interface
+### 2.6 Protocol 接口
 
 ```python
 # arf/core/protocols/prompt.py
 class SystemPromptProvider(Protocol):
     def build(self) -> SystemPrompt:
-        """Return assembled SystemPrompt with prefix/suffix populated."""
+        """返回组装后的 SystemPrompt，prefix/suffix 已填充。"""
         ...
 ```
 
-Application code injects a custom implementation via `override_protocols["system_prompt_provider"]`. Default is `DefaultSystemPromptProvider` using the `system_prompt` section of `AgentConfig`.
+应用代码通过 `override_protocols["system_prompt_provider"]` 注入自定义实现。默认使用 `DefaultSystemPromptProvider`，读取 `AgentConfig` 的 `system_prompt` 段。
 
-### 2.7 Code Paths
+### 2.7 代码路径
 
 ```
-arf/agent/config.py:56-75              SystemPromptConfig + PrefixConfig (Pydantic models)
-arf/agent/prompt.py:1-17               SystemPrompt value object
+arf/agent/config.py:56-75              SystemPromptConfig + PrefixConfig（Pydantic 模型）
+arf/agent/prompt.py:1-17               SystemPrompt 值对象
 arf/agent/default_prompt_provider.py   DefaultSystemPromptProvider
-arf/agent/base.py:299-321              BaseAgent assembly entry point, placeholder substitution
-arf/agent/base.py:468-484              _build_inventory_from_mcp() — $INVENTORY from MCP tools
-arf/agent/base.py:39-61                _load_resident_memory() — $MEMORY from memory.md
+arf/agent/base.py:299-321              BaseAgent 组装入口，占位符替换
+arf/agent/base.py:468-484              _build_inventory_from_mcp() — $INVENTORY 来自 MCP 工具
+arf/agent/base.py:39-61                _load_resident_memory() — $MEMORY 来自 memory.md
 arf/core/protocols/prompt.py:9-13      SystemPromptProvider Protocol
 ```
 
 ---
 
-## 3. Evolution Direction
+## 3. 演进方向
 
-### 3.1 Multi-Agent Prompt Composition
+### 3.1 多 Agent Prompt 组合
 
-Currently each Agent independently configures `system_prompt`. Evolution: shared `base_prompt` + per-agent `delta`:
+当前每个 Agent 独立配置 `system_prompt`。演进方向：共享 `base_prompt` + per-agent `delta`：
 
 ```yaml
 base_prompt:
@@ -207,11 +207,11 @@ agents:
         role: "You handle system operations."
 ```
 
-Merge strategy: `base + delta` — delta fields override base fields by name; unspecified fields inherit from base.
+合并策略：`base + delta`——delta 字段按名覆盖 base 字段；未指定的字段从 base 继承。
 
-### 3.2 Role-Based Template Dispatch
+### 3.2 基于角色的模板分发
 
-Select prompt templates based on the Agent's `role` field, reducing duplicate configuration:
+根据 Agent 的 `role` 字段选择 prompt 模板，减少重复配置：
 
 ```yaml
 prompt_templates:
@@ -231,12 +231,12 @@ agents:
     template: builder
 ```
 
-### 3.3 Context-Aware Prompt (Per-Turn Placeholders)
+### 3.3 上下文感知 Prompt（每轮占位符）
 
-Dynamically adjust the prompt based on session state — inject a `[Earlier]: ...` summary when `context_summary` is non-empty; inject error recovery hints when `tool_failures > 3`. This is where `$WORKSPACE` and `$TURN_BUDGET` per-turn replacement belongs — `ControlPlane` would update these before each `invoke()` or `astream()` iteration.
+根据会话状态动态调整 prompt——当 `context_summary` 非空时注入 `[Earlier]: ...` 摘要；当 `tool_failures > 3` 时注入错误恢复提示。`$WORKSPACE` 和 `$TURN_BUDGET` 的每轮替换也属于此范畴——`ControlPlane` 在每次 `invoke()` 或 `astream()` 迭代前更新。
 
-### 3.4 Prompt Versioning and A/B Testing
+### 3.4 Prompt 版本化与 A/B 测试
 
-- Tag each prompt version with a hash; record `prompt_hash` in the trace
-- Eval replay matches prompt versions to exclude prompt-change regression noise
-- Support A/B testing: randomly select prompt variants within the same session, tagged in the trace
+- 每个 prompt 版本标记 hash；在 trace 中记录 `prompt_hash`
+- Eval 回放时匹配 prompt 版本，排除 prompt 变更引入的回归噪声
+- 支持 A/B 测试：同会话内随机选择 prompt 变体，在 trace 中标记
