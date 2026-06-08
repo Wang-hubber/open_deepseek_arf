@@ -162,22 +162,6 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 
 ## TODO
 
-### Known Issues (2026-05-26 Fact Check)
-
-| # | Title | Code Path | Domain | Type | Details |
-|---|-------|-----------|--------|------|---------|
-| 1 | ~~Engine `invoke`/`astream` duplication~~ → **FIXED** | `arf/engine/graph.py` | Process Scheduling | Framework | ~~~400 lines of identical Agent Loop logic in two methods.~~ → Extracted `_step_classify_tool_calls()` — guard pipeline, sandbox, permissions, and approval logic shared by both paths. |
-| 2 | ~~`BaseAgent.__init__` oversized~~ → **FIXED** | `arf/agent/base.py` | Process Creation | Framework | ~~Constructor directly instantiates 20+ implementations inline.~~ → Extracted `_merge_models()` and `_build_resource_resolver()` factory methods; absorbs legacy `transaction_ctx` override. |
-| 3 | ~~`server.py` monolithic~~ → **FIXED** | `app/arf_default_assistant/routers/` | User Interface | App | ~~REST routes, WebSocket, SSE streaming, CORS, file serving, state management, config APIs all in one file.~~ → Split into `routers/` by route group: `chat.py`, `trace.py`, `config.py`, `resources.py`, `misc.py`. `server.py` slimmed from 846→137 lines. |
-| 4 | ~~`SnapshotRollback` null state snapshot~~ → **FIXED** | `arf/resources/backends/function.py` | Fault Recovery | Framework | ~~`begin()` always sets `"state_snapshot": None`~~ → Replaced with `FunctionBackend` inline rollback. |
-| 5 | ~~`EvalRunner` computes empty traces~~ → **FIXED** | `arf/evaluation/runner.py` | Quality Assurance | Framework | ~~trace hardcoded as `{"turns": []}`~~ → Rewritten: captures real traces via `EventBus.events_since()`, all 4 metrics compute on real data. |
-| 6 | ~~Global state `registry._agent`~~ → **FIXED** | `arf/agent/registry.py` removed | Process Isolation | Framework | ~~`_agent: Any = None` module-level singleton~~ → Deleted. Engine + state_store injected via tool executor params. |
-| 7 | ~~`PromptBasedPlanner` returns empty plans~~ → **FIXED** | `arf/plugins/planner/` | Task Planning | Framework | Replaced by plugin system. `PluginProvider` scans plugin directories, `ResourceResolver` merges plugin tools/skills with app resources. |
-| 8 | ~~SSE listener leak~~ → **FIXED** | `arf/streaming/adapters/sse.py` | Communication | Framework | Replaced with `@asynccontextmanager`: `async with stream.listen() as queue` — `__aexit__` guarantees cleanup. |
-| 9 | ~~Inconsistent code conventions~~ → **FIXED** | 13 files + `graph.py` + `planner.py` | Documentation | Framework | All files have module docstrings. Core signatures use `dict[str, Any]`. `test_code_style.py` enforces consistency. |
-| 10 | ~~No rate limiting / circuit breaker~~ → **FIXED** | `arf/protection/` | Process Scheduling | Framework | `ModelCallProtector` with `TokenBucket` + `CircuitBreaker`. See [`docs/api-protection.md`](docs/api-protection.md). |
-| 11 | Missing open-source infrastructure | — | Distribution | Framework | No `CONTRIBUTING.md`, PR/Issue templates, `CHANGELOG.md`, or versioned release process. |
-
 **Plugins** — Hook-mounted capability bundles. Each plugin has `plugin.yaml` (name + hooks + config) and `plugin.py` (PluginProtocol impl). `PluginLoader` scans `arf/plugins/{name}/`. Community-contributable. Plugin ≠ Tool — plugins fire on lifecycle hooks, tools are Agent-called MCP resources.
 
 | # | Plugin | Status | Hook | Description |

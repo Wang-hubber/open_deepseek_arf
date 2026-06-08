@@ -162,22 +162,6 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 
 ## TODO
 
-### 已知代码问题 (2026-05-26 事实校验)
-
-| # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
-|---|------|---------|--------|------|------|
-| 1 | ~~Engine `invoke`/`astream` 代码重复~~ → **已修复** | `arf/engine/graph.py` | 进程调度 | 框架 | ~~~400 行几乎相同的 Agent Loop 逻辑在两处~~ → 提取 `_execute()` + `_step_call_model()` + `_step_execute_tools()` 统一路径，invoke/astream 简化为薄包装。 |
-| 2 | ~~`BaseAgent.__init__` 巨型构造~~ → **已修复** | `arf/agent/base.py` | 进程创建 | 框架 | ~~构造函数内直接实例化 20+ 个实现~~ → 提取工厂方法。 |
-| 3 | ~~`server.py` 单文件混杂~~ → **已修复** | `app/arf_default_assistant/routers/` | 用户界面 | App | ~~REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。~~ → 拆分为 `routers/`。 |
-| 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | 改为 `FunctionBackend` 内联回滚。 |
-| 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | 重写：通过 `EventBus.events_since()` 采集真实 trace，4 个 metric 在真实数据上计算。 |
-| 6 | ~~全局状态 `registry._agent`~~ → **已修复** | `arf/agent/registry.py` 已删除 | 进程隔离 | 框架 | 已删除。Engine + state_store 通过工具执行器参数注入。 |
-| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | 由插件系统取代。 |
-| 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | 改为 `@asynccontextmanager`。 |
-| 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | 全部文件已加模块 docstring，核心签名用 `dict[str, Any]`。 |
-| 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | `ModelCallProtector` 组合 `TokenBucket` + `CircuitBreaker`。 |
-| 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。 |
-
 **Plugins** — 挂载在 Hook 点上的能力包。每个 Plugin 包含 `plugin.yaml`（name + hooks + config）和 `plugin.py`（PluginProtocol 实现）。`PluginLoader` 扫描 `arf/plugins/{name}/`。社区可贡献。Plugin ≠ Tool — Plugin 在生命周期 Hook 自动触发，Tool 是 Agent 主动调用的 MCP 资源。
 
 | # | Plugin | 状态 | Hook | 描述 |
