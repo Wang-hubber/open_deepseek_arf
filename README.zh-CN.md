@@ -125,7 +125,7 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 
 ### Plugin 体系——反射弧，非认知模块
 
-**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。关键区分：当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。
+**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。关键区分：当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。详见 [Plugin 总览](docs/plugins/overview.md)。
 
 | Plugin | Hook | 状态 | 描述 |
 |--------|------|------|------|

@@ -56,12 +56,12 @@ OS 用检查点保存进程状态快照（CRIU、BLCR）。ARF 的 `RoundManager
 cancel_event.set()  ← asyncio.Event（非阻塞标志）
     │
     ▼
-GraphEngine 循环边界检查 _cancelled()
+ControlPlane 循环边界检查 _cancelled()
     ├─ True  → emit session_end(reason="cancelled") → break
     └─ False → 继续执行
 ```
 
-**引擎侧**（`GraphEngine`）：
+**引擎侧**（`ControlPlane`）：
 
 ```python
 def _cancelled(self) -> bool:
@@ -74,7 +74,7 @@ App 层通过 `engine.set_cancel_event()` 注入事件，监听 `session_end(rea
 
 ### 2.3 状态持久化与恢复
 
-**引擎侧**：`FileStateStore` 在每个 turn 结束、工具执行前后、`human_loop` 暂停前自动调用 `put()`。状态以 JSON 格式写入 `memory/state/{session_id}.json`。
+**引擎侧**：`FileStateStore` 在每个 turn 结束、工具执行前后、`human_loop` 暂停前自动调用 `put()`。状态以 JSON 格式写入 `state/{session_id}.json`（默认 `data/state/`）。
 
 **启动恢复**：引擎初始化时从 `FileStateStore` 加载状态，存在则恢复对话历史、当前模型、上下文摘要等。`BaseAgent.chat()/astream()` 入口通过 `state_store.get(session_id)` 读取已有状态后追加新消息：
 
@@ -108,7 +108,7 @@ class ErrorPolicy(Protocol):
 `DefaultErrorPolicy`（`arf/errors/retry.py`）是该协议的唯一实现：
 
 - **工具错误**：指数退避重试（2^attempt × 1.0s），超出 `tool_retry` 后 abort
-- **模型 5xx**：根据 `model_5xx_action` 决定 fallback（切换到备用模型）、retry 或 abort。引擎级重试已移除，瞬时重试由 protection 层处理
+- **模型 5xx**：根据 `model_5xx_action` 决定 fallback（切换到备用模型）、retry 或 abort。引擎级重试已移除，瞬时重试由 ModelAdapter 层处理
 - **护栏拦截**：根据 `guardrail_block_action` 决定 abort 或 ask_user
 
 ---
@@ -119,7 +119,7 @@ class ErrorPolicy(Protocol):
 
 | 场景 | 触发方式 | 行为 |
 |------|---------|------|
-| **用户主动撤销** | `GraphEngine.undo(steps=N)` 或对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
+| **用户主动撤销** | `ControlPlane.undo(steps=N)` 或对话内 `undo` 工具 | 状态 + 文件恢复到 N 轮之前 |
 | **检查点损坏/不可用** | `undo()` 返回 `None`，或 `checkpoint_count()` < steps | 拒绝回滚，返回错误信息 |
 
 ### 4.2 RoundManager 检查点
@@ -135,16 +135,16 @@ class RoundManager:
 **检查点创建**：`BaseAgent.chat/astream` 入口调用 `rounds.begin_round(state)`，同时保存：
 
 1. 对话状态深拷贝（messages、current_model、context_summary）
-2. 工作区文件快照（复制到 `memory/checkpoints/{round_num}/`，排除 `.git`）
-3. Round 元数据持久化到 `memory/checkpoints/rounds.json`
+2. 工作区文件快照（复制到 `data/checkpoints/{round_num}/`，排除 `.git`）
+3. Round 元数据持久化到 `data/checkpoints/rounds.json`
 
 **Handoff 与检查点**：Agent 切换时 `rounds.record_handoff(from, to)` 仅记录参与顺序，**不创建新检查点**。一个 round 内无论多少次 handoff，undo 都回退整个 round。
 
 ### 4.3 Undo 过程
 
 ```
-Round 0: hello.txt(v1) → begin_round → memory/checkpoints/0/hello.txt
-Round 1: hello.txt(v2) → begin_round → memory/checkpoints/1/hello.txt
+Round 0: hello.txt(v1) → begin_round → data/checkpoints/0/hello.txt
+Round 1: hello.txt(v2) → begin_round → data/checkpoints/1/hello.txt
   └─ handoff → sys_agent (record_handoff, no new checkpoint)
 Round 2: hello.txt(v3)  ← 改坏了
     │
@@ -152,7 +152,7 @@ Round 2: hello.txt(v3)  ← 改坏了
     │
     ├─ 恢复对话状态到 Round 1 开始前
     ├─ 删除当前工作区文件
-    ├─ 从 memory/checkpoints/1/ 恢复文件 → hello.txt(v2)
+    ├─ 从 data/checkpoints/1/ 恢复文件 → hello.txt(v2)
     ├─ emit undo_executed(from=2, to=1) → Trace 可标记回滚边界
     └─ 清理 >= round 2 的检查点目录
 ```
@@ -167,7 +167,7 @@ Round 2: hello.txt(v3)  ← 改坏了
 
 当 `checkpoint_count() < steps` 或检查点数据损坏时：
 
-- `GraphEngine.undo()` 返回 `None`
+- `ControlPlane.undo()` 返回 `None`
 - 调用方应检查返回值并报告 `{"status": "insufficient_checkpoints", "available": N, "requested": steps}`
 - 对话内 `undo` 工具返回 `{"ok": false, "error": "Only N checkpoints available"}`
 - 不会部分回滚，不会损坏现有状态
@@ -242,7 +242,7 @@ tools:
 
 - **`tool_retry`**：工具执行失败时的最大重试次数，默认 2。超出后 abort
 - **`tool_backoff`**：重试退避策略。exponential 为 2^attempt × 1.0s 延迟
-- **`model_5xx_action`**：模型返回 500/502/503/504 时的行为。`fallback` 切换备用模型，`retry`/`abort` 直接终止（引擎级重试已移除，瞬时重试由 protection 层处理）
+- **`model_5xx_action`**：模型返回 500/502/503/504 时的行为。`fallback` 切换备用模型，`retry`/`abort` 直接终止（引擎级重试已移除，瞬时重试由 ModelAdapter 层处理）
 - **`guardrail_block_action`**：护栏拦截时的行为。`abort` 终止执行，`ask_user` 推送审批
 
 ---
