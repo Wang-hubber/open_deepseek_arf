@@ -88,7 +88,7 @@ ARF 将 Harness 实现为三层基于规则的简单反射——固定规则、�
 | 层级 | 设计准则 | ARF 实现 | 对应骨架 |
 |------|---------|---------|---------|
 | **L1: 固定感知编码器** | 零认知状态编码。固定周期、固定字段、仅做格式与时间对齐。不追问、不澄清、不理解。 | `SystemPromptProvider` 从固定模板组装结构化上下文。`ResourceResolver` + `FileWatcher` 按文件系统约定发现并热加载工具/技能/模型——不做语义解释。 | #1 Prompt 组装, #2 资源注册 |
-| **L2: 可靠行动执行器** | 可逆行动执行。预演-执行-回滚机制，确保执行损伤可恢复。支持并行执行与依赖排序。 | `SandboxManager` 提供每会话隔离工作区。`ConcurrentToolExecutor` 并行执行无依赖工具。`FunctionBackend` 支持可选 `rollback()`。`SkillPipeline` 强制执行依赖 DAG。 | #5 执行器（沙箱）, Skill Pipeline |
+| **L2: 可靠行动执行器** | 可逆行动执行。预演-执行-回滚机制，确保执行损伤可恢复。支持并行执行与依赖排序。 | `SandboxManager` 提供每会话隔离工作区。`ConcurrentToolExecutor` 并行执行无依赖工具。`FunctionBackend` 支持可选 `rollback()`。 | #5 执行器（沙箱） |
 | **L3: 非条件反射层** | 硬编码安全。权限门控、缩手反射、节律性存档——独立于模型决策，模型不可绕过。 | `PathCheckToolGuard` 阻断路径穿越与绝对路径。`ContentGuard` 执行前/后内容筛查。`SessionModeManager` + `PermissionRegistry` 强制执行 deny→ask→allow。`RoundManager` 维护滚动快照支持 undo。每轮检查取消令牌。 | #3 权限控制, #4 安全审核, 中断回滚 |
 
 **设计准则**：每层都是*规则驱动的*——通过固定规则转换、路由、门控、记录。没有一层执行*理解*。当框架需要"智能"（记忆提取、上下文摘要），它通过 Plugin 调用模型——绝不通过核心引擎逻辑。
@@ -99,7 +99,7 @@ ARF 将 Harness 实现为三层基于规则的简单反射——固定规则、�
 
 | 方面 | 实现 |
 |------|------|
-| **执行引擎** | `GraphEngine` 统一 `_execute` 路径——三层在此交汇。`LoopStrategy` ReAct 模式 + TODO 追踪 |
+| **执行引擎** | `ControlPlane` 统一 `_execute` 路径——三层在此交汇。`LoopStrategy` ReAct 模式 + TODO 追踪 |
 | **结构化 State** | 每轮组装固定 Schema 的 State Packet。`RoundManager` 维护 3 个滚动快照支持 checkpoint/restore。会话生命周期：create → resume → archive |
 | **Hook 挂载面** | 9 个注入点（`session_start`、`round_start`、`pre_model_call`、`post_model_call`、`post_permission`、`pre_tool_exec`、`post_tool_exec`、`sandbox_persist`、`round_end`、`session_end`）——Plugin 挂载的 9 个触点 |
 
@@ -164,11 +164,9 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 
 **运行实验**：每项实验设计为在同一 ARF 台架上运行。框架的 `EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见 [回归测评文档](docs/eval-benchmark.md) 了解评估基础设施。
 
-**研究日志**：`docs/paper/`（待创建）将包含论文框架、实验方案和阶段性结果。
+**研究日志**：[`docs/paper/`](docs/paper/) 包含论文框架、阅读笔记和阶段性研究进展。
 
 <br/>
-
----
 
 ---
 

@@ -88,7 +88,7 @@ ARF implements the Harness as three layers of rule-based reflexes — simple, de
 | Layer | Principle | Implementation in ARF | Skeletons |
 |-------|-----------|----------------------|-----------|
 | **L1: Fixed Perceptual Encoder** | Zero-cognition state encoding. Fixed period, fixed schema, format + time alignment only. No questioning, no clarification, no understanding. | `SystemPromptProvider` assembles structured context from fixed template. `ResourceResolver` + `FileWatcher` discover and hot-reload tools/skills/models by filesystem convention — no semantic interpretation. | #1 Prompt Assembly, #2 Resource Registry |
-| **L2: Reliable Action Executor** | Reversible action execution. Preview-execute-rollback cycle ensures execution damage is recoverable. Parallel execution with dependency ordering. | `SandboxManager` provides per-session isolated workspaces. `ConcurrentToolExecutor` runs independent tool calls in parallel. `FunctionBackend` supports optional `rollback()` per tool. `SkillPipeline` enforces dependency DAG. | #5 Executor (Sandbox), Skill Pipeline |
+| **L2: Reliable Action Executor** | Reversible action execution. Preview-execute-rollback cycle ensures execution damage is recoverable. Parallel execution with dependency ordering. | `SandboxManager` provides per-session isolated workspaces. `ConcurrentToolExecutor` runs independent tool calls in parallel. `FunctionBackend` supports optional `rollback()` per tool. | #5 Executor (Sandbox) |
 | **L3: Unconditioned Reflex** | Hardcoded safety. Permission gating, withdrawal reflex, rhythmic checkpointing — independent of model decisions. The model cannot bypass these. | `PathCheckToolGuard` blocks path traversal + absolute paths. `ContentGuard` screens pre/post execution. `SessionModeManager` + `PermissionRegistry` enforce deny→ask→allow. `RoundManager` maintains rolling snapshots for undo. Cancel token checked every turn. | #3 Permission Control, #4 Security Audit, Interrupt |
 
 **Design Principle**: Each layer is *mechanical* — it transforms, routes, gates, or records via fixed rules. None of them *understand*. When the framework needs "intelligence" (memory extraction, context summarization), it calls a model through a Plugin — never through core engine logic.
@@ -99,7 +99,7 @@ The three layers don't float in isolation. The **Control Plane** is the orchestr
 
 | Aspect | Implementation |
 |--------|---------------|
-| **Execution engine** | `GraphEngine` single `_execute` path — all three layers converge here. `LoopStrategy` ReAct pattern + TODO tracking |
+| **Execution engine** | `ControlPlane` single `_execute` path — all three layers converge here. `LoopStrategy` ReAct pattern + TODO tracking |
 | **Structured State** | Fixed-schema State Packets assembled at each turn. Checkpoint/restore via `RoundManager` (3 rolling snapshots). Session lifecycle: create → resume → archive |
 | **Hook surface** | 9 injection points (`session_start`, `round_start`, `pre_model_call`, `post_model_call`, `post_permission`, `pre_tool_exec`, `post_tool_exec`, `sandbox_persist`, `round_end`, `session_end`) — the 9 points where Plugins mount |
 
@@ -164,11 +164,9 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 
 **Running an experiment**: Each experiment is designed to be run against the same ARF testbed. The framework's `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md) for the evaluation infrastructure.
 
-**Research log**: `docs/paper/` (not yet created) will contain the paper framework, experiment protocols, and progressive results.
+**Research log**: [`docs/paper/`](docs/paper/) contains the paper framework, reading summaries, and progressive research notes.
 
 <br/>
-
----
 
 ---
 
