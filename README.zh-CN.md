@@ -138,21 +138,6 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | TaskScheduler (`arf/concurrency/`) | 弃用 | 仅单 Agent 执行 |
 | Plan-Execute 策略 | 延后 | ReAct + TODO 当前足够 |
 
-## 快速开始
-
-需要 Python ≥ 3.11。
-
-```bash
-git clone git@gitee.com:dalaydata/open_deepseek_arf.git
-cd open_deepseek_arf
-pip install -e .
-cd app/arf_default_assistant
-python test_setup.py   # 验证环境
-python cli.py start    # 启动服务
-```
-
-浏览器打开 **http://127.0.0.1:8000**，输入 API 密钥即可开始。
-
 ## 第二部分 — 研究路线图
 
 ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。

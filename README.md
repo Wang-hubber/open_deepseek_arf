@@ -138,21 +138,6 @@ ARF is built on **6 skeletons** — the minimum viable framework. Each skeleton 
 | TaskScheduler (`arf/concurrency/`) | Deprecated | Single-agent execution only |
 | Plan-Execute strategy | Deferred | ReAct + TODO sufficient for now |
 
-## Quick Start
-
-Requires Python ≥ 3.11.
-
-```bash
-git clone git@gitee.com:dalaydata/open_deepseek_arf.git
-cd open_deepseek_arf
-pip install -e .
-cd app/arf_default_assistant
-python test_setup.py   # verify environment
-python cli.py start    # launch service
-```
-
-Browser opens at **http://127.0.0.1:8000** — enter your API key and start.
-
 ## Part II — Research Roadmap
 
 ARF is the testbed for all five experiments proposed in the paper. This section maps each experiment to current ARF capabilities and identifies what needs to be built.
