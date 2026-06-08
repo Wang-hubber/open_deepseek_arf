@@ -1,5 +1,6 @@
 <p align="center">
   <h1 align="center">ARF — Agent Resources & RunTime FrameWork</h1>
+  <p align="center"><em>大脑-脊椎-身体架构的研究脚手架与 Harness MVP</em></p>
 </p>
 
 <p align="center">
@@ -21,6 +22,7 @@
 <br/>
 
 <h3 align="center">Harness = 操作系统内核。Model = CPU。Agent = 计算机。</h3>
+<p align="center">模型是大脑。Harness 是脑干、脊椎与身体。</p>
 <p align="center">本地优先 · 约定大于配置 · 全程可追溯 · 自我演进</p>
 
 <br/>
@@ -29,15 +31,32 @@
 
 <br/>
 
+## 研究背景
+
+ARF 是研究论文 **《寻找 Agent 系统的脊椎——大模型与 Harness 的严格分工与协同进化》** 的工程配套项目。
+
+**核心命题**：当前 Agent 系统普遍存在 *Harness 膨胀*——协调层承担了大量本该属于模型的认知功能：RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理。这种膨胀不是实现缺陷，而是根本性的角色混淆。Harness 本应是**零认知的机械层**，如同生物的脑干、脊椎与身体：编码感知、执行动作、运转硬连线反射。它不应思考。
+
+**ARF 的双重角色**：
+- **作为 MVP**：ARF 实现了三层机械层，证明了剥离认知责任后的 Harness 足以支撑完整可用的 Agent。6 个骨架 + Plugin 体系构成了设计准则的完整、可测试的工程实体。
+- **作为研究脚手架**：ARF 为论文中全部五项实验提供统一的实验台架——状态接口稳定性、零认知基准测试、在线 LoRA 记忆、身份边界鲁棒性、内部上下文压缩。
+
+**这个 MVP 证明了什么**：一个基于 Protocol 定义的骨架构建的 Harness，将所有"智能"行为（记忆提取、任务追踪、上下文压缩）实现为可插拔的反射弧而非核心引擎逻辑，能够在严格分离*认知工作*（模型）与*机械工作*（Harness）的前提下，支撑全功能 Agent 运行。
+
+<br/>
+
+---
+
 ## 阅读指引
 
-这份文档分为两大部分和底部待办清单：
+本文档分为三大部分加研究路线图：
 
-- **第一部分 — 框架**：核心设计理念和问题域全景。表格中每个问题名称都是一个链接，指向深度设计文档（每篇含 OS 方案演进 / 当前实现 / 演进方向三章）
-- **第二部分 — 参考应用**：展示应用层如何调用框架的每项能力，附配置示例和设计文档链接
-- **底部 [TODO](#todo)**：已知问题与演进方向汇总，面向贡献者
+- **第一部分 — 框架**：大脑-脊椎-身体设计模型、三层机械层、6 骨架架构、Plugin 体系
+- **第二部分 — 参考应用**：展示应用层如何调用框架的每项能力，附配置示例
+- **第三部分 — 研究路线图**：论文五项实验在 ARF 中的当前状态与待建设内容
+- **底部 [TODO](#todo)**：已知问题与演进方向
 
-新读者建议先扫一遍总览表格建立全景，再按需深入具体文档。
+新读者建议先扫一遍三层机械层理解架构主张，再看 6 骨架表格深入实现细节。
 
 <br/>
 
@@ -45,11 +64,34 @@
 
 ## 第一部分 — 框架
 
-### 设计理念
+### 设计理念：大脑-脊椎-身体模型
 
-模型是裸算力——强大，但不是一台可用的计算机。它需要内存管理、进程调度、中断响应、文件系统和安全边界。ARF 提供这一切。它是一个**智能体框架**，建立在一个核心架构洞察之上：**Harness 层就是 AI 原生计算的内核态**。
+模型是裸算力——强大，但不是一台可用的计算机。它需要内存管理、进程调度、中断响应、文件系统和安全边界。ARF 提供这一切。但设计理念比 OS 类比更深一层。
 
-操作系统的经典抽象——虚拟内存、缓存层次、系统调用、保护环——直接映射到每个智能体工程师日常面对的问题。ARF 不发明新抽象，而是将经过数十年验证的 OS 模式适配到 Token 时代。
+**支配每一项架构决策的生物学映射**：
+
+| 生物系统 | Agent 系统 | 职责 | 认知负载 |
+|---------|-----------|------|---------|
+| **大脑** | 大语言模型 | 条件反射中枢。接收编码后的状态数据包，输出行为指令。通过后训练内化专业知识与身份边界。 | **全认知** — 理解、推理、决策 |
+| **脑干 / 脊椎** | Harness 核心（6 骨架） | 固定感知编码、可靠行动执行、非条件反射。多源信号时间对齐为固定 Schema 的状态数据包。解析函数调用，执行并收集反馈——不做策略判断。 | **零认知** — 格式化、对齐、执行、门控 |
+| **身体** | 工具生态 | 模型操作世界的物理/虚拟效应器。文件 I/O、网页抓取、Shell 执行、代码解释。 | **零认知** — 仅机械动作 |
+
+**协同进化律**：猴脑无法操纵人身。Harness 定义的状态 Schema 必须通过配对后训练成为模型的原生感知语言。大脑与身体协同进化，否则两者都无法工作。
+
+操作系统的经典抽象——虚拟内存、缓存层次、系统调用、保护环——直接映射到工程实现。但架构主张是生物学的：**认知工作属于大脑；Harness 是脊髓，不是第二个大脑。**
+
+### 三层机械层
+
+ARF 将 Harness 实现为三个零认知层，每层映射到具体骨架。这三层对应论文第 5 节"理想 Harness 的设计准则"。
+
+| 层级 | 设计准则 | ARF 实现 | 对应骨架 |
+|------|---------|---------|---------|
+| **L1: 固定感知编码器** | 零认知状态编码。固定周期、固定字段、仅做格式与时间对齐。不追问、不澄清、不理解。 | `SystemPromptProvider` 从固定模板组装结构化上下文。`ResourceResolver` + `FileWatcher` 按文件系统约定发现并热加载工具/技能/模型——不做语义解释。 | #1 Prompt 组装, #2 资源注册 |
+| **L2: 可靠行动执行器** | 可逆行动执行。预演-执行-回滚机制，确保执行损伤可恢复。支持并行执行与依赖排序。 | `SandboxManager` 提供每会话隔离工作区。`ConcurrentToolExecutor` 并行执行无依赖工具。`FunctionBackend` 支持可选 `rollback()`。`SkillPipeline` 强制执行依赖 DAG。 | #5 执行器（沙箱）, Skill Pipeline |
+| **L3: 非条件反射层** | 硬编码安全。权限门控、缩手反射、节律性存档——独立于模型决策，模型不可绕过。 | `PathCheckToolGuard` 阻断路径穿越与绝对路径。`ContentGuard` 执行前/后内容筛查。`SessionModeManager` + `PermissionRegistry` 强制执行 deny→ask→allow。`RoundManager` 维护滚动快照支持 undo。每轮检查取消令牌。 | #3 权限控制, #4 安全审核, 中断回滚 |
+| **跨切面** | 进程调度器 + 生命周期信号。调度三层机械层的控制平面。 | `GraphEngine` 统一执行路径 + 9 个 Hook 注入点。`LoopStrategy` ReAct 模式 + TODO 追踪。状态管理含 checkpoint/restore。 | #6 控制平面 |
+
+**设计准则**：每层都是*机械性的*——它转换、路由、门控、记录。没有一层执行*理解*。当框架需要"智能"（记忆提取、上下文摘要），它通过 Plugin 调用模型——绝不通过核心引擎逻辑。
 
 ### Harness 即内核——6 骨架架构
 
@@ -59,7 +101,7 @@
 
 ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对应一个 Protocol。框架可以只用这 6 个骨架运行 Agent；其余一切都是挂载在生命周期 Hook 点上的 **Plugin**。
 
-*点击第一列的名称可查看深度设计文档。*
+*点击骨架名称可查看深度设计文档。*
 
 | # | 骨架 | OS 类比 | 当前实现 | 演进方向 |
 |---|------|--------|----------|----------|
@@ -70,9 +112,9 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | 5 | **[执行器 (沙箱)](docs/tool-sandbox.md)** | 进程隔离 (chroot/namespace) | `SandboxManager` — 每会话隔离工作区，可配置黑名单，自动销毁。`ConcurrentToolExecutor` 并行执行。`FunctionBackend` 可选 `rollback()`。 | 容器级沙箱；资源配额 |
 | 6 | **[控制平面](docs/agent-execution.md)** | 进程调度器 + 信号 | `GraphEngine` 统一 `_execute` 路径。`LoopStrategy` ReAct 模式 + TODO 追踪。State 管理（运行时会话状态）。9 个 Hook 注入点（`session_start`、`round_start`、`pre_model_call`、`post_model_call`、`post_permission`、`pre_tool_exec`、`post_tool_exec`、`sandbox_persist`、`round_end`、`session_end`）。 | Plan-Execute 循环策略；暂停/恢复/检查点；多 Agent DAG |
 
-### Plugin 体系
+### Plugin 体系——反射弧，非认知模块
 
-**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。
+**Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。关键区分：当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。
 
 | Plugin | Hook | 状态 | 描述 |
 |--------|------|------|------|
@@ -96,6 +138,8 @@ ARF 建立在 **6 个骨架**之上——最小可运行框架。每个骨架对
 | A2A 通信 (`arf/communication/`) | 弃用 | 先聚焦 agent+subagent |
 | TaskScheduler (`arf/concurrency/`) | 弃用 | 仅单 Agent 执行 |
 | Plan-Execute 策略 | 延后 | ReAct + TODO 当前足够 |
+
+### 框架 vs. 应用
 
 **边界原则**：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。`agent.yaml` 是桥接点——框架读取它自动装配全部能力；应用只需声明"用什么"，不需要知道"怎么实现"。
 
@@ -303,7 +347,7 @@ python cli.py start    # 启动服务
 
 **基于 ARF 构建 App**：详见 [APP 开发者指南](./APP开发者指南.md)——从零写一个 `agent.yaml`，配置模型、工具、技能、Hook，启动服务。
 
-**参与框架开发**：参见底部 [TODO](#todo) 中的待修复问题和演进方向。框架代码位于 `arf/`，依赖注入设计允许替换任意默认实现。
+**参与框架开发**：框架代码位于 `arf/`，依赖注入设计允许替换任意默认实现。参见底部 [TODO](#todo) 中的待修复问题和演进方向。
 
 ```bash
 git clone git@gitee.com:dalaydata/open_deepseek_arf.git
@@ -318,41 +362,57 @@ cd app/web && npm install && npm run dev
 
 ---
 
+## 第三部分 — 研究路线图
+
+ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。
+
+| 实验 | 论文章节 | ARF 状态 | 已有基础 | 待建设 |
+|------|---------|---------|---------|--------|
+| **E1: 固定状态接口 vs. 自由文本提示**——任务稳定性对比 | §6.1 | **台架就绪** | Resource Registry 提供固定 schema 的状态组装。`SystemPromptProvider` 的 `$INVENTORY` 模板已展示了结构化上下文编码。 | 构建对比基准：相同任务分别用 ARF 固定 StatePacket 和传统自由文本提示运行。测量任务完成稳定性（多次运行的方差）。候选基准：AgentBench、SWE-bench。 |
+| **E2: 零认知 Harness 基准测试** | §6.2 | **台架就绪** | 全部 6 骨架实现了三层机械层。完整 Agent 循环（ReAct + 工具 + guardrails）端到端运行。 | 横向对比：ARF vs. LangChain / OpenDevin 在编程/CLI 任务上的表现。指标：代码量、任务完成率、认知泄漏点数量（在模型调用之外执行语义解释的模块）。 |
+| **E3: 在线 LoRA 用于长期记忆保持** | §6.3 | **扩展点** | `MemoryPlugin` 提取事实到 `memory.md`。`ModelAdapter` 提供模型调用抽象。`FileMemoryStore` 作为数据源。 | 在 `ModelAdapter` 上接入 LoRA 权重更新接口。使用 `memory.md` 条目作为在线 LoRA 微调的训练信号。对比记忆保持质量 vs. 外部记忆注入。 |
+| **E4: 后训练身份边界鲁棒性** | §6.4 | **扩展点** | `Guardrails` 层含 `deny_patterns` 正则匹配。`SessionModeManager` 强制执行权限边界。`PathCheckToolGuard` 阻断路径穿越。 | 扩展 guardrails 支持对抗性提示测试。构建越狱基准测试集。测量身份边界在提示注入、角色覆盖、少样本操纵攻击下的保持率。 |
+| **E5: 架构内上下文压缩（记忆令牌）** | §6.5 | **扩展点** | `CompactionPlugin` 提供 token 感知滑动窗口 + LLM 摘要。Token 计数基础设施已存在。 | 原型验证基于记忆令牌的压缩：替代外部摘要，训练模型将上下文内部压缩为记忆令牌。对比压缩保真度 vs. 当前 LLM 摘要方案。 |
+
+**运行实验**：每项实验设计为在同一 ARF 台架上运行。框架的 `EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见 [回归测评文档](docs/eval-benchmark.md) 了解评估基础设施。
+
+**研究日志**：`docs/paper/`（待创建）将包含论文框架、实验方案和阶段性结果。
+
+<br/>
+
+---
+
 ## TODO
 
 ### 已知代码问题 (2026-05-26 事实校验)
 
-### TODO — 待改进项
-
-> 基于代码逐项验证。
-
 | # | 标题 | 代码路径 | 功能域 | 类型 | 详情 |
 |---|------|---------|--------|------|------|
-| 1 | ~~Engine `invoke`/`astream` 代码重复~~ → **已修复** | `arf/engine/graph.py` | 进程调度 | 框架 | ~~~400 行几乎相同的 Agent Loop 逻辑在两处~~ → 提取 `_execute()` + `_step_call_model()` + `_step_execute_tools()` 统一路径，invoke/astream 简化为薄包装（净删除 ~370 行）。 |
-| 2 | ~~`BaseAgent.__init__` 巨型构造~~ → **已修复** | `arf/agent/base.py` | 进程创建 | 框架 | ~~构造函数内直接实例化 20+ 个实现~~ → 提取了 `_merge_models()` 和 `_build_resource_resolver()` 工厂方法；吸收遗留的 `transaction_ctx` 覆盖。 |
-| 3 | ~~`server.py` 单文件混杂~~ → **已修复** | `app/arf_default_assistant/routers/` | 用户界面 | App | ~~REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。~~ → 拆分为 `routers/` 按路由组：`chat.py`、`trace.py`、`config.py`、`resources.py`、`misc.py`。`server.py` 从 846→137 行（app 创建 + lifespan + router 挂载）。共享状态在 `routers/state.py`。 |
-| 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | ~~`begin()` 中 `"state_snapshot": None` 始终不存快照~~ → 改为 `FunctionBackend` 内联回滚：tool `function.py` 可选导出 `rollback()`，`execute()` 异常时自动调用。`TransactionContext` 协议和 `SnapshotRollback` 类已移除。 |
-| 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | ~~trace 硬编码为 `{"turns": []}`~~ → 重写：`EvalRunner` 通过 `EventBus.events_since()` 采集真实 trace，`events_to_trace()` 组装结构化 turn 数据，4 个 metric 在真实数据上计算。`BenchmarkBuilder` 从 `FileTraceStore` 会话创建 benchmark，`EvalComparator` 跨运行 diff 检测回归。 |
-| 6 | ~~全局状态 `registry._agent`~~ → **已修复** | `arf/agent/registry.py` 已删除 | 进程隔离 | 框架 | ~~`_agent: Any = None` 模块级单例~~ → 已删除。`_engine` 和 `_state_store` 现通过工具执行器参数注入（与 `_agent_mode` 同模式）。`undo` 工具通过函数签名接收。`server.py` 不再调用 `set_agent()`。 |
-| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | ~~`generate_plan()` 始终返回 `{"steps": []}`~~ → 由插件系统取代。`arf/plugins/` 提供框架插件（planner、todo、undo...）。App 在 `agent.yaml` 中声明 `plugins: [planner, todo]`。`PluginProvider` 扫描插件目录，`ResourceResolver` 合并插件 tools/skills 与 App 资源。**遗留问题**：`generate_plan()` 仍返回 `{"steps": []}`，`detect_divergence()` 仍返回 `{"diverged": False}`，`_call_model` 已注入但 LLM 从未被调用执行规划。`Planner` 协议是自主 Agent 的关键扩展点，调用方收到空结果可能误认为"无需分解"。 |
-| 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | ~~回调移除依赖 async generator 的 `finally`，但 CPython 在 `break`/exception 时不调用。~~ → 改为 `@asynccontextmanager`：`async with stream.listen() as queue` — `__aexit__` 在所有退出路径上保证清理。 |
-| 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | ~~14 文件缺模块 docstring；10 处裸 `dict` 类型~~ → 全部 13 个文件已加模块 docstring。核心签名用 `dict[str, Any]` 替代裸 `dict`。`test_code_style.py` 强制执行规范。 |
-| 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | ~~LLM API 调用无速率限制、无断路器保护。~~ → `ModelCallProtector` 组合 `TokenBucket`（按 api_base）+ `CircuitBreaker`（按模型，指数冷却）。在 `BaseAgent._inject_model_calls()` 中以 decorator 模式包装 `_call_model`/`_stream_model`。5 种事件通过 EventBus → trace viewer 可观测。移除了 `DefaultErrorPolicy` 中的 engine 级重试。GraphEngine/ModelAdapter 零侵入。参见 [`docs/api-protection.md`](docs/api-protection.md)。 |
-| 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。文档丰富但缺乏外部贡献的流程指引。**风险**：潜在贡献者不知道提交标准；无 changelog 则用户无法评估升级影响 |
+| 1 | ~~Engine `invoke`/`astream` 代码重复~~ → **已修复** | `arf/engine/graph.py` | 进程调度 | 框架 | ~~~400 行几乎相同的 Agent Loop 逻辑在两处~~ → 提取 `_execute()` + `_step_call_model()` + `_step_execute_tools()` 统一路径，invoke/astream 简化为薄包装。 |
+| 2 | ~~`BaseAgent.__init__` 巨型构造~~ → **已修复** | `arf/agent/base.py` | 进程创建 | 框架 | ~~构造函数内直接实例化 20+ 个实现~~ → 提取工厂方法。 |
+| 3 | ~~`server.py` 单文件混杂~~ → **已修复** | `app/arf_default_assistant/routers/` | 用户界面 | App | ~~REST 路由、WebSocket、SSE 流、CORS、文件服务、状态管理、配置 API 全在一个文件。~~ → 拆分为 `routers/`。 |
+| 4 | ~~`SnapshotRollback` 状态快照为空~~ → **已修复** | `arf/resources/backends/function.py` | 故障恢复 | 框架 | 改为 `FunctionBackend` 内联回滚。 |
+| 5 | ~~`EvalRunner` 指标空转~~ → **已修复** | `arf/evaluation/runner.py` | 质量保证 | 框架 | 重写：通过 `EventBus.events_since()` 采集真实 trace，4 个 metric 在真实数据上计算。 |
+| 6 | ~~全局状态 `registry._agent`~~ → **已修复** | `arf/agent/registry.py` 已删除 | 进程隔离 | 框架 | 已删除。Engine + state_store 通过工具执行器参数注入。 |
+| 7 | ~~`PromptBasedPlanner` 返回空计划~~ → **已修复** | `arf/plugins/planner/` | 任务规划 | 框架 | 由插件系统取代。 |
+| 8 | ~~SSE 监听器泄漏~~ → **已修复** | `arf/streaming/adapters/sse.py` | 通信协议 | 框架 | 改为 `@asynccontextmanager`。 |
+| 9 | ~~代码规范不统一~~ → **已修复** | 13 文件 + `graph.py` + `planner.py` | 文档系统 | 框架 | 全部文件已加模块 docstring，核心签名用 `dict[str, Any]`。 |
+| 10 | ~~无 Rate Limiting / Circuit Breaker~~ → **已修复** | `arf/protection/` | 进程调度 | 框架 | `ModelCallProtector` 组合 `TokenBucket` + `CircuitBreaker`。 |
+| 11 | 开源基建缺失 | — | 打包分发 | 框架 | 无 `CONTRIBUTING.md`、PR/Issue 模板、`CHANGELOG.md`、版本发布流程。 |
 
 **Plugins** — 挂载在 Hook 点上的能力包。每个 Plugin 包含 `plugin.yaml`（name + hooks + config）和 `plugin.py`（PluginProtocol 实现）。`PluginLoader` 扫描 `arf/plugins/{name}/`。社区可贡献。Plugin ≠ Tool — Plugin 在生命周期 Hook 自动触发，Tool 是 Agent 主动调用的 MCP 资源。
 
 | # | Plugin | 状态 | Hook | 描述 |
 |---|--------|------|------|------|
-| P-1 | ✅ `compaction` | DONE | `round_end` | Token 感知上下文压缩，75% 阈值 + LLM 摘要 |
-| P-2 | ✅ `checkpoint` | DONE | `round_end`, `session_end` | Round 快照 + session 归档，支持恢复 |
-| P-3 | ✅ `trace` | DONE | 全部 9 个 hook | JSONL 事件记录，用于调试、回放、评估 |
-| P-4 | ✅ `eval` | DONE | 离线 | Trace 回放 + 指标计算 + diff 报告 |
-| P-5 | ✅ `memory` | DONE | `round_end` | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
-| P-6 | ✅ `todo` | DONE | `round_start`, `round_end` | 任务列表追踪 + 提醒注入 |
-| P-7 | ✅ `undo` | DONE | `round_end`, `sandbox_persist` | Round 级状态 + 文件回滚 |
+| P-1 | `compaction` | DONE | `round_end` | Token 感知上下文压缩，75% 阈值 + LLM 摘要 |
+| P-2 | `checkpoint` | DONE | `round_end`, `session_end` | Round 快照 + session 归档，支持恢复 |
+| P-3 | `trace` | DONE | 全部 9 个 hook | JSONL 事件记录，用于调试、回放、评估 |
+| P-4 | `eval` | DONE | 离线 | Trace 回放 + 指标计算 + diff 报告 |
+| P-5 | `memory` | DONE | `round_end` | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
+| P-6 | `todo` | DONE | `round_start`, `round_end` | 任务列表追踪 + 提醒注入 |
+| P-7 | `undo` | DONE | `round_end`, `sandbox_persist` | Round 级状态 + 文件回滚 |
 | ~~P-8~~ | ~~`model_router`~~ | **已弃用** | `pre_model_call` | TwoTierRouter 快/慢分发 — 已弃用 |
-| P-9 | ✅ `human_loop` | DONE | `post_permission` | SSE 审批通道，60s 超时 |
+| P-9 | `human_loop` | DONE | `post_permission` | SSE 审批通道，60s 超时 |
 | P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
 | P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
 
