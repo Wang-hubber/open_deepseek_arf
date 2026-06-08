@@ -53,7 +53,7 @@ ARF 是研究论文 **《寻找 Agent 系统的脊椎——大模型与 Harness 
 
 **研究者** — 关注架构主张和实验路线：
 
-- [设计理念](#设计理念大脑-脊椎-身体模型) → [三层基于规则的简单反射](#三层基于规则的简单反射) → [控制平面](#控制平面--结构化-state--生命周期) → [第二部分 — 研究路线图](#第二部分--研究路线图) → [演进方向](#演进方向)
+- [设计理念](#设计理念大脑-脊椎-身体模型) → [三层基于规则的简单反射](#三层基于规则的简单反射) → [控制平面](#控制平面--结构化-state--生命周期) → [第二部分 — 研究路线图](#第二部分--研究路线图)
 
 **框架使用者** — 想基于 ARF 构建应用：
 
@@ -169,36 +169,6 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 <br/>
 
 ---
-
-## TODO
-
-**Plugins** — 挂载在 Hook 点上的能力包。每个 Plugin 包含 `plugin.yaml`（name + hooks + config）和 `plugin.py`（PluginProtocol 实现）。`PluginLoader` 扫描 `arf/plugins/{name}/`。社区可贡献。Plugin ≠ Tool — Plugin 在生命周期 Hook 自动触发，Tool 是 Agent 主动调用的 MCP 资源。
-
-| # | Plugin | 状态 | Hook | 描述 |
-|---|--------|------|------|------|
-| P-1 | `compaction` | DONE | `round_end` | Token 感知上下文压缩，75% 阈值 + LLM 摘要 |
-| P-2 | `checkpoint` | DONE | `round_end`, `session_end` | Round 快照 + session 归档，支持恢复 |
-| P-3 | `trace` | DONE | 全部 9 个 hook | JSONL 事件记录，用于调试、回放、评估 |
-| P-4 | `eval` | DONE | 离线 | Trace 回放 + 指标计算 + diff 报告 |
-| P-5 | `memory` | DONE | `round_end` | 长期记忆提取，system model 驱动，原子写入 `memory.md` |
-| P-6 | `todo` | DONE | `round_start`, `round_end` | 任务列表追踪 + 提醒注入 |
-| P-7 | `undo` | DONE | `round_end`, `sandbox_persist` | Round 级状态 + 文件回滚 |
-| ~~P-8~~ | ~~`model_router`~~ | **已弃用** | `pre_model_call` | TwoTierRouter 快/慢分发 — 已弃用 |
-| P-9 | `human_loop` | DONE | `post_permission` | SSE 审批通道，60s 超时 |
-| P-10 | `bash` | P1 | `pre_tool_exec` | Shell 执行器，注入安全审计 |
-| P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python 沙箱 |
-
-### 演进方向
-
-**记忆：从 In-Context Learning 到参数化。** 近期工作（PEAM、TMEM）揭示了范式迁移的可能性——Agent 记忆可以从提示空间迁移到权重空间。主要方向：
-
-- **参数化记忆层**：系统提示词、上下文压缩、长期记忆、领域知识各自对应可插拔 LoRA 适配器，不同更新策略和监督信号
-- **容量对齐消融实验**：在总计算开销一致的前提下，对比 LoRA 参数化 vs 文本摘要；扫 r=1–8 找性价比最优
-- **异步非阻塞更新**：双缓冲 LoRA B 矩阵——后台 SFT 更新，不阻塞推理
-- **PV/STC 迁移到通用 Agent**：将 PEAM 的"什么值得记住"评分体系和自触发固化机制适配到通用 Agent 场景
-- **偏好与事实解耦**：偏好记忆用自监督、事实记忆用可校验 QA 对，分离 LoRA 适配器各自更新
-
-详见 [从 In-Context Learning 到 Weight Updates](docs/paper/reading_summary/parameterized-memory.md)。
 
 ---
 

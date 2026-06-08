@@ -53,7 +53,7 @@ ARF is the **engineering companion** to the research paper *"Finding the Spine o
 
 **For researchers** — interested in the architecture thesis and experimental roadmap:
 
-- [Design Philosophy](#design-philosophy-the-brain-spine-body-model) → [Three Layers of Rule-Based Reflexes](#three-layers-of-rule-based-reflexes) → [The Control Plane](#the-control-plane--structured-state--lifecycle) → [Part II — Research Roadmap](#part-ii--research-roadmap) → [Evolution](#evolution)
+- [Design Philosophy](#design-philosophy-the-brain-spine-body-model) → [Three Layers of Rule-Based Reflexes](#three-layers-of-rule-based-reflexes) → [The Control Plane](#the-control-plane--structured-state--lifecycle) → [Part II — Research Roadmap](#part-ii--research-roadmap)
 
 **For framework users** — want to build on ARF:
 
@@ -169,36 +169,6 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 <br/>
 
 ---
-
-## TODO
-
-**Plugins** — Hook-mounted capability bundles. Each plugin has `plugin.yaml` (name + hooks + config) and `plugin.py` (PluginProtocol impl). `PluginLoader` scans `arf/plugins/{name}/`. Community-contributable. Plugin ≠ Tool — plugins fire on lifecycle hooks, tools are Agent-called MCP resources.
-
-| # | Plugin | Status | Hook | Description |
-|---|--------|--------|------|-------------|
-| P-1 | `compaction` | DONE | `round_end` | Token-aware context compaction, 75% threshold + LLM summary |
-| P-2 | `checkpoint` | DONE | `round_end`, `session_end` | Round snapshots + session archiving, restore support |
-| P-3 | `trace` | DONE | all 9 hooks | JSONL event recording for debug, replay, evaluation |
-| P-4 | `eval` | DONE | offline | Trace replay + metric computation + diff reports |
-| P-5 | `memory` | DONE | `round_end` | Long-term memory extraction via system model, atomic write to `memory.md` |
-| P-6 | `todo` | DONE | `round_start`, `round_end` | Task list tracking with reminder injection |
-| P-7 | `undo` | DONE | `round_end`, `sandbox_persist` | Round-level state + file rollback |
-| ~~P-8~~ | ~~`model_router`~~ | **DEPRECATED** | `pre_model_call` | TwoTierRouter fast/slow dispatch — deprecated |
-| P-9 | `human_loop` | DONE | `post_permission` | SSE approval channel with 60s timeout |
-| P-10 | `bash` | P1 | `pre_tool_exec` | Shell executor, community-audited injection safety |
-| P-11 | `code_interpreter` | P1 | `pre_tool_exec` | Python sandbox |
-
-### Evolution
-
-**Memory: From In-Context Learning to Parameterization.** Recent work (PEAM, TMEM) points to a paradigm shift — agent memory can move from prompt space to weight space. Key directions:
-
-- **Parameterized memory layer**: Pluggable LoRA adapters for system prompt, context compression, long-term memory, and domain knowledge — each with independent update strategies and supervision signals
-- **Capacity-aligned ablation**: Compare LoRA-based parameterization vs. text summarization under equal compute budgets; sweep rank r=1–8 to find the cost-quality sweet spot
-- **Async non-blocking updates**: Dual-buffer LoRA B-matrix — background SFT without blocking inference
-- **PV/STC for general agents**: Adapt PEAM's "what's worth remembering" scoring and self-triggered consolidation to general-purpose agents
-- **Preference vs. fact decoupling**: Separate LoRA adapters with self-supervised (preferences) vs. verifiable QA (facts) update strategies
-
-See [From In-Context Learning to Weight Updates](docs/paper/reading_summary/parameterized-memory.md) for the full analysis.
 
 ---
 
