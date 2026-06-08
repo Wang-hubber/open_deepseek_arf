@@ -33,8 +33,8 @@
 | 子方向 | 要点 | ARF 关联 |
 |--------|------|---------|
 | 2.1 Agent 架构 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 定义模糊 | ARF 的 `GraphEngine` + `LoopStrategy` 是 ReAct 参考实现 |
-| 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 对应论文核心论点：知识应内化到模型，而非 Harness 打补丁 |
-| 2.3 记忆与上下文 | 外部记忆（向量DB、MemGPT）vs 内部记忆（Transformer-XL、长上下文） | ARF `MemoryPlugin` 是当前的外部方案；实验三将探索在线 LoRA 替代 |
+| 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 对应论文核心论点：知识应内化到模型，而非 Harness 打补丁。已有 PEAM、TMEM 等参数化记忆工作提供实证支撑 |
+| 2.3 记忆与上下文 | 外部记忆（向量DB、MemGPT）vs 参数化记忆（LoRA 权重增量）。范式迁移：从 In-Context Learning → Weight Updates。详见 [阅读笔记](reading_summary/parameterized-memory.md) | ARF `MemoryPlugin` 是当前外部方案；实验三/五将探索 LoRA 参数化替代 |
 | 2.4 具身智能 | 机器人学的感知编码、状态空间、身体图式 | 直接对应三层机械层的“固定感知编码器”设计 |
 
 > **本节 TODO**：检索各小节 2023-2026 代表性论文；重点找是否有工作提出过类似“大脑-身体”分工
@@ -123,10 +123,11 @@
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 在线 LoRA 微调的记忆保持质量优于外部记忆注入（`memory.md`） |
+| **假设** | 参数化记忆（LoRA 权重增量）的记忆保持质量优于外部记忆注入（`memory.md`），且不占用上下文窗口 |
+| **动机** | PEAM（跨回合技能固化）和 TMEM（会话内在线更新）分别验证了参数化记忆的有效性。两篇论文均存在消融漏洞（参数量不对等、r 未扫参）——这正是本实验的切入点 |
 | **ARF 已有** | `MemoryPlugin` → `memory.md` + `ModelAdapter` 抽象 + `FileMemoryStore` |
-| **待建设** | `ModelAdapter` 接入 LoRA 权重更新接口；用 `memory.md` 条目作为训练信号；对比保持质量 |
-| **状态** | ⬜ 未开始 |
+| **待建设** | `ModelAdapter` 接入 LoRA B 矩阵更新接口；用 `memory.md` 条目作为监督信号；扫 r=1,2,4,6,8 找性价比最优；控制总计算开销一致，对比参数化 vs 外挂摘要 |
+| **状态** | ⬜ 未开始。文献基础：PEAM (arXiv 2605.27762)、TMEM，详见 [阅读笔记](reading_summary/parameterized-memory.md) |
 
 #### 6.4 实验四：后训练身份边界鲁棒性
 
@@ -137,14 +138,15 @@
 | **待建设** | 扩展 guardrails 做对抗测试；构建越狱基准；测量身份边界保持率 |
 | **状态** | ⬜ 未开始 |
 
-#### 6.5 实验五：架构内上下文压缩（记忆令牌）
+#### 6.5 实验五：参数化上下文压缩 vs. 外部摘要
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 模型内部记忆令牌的压缩保真度优于外部 LLM 摘要方案 |
+| **假设** | 将上下文关键信息在线写入 LoRA 权重（参数化压缩），保真度优于外部 LLM 摘要，且释放上下文窗口 |
+| **动机** | 传统摘要是 token-level 有损压缩，每次需重新计算 KV。PEAM 和 TMEM 证明关键信息可压入 FFN 权重，实现真正的"内化"。TMEM 的同步阻塞设计可改为异步双缓冲 |
 | **ARF 已有** | `CompactionPlugin`（token 感知滑动窗口 + LLM 摘要） |
-| **待建设** | 原型验证记忆令牌压缩机制；对比保真度 vs 当前 LLM 摘要 |
-| **状态** | ⬜ 未开始 |
+| **待建设** | 在 `CompactionPlugin` 中集成 LoRA B 矩阵在线更新；设计异步双缓冲（当前 B / 后台 B）避免阻塞推理；对比保真度 vs 当前 LLM 摘要；扫 r 找最优性价比 |
+| **状态** | ⬜ 未开始。文献基础：同实验三，详见 [阅读笔记](reading_summary/parameterized-memory.md) |
 
 > **本节 TODO**：为每个实验方向找基线方法和评估基准；确认是否有团队做过类似实验
 
@@ -188,8 +190,9 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 
 ### 持续
 
-- [ ] **CLAUDE.md 研究日志**：每次研究进展在 commit message 或 CHANGELOG 中记录
-- [ ] **阅读笔记**：每读完一篇关键论文，写一页笔记存入 `docs/paper/notes/`
+- [ ] **阅读笔记**：每读完一篇关键论文，写一页笔记存入 `docs/paper/reading_summary/`
+  - 已完成：PEAM + TMEM → [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md)
+- [ ] **实验三/五方案细化**：基于 PEAM/TMEM 的消融漏洞（容量对齐、r 扫参、同步→异步），设计可发表的对比实验
 
 ---
 
@@ -197,8 +200,16 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 
 1. **Agent 架构综述** — `LLM-based Agent survey 2024 2025`
 2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等
-3. **记忆增强模型** — MemGPT、Memorizing Transformer、Unlimiformer
+3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM、Memorizing Transformer、Unlimiformer
 4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM`
 5. **具身智能感知-行动接口** — `embodied agent state representation modality alignment`
 6. **Agent 安全与约束** — Agent permission control、rollback 机制
 7. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
+
+---
+
+## 阅读笔记索引
+
+| 日期 | 论文 | 笔记 |
+|------|------|------|
+| 2026-06 | PEAM · TMEM — 参数化记忆的两条路径 | [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md) |
