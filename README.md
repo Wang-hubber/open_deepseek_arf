@@ -95,7 +95,7 @@ ARF implements the Harness as three layers of rule-based reflexes — simple, de
 
 ### The Control Plane — Structured State & Lifecycle
 
-The three layers don't float in isolation. The **Control Plane** is the orchestrating surface they all connect to — the Harness equivalent of a spinal cord that routes signals between brain and body.
+The three layers don't float in isolation. The **[Control Plane](docs/agent-execution.md)** is the orchestrating surface they all connect to — the Harness equivalent of a spinal cord that routes signals between brain and body.
 
 | Aspect | Implementation |
 |--------|---------------|
