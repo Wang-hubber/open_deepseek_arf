@@ -51,13 +51,13 @@ ARF is the **engineering companion** to the research paper *"Finding the Spine o
 
 ## Reading Guide
 
-This document is organized in two parts plus research roadmap:
+**For researchers** — interested in the architecture thesis and experimental roadmap:
 
-- **Part I — Framework**: The Brain-Spine-Body design model, the three mechanical layers, the 6-skeleton architecture, and the plugin system
-- **Part II — Research Roadmap**: Mapping the paper's five experiments to current ARF capabilities and extension points
-- **Bottom [TODO](#todo)**: Known issues and evolution directions
+- [Design Philosophy](#design-philosophy-the-brain-spine-body-model) → [The Three Mechanical Layers](#the-three-mechanical-layers) → [Part II — Research Roadmap](#part-ii--research-roadmap) → [Evolution](#evolution)
 
-New readers: scan the three mechanical layers first to understand the architecture thesis, then the 6-skeleton table for implementation details.
+**For framework users** — want to build on ARF:
+
+- [6-Skeleton Architecture](#harness-as-kernel--6-skeleton-architecture) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
 
 <br/>
 
