@@ -136,6 +136,11 @@ class TestNewlineInMiddleDoesNotBypassWhenIntendedAsContent:
 
     # ── overly long strings are rejected ──
 
+    def test_null_byte_rejected(self, guard, boundary):
+        result = guard._check_one("safe\0/etc/passwd", boundary)
+        assert result.allowed is False
+        assert "null" in result.reason
+
     def test_overly_long_path_rejected(self, guard, boundary):
         """A 300-char string is not a legitimate path — reject it."""
         long_path = "a" * 300
