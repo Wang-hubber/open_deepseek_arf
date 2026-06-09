@@ -25,23 +25,6 @@ class InMemoryGuardRunner:
         return GuardResult(allowed=True)
 
 
-class InMemoryApprovalChannel:
-    """Auto-approve ApprovalChannel for testing."""
-    def __init__(self) -> None:
-        self.responses: list = []
-
-    async def send(self, request):
-        self.responses.append(request)
-        return "test_approval_id"
-
-    async def wait(self, approval_id: str, timeout: int):
-        from arf.core.results import ApprovalResponse
-        return ApprovalResponse(action="approve")
-
-    def reset(self) -> None:
-        self.responses.clear()
-
-
 class InMemoryToolResolver:
     """Preset-tool ToolResolver for testing."""
     def __init__(self, tools: dict | None = None) -> None:
@@ -96,6 +79,6 @@ class InMemoryToolExecutor:
 
 __all__ = [
     "InMemoryStateStore", "InMemoryEventBus",
-    "InMemoryGuardRunner", "InMemoryApprovalChannel",
+    "InMemoryGuardRunner",
     "InMemoryToolResolver", "InMemoryToolExecutor",
 ]
