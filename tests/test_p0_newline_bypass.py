@@ -4,6 +4,9 @@ Trailing-newline attacks (e.g. ``../../etc/passwd\\n``) are now blocked:
 the guard strips trailing whitespace before running path checks. True
 multi-line content (embedded newlines after stripping) is still allowed
 since it is file content, not a path.
+
+Also verifies path_param_names filtering — only explicitly marked
+path parameters are checked when the filter is provided.
 """
 import tempfile
 import os
@@ -109,13 +112,10 @@ class TestNewlineBypassPathTraversal:
         assert result.allowed is False
 
 
-class TestNewlineInMiddleDoesNotBypassWhenIntendedAsContent:
-    """Ensure legitimate multi-line content is still handled correctly.
-
-    The fix must distinguish between:
-      - ``path\\n``   (trailing newline — attack, should be blocked)
-      - ``content\\nmore content`` (multi-line file content — legit, should be allowed)
-    """
+class TestRejectIllegalChars:
+    """Null bytes, newlines, and overly-long strings are rejected
+    outright — they cannot appear in legitimate paths. Content strings
+    are handled by path_param_names filtering at the executor layer."""
 
     @pytest.fixture
     def guard(self):
@@ -126,15 +126,13 @@ class TestNewlineInMiddleDoesNotBypassWhenIntendedAsContent:
         with tempfile.TemporaryDirectory() as tmp:
             yield DirectoryBoundary(tmp)
 
-    def test_multi_line_content_still_allowed(self, guard, boundary):
-        """Real file content with embedded newlines is not a path attack."""
-        content = "def foo():\n    return 42\n"
-        result = guard._check_one(content, boundary)
-        assert result.allowed is True, (
-            "Multi-line content should remain allowed (not a path)."
-        )
-
-    # ── overly long strings are rejected ──
+    def test_multi_line_content_rejected(self, guard, boundary):
+        """Any string with embedded newlines is rejected — newlines cannot
+        appear in a legitimate path. Content strings are handled by
+        path_param_names filtering at the executor layer."""
+        result = guard._check_one("def foo():\n    return 42\n", boundary)
+        assert result.allowed is False
+        assert "newline" in result.reason
 
     def test_null_byte_rejected(self, guard, boundary):
         result = guard._check_one("safe\0/etc/passwd", boundary)
@@ -142,26 +140,67 @@ class TestNewlineInMiddleDoesNotBypassWhenIntendedAsContent:
         assert "null" in result.reason
 
     def test_overly_long_path_rejected(self, guard, boundary):
-        """A 300-char string is not a legitimate path — reject it."""
         long_path = "a" * 300
         result = guard._check_one(long_path, boundary)
         assert result.allowed is False
         assert "too long" in result.reason
 
     def test_max_path_len_boundary_accepted(self, guard, boundary):
-        """A path at exactly MAX_PATH_LEN (255) within workspace passes
-        all checks — it's a legitimate (if unusually named) path."""
         ok_path = "x" * 255
         result = guard._check_one(ok_path, boundary)
-        assert result.allowed is True  # within boundary, no traversal
+        assert result.allowed is True
 
-    def test_multi_line_with_suspicious_text_still_checked(self, guard, boundary):
-        """Content that happens to contain path-like substrings should
-        NOT be blindly allowed just because it has newlines."""
-        # Single-line ``..`` disguised inside multi-line content is NOT a path
-        content = "line one\n../../etc/passwd\nline three"
-        result = guard._check_one(content, boundary)
-        # This is debatable: is it content or an attack? Current behavior allows it.
-        # After fix, we may want to sanitize or reject paths spanning multiple lines.
-        # For now, document the current behavior.
-        assert result.allowed is True, "Multi-line with embedded patterns currently allowed."
+    def test_embedded_traversal_with_newline_rejected(self, guard, boundary):
+        result = guard._check_one("line one\n../../etc/passwd\nline three", boundary)
+        assert result.allowed is False
+        assert "newline" in result.reason
+
+
+class TestPathParamFiltering:
+    """When path_param_names is provided, only marked params are checked."""
+
+    @pytest.fixture
+    def guard(self):
+        return PathCheckToolGuard()
+
+    @pytest.fixture
+    def boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            yield DirectoryBoundary(tmp)
+
+    def test_checks_only_marked_params(self, guard, boundary):
+        """file_path=/etc/passwd is checked; content=/etc/passwd is skipped."""
+        import asyncio
+        params = {
+            "file_path": "/etc/passwd",
+            "content": "/etc/passwd",  # same string, but not a path param
+        }
+        result = asyncio.run(
+            guard.check("write_file", params, boundary,
+                        path_param_names={"file_path"}))
+        # file_path is absolute → blocked
+        assert result.allowed is False
+
+    def test_unmarked_absolute_param_is_allowed(self, guard, boundary):
+        """If no path_param_names, all strings are checked (backward compat)."""
+        import asyncio
+        params = {
+            "file_path": "safe.txt",
+            "content": "/etc/passwd",
+        }
+        result = asyncio.run(
+            guard.check("write_file", params, boundary))
+        # content is also checked → blocked
+        assert result.allowed is False
+
+    def test_marked_params_only_check_named_keys(self, guard, boundary):
+        """Nested values under unmarked keys are skipped entirely."""
+        import asyncio
+        params = {
+            "file_path": "safe.txt",
+            "metadata": {"template": "/etc/nginx/nginx.conf"},  # nested, unmarked
+        }
+        result = asyncio.run(
+            guard.check("render", params, boundary,
+                        path_param_names={"file_path"}))
+        assert result.allowed is True  # metadata.template not checked

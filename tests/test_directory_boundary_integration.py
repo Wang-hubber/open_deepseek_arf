@@ -48,10 +48,10 @@ class TestPathCheckWithBoundary:
             result = guard._check_one("/etc/passwd", boundary)
             assert result.allowed is False
 
-    def test_multiline_content_skipped(self, guard, workspace_boundary):
+    def test_multiline_content_rejected(self, guard, workspace_boundary):
         content = "line1\nline2\n/etc/passwd\nline3"
         result = guard._check_one(content, workspace_boundary)
-        assert result.allowed is True  # multiline = file content, not path
+        assert result.allowed is False  # newlines cannot appear in paths
 
 
 class TestBoundaryResolution:

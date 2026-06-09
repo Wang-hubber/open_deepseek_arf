@@ -8,6 +8,7 @@ parameters:
       description: Regular expression to search for
     path:
       type: string
+      format: path
       description: Directory to search in (default workspace root)
     include:
       type: string

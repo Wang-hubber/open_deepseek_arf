@@ -60,16 +60,22 @@ class PathCheckToolGuard:
         }
 
     async def check(
-        self, tool_name: str, params: dict, boundary: DirectoryBoundary
+        self,
+        tool_name: str,
+        params: dict,
+        boundary: DirectoryBoundary,
+        path_param_names: set[str] | None = None,
     ) -> GuardResult:
-        """Validate all string params against *boundary*.
+        """Validate path-like params against *boundary*.
 
-        boundary is provided by the executor, resolved per-tool.
+        If *path_param_names* is provided, only those top-level keys
+        are checked.  Otherwise every string value in *params* is scanned
+        (backward-compatible default).
         """
         if self._quota:
             self._quota.reset()
 
-        for path_str in self._walk_strings(params):
+        for path_str in self._walk_strings(params, path_param_names):
             result = self._check_one(path_str, boundary)
             if not result.allowed:
                 return result
@@ -78,22 +84,20 @@ class PathCheckToolGuard:
     _MAX_PATH_LEN = 255
 
     def _check_one(self, v: str, boundary: DirectoryBoundary) -> GuardResult:
-        # ── Sanitize ──
-        cleaned = v.rstrip()  # drop trailing whitespace / newlines
-
-        # ── Reject: impossible to be a path ──
-        if "\x00" in cleaned:
+        # ── Reject: cannot be a legitimate path ──
+        if "\x00" in v:
             return GuardResult(allowed=False, reason="Path contains null byte")
 
-        if len(cleaned) > self._MAX_PATH_LEN:
+        if "\n" in v:
+            return GuardResult(allowed=False, reason="Path contains newline")
+
+        if len(v) > self._MAX_PATH_LEN:
             return GuardResult(
                 allowed=False,
-                reason=f"Path too long ({len(cleaned)} > {self._MAX_PATH_LEN})",
+                reason=f"Path too long ({len(v)} > {self._MAX_PATH_LEN})",
             )
 
-        # ── Allow: clearly file content, not a path ──
-        if "\n" in cleaned:
-            return GuardResult(allowed=True)
+        cleaned = v.rstrip()
 
         # ── Path checks ──
         parts = Path(cleaned).parts
@@ -129,12 +133,17 @@ class PathCheckToolGuard:
         return GuardResult(allowed=True)
 
     @staticmethod
-    def _walk_strings(obj: Any) -> Iterator[str]:
+    def _walk_strings(obj: Any,
+                      path_param_names: set[str] | None = None) -> Iterator[str]:
         if isinstance(obj, str):
             yield obj
         elif isinstance(obj, dict):
-            for value in obj.values():
-                yield from PathCheckToolGuard._walk_strings(value)
+            for key, value in obj.items():
+                if path_param_names is not None and key not in path_param_names:
+                    continue
+                yield from PathCheckToolGuard._walk_strings(
+                    value, path_param_names)
         elif isinstance(obj, (list, tuple, set)):
             for item in obj:
-                yield from PathCheckToolGuard._walk_strings(item)
+                yield from PathCheckToolGuard._walk_strings(
+                    item, path_param_names)
