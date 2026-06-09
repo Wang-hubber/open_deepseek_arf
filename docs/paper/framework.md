@@ -113,13 +113,41 @@
 
 **4.2 大脑的职责**：后训练形成内模型（预训练“本我” → RLHF“自我/超我”）· 长上下文压缩 · 在线 LoRA 自演化
 
-**4.3 Harness 的职责：三层机械层** ← **ARF 的核心工程贡献**
+**4.3 Harness 的定义：硬线 + 软线** ← **ARF 的核心贡献**
 
-| 层 | 功能 | ARF 实现 | 状态 |
-|----|------|---------|------|
-| L1 固定感知编码器 | 多源信息时间对齐，固定 schema StatePacket，不追问不澄清 | `SystemPromptProvider` + `ResourceResolver` + `FileWatcher` | ✅ 已实现 |
-| L2 可靠行动执行器 | 解析函数调用，执行并收集反馈，预演-执行-回滚 | `SandboxManager` + `ConcurrentToolExecutor` + `FunctionBackend.rollback()` + `SkillPipeline` | ✅ 已实现 |
-| L3 非条件反射层 | 硬编码安全门控、损伤回滚、节律存档，模型不可绕过 | `PathCheckToolGuard` + `PermissionRegistry` + `RoundManager` + Cancel Token | ✅ 已实现 |
+Harness 是 Agent 的脊椎——两条并行线，一条零认知，一条承载认知信号的渐进内化。
+
+**硬线（零认知，框架负责，永不变更）**
+
+```
+控制平面 (ControlPlane)
+├── 安全门控     → PathCheckToolGuard · PermissionRegistry · deny→ask→allow
+├── 错误恢复     → ErrorHandlerPlugin · SessionAbortedError
+├── 节律存档     → RoundManager · state_store.put() · checkpoint
+├── 全量追踪     → EventBus → FileTraceStore (JSONL)
+├── 回归测评     → EvalRunner · BenchmarkBuilder · trace replay
+│
+├── Action 执行  → _execute_action(step)
+│   ├── call_model      → ModelAdapter → 推理
+│   └── execute_tools   → ConcurrentToolExecutor → 沙箱执行
+│
+├── Hook 挂载点  → 9 个生命周期事件
+│
+└── Agent 编排   → LoopStrategy · AgentBus (预留)
+```
+
+**软线（认知信号，渐进从 ICL 迁移到 LoRA MOE）**
+
+| 维度 | 冷启动 (ICL) | 热机 (LoRA MOE) |
+|------|-------------|-----------------|
+| 身份 | SystemPrompt 定义角色 | Identity LoRA 固化人格 |
+| 知识 | RAG 检索注入上下文 | Knowledge LoRA 参数化知识库 |
+| 记忆 | memory.md 外挂摘要 | Memory LoRA 在线 SFT 写入 B 矩阵 |
+| 通信 | 自然语言文本串行 | TFlow 权重空间扰动融合 |
+
+Harness 的核心职责：冷启动时用 ICL 兜底，运行时接收交互信号，逐步构造 SFT 监督样本，异步更新对应 LoRA 适配器，完成后热切换到参数化模式。**Harness 是一个持续"内化"的机器**——把运行时产出的身份信号、知识信号、记忆信号、通信信号从上下文空间逐步迁移到参数空间。脊椎不思考，但它是大脑学习的载体。
+
+**ARF 实现状态**：硬线全部已实现 ✅。软线的 LoRA MOE 路由和在线 SFT 管线是实验一到四的建设目标。 |
 
 **4.4 协同进化原则**：Harness 状态 schema 必须作为模型后训练的原生感知语言
 
@@ -196,7 +224,14 @@ Agent 不再是一个静态程序，而是按需动态组合 **基础智能（Ba
 | **ARF 已有** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()` |
 | **状态** | ⬜ 模拟环境待搭建。文献基础：TFlow |
 
-> **本节 TODO**：为每个实验方向找基线方法和评估基准；确认是否有团队做过类似实验
+#### 6.5 实验五（终局）：热机 LoRA MOE Harness vs. 传统 ICL Harness
+
+| 项 | 内容 |
+|----|------|
+| **假设** | 热机后的 LoRA MOE Harness（Identity + Knowledge + Memory + Comm LoRA 全部激活）在任务完成率、抗越狱、记忆保持、通信效率四个维度上均显著优于传统纯 ICL Harness |
+| **设计** | 同一套 ARF 硬线（硬线不变），对比两种软线配置——A 组纯 ICL（SystemPrompt + RAG + memory.md + NL 文本通信），B 组热机 LoRA MOE（四个 LoRA 适配器全部激活，低上下文）。同一任务、同一基座模型，2×2 横跨四个维度评分 |
+| **数据集与测评** | *（待实验一至四完成后汇总）* |
+| **状态** | ⬜ 依赖实验一至四的结论和数据集 |
 
 ---
 
@@ -210,9 +245,9 @@ Agent 不再是一个静态程序，而是按需动态组合 **基础智能（Ba
 
 ```
 论文第 1-3 节 (问题引出)  ← ARF 是这些问题驱动的产物
-论文第 4 节   (理论框架)  ← ARF 三层机械层直接实现 4.3
-论文第 5 节   (设计准则)  ← ARF 6 骨架 + Plugin 体系实现全部四条准则
-论文第 6 节   (实验设计)  ← ARF 是全部四项实验的统一台架
+论文第 4 节   (理论框架)  ← ARF 硬线 + 软线直接实现 4.3
+论文第 5 节   (设计准则)  ← ARF 硬线体系实现全部四条准则
+论文第 6 节   (实验设计)  ← 实验一至四验证各维度参数化迁移，实验五为终局对比
 ```
 
 ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论文的工程验证**。两者是同一思想的两种语言。
