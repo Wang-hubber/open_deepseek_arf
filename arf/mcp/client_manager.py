@@ -55,6 +55,7 @@ class McpClientManager:
         self._started = False
         self._healthy = False
         self._request_id = 0
+        self._send_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Spawn the local MCP server subprocess and establish stdio connection."""
@@ -101,46 +102,95 @@ class McpClientManager:
             self._process = None
         self._started = False
 
+    @staticmethod
+    def _consume_frame(buffer: bytes) -> tuple[str | None, bytes]:
+        """Decode first complete frame in *buffer*, returning
+        ``(payload, remaining_bytes)``.  Returns ``(None, buffer)`` when
+        no complete frame is available yet.
+        """
+        decoded = StdioFraming.decode(buffer)
+        if decoded is None:
+            return None, buffer
+
+        # Re-parse the header so we know how many bytes to consume.
+        header_end = buffer.find(b"\r\n\r\n")
+        if header_end == -1:
+            return None, buffer
+        header = buffer[:header_end].decode("ascii")
+        if not header.startswith("Content-Length: "):
+            return None, buffer
+        try:
+            content_length = int(header[len("Content-Length: "):])
+        except ValueError:
+            return None, buffer
+        consumed = header_end + 4 + content_length
+        return decoded, buffer[consumed:]
+
     async def _send_request(self, method: str, params: dict) -> dict:
-        """Send a JSON-RPC request and return the result dict."""
+        """Send a JSON-RPC request and return the result dict.
+
+        Serialized via ``_send_lock`` so only one request is in-flight at a
+        time.  Response id is verified against the sent request id; mismatched
+        (stale) responses are discarded and the correct one is waited for.
+        """
         self._request_id += 1
-        req = JsonRpcRequest(id=self._request_id, method=method, params=params)
+        sent_id = self._request_id
+        req = JsonRpcRequest(id=sent_id, method=method, params=params)
         payload = req.model_dump_json(by_alias=True)
         framed = StdioFraming.encode(payload)
 
-        if not self._healthy:
-            return {}
-
-        if self._process and self._process.stdin:
-            try:
-                self._process.stdin.write(framed)
-                await self._process.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                self._healthy = False
+        async with self._send_lock:
+            if not self._healthy:
                 return {}
 
-        if self._process and self._process.stdout:
-            buffer = b""
-            try:
-                while True:
+            if self._process and self._process.stdin:
+                try:
+                    self._process.stdin.write(framed)
+                    await self._process.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    self._healthy = False
+                    return {}
+
+            if not (self._process and self._process.stdout):
+                return {}
+
+            buf = b""
+            while True:
+                try:
                     chunk = await asyncio.wait_for(
                         self._process.stdout.read(4096), timeout=10.0
                     )
-                    if not chunk:
-                        break
-                    buffer += chunk
-                    decoded = StdioFraming.decode(buffer)
-                    if decoded:
-                        resp = json.loads(decoded)
-                        if "result" in resp:
-                            return resp["result"]
-                        if "error" in resp:
-                            return {"error": resp["error"].get("message", "MCP error")}
-                        break
-            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
-                self._healthy = False
+                except (asyncio.TimeoutError, ConnectionResetError,
+                        BrokenPipeError, OSError):
+                    self._healthy = False
+                    return {}
 
-        return {}
+                if not chunk:
+                    return {}
+                buf += chunk
+
+                while True:
+                    decoded, buf = self._consume_frame(buf)
+                    if decoded is None:
+                        break  # need more data
+
+                    resp = json.loads(decoded)
+                    resp_id = resp.get("id")
+
+                    if resp_id != sent_id:
+                        logger = __import__('logging').getLogger("arf.mcp")
+                        logger.debug("Discarding stale response id=%s, expected=%s",
+                                     resp_id, sent_id)
+                        continue  # discard, try next frame in buf
+
+                    if "result" in resp:
+                        return resp["result"]
+                    if "error" in resp:
+                        return {"error": resp["error"].get("message", "MCP error")}
+                    # response with neither result nor error — malformed, discard
+                    break
+
+            return {}
 
     @property
     def healthy(self) -> bool:

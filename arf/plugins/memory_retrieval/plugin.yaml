@@ -1,6 +1,0 @@
-name: memory_retrieval
-enabled: true
-description: "Retrieve long-term memory at round_start"
-config:
-  max_tokens: 2000
-  top_k: 5

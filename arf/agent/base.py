@@ -13,9 +13,7 @@ from arf.action_runner.runner import ActionRunner
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
 from arf.resources.providers.tool_provider import ToolProvider
-from arf.memory.file_store import FileMemoryStore
-from arf.memory.recent_first import RecentFirstRetriever
-from arf.memory.writer import RuleBasedMemoryWriter
+
 from arf.hooks.runner import SubprocessHookRunner
 from arf.guardrails.runner import DefaultGuardRunner
 from arf.guardrails.none_guard import NoneInputGuard
@@ -151,7 +149,7 @@ class BaseAgent:
         ) if watch_enabled else None
         self._file_watcher = file_watcher
 
-        # 3. Memory — LLM-driven by default, falls back to rule-based
+        # 3. Plugin runtime
         from pathlib import Path as _Path
         _mem_dir = str(ctx.memory_dir) if ctx else "./data/memory"
         _workspace_dir = str(ctx.root) if ctx else "."
@@ -174,19 +172,6 @@ class BaseAgent:
                 for m in config.models
             },
         )
-        memory_store = override_protocols.pop("memory_store", FileMemoryStore(_mem_dir))
-
-        # System model adapter — removed (each Plugin now configures its own model).
-        _system_model_call = None
-
-        # Memory extraction moved to arf/plugins/memory/ plugin.
-        # Framework no longer constructs or holds a writer/retriever.
-        memory_writer = override_protocols.pop("memory_writer", None)
-        memory_retriever = override_protocols.pop("memory_retriever", None)
-
-        # Compaction — moved to CompactionPlugin (round_end hook).
-        # Framework no longer constructs SlidingWindowCompactor inline.
-        compaction = override_protocols.pop("compaction", None)
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
         _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
@@ -413,7 +398,6 @@ class BaseAgent:
         self._hook_runner = hook_runner
         self._state_store = state_store
         self._event_bus = event_bus
-        self._memory_store = memory_store
         self._tool_resolver = mcp_manager
 
         # Auto-create trace store (framework default)
@@ -679,10 +663,6 @@ class BaseAgent:
     @property
     def event_bus(self):
         return self._event_bus
-
-    @property
-    def memory_store(self):
-        return self._memory_store
 
     @property
     def tool_resolver(self):

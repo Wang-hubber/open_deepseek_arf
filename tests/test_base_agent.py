@@ -37,7 +37,6 @@ class TestBaseAgentInitialization:
         assert agent.engine is not None
         assert agent.event_bus is not None
         assert agent.state_store is not None
-        assert agent.memory_store is not None
         assert agent.tool_resolver is not None
 
     @pytest.mark.anyio
