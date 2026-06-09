@@ -42,8 +42,8 @@
 | 子方向 | 要点 | 与 ARF 的关联 |
 |--------|------|-------------|
 | 2.1 Agent 架构 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 定义模糊 | ARF `ControlPlane` + `LoopStrategy` 为 ReAct 参考实现 |
-| 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 对应核心论点：知识应内化到模型，而非 Harness 打补丁。PEAM、TMEM 等参数化记忆工作提供实证支撑 |
-| 2.3 记忆与上下文 | 外部记忆（向量 DB、MemGPT）vs 参数化记忆（LoRA 权重增量） | ARF `MemoryPlugin` 为当前外部方案；实验一与实验三将探索 LoRA 参数化替代 |
+| 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 已有：PEAM、TMEM 参数化记忆方向；[范式迁移报告](reading_summary/control-paradigm-migration.md) 覆盖 P-RAG、MEGa。**待补**：RAG vs Fine-tuning 系统对比综述（如《RAG vs Fine-tuning: Pipelines, Tradeoffs》）、LoRA MoE 路由机制文献 |
+| 2.3 记忆与上下文 | 外部记忆（向量 DB、MemGPT）vs 参数化记忆（LoRA 权重增量） | 已有：[参数化记忆笔记](reading_summary/parameterized-memory.md) 覆盖 PEAM/TMEM 两条路径。**待补**：MemGPT、Memotron 等外部记忆系统综述；向量 DB vs 参数化存储的定量对比文献 |
 | 2.4 具身智能 | 机器人学的感知编码、状态空间、身体图式 | 对应 §4.1 生物映射中"身体"层的固定感知编码设计 |
 
 > **本节 TODO**：检索各小节 2023–2026 代表性论文；重点确认是否有工作已提出过类似的"大脑-身体"分工或批判 Harness 功能过载。
@@ -257,9 +257,9 @@ TFlow 初步验证了固定数量（3 个）发送方场景下权重空间通信
 ## 参考检索方向
 
 1. **Agent 架构综述** — `LLM-based Agent survey 2024 2025` · 已有：[Harness 演进调查报告](reading_summary/harness-evolution-survey.md)（Metaso, 2026-06）
-2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等
-3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM、Memorizing Transformer、Unlimiformer
-4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM`
+2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等 · **待检索**：系统对比综述，重点关注是否有定量证据支持"参数化在效率上优于 RAG"
+3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM · ✅ 已阅读，[笔记](reading_summary/parameterized-memory.md)。**待补**：Memorizing Transformer、Unlimiformer、MemGPT 对比
+4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM` · **待检索**：LoRA MoE 路由、多适配器协同、灾难性遗忘缓解
 5. **具身智能感知-行动接口** — `embodied agent state representation modality alignment`
 6. **Agent 安全与约束** — Agent permission control、rollback 机制
 7. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
