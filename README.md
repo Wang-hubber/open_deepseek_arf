@@ -33,7 +33,7 @@
 
 ## Research Context
 
-ARF is the **engineering companion** to the research paper *"Finding the Spine of Agent Systems — Strict Division of Labor and Co-evolution between Large Models and Harness."*
+ARF is the **engineering companion** to the research paper [*"Finding the Spine of Agent Systems — Strict Division of Labor and Co-evolution between Large Models and Harness"*](docs/paper/framework.md).
 
 **The core thesis**: Current Agent systems suffer from *Harness bloat*. The coordination layer has absorbed cognitive responsibilities — RAG knowledge injection, system-prompt identity injection, context summarization, external memory management — that rightfully belong to the model. This bloat is not an implementation flaw; it signals a fundamental confusion of roles. The Harness should be a **zero-cognition mechanical layer**, analogous to the brainstem, spine, and body: it encodes perception, executes action, and runs hardwired reflexes. It does not think.
 
