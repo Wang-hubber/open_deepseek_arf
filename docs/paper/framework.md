@@ -56,24 +56,26 @@
 
 **3.1 典型数据流**：画 Agent 架构图，标注 RAG/提示词构造/记忆读取/摘要压缩 均在 Harness 层
 
-**3.2 三类误置**
+**3.2 四类误置**
 
 | 误置类型 | 现象 | 应然 | ARF 已有支撑 |
 |---------|------|------|-------------|
 | **知识误置** | 专业知识通过 RAG 外部注入 | 后训练内化 | 论文论点层面，ARF 尚无直接实验 |
 | **身份误置** | 系统提示词临时赋予角色边界 | 模型权重固有自我认知 | `SystemPromptProvider` 当前仍用 prompt，但已模块化，方便后续替换 |
 | **记忆误置** | 上下文压缩与长期记忆由外部模块处理 | 模型内部机制 | `MemoryPlugin` + `CompactionPlugin` 是当前基线，实验三/五将探索替代方案 |
+| **通信误置** | 多 Agent 间通过自然语言文本串行交互 | 权重空间直接信息交换（TFlow） | `AgentBus` 协议已定义；TFlow 作为实验六的理论基础 |
 
-**3.2.1 三类误置的统一根源：外部知识管理的范式革命**
+**3.2.1 四类误置的统一根源：外部知识管理的范式革命**
 
-三类误置指向同一个根本问题：**外部知识如何管理和引入模型**。
+四类误置指向同一个根本问题：**外部信息如何管理和引入模型**——不仅是知识，还包括身份定义、记忆持久化和 Agent 间通信。
 
 | 维度 | 当前范式（In-Context Learning） | 目标范式（Parameterization） |
 |------|-------------------------------|---------------------------|
 | **知识** | RAG 检索 → 拼入提示词 | LoRA 适配器编码领域知识，MoE 路由分发 |
 | **身份** | System Prompt 注入角色描述 | 后训练将身份边界写入权重（"自我"在模型中而非 prompt 中） |
 | **记忆** | memory.md / 向量库 → 摘要后注入上下文 | 在线 SFT 将记忆写入 LoRA B 矩阵，释放上下文窗口 |
-| **共性缺陷** | 每次推理都需重新注入，占用上下文窗口 | 一次训练，永久内化，不占用上下文 |
+| **通信** | Agent 间自然语言文本串行交互 → 上下文膨胀、延迟高 | 权重空间扰动融合（TFlow）：`W + ΔW_sender1 + ΔW_sender2`，O(1) 融合，无上下文开销 |
+| **共性缺陷** | 每次推理都需重新注入，占用上下文窗口 | 一次训练/编译，永久内化/实例级融合，不占用上下文 |
 
 **LoRA MoE + 在线 SFT 的技术路线**：
 
@@ -85,8 +87,9 @@
   → 知识/身份/记忆以权重增量的形式内化，无需显式注入 prompt
 ```
 
-- **LoRA MoE**：每种知识域（领域知识 / 身份 / 长期记忆）对应独立 LoRA 适配器，MoE Router 按需激活。适配器可叠加、可替换、可版本管理
+- **LoRA MoE**：每种功能域（领域知识 / 身份 / 长期记忆 / 通信扰动）对应独立 LoRA 适配器，MoE Router 按需激活。适配器可叠加（`W = W_base + Δ_id + Δ_knowledge + Δ_memory + ΣΔ_comm`）、可替换、可版本管理
 - **在线 SFT**：从 Agent 运行时产出（用户纠错、工具调用成功/失败、记忆提取结果）自动构造训练对，持续更新 LoRA B 矩阵
+- **TFlow 权重通信**：多 Agent 协同场景下，发送方将内部激活编入临时 LoRA 扰动，接收方在生成时无缝融合，实现高带宽、低延迟的并行信息交换。详见 [阅读笔记](reading_summary/control-paradigm-migration.md)
 
 > 这直接对应论文实验三（在线 LoRA 长期记忆保持）、实验四（后训练身份边界鲁棒性）、实验五（参数化上下文压缩）。三个实验共享同一基础架构——LoRA MoE + 在线 SFT——只是在不同的信号源和评估维度上展开。
 >
@@ -119,6 +122,17 @@
 | L3 非条件反射层 | 硬编码安全门控、损伤回滚、节律存档，模型不可绕过 | `PathCheckToolGuard` + `PermissionRegistry` + `RoundManager` + Cancel Token | ✅ 已实现 |
 
 **4.4 协同进化原则**：Harness 状态 schema 必须作为模型后训练的原生感知语言
+
+**4.5 控制平面与执行平面**：整合参数化范式的统一架构
+
+| 平面 | 职责 | 组成 |
+|------|------|------|
+| **执行平面** | 大量同构、无状态的基础模型实例（GPU 资源池） | `W_base` — "裸模型"，Agent 的通用大脑基底 |
+| **控制平面** | LoRA 仓库管理、任务路由、动态绑定、通信编排 | `ControlPlane` — ARF 的核心调度引擎 |
+
+Agent 不再是一个静态程序，而是按需动态组合 **基础智能（Base Model）** + **人格（Identity LoRA）** + **技能（Knowledge LoRA）** + **记忆（Memory LoRA）** + **沟通方式（TFlow Perturbation）** 的弹性实体。这与 ARF 的命名和架构设计完全对齐：`ControlPlane` 就是控制平面的工程实现，`ModelAdapter` + LoRA 热插拔是执行平面的核心机制。
+
+详见 [范式迁移研究报告](reading_summary/control-paradigm-migration.md) 第 3 节。
 
 > **本节 TODO**：完善生物学映射的严谨性（是否需要对标具体神经通路）；为 4.4 寻找相关文献支撑
 
@@ -187,6 +201,16 @@
 | **待建设** | 在 `CompactionPlugin` 中集成 LoRA B 矩阵在线更新；设计异步双缓冲（当前 B / 后台 B）避免阻塞推理；对比保真度 vs 当前 LLM 摘要；扫 r 找最优性价比 |
 | **状态** | ⬜ 未开始。文献基础：同实验三，详见 [阅读笔记](reading_summary/parameterized-memory.md) |
 
+#### 6.6 实验六：TFlow 权重空间通信 vs. 自然语言通信
+
+| 项 | 内容 |
+|----|------|
+| **假设** | 在多 Agent 协同任务中，TFlow 权重空间通信在延迟、Token 处理量、任务完成率上均优于自然语言通信 |
+| **动机** | TFlow (2025-2026) 证明了 Agent 间通过低秩扰动直接传递"思维"的可行性。当前实验仅验证了固定数量（3个）发送方，扰动叠加稳定性缺乏理论保证——这是本实验的切入点 |
+| **ARF 已有** | `AgentBus` 协议 + `PeerAgent` + `ControlPlane.astream()` 事件流 |
+| **待建设** | 实现 TFlow 扰动编译模块（内部激活 → 低秩 ΔW）；在 ARF 的多 Agent 场景中对比 TFlow vs 文本通信；测量延迟 / Token 量 / 任务完成率；扫发送方数量（2,3,5,10）评估叠加稳定性 |
+| **状态** | ⬜ 未开始。文献基础：TFlow，详见 [阅读笔记](reading_summary/control-paradigm-migration.md) |
+
 > **本节 TODO**：为每个实验方向找基线方法和评估基准；确认是否有团队做过类似实验
 
 ---
@@ -244,6 +268,8 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 5. **具身智能感知-行动接口** — `embodied agent state representation modality alignment`
 6. **Agent 安全与约束** — Agent permission control、rollback 机制
 7. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
+8. **Agent 通信与协同** — TFlow 权重空间通信、Multi-Agent orchestration、A2A protocols
+9. **角色扮演与身份固化** — Character-LLM、Neeko、RoleLLM、CharLoRA
 
 ---
 
@@ -253,3 +279,4 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 |------|------|------|
 | 2026-06 | PEAM · TMEM — 参数化记忆的两条路径 | [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md) |
 | 2026-06 | 2024-2026 AI Agent框架技术演进与Harness全景解析 | [从构建块到操作系统](reading_summary/harness-evolution-survey.md) |
+| 2026-06 | 从ICL到参数内化：Identity LoRA · Knowledge LoRA · TFlow | [LLM Agent 核心控制范式迁移](reading_summary/control-paradigm-migration.md) |
