@@ -23,7 +23,7 @@ class FakeMemoryPlugin:
 
 
 class FakeRouterPlugin:
-    """Plugin that subscribes to pre_model_call."""
+    """Plugin that subscribes to round_start for testing."""
     def __init__(self):
         self.routed_to: str | None = None
 
@@ -33,7 +33,7 @@ class FakeRouterPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"pre_model_call": "blocking"}
+        return {"round_start": "blocking"}
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
         self.routed_to = context.hook_data.get("model", "unknown")
@@ -109,7 +109,7 @@ class TestInProcessHookRunner:
             session_id="test",
             hook_data={"model": "deep", "messages_count": 42},
         )
-        asyncio.run(runner.fire("pre_model_call", ctx))
+        asyncio.run(runner.fire("round_start", ctx))
 
         assert router.routed_to == "deep"
 

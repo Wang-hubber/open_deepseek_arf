@@ -18,7 +18,7 @@ class UndoPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"round_end": "blocking", "sandbox_persist": "blocking"}
+        return {"round_end": "blocking"}
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         pass  # checkpoint snapshots handled by CheckpointPlugin

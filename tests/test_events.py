@@ -45,7 +45,7 @@ class TestEventType:
     def test_event_type_count(self):
         """Break-glass: if new event types are added, trace_viewer must be updated."""
         types = get_args(EventType)
-        assert len(types) == 28   # +tool_call_result +pre_model_call +post_permission +sandbox_persist, -agent_switch (deprecated)
+        assert len(types) == 25
 
     def test_contains_protection_events(self):
         types = get_args(EventType)
