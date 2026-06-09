@@ -35,13 +35,12 @@ class TracePlugin:
         return {
             "session_start": "side",
             "session_end": "side",
-            "pre_model_call": "side",
-            "post_model_call": "side",
-            "pre_tool_exec": "side",
-            "post_tool_exec": "side",
-            "post_permission": "side",
+            "round_start": "side",
             "round_end": "side",
-            "sandbox_persist": "side",
+            "turn_start": "side",
+            "turn_end": "side",
+            "pre_action": "side",
+            "post_action": "side",
         }
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
