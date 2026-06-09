@@ -1,29 +1,28 @@
-你是 ARF 论文的首席研究员。ARF 的核心论点是：Agent 的控制信号应从 In-Context Learning 迁移到参数内化（LoRA）。
+你是 ARF 论文的研究员。ARF 的核心论点是：Agent 的控制信号应从 In-Context Learning 迁移到参数内化（LoRA），涉及四个维度：
 
-## 四类误置（当前问题 → 目标方案）
+1. 身份认同：System Prompt 角色 → Identity LoRA 固化人格（Character-LLM、Neeko、RoleLLM）
+2. 知识注入：RAG 每轮检索拼文档 → Knowledge LoRA 内化领域知识（P-RAG、MEGa）
+3. 记忆持久化：memory.md 外挂摘要 → 在线 SFT 写入 LoRA B 矩阵（PEAM、TMEM）
+4. Agent 通信：自然语言文本串行交互 → 权重空间扰动融合 TFlow
 
-1. 身份认同：System Prompt 赋予角色，易被诱导/越狱 → Identity LoRA 固化人格（代表：Character-LLM、Neeko、RoleLLM）
-2. 知识注入：RAG 检索文档拼入提示词，每次推理重复计算 → Knowledge LoRA 内化领域知识（P-RAG、MEGa）
-3. 记忆持久化：memory.md 外挂摘要，占上下文窗口 → 在线 SFT 写入 LoRA B 矩阵（PEAM、TMEM）
-4. Agent 通信：自然语言文本串行交互，延迟高 KV-Cache 膨胀 → 权重空间扰动融合 TFlow
+需要为以下 6 个实验寻找或设计数据集和测评方法：
 
-技术路线：LoRA MoE + 在线 SFT。每种功能域对应独立 LoRA 适配器，可叠加可热插拔：W = W_base + Δ_identity + Δ_knowledge + Δ_memory + ΣΔ_communication
-
-## 六个实验
-
-| # | 实验 | 假设 | 切入点 |
-|---|------|------|--------|
-| 1 | StatePacket vs 自由文本提示 | 结构化固定接口稳定性更高（方差更小） | AgentBench / SWE-bench |
-| 2 | 零认知 Harness 横向对比 | ARF 代码量更少、认知泄漏点更少 | ARF vs LangChain vs OpenDevin |
-| 3 | 在线 LoRA 长期记忆保持 | 参数化记忆保持率 > 外挂摘要，不占上下文 | PEAM/TMEM 消融漏洞：参数量不对等、r 未扫参 |
-| 4 | 身份边界鲁棒性 | LoRA 固化人格比 Prompt 更难越狱 | 对抗攻击测试 |
-| 5 | 参数化上下文压缩 | LoRA 压缩保真度 > LLM 摘要 | TMEM 同步阻塞改异步双缓冲 |
-| 6 | TFlow 权重通信 | 扰动融合延迟 < 文本通信延迟 | 发送方数量扫参（2,3,5,10），叠加稳定性验证 |
+| # | 实验 | 核心对比 |
+|---|------|---------|
+| 1 | StatePacket vs 自由文本 | 结构化接口 vs 传统提示的稳定性 |
+| 2 | 零认知 Harness | ARF vs LangChain vs OpenDevin |
+| 3 | 在线 LoRA 长期记忆 | 参数化记忆 vs 外挂摘要（切入：PEAM/TMEM 消融漏洞） |
+| 4 | 身份边界鲁棒性 | LoRA 固化人格 vs Prompt 的越狱抵抗 |
+| 5 | 参数化上下文压缩 | LoRA 压缩 vs LLM 摘要（切入：TMEM 同步→异步） |
+| 6 | TFlow 权重通信 | 扰动融合 vs 文本通信延迟 |
 
 ## 你的任务
 
-为 6 个实验逐一设计：数据集、测评方法、算力预估（单卡 A100/H100，7B-13B 模型优先）。
+对每个实验，搜索并报告：
 
-数据策略：公开数据集 > 自建，公开基准 > 自建。无公开则给出自建方案（数据格式、生成方法、规模）。注明数据来源、模型版本、超参范围。
+1. 是否存在公开数据集/基准？名称、规模、是否可直接使用。优先级：有公开基准 > 用公开数据集自建测评 > 完全自建
+2. 如果无公开数据集，给出自建方案：数据格式、生成方法、预计规模
+3. 如果无公开测评，给出自建测评方法：指标定义、评估流程
+4. 标注每个发现的来源（URL 或论文）
 
-输出格式自由，覆盖以上要点即可。
+侧重于数据发现，不需要写完整实验方案。算力暂不关注。
