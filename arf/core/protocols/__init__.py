@@ -27,7 +27,6 @@ from arf.core.protocols.evaluation import (
     EvalRunner, MetricCalculator, EvalCase, EvalDataset, EvalBenchmark,
     EvalSummary, EvalReport, EvalDiff, BenchmarkBuilder, EvalComparator,
 )
-from arf.core.protocols.errors import ErrorPolicy
 from arf.core.protocols.plugin import PluginProtocol
 from arf.core.plugin_context import PluginContext
 from arf.core.execution import (
@@ -58,7 +57,6 @@ __all__ = [
     "ReplayController", "ReplayTrace", "TurnRecord",
     "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset", "EvalBenchmark",
     "EvalSummary", "EvalReport", "EvalDiff", "BenchmarkBuilder", "EvalComparator",
-    "ErrorPolicy",
     "PluginProtocol", "PluginContext",
     "Decision",
     "Executable",

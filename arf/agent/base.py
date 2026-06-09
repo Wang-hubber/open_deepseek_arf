@@ -21,7 +21,7 @@ from arf.guardrails.runner import DefaultGuardRunner
 from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
-from arf.errors.retry import DefaultErrorPolicy
+
 
 
 def _parse_duration(s: str) -> float:
@@ -257,22 +257,13 @@ class BaseAgent:
             permission_lists=main_permission_lists,
         ))
 
-        # 5. Error + Transaction
-        err_cfg = (adv.errors or AdvancedConfig.default().errors) if adv else None
-        error_policy = override_protocols.pop("error_policy", DefaultErrorPolicy(
-            tool_retry=(err_cfg.tool_retry if err_cfg else 2),
-            tool_backoff=(err_cfg.tool_backoff if err_cfg else "exponential"),
-            model_5xx_action=(err_cfg.model_5xx_action if err_cfg else "fallback"),
-            guardrail_block_action=(err_cfg.guardrail_block_action if err_cfg else "abort"),
-        ))
-
-        # 6. Hooks
+        # 5. Hooks
         hooks_list = list(override_protocols.pop("hooks", list(config.hooks)))
         if self._plugin_provider and self._plugin_provider.list_hooks():
             hooks_list.extend(self._plugin_provider.list_hooks())
         hook_runner = override_protocols.pop("hook_runner", SubprocessHookRunner(hooks_list, plugin_runtime=plugin_runtime))
 
-        # 7. Tool executor
+        # 6. Tool executor
         from arf.core.config_base import ConcurrencyConfig
         cc_cfg = adv.concurrency if adv and adv.concurrency else ConcurrencyConfig()
         tool_executor = override_protocols.pop(
@@ -288,14 +279,14 @@ class BaseAgent:
             ),
         )
 
-        # 8. Loop strategy
+        # 7. Loop strategy
         ls_name = (adv.loop_strategy if adv else "react") if adv else "react"
         loop_strategy = override_protocols.pop("loop_strategy", ReActStrategy(max_turns=(adv.max_turns if adv else 50)))
 
-        # 9. Planner (optional)
+        # 8. Planner (optional)
         planner = override_protocols.pop("planner", None)
 
-        # 10. Build system prompt via provider (prefix only — inventory via MCP)
+        # 9. Build system prompt via provider (prefix only — inventory via MCP)
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
         prompt_provider = override_protocols.pop(
             "system_prompt_provider",

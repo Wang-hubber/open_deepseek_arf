@@ -503,12 +503,11 @@ class TestCrossDocConsistency:
 # ---------------------------------------------------------------------------
 
 class TestDeadModelRetryParam:
-    """Doc 2.6: DefaultErrorPolicy removed engine-level retry."""
+    """Doc 2.6: Error policy engine-level retry removed."""
 
     def test_model_retry_param_removed(self):
-        """Doc: engine retry was removed. model_retry removed everywhere."""
-        from arf.errors.retry import DefaultErrorPolicy
-        init_src = inspect.getsource(DefaultErrorPolicy.__init__)
-        assert "model_retry" not in init_src, (
-            "model_retry should be removed from DefaultErrorPolicy.__init__"
-        )
+        """Doc: engine retry was removed. ErrorPolicy no longer exists."""
+        # DefaultErrorPolicy removed — error handling is now done
+        # by ErrorHandlerPlugin via the hook system.
+        with __import__('pytest').raises(ImportError):
+            __import__('arf.errors.retry')
