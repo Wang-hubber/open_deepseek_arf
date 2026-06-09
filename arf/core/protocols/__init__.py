@@ -12,7 +12,6 @@ from arf.core.protocols.guardrails import (
 from arf.core.protocols.compaction import CompactionStrategy
 from arf.core.protocols.sandbox import ToolSandbox
 from arf.core.protocols.concurrency import TaskScheduler
-from arf.core.protocols.human_loop import ApprovalPoint, ApprovalChannel
 from arf.core.protocols.communication import (
     AgentBus, PeerAgent, TaskDelegator, Supervisor,
     SharedWorkspace, Lock, ConsensusProtocol,
@@ -45,7 +44,6 @@ __all__ = [
     "CompactionStrategy",
     "ToolSandbox",
     "TaskScheduler",
-    "ApprovalPoint", "ApprovalChannel",
     "AgentBus", "PeerAgent", "TaskDelegator", "Supervisor",
     "SharedWorkspace", "Lock", "ConsensusProtocol",
     "AgentMessage", "AgentInfo",

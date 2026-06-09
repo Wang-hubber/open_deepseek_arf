@@ -34,23 +34,6 @@ class HookResult:
 
 
 @dataclass
-class ApprovalRequest:
-    agent_name: str
-    session_id: str
-    turn: int
-    tool_name: str
-    params: dict
-    reason: str
-
-
-@dataclass
-class ApprovalResponse:
-    action: Literal["approve", "reject", "modify"]
-    modified_params: dict | None = None
-    comment: str = ""
-
-
-@dataclass
 class ErrorAction:
     action: Literal["retry", "fallback", "ask_user", "abort"]
     delay: float = 0.0
