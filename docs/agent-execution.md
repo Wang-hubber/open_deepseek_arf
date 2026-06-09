@@ -44,7 +44,7 @@ The kernel's syscall interface is the boundary between user mode and kernel mode
 | Scheduler timeslice | Turn (model call + tool exec) | `ReActStrategy` |
 | Context switch | Hook dispatch | `_fire_blocking()`, `_fire_side()` |
 | Signal (SIGINT) | `cancel_event` (asyncio.Event) | `_cancelled()` |
-| System call | Tool call | `_dispatch_execute_tools()` |
+| System call | Tool call | `_action_execute_tools()` |
 | Security enforcement (SELinux) | Tool guards + approval | Plugins (ToolGuard, Approval) |
 | Tracepoints/kprobes | Hook points (9 lifecycle events) | `InProcessHookRunner` |
 | Process group | Round (transaction boundary) | `RoundManager` (see 2.9) |
@@ -78,7 +78,7 @@ Agent execution is organized into three nested tiers, each with its own counter,
 |------|-----------|-------------|---------|-----------------|
 | **Session** | One continuous user connection, spanning multiple rounds | `session_start`, `session_end` | `session_id: str` | -- |
 | **Round** | One `chat()` / `astream()` call boundary | `round_start`, `round_end` | `interaction_round: int` (monotonic across the agent's lifetime) | -- |
-| **Turn** | One model call + tool execution iteration | `turn_start`, `pre_dispatch`, `post_dispatch`, `turn_end` | `current_turn: int` (reset per round) | `max_turns` (per-round circuit breaker) |
+| **Turn** | One model call + tool execution iteration | `turn_start`, `pre_action`, `post_action`, `turn_end` | `current_turn: int` (reset per round) | `max_turns` (per-round circuit breaker) |
 
 **Sequence diagram**:
 
@@ -134,9 +134,9 @@ _execute(state)
   |     |     +-- turn = current_turn + 1
   |     |     +-- step = loop_strategy.next_step(state)
   |     |     +-- [Hook] turn_start (blocking + side)
-  |     |     +-- [Hook] pre_dispatch (fire_and_drain -- hooks emit events)
-  |     |     +-- _dispatch(step, state, ctx)  -- inline execution
-  |     |     +-- [Hook] post_dispatch (blocking + side)
+  |     |     +-- [Hook] pre_action (fire_and_drain -- hooks emit events)
+  |     |     +-- _execute_action(step, state, ctx)  -- inline execution
+  |     |     +-- [Hook] post_action (blocking + side)
   |     |     +-- [Hook] turn_end (blocking + side)
   |     |     +-- loop_strategy.on_transition("turn_end", ctx)
   |     |     +-- state_store.put(session_id, state)
@@ -170,25 +170,25 @@ _execute(state)
 | | `continue` (default) | Skip to next round |
 | `turn_start` | `abort` | Break inner loop |
 | | `continue` (default) | Skip to next turn |
-| `pre_dispatch` | `abort` | Break inner loop |
+| `pre_action` | `abort` | Break inner loop |
 | | `skip` | Continue to next iteration |
-| `dispatch` | `abort` | Break inner loop |
+| `action` | `abort` | Break inner loop |
 | | `retry` | Decrement turn, re-enter same turn |
 | | `skip` | Continue to next iteration |
 | | `fallback` | Save state, continue |
 | | `rollback` | Break inner loop |
-| `post_dispatch` | `abort` | Break inner loop |
+| `post_action` | `abort` | Break inner loop |
 | | `continue` (default) | Continue to turn_end |
 | `turn_end` | `abort` | Break inner loop |
 | | `continue` (default) | Continue normally |
 | `round_end` | `abort` | Break outer loop |
 | | `continue` (default) | Continue to next round |
 
-### 2.4 Dispatch
+### 2.4 Action
 
-The `_dispatch()` method routes execution based on the step name returned by `LoopStrategy.next_step()`. There are two dispatch targets:
+The `_execute_action()` method routes execution based on the step name returned by `LoopStrategy.next_step()`. There are two action targets:
 
-**`call_model`** -- model invocation (`_dispatch_call_model`):
+**`call_model`** -- model invocation (`_action_call_model`):
 
 1. Resolve tool definitions via MCP tool resolver (if configured)
 2. Convert internal message format to OpenAI API format (`_to_api_messages`): wraps system prompt, converts internal `{id, name, params}` tool_calls to API `{id, type, function: {name, arguments}}`
@@ -206,7 +206,7 @@ The `_dispatch()` method routes execution based on the step name returned by `Lo
 9. Append assistant message to state (with tool_calls if any)
 10. Store pending tool_calls in `state["_pending_tool_calls"]`
 
-**`execute_tools`** -- tool execution (`_dispatch_execute_tools`):
+**`execute_tools`** -- tool execution (`_action_execute_tools`):
 
 1. Pop `state["_pending_tool_calls"]`
 2. If none, return immediately
@@ -225,16 +225,16 @@ The ControlPlane fires hooks at 9 lifecycle points. Each point has two hook runn
 | 1 | `session_start` | Beginning of `_execute()` | blocking + side | session_id, full AgentState | Session initialization, resource allocation |
 | 2 | `round_start` | Each round iteration start | blocking + side | full PluginContext | Round initialization; can inject `strategy_override` via `ctx.hook_data["strategy"]` |
 | 3 | `turn_start` | Each turn iteration start | blocking + side | full PluginContext with current step | Turn-level initialization |
-| 4 | `pre_dispatch` | Before `_dispatch()` call | fire_and_drain (blocking hooks emit events into stream) + side | full PluginContext | Intercept/modify dispatch; emit approval events |
-| 5 | `post_dispatch` | After `_dispatch()` returns | blocking + side | full PluginContext with updated state | Post-execution processing |
-| 6 | `turn_end` | End of each turn (after dispatch + state_store.put) | blocking + side | full PluginContext | Turn-level teardown, state checks |
+| 4 | `pre_action` | Before `_execute_action()` call | fire_and_drain (blocking hooks emit events into stream) + side | full PluginContext | Intercept/modify action; emit approval events |
+| 5 | `post_action` | After `_execute_action()` returns | blocking + side | full PluginContext with updated state | Post-execution processing |
+| 6 | `turn_end` | End of each turn (after action + state_store.put) | blocking + side | full PluginContext | Turn-level teardown, state checks |
 | 7 | `round_end` | After inner loop exits | blocking + side | full PluginContext | Round-level teardown, memory extraction, compaction |
 | 8 | `session_end` | Before final state save | blocking (errors caught) + side (always fires) | full PluginContext | Session teardown, resource cleanup |
-| 9 | `error` | When any hook or dispatch throws | blocking only | PluginContext with `ctx.hook_data["exception"]` | Error recovery; sets `ctx.hook_data["_recovery_decision"]` |
+| 9 | `error` | When any hook or action throws | blocking only | PluginContext with `ctx.hook_data["exception"]` | Error recovery; sets `ctx.hook_data["_recovery_decision"]` |
 
 **Special characteristics**:
 
-- `pre_dispatch` uses `_fire_and_drain` instead of `_fire_blocking`. This runs the blocking plugin in a background task while the engine drains events emitted by the hook via `ctx.emit()`. This allows hooks (e.g., ApprovalPlugin) to emit approval_required events into the stream without blocking the entire loop.
+- `pre_action` uses `_fire_and_drain` instead of `_fire_blocking`. This runs the blocking plugin in a background task while the engine drains events emitted by the hook via `ctx.emit()`. This allows hooks (e.g., ApprovalPlugin) to emit approval_required events into the stream without blocking the entire loop.
 - `session_end` blocking hook errors are silently caught (`pass` on exception) so that session teardown cannot be prevented by a failing hook.
 - `error` fires only on the blocking runner. The error hook sets `ctx.hook_data["_recovery_decision"]` to a dict with an `"action"` key. If no decision is set, the engine falls back to default actions based on exception type.
 
@@ -270,7 +270,7 @@ The context object passed to every hook invocation. It provides:
 - `event_bus` -- for emitting events
 - `hook_data: dict` -- arbitrary key-value store for cross-hook data passing
 - `plugin_config: dict` -- per-plugin configuration from plugin.yaml
-- `emit(event_type, data)` -- push an AgentEvent into the engine's output stream (used by blocking plugins in `pre_dispatch` to inject approval events)
+- `emit(event_type, data)` -- push an AgentEvent into the engine's output stream (used by blocking plugins in `pre_action` to inject approval events)
 
 ### 2.7 Loop Strategy
 
@@ -292,7 +292,7 @@ Three gates control the loop:
 
 - `should_continue(state) -> bool`: Entry gate. False means the loop body (the entire round) is skipped.
 - `should_break(state) -> bool`: Exit gate. True means exit the loop after this turn completes.
-- `next_step(state) -> str`: Dispatch gate. Returns the step name for the current iteration. The engine dispatches to `call_model` or `execute_tools`.
+- `next_step(state) -> str`: Action gate. Returns the step name for the current iteration. The engine dispatches to `call_model` or `execute_tools`.
 
 Additional protocol methods:
 
@@ -353,7 +353,7 @@ Two implementations exist:
 
 **Where StateStore.put() is called in the engine**:
 
-1. After dispatch (during error recovery for `retry` / `fallback` actions)
+1. After action (during error recovery for `retry` / `fallback` actions)
 2. At the end of every turn (`turn_end` hook fires first, then `put()`)
 3. At session end (before yielding `session_end` event)
 
@@ -459,7 +459,7 @@ rollback_error: str  -- rollback failure message
 
 ### 2.11 Error Handling
 
-The `_handle_error()` method (`control_plane.py:484`) is called when any hook or dispatch operation throws an exception.
+The `_handle_error()` method (`control_plane.py:484`) is called when any hook or action operation throws an exception.
 
 **Flow**:
 
@@ -480,7 +480,7 @@ The `_handle_error()` method (`control_plane.py:484`) is called when any hook or
 **Error events**: The engine emits an `AgentEvent(type="error")` via the event bus when:
 - A hook fails during error handling (the error hook itself crashed)
 - No recovery decision was returned by the error hook
-- Streaming model calls fail (caught by `_dispatch_call_model`)
+- Streaming model calls fail (caught by `_action_call_model`)
 
 ### 2.12 BaseAgent -- Assembly and Public API
 
@@ -516,7 +516,7 @@ The `_handle_error()` method (`control_plane.py:484`) is called when any hook or
 **Blocking plugins constructed from permission config**:
 
 - `ToolGuardPlugin`: Handles `deny` (immediate rejection), `allow` (bypass), and `deny_patterns` (dangerous content check)
-- `ApprovalPlugin`: Handles `ask` (human-in-the-loop wait), registered on `pre_dispatch` hook to emit approval_required events
+- `ApprovalPlugin`: Handles `ask` (human-in-the-loop wait), registered on `pre_action` hook to emit approval_required events
 - Auto-discovered plugins from `PluginProvider` are appended after these two (with special plugins `tool_guard` and `approval` skipped to avoid duplication)
 
 **Public API**:
@@ -567,7 +567,7 @@ Events emitted by the engine (ControlPlane):
 | `model_call_end` | After model API call | `{model, turn, content, usage}` |
 | `tool_call_start` | Tool execution starts | `{tool_name, turn, id, arguments}` |
 | `tool_call_end` | Tool execution finishes | `{tool_name, turn, id, success, duration_ms, result, error}` |
-| `error` | Error during dispatch | `{phase, exception, detail, message}` |
+| `error` | Error during action | `{phase, exception, detail, message}` |
 
 Events available for plugins to emit via `ctx.emit()` or the EventBus (defined in the type union but not emitted by the engine itself):
 
@@ -599,8 +599,8 @@ The ControlPlane and BaseAgent maintain separate hook systems that fire at overl
 | `session_start` | Yes (if new session, before invoke) | Yes | Yes |
 | `round_start` | Yes (before invoke) | Yes | Yes |
 | `turn_start` | -- | Yes | Yes |
-| `pre_dispatch` | -- | Yes (fire_and_drain, can emit events) | Yes (after blocking) |
-| `post_dispatch` | -- | Yes | Yes |
+| `pre_action` | -- | Yes (fire_and_drain, can emit events) | Yes (after blocking) |
+| `post_action` | -- | Yes | Yes |
 | `turn_end` | -- | Yes | Yes |
 | `round_end` | -- | Yes | Yes |
 | `session_end` | Yes (on stop/shutdown) | Yes (errors silently caught) | Yes |
@@ -643,7 +643,7 @@ The vision is DAG-style orchestration where a supervisor agent decomposes a task
 
 **Status**: Current cancellation is cooperative -- the `cancel_event` is checked only at loop boundaries (before each turn begins). If a model call is in progress, the user must wait for it to complete.
 
-Future: Cancel in-flight HTTP requests to the model API. This requires API client support (`httpx`/`openai` client cancellation). The `_cancelled()` check could be augmented with a background task that forcefully cancels the current dispatch when the event is set.
+Future: Cancel in-flight HTTP requests to the model API. This requires API client support (`httpx`/`openai` client cancellation). The `_cancelled()` check could be augmented with a background task that forcefully cancels the current action when the event is set.
 
 ### 3.4 Turn-Level Checkpointing
 
