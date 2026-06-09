@@ -1,36 +1,29 @@
-# 任务：ARF 论文实验方案设计
+你是 ARF 论文的首席研究员。ARF 的核心论点是：Agent 的控制信号应从 In-Context Learning 迁移到参数内化（LoRA）。
 
-你是研究型 Agent，负责为 ARF 论文的 6 个实验设计详细方案。请依次完成以下工作：
+## 四类误置（当前问题 → 目标方案）
 
-## 输入材料
+1. 身份认同：System Prompt 赋予角色，易被诱导/越狱 → Identity LoRA 固化人格（代表：Character-LLM、Neeko、RoleLLM）
+2. 知识注入：RAG 检索文档拼入提示词，每次推理重复计算 → Knowledge LoRA 内化领域知识（P-RAG、MEGa）
+3. 记忆持久化：memory.md 外挂摘要，占上下文窗口 → 在线 SFT 写入 LoRA B 矩阵（PEAM、TMEM）
+4. Agent 通信：自然语言文本串行交互，延迟高 KV-Cache 膨胀 → 权重空间扰动融合 TFlow
 
-先阅读以下文档（均在 `docs/paper/` 下）：
+技术路线：LoRA MoE + 在线 SFT。每种功能域对应独立 LoRA 适配器，可叠加可热插拔：W = W_base + Δ_identity + Δ_knowledge + Δ_memory + ΣΔ_communication
 
-1. `framework.md` — 论文框架：大脑-脊椎-身体模型、四类误置（知识/身份/记忆/通信）、LoRA MoE + 在线 SFT 技术路线、实验一到六概要
-2. `reading_summary/parameterized-memory.md` — PEAM/TMEM 笔记：参数化记忆两条路径、容量对齐消融漏洞
-3. `reading_summary/control-paradigm-migration.md` — 范式迁移报告：Identity LoRA、Knowledge LoRA、TFlow 代表工作
-4. `reading_summary/harness-evolution-survey.md` — Harness 三阶段演进
+## 六个实验
 
-## 任务要求
+| # | 实验 | 假设 | 切入点 |
+|---|------|------|--------|
+| 1 | StatePacket vs 自由文本提示 | 结构化固定接口稳定性更高（方差更小） | AgentBench / SWE-bench |
+| 2 | 零认知 Harness 横向对比 | ARF 代码量更少、认知泄漏点更少 | ARF vs LangChain vs OpenDevin |
+| 3 | 在线 LoRA 长期记忆保持 | 参数化记忆保持率 > 外挂摘要，不占上下文 | PEAM/TMEM 消融漏洞：参数量不对等、r 未扫参 |
+| 4 | 身份边界鲁棒性 | LoRA 固化人格比 Prompt 更难越狱 | 对抗攻击测试 |
+| 5 | 参数化上下文压缩 | LoRA 压缩保真度 > LLM 摘要 | TMEM 同步阻塞改异步双缓冲 |
+| 6 | TFlow 权重通信 | 扰动融合延迟 < 文本通信延迟 | 发送方数量扫参（2,3,5,10），叠加稳定性验证 |
 
-为 6 个实验分别设计：数据集、测评方法、算力预估。
+## 你的任务
 
-实验覆盖四个维度：
+为 6 个实验逐一设计：数据集、测评方法、算力预估（单卡 A100/H100，7B-13B 模型优先）。
 
-- **身份**（实验四）：后训练 vs System Prompt 的角色边界鲁棒性
-- **记忆**（实验三/五）：在线 LoRA 记忆保持 + 参数化上下文压缩
-- **知识**（实验基准）：RAG with ICL vs Knowledge LoRA 的效率精度权衡
-- **通信**（实验六）：TFlow 权重空间通信 vs 自然语言通信
-- **框架验证**（实验一/二）：StatePacket 稳定性对比 + 零认知 Harness 横向对比
+数据策略：公开数据集 > 自建，公开基准 > 自建。无公开则给出自建方案（数据格式、生成方法、规模）。注明数据来源、模型版本、超参范围。
 
-## 数据策略
-
-1. **公开数据集优先** — 每个子任务先检索是否有公开可用数据集
-2. **无公开则自建** — 说明自建方案（数据格式、生成方法、预估规模）
-3. **公开测评优先于自建** — 评估维度优先使用已有基准，无基准时定义自建指标
-4. **可复现** — 注明数据来源、模型版本、超参范围
-5. **成本可控** — 算力预估以单卡 A100/H100 为基准，7B–13B 模型优先
-
-## 输出
-
-输出到 `docs/paper/experiment-design.md`，每个实验一个章节。格式自由但需覆盖：数据集来源与理由、自建方案（如需）、测评指标与基线、算力预估、风险提示。
+输出格式自由，覆盖以上要点即可。
