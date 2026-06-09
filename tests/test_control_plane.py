@@ -129,3 +129,184 @@ async def test_streaming_fallback_to_non_streaming():
 
     final = await cp.invoke(state)
     assert final["messages"][-1]["content"] == "Fallback response"
+
+
+# ============================================================
+# MCP error — trace captures failure, execution continues
+# ============================================================
+
+@pytest.mark.anyio
+async def test_mcp_resolution_failure_emits_error_event():
+    """MCP tool resolution failure logs error and emits trace event, continues."""
+    from arf.event_bus import InMemoryEventBus
+
+    event_bus = InMemoryEventBus()
+
+    async def _failing_mcp_resolver(state):
+        raise RuntimeError("MCP server unreachable")
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([{"content": "Hi!"}]),
+        event_bus=event_bus,
+        mcp_tool_resolver=_failing_mcp_resolver,
+    )
+
+    final = await cp.invoke(_basic_state())
+    assert final["messages"][-1]["content"] == "Hi!"
+
+    errors = event_bus.collected("error")
+    assert len(errors) >= 1
+    assert "MCP" in errors[0].data.get("detail", "")
+
+
+@pytest.mark.anyio
+async def test_mcp_resolution_success_no_error_event():
+    """Normal MCP resolution emits no error events."""
+    from arf.event_bus import InMemoryEventBus
+
+    event_bus = InMemoryEventBus()
+
+    async def _ok_mcp_resolver(state):
+        return [{"name": "read", "description": "Read a file", "parameters": {}}]
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([{"content": "Hi!"}]),
+        event_bus=event_bus,
+        mcp_tool_resolver=_ok_mcp_resolver,
+    )
+
+    await cp.invoke(_basic_state())
+    errors = event_bus.collected("error")
+    mcp_errors = [e for e in errors if "MCP" in e.data.get("detail", "")]
+    assert len(mcp_errors) == 0
+
+
+# ============================================================
+# Error handler — trace captures every decision
+# ============================================================
+
+@pytest.mark.anyio
+async def test_error_handler_abort_emits_trace_event():
+    """When error_handler decides abort, trace captures the error with decision."""
+    from arf.event_bus import InMemoryEventBus
+    from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
+
+    event_bus = InMemoryEventBus()
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([RuntimeError("API server crashed")]),
+        event_bus=event_bus,
+        blocking_plugins=[ErrorHandlerPlugin()],
+    )
+
+    final = await cp.invoke(_basic_state())
+
+    errors = event_bus.collected("error")
+    assert len(errors) >= 1
+    assert any("abort" in e.data.get("detail", "").lower() for e in errors)
+
+
+@pytest.mark.anyio
+async def test_error_handler_skip_emits_trace_event():
+    """Guard denial → skip decision is trace-captured."""
+    from arf.event_bus import InMemoryEventBus
+    from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
+
+    event_bus = InMemoryEventBus()
+
+    class PermissionDenied(Exception):
+        pass
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([PermissionDenied("tool rm blocked")]),
+        event_bus=event_bus,
+        blocking_plugins=[ErrorHandlerPlugin()],
+    )
+
+    final = await cp.invoke(_basic_state())
+
+    errors = event_bus.collected("error")
+    assert len(errors) >= 1
+    assert any("skip" in e.data.get("detail", "").lower() for e in errors)
+
+
+# ============================================================
+# abort → SessionAbortedError → invoke cleanup
+# ============================================================
+
+@pytest.mark.anyio
+async def test_abort_cleans_session_active_flag():
+    """When error_handler decides abort, invoke() catches SessionAbortedError
+    and sets session_active = False before returning."""
+    state = _basic_state()
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([RuntimeError("fatal error")]),
+    )
+
+    final = await cp.invoke(state)
+    assert not final.get("session_active", True)
+
+
+@pytest.mark.anyio
+async def test_abort_returns_partial_state():
+    """After abort, invoke() returns the partial state (messages before crash)."""
+    state = _basic_state()
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_FakeCallModel([RuntimeError("fatal error")]),
+    )
+
+    final = await cp.invoke(state)
+    # Partial state: session_id and message history preserved
+    assert final.get("session_id") == "test"
+    assert len(final.get("messages", [])) >= 1
+
+
+# ============================================================
+# Timeout — triggered via error_handler
+# ============================================================
+
+@pytest.mark.anyio
+async def test_call_timeout_triggers_error_handler_abort():
+    """asyncio.TimeoutError from non-streaming call → error_handler → abort."""
+    from arf.event_bus import InMemoryEventBus
+
+    event_bus = InMemoryEventBus()
+
+    async def _hanging_model(msgs, model, tools=None):
+        await asyncio.sleep(10.0)
+
+    cp = ControlPlane(
+        loop_strategy=ReActStrategy(max_turns=5),
+        state_store=InMemoryStateStore(),
+        tool_executor=_NoopToolExecutor(),
+        call_model=_hanging_model,
+        event_bus=event_bus,
+        call_timeout=0.2,
+    )
+
+    final = await cp.invoke(_basic_state())
+
+    assert not final.get("session_active", True)
+    errors = event_bus.collected("error")
+    assert len(errors) >= 1
+    assert any("abort" in e.data.get("detail", "").lower() for e in errors)

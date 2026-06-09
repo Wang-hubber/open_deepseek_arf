@@ -575,6 +575,10 @@ class TestBaseAgentStop:
             agent._state_store.put = AsyncMock()
             await agent.chat("hi", session_id="s1")
 
+            # chat() cleans _active_sessions on return. Re-add to simulate
+            # an interrupted session that wasn't cleanly shut down.
+            agent._active_sessions.add("s1")
+
             # Clear call history from chat()
             hook_runner.fire.reset_mock()
 
@@ -839,9 +843,9 @@ class TestSessionLifecycleEdgeCases:
             })
 
             await agent.chat("hi", session_id="s1")
-            assert "s1" in agent._active_sessions
+            # chat() cleans _active_sessions on return — session is no longer active
 
-            # Simulate stop — removes from active_sessions, marks inactive in store
+            # Simulate stop — marks inactive in store
             agent._active_sessions.discard("s1")
 
             # Next chat: state_store has session_active=False → treated as NEW session
@@ -859,30 +863,29 @@ class TestSessionLifecycleEdgeCases:
         asyncio.run(_test())
 
     def test_multiple_sessions_tracked_independently(self):
-        """Each session_id is tracked separately in _active_sessions."""
+        """Each session_id can be used independently without interference."""
         async def _test():
             hook_runner = MagicMock()
             hook_runner.fire = AsyncMock(return_value=[])
-            put_calls = []
 
             agent = self._make_agent(hook_runner=hook_runner)
             agent._state_store.get = AsyncMock(return_value=None)
+            agent._state_store.put = AsyncMock()
 
-            async def track_put(sid, state):
-                put_calls.append(sid)
-            agent._state_store.put = track_put
-
-            agent._engine.invoke = AsyncMock(return_value={
-                "session_id": "s1",
-                "messages": [{"role": "assistant", "content": "ok"}],
-                "session_active": True,
-            })
+            invoke_states = []
+            async def record_invoke(state):
+                invoke_states.append(state.get("session_id"))
+                return {
+                    "session_id": state.get("session_id"),
+                    "messages": [{"role": "assistant", "content": "ok"}],
+                    "session_active": True,
+                }
+            agent._engine.invoke = record_invoke
 
             await agent.chat("hi", session_id="s1")
             await agent.chat("hi", session_id="s2")
 
-            assert "s1" in agent._active_sessions
-            assert "s2" in agent._active_sessions
+            assert invoke_states == ["s1", "s2"]
 
         asyncio.run(_test())
 
@@ -899,7 +902,8 @@ class TestSessionLifecycleEdgeCases:
             agent._state_store.put = AsyncMock()
 
             await agent.chat("hello")
-            assert "default" in agent._active_sessions
+            # chat() cleans _active_sessions on return — verify via invoke call instead
+            agent._engine.invoke.assert_called_once()
 
         asyncio.run(_test())
 

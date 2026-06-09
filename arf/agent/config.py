@@ -27,6 +27,8 @@ class AdvancedConfig(BaseModel):
     loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
     max_turns: int = 50
     max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
+    call_timeout: float = 120.0       # per-call timeout, None = no limit
+    session_timeout: float | None = None  # overall invoke timeout, None = no limit
     compaction: CompactionConfig | None = None
     memory: MemoryConfig | None = None
     guardrails: GuardrailsConfig | None = None
