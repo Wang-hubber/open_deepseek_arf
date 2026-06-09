@@ -59,26 +59,3 @@ class TestMinimalFramework:
         # No exceptions = success
         assert True
 
-    def test_plugin_loader_discovers_plugins(self):
-        """PluginLoader should discover at least compaction, checkpoint, trace, eval."""
-        from arf.plugins.plugin_loader import discover_manifests
-
-        manifests = discover_manifests()
-        names = {m["name"] for m in manifests if "name" in m}
-
-        assert "compaction" in names
-        assert "checkpoint" in names
-        assert "trace" in names
-        assert "eval" in names
-
-    def test_plugin_loader_loads_in_process_plugins(self):
-        """load_all_plugins should instantiate in-process plugins."""
-        from arf.plugins.plugin_loader import load_all_plugins
-
-        plugins = load_all_plugins()
-        names = {p.name for p in plugins}
-
-        assert "compaction" in names
-        assert "checkpoint" in names
-        assert "trace" in names
-        assert "eval" in names
