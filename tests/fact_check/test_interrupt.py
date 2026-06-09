@@ -49,8 +49,6 @@ class TestFileExistence:
     def test_errors_module_files_exist(self):
         root = Path(__file__).parent.parent.parent
         files = [
-            "arf/errors/__init__.py",
-            "arf/errors/retry.py",
             "arf/engine/control_plane.py",
             "arf/engine/round_manager.py",
             "arf/engine/checkpoint.py",
@@ -921,70 +919,7 @@ class TestEventTypes:
 
 
 # ---------------------------------------------------------------------------
-# 10. DefaultErrorPolicy (arf/errors/retry.py)
-# ---------------------------------------------------------------------------
-
-class TestDefaultErrorPolicy:
-    """Doc (reference): DefaultErrorPolicy in arf/errors/retry.py."""
-
-    def test_default_error_policy_importable_from_retry(self):
-        """Doc: DefaultErrorPolicy from arf.errors.retry."""
-        from arf.errors.retry import DefaultErrorPolicy
-        assert DefaultErrorPolicy is not None
-
-    def test_default_error_policy_importable_from_errors(self):
-        """Doc: DefaultErrorPolicy re-exported from arf.errors."""
-        from arf.errors import DefaultErrorPolicy
-        assert DefaultErrorPolicy is not None
-
-    def test_default_error_policy_init_params(self):
-        """Doc: DefaultErrorPolicy(tool_retry=2, ...)."""
-        from arf.errors.retry import DefaultErrorPolicy
-        sig = inspect.signature(DefaultErrorPolicy.__init__)
-        assert sig.parameters["tool_retry"].default == 2
-
-    def test_default_error_policy_has_guardrail_handler(self):
-        """Doc: DefaultErrorPolicy.on_guardrail_block()."""
-        from arf.errors.retry import DefaultErrorPolicy
-        assert hasattr(DefaultErrorPolicy, "on_guardrail_block")
-
-    def test_default_error_policy_has_tool_error_handler(self):
-        """Doc: DefaultErrorPolicy.on_tool_error()."""
-        from arf.errors.retry import DefaultErrorPolicy
-        assert hasattr(DefaultErrorPolicy, "on_tool_error")
-
-    def test_default_error_policy_has_model_error_handler(self):
-        """Doc: DefaultErrorPolicy.on_model_error()."""
-        from arf.errors.retry import DefaultErrorPolicy
-        assert hasattr(DefaultErrorPolicy, "on_model_error")
-
-    def test_default_error_policy_on_tool_error_retry_logic(self):
-        """Doc: on_tool_error retries up to tool_retry times."""
-        from arf.errors.retry import DefaultErrorPolicy
-        from arf.core.results import ErrorAction
-
-        policy = DefaultErrorPolicy(tool_retry=2)
-        action1 = policy.on_tool_error(RuntimeError("e"), "tool1", 0)
-        assert action1.action == "retry"
-        assert action1.delay == 1.0
-        action2 = policy.on_tool_error(RuntimeError("e"), "tool1", 1)
-        assert action2.action == "retry"
-        assert action2.delay == 2.0
-        action3 = policy.on_tool_error(RuntimeError("e"), "tool1", 2)
-        assert action3.action == "abort"
-
-    def test_default_error_policy_model_5xx_fallback(self):
-        """Doc: 5xx errors trigger fallback action."""
-        from arf.errors.retry import DefaultErrorPolicy
-        from arf.core.results import ErrorAction
-
-        policy = DefaultErrorPolicy(model_5xx_action="fallback")
-        action = policy.on_model_error(RuntimeError("got 502 error"), "deep", 0)
-        assert action.action == "fallback"
-
-
-# ---------------------------------------------------------------------------
-# 11. ErrorAction fields (implied by docs)
+# 10. ErrorAction fields (implied by docs)
 # ---------------------------------------------------------------------------
 
 class TestErrorAction:

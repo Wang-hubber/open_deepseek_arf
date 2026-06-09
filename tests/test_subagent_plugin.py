@@ -10,7 +10,7 @@ from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.engine.tool_executor import ConcurrentToolExecutor
-from arf.errors.retry import DefaultErrorPolicy
+
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.plugins.subagent.tools.subagent.function import (
     execute, FilteredToolProvider,

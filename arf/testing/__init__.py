@@ -128,24 +128,8 @@ class InMemoryMemoryRetriever:
         return self.seed_entries[:top_k]
 
 
-class InMemoryErrorPolicy:
-    """Error policy for testing -- abort by default."""
-    def on_tool_error(self, error, tool_name: str, attempt: int):
-        from arf.core.results import ErrorAction
-        return ErrorAction(action="abort", message=str(error))
-
-    def on_model_error(self, error, model_name: str, attempt: int):
-        from arf.core.results import ErrorAction
-        return ErrorAction(action="abort", message=str(error))
-
-    def on_guardrail_block(self, result, context):
-        from arf.core.results import ErrorAction
-        return ErrorAction(action="abort", message=result.reason)
-
-
 __all__ = [
     "InMemoryStateStore", "InMemoryEventBus",
     "InMemoryMemoryStore", "InMemoryGuardRunner", "InMemoryApprovalChannel",
     "InMemoryToolResolver", "InMemoryToolExecutor", "InMemoryMemoryRetriever",
-    "InMemoryErrorPolicy",
 ]

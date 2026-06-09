@@ -127,30 +127,6 @@ class PluginProvider:
                             "ARF_PLUGIN_CONFIG": json.dumps(plugin_config),
                         },
                     ))
-            if plugin_py.exists():
-                try:
-                    mod = importlib.import_module(
-                        f"arf.plugins.{plugin_dir.name}.plugin"
-                    )
-                    for attr in dir(mod):
-                        obj = getattr(mod, attr)
-                        if (isinstance(obj, type)
-                                and hasattr(obj, "name")
-                                and hasattr(obj, "hooks")
-                                and attr.endswith("Plugin")):
-                            cfg = _merge_plugin_config(
-                                plugin_config.get("config", {}),
-                                self._plugin_configs.get(plugin_dir.name, {}),
-                            )
-                            instance = obj(cfg)
-                            self._scanned_plugins.append(instance)
-                            logger.info("Loaded plugin '%s' from %s",
-                                        instance.name, plugin_dir.name)
-                            break
-                except Exception as e:
-                    logger.warning("Failed to load plugin from %s: %s",
-                                   plugin_dir.name, e)
-
         # Collect tools from all enabled plugin tool providers
         for tp in self._tool_providers.values():
             self._scanned_tools.extend(tp.list())
