@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">ARF — Agent Resources & RunTime FrameWork</h1>
-  <p align="center"><em>大脑-脊椎-身体架构的研究脚手架与 Harness MVP</em></p>
+  <p align="center"><em>"Parameter Is All You Need" 的研究脚手架与 Harness MVP</em></p>
 </p>
 
 <p align="center">
@@ -21,8 +21,8 @@
 
 <br/>
 
-<h3 align="center">Harness = 操作系统内核。Model = CPU。Agent = 计算机。</h3>
-<p align="center">模型是大脑。Harness 是脑干、脊椎与身体。</p>
+<h3 align="center">Parameter Is All You Need — Harness 的全新范式</h3>
+<p align="center">硬线（零认知，永不变更）+ 软线（ICL → LoRA MOE 渐进内化）</p>
 <p align="center">本地优先 · 约定大于配置 · 全程可追溯 · 自我演进</p>
 
 <br/>
@@ -33,15 +33,15 @@
 
 ## 研究背景
 
-ARF 是研究论文 **[《寻找 Agent 系统的脊椎——大模型与 Harness 的严格分工与协同进化》](docs/paper/framework.md)** 的工程配套项目。
+ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式》](docs/paper/framework.md)** 的工程配套项目。
 
-**核心命题**：当前 Agent 系统普遍存在 *Harness 膨胀*——协调层承担了大量本该属于模型的认知功能：RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理。这种膨胀不是实现缺陷，而是根本性的角色混淆。Harness 本应是**零认知的机械层**，如同生物的脑干、脊椎与身体：编码感知、执行动作、运转硬连线反射。它不应思考。
+**核心命题**：《Attention Is All You Need》发表近十年后，Agent 系统陷入了另一种"一切皆在 X"——一切皆在上下文。System Prompt 定义身份，RAG 管线注入知识，memory.md 承载长期记忆，自然语言文本充当 Agent 间通信协议。In-Context Learning 成为了万能锤子。论文主张一种范式迁移：身份、知识、记忆、通信应从上下文窗口迁移至模型参数——通过 LoRA 适配器在运行时热插拔、组合叠加、渐进更新。**Parameter Is All You Need.**
+
+**Harness 在新范式中的角色**：如果参数承载认知信号，Harness 还剩什么？两条并行线：**硬线**（零认知，永不变更——安全门控、存档、追踪、Action 执行、Hook 挂载）和**软线**（身份/知识/记忆/通信信号从 ICL 渐进迁移至 LoRA MOE）。Harness 是脊椎——不思考，但它是学习发生的载体。
 
 **ARF 的双重角色**：
-- **作为 MVP**：ARF 实现了三层基于规则的简单反射，证明了剥离认知责任后的 Harness 足以支撑完整可用的 Agent。5 个骨架 + 控制平面 + Plugin 体系构成了设计准则的完整、可测试的工程实体。
-- **作为研究脚手架**：ARF 为论文中全部五项实验提供统一的实验台架——状态接口稳定性、零认知基准测试、在线 LoRA 记忆、身份边界鲁棒性、内部上下文压缩。
-
-**这个 MVP 证明了什么**：一个基于 Protocol 定义的骨架构建的 Harness，将所有"智能"行为（记忆提取、任务追踪、上下文压缩）实现为可插拔的反射弧而非核心引擎逻辑，能够在严格分离*认知工作*（模型）与*机械工作*（Harness）的前提下，支撑全功能 Agent 运行。
+- **作为 MVP**：ARF 实现了完整硬线——安全、错误恢复、存档、追踪、测评、Action 执行、Hook 体系、Agent 编排。软线（LoRA MOE 路由 + 在线 SFT 管线）为实验一至四的建设目标。
+- **作为研究脚手架**：ARF 为全部五项实验提供统一台架——四个单维度验证（记忆、身份、压缩、TFlow 通信）加终局对比（热机 LoRA MOE vs 冷启动纯 ICL Harness）。
 
 **配套教学项目 — [ARF App](https://gitee.com/dalaydata/arf_app_021)**：7 单元渐进式教程，覆盖从零构建 ARF 应用到生产级 Agent 的完整链路——Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优。每单元含可运行代码快照。教程同时作为框架的用户验收测试，在真实使用中验证 API 设计的完备性。
 
@@ -101,7 +101,7 @@ ARF 将 Harness 实现为三层基于规则的简单反射——固定规则、�
 |------|------|
 | **执行引擎** | `ControlPlane` 统一 `_execute` 路径——三层在此交汇。`LoopStrategy` ReAct 模式 + TODO 追踪 |
 | **结构化 State** | 每轮组装固定 Schema 的 State Packet。`RoundManager` 维护 3 个滚动快照支持 checkpoint/restore。会话生命周期：create → resume → archive |
-| **Hook 挂载面** | 9 个注入点（`session_start`、`round_start`、`pre_model_call`、`post_model_call`、`post_permission`、`pre_tool_exec`、`post_tool_exec`、`sandbox_persist`、`round_end`、`session_end`）——Plugin 挂载的 9 个触点 |
+| **Hook 挂载面** | 9 个生命周期点（`session_start`、`round_start`、`turn_start`、`pre_action`、`post_action`、`turn_end`、`round_end`、`session_end`、`error`）——Plugin 挂载的 9 个触点。`pre_action`/`post_action` 包裹每一次模型调用和工具执行 |
 
 如果说三层是反射弧，控制平面就是脊髓——协调每个反射的触发时机，在三层之间路由状态，并为所有 Plugin 提供挂载面。
 
@@ -131,13 +131,13 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 
 ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。
 
-| 实验 | 论文章节 | ARF 状态 | 已有基础 | 待建设 |
-|------|---------|---------|---------|--------|
-| **E1: 固定状态接口 vs. 自由文本提示**——任务稳定性对比 | §6.1 | **台架就绪** | Resource Registry 提供固定 schema 的状态组装。`SystemPromptProvider` 的 `$INVENTORY` 模板已展示了结构化上下文编码。 | 构建对比基准：相同任务分别用 ARF 固定 StatePacket 和传统自由文本提示运行。测量任务完成稳定性（多次运行的方差）。候选基准：AgentBench、SWE-bench。 |
-| **E2: 零认知 Harness 基准测试** | §6.2 | **台架就绪** | 5 骨架 + 控制平面实现了三层基于规则的简单反射。完整 Agent 循环（ReAct + 工具 + guardrails）端到端运行。 | 横向对比：ARF vs. LangChain / OpenDevin 在编程/CLI 任务上的表现。指标：代码量、任务完成率、认知泄漏点数量（在模型调用之外执行语义解释的模块）。 |
-| **E3: 在线 LoRA 用于长期记忆保持** | §6.3 | **扩展点** | `MemoryPlugin` 提取事实到 `memory.md`。`ModelAdapter` 提供模型调用抽象。`FileMemoryStore` 作为数据源。 | 在 `ModelAdapter` 上接入 LoRA 权重更新接口。使用 `memory.md` 条目作为在线 LoRA 微调的训练信号。对比记忆保持质量 vs. 外部记忆注入。 |
-| **E4: 后训练身份边界鲁棒性** | §6.4 | **扩展点** | `Guardrails` 层含 `deny_patterns` 正则匹配。`SessionModeManager` 强制执行权限边界。`PathCheckToolGuard` 阻断路径穿越。 | 扩展 guardrails 支持对抗性提示测试。构建越狱基准测试集。测量身份边界在提示注入、角色覆盖、少样本操纵攻击下的保持率。 |
-| **E5: 架构内上下文压缩（记忆令牌）** | §6.5 | **扩展点** | `CompactionPlugin` 提供 token 感知滑动窗口 + LLM 摘要。Token 计数基础设施已存在。 | 原型验证基于记忆令牌的压缩：替代外部摘要，训练模型将上下文内部压缩为记忆令牌。对比压缩保真度 vs. 当前 LLM 摘要方案。 |
+| 实验 | 论文 § | ARF 状态 | 已有基础 | 待建设 |
+|------|---------|----------|---------|--------|
+| **E1: 在线 LoRA 长期记忆保持** | §5.1 | **扩展点** | `MemoryPlugin` → `memory.md` + `ModelAdapter`。数据集：LoCoMo、LongMemEval、自建 DFC | 接入 LoRA B 矩阵在线 SFT；以 memory.md 条目为监督信号；扫 r=1–8；对比参数化 vs 外挂摘要的记忆保持率 |
+| **E2: 身份边界鲁棒性** | §5.2 | **扩展点** | `Guardrails` + `deny_patterns` + `SessionModeManager`。数据集：JailbreakBench、自建 Persona Conflict | 训练 Identity LoRA；测量 ASR/ICS/RQ；对比 System Prompt 基线在对抗攻击下的突破率 |
+| **E3: 参数化上下文压缩** | §5.3 | **扩展点** | `CompactionPlugin`（token 感知滑动窗口 + LLM 摘要）。数据集：LongBench QA | 同步 SFT 改为异步双缓冲 LoRA B 矩阵；对比 F1/延迟 vs LLM 摘要 |
+| **E4: TFlow 权重空间通信** | §5.4 | **扩展点** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`。自建 DRSA 模拟环境 | 实现扰动编译模块；扫发送方数量（2–32）；对比延迟/带宽 vs 文本通信 |
+| **E5（终局）: 热机 LoRA MOE vs 冷启动 ICL Harness** | §5.5 | **依赖 E1–4** | 同一 ARF 硬线，两组软线配置：A 组纯 ICL，B 组四个 LoRA 全激活 | 同任务、同基座、四维评分。检验标题命题："Parameter Is All You Need" 是否击败 "Context Is All You Need" |
 
 **运行实验**：每项实验设计为在同一 ARF 台架上运行。框架的 `EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见 [回归测评文档](docs/eval-benchmark.md) 了解评估基础设施。
 
@@ -151,20 +151,23 @@ ARF 是论文全部五项实验的统一台架。下表将每项实验映射到�
 
 ### 短期：论文阅读与理论校验
 
-当前算力受限，短期聚焦文献调研和理论框架完善：
+算力受限，聚焦四维软线的文献调研：
 
-- **参数化记忆文献追踪**：持续跟进 PEAM、TMEM 等工作的后续进展，以及在线 LoRA、记忆令牌等方向的代表性论文
-- **容量对齐消融实验设计**：完善实验三/五的方案设计，明确变量控制、评估基准和指标，为算力就绪后快速启动做准备
-- **PV/STC 理论框架泛化**：将 PEAM 的"什么值得记住"评分体系和自触发固化机制，从代码生成领域迁移到通用 Agent 场景的理论论证
+- **记忆**：PEAM、TMEM ✅ — 扩展至 Memorizing Transformer、Unlimiformer、MemGPT
+- **身份**：Character-LLM、Neeko、RoleLLM — LoRA 固化人格的对抗鲁棒性
+- **知识**：P-RAG、MEGa — RAG vs Fine-tuning 系统对比
+- **通信**：TFlow — 权重扰动叠加在大规模 Agent 群中的稳定性
+- **消融实验设计**：完善 E1/E3 变量控制、基准和指标，算力就绪后快速启动
 
-详见 [阅读笔记](docs/paper/reading_summary/parameterized-memory.md)。
+详见 [阅读笔记](docs/paper/reading_summary/)。
 
-### 中远期：参数化记忆工程验证
+### 中远期：LoRA MOE + 在线 SFT 管线
 
 算力就绪后启动：
 
-- 统一参数化存储框架（可插拔 LoRA 适配器 + 路由机制）
-- 容量对齐消融实验（参数内化 vs 外挂摘要，扫 r=1-8）
+- LoRA MOE 路由器 — 按功能域（身份/知识/记忆/通信）热插拔适配器
+- 在线 SFT 管线 — 双缓冲 LoRA B 矩阵，异步非阻塞更新
+- E5 终局实验 — 热机 LoRA MOE Harness vs 冷启动 ICL Harness，四维评分
 - 异步非阻塞更新（双缓冲 LoRA B 矩阵）
 - 偏好与事实解耦（自监督 vs 强监督，分离适配器）
 

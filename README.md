@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">ARF — Agent Resources & RunTime FrameWork</h1>
-  <p align="center"><em>A Research Scaffold & Harness MVP for the Brain-Spine-Body Architecture</em></p>
+  <p align="center"><em>A Research Scaffold & Harness MVP for &ldquo;Parameter Is All You Need&rdquo;</em></p>
 </p>
 
 <p align="center">
@@ -21,8 +21,8 @@
 
 <br/>
 
-<h3 align="center">Harness = OS Kernel. Model = CPU. Agent = Computer.</h3>
-<p align="center">The Model is the Brain. The Harness is the Brainstem, Spine & Body.</p>
+<h3 align="center">Parameter Is All You Need — A New Paradigm for Harness</h3>
+<p align="center">Hard-line (zero-cognition, never-changing) + Soft-line (ICL → LoRA MOE progressive internalization)</p>
 <p align="center">Local-first. Convention over configuration. Fully traceable. Self-evolving.</p>
 
 <br/>
@@ -33,15 +33,15 @@
 
 ## Research Context
 
-ARF is the **engineering companion** to the research paper [*"Finding the Spine of Agent Systems — Strict Division of Labor and Co-evolution between Large Models and Harness"*](docs/paper/framework.md).
+ARF is the **engineering companion** to the research paper [*"Parameter Is All You Need — A New Paradigm for Harness"*](docs/paper/framework.md).
 
-**The core thesis**: Current Agent systems suffer from *Harness bloat*. The coordination layer has absorbed cognitive responsibilities — RAG knowledge injection, system-prompt identity injection, context summarization, external memory management — that rightfully belong to the model. This bloat is not an implementation flaw; it signals a fundamental confusion of roles. The Harness should be a **zero-cognition mechanical layer**, analogous to the brainstem, spine, and body: it encodes perception, executes action, and runs hardwired reflexes. It does not think.
+**The core thesis**: Nearly a decade after *Attention Is All You Need*, Agent systems have fallen into another "all you need" — everything is in context. System Prompts define identity, RAG pipelines inject knowledge, memory.md files carry long-term memory, natural language text serves as inter-Agent communication protocol. In-Context Learning became the universal hammer. The paper argues for a paradigm shift: identity, knowledge, memory, and communication should migrate from the context window into model parameters — via LoRA adapters that can be hot-swapped, composed, and progressively updated at runtime. **Parameter Is All You Need.**
+
+**The Harness role in this paradigm**: If parameters carry cognitive signals, what remains for the Harness? Two parallel lines: a **hard-line** (zero-cognition, never-changing — safety gating, archival, trace, action execution, hooks) and a **soft-line** (the progressive migration of identity/knowledge/memory/communication signals from ICL → LoRA MOE). The Harness is the spinal cord — it doesn't think, but it is the carrier on which learning happens.
 
 **ARF's dual role**:
-- **As an MVP**: ARF implements three layers of rule-based reflexes and demonstrates that a Harness stripped of cognitive responsibility can run a fully functional Agent. The 5 skeletons + control plane + plugin system form a complete, testable embodiment of the design principles.
-- **As a research scaffold**: ARF provides the unified testbed for all five experiments proposed in the paper — state interface stability, zero-cognition benchmarks, online LoRA memory, identity boundary robustness, and internal context compression.
-
-**What this MVP proves**: A Harness built on Protocol-defined skeletons, where all "intelligent" behaviors (memory extraction, task tracking, context compaction) are implemented as pluggable reflex arcs — never as core engine logic — maintains strict separation between *cognitive work* (model) and *mechanical work* (harness).
+- **As an MVP**: ARF implements the hard-line in full — safety, error recovery, archival, tracing, evaluation, action execution, hook surface, and agent orchestration. The soft-line (LoRA MOE routing + online SFT pipeline) is the target of experiments 1–4.
+- **As a research scaffold**: ARF provides the unified testbed for all five experiments — four per-dimension validations (memory, identity, compression, TFlow communication) plus the culminating HOT (LoRA MOE) vs COLD (ICL-only) Harness comparison.
 
 **Companion project — [ARF App](https://gitee.com/dalaydata/arf_app_021)**: A 7-unit progressive tutorial that teaches building on ARF from zero to a production Agent — covering Hello ARF, session management, tools, approval, guardrails, memory, and agent tuning. Each unit includes runnable code snapshots. The tutorial doubles as user-acceptance testing for the framework, validating API design completeness through real usage.
 
@@ -101,7 +101,7 @@ The three layers don't float in isolation. The **[Control Plane](docs/agent-exec
 |--------|---------------|
 | **Execution engine** | `ControlPlane` single `_execute` path — all three layers converge here. `LoopStrategy` ReAct pattern + TODO tracking |
 | **Structured State** | Fixed-schema State Packets assembled at each turn. Checkpoint/restore via `RoundManager` (3 rolling snapshots). Session lifecycle: create → resume → archive |
-| **Hook surface** | 9 injection points (`session_start`, `round_start`, `pre_model_call`, `post_model_call`, `post_permission`, `pre_tool_exec`, `post_tool_exec`, `sandbox_persist`, `round_end`, `session_end`) — the 9 points where Plugins mount |
+| **Hook surface** | 9 lifecycle points (`session_start`, `round_start`, `turn_start`, `pre_action`, `post_action`, `turn_end`, `round_end`, `session_end`, `error`) — the 9 points where Plugins mount. `pre_action`/`post_action` wrap every model call and tool execution |
 
 If the three layers are reflex arcs, the Control Plane is the spinal cord that coordinates when each reflex fires, routes state between them, and provides the attachment surface for every Plugin.
 
@@ -131,13 +131,13 @@ ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton 
 
 ARF is the testbed for all five experiments proposed in the paper. This section maps each experiment to current ARF capabilities and identifies what needs to be built.
 
-| Experiment | Paper Section | ARF Status | What Exists | What to Build |
-|------------|--------------|------------|-------------|---------------|
-| **E1: Fixed State Interface vs. Free-Text Prompts** — task stability comparison | §6.1 | **Testbed ready** | Resource Registry provides fixed-schema state assembly. `SystemPromptProvider` with `$INVENTORY` template already demonstrates structured context encoding. | Build a comparative benchmark: same tasks run through ARF's fixed StatePacket vs. traditional free-text prompts. Measure task completion stability (variance across runs). Candidate benchmarks: AgentBench, SWE-bench. |
-| **E2: Zero-Cognition Harness Benchmark** | §6.2 | **Testbed ready** | 5 skeletons + control plane implement the three layers of rule-based reflexes. The full agent loop (ReAct + tools + guardrails) runs end-to-end. | Horizontal comparison: ARF vs. LangChain / OpenDevin on programming/CLI tasks. Metrics: code footprint, task completion rate, cognitive leakage points (modules that perform semantic interpretation outside model calls). |
-| **E3: Online LoRA for Long-Term Memory** | §6.3 | **Extension point** | `MemoryPlugin` extracts facts to `memory.md`. `ModelAdapter` provides the model call abstraction. `FileMemoryStore` is the data source. | Add LoRA weight update interface to `ModelAdapter`. Use `memory.md` entries as training signal for online LoRA fine-tuning. Compare retention quality vs. external memory injection. |
-| **E4: Post-Training Identity Boundary Robustness** | §6.4 | **Extension point** | `Guardrails` layer with `deny_patterns` regex matching. `SessionModeManager` enforces permission boundaries. `PathCheckToolGuard` blocks path traversal. | Extend guardrails for adversarial prompt testing. Build a jailbreak benchmark suite. Measure identity boundary preservation under prompt injection, role-play override, and few-shot manipulation attacks. |
-| **E5: Internal Context Compression (Memory Tokens)** | §6.5 | **Extension point** | `CompactionPlugin` provides token-aware sliding window with LLM summarization. Token counting infrastructure exists. | Prototype memory-token-based compression: instead of external summarization, train the model to compress context into memory tokens internally. Compare compression fidelity against the current LLM-summary approach. |
+| Experiment | Paper § | ARF Status | What Exists | What to Build |
+|------------|---------|------------|-------------|---------------|
+| **E1: Online LoRA Long-Term Memory** | §5.1 | **Extension point** | `MemoryPlugin` → `memory.md` + `ModelAdapter`. Datasets: LoCoMo, LongMemEval, self-built DFC. | Add LoRA B-matrix online SFT interface. Use memory entries as supervision. Sweep r=1–8. Compare parametric vs. external summary retention. |
+| **E2: Identity Boundary Robustness** | §5.2 | **Extension point** | `Guardrails` + `deny_patterns` + `SessionModeManager`. Datasets: JailbreakBench, self-built Persona Conflict. | Train Identity LoRA from role-play data. Measure ASR, ICS, RQ against System Prompt baseline under adversarial attacks. |
+| **E3: Parametric Context Compression** | §5.3 | **Extension point** | `CompactionPlugin` (token-aware sliding window + LLM summary). Dataset: LongBench QA. | Replace sync SFT with async dual-buffer LoRA B-matrix. Compare fidelity (F1) and latency (E2EPL) vs. LLM summarization. |
+| **E4: TFlow Weight-Space Communication** | §5.4 | **Extension point** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`. Self-built DRSA simulation. | Implement perturbation compiler (internal activations → ΔW). Sweep sender count (2–32). Compare latency/bandwidth vs. NL text communication. |
+| **E5 (Culmination): HOT LoRA MOE vs. COLD ICL Harness** | §5.5 | **Dependent on E1–4** | Same ARF hard-line. Two soft-line configs: A (ICL-only) vs. B (all four LoRA adapters active). | Same task, same base model, 4-dimensional scoring. Tests the title thesis: does "Parameter Is All You Need" beat "Context Is All You Need"? |
 
 **Running an experiment**: Each experiment is designed to be run against the same ARF testbed. The framework's `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md) for the evaluation infrastructure.
 
@@ -151,22 +151,23 @@ ARF is the testbed for all five experiments proposed in the paper. This section 
 
 ### Short-term: Literature Review & Theory Validation
 
-Compute-constrained for now. Short-term focus on literature survey and theoretical framework refinement:
+Compute-constrained. Focus on literature survey across the four soft-line dimensions:
 
-- **Parameterized memory literature tracking**: Follow up on PEAM, TMEM, and related work on online LoRA, memory tokens, and parametric memory
-- **Capacity-aligned ablation design**: Finalize experimental design for E3/E5 — variable control, evaluation benchmarks, and metrics — ready to launch when compute becomes available
-- **PV/STC generalization**: Theoretically adapt PEAM's "what's worth remembering" scoring and self-triggered consolidation from code generation to general-purpose agents
+- **Memory**: PEAM, TMEM ✅ — extend to Memorizing Transformer, Unlimiformer, MemGPT
+- **Identity**: Character-LLM, Neeko, RoleLLM — adversarial robustness of LoRA-frozen personas
+- **Knowledge**: P-RAG, MEGa — RAG vs. Fine-tuning systematic comparison
+- **Communication**: TFlow — weight-space perturbation stability at scale
+- **Capacity-aligned ablation design**: Finalize E1/E3 — variable control, benchmarks, metrics
 
-See [reading notes](docs/paper/reading_summary/parameterized-memory.md).
+See [reading notes](docs/paper/reading_summary/).
 
-### Medium/Long-term: Parameterized Memory Engineering
+### Medium/Long-term: LoRA MOE + Online SFT Pipeline
 
 When compute is available:
 
-- Unified parameterized storage framework (pluggable LoRA adapters + router)
-- Capacity-aligned ablation (parameterization vs. summarization, sweep r=1–8)
-- Async non-blocking updates (dual-buffer LoRA B-matrix)
-- Preference vs. fact decoupling (self-supervised vs. verifiable QA, separate adapters)
+- LoRA MOE router — per-domain adapters (identity/knowledge/memory/comm), hot-swap at runtime
+- Online SFT pipeline — dual-buffer LoRA B-matrix, async non-blocking updates
+- E5 culmination — HOT LoRA MOE Harness vs. COLD ICL Harness, four-dimensional scoring
 
 ---
 
