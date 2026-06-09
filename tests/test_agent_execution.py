@@ -230,7 +230,6 @@ class TestSessionHooks:
                         config,
                         hook_runner=hook_runner,
                         state_store=MagicMock(),
-                        memory_store=MagicMock(),
                     )
         return agent
 

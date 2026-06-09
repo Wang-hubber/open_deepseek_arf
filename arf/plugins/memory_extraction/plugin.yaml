@@ -1,3 +1,0 @@
-name: memory_extraction
-enabled: true
-description: "Extract and write long-term memory at session_end"

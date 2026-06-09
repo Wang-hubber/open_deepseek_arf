@@ -7,31 +7,6 @@ from arf.engine.checkpoint import InMemoryStateStore
 from arf.event_bus import InMemoryEventBus
 
 
-class InMemoryMemoryStore:
-    """Dict-backed MemoryStore for testing."""
-    def __init__(self) -> None:
-        self.entries: list = []
-        self.saves: list = []
-        self.deletes: list = []
-
-    async def save(self, entry) -> None:
-        self.saves.append(entry)
-        self.entries = [e for e in self.entries if e.id != entry.id]
-        self.entries.append(entry)
-
-    async def load(self, session_id: str):
-        return list(self.entries)
-
-    async def delete(self, entry_id: str) -> None:
-        self.deletes.append(entry_id)
-        self.entries = [e for e in self.entries if e.id != entry_id]
-
-    def reset(self) -> None:
-        self.entries.clear()
-        self.saves.clear()
-        self.deletes.clear()
-
-
 class InMemoryGuardRunner:
     """Pass-through GuardRunner for testing."""
     @staticmethod
@@ -119,17 +94,8 @@ class InMemoryToolExecutor:
         self.results.clear()
 
 
-class InMemoryMemoryRetriever:
-    """Recent-first memory retriever for testing."""
-    def __init__(self, seed_entries: list | None = None) -> None:
-        self.seed_entries = seed_entries or []
-
-    async def retrieve(self, store, query_context: str, session_id: str, max_tokens: int = 2000, top_k: int = 5):
-        return self.seed_entries[:top_k]
-
-
 __all__ = [
     "InMemoryStateStore", "InMemoryEventBus",
-    "InMemoryMemoryStore", "InMemoryGuardRunner", "InMemoryApprovalChannel",
-    "InMemoryToolResolver", "InMemoryToolExecutor", "InMemoryMemoryRetriever",
+    "InMemoryGuardRunner", "InMemoryApprovalChannel",
+    "InMemoryToolResolver", "InMemoryToolExecutor",
 ]
