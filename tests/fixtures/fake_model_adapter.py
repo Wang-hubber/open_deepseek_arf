@@ -106,7 +106,7 @@ class FakeModelAdapter:
         import json
         from pathlib import Path
 
-        trace_file = Path(trace_dir) / f"{session_id}.json"
+        trace_file = Path(trace_dir) / f"{session_id}.jsonl"
         if not trace_file.exists():
             return cls(default=FakeResponse(content="trace not found"))
 

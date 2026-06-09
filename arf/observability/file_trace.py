@@ -1,4 +1,4 @@
-"""FileTraceStore — persist agent events to JSON files per session."""
+"""FileTraceStore — persist agent events to JSONL files (append-only, O(1))."""
 import asyncio
 import json
 from pathlib import Path
@@ -21,14 +21,13 @@ def _sanitize_for_json(obj):
 
 
 class FileTraceStore:
-    """订阅 EventBus，将事件按 session 追加写入 JSON 文件。
+    """订阅 EventBus，将事件按 session 追加写入 JSONL 文件。
 
-    文件位置: {dir}/{session_id}.json
-    每个 session 一个文件，session 结束后完整轨迹可被 /trace/{id} 查询。
+    文件位置: {dir}/{session_id}.jsonl
+    每行一个 JSON 对象，append-only — O(1) 每次写入。
 
     用法:
         store = FileTraceStore(agent.event_bus, dir="./data/traces")
-        # 自动开始消费，无需手动管理生命周期
     """
 
     def __init__(self, bus, dir: str | Path = "./data/traces") -> None:
@@ -40,38 +39,40 @@ class FileTraceStore:
         try:
             async for event in bus.subscribe():
                 if event.type in ("session_start", "session_end", "thinking_delta"):
-                    continue  # skip streaming noise; model_call_end has full response
+                    continue
                 self._append(event.session_id, event)
         except asyncio.CancelledError:
             pass
 
     def _append(self, session_id: str, event: AgentEvent) -> None:
-        path = self._dir / f"{session_id}.json"
-        records: list[dict] = []
-        if path.exists():
-            try:
-                records = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                records = []
-        records.append({
+        record = json.dumps({
             "type": event.type,
             "data": _sanitize_for_json(event.data),
             "turn": event.turn,
             "timestamp": event.timestamp,
             "trace_id": event.trace_id,
             "span_id": event.span_id,
-        })
-        path.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
+        }, ensure_ascii=False)
+        path = self._dir / f"{session_id}.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(record + "\n")
 
     def load(self, session_id: str) -> list[dict]:
-        """加载指定 session 的完整轨迹"""
-        path = self._dir / f"{session_id}.json"
+        path = self._dir / f"{session_id}.jsonl"
         if not path.exists():
             return []
-        return json.loads(path.read_text(encoding="utf-8"))
+        events: list[dict] = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return events
 
     def list_sessions(self) -> list[str]:
-        """列出所有已记录的 session ID"""
         return [
-            p.stem for p in self._dir.glob("*.json")
+            p.stem for p in self._dir.glob("*.jsonl")
         ]

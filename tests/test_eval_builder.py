@@ -21,11 +21,13 @@ def _make_store(trace_dir):
 
 
 def _write_trace(dir, session_id, events):
-    p = Path(dir) / f"{session_id}.json"
-    p.write_text(json.dumps([
-        {"type": e.type, "data": e.data, "turn": e.turn, "timestamp": e.timestamp}
-        for e in events
-    ]))
+    p = Path(dir) / f"{session_id}.jsonl"
+    with open(p, "w", encoding="utf-8") as f:
+        for e in events:
+            f.write(json.dumps({
+                "type": e.type, "data": e.data, "turn": e.turn,
+                "timestamp": e.timestamp,
+            }, ensure_ascii=False) + "\n")
 
 
 class TestBenchmarkBuilder:
