@@ -78,19 +78,24 @@ class PathCheckToolGuard:
     _MAX_PATH_LEN = 255
 
     def _check_one(self, v: str, boundary: DirectoryBoundary) -> GuardResult:
-        # Multi-line content (after stripping trailing whitespace) is file
-        # content, not a path — skip path checks.
-        cleaned = v.rstrip()
-        if "\n" in cleaned:
-            return GuardResult(allowed=True)
+        # ── Sanitize ──
+        cleaned = v.rstrip()  # drop trailing whitespace / newlines
 
-        # Overly long string → not a legitimate path, reject.
+        # ── Reject: impossible to be a path ──
+        if "\x00" in cleaned:
+            return GuardResult(allowed=False, reason="Path contains null byte")
+
         if len(cleaned) > self._MAX_PATH_LEN:
             return GuardResult(
                 allowed=False,
                 reason=f"Path too long ({len(cleaned)} > {self._MAX_PATH_LEN})",
             )
 
+        # ── Allow: clearly file content, not a path ──
+        if "\n" in cleaned:
+            return GuardResult(allowed=True)
+
+        # ── Path checks ──
         parts = Path(cleaned).parts
 
         if self._checks.get("path_traversal") and ".." in parts:
