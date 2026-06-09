@@ -36,6 +36,8 @@ class ControlPlane:
         state_dir: str = "./data/state",
         trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
+        call_timeout: float | None = 120.0,
+        session_timeout: float | None = None,
     ):
         self.loop_strategy = loop_strategy
         self.state_store = state_store
@@ -51,6 +53,8 @@ class ControlPlane:
         self._state_dir = state_dir
         self._trace_dir = trace_dir
         self._mcp_tool_resolver = mcp_tool_resolver
+        self._call_timeout = call_timeout
+        self._session_timeout = session_timeout
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -243,8 +247,9 @@ class ControlPlane:
         if self._mcp_tool_resolver:
             try:
                 tools = await self._mcp_tool_resolver(state)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception("MCP tool resolution failed")
+                self._emit_mcp_error_event(session_id, e)
 
         # Build messages — convert internal tool_calls format to API format
         msgs = self._to_api_messages(self._system_prompt, state.get("messages", []))
@@ -310,7 +315,13 @@ class ControlPlane:
                 }, turn=turn, session_id=session_id)
 
         if resp is None and self._call_model:
-            resp = await self._call_model(msgs, model, tools=tools)
+            resp = await (
+                asyncio.wait_for(
+                    self._call_model(msgs, model, tools=tools),
+                    timeout=self._call_timeout,
+                ) if self._call_timeout
+                else self._call_model(msgs, model, tools=tools)
+            )
 
         if resp is None:
             yield self._make_event("error", {
@@ -482,18 +493,53 @@ class ControlPlane:
             raise MessageContractError("Messages must start with user role")
 
     async def _handle_error(self, exc: Exception, ctx: PluginContext) -> dict:
-        """Fire error hook on blocking runner."""
+        """Fire error hook on blocking runner.
+
+        Trace-captures every recovery decision. Raises SessionAbortedError
+        when the decision is 'abort' so invoke()/astream() can clean up.
+        """
         ctx.hook_data["exception"] = exc
         try:
             await self._fire_blocking("error", ctx)
         except Exception as hook_err:
             self._emit_error_event(ctx, exc, f"error_hook_failed: {hook_err}")
-            return self._default_error_action(exc)
+            self._emit_decision_event(ctx, exc, "abort", "error_hook_failed")
+            raise SessionAbortedError(
+                f"Error handler hook failed: {hook_err}"
+            ) from exc
         decision = ctx.hook_data.get("_recovery_decision", {})
         if not decision:
-            self._emit_error_event(ctx, exc, "no_recovery_decision_defaulting_to_abort")
-            return self._default_error_action(exc)
+            self._emit_error_event(ctx, exc, "no_recovery_decision")
+            self._emit_decision_event(ctx, exc, "abort", "no_recovery_decision")
+            raise SessionAbortedError(
+                f"No recovery decision from error_handler: {exc}"
+            ) from exc
+        action = decision.get("action", "abort")
+        reason = decision.get("reason", "")
+        self._emit_decision_event(ctx, exc, action, reason)
+        if action == "abort":
+            raise SessionAbortedError(
+                f"Error handler decided abort: {exc}"
+            ) from exc
         return decision
+
+    def _emit_decision_event(self, ctx: PluginContext, exc: Exception,
+                             action: str, reason: str) -> None:
+        """Emit an error event capturing the error_handler decision for trace."""
+        event = AgentEvent(
+            type="error",
+            data={
+                "phase": ctx.current_step or "dispatch",
+                "detail": f"error_handler: {action} ({reason})",
+                "exception": type(exc).__name__,
+                "message": str(exc)[:300],
+                "action": action,
+                "reason": reason,
+            },
+            session_id=ctx.session_id,
+        )
+        if self.event_bus:
+            self.event_bus.emit(event)
 
     @staticmethod
     def _default_error_action(exc: Exception) -> dict:
@@ -505,6 +551,21 @@ class ControlPlane:
             # tool_result and respond, not abort the turn.
             return {"action": "skip"}
         return {"action": "abort", "params": {"user_message": str(exc)}}
+
+    def _emit_mcp_error_event(self, session_id: str, exc: Exception) -> None:
+        """Emit MCP error to trace — MCP failures should be visible."""
+        event = AgentEvent(
+            type="error",
+            data={
+                "phase": "mcp_tool_resolution",
+                "detail": f"MCP tool resolution failed: {exc}",
+                "exception": type(exc).__name__,
+                "message": str(exc)[:300],
+            },
+            session_id=session_id,
+        )
+        if self.event_bus:
+            self.event_bus.emit(event)
 
     def _emit_error_event(self, ctx: PluginContext, exc: Exception, detail: str) -> None:
         """Emit an error event to the trace — does not affect control flow."""
@@ -552,18 +613,51 @@ class ControlPlane:
     # ==================================================================
 
     async def invoke(self, state: AgentState) -> AgentState:
-        async for _ in self._execute(state):
-            pass
+        aborted = False
+        try:
+            if self._session_timeout:
+                await asyncio.wait_for(
+                    self._consume_execute(state), timeout=self._session_timeout
+                )
+            else:
+                async for _ in self._execute(state):
+                    pass
+        except (SessionAbortedError, asyncio.TimeoutError):
+            aborted = True
         session_id = state.get("session_id", "default")
+        if aborted:
+            state["session_active"] = False
+            if self.state_store:
+                await self.state_store.put(session_id, state)
         if self.state_store:
             saved = await self.state_store.get(session_id)
             if saved:
                 return saved
         return state
 
+    async def _consume_execute(self, state: AgentState):
+        """Coroutine wrapper — consumes _execute events for asyncio.wait_for."""
+        async for _ in self._execute(state):
+            pass
+
     async def astream(self, state: AgentState):
-        async for event in self._execute(state):
-            yield event
+        session_id = state.get("session_id", "default")
+        try:
+            async for event in self._execute(state):
+                yield event
+        except SessionAbortedError:
+            state["session_active"] = False
+            if self.state_store:
+                await self.state_store.put(session_id, state)
+            yield self._make_event(
+                "session_end",
+                {"session_id": session_id, "reason": "aborted"},
+                session_id=session_id,
+            )
+
+
+class SessionAbortedError(Exception):
+    """Fatal — error_handler decided abort. Propagated to invoke() for cleanup."""
 
 
 class MessageContractError(Exception):

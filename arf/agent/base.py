@@ -416,6 +416,8 @@ class BaseAgent:
             state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
             mcp_tool_resolver=_mcp_tool_resolver,
+            call_timeout=(adv.call_timeout if adv else 120.0),
+            session_timeout=(adv.session_timeout if adv else None),
         )
         self._hook_runner = hook_runner
         self._state_store = state_store
@@ -780,25 +782,28 @@ class BaseAgent:
 
         self._active_sessions.add(session_id)
 
-        if self._hook_runner:
-            self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
+        try:
+            if self._hook_runner:
+                self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
 
-        if is_new_session and self._hook_runner:
-            await self._hook_runner.fire("session_start", {
-                "session_id": session_id,
-            })
+            if is_new_session and self._hook_runner:
+                await self._hook_runner.fire("session_start", {
+                    "session_id": session_id,
+                })
 
-        if self._hook_runner:
-            await self._hook_runner.fire("round_start", {
-                "session_id": session_id,
-                "round": interaction,
-            })
+            if self._hook_runner:
+                await self._hook_runner.fire("round_start", {
+                    "session_id": session_id,
+                    "round": interaction,
+                })
 
-        result = await self._engine.invoke(state)
-        for m in reversed(result.get("messages", [])):
-            if m.get("role") == "assistant":
-                return m.get("content", "")
-        return ""
+            result = await self._engine.invoke(state)
+            for m in reversed(result.get("messages", [])):
+                if m.get("role") == "assistant":
+                    return m.get("content", "")
+            return ""
+        finally:
+            self._active_sessions.discard(session_id)
 
     async def astream(self, user_message: str, session_id: str = "default"):
         from arf.core.state import AgentState
@@ -833,22 +838,25 @@ class BaseAgent:
 
         self._active_sessions.add(session_id)
 
-        if self._hook_runner:
-            self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
+        try:
+            if self._hook_runner:
+                self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
 
-        if is_new_session and self._hook_runner:
-            await self._hook_runner.fire("session_start", {
-                "session_id": session_id,
-            })
+            if is_new_session and self._hook_runner:
+                await self._hook_runner.fire("session_start", {
+                    "session_id": session_id,
+                })
 
-        if self._hook_runner:
-            await self._hook_runner.fire("round_start", {
-                "session_id": session_id,
-                "round": interaction,
-            })
+            if self._hook_runner:
+                await self._hook_runner.fire("round_start", {
+                    "session_id": session_id,
+                    "round": interaction,
+                })
 
-        async for event in self._engine.astream(state):
-            yield event
+            async for event in self._engine.astream(state):
+                yield event
+        finally:
+            self._active_sessions.discard(session_id)
 
     def reconfigure(self, **overrides) -> None:
         if "advanced" in overrides:
