@@ -7,11 +7,9 @@ from arf.engine.control_plane import ControlPlane
 from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
-from arf.promotion.gate import Promotion
-from arf.action_runner.runner import ActionRunner
 
 from arf.event_bus import InMemoryEventBus
-from arf.resources.resolver import ResourceResolver
+
 from arf.resources.providers.tool_provider import ToolProvider
 
 from arf.hooks.runner import SubprocessHookRunner
@@ -21,17 +19,6 @@ from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
 
 
-
-def _parse_duration(s: str) -> float:
-    """Parse a duration string like '60s', '5m', '1h' into float seconds."""
-    s = s.strip()
-    if s.endswith("s"):
-        return float(s[:-1])
-    if s.endswith("m"):
-        return float(s[:-1]) * 60
-    if s.endswith("h"):
-        return float(s[:-1]) * 3600
-    raise ValueError(f"Unsupported duration unit: {s}")
 
 
 def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
@@ -75,7 +62,7 @@ class BaseAgent:
 
         # 2. Resources — MCP-based unified management
         # McpClientManager replaces ToolProvider + SkillProvider +
-        # PluginProvider + ResourceResolver quartet.
+        # PluginProvider + MCP manager — tools/skills via MCP, hooks via plugins.
         tools_dir = override_protocols.pop(
             "tools_dir", ctx.tools_dir if ctx else Path.cwd() / "tools"
         )
@@ -460,54 +447,6 @@ class BaseAgent:
                 lines.append(f"- `{t['name']}`: {t.get('description', '')}")
         return "\n".join(lines) if lines else ""
 
-    @staticmethod
-    def _build_promotion(adv: AdvancedConfig) -> Promotion | None:
-        """Build Promotion gate, sharing permissions from guardrails.permissions.
-
-        Promotion's deny/ask/allow lists are drawn from the unified permissions
-        model (guardrails.permissions). The Promotion strategy controls *how*
-        permission decisions are made ('auto' bypasses, 'ask' requires user
-        input, 'plan' is read-only).
-        """
-        from arf.core.config_base import PromotionConfig, PermissionsConfig
-        pc = adv.promotion or PromotionConfig()
-        # Use unified permissions from guardrails as the single source of truth
-        perms = adv.guardrails.permissions if adv.guardrails else PermissionsConfig()
-        return Promotion(
-            strategy=pc.strategy,
-            deny=pc.deny or perms.deny,
-            ask=pc.ask or perms.ask,
-            allow=pc.allow or perms.allow,
-            deny_patterns=pc.deny_patterns or perms.deny_patterns,
-        )
-
-    def _build_resource_resolver(self, config: AgentConfig, tool_provider, skill_provider,
-                                   tools_dir, skills_dir, models_dir,
-                                   watch_enabled: bool, reload_cfg, override_protocols: dict[str, Any]):
-        """Build ResourceResolver with override merge and optional FileWatcher."""
-        from arf.resources.file_watcher import FileWatcher
-        overrides = {
-            "tools": [t.model_dump(exclude_none=True) for t in (config.tools or [])],
-            "skills": [s.model_dump(exclude_none=True) for s in (config.skills or [])],
-        }
-        resource_resolver = override_protocols.pop("tool_resolver", ResourceResolver(
-            tool_provider=tool_provider,
-            skill_provider=skill_provider,
-            agent_yaml_overrides=overrides,
-        ))
-        file_watcher = None
-        if watch_enabled:
-            poll_interval = reload_cfg.poll_interval if reload_cfg else 5.0
-            file_watcher = FileWatcher(poll_interval=poll_interval)
-            async def _on_fs_change(changed_paths):
-                if hasattr(resource_resolver, "reload_dynamic"):
-                    await resource_resolver.reload_dynamic()
-            for d in [tools_dir, skills_dir, models_dir]:
-                path = Path(d)
-                if path.exists():
-                    file_watcher.add_watch(path, _on_fs_change)
-        return resource_resolver, file_watcher
-
     def _inject_model_calls(self, config) -> None:
         """Create ModelAdapter for each configured model and inject call_model into engine."""
         import os as _os, json as _json, asyncio as _asyncio
@@ -666,11 +605,6 @@ class BaseAgent:
 
     @property
     def tool_resolver(self):
-        return self._tool_resolver
-
-    @property
-    def resource_resolver(self):
-        """Alias for tool_resolver — handles tools, skills, and models."""
         return self._tool_resolver
 
     @property
