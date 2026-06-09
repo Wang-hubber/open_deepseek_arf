@@ -40,8 +40,8 @@ hooks:
 | `session_start` | 会话初始化 | checkpoint、validate_messages |
 | `round_start` | 每轮开始 | strategy、memory_retrieval、checkpoint |
 | `turn_start` | 每次迭代开始 | cancellation、metrics |
-| `pre_dispatch` | 调度前（模型调用或工具执行前） | session_mode、tool_guard、approval、validate_messages |
-| `post_dispatch` | 调度后 | sandbox_persist、metrics |
+| `pre_action` | 调度前（模型调用或工具执行前） | session_mode、tool_guard、approval、validate_messages |
+| `post_action` | 调度后 | sandbox_persist、metrics |
 | `post_permission` | 权限检查后 | approval |
 | `pre_tool_exec` | 工具执行前 | — |
 | `post_tool_exec` | 工具执行后 | — |
@@ -59,10 +59,10 @@ hooks:
 
 | Plugin | Hook | 说明 |
 |--------|------|------|
-| `tool_guard` | `pre_dispatch` | 双层防护：`PermissionRegistry` deny→ask→allow 检查 + `PathSandbox` 路径遍历扫描 |
-| `approval` | `pre_dispatch`, `post_permission` | 人机审批通道。`ask_list` 中的工具需人工确认，默认 60s 超时 |
-| `session_mode` | `pre_dispatch` | 解析全局 `session_mode`（auto/ask/plan）与 per-agent policy，决定有效模式 |
-| `validate_messages` | `pre_dispatch` | 模型调用前校验消息列表（首条必须 user、role 合法） |
+| `tool_guard` | `pre_action` | 双层防护：`PermissionRegistry` deny→ask→allow 检查 + `PathSandbox` 路径遍历扫描 |
+| `approval` | `pre_action`, `post_permission` | 人机审批通道。`ask_list` 中的工具需人工确认，默认 60s 超时 |
+| `session_mode` | `pre_action` | 解析全局 `session_mode`（auto/ask/plan）与 per-agent policy，决定有效模式 |
+| `validate_messages` | `pre_action` | 模型调用前校验消息列表（首条必须 user、role 合法） |
 | `error_handler` | `error` | 五动作恢复路由：fallback（compact/repair）、retry、skip、abort |
 
 ### 记忆与上下文
@@ -88,7 +88,7 @@ hooks:
 | Plugin | Hook | 说明 |
 |--------|------|------|
 | `trace` | 全部 9 个 Hook（side） | 跨切面 JSONL 事件记录。每个 Hook 调用写入 `{trace_dir}/{session_id}.jsonl` |
-| `metrics` | `turn_start`, `post_dispatch`（side） | 采集 turn 级别耗时指标 |
+| `metrics` | `turn_start`, `post_action`（side） | 采集 turn 级别耗时指标 |
 | `eval` | 离线 | 回放 trace，计算指标，diff 报告。通过 `EvalRunner` 执行 |
 
 ### 调度与策略

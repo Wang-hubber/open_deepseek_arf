@@ -101,8 +101,8 @@ Round 0 (3 次内部迭代)
 │   ├── model_call_end: "让我看看工作区文件"
 │   ├── guard_pass (file_reader)          ← 路径沙箱 + 权限检查通过
 │   ├── tool_call_end (file_reader)
-│   ├── hook_start / hook_end (pre_tool_exec)
-│   └── hook_start / hook_end (post_tool_exec)
+│   ├── hook_start / hook_end (pre_action)
+│   └── hook_start / hook_end (post_action)
 ├── 迭代 2
 │   ├── model_call_end: "帮你写一个文件"
 │   ├── approval_required (file_writer)   ← 权限 ask，需审批
