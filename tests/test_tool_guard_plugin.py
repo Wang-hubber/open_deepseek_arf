@@ -15,7 +15,7 @@ async def test_deny_list_blocks_tool():
     )
 
     with pytest.raises(PermissionDenied, match="rm"):
-        await plugin.on_hook("pre_dispatch", ctx)
+        await plugin.on_hook("pre_action", ctx)
 
 
 @pytest.mark.anyio
@@ -28,7 +28,7 @@ async def test_sandbox_blocks_path_traversal():
     )
 
     with pytest.raises(SandboxViolation, match="sandbox violation"):
-        await plugin.on_hook("pre_dispatch", ctx)
+        await plugin.on_hook("pre_action", ctx)
 
 
 @pytest.mark.anyio
@@ -41,4 +41,4 @@ async def test_allowed_tool_passes():
     )
 
     # Should not raise
-    await plugin.on_hook("pre_dispatch", ctx)
+    await plugin.on_hook("pre_action", ctx)

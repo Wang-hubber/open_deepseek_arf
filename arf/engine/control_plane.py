@@ -135,7 +135,7 @@ class ControlPlane:
 
                 # --- pre_dispatch ---
                 try:
-                    async for event in self._fire_and_drain("pre_dispatch", ctx):
+                    async for event in self._fire_and_drain("pre_action", ctx):
                         yield event
                 except Exception as e:
                         decision = await self._handle_error(e, ctx)
@@ -146,7 +146,7 @@ class ControlPlane:
 
                 # --- dispatch ---
                 try:
-                    async for event in self._dispatch(step, state, ctx):
+                    async for event in self._execute_action(step, state, ctx):
                         yield event
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
@@ -169,8 +169,8 @@ class ControlPlane:
 
                 # --- post_dispatch ---
                 try:
-                    await self._fire_blocking("post_dispatch", ctx)
-                    await self._fire_side("post_dispatch", ctx)
+                    await self._fire_blocking("post_action", ctx)
+                    await self._fire_side("post_action", ctx)
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
                     if decision.get("action") == "abort":
@@ -229,15 +229,15 @@ class ControlPlane:
     # Dispatch
     # ==================================================================
 
-    async def _dispatch(self, step: str, state: AgentState, ctx: PluginContext):
+    async def _execute_action(self, step: str, state: AgentState, ctx: PluginContext):
         if step == "call_model":
-            async for event in self._dispatch_call_model(state, ctx):
+            async for event in self._action_call_model(state, ctx):
                 yield event
         elif step == "execute_tools":
-            async for event in self._dispatch_execute_tools(state, ctx):
+            async for event in self._action_execute_tools(state, ctx):
                 yield event
 
-    async def _dispatch_call_model(self, state: AgentState, ctx: PluginContext):
+    async def _action_call_model(self, state: AgentState, ctx: PluginContext):
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
         model = state.get("current_model", "")
@@ -352,7 +352,7 @@ class ControlPlane:
         state["messages"].append(assistant_msg)
         state["_pending_tool_calls"] = tool_calls
 
-    async def _dispatch_execute_tools(self, state: AgentState, ctx: PluginContext):
+    async def _action_execute_tools(self, state: AgentState, ctx: PluginContext):
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
         tool_calls = state.pop("_pending_tool_calls", [])
@@ -529,7 +529,7 @@ class ControlPlane:
         event = AgentEvent(
             type="error",
             data={
-                "phase": ctx.current_step or "dispatch",
+                "phase": ctx.current_step or "action",
                 "detail": f"error_handler: {action} ({reason})",
                 "exception": type(exc).__name__,
                 "message": str(exc)[:300],

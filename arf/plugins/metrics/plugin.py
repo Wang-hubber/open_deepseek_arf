@@ -14,14 +14,14 @@ class MetricsPlugin:
     @property
     def hooks(self) -> dict[str, str]:
         return {
-            "turn_start": "side", "post_dispatch": "side",
+            "turn_start": "side", "post_action": "side",
             "turn_end": "side", "session_end": "side",
         }
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if hook_name == "turn_start":
             ctx.hook_data["_metric_turn_start"] = time.time()
-        elif hook_name == "post_dispatch":
+        elif hook_name == "post_action":
             start = ctx.hook_data.get("_metric_turn_start", time.time())
             duration = time.time() - start
             ctx.state.setdefault("_metrics", []).append({

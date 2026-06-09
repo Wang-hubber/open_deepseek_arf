@@ -13,7 +13,7 @@ class ValidateMessagesPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"pre_dispatch": "blocking"}
+        return {"pre_action": "blocking"}
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if ctx.current_step != "call_model":

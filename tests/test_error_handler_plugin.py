@@ -3,7 +3,7 @@ from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
 from arf.core.plugin_context import PluginContext
 
 
-def _make_ctx(exc, hook_name="dispatch", step="call_model"):
+def _make_ctx(exc, hook_name="action", step="call_model"):
     return PluginContext(
         session_id="test",
         state={},
