@@ -21,8 +21,8 @@ class _HookRunnerPlugin:
             "round_end": "blocking",
             "turn_start": "blocking",
             "turn_end": "blocking",
-            "pre_dispatch": "blocking",
-            "post_dispatch": "blocking",
+            "pre_action": "blocking",
+            "post_action": "blocking",
             "error": "blocking",
         }
 
