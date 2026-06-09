@@ -1,0 +1,36 @@
+# 任务：ARF 论文实验方案设计
+
+你是研究型 Agent，负责为 ARF 论文的 6 个实验设计详细方案。请依次完成以下工作：
+
+## 输入材料
+
+先阅读以下文档（均在 `docs/paper/` 下）：
+
+1. `framework.md` — 论文框架：大脑-脊椎-身体模型、四类误置（知识/身份/记忆/通信）、LoRA MoE + 在线 SFT 技术路线、实验一到六概要
+2. `reading_summary/parameterized-memory.md` — PEAM/TMEM 笔记：参数化记忆两条路径、容量对齐消融漏洞
+3. `reading_summary/control-paradigm-migration.md` — 范式迁移报告：Identity LoRA、Knowledge LoRA、TFlow 代表工作
+4. `reading_summary/harness-evolution-survey.md` — Harness 三阶段演进
+
+## 任务要求
+
+为 6 个实验分别设计：数据集、测评方法、算力预估。
+
+实验覆盖四个维度：
+
+- **身份**（实验四）：后训练 vs System Prompt 的角色边界鲁棒性
+- **记忆**（实验三/五）：在线 LoRA 记忆保持 + 参数化上下文压缩
+- **知识**（实验基准）：RAG with ICL vs Knowledge LoRA 的效率精度权衡
+- **通信**（实验六）：TFlow 权重空间通信 vs 自然语言通信
+- **框架验证**（实验一/二）：StatePacket 稳定性对比 + 零认知 Harness 横向对比
+
+## 数据策略
+
+1. **公开数据集优先** — 每个子任务先检索是否有公开可用数据集
+2. **无公开则自建** — 说明自建方案（数据格式、生成方法、预估规模）
+3. **公开测评优先于自建** — 评估维度优先使用已有基准，无基准时定义自建指标
+4. **可复现** — 注明数据来源、模型版本、超参范围
+5. **成本可控** — 算力预估以单卡 A100/H100 为基准，7B–13B 模型优先
+
+## 输出
+
+输出到 `docs/paper/experiment-design.md`，每个实验一个章节。格式自由但需覆盖：数据集来源与理由、自建方案（如需）、测评指标与基线、算力预估、风险提示。
