@@ -75,16 +75,28 @@ class PathCheckToolGuard:
                 return result
         return GuardResult(allowed=True)
 
+    _MAX_PATH_LEN = 255
+
     def _check_one(self, v: str, boundary: DirectoryBoundary) -> GuardResult:
-        if "\n" in v or len(v) > 500:
+        # Multi-line content (after stripping trailing whitespace) is file
+        # content, not a path — skip path checks.
+        cleaned = v.rstrip()
+        if "\n" in cleaned:
             return GuardResult(allowed=True)
 
-        parts = Path(v).parts
+        # Overly long string → not a legitimate path, reject.
+        if len(cleaned) > self._MAX_PATH_LEN:
+            return GuardResult(
+                allowed=False,
+                reason=f"Path too long ({len(cleaned)} > {self._MAX_PATH_LEN})",
+            )
+
+        parts = Path(cleaned).parts
 
         if self._checks.get("path_traversal") and ".." in parts:
             return GuardResult(allowed=False, reason=f"Path traversal blocked: '{v}'")
 
-        if self._checks.get("absolute_path") and v.startswith("/"):
+        if self._checks.get("absolute_path") and cleaned.startswith("/"):
             return GuardResult(allowed=False, reason=f"Absolute path blocked: '{v}'")
 
         if self._quota and self._quota.max_path_depth is not None:
@@ -102,11 +114,11 @@ class PathCheckToolGuard:
             )
 
         if self._checks.get("symlink"):
-            if boundary.has_symlink(v):
+            if boundary.has_symlink(cleaned):
                 return GuardResult(allowed=False, reason=f"Symlink traversal blocked: '{v}'")
 
         if self._checks.get("workspace_containment"):
-            if not boundary.contains(v):
+            if not boundary.contains(cleaned):
                 return GuardResult(allowed=False, reason=f"Path outside allowed directory: '{v}'")
 
         return GuardResult(allowed=True)
