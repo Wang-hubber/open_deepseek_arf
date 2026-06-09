@@ -16,15 +16,26 @@
 - 两种范式：垂直专精 · 全域通用
 - Harness 成为实际部署的必需组件
 
-**1.2 问题的浮现：不断膨胀的 Harness**
-- 观察：Harness 承担了 RAG、系统提示词身份注入、上下文摘要、外部记忆管理等认知性功能
-- 判断：Harness 本应是轻量信息传递层，却变成补丁集合 → 角色混淆
+**Agent 框架的三阶段演进**（详见 [Harness演进调查报告](reading_summary/harness-evolution-survey.md)）：
 
-**1.3 核心命题**
-- 分工隐喻：**大模型 = 大脑，Harness = 脑干、脊椎与身体**
-- 目标：澄清边界 + 指明认知功能回归模型侧的路径 + 定义理想 Harness 设计准则 + 给出验证路线
+| 阶段 | 时间 | 标志 | 特征 |
+|------|------|------|------|
+| 奠基与探索期 | 2023-2024 | LangChain、AutoGPT | 模块化组件（LLM/Prompt/Chain/Tool/Memory）+ 自主性极限探索 |
+| 协作与专精期 | 2024-2025 | CrewAI、AutoGen、OpenDevin | 多Agent角色分工协同 + 垂直领域深耕 |
+| Harness系统化 | 2025-2026 | Claude Code、OpenClaw、LangGraph | 系统级运行环境：LLM=CPU，框架=SDK，Harness=OS |
 
-> **本节 TODO**：查近两年 Agent 框架综述（LangChain、AutoGPT、CrewAI、OpenDevin）+ 提取 Harness 典型功能列表
+**Harness 八大核心功能**（行业共识，2026）：
+
+1. 任务生命周期管理与编排引擎 — 动态规划、多Agent协同调度、状态机执行
+2. 高级工具与技能管理系统 — 声明式注册、标准化调用、CLI-as-Tool
+3. 精细化记忆与上下文工程 — 分层记忆、上下文压缩、KV-Cache优化
+4. 企业级安全与治理框架 — 沙盒执行、细粒度权限、DLP、成本管控
+5. 全链路可观测性与调试套件 — Trace追踪、结构化日志、执行回放
+6. 系统化评估与基准测试平台 — 多维指标、过程性评分、A/B比对
+7. 高可扩展的插件化与中间件架构 — 统一插件系统、Hook机制、模型路由
+8. 标准化与互操作性接口层 — 通信协议、工具描述标准(OpenAPI)、开放基准
+
+> **本节已基本完成**。框架综述已覆盖 LangChain/AutoGPT/CrewAI/OpenDevin/Claude Code/OpenClaw；八大功能列表已提取。待补充：将调查报告中的引用转化为学术格式。
 
 ---
 
@@ -198,7 +209,7 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 
 ## 参考检索方向
 
-1. **Agent 架构综述** — `LLM-based Agent survey 2024 2025`
+1. **Agent 架构综述** — `LLM-based Agent survey 2024 2025` · 已有：[Harness演进调查报告](reading_summary/harness-evolution-survey.md)（Metaso, 2026-06）
 2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等
 3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM、Memorizing Transformer、Unlimiformer
 4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM`
@@ -213,3 +224,4 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 | 日期 | 论文 | 笔记 |
 |------|------|------|
 | 2026-06 | PEAM · TMEM — 参数化记忆的两条路径 | [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md) |
+| 2026-06 | 2024-2026 AI Agent框架技术演进与Harness全景解析 | [从构建块到操作系统](reading_summary/harness-evolution-survey.md) |
