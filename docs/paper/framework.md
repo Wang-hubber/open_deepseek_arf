@@ -45,7 +45,7 @@
 |--------|------|---------|
 | 2.1 Agent 架构 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 定义模糊 | ARF 的 `GraphEngine` + `LoopStrategy` 是 ReAct 参考实现 |
 | 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 对应论文核心论点：知识应内化到模型，而非 Harness 打补丁。已有 PEAM、TMEM 等参数化记忆工作提供实证支撑 |
-| 2.3 记忆与上下文 | 外部记忆（向量DB、MemGPT）vs 参数化记忆（LoRA 权重增量）。范式迁移：从 In-Context Learning → Weight Updates。详见 [阅读笔记](reading_summary/parameterized-memory.md) | ARF `MemoryPlugin` 是当前外部方案；实验三/五将探索 LoRA 参数化替代 |
+| 2.3 记忆与上下文 | ... | ARF `MemoryPlugin` 是当前外部方案；实验一/三将探索 LoRA 参数化替代 |
 | 2.4 具身智能 | 机器人学的感知编码、状态空间、身体图式 | 直接对应三层机械层的“固定感知编码器”设计 |
 
 > **本节 TODO**：检索各小节 2023-2026 代表性论文；重点找是否有工作提出过类似“大脑-身体”分工
@@ -62,8 +62,8 @@
 |---------|------|------|-------------|
 | **知识误置** | 专业知识通过 RAG 外部注入 | 后训练内化 | 论文论点层面，ARF 尚无直接实验 |
 | **身份误置** | 系统提示词临时赋予角色边界 | 模型权重固有自我认知 | `SystemPromptProvider` 当前仍用 prompt，但已模块化，方便后续替换 |
-| **记忆误置** | 上下文压缩与长期记忆由外部模块处理 | 模型内部机制 | `MemoryPlugin` + `CompactionPlugin` 是当前基线，实验三/五将探索替代方案 |
-| **通信误置** | 多 Agent 间通过自然语言文本串行交互 | 权重空间直接信息交换（TFlow） | `AgentBus` 协议已定义；TFlow 作为实验六的理论基础 |
+| **记忆误置** | ... | `MemoryPlugin` + `CompactionPlugin` 是当前基线，实验一/三将探索替代方案 |
+| **通信误置** | ... | `AgentBus` 协议已定义；TFlow 作为实验四的理论基础 |
 
 **3.2.1 四类误置的统一根源：外部知识管理的范式革命**
 
@@ -91,7 +91,7 @@
 - **在线 SFT**：从 Agent 运行时产出（用户纠错、工具调用成功/失败、记忆提取结果）自动构造训练对，持续更新 LoRA B 矩阵
 - **TFlow 权重通信**：多 Agent 协同场景下，发送方将内部激活编入临时 LoRA 扰动，接收方在生成时无缝融合，实现高带宽、低延迟的并行信息交换。详见 [阅读笔记](reading_summary/control-paradigm-migration.md)
 
-> 这直接对应论文实验三（在线 LoRA 长期记忆保持）、实验四（后训练身份边界鲁棒性）、实验五（参数化上下文压缩）。三个实验共享同一基础架构——LoRA MoE + 在线 SFT——只是在不同的信号源和评估维度上展开。
+> 这直接对应论文实验一（在线 LoRA 长期记忆保持）、实验二（后训练身份边界鲁棒性）、实验三（参数化上下文压缩）。三个实验共享同一基础架构——LoRA MoE + 在线 SFT——只是在不同的信号源和评估维度上展开。
 >
 > 文献基础：PEAM（arXiv 2605.27762）验证了跨回合技能固化的可行性；TMEM 验证了会话内在线更新的可行性。两者的共同消融漏洞（参数量不对等、r 未扫参、同步阻塞）正是本论文实验设计的切入点。详见 [阅读笔记](reading_summary/parameterized-memory.md)。
 
@@ -153,63 +153,48 @@ Agent 不再是一个静态程序，而是按需动态组合 **基础智能（Ba
 
 ### 6 研究路线与实验设计
 
-#### 6.1 实验一：固定状态接口 vs. 传统提示 — 任务稳定性对比
+#### 6.1 实验一：在线 LoRA 长期记忆保持
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 结构化 StatePacket 比自由文本提示在相同任务上稳定性更高（方差更小） |
-| **ARF 已有** | `SystemPromptProvider` 固定模板 + `$INVENTORY` 结构化上下文 |
-| **待建设** | 对比基准：同一任务 × { ARF StatePacket, 传统自由文本提示 }，测量多次运行的任务完成稳定性 |
-| **候选基准** | AgentBench、SWE-bench |
-| **状态** | ⬜ 未开始 |
+| **假设** | 参数化记忆（在线 SFT 写入 LoRA B 矩阵）在记忆保持率、更新能力、抗干扰上均优于外部记忆注入（`memory.md`），且不占用上下文窗口 |
+| **动机** | PEAM（跨回合技能固化）和 TMEM（会话内在线更新）分别验证了可行性。消融漏洞（参数量不对等、r 未扫参、同步阻塞）是本实验切入点 |
+| **数据集** | 公开：LoCoMo（长对话多跳推理）、LongMemEval（105K tokens 压力测试）；自建：DFC（Dynamic Facts & Contradictions，100-200 对话，分阶段注入/更新/冲突/干扰/查询） |
+| **测评** | QA Accuracy、KUI (Knowledge Update Index)、MFR (Memory Forgetting Rate)、Query/Update Latency |
+| **ARF 已有** | `MemoryPlugin` → `memory.md` + `ModelAdapter` |
+| **状态** | ⬜ 数据集已确定，待实现 |
 
-#### 6.2 实验二：零认知 Harness 原型 — 性能基准
-
-| 项 | 内容 |
-|----|------|
-| **假设** | 零认知 Harness 在代码量、认知泄漏点数量上显著优于现有框架 |
-| **ARF 已有** | 完整 6 骨架 + 三层机械层，端到端 Agent Loop 可运行 |
-| **待建设** | 横向对比 ARF vs LangChain vs OpenDevin；指标：代码量、任务完成率、认知泄漏点（模型调用外执行语义解释的模块） |
-| **状态** | ⬜ 未开始 |
-
-#### 6.3 实验三：在线 LoRA 用于长期记忆保持
+#### 6.2 实验二：后训练身份边界鲁棒性
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 参数化记忆（LoRA 权重增量）的记忆保持质量优于外部记忆注入（`memory.md`），且不占用上下文窗口 |
-| **动机** | PEAM（跨回合技能固化）和 TMEM（会话内在线更新）分别验证了参数化记忆的有效性。两篇论文均存在消融漏洞（参数量不对等、r 未扫参）——这正是本实验的切入点 |
-| **ARF 已有** | `MemoryPlugin` → `memory.md` + `ModelAdapter` 抽象 + `FileMemoryStore` |
-| **待建设** | `ModelAdapter` 接入 LoRA B 矩阵更新接口；用 `memory.md` 条目作为监督信号；扫 r=1,2,4,6,8 找性价比最优；控制总计算开销一致，对比参数化 vs 外挂摘要 |
-| **状态** | ⬜ 未开始。文献基础：PEAM (arXiv 2605.27762)、TMEM，详见 [阅读笔记](reading_summary/parameterized-memory.md) |
-
-#### 6.4 实验四：后训练身份边界鲁棒性
-
-| 项 | 内容 |
-|----|------|
-| **假设** | 后训练固化的身份边界比系统提示词赋予的身份更难被越狱攻击突破 |
+| **假设** | Identity LoRA 固化人格比 System Prompt 更难被越狱攻击突破，且在身份冲突场景中一致性更高 |
+| **数据集** | 公开：JailbreakBench（100+ 有害行为 + 对抗提示库，角色扮演攻击与实验直接相关）；自建：Persona Conflict（~50 个身份冲突场景，核心身份 vs 冲突性请求） |
+| **测评** | ASR (Attack Success Rate, GPT-4 裁判)、ICS (Identity Consistency Score, 1-5)、RQ (Refusal Quality, 1-3) |
 | **ARF 已有** | `Guardrails` + `deny_patterns` + `SessionModeManager` |
-| **待建设** | 扩展 guardrails 做对抗测试；构建越狱基准；测量身份边界保持率 |
-| **状态** | ⬜ 未开始 |
+| **状态** | ⬜ 数据集已确定，待实现 |
 
-#### 6.5 实验五：参数化上下文压缩 vs. 外部摘要
+#### 6.3 实验三：参数化上下文压缩 vs. 外部摘要
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 将上下文关键信息在线写入 LoRA 权重（参数化压缩），保真度优于外部 LLM 摘要，且释放上下文窗口 |
-| **动机** | 传统摘要是 token-level 有损压缩，每次需重新计算 KV。PEAM 和 TMEM 证明关键信息可压入 FFN 权重，实现真正的"内化"。TMEM 的同步阻塞设计可改为异步双缓冲 |
+| **假设** | Context LoRA 异步压缩在信息保真度和端到端延迟上均优于 LLM 摘要 |
+| **动机** | TMEM 同步阻塞设计可改为异步双缓冲（当前 B / 后台 B），消除更新延迟对推理的干扰 |
+| **数据集** | 公开：LongBench Multi-document QA（主测试集）、Single-document QA（辅助）。F1/ROUGE 指标成熟 |
+| **测评** | F1 Score（LongBench 脚本）、Compression Ratio、E2EPL (End-to-End Processing Latency)、AUI (Asynchronous Update Impact) |
 | **ARF 已有** | `CompactionPlugin`（token 感知滑动窗口 + LLM 摘要） |
-| **待建设** | 在 `CompactionPlugin` 中集成 LoRA B 矩阵在线更新；设计异步双缓冲（当前 B / 后台 B）避免阻塞推理；对比保真度 vs 当前 LLM 摘要；扫 r 找最优性价比 |
-| **状态** | ⬜ 未开始。文献基础：同实验三，详见 [阅读笔记](reading_summary/parameterized-memory.md) |
+| **状态** | ⬜ 数据集已确定，待实现 |
 
-#### 6.6 实验六：TFlow 权重空间通信 vs. 自然语言通信
+#### 6.4 实验四：TFlow 权重空间通信 vs. 自然语言通信
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 在多 Agent 协同任务中，TFlow 权重空间通信在延迟、Token 处理量、任务完成率上均优于自然语言通信 |
-| **动机** | TFlow (2025-2026) 证明了 Agent 间通过低秩扰动直接传递"思维"的可行性。当前实验仅验证了固定数量（3个）发送方，扰动叠加稳定性缺乏理论保证——这是本实验的切入点 |
-| **ARF 已有** | `AgentBus` 协议 + `PeerAgent` + `ControlPlane.astream()` 事件流 |
-| **待建设** | 实现 TFlow 扰动编译模块（内部激活 → 低秩 ΔW）；在 ARF 的多 Agent 场景中对比 TFlow vs 文本通信；测量延迟 / Token 量 / 任务完成率；扫发送方数量（2,3,5,10）评估叠加稳定性 |
-| **状态** | ⬜ 未开始。文献基础：TFlow，详见 [阅读笔记](reading_summary/control-paradigm-migration.md) |
+| **假设** | 权重空间扰动融合在延迟、带宽占用、可扩展性上均优于文本通信 |
+| **动机** | TFlow 仅验证了固定数量（3个）发送方；扰动叠加稳定性 + 异步聚合缺乏分析 |
+| **数据集** | 无公开基准。自建 DRSA (Distributed Real-time Situational Awareness) 模拟环境：N 个 Agent（4/8/16/32）监控 2D 网格世界，部分可观察，每 tick 融合全局态势估计 |
+| **测评** | E2EFL (End-to-End Fusion Latency)、CBU (Communication Bandwidth Usage)、GSA (Global Situational Accuracy)、SI (Scalability Index) |
+| **ARF 已有** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()` |
+| **状态** | ⬜ 模拟环境待搭建。文献基础：TFlow |
 
 > **本节 TODO**：为每个实验方向找基线方法和评估基准；确认是否有团队做过类似实验
 
@@ -227,7 +212,7 @@ Agent 不再是一个静态程序，而是按需动态组合 **基础智能（Ba
 论文第 1-3 节 (问题引出)  ← ARF 是这些问题驱动的产物
 论文第 4 节   (理论框架)  ← ARF 三层机械层直接实现 4.3
 论文第 5 节   (设计准则)  ← ARF 6 骨架 + Plugin 体系实现全部四条准则
-论文第 6 节   (实验设计)  ← ARF 是全部五项实验的统一台架
+论文第 6 节   (实验设计)  ← ARF 是全部四项实验的统一台架
 ```
 
 ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论文的工程验证**。两者是同一思想的两种语言。
@@ -242,20 +227,18 @@ ARF 不是论文的附属品——**论文是 ARF 的理论论证，ARF 是论�
 - [ ] **文献检索**：Agent 架构综述 (2024-2026) + RAG vs Fine-tuning 对比 + 具身智能感知-行动接口
   - 重点关注：是否有工作已提出类似“大脑-身体”分工、或批判过 Harness 过载
   - 检索关键词：`LLM-based Agent survey`、`RAG vs Fine-tuning`、`online LoRA continual learning`、`embodied agent state representation`、`Agent permission control rollback`
-- [ ] **实验一方案细化**：选定基准（AgentBench 或 SWE-bench），设计对比实验方案，写实验脚本
 - [ ] **论文引言 (1.1-1.3) 初稿**：README 和简历中已有原材料，可直接转化为学术语言
 
 ### 中优先级（下月）
 
 - [ ] **第 2 节“相关工作”初稿**：基于文献检索结果
-- [ ] **实验二环境搭建**：搭建 LangChain/OpenDevin 对比环境，定义认知泄漏点检测方法
 - [ ] **`docs/paper/` 持续更新**：每完成一步在此目录记录阶段性结果
 
 ### 持续
 
 - [ ] **阅读笔记**：每读完一篇关键论文，写一页笔记存入 `docs/paper/reading_summary/`
   - 已完成：PEAM + TMEM → [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md)
-- [ ] **实验三/五方案细化**：基于 PEAM/TMEM 的消融漏洞（容量对齐、r 扫参、同步→异步），设计可发表的对比实验
+- [ ] **实验方案细化**：基于 PEAM/TMEM 的消融漏洞（容量对齐、r 扫参、同步→异步），设计可发表的对比实验。数据集与测评方案已完成，详见 [experiment-design.md](experiment-design.md)
 
 ---
 
