@@ -67,6 +67,37 @@ class ConcurrentToolExecutor:
         self._tool_boundaries = tool_boundaries or {}
         self._default_boundary = default_boundary
         self._sandbox_manager = sandbox_manager
+        self._path_param_cache: dict[str, set[str]] = {}
+
+    async def _get_path_param_names(self, tool_name: str) -> set[str] | None:
+        """Return the set of params annotated ``format: path`` for *tool_name*.
+
+        Returns None when the tool has no such annotations (backward
+        compatible full-scan).  An empty set means the tool declares path
+        params but none matched — nothing to check.
+        """
+        if tool_name in self._path_param_cache:
+            result = self._path_param_cache[tool_name]
+            return result if result else None
+
+        try:
+            defs = await self._resolver.get_tool_definitions(
+                query_context="", top_k=100)
+        except Exception:
+            return None
+
+        for t in defs:
+            name = t.name if hasattr(t, 'name') else t.get('name', '')
+            params = (t.parameters if hasattr(t, 'parameters')
+                      else t.get('parameters', {}))
+            path_names: set[str] = set()
+            for pname, prop in params.get('properties', {}).items():
+                if isinstance(prop, dict) and prop.get('format') == 'path':
+                    path_names.add(pname)
+            self._path_param_cache[name] = path_names
+
+        result = self._path_param_cache.get(tool_name)
+        return result if result else None
 
     async def execute(
         self,
@@ -166,7 +197,9 @@ class ConcurrentToolExecutor:
 
         # Path safety check
         if self._tool_guard is not None and boundary is not None:
-            gr = await self._tool_guard.check(tool_name, params, boundary)
+            path_params = await self._get_path_param_names(tool_name)
+            gr = await self._tool_guard.check(
+                tool_name, params, boundary, path_param_names=path_params)
             if not gr.allowed:
                 return ToolResult(
                     tool_name=tool_name,

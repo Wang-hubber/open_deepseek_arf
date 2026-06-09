@@ -8,6 +8,7 @@ parameters:
       description: Glob pattern (e.g. "**/*.py", "src/**/*.tsx")
     path:
       type: string
+      format: path
       description: Search root directory (default workspace root)
   required:
     - pattern
