@@ -57,7 +57,7 @@ ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式
 
 **框架使用者** — 想基于 ARF 构建应用：
 
-- [研究路线图](#第一部分--研究路线图) → [5 骨架架构](#harness-即内核5-骨架架构) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，7 单元渐进式教程，从零到生产级 Agent
+- [研究路线图](#第一部分--研究路线图) → [框架骨架](#harness-即内核框架骨架) → [控制平面](#控制平面--结构化-state--生命周期) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，7 单元渐进式教程，从零到生产级 Agent
 
 <br/>
 
@@ -88,44 +88,33 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 ## 第二部分 — 框架
 
-### Harness 不变量：跨范式的六项框架能力
-
-无论软线如何演进——无论身份、知识、记忆、通信以 ICL 还是 LoRA MOE 方式注入——Harness 硬线必须提供以下六项能力。它们是机械的、零认知的、跨范式不变的。
-
-| # | 能力 | 职责 | 为什么范式无关 |
-|---|------|------|-------------|
-| 1 | **组装上下文** | 将系统指令、任务描述、工具清单、记忆摘要等组装为结构化的 Prompt | 即便大段身份提示词不再需要，临时性的修正、调整、运行态状态仍需注入上下文窗口 |
-| 2 | **资源发现与注册** | 发现并热加载 Tool 和 Skill，提供统一的资源接口 | Tool 和 Skill 是跨模型的——无论模型能力如何演进，工具生态需要框架引入和管理 |
-| 3 | **框架动作执行** | 执行工具调用、错误恢复、断连重试、权限门控、人工审批、沙箱隔离、安全审查 | 机械化的执行动作不应占用大模型——重试几次、权限是否通过、沙箱是否合法，这些是规则判断，不需要认知 |
-| 4 | **Trace** | 全链路追踪：每轮 Prompt、每个 Action、每次模型调用的输入输出 | 可观测性是独立于认知的——无论模型多强，运行记录必须完整、可回放 |
-| 5 | **测评** | 回归测评台架：A/B 对比、多维指标、会话回放 | 评估基础设施不关心被测对象是 ICL 还是 LoRA——它只关心输入输出的可比较性 |
-| 6 | **Hook / 动态挂载点** | 生命周期事件驱动的可扩展挂载面 | 框架能力需要随实验需求动态扩展——新 Plugin 不应修改框架核心代码 |
-
-这些能力共同构成 Harness 的硬线——它们不参与"思考"，但对 Agent 的生存至关重要。ARF 的 5 骨架 + 控制平面 + Plugin 体系是这六项能力的工程实现。
-
----
-
-### Harness 即内核——5 骨架架构
+### Harness 即内核——框架骨架
 
 > **Model + Harness = Agent。CPU + Kernel = Computer。**
 >
 > Token 是指令。Agent 会话是进程。工具调用是系统调用。
 
-ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对应一个 Protocol。5 骨架 + [控制平面](#控制平面--结构化-state--生命周期) 构成完整 Harness 核心。其余一切都是挂载在生命周期 Hook 点上的 **Plugin**。
+无论软线如何演进——无论身份、知识、记忆、通信以 ICL 还是 LoRA MOE 方式注入——Harness 硬线必须提供六项跨范式能力。其中四项直接影响 Agent 运行时行为（控制项），两项是范式无关的企业级基础设施（非控制项——不影响运行，但决定框架能否落地）。
 
-*点击骨架名称可查看深度设计文档。*
+**控制项（运行时骨架）**
 
-| # | 骨架 | OS 类比 | 当前实现 | 演进方向 |
-|---|------|--------|----------|----------|
-| 1 | **[Prompt 组装](docs/prompt-assembly.md)** | 程序加载器 (execve) | `SystemPromptProvider` — prefix（role + critical_rules）+ suffix（`$INVENTORY` 模板）。`string.Template` 占位符（`$MEMORY`、`$WORKSPACE`、`$TURN_BUDGET`）。引擎每轮替换。 | 多 Agent prompt 组合；基于角色的模板分发 |
-| 2 | **[资源注册 (MCP)](docs/resource-registry.md)** | 文件系统 + 注册表 | 约定优于配置：`tool.yaml`+`function.py` 每工具，`skills/*.yaml`。模型在 `agent.yaml` 中内联定义（`model_defs`）。`FileWatcher` inotify+轮询热加载。`ResourceResolver` 覆盖合并。MCP 统一接口（本地 MCP Server 子进程，stdio JSON-RPC）聚合本地与外部资源。 | 层次化覆盖合并；MCP 多源 Provider；交叉引用验证 |
-| 3 | **[权限控制](docs/tool-sandbox.md)** | ACL + 能力位 | `SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow 执行。Per-agent `policy` 覆盖。`deny_patterns` 正则匹配。 | OAuth 范围权限；基于角色的访问控制 |
-| 4 | **[安全审核](docs/tool-sandbox.md)** | 保护环 (Ring 0-3) | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ContentGuard` — 执行前/后 + 输出前基于规则的筛查。`GuardDefaults` 三道防线。 | 逐次调用沙箱；内容感知扫描 |
-| 5 | **[执行器 (沙箱)](docs/tool-sandbox.md)** | 进程隔离 (chroot/namespace) | `SandboxManager` — 每会话隔离工作区，可配置黑名单，自动销毁。`ConcurrentToolExecutor` 并行执行。`FunctionBackend` 可选 `rollback()`。 | 容器级沙箱；资源配额 |
+| # | 骨架 | 职责 | ARF 实现 | 演进方向 |
+|---|------|------|---------|----------|
+| 1 | **[Prompt 组装](docs/prompt-assembly.md)** | 将系统指令、任务描述、工具清单、记忆摘要等组装为结构化 Prompt。即便大段身份提示词不再需要，临时性修正、运行态状态仍需注入 | `SystemPromptProvider` — prefix + suffix（`$INVENTORY` 模板）。`string.Template` 占位符。引擎每轮替换 | 多 Agent prompt 组合；基于角色的模板分发 |
+| 2 | **[资源发现与注册](docs/resource-registry.md)** | 发现并热加载 Tool 和 Skill。Tool 和 Skill 是跨模型的——无论模型如何演进，工具生态需要框架管理 | 约定优于配置：`tool.yaml`+`function.py`。`FileWatcher` 热加载。MCP Server 子进程 stdio JSON-RPC 聚合本地与外部资源 | 层次化覆盖合并；MCP 多源 Provider |
+| 3 | **[动作执行](docs/tool-sandbox.md)** | 工具调用、错误恢复、断连重试、权限门控（deny→ask→allow）、人工审批、沙箱隔离、安全审查。机械化执行不占用大模型——规则判断，零认知 | `SessionModeManager` + `PermissionRegistry`。`PathCheckToolGuard` + `ContentGuard`。`SandboxManager` 每会话隔离。`FunctionBackend` + `rollback()` | 容器级沙箱；OAuth 范围权限；内容感知扫描 |
+| 4 | **[Hook 挂载面](docs/agent-execution.md)** | 生命周期事件驱动的可扩展挂载点。框架能力随实验需求动态扩展——新 Plugin 不修改核心代码 | 9 个生命周期 Hook 点（`session_start` ~ `error`）。`pre_action`/`post_action` 包裹每次模型调用和工具执行 | 动态 Hook 注册；优先级排序 |
+
+**非控制项（企业级基础设施——不影响运行，影响落地）**
+
+| # | 能力 | 职责 | ARF 实现 |
+|---|------|------|---------|
+| 5 | **Trace** | 全链路追踪：每轮 Prompt、每个 Action、每次模型调用的输入输出。可观测性独立于认知——无论模型多强，运行记录必须完整、可回放 | `FileTraceStore` + `TracePlugin` |
+| 6 | **测评** | 回归测评台架：A/B 对比、多维指标、会话回放。评估基础设施不关心被测对象是 ICL 还是 LoRA——只关心可比较性 | `EvalRunner` + `BenchmarkBuilder` + `EvalComparator` |
 
 ### 控制平面 — 结构化 State & 生命周期
 
-**[控制平面](docs/agent-execution.md)** 是 5 骨架共同交汇的调度面——在六项不变量的执行实现和 Plugin 扩展之间路由信号。
+**[控制平面](docs/agent-execution.md)** 是四项控制骨架的共同调度面——统一 `_execute` 路径，协调 Plugin 挂载，管理会话生命周期。
 
 | 方面 | 实现 |
 |------|------|
