@@ -86,6 +86,23 @@ ARF is the unified testbed for all five experiments proposed in the paper. The e
 
 ## Part II — Framework
 
+### Harness Invariants: Six Cross-Paradigm Framework Capabilities
+
+Regardless of how the soft-line evolves — whether identity, knowledge, memory, and communication signals are injected via ICL or LoRA MOE — the Harness hard-line must provide these six capabilities. They are mechanical, zero-cognition, and invariant across paradigms.
+
+| # | Capability | Responsibility | Why Paradigm-Independent |
+|---|-----------|----------------|-------------------------|
+| 1 | **Prompt Assembly** | Assemble system instructions, task descriptions, tool inventories, and memory summaries into structured prompts. | Even when identity prompts shrink dramatically, temporary corrections, adjustments, and runtime state still need injection into the context window. |
+| 2 | **Resource Discovery & Registration** | Discover and hot-reload Tools and Skills; provide a unified resource interface. | Tools and Skills are cross-model — no matter how model capability evolves, the tool ecosystem needs the framework to introduce and manage it. |
+| 3 | **Framework Action Execution** | Execute tool calls, error recovery, reconnection retry, permission gating, human approval, sandbox isolation, security audit. | Mechanical execution should not occupy the LLM — retry counts, permission checks, sandbox legality are rule-based judgments requiring zero cognition. |
+| 4 | **Trace** | End-to-end tracing: every prompt, every action, every model call input/output. | Observability is cognition-independent — no matter how strong the model, execution records must be complete and replayable. |
+| 5 | **Evaluation** | Regression benchmarking: A/B comparison, multi-dimensional metrics, session replay. | Evaluation infrastructure doesn't care whether the subject is ICL or LoRA — it only cares about input-output comparability. |
+| 6 | **Hook / Extensible Mount Points** | Lifecycle-event-driven extensible attachment surface. | Framework capabilities must expand with experimental needs — new Plugins should never require modifying framework core code. |
+
+Together, these six capabilities form the Harness hard-line — they don't "think," but they are essential for Agent survival. ARF's 5 Skeletons + Control Plane + Plugin System are the engineering implementation of these six capabilities.
+
+---
+
 ### Design Philosophy: The Brain-Spine-Body Model
 
 A model is raw compute — powerful, but not a computer. It needs memory management, process scheduling, interrupt handling, a file system, and security boundaries. ARF provides those. But the design goes deeper than an OS analogy.
