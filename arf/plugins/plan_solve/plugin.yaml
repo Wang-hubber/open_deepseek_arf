@@ -1,0 +1,5 @@
+name: plan_solve
+enabled: true
+description: "Task planning and execution with dependency tracking and contract enforcement"
+config:
+  workspace_dir: ""

@@ -1,0 +1,17 @@
+name: plan_dispatch
+description: Execute a single plan step in an isolated sub-agent. The step must have all dependencies satisfied before dispatch.
+parameters:
+  type: object
+  properties:
+    step_index:
+      type: integer
+      description: The index of the plan step to execute
+    prompt_override:
+      type: string
+      description: Optional override for the step's prompt
+  required:
+    - step_index
+execution:
+  sandbox: inherit
+  timeout: 120s
+activation: kernel
