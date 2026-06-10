@@ -46,7 +46,7 @@
 | 2.1 Agent 架构 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 定义模糊 | ARF `ControlPlane` + `LoopStrategy` 为 ReAct 参考实现 |
 | 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 已有：PEAM、TMEM 参数化记忆方向；[范式迁移报告](reading_summary/control-paradigm-migration.md) 覆盖 P-RAG、MEGa。**待补**：RAG vs Fine-tuning 系统对比综述（如《RAG vs Fine-tuning: Pipelines, Tradeoffs》）、LoRA MoE 路由机制文献 |
 | 2.3 记忆与上下文 | 外部记忆（向量 DB、MemGPT）vs 参数化记忆（LoRA 权重增量） | 已有：[参数化记忆笔记](reading_summary/parameterized-memory.md) 覆盖 PEAM/TMEM 两条路径。**待补**：MemGPT、Memotron 等外部记忆系统综述；向量 DB vs 参数化存储的定量对比文献 |
-| 2.4 具身智能 | 机器人学的感知编码、状态空间、身体图式 | 对应 §4.1 生物映射中"身体"层的固定感知编码设计 |
+| 2.4 Agent 通信 | NL 文本通信 vs 权重空间通信（TFlow）；A2A 协议与 Multi-Agent 编排 | 已有：[范式迁移报告](reading_summary/control-paradigm-migration.md) 覆盖 TFlow。**待补**：A2A 协议综述（Google A2A、ANP 等）；Multi-Agent 通信效率定量对比文献 |
 
 > **本节 TODO**：检索各小节 2023–2026 代表性论文；重点确认是否有工作已提出过类似的"大脑-身体"分工或批判 Harness 功能过载。
 
@@ -241,7 +241,7 @@ TFlow 初步验证了固定数量（3 个）发送方场景下权重空间通信
 ### 高优先级
 
 - [ ] **绘制 §3.1 数据流图**：ASCII 或 SVG 图，标注认知功能在 Harness 层的分布及ICL 注入点
-- [ ] **文献检索**：Agent 架构综述 (2024–2026)、RAG vs Fine-tuning 对比、具身智能感知-行动接口。重点关注是否已有工作提出类似"大脑-身体"分工或批判 Harness 过载。检索关键词：`LLM-based Agent survey`、`RAG vs Fine-tuning`、`online LoRA continual learning`、`embodied agent state representation`、`Agent permission control rollback`
+- [ ] **文献检索**：Agent 架构综述 (2024–2026)、RAG vs Fine-tuning 对比、A2A 通信协议。重点关注是否已有工作提出类似"大脑-身体"分工或批判 Harness 过载。检索关键词：`LLM-based Agent survey`、`RAG vs Fine-tuning`、`online LoRA continual learning`、`Agent A2A communication protocol`、`Agent permission control rollback`
 - [ ] **论文引言初稿**：README 和简历中已有原材料，可直接转化为学术语言
 
 ### 中优先级
@@ -262,11 +262,10 @@ TFlow 初步验证了固定数量（3 个）发送方场景下权重空间通信
 2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等 · **待检索**：系统对比综述，重点关注是否有定量证据支持"参数化在效率上优于 RAG"
 3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM · ✅ 已阅读，[笔记](reading_summary/parameterized-memory.md)。**待补**：Memorizing Transformer、Unlimiformer、MemGPT 对比
 4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM` · **待检索**：LoRA MoE 路由、多适配器协同、灾难性遗忘缓解
-5. **具身智能感知-行动接口** — `embodied agent state representation modality alignment`
-6. **Agent 安全与约束** — Agent permission control、rollback 机制
-7. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
-8. **Agent 通信与协同** — TFlow 权重空间通信、Multi-Agent orchestration、A2A protocols
-9. **角色扮演与身份固化** — Character-LLM、Neeko、RoleLLM、CharLoRA
+5. **Agent 安全与约束** — Agent permission control、rollback 机制
+6. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
+7. **Agent 通信与协同** — TFlow 权重空间通信、Multi-Agent orchestration、A2A protocols
+8. **角色扮演与身份固化** — Character-LLM、Neeko、RoleLLM、CharLoRA
 
 ---
 
