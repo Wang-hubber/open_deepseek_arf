@@ -4,7 +4,6 @@ from typing import Any
 from arf.agent.config import AgentConfig, AdvancedConfig
 from arf.agent.app_context import AppContext
 from arf.engine.control_plane import ControlPlane
-from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.engine.tool_executor import ConcurrentToolExecutor
 
@@ -251,12 +250,10 @@ class BaseAgent:
             ),
         )
 
-        # 7. Loop strategy
-        ls_name = (adv.loop_strategy if adv else "react") if adv else "react"
-        loop_strategy = override_protocols.pop("loop_strategy", ReActStrategy(max_turns=(adv.max_turns if adv else 50)))
+        # 7. Loop strategy removed — engine uses simplified model_call/tool_call loop
+        # with GateChecker for termination. max_turns passed directly to ControlPlane.
 
-        # 8. Planner (optional)
-        planner = override_protocols.pop("planner", None)
+        # 8. Planner removed — plan-execute will be implemented as tool + plugin.
 
         # 9. Build system prompt via provider (prefix only — inventory via MCP)
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
@@ -363,7 +360,6 @@ class BaseAgent:
                     p.set_state_store(state_store)
 
         self._engine = ControlPlane(
-            loop_strategy=loop_strategy,
             state_store=state_store,
             tool_executor=tool_executor,
             event_bus=event_bus,

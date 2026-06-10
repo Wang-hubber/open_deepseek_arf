@@ -24,7 +24,6 @@ class RecoveryConfig(BaseModel):
 
 class AdvancedConfig(BaseModel):
     """All internal framework mechanisms with production-grade defaults."""
-    loop_strategy: Literal["react", "direct", "plan_execute"] = "react"
     max_turns: int = 50
     max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
     call_timeout: float = 120.0       # per-call timeout, None = no limit

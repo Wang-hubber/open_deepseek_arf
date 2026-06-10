@@ -1,12 +1,10 @@
 """Integration test: ControlPlane with full plugin stack."""
 import pytest
 from arf.engine.control_plane import ControlPlane
-from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
 from arf.plugins.validate_messages.plugin import ValidateMessagesPlugin
 from arf.plugins.checkpoint.plugin import CheckpointPlugin
-from arf.plugins.strategy.plugin import StrategyPlugin
 from arf.plugins.session_mode.plugin import SessionModePlugin
 from arf.plugins.tool_guard.plugin import ToolGuardPlugin
 from arf.plugins.trace.plugin import TracePlugin
@@ -36,14 +34,11 @@ class _RecordingCallModel:
 
 def _make_plugins():
     trace = TracePlugin({"trace_dir": "/tmp/test_traces"})
-    strategy = StrategyPlugin({"default_strategy": "react"})
-    strategy.register("react", ReActStrategy(max_turns=5))
     return {
         "blocking": [
             ErrorHandlerPlugin(),
             ValidateMessagesPlugin(),
             CheckpointPlugin(),
-            strategy,
             SessionModePlugin(),
             ToolGuardPlugin({"deny_list": ["rm"]}),
         ],
@@ -66,7 +61,7 @@ async def test_full_round_text_only():
     """Text-only response: one call_model dispatch, no tools."""
     plugins = _make_plugins()
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_FakeToolExecutor(),
         call_model=_RecordingCallModel([{"content": "Hello! How can I help?"}]),
@@ -91,7 +86,7 @@ async def test_round_with_tool_calls():
         {"content": "I read the file and it says: result"},
     ])
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_FakeToolExecutor(),
         call_model=model,
@@ -113,7 +108,7 @@ async def test_blocked_tool_aborts_round():
         ]},
     ])
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_FakeToolExecutor(),
         call_model=model,
@@ -131,7 +126,7 @@ async def test_blocked_tool_aborts_round():
 async def test_skeleton_runs_without_any_plugins():
     """Minimal execution: no plugins, skeleton only."""
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=3),
+        max_turns=3,
         state_store=InMemoryStateStore(),
         tool_executor=_FakeToolExecutor(),
         call_model=_RecordingCallModel([{"content": "Hi!"}]),
@@ -144,7 +139,7 @@ async def test_skeleton_runs_without_any_plugins():
 async def test_multiple_rounds():
     """Two consecutive rounds work correctly."""
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=10),
+        max_turns=10,
         state_store=InMemoryStateStore(),
         tool_executor=_FakeToolExecutor(),
         call_model=_RecordingCallModel([

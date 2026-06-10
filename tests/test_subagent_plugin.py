@@ -11,7 +11,6 @@ from arf.resources.resolver import ResourceResolver
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.engine.tool_executor import ConcurrentToolExecutor
 
-from arf.engine.loop_strategies.react import ReActStrategy
 from arf.plugins.subagent.tools.subagent.function import (
     execute, FilteredToolProvider,
 )
@@ -59,7 +58,7 @@ class TestSubagentExecute:
         state_store = InMemoryStateStore()
 
         engine = ControlPlane(
-            loop_strategy=ReActStrategy(max_turns=10),
+            max_turns=10,
             state_store=state_store,
             tool_executor=executor,
             event_bus=InMemoryEventBus(),
@@ -122,7 +121,7 @@ class TestSubagentExecute:
         state_store = InMemoryStateStore()
 
         engine = ControlPlane(
-            loop_strategy=ReActStrategy(max_turns=10),
+            max_turns=10,
             state_store=state_store,
             tool_executor=executor,
             event_bus=InMemoryEventBus(),
@@ -162,7 +161,7 @@ class TestSubagentExecute:
         state_store = InMemoryStateStore()
 
         engine = ControlPlane(
-            loop_strategy=ReActStrategy(max_turns=10),
+            max_turns=10,
             state_store=state_store,
             tool_executor=executor,
             event_bus=InMemoryEventBus(),

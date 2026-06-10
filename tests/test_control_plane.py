@@ -3,7 +3,6 @@
 import asyncio
 import pytest
 from arf.engine.control_plane import ControlPlane, MessageContractError
-from arf.engine.loop_strategies.react import ReActStrategy
 from arf.engine.checkpoint import InMemoryStateStore
 
 
@@ -42,7 +41,7 @@ async def test_skeleton_runs_without_plugins():
     """Skeleton alone can complete a simple round (text-only response)."""
     state = _basic_state()
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([{"content": "Hi there!"}]),
@@ -63,7 +62,6 @@ async def test_validate_messages_passes_valid_sequence():
         {"role": "assistant", "content": "hi"},
     ]
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(),
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([{"content": "ok"}]),
@@ -79,7 +77,6 @@ async def test_validate_messages_rejects_leading_assistant():
          "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]},
     ]
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(),
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([]),
@@ -98,7 +95,7 @@ async def test_round_with_tool_calls():
         {"content": "I read the file and it says: result"},
     ])
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=model,
@@ -120,7 +117,7 @@ async def test_streaming_fallback_to_non_streaming():
 
     state = _basic_state()
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([{"content": "Fallback response"}]),
@@ -146,7 +143,7 @@ async def test_mcp_resolution_failure_emits_error_event():
         raise RuntimeError("MCP server unreachable")
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([{"content": "Hi!"}]),
@@ -173,7 +170,7 @@ async def test_mcp_resolution_success_no_error_event():
         return [{"name": "read", "description": "Read a file", "parameters": {}}]
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([{"content": "Hi!"}]),
@@ -200,7 +197,7 @@ async def test_error_handler_abort_emits_trace_event():
     event_bus = InMemoryEventBus()
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([RuntimeError("API server crashed")]),
@@ -227,7 +224,7 @@ async def test_error_handler_skip_emits_trace_event():
         pass
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([PermissionDenied("tool rm blocked")]),
@@ -253,7 +250,7 @@ async def test_abort_cleans_session_active_flag():
     state = _basic_state()
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([RuntimeError("fatal error")]),
@@ -269,7 +266,7 @@ async def test_abort_returns_partial_state():
     state = _basic_state()
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_FakeCallModel([RuntimeError("fatal error")]),
@@ -296,7 +293,7 @@ async def test_call_timeout_triggers_error_handler_abort():
         await asyncio.sleep(10.0)
 
     cp = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=5),
+        max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
         call_model=_hanging_model,

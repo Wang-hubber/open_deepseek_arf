@@ -14,7 +14,6 @@ def _build_cp(**overrides):
     """Build a minimal ControlPlane with mock dependencies."""
     from arf.engine.control_plane import ControlPlane
     defaults = {
-        "loop_strategy": MagicMock(),
         "state_store": MagicMock(),
         "tool_executor": MagicMock(),
         "event_bus": MagicMock(),
@@ -131,7 +130,6 @@ class TestCancelEvent:
     def test_invoke_breaks_on_cancelled(self):
         """Doc: cancelled -> emit session_end(reason=cancelled) -> break."""
         from arf.engine.control_plane import ControlPlane
-        from arf.engine.loop_strategies.react import ReActStrategy
         from arf.testing import (
             InMemoryStateStore, InMemoryToolExecutor,
         )
@@ -140,12 +138,11 @@ class TestCancelEvent:
         evt = asyncio.Event()
         bus = InMemoryEventBus()
         eng = ControlPlane(
-            loop_strategy=ReActStrategy(max_turns=5),
+            max_turns=5,
             state_store=InMemoryStateStore(),
             tool_executor=InMemoryToolExecutor(),
             event_bus=bus,
             cancel_event=evt,
-            max_turns=5,
         )
 
         async def run():
@@ -168,7 +165,6 @@ class TestCancelEvent:
     def test_astream_breaks_on_cancelled(self):
         """Doc: astream breaks on cancelled with session_end event."""
         from arf.engine.control_plane import ControlPlane
-        from arf.engine.loop_strategies.react import ReActStrategy
         from arf.testing import (
             InMemoryStateStore, InMemoryToolExecutor,
         )
@@ -177,12 +173,11 @@ class TestCancelEvent:
         evt = asyncio.Event()
         bus = InMemoryEventBus()
         eng = ControlPlane(
-            loop_strategy=ReActStrategy(max_turns=5),
+            max_turns=5,
             state_store=InMemoryStateStore(),
             tool_executor=InMemoryToolExecutor(),
             event_bus=bus,
             cancel_event=evt,
-            max_turns=5,
         )
 
         async def run():
@@ -1129,19 +1124,17 @@ class TestStatePersistenceInEngine:
     def test_invoke_saves_state_before_text_only_break(self):
         """Doc: text-only response triggers state_store.put() before break."""
         from arf.testing import InMemoryStateStore, InMemoryToolExecutor
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+        
         store = InMemoryStateStore()
         call_model = AsyncMock(return_value={
             "content": "hello, how can I help?",
             "usage": {"total_tokens": 10, "prompt_tokens": 5, "completion_tokens": 5},
         })
         eng = _build_cp(
-            loop_strategy=ReActStrategy(max_turns=5),
+            max_turns=5,
             state_store=store,
             tool_executor=InMemoryToolExecutor(),
             call_model=call_model,
-            max_turns=5,
         )
 
         async def run():
