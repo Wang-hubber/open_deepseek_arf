@@ -57,7 +57,7 @@ ARF is the **engineering companion** to the research paper [*"Parameter Is All Y
 
 **For framework users** — want to build on ARF:
 
-- [Research Roadmap](#part-i--research-roadmap) → [5-Skeleton Architecture](#harness-as-kernel--5-skeleton-architecture) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
+- [Research Roadmap](#part-i--research-roadmap) → [Framework Skeletons](#harness-as-kernel--framework-skeletons) → [Control Plane](#the-control-plane--structured-state--lifecycle) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
 
 <br/>
 
@@ -88,44 +88,33 @@ ARF is the unified testbed for all five experiments proposed in the paper. The e
 
 ## Part II — Framework
 
-### Harness Invariants: Six Cross-Paradigm Framework Capabilities
-
-Regardless of how the soft-line evolves — whether identity, knowledge, memory, and communication signals are injected via ICL or LoRA MOE — the Harness hard-line must provide these six capabilities. They are mechanical, zero-cognition, and invariant across paradigms.
-
-| # | Capability | Responsibility | Why Paradigm-Independent |
-|---|-----------|----------------|-------------------------|
-| 1 | **Prompt Assembly** | Assemble system instructions, task descriptions, tool inventories, and memory summaries into structured prompts. | Even when identity prompts shrink dramatically, temporary corrections, adjustments, and runtime state still need injection into the context window. |
-| 2 | **Resource Discovery & Registration** | Discover and hot-reload Tools and Skills; provide a unified resource interface. | Tools and Skills are cross-model — no matter how model capability evolves, the tool ecosystem needs the framework to introduce and manage it. |
-| 3 | **Framework Action Execution** | Execute tool calls, error recovery, reconnection retry, permission gating, human approval, sandbox isolation, security audit. | Mechanical execution should not occupy the LLM — retry counts, permission checks, sandbox legality are rule-based judgments requiring zero cognition. |
-| 4 | **Trace** | End-to-end tracing: every prompt, every action, every model call input/output. | Observability is cognition-independent — no matter how strong the model, execution records must be complete and replayable. |
-| 5 | **Evaluation** | Regression benchmarking: A/B comparison, multi-dimensional metrics, session replay. | Evaluation infrastructure doesn't care whether the subject is ICL or LoRA — it only cares about input-output comparability. |
-| 6 | **Hook / Extensible Mount Points** | Lifecycle-event-driven extensible attachment surface. | Framework capabilities must expand with experimental needs — new Plugins should never require modifying framework core code. |
-
-Together, these six capabilities form the Harness hard-line — they don't "think," but they are essential for Agent survival. ARF's 5 Skeletons + Control Plane + Plugin System are the engineering implementation of these six capabilities.
-
----
-
-### Harness as Kernel — 5-Skeleton Architecture
+### Harness as Kernel — Framework Skeletons
 
 > **Model + Harness = Agent. CPU + Kernel = Computer.**
 >
 > Token is the instruction. Agent session is the process. Tool call is the system call.
 
-ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton maps to a Protocol. Together with the [Control Plane](#the-control-plane--structured-state--lifecycle), they form the complete Harness core. Everything else is a **Plugin** mounted on lifecycle Hook points.
+Regardless of how the soft-line evolves — whether identity, knowledge, memory, and communication signals are injected via ICL or LoRA MOE — the Harness hard-line must provide six cross-paradigm capabilities. Four are **control items** that directly shape Agent runtime behavior. Two are **non-control items** — paradigm-independent enterprise infrastructure that don't affect execution, but determine whether the framework is production-viable.
 
-*Click any skeleton name for the full design document.*
+**Control Items (Runtime Skeletons)**
 
-| # | Skeleton | OS Analogy | Current | Evolution |
-|---|----------|------------|---------|-----------|
-| 1 | **[Prompt Assembly](docs/prompt-assembly.md)** | Program loader (execve) | `SystemPromptProvider` — prefix (role + critical_rules) + suffix (`$INVENTORY` template). `string.Template` placeholders (`$MEMORY`, `$WORKSPACE`, `$TURN_BUDGET`). Per-turn replacement by engine. | Multi-agent prompt composition; role-based template dispatch |
-| 2 | **[Resource Registry (MCP)](docs/resource-registry.md)** | File system + udev + systemd | Convention over configuration: `tool.yaml`+`function.py` per tool, `skills/*.yaml`. Models defined inline in `agent.yaml` (`model_defs`). `FileWatcher` inotify+polling hot reload. `ResourceResolver` override merge. MCP-based unified interface via local MCP Server (stdio JSON-RPC) — aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider; cross-reference validation |
-| 3 | **[Permission Control](docs/tool-sandbox.md)** | ACL + capability bits | `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow enforcement. Per-agent `policy` override. `deny_patterns` regex matching. | OAuth-scoped permissions; role-based access control |
-| 4 | **[Security Audit](docs/tool-sandbox.md)** | Protection rings (Ring 0-3) | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ContentGuard` — pre/post execution + pre-output rule-based screening. `GuardDefaults` three-line defense. | Per-invocation sandbox; content-aware scanning |
-| 5 | **[Executor (Sandbox)](docs/tool-sandbox.md)** | Process isolation (chroot/namespace) | `SandboxManager` — per-session isolated workspace, configurable blacklist, auto-destroy. `ConcurrentToolExecutor` parallel execution. `FunctionBackend` with optional `rollback()`. | Container-based sandbox; resource quotas |
+| # | Skeleton | Responsibility | ARF Implementation | Evolution |
+|---|----------|---------------|-------------------|-----------|
+| 1 | **[Prompt Assembly](docs/prompt-assembly.md)** | Assemble system instructions, task descriptions, tool inventories, memory summaries into structured prompts. Even when identity prompts shrink, temporary corrections and runtime state still need injection. | `SystemPromptProvider` — prefix + suffix (`$INVENTORY` template). `string.Template` placeholders. Per-turn engine replacement. | Multi-agent prompt composition; role-based template dispatch |
+| 2 | **[Resource Discovery & Registration](docs/resource-registry.md)** | Discover and hot-reload Tools and Skills. Tools and Skills are cross-model — the tool ecosystem needs the framework regardless of model evolution. | Convention over configuration: `tool.yaml`+`function.py`. `FileWatcher` hot reload. MCP Server subprocess (stdio JSON-RPC) aggregates local + external resources. | Hierarchical override merging; MCP multi-source Provider |
+| 3 | **[Action Execution](docs/tool-sandbox.md)** | Tool calls, error recovery, reconnection retry, permission gating (deny→ask→allow), human approval, sandbox isolation, security audit. Mechanical execution should not occupy the LLM — rule-based judgments, zero cognition. | `SessionModeManager` + `PermissionRegistry`. `PathCheckToolGuard` + `ContentGuard`. `SandboxManager` per-session isolation. `FunctionBackend` + `rollback()`. | Container-based sandbox; OAuth-scoped permissions; content-aware scanning |
+| 4 | **[Hook Surface](docs/agent-execution.md)** | Lifecycle-event-driven extensible mount points. Framework capabilities expand with experimental needs — new Plugins never modify core code. | 9 lifecycle Hook points (`session_start` ~ `error`). `pre_action`/`post_action` wrap every model call and tool execution. | Dynamic Hook registration; priority ordering |
+
+**Non-Control Items (Enterprise Infrastructure — not affecting execution, enabling deployment)**
+
+| # | Capability | Responsibility | ARF Implementation |
+|---|-----------|----------------|-------------------|
+| 5 | **Trace** | End-to-end tracing: every prompt, every action, every model call input/output. Observability is cognition-independent — execution records must be complete and replayable regardless of model strength. | `FileTraceStore` + `TracePlugin` |
+| 6 | **Evaluation** | Regression benchmarking: A/B comparison, multi-dimensional metrics, session replay. Evaluation infrastructure doesn't care whether the subject is ICL or LoRA — only comparability matters. | `EvalRunner` + `BenchmarkBuilder` + `EvalComparator` |
 
 ### The Control Plane — Structured State & Lifecycle
 
-The **[Control Plane](docs/agent-execution.md)** is the orchestrating surface where all five skeletons converge — routing signals between the six invariant capabilities and Plugin extensions.
+The **[Control Plane](docs/agent-execution.md)** is the shared orchestration surface for the four control skeletons — unified `_execute` path, Plugin mount coordination, session lifecycle management.
 
 | Aspect | Implementation |
 |--------|---------------|
