@@ -80,6 +80,8 @@ ARF is the unified testbed for all five experiments proposed in the paper. The e
 
 **Research log**: [`docs/paper/`](docs/paper/) — paper framework, reading summaries by domain, and progressive research notes.
 
+**Thesis**: As models grow stronger, less information needs to be injected via ICL — the Harness gets thinner. At the same time, the migration from ICL to Parameter tightens the coupling between model and Harness: training data collection, injection trigger points, identity switching, and parameter-level communication pipelines all depend deeply on the specific model's architecture and post-training interfaces. What thins is the cognitive burden. What tightens is the engineering integration.
+
 <br/>
 
 ---
