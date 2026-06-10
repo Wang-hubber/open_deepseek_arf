@@ -8,7 +8,6 @@ from arf.engine.checkpoint import InMemoryStateStore
 from arf.event_bus import InMemoryEventBus
 from arf.resources.resolver import ResourceResolver
 from arf.engine.tool_executor import ConcurrentToolExecutor
-from arf.engine.loop_strategies.react import ReActStrategy
 
 
 # Load allowed_tools from sibling tool.yaml at module level
@@ -103,7 +102,7 @@ async def execute(
         return []
 
     sub_engine = ControlPlane(
-        loop_strategy=ReActStrategy(max_turns=10),
+        max_turns=10,
         state_store=sub_state_store,
         tool_executor=sub_tool_executor,
         event_bus=sub_event_bus,

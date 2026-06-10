@@ -6,8 +6,9 @@ from typing import Any, Callable
 
 from arf.core.state import AgentState
 from arf.core.events import AgentEvent
-from arf.core.protocols import LoopStrategy, StateStore, ToolExecutor, EventBus
+from arf.core.protocols import StateStore, ToolExecutor, EventBus
 from arf.core.plugin_context import PluginContext
+from arf.engine.gate import GateChecker
 from arf.hooks.in_process_runner import InProcessHookRunner
 from arf.hooks.runner import SubprocessHookRunner
 
@@ -20,7 +21,6 @@ class ControlPlane:
     def __init__(
         self,
         *,
-        loop_strategy: LoopStrategy,
         state_store: StateStore,
         tool_executor: ToolExecutor,
         event_bus: EventBus | None = None,
@@ -39,7 +39,8 @@ class ControlPlane:
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
     ):
-        self.loop_strategy = loop_strategy
+        self.loop_strategy = None  # removed — kept for compat during migration
+        self.gate = GateChecker(max_turns=max_turns)
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.event_bus = event_bus
@@ -78,7 +79,6 @@ class ControlPlane:
         self._current_session_id = session_id
         self._interaction_round = state.get("interaction_round", 0) + 1
         state["interaction_round"] = self._interaction_round
-        self.loop_strategy.max_turns = self._max_turns
 
         ctx = self._make_ctx(state, session_id, 0, "")
         yield self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
@@ -89,10 +89,10 @@ class ControlPlane:
             await self._fire_side("session_start", ctx)
         except Exception as e:
             await self._handle_error(e, ctx)
-            # ErrorHandler may abort session
 
         # --- round loop ---
-        while self.loop_strategy.should_continue(state):
+        aborted = False
+        while not aborted:
             if self._cancelled():
                 yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
                 break
@@ -107,21 +107,23 @@ class ControlPlane:
                 await self._fire_side("round_start", ctx)
             except Exception as e:
                 decision = await self._handle_error(e, ctx)
-                if decision.get("action") == "abort":
-                    break
-                continue
-
-            # Check for strategy override from round_start hook
-            strategy_override = ctx.hook_data.get("strategy")
-            if strategy_override is not None:
-                self.loop_strategy = strategy_override
+                break  # abort on any error — don't retry round_start
 
             # --- turn loop ---
-            while self.loop_strategy.should_continue(state):
+            while True:
                 turn = state.get("current_turn", 0) + 1
                 state["current_turn"] = turn
-                step = self.loop_strategy.next_step(state)
-                ctx = self._make_ctx(state, session_id, turn, step)
+
+                # Gate check at top — bounds every iteration including retry/skip
+                if self.gate.is_exceeded(current_turn=turn):
+                    yield self._make_event(
+                        "gate_exceeded",
+                        {"reason": self.gate.reason, "current_turn": turn},
+                        turn=turn, session_id=session_id,
+                    )
+                    break
+
+                ctx = self._make_ctx(state, session_id, turn, "")
 
                 # --- turn_start ---
                 try:
@@ -130,6 +132,7 @@ class ControlPlane:
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
                     if decision.get("action") == "abort":
+                        aborted = True
                         break
                     continue
 
@@ -138,20 +141,22 @@ class ControlPlane:
                     async for event in self._fire_and_drain("pre_action", ctx):
                         yield event
                 except Exception as e:
-                        decision = await self._handle_error(e, ctx)
-                        if decision.get("action") == "abort":
-                            break
-                        if decision.get("action") == "skip":
-                            continue
+                    decision = await self._handle_error(e, ctx)
+                    if decision.get("action") == "abort":
+                        aborted = True
+                        break
+                    if decision.get("action") == "skip":
+                        continue
 
-                # --- dispatch ---
+                # --- dispatch: model_call ---
                 try:
-                    async for event in self._execute_action(step, state, ctx):
+                    async for event in self._action_call_model(state, ctx):
                         yield event
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
                     action = decision.get("action", "abort")
                     if action == "abort":
+                        aborted = True
                         break
                     elif action == "retry":
                         state["current_turn"] = turn - 1
@@ -167,6 +172,25 @@ class ControlPlane:
                     else:
                         break
 
+                # Snapshot pending_tool_calls BEFORE execute_tools pops them
+                has_tool_calls = bool(state.get("_pending_tool_calls"))
+
+                # --- dispatch: execute_tools (if model returned tool_calls) ---
+                if has_tool_calls:
+                    try:
+                        async for event in self._action_execute_tools(state, ctx):
+                            yield event
+                    except Exception as e:
+                        decision = await self._handle_error(e, ctx)
+                        action = decision.get("action", "abort")
+                        if action == "abort":
+                            aborted = True
+                            break
+                        elif action == "skip":
+                            continue
+                        else:
+                            break
+
                 # --- post_dispatch ---
                 try:
                     await self._fire_blocking("post_action", ctx)
@@ -174,6 +198,7 @@ class ControlPlane:
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
                     if decision.get("action") == "abort":
+                        aborted = True
                         break
                     continue
 
@@ -184,17 +209,23 @@ class ControlPlane:
                 except Exception as e:
                     decision = await self._handle_error(e, ctx)
                     if decision.get("action") == "abort":
+                        aborted = True
                         break
                     continue
 
-                self.loop_strategy.on_transition("turn_end", ctx)
                 await self.state_store.put(session_id, state)
 
-                if self.loop_strategy.should_break(state):
+                # Text-only response (no tool_calls) → round complete
+                if not has_tool_calls:
                     break
 
-                # Text-only response (no tool_calls) → round complete
-                if step == "call_model" and not state.get("_pending_tool_calls"):
+                # Gate check — terminate if budget exceeded
+                if self.gate.is_exceeded(current_turn=turn):
+                    yield self._make_event(
+                        "gate_exceeded",
+                        {"reason": self.gate.reason, "current_turn": turn},
+                        turn=turn, session_id=session_id,
+                    )
                     break
 
             # --- round_end ---
@@ -207,11 +238,18 @@ class ControlPlane:
                     break
                 continue
 
-            if self.loop_strategy.should_break(state):
+            # Gate check at round level too
+            if self.gate.is_exceeded(current_turn=state.get("current_turn", 0)):
+                yield self._make_event(
+                    "gate_exceeded",
+                    {"reason": self.gate.reason, "current_turn": state.get("current_turn")},
+                    turn=state.get("current_turn", 0), session_id=session_id,
+                )
                 break
 
             # No new user input after round — exit round loop
-            if state.get("messages", []) and state["messages"][-1].get("role") != "user":
+            msgs = state.get("messages", [])
+            if msgs and msgs[-1].get("role") != "user":
                 break
 
         # --- session_end ---
@@ -226,16 +264,8 @@ class ControlPlane:
         yield self._make_event("session_end", {"session_id": session_id}, session_id=session_id)
 
     # ==================================================================
-    # Dispatch
+    # Actions
     # ==================================================================
-
-    async def _execute_action(self, step: str, state: AgentState, ctx: PluginContext):
-        if step == "call_model":
-            async for event in self._action_call_model(state, ctx):
-                yield event
-        elif step == "execute_tools":
-            async for event in self._action_execute_tools(state, ctx):
-                yield event
 
     async def _action_call_model(self, state: AgentState, ctx: PluginContext):
         session_id = state.get("session_id", "default")

@@ -1,6 +1,6 @@
 """Protocol definitions — abstract interfaces for all framework domains."""
 from arf.core.protocols.engine import (
-    LoopStrategy, StateStore, ToolExecutor, Planner,
+    StateStore, ToolExecutor,
 )
 from arf.core.protocols.resources import (
     ToolResolver, ToolProvider, ToolRetriever, ToolBackend, ToolDefinition,
@@ -37,7 +37,7 @@ from arf.core.execution import (
 )
 
 __all__ = [
-    "LoopStrategy", "StateStore", "ToolExecutor", "Planner",
+    "StateStore", "ToolExecutor",
     "ToolResolver", "ToolProvider", "ToolRetriever", "ToolBackend", "ToolDefinition",
     "HookRunner",
     "GuardRunner", "InputGuardrail", "OutputGuardrail", "ToolGuardrail",

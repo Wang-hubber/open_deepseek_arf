@@ -25,7 +25,6 @@ class TestModuleDocstrings:
         core_files = [
             ARF_DIR / "engine" / "graph.py",
             ARF_DIR / "agent" / "base.py",
-            ARF_DIR / "engine" / "loop_strategies" / "planner.py",
         ]
         bare = []
         for p in core_files:

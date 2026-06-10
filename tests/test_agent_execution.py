@@ -41,7 +41,6 @@ class _HookRunnerPlugin:
 def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
                        tmp_path=None, **overrides):
     """Build a ControlPlane with real component defaults (no MagicMock)."""
-    from arf.engine.loop_strategies.react import ReActStrategy
     from arf.engine.tool_executor import ConcurrentToolExecutor
     from arf.engine.control_plane import ControlPlane
     from arf.resources.resolver import ResourceResolver
@@ -72,7 +71,7 @@ def _build_real_engine(fake_model=None, tool_provider=None, skill_provider=None,
         blocking_plugins.append(_HookRunnerPlugin(hook_runner))
 
     defaults = {
-        "loop_strategy": ReActStrategy(max_turns=10),
+        "max_turns": 10,
         "state_store": state_store,
         "tool_executor": ConcurrentToolExecutor(resolver),
         "event_bus": InMemoryEventBus(),
@@ -157,13 +156,9 @@ class TestRoundHooks:
 
     def _make_engine(self, hook_runner):
         """Build engine with real components for the full invoke() cycle."""
-        loop_strategy = MagicMock()
-        loop_strategy.should_continue.side_effect = [True, False]
-
         fake = FakeModelAdapter(default=FakeResponse(content="hello"))
         engine = _build_real_engine(
             fake_model=fake,
-            loop_strategy=loop_strategy,
             hook_runner=hook_runner,
         )
         return engine
@@ -370,13 +365,12 @@ class TestTurnReset:
 
     def test_turn_resets_to_zero_each_round(self):
         """Engine receives current_turn=0 at the start of every round."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+        
         async def call_model(msgs, model, tools=None):
             return {"content": "hi back", "tool_calls": [], "usage": {}}
 
         engine = _build_real_engine(
-            loop_strategy=ReActStrategy(max_turns=50),
+            max_turns=50,
         )
         engine._call_model = call_model
 
@@ -400,10 +394,6 @@ class TestTurnReset:
 
     def test_max_turns_stops_round(self):
         """max_turns=3 circuit breaker allows exactly 3 model calls then stops."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
-        loop_strategy = ReActStrategy(max_turns=3)
-
         call_count = 0
 
         async def call_model(msgs, model, tools=None):
@@ -416,8 +406,7 @@ class TestTurnReset:
             return {"content": "done", "tool_calls": [], "usage": {}}
 
         engine = _build_real_engine(
-            loop_strategy=loop_strategy,
-        )
+                    )
         engine._call_model = call_model
         engine.tool_executor.execute = AsyncMock(return_value={})
 
@@ -439,14 +428,13 @@ class TestTurnReset:
 
     def test_round_2_continues_after_max_turns_in_round_1(self):
         """Round 2 starts fresh even after Round 1 hit max_turns."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+        
         async def call_model(msgs, model, tools=None):
             return {"content": "done", "tool_calls": [], "usage": {}}
 
         # Round 1: max_turns=1
         engine_r1 = _build_real_engine(
-            loop_strategy=ReActStrategy(max_turns=1),
+            max_turns=1,
         )
         engine_r1._call_model = call_model
 
@@ -461,7 +449,7 @@ class TestTurnReset:
 
         # Round 2: fresh state, turn=0, max_turns=1 should allow 1 more call
         engine_r2 = _build_real_engine(
-            loop_strategy=ReActStrategy(max_turns=1),
+            max_turns=1,
         )
         engine_r2._call_model = call_model
 
@@ -481,25 +469,20 @@ class TestTurnReset:
         )
 
     def test_engine_fires_round_end_even_when_max_turns_reached(self):
-        """round_end hook fires even when max_turns terminates the loop."""
+        """round_end hook fires even when gate exceeds max_turns."""
         hook_runner = MagicMock()
         hook_runner.fire = AsyncMock(return_value=[])
 
-        turn_count = [0]
-
-        def should_continue(state):
-            turn_count[0] += 1
-            return turn_count[0] <= 3
-
-        loop_strategy = MagicMock()
-        loop_strategy.should_continue = should_continue
-
-        fake = FakeModelAdapter(default=FakeResponse(content="ok"))
+        fake = FakeModelAdapter(default=FakeResponse(
+            content="",
+            tool_calls=[{"id": "t1", "name": "mock", "params": {}}],
+        ))
         engine = _build_real_engine(
             fake_model=fake,
-            loop_strategy=loop_strategy,
+            max_turns=3,
             hook_runner=hook_runner,
         )
+        engine.tool_executor.execute = AsyncMock(return_value={})
 
         state = {
             "session_id": "test", "agent_name": "test",
@@ -916,8 +899,7 @@ class TestEngineCheckpointBehavior:
 
     def test_checkpoint_saved_on_text_only_response(self):
         """state_store.put() is called even for text-only (no tool) responses."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+        
         store = CountingStateStore()
         fake = FakeModelAdapter(default=FakeResponse(
             content="hello, no tools needed",
@@ -925,7 +907,7 @@ class TestEngineCheckpointBehavior:
         ))
         engine = _build_real_engine(
             fake_model=fake,
-            loop_strategy=ReActStrategy(max_turns=50),
+            max_turns=50,
             state_store=store,
         )
 
@@ -945,8 +927,7 @@ class TestEngineCheckpointBehavior:
     def test_checkpoint_saved_per_turn_with_tools(self):
         """Each turn has at least one checkpoint. Turns with tool calls have two:
         one after append assistant+tool_calls (crash recovery), one after tool exec."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+        
         store = CountingStateStore()
 
         call_count = [0]
@@ -962,7 +943,7 @@ class TestEngineCheckpointBehavior:
             return {"content": "done", "tool_calls": [], "usage": {}}
 
         engine = _build_real_engine(
-            loop_strategy=ReActStrategy(max_turns=50),
+            max_turns=50,
             state_store=store,
         )
         engine._call_model = call_model
@@ -977,19 +958,16 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        # ControlPlane saves state_store.put() once per iteration (after turn_end)
-        # plus one at session_end. With 3 model calls (2 w/ tools + 1 text) and
-        # 2 tool executions: 5 turn puts + 1 session put = 6 total.
-        assert store.put_call_count == 6, (
-            f"Expected 6 checkpoints for 3-call scenario with ControlPlane, "
+        # Simplified loop: model_call + execute_tools = 1 turn.
+        # 3 turns × 1 put (turn_end) + 1 put (session_end) = 4 total.
+        assert store.put_call_count == 4, (
+            f"Expected 4 checkpoints for 3-turn scenario with simplified loop, "
             f"got {store.put_call_count}"
         )
 
-    def test_invoke_saves_checkpoint_before_tool_exec(self):
-        """invoke() saves checkpoint after appending assistant+tool_calls,
-        before tool execution — matching astream behavior."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-
+    def test_invoke_saves_checkpoint_after_tool_exec(self):
+        """Simplified loop checkpoints after turn_end — after tool execution completes."""
+        
         store = CountingStateStore()
 
         async def call_model(msgs, model, tools=None):
@@ -1000,7 +978,7 @@ class TestEngineCheckpointBehavior:
             }
 
         engine = _build_real_engine(
-            loop_strategy=ReActStrategy(max_turns=50),
+            max_turns=50,
             state_store=store,
         )
         engine._call_model = call_model
@@ -1020,69 +998,17 @@ class TestEngineCheckpointBehavior:
         asyncio.run(engine.invoke(state))
         assert len(store.put_states) >= 1
 
-        # The first checkpoint should contain assistant with tool_calls
+        # In simplified loop, checkpoint happens after turn_end (model_call → tool_exec completed).
+        # The state includes the assistant's tool_call AND the tool response.
         first_put = store.put_states[0]["state"]
         messages = first_put.get("messages", [])
-        last_assistant = messages[-1]
-        assert last_assistant["role"] == "assistant"
-        assert "tool_calls" in last_assistant, (
-            "First checkpoint must persist assistant+tool_calls for crash recovery"
+        # Messages: [user, assistant(with tool_calls), tool_result]
+        assert len(messages) >= 3
+        assert messages[1]["role"] == "assistant"
+        assert "tool_calls" in messages[1], (
+            "Checkpoint must include assistant+tool_calls for crash recovery"
         )
-
-
-# ---------------------------------------------------------------------------
-# ReActStrategy.next_step() — all role transitions (Doc 2.5)
-# NOTE: Doc previously claimed next_step() was "unused" — it IS called
-# every loop iteration. This test suite covers all 5 transition states.
-# ---------------------------------------------------------------------------
-
-class TestReActStrategyNextStep:
-    """Doc 2.5: next_step() drives the main loop dispatch."""
-
-    def test_empty_messages_returns_call_model(self):
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": []}) == "call_model"
-
-    def test_user_message_returns_call_model(self):
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": [
-            {"role": "user", "content": "hello"}
-        ]}) == "call_model"
-
-    def test_system_message_returns_call_model(self):
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": [
-            {"role": "system", "content": "instructions"}
-        ]}) == "call_model"
-
-    def test_assistant_with_tool_calls_returns_execute_tools(self):
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": [
-            {"role": "user", "content": "do it"},
-            {"role": "assistant", "content": "ok", "tool_calls": [{"id": "1", "function": {"name": "read", "arguments": "{}"}}]},
-        ]}) == "execute_tools"
-
-    def test_assistant_without_tool_calls_returns_call_model(self):
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello there"},
-        ]}) == "call_model"
-
-    def test_tool_result_returns_call_model(self):
-        """After tool execution → back to model to observe results."""
-        from arf.engine.loop_strategies.react import ReActStrategy
-        s = ReActStrategy()
-        assert s.next_step({"messages": [
-            {"role": "user", "content": "do"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {"name": "read", "arguments": "{}"}}]},
-            {"role": "tool", "content": "result data", "tool_call_id": "1"},
-        ]}) == "call_model"
+        assert messages[2]["role"] == "tool"
 
 
 # ---------------------------------------------------------------------------
