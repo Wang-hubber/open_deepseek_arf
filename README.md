@@ -105,18 +105,6 @@ Together, these six capabilities form the Harness hard-line — they don't "thin
 
 ---
 
-### The Control Plane — Structured State & Lifecycle
-
-The three layers don't float in isolation. The **[Control Plane](docs/agent-execution.md)** is the orchestrating surface they all connect to — the Harness equivalent of a spinal cord that routes signals between brain and body.
-
-| Aspect | Implementation |
-|--------|---------------|
-| **Execution engine** | `ControlPlane` single `_execute` path — all three layers converge here. `LoopStrategy` ReAct pattern + TODO tracking |
-| **Structured State** | Fixed-schema State Packets assembled at each turn. Checkpoint/restore via `RoundManager` (3 rolling snapshots). Session lifecycle: create → resume → archive |
-| **Hook surface** | 9 lifecycle points (`session_start`, `round_start`, `turn_start`, `pre_action`, `post_action`, `turn_end`, `round_end`, `session_end`, `error`) — the 9 points where Plugins mount. `pre_action`/`post_action` wrap every model call and tool execution |
-
-If the three layers are reflex arcs, the Control Plane is the spinal cord that coordinates when each reflex fires, routes state between them, and provides the attachment surface for every Plugin.
-
 ### Harness as Kernel — 5-Skeleton Architecture
 
 > **Model + Harness = Agent. CPU + Kernel = Computer.**
@@ -134,6 +122,16 @@ ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton 
 | 3 | **[Permission Control](docs/tool-sandbox.md)** | ACL + capability bits | `SessionModeManager` (auto/ask/plan) + `PermissionRegistry` deny→ask→allow enforcement. Per-agent `policy` override. `deny_patterns` regex matching. | OAuth-scoped permissions; role-based access control |
 | 4 | **[Security Audit](docs/tool-sandbox.md)** | Protection rings (Ring 0-3) | `PathCheckToolGuard` — recursive scan (.., symlink, depth/count quota). `ContentGuard` — pre/post execution + pre-output rule-based screening. `GuardDefaults` three-line defense. | Per-invocation sandbox; content-aware scanning |
 | 5 | **[Executor (Sandbox)](docs/tool-sandbox.md)** | Process isolation (chroot/namespace) | `SandboxManager` — per-session isolated workspace, configurable blacklist, auto-destroy. `ConcurrentToolExecutor` parallel execution. `FunctionBackend` with optional `rollback()`. | Container-based sandbox; resource quotas |
+
+### The Control Plane — Structured State & Lifecycle
+
+The **[Control Plane](docs/agent-execution.md)** is the orchestrating surface where all five skeletons converge — routing signals between the six invariant capabilities and Plugin extensions.
+
+| Aspect | Implementation |
+|--------|---------------|
+| **Execution engine** | `ControlPlane` single `_execute` path. `LoopStrategy` ReAct pattern + TODO tracking |
+| **Structured State** | Fixed-schema State Packets assembled at each turn. Checkpoint/restore via `RoundManager` (3 rolling snapshots). Session lifecycle: create → resume → archive |
+| **Hook surface** | 9 lifecycle points (`session_start`, `round_start`, `turn_start`, `pre_action`, `post_action`, `turn_end`, `round_end`, `session_end`, `error`) — the 9 points where Plugins mount. `pre_action`/`post_action` wrap every model call and tool execution |
 
 ### Plugin System — Reflex Arcs, Not Cognitive Modules
 

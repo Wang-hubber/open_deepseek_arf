@@ -105,18 +105,6 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 ---
 
-### 控制平面 — 结构化 State & 生命周期
-
-三层并非孤立漂浮。**[控制平面](docs/agent-execution.md)** 是它们共同交汇的调度面——相当于脊髓，在脑和身体之间路由信号。
-
-| 方面 | 实现 |
-|------|------|
-| **执行引擎** | `ControlPlane` 统一 `_execute` 路径——三层在此交汇。`LoopStrategy` ReAct 模式 + TODO 追踪 |
-| **结构化 State** | 每轮组装固定 Schema 的 State Packet。`RoundManager` 维护 3 个滚动快照支持 checkpoint/restore。会话生命周期：create → resume → archive |
-| **Hook 挂载面** | 9 个生命周期点（`session_start`、`round_start`、`turn_start`、`pre_action`、`post_action`、`turn_end`、`round_end`、`session_end`、`error`）——Plugin 挂载的 9 个触点。`pre_action`/`post_action` 包裹每一次模型调用和工具执行 |
-
-如果说三层是反射弧，控制平面就是脊髓——协调每个反射的触发时机，在三层之间路由状态，并为所有 Plugin 提供挂载面。
-
 ### Harness 即内核——5 骨架架构
 
 > **Model + Harness = Agent。CPU + Kernel = Computer。**
@@ -134,6 +122,16 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 | 3 | **[权限控制](docs/tool-sandbox.md)** | ACL + 能力位 | `SessionModeManager`（auto/ask/plan）+ `PermissionRegistry` deny→ask→allow 执行。Per-agent `policy` 覆盖。`deny_patterns` 正则匹配。 | OAuth 范围权限；基于角色的访问控制 |
 | 4 | **[安全审核](docs/tool-sandbox.md)** | 保护环 (Ring 0-3) | `PathCheckToolGuard` — 递归扫描（..、符号链接、深度/数量配额）。`ContentGuard` — 执行前/后 + 输出前基于规则的筛查。`GuardDefaults` 三道防线。 | 逐次调用沙箱；内容感知扫描 |
 | 5 | **[执行器 (沙箱)](docs/tool-sandbox.md)** | 进程隔离 (chroot/namespace) | `SandboxManager` — 每会话隔离工作区，可配置黑名单，自动销毁。`ConcurrentToolExecutor` 并行执行。`FunctionBackend` 可选 `rollback()`。 | 容器级沙箱；资源配额 |
+
+### 控制平面 — 结构化 State & 生命周期
+
+**[控制平面](docs/agent-execution.md)** 是 5 骨架共同交汇的调度面——在六项不变量的执行实现和 Plugin 扩展之间路由信号。
+
+| 方面 | 实现 |
+|------|------|
+| **执行引擎** | `ControlPlane` 统一 `_execute` 路径。`LoopStrategy` ReAct 模式 + TODO 追踪 |
+| **结构化 State** | 每轮组装固定 Schema 的 State Packet。`RoundManager` 维护 3 个滚动快照支持 checkpoint/restore。会话生命周期：create → resume → archive |
+| **Hook 挂载面** | 9 个生命周期点（`session_start`、`round_start`、`turn_start`、`pre_action`、`post_action`、`turn_end`、`round_end`、`session_end`、`error`）——Plugin 挂载的 9 个触点。`pre_action`/`post_action` 包裹每一次模型调用和工具执行 |
 
 ### Plugin 体系——反射弧，非认知模块
 
