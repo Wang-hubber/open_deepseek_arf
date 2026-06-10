@@ -1,0 +1,18 @@
+name: plan_create
+description: Decompose a task into ordered steps with dependency tracking. Steps form a DAG where depends_on and blocks define execution order.
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: The task to decompose
+    steps:
+      type: array
+      description: Ordered steps with dependencies
+  required:
+    - task
+    - steps
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel

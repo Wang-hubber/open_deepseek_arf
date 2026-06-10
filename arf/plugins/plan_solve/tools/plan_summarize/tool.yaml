@@ -1,0 +1,10 @@
+name: plan_summarize
+description: Summarize all completed plan steps into a final result. All steps must be done or failed before calling this.
+parameters:
+  type: object
+  properties: {}
+required: []
+execution:
+  sandbox: inherit
+  timeout: 120s
+activation: kernel

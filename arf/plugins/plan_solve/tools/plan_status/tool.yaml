@@ -1,0 +1,10 @@
+name: plan_status
+description: Read the current plan progress — which steps are done, pending, running, failed.
+parameters:
+  type: object
+  properties: {}
+required: []
+execution:
+  sandbox: inherit
+  timeout: 10s
+activation: kernel
