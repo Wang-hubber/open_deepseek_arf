@@ -100,7 +100,7 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 | # | 骨架 | 职责 | ARF 实现 | 演进方向 |
 |---|------|------|---------|----------|
-| 1 | **[Prompt 组装](docs/prompt-assembly.md)** | 将系统指令、任务描述、工具清单、记忆摘要等组装为结构化 Prompt。即便大段身份提示词不再需要，临时性修正、运行态状态仍需注入 | `SystemPromptProvider` — prefix + suffix（`$INVENTORY` 模板）。`string.Template` 占位符。引擎每轮替换 | 多 Agent prompt 组合；基于角色的模板分发 |
+| 1 | **[上下文组装](docs/prompt-assembly.md)** | 将系统指令、任务描述、工具清单、记忆摘要等组装为结构化上下文。即便大段大段的身份提示词和记忆注入不再需要，临时性/测试性修正、实时更新的运行态状态、可用的资源、有意义的环境反馈等信息仍需通过 ICL 注入 | `SystemPromptProvider` — prefix + suffix（`$INVENTORY` 模板）。`string.Template` 占位符。引擎每轮替换 | 多 Agent prompt 组合；基于角色的模板分发 |
 | 2 | **[资源发现与注册](docs/resource-registry.md)** | 发现并热加载 Tool 和 Skill。Tool 和 Skill 是跨模型的——无论模型如何演进，工具生态需要框架管理 | 约定优于配置：`tool.yaml`+`function.py`。`FileWatcher` 热加载。MCP Server 子进程 stdio JSON-RPC 聚合本地与外部资源 | 层次化覆盖合并；MCP 多源 Provider |
 | 3 | **[动作执行](docs/tool-sandbox.md)** | 工具调用、错误恢复、断连重试、权限门控（deny→ask→allow）、人工审批、沙箱隔离、安全审查。机械化执行不占用大模型——规则判断，零认知 | `SessionModeManager` + `PermissionRegistry`。`PathCheckToolGuard` + `ContentGuard`。`SandboxManager` 每会话隔离。`FunctionBackend` + `rollback()` | 容器级沙箱；OAuth 范围权限；内容感知扫描 |
 | 4 | **[Hook 挂载面](docs/agent-execution.md)** | 生命周期事件驱动的可扩展挂载点。框架能力随实验需求动态扩展——新 Plugin 不修改核心代码 | 9 个生命周期 Hook 点（`session_start` ~ `error`）。`pre_action`/`post_action` 包裹每次模型调用和工具执行 | 动态 Hook 注册；优先级排序 |
