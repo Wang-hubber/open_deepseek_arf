@@ -129,19 +129,19 @@ ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton 
 
 ## Part II — Research Roadmap
 
-ARF is the testbed for all five experiments proposed in the paper. This section maps each experiment to current ARF capabilities and identifies what needs to be built.
+ARF is the unified testbed for all five experiments proposed in the paper. The experiments are organized by the four problem domains identified in §2 Related Work — each domain pairs a survey position with an experimental validation.
 
-| Experiment | Paper § | ARF Status | What Exists | What to Build |
-|------------|---------|------------|-------------|---------------|
-| **E1: Online LoRA Long-Term Memory** | §5.1 | **Extension point** | `MemoryPlugin` → `memory.md` + `ModelAdapter`. Datasets: LoCoMo, LongMemEval, self-built DFC. | Add LoRA B-matrix online SFT interface. Use memory entries as supervision. Sweep r=1–8. Compare parametric vs. external summary retention. |
-| **E2: Identity Boundary Robustness** | §5.2 | **Extension point** | `Guardrails` + `deny_patterns` + `SessionModeManager`. Datasets: JailbreakBench, self-built Persona Conflict. | Train Identity LoRA from role-play data. Measure ASR, ICS, RQ against System Prompt baseline under adversarial attacks. |
-| **E3: Parametric Context Compression** | §5.3 | **Extension point** | `CompactionPlugin` (token-aware sliding window + LLM summary). Dataset: LongBench QA. | Replace sync SFT with async dual-buffer LoRA B-matrix. Compare fidelity (F1) and latency (E2EPL) vs. LLM summarization. |
-| **E4: TFlow Weight-Space Communication** | §5.4 | **Extension point** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`. Self-built DRSA simulation. | Implement perturbation compiler (internal activations → ΔW). Sweep sender count (2–32). Compare latency/bandwidth vs. NL text communication. |
-| **E5 (Culmination): HOT LoRA MOE vs. COLD ICL Harness** | §5.5 | **Dependent on E1–4** | Same ARF hard-line. Two soft-line configs: A (ICL-only) vs. B (all four LoRA adapters active). | Same task, same base model, 4-dimensional scoring. Tests the title thesis: does "Parameter Is All You Need" beat "Context Is All You Need"? |
+| Domain | Paper § | Research Question | ARF Baseline | Experiment | What to Build |
+|--------|---------|-------------------|-------------|------------|---------------|
+| **Loop Strategies** | §2.1 · §5 (framework) | Can Harness be reduced to a thin ReAct loop + zero-cognition reflexes? | `ControlPlane` + `LoopStrategy` (ReAct reference impl). Three-layer rule-based reflex arcs. | — (Baseline) | Document ARF's hard-line as a reference implementation of "thinnest viable Harness". Survey: [loop-strategies](docs/paper/reading_summary/2.1-loop-strategies/) |
+| **RAG vs Post-Training** | §2.2 · §5.2 | Can Identity LoRA frozen personas resist jailbreak better than System Prompt? | `Guardrails` + `deny_patterns` + `SessionModeManager`. Datasets: JailbreakBench, self-built Persona Conflict. | **E2: Identity Boundary Robustness** | Train Identity LoRA from role-play data. Measure ASR/ICS/RQ under adversarial attacks. Sweep LoRA rank r. Survey: [rag-finetuning](docs/paper/reading_summary/2.2-rag-vs-finetuning/) |
+| **Memory & Context** | §2.3 · §5.1, §5.3 | Does parameterized memory (online SFT → LoRA B-matrix) outperform external injection (memory.md + vector DB)? | `MemoryPlugin` → `memory.md` + `ModelAdapter`. `CompactionPlugin` (token-aware sliding window + LLM summary). Datasets: LoCoMo, LongMemEval, LongBench QA. | **E1: Online LoRA Long-Term Memory** · **E3: Parametric Context Compression** | Add LoRA B-matrix online SFT interface. Use memory.md entries as supervision. Replace sync SFT with async dual-buffer. Sweep r=1–8. Compare parametric vs. external injection on retention, update, interference, context usage. Survey: [memory-context](docs/paper/reading_summary/2.3-memory-context/) |
+| **Agent Communication** | §2.4 · §5.4 | Does weight-space perturbation (TFlow) outperform NL text communication in latency and bandwidth? | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`. Self-built DRSA simulation. | **E4: TFlow Weight-Space Communication** | Implement perturbation compiler (internal activations → ΔW). Sweep sender count (2–32). Compare latency/bandwidth vs. NL text. Survey: [agent-communication](docs/paper/reading_summary/2.4-agent-communication/) |
+| **Culmination** | §5.5 | Does "Parameter Is All You Need" beat "Context Is All You Need"? | Same ARF hard-line. Two soft-line configs: A (ICL-only) vs. B (all four LoRA adapters active). | **E5: HOT LoRA MOE vs. COLD ICL Harness** | Same task, same base model, 4-dimensional scoring. Tests the title thesis. |
 
-**Running an experiment**: Each experiment is designed to be run against the same ARF testbed. The framework's `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md) for the evaluation infrastructure.
+**Running an experiment**: Each experiment runs against the same ARF testbed. `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md).
 
-**Research log**: [`docs/paper/`](docs/paper/) contains the paper framework, reading summaries, and progressive research notes.
+**Research log**: [`docs/paper/`](docs/paper/) — paper framework, reading summaries by domain, and progressive research notes.
 
 <br/>
 
