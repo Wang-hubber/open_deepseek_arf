@@ -153,7 +153,7 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 算力受限，聚焦四维软线的文献调研：
 
-- **记忆**：PEAM、TMEM ✅ — 扩展至 Memorizing Transformer、Unlimiformer、MemGPT
+- **记忆**：PEAM、TMEM — 扩展至 Memorizing Transformer、Unlimiformer、MemGPT
 - **身份**：Character-LLM、Neeko、RoleLLM — LoRA 固化人格的对抗鲁棒性
 - **知识**：P-RAG、MEGa — RAG vs Fine-tuning 系统对比
 - **通信**：TFlow — 权重扰动叠加在大规模 Agent 群中的稳定性

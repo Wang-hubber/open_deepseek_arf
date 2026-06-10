@@ -153,7 +153,7 @@ ARF is the unified testbed for all five experiments proposed in the paper. The e
 
 Compute-constrained. Focus on literature survey across the four soft-line dimensions:
 
-- **Memory**: PEAM, TMEM ✅ — extend to Memorizing Transformer, Unlimiformer, MemGPT
+- **Memory**: PEAM, TMEM — extend to Memorizing Transformer, Unlimiformer, MemGPT
 - **Identity**: Character-LLM, Neeko, RoleLLM — adversarial robustness of LoRA-frozen personas
 - **Knowledge**: P-RAG, MEGa — RAG vs. Fine-tuning systematic comparison
 - **Communication**: TFlow — weight-space perturbation stability at scale
