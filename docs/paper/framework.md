@@ -12,9 +12,9 @@
 
 **1.1 背景：一切皆在上下文**
 
-2017 年，《Attention Is All You Need》将"注意力"确立为序列建模的核心原语。近十年后，Agent 系统的构建似乎陷入了另一种"一切皆在 X"——一切皆在上下文。System Prompt 定义身份，RAG 管线和向量数据库注入知识，memory.md 文件承载长期记忆，自然语言文本充当 Agent 间的通信协议。In-Context Learning（ICL）成为了 Harness 设计者的万能锤子。
+2017 年，《Attention Is All You Need》将"注意力"确立为序列建模的核心原语。近十年后，Agent 系统的构建似乎陷入了另一种"一切皆在 X"——一切皆在上下文。Harness 硬编码循环策略决定"怎么想"，System Prompt 定义身份，RAG 管线和向量数据库注入知识，memory.md 文件承载长期记忆，自然语言文本充当 Agent 间的通信协议。In-Context Learning（ICL）成为了 Harness 设计者的万能锤子。
 
-部分研究者开始质疑这一默认假设。Hu 等人提出的 LoRA 表明，微调不需要触及全部参数——低秩矩阵足以编码复杂行为。PEAM 和 TMEM 等近期工作在记忆领域进一步验证了"参数化"路线的可行性。如果身份、知识、记忆乃至通信都可以被参数化，那么 Harness 的职责或许需要重新定义。
+部分研究者开始质疑这一默认假设。Hu 等人提出的 LoRA 表明，微调不需要触及全部参数——低秩矩阵足以编码复杂行为。PEAM 和 TMEM 等近期工作在记忆领域进一步验证了"参数化"路线的可行性。如果行为策略、身份、知识、记忆乃至通信都可以被参数化，那么 Harness 的职责或许需要重新定义。
 
 部分研究者对近年框架演进做过阶段性划分，将 2023–2026 年的发展归纳为三个时期（详见 [Harness 演进调查报告](reading_summary/harness-evolution-survey.md)）：
 
@@ -43,10 +43,11 @@
 
 | 子方向 | 要点 | 与 ARF 的关联 |
 |--------|------|-------------|
-| 2.1 Agent 架构 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 定义模糊 | ARF `ControlPlane` + `LoopStrategy` 为 ReAct 参考实现 |
-| 2.2 RAG vs 后训练 | RAG 临时注入 vs LoRA/RLHF 永久固化 | 已有：PEAM、TMEM 参数化记忆方向；[范式迁移报告](reading_summary/control-paradigm-migration.md) 覆盖 P-RAG、MEGa。**待补**：RAG vs Fine-tuning 系统对比综述（如《RAG vs Fine-tuning: Pipelines, Tradeoffs》）、LoRA MoE 路由机制文献 |
-| 2.3 记忆与上下文 | 外部记忆（向量 DB、MemGPT）vs 参数化记忆（LoRA 权重增量） | 已有：[参数化记忆笔记](reading_summary/parameterized-memory.md) 覆盖 PEAM/TMEM 两条路径。**待补**：MemGPT、Memotron 等外部记忆系统综述；向量 DB vs 参数化存储的定量对比文献 |
-| 2.4 Agent 通信 | NL 文本通信 vs 权重空间通信（TFlow）；A2A 协议与 Multi-Agent 编排 | 已有：[范式迁移报告](reading_summary/control-paradigm-migration.md) 覆盖 TFlow。**待补**：A2A 协议综述（Google A2A、ANP 等）；Multi-Agent 通信效率定量对比文献 |
+| 2.1 行为策略 | 综述 ReAct、Plan-Execute、Multi-Agent 范式；指出 Harness 硬编码循环策略的本质是一种误置——面对简单任务和复杂任务采用不同策略，应是大模型自身的能力 | ARF `ControlPlane` + `LoopStrategy` 为当前基线；新范式 Harness 负责采集训练数据，策略选择逐步内生于模型 |
+| 2.2 身份 | System Prompt 注入角色 vs Identity LoRA 参数化固化；任务无关的抽象行为准则（我是谁、能力边界、行为基准） | 已有：[范式迁移笔记](reading_summary/2.2-identity/identity-notes.md) 覆盖 Identity LoRA 路线。**待补**：身份固化综述（Character-LLM、Neeko、RoleLLM）；对抗攻击下 LoRA 固化 vs Prompt 注入的鲁棒性对比文献 |
+| 2.3 记忆 | 外部记忆（向量 DB、MemGPT）vs 参数化记忆（LoRA 权重增量）；偏好、环境变化、任务场景内的抽象化准则，应内生注入 | 已有：[参数化记忆笔记](reading_summary/2.3-memory/memory-notes.md) 覆盖 PEAM/TMEM 两条路径；[综述](reading_summary/2.3-memory/memory-survey.md) 覆盖 MemGPT、Generative Agents。**待补**：向量 DB vs 参数化存储的定量对比文献 |
+| 2.4 知识 | RAG 临时注入 vs Knowledge LoRA 永久固化；事实、场景内固定准则、任务场景强相关的抽象化准则，外部提供，参数化注入；需动态高频更新的数据保留 ICL 通道 | 已有：[综述](reading_summary/2.4-knowledge/knowledge-survey.md) 覆盖 RAG vs Fine-tuning 系统对比。**待补**：LoRA MoE 路由机制文献；参数化知识的灾难性遗忘缓解方案 |
+| 2.5 A2A 通讯 | NL 文本通信 vs 权重空间通信（TFlow）；文本是稀疏的人类面向输出，Agent 间信息交换应走 parameter 层级管道 | 已有：[综述](reading_summary/2.5-agent-communication/communication-survey.md) 覆盖 A2A 协议与 TFlow。**待补**：Multi-Agent 通信效率定量对比文献；扰动叠加稳定性理论分析 |
 
 > **本节 TODO**：检索各小节 2023–2026 代表性论文；重点确认是否有工作已提出过类似的"大脑-身体"分工或批判 Harness 功能过载。
 
@@ -58,27 +59,29 @@
 
 > **TODO**：绘制 Agent 架构图，标注 RAG、提示词构造、记忆读取、摘要压缩在 Harness 层的分布位置，标识ICL 注入点。
 
-**3.2 四类误置**
+**3.2 五类误置**
 
-对当前主流 Agent 系统的审视揭示了一种模式：多种本应由模型自身承担的功能，被外置到 Harness 层，通过工程手段"补偿"实现。这一模式在四个维度上均有体现：
+对当前主流 Agent 系统的审视揭示了一种模式：多种本应由模型自身承担的功能，被外置到 Harness 层，通过工程手段"补偿"实现。这一模式在五个维度上均有体现：
 
 | 误置类型 | 现象 | 可能的正确位置 | ARF 已有支撑 |
 |---------|------|-------------|-------------|
-| **知识误置** | 专业知识通过 RAG 外部注入 | 后训练内化 | 论文论点层面，ARF 尚无直接实验 |
-| **身份误置** | 系统提示词临时赋予角色边界 | 模型权重固有自我认知 | `SystemPromptProvider` 已模块化，便于后续替换为 LoRA 方案 |
-| **记忆误置** | 上下文压缩与长期记忆由外部模块处理 | 模型内部机制 | `MemoryPlugin` + `CompactionPlugin` 为当前基线；实验一与实验三将探索替代方案 |
-| **通信误置** | 多 Agent 间通过自然语言文本串行交互 | 权重空间直接信息交换（TFlow） | `AgentBus` 协议已定义；TFlow 为实验四的理论基础 |
+| **行为策略误置** | Harness 硬编码 ReAct/Plan-Solve/Multi-Agent 循环策略，替模型决定"怎么想" | 模型内生策略选择——面对简单任务和复杂任务自主切换推理模式 | `ControlPlane` + `LoopStrategy` 为当前基线；新范式 Harness 负责采集训练数据，策略选择逐步迁移至模型 |
+| **身份误置** | 系统提示词临时赋予角色边界 | 模型权重固有自我认知——Identity LoRA 固化"我是谁、行为准则、能力边界" | `SystemPromptProvider` 已模块化，便于后续替换为 LoRA 方案 |
+| **记忆误置** | 上下文压缩与长期记忆由外部模块处理 | 模型内部机制——偏好、环境变化等内生准则通过参数化注入 | `MemoryPlugin` + `CompactionPlugin` 为当前基线；实验一与实验三将探索替代方案 |
+| **知识误置** | 专业知识通过 RAG 外部注入 | 后训练内化——事实、场景固定准则通过 Knowledge LoRA 注入；动态高频数据保留 ICL | 论文论点层面，ARF 尚无直接实验 |
+| **通信误置** | 多 Agent 间通过自然语言文本串行交互 | 权重空间直接信息交换（TFlow）——parameter 层级通讯管道 | `AgentBus` 协议已定义；TFlow 为实验四的理论基础 |
 
 **3.2.1 统一根源：外部信息引入模型的范式选择**
 
-四类误置或许指向同一组根本张力：外部信息——不仅是知识，还包括身份定义、记忆持久化和 Agent 间通信——应当以何种方式引入模型。部分研究者在 PEAM 和 TMEM 等工作中探讨过类似的参数化替代方案。
+五类误置或许指向同一组根本张力：外部信息——不仅是知识和身份定义，还包括行为策略、记忆持久化和 Agent 间通信——应当以何种方式引入模型。部分研究者在 PEAM 和 TMEM 等工作中探讨过类似的参数化替代方案。
 
 | 维度 | 当前范式（In-Context Learning） | 参数化范式（Parameterization） |
 |------|-------------------------------|------------------------------|
-| **知识** | RAG 检索后拼入提示词 | LoRA 适配器编码领域知识，MoE 路由分发 |
-| **身份** | System Prompt 注入角色描述 | 后训练将身份边界写入权重 |
+| **行为策略** | Harness 硬编码 ReAct/Plan-Solve 循环 | 模型内生策略选择，Harness 仅提供训练数据 |
+| **身份** | System Prompt 注入角色描述 | 后训练将身份边界写入权重（Identity LoRA） |
 | **记忆** | memory.md / 向量库摘要后注入上下文 | 在线 SFT 将记忆写入 LoRA B 矩阵 |
-| **通信** | Agent 间 NL 文本串行交互 | 权重空间扰动融合（TFlow） |
+| **知识** | RAG 检索后拼入提示词 | LoRA 适配器编码领域知识，MoE 路由分发；动态高频数据保留 ICL 通道 |
+| **通信** | Agent 间 NL 文本串行交互 | 权重空间扰动融合（TFlow）——parameter 层级通讯管道 |
 | **共性** | 每次推理重新注入，占用上下文窗口 | 一次训练/编译，不占用上下文 |
 
 近期工作提出了 LoRA MoE + 在线 SFT 的技术路线作为可能的统一方案：
@@ -88,16 +91,16 @@
   → 在线 SFT 监督信号构造
   → LoRA B 矩阵更新（异步双缓冲，不阻塞推理）
   → MoE Router 根据任务上下文选择激活的 LoRA 适配器
-  → 知识/身份/记忆以权重增量形式内化
+  → 策略/身份/知识/记忆以权重增量形式内化
 ```
 
-- **LoRA MoE**：每种功能域（领域知识、身份、长期记忆、通信扰动）对应独立 LoRA 适配器。适配器可叠加（`W = W_base + Δ_id + Δ_knowledge + Δ_memory + ΣΔ_comm`）、可替换、可版本管理。
+- **LoRA MoE**：每种功能域（行为策略、身份、长期记忆、领域知识、通信扰动）对应独立 LoRA 适配器。适配器可叠加（`W = W_base + Δ_strategy + Δ_identity + Δ_knowledge + Δ_memory + ΣΔ_comm`）、可替换、可版本管理。
 - **在线 SFT**：从 Agent 运行时产出（用户纠错、工具调用成功/失败、记忆提取结果）自动构造训练对，持续更新 LoRA B 矩阵。
-- **TFlow 权重通信**：多 Agent 场景下，发送方将内部激活编入临时 LoRA 扰动，接收方在生成时无缝融合。详见 [阅读笔记](reading_summary/control-paradigm-migration.md)。
+- **TFlow 权重通信**：多 Agent 场景下，发送方将内部激活编入临时 LoRA 扰动，接收方在生成时无缝融合。详见 [阅读笔记](reading_summary/2.2-identity/identity-notes.md)。
 
-PEAM（arXiv 2605.27762）验证了跨回合技能固化的可行性，TMEM 验证了会话内在线更新的可行性。两者共享的消融漏洞——参数量不对等、秩 r 未扫参、同步阻塞设计——为后续实验设计提供了切入点。详见 [阅读笔记](reading_summary/parameterized-memory.md)。
+PEAM（arXiv 2605.27762）验证了跨回合技能固化的可行性，TMEM 验证了会话内在线更新的可行性。两者共享的消融漏洞——参数量不对等、秩 r 未扫参、同步阻塞设计——为后续实验设计提供了切入点。详见 [阅读笔记](reading_summary/2.3-memory/memory-notes.md)。
 
-> 四类误置与 §4 理论框架的对仗：知识误置对应软线知识维度，身份误置对应软线身份维度，记忆误置对应软线记忆维度，通信误置对应软线通信维度。§4 的"硬线 + 软线"结构即为回应这四类误置而提出的框架方案。
+> 五类误置与 §4 理论框架的对仗：行为策略误置对应软线策略维度，身份误置对应软线身份维度，记忆误置对应软线记忆维度，知识误置对应软线知识维度，通信误置对应软线通信维度。§4 的"硬线 + 软线"结构即为回应这五类误置而提出的框架方案。
 
 **3.3 根源**
 
@@ -129,20 +132,21 @@ PEAM（arXiv 2605.27762）验证了跨回合技能固化的可行性，TMEM 验�
 
 | 维度 | 冷启动 (ICL) | 热机 (LoRA MOE) |
 |------|-------------|-----------------|
+| 行为策略 | Harness 硬编码 ReAct/Plan-Solve | Strategy LoRA 内生选择 |
 | 身份 | SystemPrompt 定义角色 | Identity LoRA 固化人格 |
 | 知识 | RAG 检索注入上下文 | Knowledge LoRA 参数化知识库 |
 | 记忆 | memory.md 外挂摘要 | Memory LoRA 在线 SFT 写入 B 矩阵 |
 | 通信 | 自然语言文本串行 | TFlow 权重空间扰动融合 |
 
-这一描述将 Harness 定位为持续"内化"的机器——把身份信号、知识信号、记忆信号、通信信号从上下文空间渐进迁移至参数空间。脊椎不参与推理，但它是学习发生的载体。
+这一描述将 Harness 定位为持续"内化"的机器——把行为策略信号、身份信号、知识信号、记忆信号、通信信号从上下文空间渐进迁移至参数空间。脊椎不参与推理，但它是学习发生的载体。
 
-ARF 工程实现状态：硬线全部已实现 ✅。软线中 LoRA MOE 路由和在线 SFT 管线为 §5 实验一至四的建设目标。
+ARF 工程实现状态：硬线全部已实现。软线中 LoRA MOE 路由和在线 SFT 管线为 §5 实验一至四的建设目标。
 
 > **TODO**：检索是否有工作已提出过类似的"硬线 + 软线" Harness 结构定义。
 
 **4.3 大脑的职责：渐进内化的主体**
 
-大脑（LLM）是系统中唯一承载认知的组件。预训练阶段形成"本我"（语言能力与世界观），RLHF 阶段塑造"自我/超我"（价值观与安全边界），在线 LoRA 实现持续自演化——将 Harness 软线构造的 SFT 信号实时写入 FFN 权重。每一轮交互均可能改变模型的行为分布。最终权重构成为 `W_effective = W_base + Δ_identity + Δ_knowledge + Δ_memory + ΣΔ_communication`。
+大脑（LLM）是系统中唯一承载认知的组件。预训练阶段形成"本我"（语言能力与世界观），RLHF 阶段塑造"自我/超我"（价值观与安全边界），在线 LoRA 实现持续自演化——将 Harness 软线构造的 SFT 信号实时写入 FFN 权重。每一轮交互均可能改变模型的行为分布。最终权重构成为 `W_effective = W_base + Δ_strategy + Δ_identity + Δ_knowledge + Δ_memory + ΣΔ_communication`。
 
 **4.4 设计准则（硬线的四条推论）**
 
@@ -207,12 +211,12 @@ TFlow 初步验证了固定数量（3 个）发送方场景下权重空间通信
 
 #### 5.5 实验五（终局）：热机 LoRA MOE Harness vs. 传统 ICL Harness
 
-前四个实验各自验证单一维度的参数化迁移效果。实验五检验论文标题的核心命题——当所有四个维度的 LoRA 适配器同时激活时，"Parameter Is All You Need" 是否在综合表现上击败"Context Is All You Need"。
+前四个实验各自验证单一维度的参数化迁移效果。实验五检验论文标题的核心命题——当全部五个维度的 LoRA 适配器同时激活时，"Parameter Is All You Need" 是否在综合表现上击败"Context Is All You Need"。
 
 | 项 | 内容 |
 |----|------|
-| **假设** | 热机 LoRA MOE Harness 在任务完成率、抗越狱、记忆保持、通信效率四个维度上可能显著优于纯 ICL Harness |
-| **设计** | 同一 ARF 硬线，两组软线配置：A 组纯 ICL（SystemPrompt + RAG + memory.md + NL 文本通信），B 组热机 LoRA MOE（四个适配器全激活，低上下文）。同任务、同基座，四维评分 |
+| **假设** | 热机 LoRA MOE Harness 在任务完成率、策略自主性、抗越狱、记忆保持、知识效率、通信效率六个维度上可能显著优于纯 ICL Harness |
+| **设计** | 同一 ARF 硬线，两组软线配置：A 组纯 ICL（SystemPrompt + RAG + memory.md + NL 文本通信 + Harness 硬编码 ReAct），B 组热机 LoRA MOE（五个适配器全激活，低上下文）。同任务、同基座，六维评分 |
 | **数据集与测评** | *（待实验一至四完成后汇总确定）* |
 | **状态** | ⬜ 依赖实验一至四的结论和数据集 |
 
@@ -251,28 +255,33 @@ TFlow 初步验证了固定数量（3 个）发送方场景下权重空间通信
 
 ### 持续
 
-- [ ] **阅读笔记**：每读完一篇关键论文，写一页笔记存入 `reading_summary/`。已完成：PEAM + TMEM → [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md)
+- [ ] **阅读笔记**：每读完一篇关键论文，写一页笔记存入 `reading_summary/`。已完成：PEAM + TMEM → [笔记](reading_summary/2.3-memory/memory-notes.md)；ReAct/PS/AutoGen/MetaGPT → [笔记](reading_summary/2.1-behavior-strategy/behavior-strategy-notes.md)
 - [ ] **实验方案细化**：基于 PEAM/TMEM 消融漏洞（容量对齐、r 扫参、同步→异步），设计可发表的对比实验。数据集与测评方案已完成，详见 [experiment-design.md](experiment-design.md)
 
 ---
 
 ## 参考检索方向
 
-1. **Agent 架构综述** — `LLM-based Agent survey 2024 2025` · 已有：[Harness 演进调查报告](reading_summary/harness-evolution-survey.md)（Metaso, 2026-06）
-2. **RAG vs 微调** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等 · **待检索**：系统对比综述，重点关注是否有定量证据支持"参数化在效率上优于 RAG"
-3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM · ✅ 已阅读，[笔记](reading_summary/parameterized-memory.md)。**待补**：Memorizing Transformer、Unlimiformer、MemGPT 对比
-4. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM` · **待检索**：LoRA MoE 路由、多适配器协同、灾难性遗忘缓解
-5. **Agent 安全与约束** — Agent permission control、rollback 机制
-6. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
-7. **Agent 通信与协同** — TFlow 权重空间通信、Multi-Agent orchestration、A2A protocols
-8. **角色扮演与身份固化** — Character-LLM、Neeko、RoleLLM、CharLoRA
+1. **行为策略** — `LLM-based Agent survey 2024 2025` · 已有：[Harness 演进调查报告](reading_summary/harness-evolution-survey.md)（Metaso, 2026-06）、[阅读笔记](reading_summary/2.1-behavior-strategy/behavior-strategy-notes.md)（ReAct/PS/AutoGen/MetaGPT）
+2. **身份固化** — Character-LLM、Neeko、RoleLLM、CharLoRA · **待检索**：Identity LoRA 对抗鲁棒性对比文献
+3. **参数化记忆** — PEAM (arXiv 2605.27762)、TMEM · 已阅读，[笔记](reading_summary/2.3-memory/memory-notes.md)。**待补**：Memorizing Transformer、Unlimiformer、MemGPT 对比
+4. **RAG vs 参数化知识** — 《RAG vs Fine-tuning: Pipelines, Tradeoffs, and a Case Study on Agriculture》等 · 已有：[综述](reading_summary/2.4-knowledge/knowledge-survey.md)。**待补**：LoRA MoE 路由机制；灾难性遗忘缓解
+5. **Agent 通信与协同** — TFlow 权重空间通信、A2A protocols · 已有：[综述](reading_summary/2.5-agent-communication/communication-survey.md)
+6. **在线/持续学习与 LoRA** — `online LoRA continual learning LLM` · **待检索**：LoRA MoE 路由、多适配器协同
+7. **Agent 安全与约束** — Agent permission control、rollback 机制
+8. **现有 Harness/框架剖析** — LangChain、AutoGPT、OpenDevin 技术报告
 
 ---
 
 ## 阅读笔记索引
 
-| 日期 | 论文 | 笔记 |
-|------|------|------|
-| 2026-06 | PEAM · TMEM — 参数化记忆的两条路径 | [从 In-Context Learning 到 Weight Updates](reading_summary/parameterized-memory.md) |
-| 2026-06 | 2024–2026 AI Agent 框架技术演进与 Harness 全景解析 | [从构建块到操作系统](reading_summary/harness-evolution-survey.md) |
-| 2026-06 | 从 ICL 到参数内化：Identity LoRA · Knowledge LoRA · TFlow | [LLM Agent 核心控制范式迁移](reading_summary/control-paradigm-migration.md) |
+| 日期 | 域 | 论文/主题 | 笔记 |
+|------|-----|------|------|
+| 2026-06 | 行为策略 | ReAct · PS Prompting · AutoGen · MetaGPT | [阅读笔记](reading_summary/2.1-behavior-strategy/behavior-strategy-notes.md) |
+| 2026-06 | 行为策略 | Agent 架构 vs Harness 厚度批判 | [综述](reading_summary/2.1-behavior-strategy/behavior-strategy-survey.md) |
+| 2026-06 | 身份·知识·通信 | Identity LoRA · Knowledge LoRA · TFlow 范式迁移 | [笔记](reading_summary/2.2-identity/identity-notes.md) |
+| 2026-06 | 记忆 | PEAM · TMEM — 参数化记忆的两条路径 | [笔记](reading_summary/2.3-memory/memory-notes.md) |
+| 2026-06 | 记忆 | 外部注入 vs 参数内化记忆系统对比 | [综述](reading_summary/2.3-memory/memory-survey.md) |
+| 2026-06 | 知识 | RAG vs Fine-tuning 系统定量对比 | [综述](reading_summary/2.4-knowledge/knowledge-survey.md) |
+| 2026-06 | A2A 通讯 | NL → 结构化 → 权重空间通信范式演进 | [综述](reading_summary/2.5-agent-communication/communication-survey.md) |
+| 2026-06 | 总纲 | 2024–2026 AI Agent 框架技术演进 | [Harness 演进调查](reading_summary/harness-evolution-survey.md) |

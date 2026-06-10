@@ -35,13 +35,13 @@
 
 ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式》](docs/paper/framework.md)** 的工程配套项目。
 
-**核心命题**：《Attention Is All You Need》发表近十年后，Agent 系统陷入了另一种"一切皆在 X"——一切皆在上下文。System Prompt 定义身份，RAG 管线注入知识，memory.md 承载长期记忆，自然语言文本充当 Agent 间通信协议。In-Context Learning 成为了万能锤子。论文主张一种范式迁移：身份、知识、记忆、通信应从上下文窗口迁移至模型参数——通过 LoRA 适配器在运行时热插拔、组合叠加、渐进更新。**Parameter Is All You Need.**
+**核心命题**：《Attention Is All You Need》发表近十年后，Agent 系统陷入了另一种"一切皆在 X"——一切皆在上下文。Harness 硬编码循环策略决定"怎么想"，System Prompt 定义身份，RAG 管线注入知识，memory.md 承载长期记忆，自然语言文本充当 Agent 间通信协议。In-Context Learning 成为了万能锤子。论文主张一种范式迁移：行为策略、身份、记忆、知识、通信应从上下文窗口迁移至模型参数——通过 LoRA 适配器在运行时热插拔、组合叠加、渐进更新。**Parameter Is All You Need.**
 
-**Harness 在新范式中的角色**：如果参数承载认知信号，Harness 还剩什么？两条并行线：**硬线**（零认知，永不变更——安全门控、存档、追踪、Action 执行、Hook 挂载）和**软线**（身份/知识/记忆/通信信号从 ICL 渐进迁移至 LoRA MOE）。Harness 是脊椎——不思考，但它是学习发生的载体。
+**Harness 在新范式中的角色**：如果参数承载认知信号，Harness 还剩什么？两条并行线：**硬线**（零认知，永不变更——安全门控、存档、追踪、Action 执行、Hook 挂载）和**软线**（策略/身份/知识/记忆/通信信号从 ICL 渐进迁移至 LoRA MOE）。Harness 是脊椎——不思考，但它是学习发生的载体。
 
 **ARF 的双重角色**：
 - **作为 MVP**：ARF 实现了完整硬线——安全、错误恢复、存档、追踪、测评、Action 执行、Hook 体系、Agent 编排。软线（LoRA MOE 路由 + 在线 SFT 管线）为实验一至四的建设目标。
-- **作为研究脚手架**：ARF 为全部五项实验提供统一台架——四个单维度验证（记忆、身份、压缩、TFlow 通信）加终局对比（热机 LoRA MOE vs 冷启动纯 ICL Harness）。
+- **作为研究脚手架**：ARF 为全部五项实验提供统一台架——五个单维度验证（策略、身份、记忆、知识、TFlow 通信）加终局对比（热机 LoRA MOE vs 冷启动纯 ICL Harness）。
 
 **配套教学项目 — [ARF App](https://gitee.com/dalaydata/arf_app_021)**：7 单元渐进式教程，覆盖从零构建 ARF 应用到生产级 Agent 的完整链路——Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优。每单元含可运行代码快照。教程同时作为框架的用户验收测试，在真实使用中验证 API 设计的完备性。
 
@@ -129,15 +129,16 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 
 ## 第二部分 — 研究路线图
 
-ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的四个问题域组织——每个域对应一篇综述立场 + 一组实验验证。
+ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的五个问题域组织——按认知递进排列（从模型内部到模型之间），每个域定义旧 Harness 的越位与新 Harness 的职责边界。
 
-| 问题域 | 论文 § | 研究问题 | ARF 基线 | 实验 | 待建设 |
-|--------|---------|---------|----------|------|--------|
-| **Loop Strategies** | §2.1 · §5（框架） | Harness 能否被简化为薄 ReAct 循环 + 零认知反射弧？ | `ControlPlane` + `LoopStrategy`（ReAct 参考实现）。三层基于规则的简单反射。 | —（基线） | 将 ARF 硬线文档化为"最薄可行 Harness"的参考实现。综述：[loop-strategies](docs/paper/reading_summary/2.1-loop-strategies/) |
-| **RAG vs 后训练** | §2.2 · §5.2 | Identity LoRA 固化人格在对抗攻击下是否比 System Prompt 更难突破？ | `Guardrails` + `deny_patterns` + `SessionModeManager`。数据集：JailbreakBench、自建 Persona Conflict | **E2: 身份边界鲁棒性** | 从角色扮演数据训练 Identity LoRA。测量 ASR/ICS/RQ。对抗攻击下对比 System Prompt 基线。扫 LoRA 秩 r。综述：[rag-finetuning](docs/paper/reading_summary/2.2-rag-vs-finetuning/) |
-| **记忆与上下文** | §2.3 · §5.1, §5.3 | 参数化记忆（在线 SFT → LoRA B 矩阵）在保持率、更新能力、抗干扰、上下文占用上是否优于外部注入（memory.md + 向量 DB）？ | `MemoryPlugin` → `memory.md` + `ModelAdapter`。`CompactionPlugin`（token 感知滑动窗口 + LLM 摘要）。数据集：LoCoMo、LongMemEval、LongBench QA | **E1: 在线 LoRA 长期记忆保持** · **E3: 参数化上下文压缩** | 接入 LoRA B 矩阵在线 SFT。以 memory.md 条目为监督。同步 SFT 改为异步双缓冲。扫 r=1–8。四维对比（保持率/更新/抗干扰/上下文占用）。综述：[memory-context](docs/paper/reading_summary/2.3-memory-context/) |
-| **Agent 通信** | §2.4 · §5.4 | 权重空间扰动（TFlow）在延迟和带宽上是否优于 NL 文本通信？ | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`。自建 DRSA 模拟环境 | **E4: TFlow 权重空间通信** | 实现扰动编译模块（内部激活 → ΔW）。扫发送方数量（2–32）。对比延迟/带宽 vs NL 文本。综述：[agent-communication](docs/paper/reading_summary/2.4-agent-communication/) |
-| **终局** | §5.5 | "Parameter Is All You Need" 能否击败 "Context Is All You Need"？ | 同一 ARF 硬线，两组软线配置：A 组纯 ICL，B 组四个 LoRA 全激活 | **E5: 热机 LoRA MOE vs 冷启动 ICL Harness** | 同任务、同基座、四维评分。检验标题命题。 |
+| 问题域 | 论文 § | 研究问题 | 旧 Harness | 新 Harness | 实验 |
+|--------|---------|---------|-----------|-----------|------|
+| **行为策略** | §2.1 · §5（框架） | 模型应自主选择推理策略，而非由 Harness 硬编码 ReAct/Plan-Solve？ | Harness 在引擎代码中硬编码循环策略——替模型决定"怎么想" | Harness 采集并提供训练数据；策略选择逐步内生于模型 | —（基线）综述：[behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
+| **身份** | §2.2 · §5.2 | Identity LoRA 固化人格在对抗攻击下是否比 System Prompt 注入更难突破？ | System Prompt 定义角色边界——"我是谁、行为准则、能力边界"等任务无关的抽象准则 | Harness 提供身份切换；身份准则通过参数化固定为模型行为基准 | **E2: 身份边界鲁棒性** 综述：[identity](docs/paper/reading_summary/2.2-identity/) |
+| **记忆** | §2.3 · §5.1, §5.3 | 参数化记忆（在线 SFT → LoRA B 矩阵）在保持率、更新能力、抗干扰、上下文占用上是否优于外部注入？ | memory.md + 向量 DB 外部注入偏好、环境变化、任务场景内的抽象化准则 | Harness 提供记忆抽取和注入的触发点；记忆内生，通过参数化注入 | **E1: 在线 LoRA 长期记忆保持** · **E3: 参数化上下文压缩** 综述：[memory](docs/paper/reading_summary/2.3-memory/) |
+| **知识** | §2.4 · §5.3 | Knowledge LoRA 是否优于 RAG（稳定领域知识），同时为动态高频数据保留 ICL 通道？ | RAG 将事实、场景固定准则反复注入上下文窗口——每次推理重新注入 | Harness 提供知识注入的触发点；动态高频更新数据保留 ICL 通道 | **E3: 参数化上下文压缩** 综述：[knowledge](docs/paper/reading_summary/2.4-knowledge/) |
+| **A2A 通讯** | §2.5 · §5.4 | 权重空间扰动（TFlow）在延迟和带宽上是否优于 NL 文本——Agent 间应走 parameter 层级管道？ | Agent 间交换 NL 文本——稀疏的人类面向输出，串行经过 LLM 推理 | Harness 提供 parameter 层级的通讯管道——in-memory object 传递，非文本生成 | **E4: TFlow 权重空间通信** 综述：[communication](docs/paper/reading_summary/2.5-agent-communication/) |
+| **终局** | §5.5 | "Parameter Is All You Need" 能否击败 "Context Is All You Need"？ | 同一 ARF 硬线，两组软线：A 组纯 ICL（五个维度上下文注入），B 组五个 LoRA 适配器全激活 | **E5: 热机 LoRA MOE vs 冷启动 ICL Harness** — 同任务、同基座、六维评分 |
 
 **运行实验**：每项实验在同一 ARF 台架上运行。`EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见[回归测评文档](docs/eval-benchmark.md)。
 
@@ -151,13 +152,14 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 ### 短期：论文阅读与理论校验
 
-算力受限，聚焦四维软线的文献调研：
+算力受限，聚焦五维软线的文献调研：
 
-- **记忆**：PEAM、TMEM — 扩展至 Memorizing Transformer、Unlimiformer、MemGPT
+- **行为策略**：ReAct、PS Prompting、AutoGen、MetaGPT — 策略选择能否内生于模型？
 - **身份**：Character-LLM、Neeko、RoleLLM — LoRA 固化人格的对抗鲁棒性
-- **知识**：P-RAG、MEGa — RAG vs Fine-tuning 系统对比
+- **记忆**：PEAM、TMEM — 扩展至 Memorizing Transformer、Unlimiformer、MemGPT
+- **知识**：P-RAG、MEGa — RAG vs Fine-tuning 系统对比；动态 ICL 通道保留
 - **通信**：TFlow — 权重扰动叠加在大规模 Agent 群中的稳定性
-- **消融实验设计**：完善 E1/E3 变量控制、基准和指标，算力就绪后快速启动
+- **消融实验设计**：完善 E1/E2/E3 变量控制、基准和指标，算力就绪后快速启动
 
 详见 [阅读笔记](docs/paper/reading_summary/)。
 
@@ -165,11 +167,9 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 算力就绪后启动：
 
-- LoRA MOE 路由器 — 按功能域（身份/知识/记忆/通信）热插拔适配器
+- LoRA MOE 路由器 — 按功能域（策略/身份/知识/记忆/通信）热插拔适配器
 - 在线 SFT 管线 — 双缓冲 LoRA B 矩阵，异步非阻塞更新
-- E5 终局实验 — 热机 LoRA MOE Harness vs 冷启动 ICL Harness，四维评分
-- 异步非阻塞更新（双缓冲 LoRA B 矩阵）
-- 偏好与事实解耦（自监督 vs 强监督，分离适配器）
+- E5 终局实验 — 热机 LoRA MOE Harness vs 冷启动 ICL Harness，六维评分
 
 ---
 
