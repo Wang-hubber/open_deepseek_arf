@@ -129,19 +129,19 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 
 ## 第二部分 — 研究路线图
 
-ARF 是论文全部五项实验的统一台架。下表将每项实验映射到当前 ARF 能力及待建设内容。
+ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的四个问题域组织——每个域对应一篇综述立场 + 一组实验验证。
 
-| 实验 | 论文 § | ARF 状态 | 已有基础 | 待建设 |
-|------|---------|----------|---------|--------|
-| **E1: 在线 LoRA 长期记忆保持** | §5.1 | **扩展点** | `MemoryPlugin` → `memory.md` + `ModelAdapter`。数据集：LoCoMo、LongMemEval、自建 DFC | 接入 LoRA B 矩阵在线 SFT；以 memory.md 条目为监督信号；扫 r=1–8；对比参数化 vs 外挂摘要的记忆保持率 |
-| **E2: 身份边界鲁棒性** | §5.2 | **扩展点** | `Guardrails` + `deny_patterns` + `SessionModeManager`。数据集：JailbreakBench、自建 Persona Conflict | 训练 Identity LoRA；测量 ASR/ICS/RQ；对比 System Prompt 基线在对抗攻击下的突破率 |
-| **E3: 参数化上下文压缩** | §5.3 | **扩展点** | `CompactionPlugin`（token 感知滑动窗口 + LLM 摘要）。数据集：LongBench QA | 同步 SFT 改为异步双缓冲 LoRA B 矩阵；对比 F1/延迟 vs LLM 摘要 |
-| **E4: TFlow 权重空间通信** | §5.4 | **扩展点** | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`。自建 DRSA 模拟环境 | 实现扰动编译模块；扫发送方数量（2–32）；对比延迟/带宽 vs 文本通信 |
-| **E5（终局）: 热机 LoRA MOE vs 冷启动 ICL Harness** | §5.5 | **依赖 E1–4** | 同一 ARF 硬线，两组软线配置：A 组纯 ICL，B 组四个 LoRA 全激活 | 同任务、同基座、四维评分。检验标题命题："Parameter Is All You Need" 是否击败 "Context Is All You Need" |
+| 问题域 | 论文 § | 研究问题 | ARF 基线 | 实验 | 待建设 |
+|--------|---------|---------|----------|------|--------|
+| **Loop Strategies** | §2.1 · §5（框架） | Harness 能否被简化为薄 ReAct 循环 + 零认知反射弧？ | `ControlPlane` + `LoopStrategy`（ReAct 参考实现）。三层基于规则的简单反射。 | —（基线） | 将 ARF 硬线文档化为"最薄可行 Harness"的参考实现。综述：[loop-strategies](docs/paper/reading_summary/2.1-loop-strategies/) |
+| **RAG vs 后训练** | §2.2 · §5.2 | Identity LoRA 固化人格在对抗攻击下是否比 System Prompt 更难突破？ | `Guardrails` + `deny_patterns` + `SessionModeManager`。数据集：JailbreakBench、自建 Persona Conflict | **E2: 身份边界鲁棒性** | 从角色扮演数据训练 Identity LoRA。测量 ASR/ICS/RQ。对抗攻击下对比 System Prompt 基线。扫 LoRA 秩 r。综述：[rag-finetuning](docs/paper/reading_summary/2.2-rag-vs-finetuning/) |
+| **记忆与上下文** | §2.3 · §5.1, §5.3 | 参数化记忆（在线 SFT → LoRA B 矩阵）在保持率、更新能力、抗干扰、上下文占用上是否优于外部注入（memory.md + 向量 DB）？ | `MemoryPlugin` → `memory.md` + `ModelAdapter`。`CompactionPlugin`（token 感知滑动窗口 + LLM 摘要）。数据集：LoCoMo、LongMemEval、LongBench QA | **E1: 在线 LoRA 长期记忆保持** · **E3: 参数化上下文压缩** | 接入 LoRA B 矩阵在线 SFT。以 memory.md 条目为监督。同步 SFT 改为异步双缓冲。扫 r=1–8。四维对比（保持率/更新/抗干扰/上下文占用）。综述：[memory-context](docs/paper/reading_summary/2.3-memory-context/) |
+| **Agent 通信** | §2.4 · §5.4 | 权重空间扰动（TFlow）在延迟和带宽上是否优于 NL 文本通信？ | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`。自建 DRSA 模拟环境 | **E4: TFlow 权重空间通信** | 实现扰动编译模块（内部激活 → ΔW）。扫发送方数量（2–32）。对比延迟/带宽 vs NL 文本。综述：[agent-communication](docs/paper/reading_summary/2.4-agent-communication/) |
+| **终局** | §5.5 | "Parameter Is All You Need" 能否击败 "Context Is All You Need"？ | 同一 ARF 硬线，两组软线配置：A 组纯 ICL，B 组四个 LoRA 全激活 | **E5: 热机 LoRA MOE vs 冷启动 ICL Harness** | 同任务、同基座、四维评分。检验标题命题。 |
 
-**运行实验**：每项实验设计为在同一 ARF 台架上运行。框架的 `EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见 [回归测评文档](docs/eval-benchmark.md) 了解评估基础设施。
+**运行实验**：每项实验在同一 ARF 台架上运行。`EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见[回归测评文档](docs/eval-benchmark.md)。
 
-**研究日志**：[`docs/paper/`](docs/paper/) 包含论文框架、阅读笔记和阶段性研究进展。
+**研究日志**：[`docs/paper/`](docs/paper/) — 论文框架、按域组织的阅读笔记、阶段性研究进展。
 
 <br/>
 
