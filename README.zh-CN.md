@@ -53,17 +53,38 @@ ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式
 
 **研究者** — 关注架构主张和实验路线：
 
-- [设计理念](#设计理念大脑-脊椎-身体模型) → [三层基于规则的简单反射](#三层基于规则的简单反射) → [控制平面](#控制平面--结构化-state--生命周期) → [第二部分 — 研究路线图](#第二部分--研究路线图)
+- [研究路线图](#第一部分--研究路线图) → [设计理念](#第二部分--框架) → [三层基于规则的简单反射](#三层基于规则的简单反射) → [控制平面](#控制平面--结构化-state--生命周期)
 
 **框架使用者** — 想基于 ARF 构建应用：
 
-- [5 骨架架构](#harness-即内核5-骨架架构) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，7 单元渐进式教程，从零到生产级 Agent
+- [研究路线图](#第一部分--研究路线图) → [5 骨架架构](#harness-即内核5-骨架架构) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，7 单元渐进式教程，从零到生产级 Agent
 
 <br/>
 
 ---
 
-## 第一部分 — 框架
+## 第一部分 — 研究路线图
+
+ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的五个问题域组织——按认知递进排列（从模型内部到模型之间），每个域定义旧 Harness 的越位与新 Harness 的职责边界。
+
+| 问题域 | 论文 § | 研究问题 | 旧 Harness | 新 Harness | 实验 |
+|--------|---------|---------|-----------|-----------|------|
+| **行为策略** | §2.1 · §5（框架） | 模型应自主选择推理策略，而非由 Harness 硬编码 ReAct/Plan-Solve？ | Harness 在引擎代码中硬编码循环策略——替模型决定"怎么想" | Harness 采集并提供训练数据；策略选择逐步内生于模型 | —（基线）综述：[behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
+| **身份** | §2.2 · §5.2 | Identity LoRA 固化人格在对抗攻击下是否比 System Prompt 注入更难突破？ | System Prompt 定义角色边界——"我是谁、行为准则、能力边界"等任务无关的抽象准则 | Harness 提供身份切换；身份准则通过参数化固定为模型行为基准 | **E2: 身份边界鲁棒性** 综述：[identity](docs/paper/reading_summary/2.2-identity/) |
+| **记忆** | §2.3 · §5.1, §5.3 | 参数化记忆（在线 SFT → LoRA B 矩阵）在保持率、更新能力、抗干扰、上下文占用上是否优于外部注入？ | memory.md + 向量 DB 外部注入偏好、环境变化、任务场景内的抽象化准则 | Harness 提供记忆抽取和注入的触发点；记忆内生，通过参数化注入 | **E1: 在线 LoRA 长期记忆保持** · **E3: 参数化上下文压缩** 综述：[memory](docs/paper/reading_summary/2.3-memory/) |
+| **知识** | §2.4 · §5.3 | Knowledge LoRA 是否优于 RAG（稳定领域知识），同时为动态高频数据保留 ICL 通道？ | RAG 将事实、场景固定准则反复注入上下文窗口——每次推理重新注入 | Harness 提供知识注入的触发点；动态高频更新数据保留 ICL 通道 | **E3: 参数化上下文压缩** 综述：[knowledge](docs/paper/reading_summary/2.4-knowledge/) |
+| **A2A 通讯** | §2.5 · §5.4 | 权重空间扰动（TFlow）在延迟和带宽上是否优于 NL 文本——Agent 间应走 parameter 层级管道？ | Agent 间交换 NL 文本——稀疏的人类面向输出，串行经过 LLM 推理 | Harness 提供 parameter 层级的通讯管道——in-memory object 传递，非文本生成 | **E4: TFlow 权重空间通信** 综述：[communication](docs/paper/reading_summary/2.5-agent-communication/) |
+| **终局** | §5.5 | "Parameter Is All You Need" 能否击败 "Context Is All You Need"？ | 同一 ARF 硬线，两组软线：A 组纯 ICL（五个维度上下文注入），B 组五个 LoRA 适配器全激活 | **E5: 热机 LoRA MOE vs 冷启动 ICL Harness** — 同任务、同基座、六维评分 |
+
+**运行实验**：每项实验在同一 ARF 台架上运行。`EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见[回归测评文档](docs/eval-benchmark.md)。
+
+**研究日志**：[`docs/paper/`](docs/paper/) — 论文框架、按域组织的阅读笔记、阶段性研究进展。
+
+<br/>
+
+---
+
+## 第二部分 — 框架
 
 ### 设计理念：大脑-脊椎-身体模型
 
@@ -126,23 +147,6 @@ ARF 建立在 **5 个骨架**之上——最小可运行框架。每个骨架对
 ### Plugin 体系——反射弧，非认知模块
 
 **Plugin ≠ Tool。** Tool 是 MCP 管理的函数资源，由 Agent 调用。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。框架无 Plugin 也能运行；Plugin 添加预置或自定义能力。关键区分：当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。详见 [Plugin 总览](docs/plugins/overview.md)。
-
-## 第二部分 — 研究路线图
-
-ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的五个问题域组织——按认知递进排列（从模型内部到模型之间），每个域定义旧 Harness 的越位与新 Harness 的职责边界。
-
-| 问题域 | 论文 § | 研究问题 | 旧 Harness | 新 Harness | 实验 |
-|--------|---------|---------|-----------|-----------|------|
-| **行为策略** | §2.1 · §5（框架） | 模型应自主选择推理策略，而非由 Harness 硬编码 ReAct/Plan-Solve？ | Harness 在引擎代码中硬编码循环策略——替模型决定"怎么想" | Harness 采集并提供训练数据；策略选择逐步内生于模型 | —（基线）综述：[behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
-| **身份** | §2.2 · §5.2 | Identity LoRA 固化人格在对抗攻击下是否比 System Prompt 注入更难突破？ | System Prompt 定义角色边界——"我是谁、行为准则、能力边界"等任务无关的抽象准则 | Harness 提供身份切换；身份准则通过参数化固定为模型行为基准 | **E2: 身份边界鲁棒性** 综述：[identity](docs/paper/reading_summary/2.2-identity/) |
-| **记忆** | §2.3 · §5.1, §5.3 | 参数化记忆（在线 SFT → LoRA B 矩阵）在保持率、更新能力、抗干扰、上下文占用上是否优于外部注入？ | memory.md + 向量 DB 外部注入偏好、环境变化、任务场景内的抽象化准则 | Harness 提供记忆抽取和注入的触发点；记忆内生，通过参数化注入 | **E1: 在线 LoRA 长期记忆保持** · **E3: 参数化上下文压缩** 综述：[memory](docs/paper/reading_summary/2.3-memory/) |
-| **知识** | §2.4 · §5.3 | Knowledge LoRA 是否优于 RAG（稳定领域知识），同时为动态高频数据保留 ICL 通道？ | RAG 将事实、场景固定准则反复注入上下文窗口——每次推理重新注入 | Harness 提供知识注入的触发点；动态高频更新数据保留 ICL 通道 | **E3: 参数化上下文压缩** 综述：[knowledge](docs/paper/reading_summary/2.4-knowledge/) |
-| **A2A 通讯** | §2.5 · §5.4 | 权重空间扰动（TFlow）在延迟和带宽上是否优于 NL 文本——Agent 间应走 parameter 层级管道？ | Agent 间交换 NL 文本——稀疏的人类面向输出，串行经过 LLM 推理 | Harness 提供 parameter 层级的通讯管道——in-memory object 传递，非文本生成 | **E4: TFlow 权重空间通信** 综述：[communication](docs/paper/reading_summary/2.5-agent-communication/) |
-| **终局** | §5.5 | "Parameter Is All You Need" 能否击败 "Context Is All You Need"？ | 同一 ARF 硬线，两组软线：A 组纯 ICL（五个维度上下文注入），B 组五个 LoRA 适配器全激活 | **E5: 热机 LoRA MOE vs 冷启动 ICL Harness** — 同任务、同基座、六维评分 |
-
-**运行实验**：每项实验在同一 ARF 台架上运行。`EvalPlugin` + `TracePlugin` 提供统一的数据采集与指标计算。参见[回归测评文档](docs/eval-benchmark.md)。
-
-**研究日志**：[`docs/paper/`](docs/paper/) — 论文框架、按域组织的阅读笔记、阶段性研究进展。
 
 <br/>
 

@@ -53,17 +53,38 @@ ARF is the **engineering companion** to the research paper [*"Parameter Is All Y
 
 **For researchers** — interested in the architecture thesis and experimental roadmap:
 
-- [Design Philosophy](#design-philosophy-the-brain-spine-body-model) → [Three Layers of Rule-Based Reflexes](#three-layers-of-rule-based-reflexes) → [The Control Plane](#the-control-plane--structured-state--lifecycle) → [Part II — Research Roadmap](#part-ii--research-roadmap)
+- [Research Roadmap](#part-i--research-roadmap) → [Design Philosophy](#part-ii--framework) → [Three Layers of Rule-Based Reflexes](#three-layers-of-rule-based-reflexes) → [The Control Plane](#the-control-plane--structured-state--lifecycle)
 
 **For framework users** — want to build on ARF:
 
-- [5-Skeleton Architecture](#harness-as-kernel--5-skeleton-architecture) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
+- [Research Roadmap](#part-i--research-roadmap) → [5-Skeleton Architecture](#harness-as-kernel--5-skeleton-architecture) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
 
 <br/>
 
 ---
 
-## Part I — Framework
+## Part I — Research Roadmap
+
+ARF is the unified testbed for all five experiments proposed in the paper. The experiments are organized by the five problem domains identified in §2 Related Work — ordered by cognitive progression from model-internal to inter-model.
+
+| Domain | Paper § | Research Question | Old Harness | New Harness | Experiment |
+|--------|---------|-------------------|-------------|-------------|------------|
+| **Behavior Strategy** | §2.1 · §5 (framework) | Should the model choose its own reasoning strategy, rather than Harness hardcoding ReAct/Plan-Solve? | Harness hardcodes loop strategies in engine code — deciding "how to think" for the model. | Harness collects and provides training data; strategy selection migrates to model-endogenous. | — (Baseline) Survey: [behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
+| **Identity** | §2.2 · §5.2 | Can Identity LoRA frozen personas resist jailbreak better than System Prompt injection? | System Prompt defines role boundaries — task-independent abstract norms (who I am, behavioral limits, capability boundaries). | Harness provides identity switching; identity norms fixed via parameterization as the model's behavioral baseline. | **E2: Identity Boundary Robustness** Survey: [identity](docs/paper/reading_summary/2.2-identity/) |
+| **Memory** | §2.3 · §5.1, §5.3 | Does parameterized memory (online SFT → LoRA B-matrix) outperform external injection (memory.md + vector DB)? | memory.md + vector DB external injection for preferences, environment changes, task-scene abstractions. | Harness provides trigger points for memory extraction and injection; memory is endogenous, parameterized. | **E1: Online LoRA Long-Term Memory** · **E3: Parametric Context Compression** Survey: [memory](docs/paper/reading_summary/2.3-memory/) |
+| **Knowledge** | §2.4 · §5.3 | Does Knowledge LoRA outperform RAG for stable domain knowledge, while retaining ICL for dynamic high-frequency updates? | RAG injects facts and scene-specific rules via context window — every inference re-injects. | Harness provides trigger points for knowledge injection; dynamic high-frequency data retains ICL channel. | **E3: Parametric Context Compression** Survey: [knowledge](docs/paper/reading_summary/2.4-knowledge/) |
+| **A2A Communication** | §2.5 · §5.4 | Does weight-space perturbation (TFlow) outperform NL text in latency and bandwidth for Agent-to-Agent exchange? | Agents exchange NL text — sparse, human-facing, serialized through LLM inference. | Harness provides parameter-level communication pipeline — in-memory object passing, not text generation. | **E4: TFlow Weight-Space Communication** Survey: [communication](docs/paper/reading_summary/2.5-agent-communication/) |
+| **Culmination** | §5.5 | Does "Parameter Is All You Need" beat "Context Is All You Need"? | Same ARF hard-line. Two soft-line configs: A (ICL-only, 5 dimensions injected via context) vs. B (all five LoRA adapters active, low context). | **E5: HOT LoRA MOE vs. COLD ICL Harness** — same task, same base model, 6-dimensional scoring. |
+
+**Running an experiment**: Each experiment runs against the same ARF testbed. `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md).
+
+**Research log**: [`docs/paper/`](docs/paper/) — paper framework, reading summaries by domain, and progressive research notes.
+
+<br/>
+
+---
+
+## Part II — Framework
 
 ### Design Philosophy: The Brain-Spine-Body Model
 
@@ -127,22 +148,7 @@ ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton 
 
 **Plugin ≠ Tool.** Tools are MCP-managed function resources the Agent calls. Plugins are behaviors mounted on Hook points — they fire automatically at framework lifecycle events, like biological reflex arcs. The framework runs without plugins; plugins add preset or customizable capabilities. Critically: when a plugin needs intelligence (memory extraction, context summarization), it calls a model through the standard `_call_model` interface — **the intelligence comes from the model, not from the plugin**. See [Plugin Overview](docs/plugins/overview.md) for the full architecture.
 
-## Part II — Research Roadmap
 
-ARF is the unified testbed for all five experiments proposed in the paper. The experiments are organized by the five problem domains identified in §2 Related Work — each domain pairs a survey position with an experimental validation, ordered by cognitive progression from model-internal to inter-model.
-
-| Domain | Paper § | Research Question | Old Harness | New Harness | Experiment |
-|--------|---------|-------------------|-------------|-------------|------------|
-| **Behavior Strategy** | §2.1 · §5 (framework) | Should the model choose its own reasoning strategy, rather than Harness hardcoding ReAct/Plan-Solve? | Harness hardcodes loop strategies in engine code. | Harness collects training data; strategy selection migrates to model-endogenous. | — (Baseline) Survey: [behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
-| **Identity** | §2.2 · §5.2 | Can Identity LoRA frozen personas resist jailbreak better than System Prompt injection? | System Prompt defines role boundaries — task-independent abstract norms (who I am, behavioral limits). | Harness provides identity switching; identity norms fixed via parameterization as model's behavioral baseline. | **E2: Identity Boundary Robustness** Survey: [identity](docs/paper/reading_summary/2.2-identity/) |
-| **Memory** | §2.3 · §5.1, §5.3 | Does parameterized memory (online SFT → LoRA B-matrix) outperform external injection (memory.md + vector DB)? | memory.md + vector DB external injection for preferences, environment changes, task-scene abstractions. | Harness provides trigger points for memory extraction and injection; memory is endogenous, parameterized. | **E1: Online LoRA Long-Term Memory** · **E3: Parametric Context Compression** Survey: [memory](docs/paper/reading_summary/2.3-memory/) |
-| **Knowledge** | §2.4 · §5.3 | Does Knowledge LoRA outperform RAG for stable domain knowledge, while retaining ICL for dynamic updates? | RAG injects facts and scene-specific rules via context window — every inference re-injects. | Harness provides trigger points for knowledge injection; dynamic high-frequency data retains ICL channel. | **E3: Parametric Context Compression** Survey: [knowledge](docs/paper/reading_summary/2.4-knowledge/) |
-| **A2A Communication** | §2.5 · §5.4 | Does weight-space perturbation (TFlow) outperform NL text in latency and bandwidth for Agent-to-Agent exchange? | Agents exchange NL text — sparse, human-facing, serialized through LLM inference. | Harness provides parameter-level communication pipeline — in-memory object passing, not text generation. | **E4: TFlow Weight-Space Communication** Survey: [communication](docs/paper/reading_summary/2.5-agent-communication/) |
-| **Culmination** | §5.5 | Does "Parameter Is All You Need" beat "Context Is All You Need"? | Same ARF hard-line. Two soft-line configs: A (ICL-only, 5 dimensions injected via context) vs. B (all five LoRA adapters active, low context). | **E5: HOT LoRA MOE vs. COLD ICL Harness** — same task, same base model, 6-dimensional scoring. |
-
-**Running an experiment**: Each experiment runs against the same ARF testbed. `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md).
-
-**Research log**: [`docs/paper/`](docs/paper/) — paper framework, reading summaries by domain, and progressive research notes.
 
 <br/>
 
