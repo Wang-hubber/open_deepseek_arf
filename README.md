@@ -35,13 +35,13 @@
 
 ARF is the **engineering companion** to the research paper [*"Parameter Is All You Need — A New Paradigm for Harness"*](docs/paper/framework.md).
 
-**The core thesis**: Nearly a decade after *Attention Is All You Need*, Agent systems have fallen into another "all you need" — everything is in context. System Prompts define identity, RAG pipelines inject knowledge, memory.md files carry long-term memory, natural language text serves as inter-Agent communication protocol. In-Context Learning became the universal hammer. The paper argues for a paradigm shift: identity, knowledge, memory, and communication should migrate from the context window into model parameters — via LoRA adapters that can be hot-swapped, composed, and progressively updated at runtime. **Parameter Is All You Need.**
+**The core thesis**: Nearly a decade after *Attention Is All You Need*, Agent systems have fallen into another "all you need" — everything is in context. Harness hardcodes loop strategies deciding "how to think." System Prompts define identity. RAG pipelines inject knowledge. memory.md files carry long-term memory. Natural language text serves as inter-Agent communication protocol. In-Context Learning became the universal hammer. The paper argues for a paradigm shift: behavior strategy, identity, knowledge, memory, and communication should migrate from the context window into model parameters — via LoRA adapters that can be hot-swapped, composed, and progressively updated at runtime. **Parameter Is All You Need.**
 
-**The Harness role in this paradigm**: If parameters carry cognitive signals, what remains for the Harness? Two parallel lines: a **hard-line** (zero-cognition, never-changing — safety gating, archival, trace, action execution, hooks) and a **soft-line** (the progressive migration of identity/knowledge/memory/communication signals from ICL → LoRA MOE). The Harness is the spinal cord — it doesn't think, but it is the carrier on which learning happens.
+**The Harness role in this paradigm**: If parameters carry cognitive signals, what remains for the Harness? Two parallel lines: a **hard-line** (zero-cognition, never-changing — safety gating, archival, trace, action execution, hooks) and a **soft-line** (the progressive migration of strategy/identity/knowledge/memory/communication signals from ICL → LoRA MOE). The Harness is the spinal cord — it doesn't think, but it is the carrier on which learning happens.
 
 **ARF's dual role**:
 - **As an MVP**: ARF implements the hard-line in full — safety, error recovery, archival, tracing, evaluation, action execution, hook surface, and agent orchestration. The soft-line (LoRA MOE routing + online SFT pipeline) is the target of experiments 1–4.
-- **As a research scaffold**: ARF provides the unified testbed for all five experiments — four per-dimension validations (memory, identity, compression, TFlow communication) plus the culminating HOT (LoRA MOE) vs COLD (ICL-only) Harness comparison.
+- **As a research scaffold**: ARF provides the unified testbed for all five experiments — five per-dimension validations (strategy, identity, memory, knowledge, TFlow communication) plus the culminating HOT (LoRA MOE) vs COLD (ICL-only) Harness comparison.
 
 **Companion project — [ARF App](https://gitee.com/dalaydata/arf_app_021)**: A 7-unit progressive tutorial that teaches building on ARF from zero to a production Agent — covering Hello ARF, session management, tools, approval, guardrails, memory, and agent tuning. Each unit includes runnable code snapshots. The tutorial doubles as user-acceptance testing for the framework, validating API design completeness through real usage.
 
@@ -129,15 +129,16 @@ ARF is built on **5 skeletons** — the minimum viable framework. Each skeleton 
 
 ## Part II — Research Roadmap
 
-ARF is the unified testbed for all five experiments proposed in the paper. The experiments are organized by the four problem domains identified in §2 Related Work — each domain pairs a survey position with an experimental validation.
+ARF is the unified testbed for all five experiments proposed in the paper. The experiments are organized by the five problem domains identified in §2 Related Work — each domain pairs a survey position with an experimental validation, ordered by cognitive progression from model-internal to inter-model.
 
-| Domain | Paper § | Research Question | ARF Baseline | Experiment | What to Build |
-|--------|---------|-------------------|-------------|------------|---------------|
-| **Loop Strategies** | §2.1 · §5 (framework) | Can Harness be reduced to a thin ReAct loop + zero-cognition reflexes? | `ControlPlane` + `LoopStrategy` (ReAct reference impl). Three-layer rule-based reflex arcs. | — (Baseline) | Document ARF's hard-line as a reference implementation of "thinnest viable Harness". Survey: [loop-strategies](docs/paper/reading_summary/2.1-loop-strategies/) |
-| **RAG vs Post-Training** | §2.2 · §5.2 | Can Identity LoRA frozen personas resist jailbreak better than System Prompt? | `Guardrails` + `deny_patterns` + `SessionModeManager`. Datasets: JailbreakBench, self-built Persona Conflict. | **E2: Identity Boundary Robustness** | Train Identity LoRA from role-play data. Measure ASR/ICS/RQ under adversarial attacks. Sweep LoRA rank r. Survey: [rag-finetuning](docs/paper/reading_summary/2.2-rag-vs-finetuning/) |
-| **Memory & Context** | §2.3 · §5.1, §5.3 | Does parameterized memory (online SFT → LoRA B-matrix) outperform external injection (memory.md + vector DB)? | `MemoryPlugin` → `memory.md` + `ModelAdapter`. `CompactionPlugin` (token-aware sliding window + LLM summary). Datasets: LoCoMo, LongMemEval, LongBench QA. | **E1: Online LoRA Long-Term Memory** · **E3: Parametric Context Compression** | Add LoRA B-matrix online SFT interface. Use memory.md entries as supervision. Replace sync SFT with async dual-buffer. Sweep r=1–8. Compare parametric vs. external injection on retention, update, interference, context usage. Survey: [memory-context](docs/paper/reading_summary/2.3-memory-context/) |
-| **Agent Communication** | §2.4 · §5.4 | Does weight-space perturbation (TFlow) outperform NL text communication in latency and bandwidth? | `AgentBus` + `PeerAgent` + `ControlPlane.astream()`. Self-built DRSA simulation. | **E4: TFlow Weight-Space Communication** | Implement perturbation compiler (internal activations → ΔW). Sweep sender count (2–32). Compare latency/bandwidth vs. NL text. Survey: [agent-communication](docs/paper/reading_summary/2.4-agent-communication/) |
-| **Culmination** | §5.5 | Does "Parameter Is All You Need" beat "Context Is All You Need"? | Same ARF hard-line. Two soft-line configs: A (ICL-only) vs. B (all four LoRA adapters active). | **E5: HOT LoRA MOE vs. COLD ICL Harness** | Same task, same base model, 4-dimensional scoring. Tests the title thesis. |
+| Domain | Paper § | Research Question | Old Harness | New Harness | Experiment |
+|--------|---------|-------------------|-------------|-------------|------------|
+| **Behavior Strategy** | §2.1 · §5 (framework) | Should the model choose its own reasoning strategy, rather than Harness hardcoding ReAct/Plan-Solve? | Harness hardcodes loop strategies in engine code. | Harness collects training data; strategy selection migrates to model-endogenous. | — (Baseline) Survey: [behavior-strategy](docs/paper/reading_summary/2.1-behavior-strategy/) |
+| **Identity** | §2.2 · §5.2 | Can Identity LoRA frozen personas resist jailbreak better than System Prompt injection? | System Prompt defines role boundaries — task-independent abstract norms (who I am, behavioral limits). | Harness provides identity switching; identity norms fixed via parameterization as model's behavioral baseline. | **E2: Identity Boundary Robustness** Survey: [identity](docs/paper/reading_summary/2.2-identity/) |
+| **Memory** | §2.3 · §5.1, §5.3 | Does parameterized memory (online SFT → LoRA B-matrix) outperform external injection (memory.md + vector DB)? | memory.md + vector DB external injection for preferences, environment changes, task-scene abstractions. | Harness provides trigger points for memory extraction and injection; memory is endogenous, parameterized. | **E1: Online LoRA Long-Term Memory** · **E3: Parametric Context Compression** Survey: [memory](docs/paper/reading_summary/2.3-memory/) |
+| **Knowledge** | §2.4 · §5.3 | Does Knowledge LoRA outperform RAG for stable domain knowledge, while retaining ICL for dynamic updates? | RAG injects facts and scene-specific rules via context window — every inference re-injects. | Harness provides trigger points for knowledge injection; dynamic high-frequency data retains ICL channel. | **E3: Parametric Context Compression** Survey: [knowledge](docs/paper/reading_summary/2.4-knowledge/) |
+| **A2A Communication** | §2.5 · §5.4 | Does weight-space perturbation (TFlow) outperform NL text in latency and bandwidth for Agent-to-Agent exchange? | Agents exchange NL text — sparse, human-facing, serialized through LLM inference. | Harness provides parameter-level communication pipeline — in-memory object passing, not text generation. | **E4: TFlow Weight-Space Communication** Survey: [communication](docs/paper/reading_summary/2.5-agent-communication/) |
+| **Culmination** | §5.5 | Does "Parameter Is All You Need" beat "Context Is All You Need"? | Same ARF hard-line. Two soft-line configs: A (ICL-only, 5 dimensions injected via context) vs. B (all five LoRA adapters active, low context). | **E5: HOT LoRA MOE vs. COLD ICL Harness** — same task, same base model, 6-dimensional scoring. |
 
 **Running an experiment**: Each experiment runs against the same ARF testbed. `EvalPlugin` + `TracePlugin` provide unified data collection and metric computation. See [Eval Benchmark docs](docs/eval-benchmark.md).
 
@@ -151,13 +152,14 @@ ARF is the unified testbed for all five experiments proposed in the paper. The e
 
 ### Short-term: Literature Review & Theory Validation
 
-Compute-constrained. Focus on literature survey across the four soft-line dimensions:
+Compute-constrained. Focus on literature survey across the five soft-line dimensions:
 
-- **Memory**: PEAM, TMEM — extend to Memorizing Transformer, Unlimiformer, MemGPT
+- **Behavior Strategy**: ReAct, PS Prompting, AutoGen, MetaGPT — can strategy selection be model-endogenous?
 - **Identity**: Character-LLM, Neeko, RoleLLM — adversarial robustness of LoRA-frozen personas
-- **Knowledge**: P-RAG, MEGa — RAG vs. Fine-tuning systematic comparison
+- **Memory**: PEAM, TMEM — extend to Memorizing Transformer, Unlimiformer, MemGPT
+- **Knowledge**: P-RAG, MEGa — RAG vs. Fine-tuning systematic comparison; dynamic ICL retention
 - **Communication**: TFlow — weight-space perturbation stability at scale
-- **Capacity-aligned ablation design**: Finalize E1/E3 — variable control, benchmarks, metrics
+- **Ablation design**: Finalize E1/E2/E3 — variable control, benchmarks, metrics
 
 See [reading notes](docs/paper/reading_summary/).
 
@@ -165,9 +167,9 @@ See [reading notes](docs/paper/reading_summary/).
 
 When compute is available:
 
-- LoRA MOE router — per-domain adapters (identity/knowledge/memory/comm), hot-swap at runtime
+- LoRA MOE router — per-domain adapters (strategy/identity/knowledge/memory/comm), hot-swap at runtime
 - Online SFT pipeline — dual-buffer LoRA B-matrix, async non-blocking updates
-- E5 culmination — HOT LoRA MOE Harness vs. COLD ICL Harness, four-dimensional scoring
+- E5 culmination — HOT LoRA MOE Harness vs. COLD ICL Harness, six-dimensional scoring
 
 ---
 
