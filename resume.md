@@ -6,28 +6,39 @@
 
 ---
 
-## 我在做什么：探索并验证 Harness 与大模型的能力边界与分工
+## 我在做什么：Harness 的能力边界与 Agent 的内生智能
 
-这几年做 Agent 应用，我发现一个普遍现象——**Harness 在膨胀**。RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理……这些本该由模型承载的认知功能，正一块块往协调层里塞。每次模型能力不够，就在外面打一个补丁。
+这几年做 Agent 应用，我发现一个普遍现象——**Harness 在膨胀**。RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理、行为策略编排……这些认知功能正一块块往协调层里塞。每次模型能力不够，就在外面打一个补丁。
 
 这不是哪个框架的问题。它指向一个更底层的疑问：**Harness 到底该做什么，不该做什么？**
 
-我目前的假设是：**大模型是大脑，Harness 是脑干、脊椎与身体。** 借用生物学的分工来重新划定边界——
+我的核心假设：**大模型是大脑，Harness 是脑干、脊椎与身体。** 借用生物学分工重新划定边界——
 
-- **大模型·大脑**（条件反射·中枢）— 接收编码后的感知，输出行为指令。知识、身份、长期记忆的固化，应该是模型后训练要解决的事，不该在 Harness 里用 prompt 和 RAG 凑合。
+- **大模型·大脑**（条件反射·中枢）— 接收编码后的感知，输出行为指令。知识、身份、长期记忆、乃至策略选择的元决策，应该是模型内生能力，不该在 Harness 里用 prompt 和规则凑合。
 - **Harness·脑干脊椎与躯体**（非条件反射·系统）— 固定感知编码、可靠行动执行、硬连线安全反射。它不思考，不追问，不澄清。它只是本能地编码、执行、门控。
 
-这不是一个观点——它是一个**可验证的假设**。而我的计划很明确：把它做出来，然后做实验去验证。
+这不是一个观点——它是一个**可验证的假设**。我的计划很明确：把它做出来，用实验验证。
 
-为此我写了论文框架来理清思路，搭建了 ARF 框架来作为实验"台架"，写了 7 单元教学课程来让这个思路对其他人也可理解、可复现。
+为此我完成了三件事：（1）写了论文框架 **"Parameter Is All You Need"**，提出从"一切皆在上下文"到"一切皆可参数化"的范式转换；（2）系统梳理了 **Agent 行为策略内生选择**的前沿研究——元控制器架构、RL 自适应机制、行业三条路线；（3）搭建了 **ARF 框架**作为实验台架，写了 7 单元教学课程让思路对他人可理解、可复现。
 
-接下来是实验——固定状态接口 vs 传统提示、零认知 Harness 基准测试、在线 LoRA 记忆保持、后训练身份鲁棒性、内部上下文压缩。每一项都在这个台架上跑。详细的研究框架、ARF 映射关系和近期 TODO → https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md。
+接下来的实验——固定状态接口 vs 传统提示、零认知 Harness 基准、在线 LoRA 记忆保持、后训练身份鲁棒性、内生策略选择器 vs 外部编排——每一项都在这个台架上跑。详细研究框架与近期 TODO → https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md。
 
-**我想做 Harness 工程师。** 不是某个 Agent 应用的业务逻辑，而是所有 Agent 共享的信息基础设施——把它做薄，而不是做厚。
+**我想做 Harness 工程师。** 不是某个 Agent 应用的业务逻辑，而是所有 Agent 共享的信息基础设施——把它做薄，让智能内生。
 
 ---
 
-## 开源作品（2025.05 – 至今）
+## 开源作品（2026.05 – 至今）
+
+### "Parameter Is All You Need" — 论文框架与文献综述
+
+https://gitee.com/dalaydata/open_deepseek_arf/tree/main/docs/paper
+
+**提出 Harness 新范式：从"一切皆在上下文"到"一切皆可参数化"**
+
+- **核心命题**：行为策略、身份、知识、记忆乃至通信——这些当前由 Harness 用 prompt 和 RAG 承载的认知功能，应该被参数化到模型内部。Harness 的职责应从"认知代理"收缩为"执行基础设施"
+- **Harness 演进史**：独立完成三阶段划分（奠基探索 2023–2024 → 协作专精 2024–2025 → Harness 系统化 2025–2026），横向分析六大框架，提取趋同的八项能力集
+- **行为策略内生选择**：系统性综述 2025–2026 年前沿研究——元控制器（Meta-Controller）架构、基于 RL/Meta-RL 的自适应机制、内省驱动规划，以及 DeepMind/OpenAI/Anthropic 三条行业路线
+- **实验设计**：五组对照实验（固定状态接口、零认知 Harness 基准、在线 LoRA 记忆保持、后训练身份鲁棒性、内生策略选择器 vs 外部编排），覆盖控制组→假设验证→对抗测试的完整链路
 
 ### ARF — Agent Resources & Runtime Framework
 
@@ -37,11 +48,11 @@ https://gitee.com/dalaydata/open_deepseek_arf
 
 ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。核心贡献：
 
-- **6 骨架架构**：Prompt 组装、资源注册（MCP）、权限控制、安全审核、沙箱执行器、控制平面——每个骨架对应一个 Protocol，依赖注入组装。框架无 Plugin 也能运行完整 Agent Loop。
-- **三层机械层**：感知编码器·传递任务与环境信息（ResourceRegistry + SystemPromptProvider）→ 行动执行器·把决策落地（SandboxManager + FunctionBackend rollback）→ 非条件反射层·提供必要的安全防护（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应研究框架中第 5 节设计准则的完整工程实现。
-- **Plugin 体系**：9 个 Hook 挂载点。Memory、Compaction、Trace、HumanLoop、Checkpoint 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断。
-- **全链路可观测**：JSONL Trace、Token 统计、离线评估回放。
-- **安全三道防线**：deny_patterns 正则 > deny/ask/allow 列表 > PathCheckToolGuard 路径扫描——纯 YAML 声明式配置，模型不可绕过。
+- **6 骨架架构**：Context Assembly、资源注册、权限控制、安全审核、沙箱执行器、控制平面——每个骨架对应一个 Protocol，依赖注入组装。框架无 Plugin 也能运行完整 Agent Loop
+- **三层执行模型**：感知编码器（ResourceRegistry + SystemPromptProvider）→ 行动执行器（SandboxManager + FunctionBackend rollback）→ 非条件反射层（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应研究框架第 5 节设计准则的完整工程实现
+- **Plugin 体系**：9 个 Hook 生命周期挂载点。Memory、Compaction、Trace、HumanLoop、Checkpoint 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断
+- **安全防线**：deny_patterns 正则 > deny/ask/allow 列表 > PathCheckToolGuard 路径扫描——纯 YAML 声明式配置，模型不可绕过
+- **全链路可观测**：JSONL Trace、Token 统计、离线评估回放
 - 技术栈：Python 3.11+ · FastAPI · asyncio · Pydantic · Protocol 接口隔离 · MCP 协议
 
 ### ARF App 教学项目
