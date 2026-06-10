@@ -124,7 +124,7 @@ The **[Control Plane](docs/agent-execution.md)** is the shared orchestration sur
 
 ### Plugin System — Reflex Arcs, Not Cognitive Modules
 
-**Plugin ≠ Tool.** Tools are MCP-managed function resources the Agent calls. Plugins are behaviors mounted on Hook points — they fire automatically at framework lifecycle events, like biological reflex arcs. The framework runs without plugins; plugins add preset or customizable capabilities. Critically: when a plugin needs intelligence (memory extraction, context summarization), it calls a model through the standard `_call_model` interface — **the intelligence comes from the model, not from the plugin**. See [Plugin Overview](docs/plugins/overview.md) for the full architecture.
+**Plugin ≠ Tool.** Tools are MCP-managed function resources the Agent calls. Plugins are behaviors mounted on Hook points — they fire automatically at framework lifecycle events, like biological reflex arcs. The framework runs without plugins; plugins add preset or customizable capabilities. Critically: when a plugin needs intelligence (memory extraction, context summarization), it calls a model through the standard `_call_model` interface — **the intelligence comes from the model, not from the plugin**. See [Plugin Overview](docs/plugins/overview.md) for the full architecture. See [Plan-Solve](docs/plan-solve.md) for the DAG-driven multi-step execution plugin.
 
 
 

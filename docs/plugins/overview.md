@@ -95,8 +95,7 @@ hooks:
 
 | Plugin | Hook | 说明 |
 |--------|------|------|
-| `strategy` | `round_start` | 选择 Loop 策略（默认 `"react"`），可注册自定义策略 |
-| `planner` | Tool 提供者 | 提供 `planner` 工具和 `plan_execute.yaml` Skill |
+| `plan_solve` | `pre_action`, `round_start` | DAG 依赖校验 + 断点检测。提供 `plan_create`、`plan_dispatch`、`plan_summarize`、`plan_status` 工具族 |
 
 ### 工具型 Plugin
 
@@ -106,6 +105,7 @@ hooks:
 |--------|---------|
 | `file_tools` | glob、grep、read、subagent 工具 + `file_tools.yaml` Skill |
 | `subagent` | `subagent` 工具（max_turns: 10, timeout: 120） |
+| `plan_solve` | `plan_create`, `plan_dispatch`, `plan_summarize`, `plan_status` 工具族 + `plan_solve.yaml` Skill + PlanSolvePlugin |
 
 ---
 
@@ -161,8 +161,8 @@ class MyPlugin(PluginProtocol):
 
 | 状态 | 数量 | Plugin |
 |------|------|--------|
-| **完整实现** | 18 | approval, cancellation, checkpoint, compaction, error_handler, eval, memory, memory_extraction, memory_retrieval, metrics, session_mode, strategy, todo, tool_guard, trace, undo, validate_messages, memory |
-| **工具/Skill 提供者** | 3 | file_tools, planner, subagent |
+| **完整实现** | 18 | approval, cancellation, checkpoint, compaction, error_handler, eval, memory, memory_extraction, memory_retrieval, metrics, plan_solve, session_mode, todo, tool_guard, trace, undo, validate_messages, memory |
+| **工具/Skill 提供者** | 2 | file_tools, subagent |
 | **Stub（空实现）** | 2 | sandbox_persist, secure_archive |
 
 ---
