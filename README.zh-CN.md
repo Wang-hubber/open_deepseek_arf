@@ -105,18 +105,6 @@ ARF 是论文全部五项实验的统一台架。实验按 §2 相关工作的�
 
 ---
 
-### 三层基于规则的简单反射
-
-ARF 将 Harness 实现为三层基于规则的简单反射——固定规则、确定性执行、零认知。如同生物的膝跳反射、缩手反射，每层通过固定规则将输入转换为输出，不做语义理解。这三层对应论文第 5 节"理想 Harness 的设计准则"。
-
-| 层级 | 设计准则 | ARF 实现 | 对应骨架 |
-|------|---------|---------|---------|
-| **L1: 固定感知编码器** | 零认知状态编码。固定周期、固定字段、仅做格式与时间对齐。不追问、不澄清、不理解。 | `SystemPromptProvider` 从固定模板组装结构化上下文。`ResourceResolver` + `FileWatcher` 按文件系统约定发现并热加载工具/技能/模型——不做语义解释。 | [#1 Prompt 组装](docs/prompt-assembly.md), [#2 资源注册](docs/resource-registry.md) |
-| **L2: 可靠行动执行器** | 可逆行动执行。预演-执行-回滚机制，确保执行损伤可恢复。支持并行执行与依赖排序。 | `SandboxManager` 提供每会话隔离工作区。`ConcurrentToolExecutor` 并行执行无依赖工具。`FunctionBackend` 支持可选 `rollback()`。 | [#5 执行器](docs/tool-sandbox.md) |
-| **L3: 非条件反射层** | 硬编码安全。权限门控、缩手反射、节律性存档——独立于模型决策，模型不可绕过。 | `PathCheckToolGuard` 阻断路径穿越与绝对路径。`ContentGuard` 执行前/后内容筛查。`SessionModeManager` + `PermissionRegistry` 强制执行 deny→ask→allow。`RoundManager` 维护滚动快照支持 undo。每轮检查取消令牌。 | [#3 权限控制](docs/tool-sandbox.md), [#4 安全审核](docs/tool-sandbox.md), [中断回滚](docs/interrupt.md) |
-
-**设计准则**：每层都是*规则驱动的*——通过固定规则转换、路由、门控、记录。没有一层执行*理解*。当框架需要"智能"（记忆提取、上下文摘要），它通过 Plugin 调用模型——绝不通过核心引擎逻辑。
-
 ### 控制平面 — 结构化 State & 生命周期
 
 三层并非孤立漂浮。**[控制平面](docs/agent-execution.md)** 是它们共同交汇的调度面——相当于脊髓，在脑和身体之间路由信号。
