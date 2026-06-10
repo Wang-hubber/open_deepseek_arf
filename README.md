@@ -105,22 +105,6 @@ Together, these six capabilities form the Harness hard-line — they don't "thin
 
 ---
 
-### Design Philosophy: The Brain-Spine-Body Model
-
-A model is raw compute — powerful, but not a computer. It needs memory management, process scheduling, interrupt handling, a file system, and security boundaries. ARF provides those. But the design goes deeper than an OS analogy.
-
-**The biological mapping that governs every architectural decision:**
-
-| Biological System | Agent System | Responsibility | Cognitive Load |
-|-------------------|-------------|----------------|----------------|
-| **Brain** | Large Language Model | Conditioned reflex center. Receives encoded state packets, outputs action instructions. Post-training internalizes professional knowledge and identity boundaries. | **Full cognitive** — understanding, reasoning, deciding |
-| **Brainstem / Spine** | Harness Core (5 Skeletons + Control Plane) | Fixed perception encoding, reliable action execution, unconditioned reflex. Multi-source signals time-aligned into fixed-schema State Packets. Function calls parsed, executed, feedback collected — no policy judgment. | **Zero cognition** — format, align, execute, guard |
-| **Body** | Tool Ecosystem | The physical/virtual effectors the model operates through. File I/O, web fetch, shell execution, code interpretation. | **Zero cognition** — mechanical action only |
-
-**The co-evolution imperative**: A monkey brain cannot operate a human body. The state schema defined by the Harness must become the model's native perception language through paired post-training. Brain and body co-evolve, or neither works.
-
-The primitives of operating systems — virtual memory, cache hierarchies, system calls, protection rings — map directly onto the implementation. But the architecture thesis is biological: **cognitive work belongs to the brain; the harness is spinal cord, not a second brain.**
-
 ### Three Layers of Rule-Based Reflexes
 
 ARF implements the Harness as three layers of rule-based reflexes — simple, deterministic, zero-cognition. Like biological reflexes (knee-jerk, hand-withdrawal), each layer transforms input to output via fixed rules with no semantic understanding. These layers correspond to Section 5 of the paper ("Design Principles for the Ideal Harness").
