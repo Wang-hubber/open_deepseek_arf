@@ -39,11 +39,11 @@ class SuccessRateMetric:
 
 
 class ToolCallAccuracyMetric:
-    """Indexed tool call accuracy: name + params subset matching.
+    """Name-based tool call accuracy: name + params subset matching.
 
-    When expected_tool_calls is set, compares tool calls by index
-    with params subset matching. Falls back to expected_tools (name-only)
-    when expected_tool_calls is None.
+    Matches expected tool calls against actual calls by name (not index),
+    so parallel/out-of-order tool calls are handled correctly.
+    Falls back to expected_tools (name-only) when expected_tool_calls is None.
     """
 
     @property
@@ -55,7 +55,6 @@ class ToolCallAccuracyMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None):
-        # Collect actual tool calls (tool_call_start events)
         actual_calls: list[dict] = []
         for e in actual_trace:
             if e.get("type") == "tool_call_start":
@@ -74,18 +73,16 @@ class ToolCallAccuracyMetric:
     def _compute_with_params(self, expected_calls, actual_calls):
         total = max(len(expected_calls), len(actual_calls) or 1)
         matches = 0
-        for i, exp in enumerate(expected_calls):
-            if i >= len(actual_calls):
-                break
-            act = actual_calls[i]
-            if exp.get("name", "") != act["tool_name"]:
-                continue
-            if not self._params_subset(
-                exp.get("params", {}),
-                act["arguments"],
-            ):
-                continue
-            matches += 1
+        for exp in expected_calls:
+            exp_name = exp.get("name", "")
+            exp_params = exp.get("params", {})
+            for act in actual_calls:
+                if act["tool_name"] != exp_name:
+                    continue
+                if not self._params_subset(exp_params, act["arguments"]):
+                    continue
+                matches += 1
+                break  # found a match, move to next expected
         return {"tool_call_accuracy": matches / total}
 
     def _compute_name_only(self, expected_names, actual_calls):
@@ -129,9 +126,9 @@ class ToolCallAccuracyMetric:
 class ToolCallResultLLMMetric:
     """LLM-judged semantic equivalence of tool call results.
 
-    Compares expected result strings against actual tool results,
-    using an LLM to determine semantic equivalence. Used alongside
-    ToolCallAccuracyMetric (which handles name + params matching).
+    Matches expected tool calls against actual results by name (not index),
+    then uses an LLM to judge semantic equivalence of result strings.
+    Used alongside ToolCallAccuracyMetric (which handles name + params matching).
     """
 
     _PROMPT = (
@@ -179,17 +176,19 @@ class ToolCallResultLLMMetric:
 
         matches = 0
         total = len(expected_with_results)
-        for i, exp in enumerate(expected_with_results):
-            if i >= len(actual_results):
-                break
-            act = actual_results[i]
-            if not act["result"]:
-                continue
-            result = await self._call_judge(
-                judge, exp["result"], act["result"]
-            )
-            if result.get("match"):
-                matches += 1
+        for exp in expected_with_results:
+            exp_name = exp.get("name", "")
+            for act in actual_results:
+                if act["tool_name"] != exp_name:
+                    continue
+                if not act["result"]:
+                    continue
+                result = await self._call_judge(
+                    judge, exp["result"], act["result"]
+                )
+                if result.get("match"):
+                    matches += 1
+                    break  # found a match, move to next expected
 
         return {"tool_call_result_llm": matches / total if total > 0 else 1.0}
 
