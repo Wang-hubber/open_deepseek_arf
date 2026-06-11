@@ -114,6 +114,18 @@ class ControlPlane:
             state["interaction_round"] = self._interaction_round
             ctx = self._make_ctx(state, session_id, 0, "")
 
+            # Inject user_input for this round (dedup by message count)
+            messages = state.get("messages", [])
+            user_count = sum(1 for m in messages if m.get("role") == "user")
+            if user_count > state.get("_last_injected_user_count", 0):
+                state["_last_injected_user_count"] = user_count
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        ctx.inject_engine_event("user_input", {
+                            "content": m.get("content", ""),
+                        })
+                        break
+
             try:
                 await self._fire_blocking("round_start", ctx)
                 await self._fire_side("round_start", ctx)
@@ -136,18 +148,6 @@ class ControlPlane:
                     break
 
                 ctx = self._make_ctx(state, session_id, turn, "")
-
-                # --- user_input (once per turn, dedup by message index) ---
-                messages = state.get("messages", [])
-                user_count = sum(1 for m in messages if m.get("role") == "user")
-                if user_count > state.get("_last_injected_user_count", 0):
-                    state["_last_injected_user_count"] = user_count
-                    for m in reversed(messages):
-                        if m.get("role") == "user":
-                            ctx.inject_engine_event("user_input", {
-                                "content": m.get("content", ""),
-                            })
-                            break
 
                 # --- turn_start ---
                 try:

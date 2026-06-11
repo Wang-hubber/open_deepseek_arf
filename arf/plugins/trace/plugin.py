@@ -74,9 +74,9 @@ class TracePlugin:
         session_id = context.session_id
         interaction_round = context.interaction_round
 
-        # Flatten injected engine events at post_action — the only hook that
-        # fires after all engine events for the turn have been injected.
-        if hook_name == "post_action":
+        # Flatten injected engine events at round_start (user_input) and
+        # post_action (model_call_*, tool_call_*).
+        if hook_name in ("round_start", "post_action"):
             engine_events = context.hook_data.pop("_engine_events", [])
             for ee in engine_events:
                 record = {
