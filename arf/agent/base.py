@@ -359,6 +359,12 @@ class BaseAgent:
                 if hasattr(p, "set_state_store"):
                     p.set_state_store(state_store)
 
+        # Wire event_bus into TracePlugin for EventBus subscription
+        for p in side_plugins:
+            if p.name == "trace":
+                p.set_event_bus(event_bus)
+                break
+
         self._engine = ControlPlane(
             state_store=state_store,
             tool_executor=tool_executor,
