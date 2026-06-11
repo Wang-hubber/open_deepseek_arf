@@ -52,6 +52,29 @@ class TestEvalBenchmarkJson:
         assert bm.cases == []
         assert bm.source_session is None
 
+    def test_golden_trajectory_roundtrip(self, tmp_path):
+        bm = EvalBenchmark(
+            name="gt_test",
+            cases=[
+                EvalCase(
+                    id="c0", input="hello",
+                    golden_trajectory={
+                        "turns": [{
+                            "turn": 1,
+                            "assistant": {"content": "hi", "tool_calls": []},
+                            "tool_results": [],
+                            "assistant_final": {"content": "done"},
+                        }]
+                    },
+                ),
+            ],
+        )
+        p = tmp_path / "bm.json"
+        bm.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+        assert loaded.cases[0].golden_trajectory == bm.cases[0].golden_trajectory
+        assert loaded.cases[0].golden_trajectory["turns"][0]["turn"] == 1
+
 
 from arf.evaluation.models import EvalSummary, EvalReport, EvalDiff
 

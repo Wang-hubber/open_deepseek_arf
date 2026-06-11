@@ -10,6 +10,7 @@ class EvalCase:
     expected_tools: list[str] | None = None
     expected_output_contains: list[str] | None = None
     max_turns: int | None = None
+    golden_trajectory: dict | None = None  # full golden trajectory from trace
 
 
 @dataclass
@@ -31,6 +32,8 @@ class EvalBenchmark:
                     **({"expected_tools": c.expected_tools} if c.expected_tools else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
+                    **({"golden_trajectory": c.golden_trajectory}
+                       if c.golden_trajectory else {}),
                 }
                 for c in self.cases
             ],
@@ -53,6 +56,7 @@ class EvalBenchmark:
                     expected_tools=c.get("expected_tools"),
                     expected_output_contains=c.get("expected_output_contains"),
                     max_turns=c.get("max_turns"),
+                    golden_trajectory=c.get("golden_trajectory"),
                 )
                 for c in data.get("cases", [])
             ],
