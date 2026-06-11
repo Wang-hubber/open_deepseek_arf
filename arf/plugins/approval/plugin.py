@@ -90,14 +90,26 @@ class ApprovalPlugin:
         # format stays valid (tool_calls must be followed by tool messages).
         if denied:
             for tc in denied:
-                ctx.emit("tool_call_start", {
+                event_data = {
                     "tool_name": tc.get("name", ""),
                     "id": tc.get("id", ""),
+                }
+                ctx.emit("tool_call_start", {
+                    **event_data,
+                    "arguments": tc.get("params", {}),
+                })
+                ctx.inject_engine_event("tool_call_start", {
+                    **event_data,
                     "arguments": tc.get("params", {}),
                 })
                 ctx.emit("tool_call_end", {
-                    "tool_name": tc.get("name", ""),
-                    "id": tc.get("id", ""),
+                    **event_data,
+                    "success": False,
+                    "blocked": True,
+                    "error": "Blocked: user denied",
+                })
+                ctx.inject_engine_event("tool_call_end", {
+                    **event_data,
                     "success": False,
                     "blocked": True,
                     "error": "Blocked: user denied",
