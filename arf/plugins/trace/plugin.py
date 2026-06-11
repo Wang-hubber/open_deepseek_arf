@@ -73,6 +73,7 @@ class TracePlugin:
 
         session_id = context.session_id
         interaction_round = context.interaction_round
+        current_turn = context.turn
 
         # Flatten injected engine events at round_start (user_input) and
         # post_action (model_call_*, tool_call_*).
@@ -81,7 +82,8 @@ class TracePlugin:
             for ee in engine_events:
                 record = {
                     "type": ee["type"],
-                    "turn": interaction_round,
+                    "round": interaction_round,
+                    "turn": current_turn,
                     "timestamp": ee.get("timestamp", time.time()),
                     "data": self._sanitize(ee.get("data", {})),
                     "session_id": session_id,
@@ -91,7 +93,8 @@ class TracePlugin:
         # Hook boundary event
         event = {
             "type": hook_name,
-            "turn": interaction_round,
+            "round": interaction_round,
+            "turn": current_turn,
             "timestamp": time.time(),
             "data": self._sanitize(dict(context.hook_data)),
             "session_id": session_id,
