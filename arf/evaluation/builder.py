@@ -53,6 +53,9 @@ class BenchmarkBuilder:
             # Build golden trajectory turns
             golden_turns = self._build_golden_turns(events, turn, next_user_turn)
 
+            # Extract expected_tool_calls from golden trajectory (indexed, with params + result)
+            expected_tool_calls = self._build_expected_tool_calls(golden_turns)
+
             # Extract expected_output_contains from final assistant content
             expected_output = self._extract_output_contains(
                 events, turn, next_user_turn
@@ -62,6 +65,7 @@ class BenchmarkBuilder:
                 id=f"case_{i}",
                 input=ue.get("data", {}).get("content", ""),
                 expected_tools=tool_names if tool_names else None,
+                expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
                 expected_output_contains=expected_output,
                 max_turns=len(golden_turns) if golden_turns else None,
                 golden_trajectory={"turns": golden_turns} if golden_turns else None,
@@ -136,6 +140,29 @@ class BenchmarkBuilder:
             "tool_results": tool_results,
             "assistant_final": assistant_final,
         }
+
+    @staticmethod
+    def _build_expected_tool_calls(golden_turns):
+        """Build expected_tool_calls list from golden trajectory turns.
+
+        Pairs assistant.tool_calls[i] with tool_results[i] by index.
+        Returns [{"name": ..., "params": {...}, "result": "..."}, ...].
+        """
+        calls = []
+        for turn in golden_turns:
+            tool_calls = turn.get("assistant", {}).get("tool_calls", [])
+            tool_results = turn.get("tool_results", [])
+            for i, tc in enumerate(tool_calls):
+                info: dict = {
+                    "name": tc.get("name", ""),
+                    "params": tc.get("params", {}),
+                }
+                if i < len(tool_results):
+                    tr = tool_results[i]
+                    info["result"] = tr.get("result", "")
+                    info["success"] = tr.get("success", False)
+                calls.append(info)
+        return calls
 
     @staticmethod
     def _extract_output_contains(events, start_turn, end_turn):

@@ -9,7 +9,8 @@ from arf.evaluation.models import (
 )
 from arf.evaluation.exceptions import EvalError
 from arf.evaluation.metrics import (
-    SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric,
+    SuccessRateMetric, ToolCallAccuracyMetric, ToolCallResultLLMMetric,
+    TurnEfficiencyMetric,
     OutputQualityMetric, TrajectorySimilarityMetric,
 )
 
@@ -74,6 +75,8 @@ class EvalRunner:
             metrics.append(SuccessRateMetric())
         if me.get("tool_call_accuracy"):
             metrics.append(ToolCallAccuracyMetric())
+        if me.get("tool_call_result_llm"):
+            metrics.append(ToolCallResultLLMMetric())
         if me.get("turn_efficiency"):
             metrics.append(TurnEfficiencyMetric())
         if me.get("output_quality"):
