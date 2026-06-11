@@ -1,6 +1,7 @@
 """PluginContext — full-visibility context passed to plugin hooks."""
 from __future__ import annotations
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from arf.core.state import AgentState
@@ -63,6 +64,19 @@ class PluginContext:
         )
         if self._event_ready:
             self._event_ready.set()
+
+    def inject_engine_event(self, event_type: str, data: dict) -> None:
+        """Record an engine-internal event for trace visibility.
+
+        Called by ControlPlane after model_call / tool_exec to inject
+        results into hook_data so TracePlugin (and other observers)
+        can capture them in the next hook callback.
+        """
+        self.hook_data.setdefault("_engine_events", []).append({
+            "type": event_type,
+            "timestamp": time.time(),
+            "data": data,
+        })
 
     def to_dict(self) -> dict:
         return {
