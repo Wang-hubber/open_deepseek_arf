@@ -74,6 +74,12 @@ class EvalSummary:
     avg_duration_seconds: float = 0.0
     tool_accuracy: float = 0.0
     output_contains: float = 0.0
+    # New metric-specific averages
+    tool_call_accuracy: float = 0.0
+    turn_efficiency: float = 0.0
+    success_rate: float = 0.0
+    output_quality: float | None = None  # 1-5 LLM judge
+    trajectory_similarity: float | None = None  # 1-5 LLM judge
 
 
 @dataclass
@@ -84,6 +90,10 @@ class EvalReport:
     timestamp: float
     summary: EvalSummary = field(default_factory=EvalSummary)
     per_case: list[dict] = field(default_factory=list)
+    judge_model: str = ""
+    metrics_enabled: list[str] = field(default_factory=list)
+    mode: str = "online"
+    snapshot_hash: str = ""
 
     def to_json(self, path: str) -> None:
         data = {
@@ -101,8 +111,17 @@ class EvalReport:
                 "avg_duration_seconds": self.summary.avg_duration_seconds,
                 "tool_accuracy": self.summary.tool_accuracy,
                 "output_contains": self.summary.output_contains,
+                "tool_call_accuracy": self.summary.tool_call_accuracy,
+                "turn_efficiency": self.summary.turn_efficiency,
+                "success_rate": self.summary.success_rate,
+                "output_quality": self.summary.output_quality,
+                "trajectory_similarity": self.summary.trajectory_similarity,
             },
             "per_case": self.per_case,
+            "judge_model": self.judge_model,
+            "metrics_enabled": self.metrics_enabled,
+            "mode": self.mode,
+            "snapshot_hash": self.snapshot_hash,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -124,8 +143,17 @@ class EvalReport:
                 avg_duration_seconds=s.get("avg_duration_seconds", 0.0),
                 tool_accuracy=s.get("tool_accuracy", 0.0),
                 output_contains=s.get("output_contains", 0.0),
+                tool_call_accuracy=s.get("tool_call_accuracy", 0.0),
+                turn_efficiency=s.get("turn_efficiency", 0.0),
+                success_rate=s.get("success_rate", 0.0),
+                output_quality=s.get("output_quality"),
+                trajectory_similarity=s.get("trajectory_similarity"),
             ),
             per_case=data.get("per_case", []),
+            judge_model=data.get("judge_model", ""),
+            metrics_enabled=data.get("metrics_enabled", []),
+            mode=data.get("mode", "online"),
+            snapshot_hash=data.get("snapshot_hash", ""),
         )
 
 
@@ -136,3 +164,50 @@ class EvalDiff:
     summary_diff: dict = field(default_factory=dict)
     regressions: list[dict] = field(default_factory=list)
     improvements: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class JudgeModelConfig:
+    """OpenAI API-compatible judge LLM configuration.
+
+    Independent of the ARF ModelAdapter — the judge should not share
+    a model with the agent under evaluation.
+    """
+    api_base: str = "https://api.openai.com/v1"
+    api_key_env: str = "OPENAI_API_KEY"
+    model: str = "gpt-4"
+    temperature: float = 0.0
+    max_tokens: int = 2000
+
+
+@dataclass
+class EvalConfig:
+    """Evaluation runner configuration."""
+    benchmark_path: str = ""
+    trace_dir: str = "./data/traces"
+    judge: JudgeModelConfig | None = None
+    metrics: dict[str, bool] = field(default_factory=lambda: {
+        "tool_call_accuracy": True,
+        "turn_efficiency": True,
+        "success_rate": True,
+        "output_quality": False,
+        "trajectory_similarity": False,
+    })
+    mode: str = "online"
+    trace_session_ids: list[str] = field(default_factory=list)
+    output_path: str | None = None
+    timeout_per_case: float = 300.0
+
+    def requires_judge(self) -> bool:
+        return any([
+            self.metrics.get("output_quality", False),
+            self.metrics.get("trajectory_similarity", False),
+        ])
+
+    def validate(self) -> None:
+        if self.requires_judge() and self.judge is None:
+            raise ValueError(
+                "LLM-as-judge metrics enabled but no judge model configured"
+            )
+        if self.mode == "offline" and not self.trace_session_ids:
+            raise ValueError("Offline mode requires trace_session_ids")
