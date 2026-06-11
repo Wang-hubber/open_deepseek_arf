@@ -271,11 +271,12 @@ print(f"Improvements: {diff.improvements}")
 
 **ToolCallAccuracyMetric 匹配策略**：
 
-1. 优先使用 `expected_tool_calls`（如果非空），按索引与 actual 配对
-2. 每个配对先比 `name`，再比 `params`（子集匹配）
+1. 优先使用 `expected_tool_calls`（如果非空），按**名称**与 actual 配对（不关注执行顺序）
+2. 每个 expected item 在 actual 中找同名的、params 子集匹配的，找到即算命中
 3. 字符串参数用**子串匹配**（`"焖子"` in `"良子的焖子"`），非字符串用 `==`
 4. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
-5. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
+5. actual 多出 expected 没有的工具 → 降低总分（total 取 max(expected, actual)）
+6. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
 
 ### LLM-as-judge
 
@@ -351,8 +352,8 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LL
 
 ### 6.3 标注注意事项
 
-- **索引对齐**：`expected_tool_calls[i]` 对应 actual trace 中第 i 个 `tool_call_start`。如果 expected 和 actual 顺序不同，工具名称匹配会先按名称对齐
-- **多轮对话**：每轮（一个 user input → 最终 text response）一个 EvalCase。如果一轮中有多个 tool_call，全放在同一个 `expected_tool_calls` 数组里按顺序排列
+- **按名称匹配**：评估时按工具名配对，不关注执行顺序。并行 tool_call 返回顺序不确定也不影响评分的正确性
+- **多轮对话**：每轮（一个 user input → 最终 text response）一个 EvalCase。如果一轮中有多个 tool_call，全放在同一个 `expected_tool_calls` 数组里
 - **params 标关键字段即可**：不用标全量参数，标对决策有影响的字段（如 `path`、`pattern`、`name`）。框架自动注入的参数（`_workspace`）不要标
 - **result 标预期语义而非精确值**：写 "文件包含 ARF 框架说明" 而不是 "文件内容是 ARF — AI Resources & Runtime Framework\n\n...（3000 字）"。LLM 裁判做语义等价判断
 - **向后兼容**：已有 benchmark 的 `expected_tools` 无需迁移，ToolCallAccuracyMetric 自动 fallback 到 name-only 模式
