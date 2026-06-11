@@ -81,19 +81,31 @@ class ControlPlane:
         state["interaction_round"] = self._interaction_round
 
         ctx = self._make_ctx(state, session_id, 0, "")
-        yield self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
 
-        # --- session_start ---
-        try:
-            await self._fire_blocking("session_start", ctx)
-            await self._fire_side("session_start", ctx)
-        except Exception as e:
-            await self._handle_error(e, ctx)
+        # --- session_start (only on first call) ---
+        if not state.get("_session_opened"):
+            yield self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
+            try:
+                await self._fire_blocking("session_start", ctx)
+                await self._fire_side("session_start", ctx)
+            except Exception as e:
+                await self._handle_error(e, ctx)
+            state["_session_opened"] = True
+
+        # --- user_input (once per astream call) ---
+        messages = state.get("messages", [])
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                yield self._make_event("user_input", {
+                    "content": m.get("content", ""),
+                }, session_id=session_id)
+                break
 
         # --- round loop ---
         aborted = False
         while not aborted:
             if self._cancelled():
+                state["_session_ended"] = True
                 yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
                 break
 
@@ -136,7 +148,8 @@ class ControlPlane:
                         break
                     continue
 
-                # --- pre_dispatch ---
+                # --- pre_action: call_model ---
+                ctx.current_step = "call_model"
                 try:
                     async for event in self._fire_and_drain("pre_action", ctx):
                         yield event
@@ -175,8 +188,20 @@ class ControlPlane:
                 # Snapshot pending_tool_calls BEFORE execute_tools pops them
                 has_tool_calls = bool(state.get("_pending_tool_calls"))
 
-                # --- dispatch: execute_tools (if model returned tool_calls) ---
+                # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
                 if has_tool_calls:
+                    ctx.current_step = "execute_tools"
+                    try:
+                        async for event in self._fire_and_drain("pre_action", ctx):
+                            yield event
+                    except Exception as e:
+                        decision = await self._handle_error(e, ctx)
+                        if decision.get("action") == "abort":
+                            aborted = True
+                            break
+                        if decision.get("action") == "skip":
+                            continue
+
                     try:
                         async for event in self._action_execute_tools(state, ctx):
                             yield event
@@ -252,16 +277,8 @@ class ControlPlane:
             if msgs and msgs[-1].get("role") != "user":
                 break
 
-        # --- session_end ---
-        ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
-        try:
-            await self._fire_blocking("session_end", ctx)
-        except Exception:
-            pass  # session_end failure should not prevent teardown
-        await self._fire_side("session_end", ctx)
+        # Save state for continuation (session_end emitted by close())
         await self.state_store.put(session_id, state)
-
-        yield self._make_event("session_end", {"session_id": session_id}, session_id=session_id)
 
     # ==================================================================
     # Actions
@@ -288,12 +305,14 @@ class ControlPlane:
         self._validate_messages(state)
 
         yield self._make_event("model_call_start", {"model": model, "turn": turn}, turn=turn, session_id=session_id)
+        ctx.inject_engine_event("model_call_start", {"model": model, "turn": turn})
 
         # Try streaming first, fall back to non-streaming
         resp = None
         stream_usage: dict = {}
         if self._stream_model:
             full_text = ""
+            full_reasoning = ""
             stream_tool_calls: list[dict] = []
             try:
                 async for chunk in self._stream_model(msgs, model, tools=tools):
@@ -302,6 +321,8 @@ class ControlPlane:
                         reasoning = chunk.get("reasoning", "")
                         if text:
                             full_text += text
+                        if reasoning:
+                            full_reasoning += reasoning
                         if text or reasoning:
                             yield self._make_event(
                                 "thinking_delta",
@@ -334,6 +355,7 @@ class ControlPlane:
                 else:
                     resp = {
                         "content": full_text,
+                        "reasoning": full_reasoning,
                         "tool_calls": stream_tool_calls,
                         "usage": stream_usage,
                     }
@@ -370,6 +392,7 @@ class ControlPlane:
         yield self._make_event("model_call_end", {
             "model": model, "turn": turn,
             "content": resp.get("content", "") if isinstance(resp, dict) else "",
+            "reasoning": resp.get("reasoning", "") if isinstance(resp, dict) else "",
             "usage": stream_usage,
         }, turn=turn, session_id=session_id)
 
@@ -383,15 +406,16 @@ class ControlPlane:
         state["_pending_tool_calls"] = tool_calls
 
         # Inject model_call result for trace visibility
-        ctx.inject_engine_event("model_call", {
+        ctx.inject_engine_event("model_call_end", {
             "model": model,
-            "input_tokens": stream_usage.get("prompt_tokens", 0),
-            "output_tokens": stream_usage.get("completion_tokens", 0),
+            "turn": turn,
             "content": content,
+            "reasoning": resp.get("reasoning", "") if isinstance(resp, dict) else "",
             "tool_calls": [
                 {"name": tc.get("name", ""), "params": tc.get("params", {})}
                 for tc in tool_calls
             ],
+            "usage": stream_usage,
         })
 
     async def _action_execute_tools(self, state: AgentState, ctx: PluginContext):
@@ -408,6 +432,12 @@ class ControlPlane:
                 "id": tc.get("id", ""),
                 "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
             }, turn=turn, session_id=session_id)
+            ctx.inject_engine_event("tool_call_start", {
+                "tool_name": tc.get("name", ""),
+                "id": tc.get("id", ""),
+                "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
+                "turn": turn,
+            })
 
         results = await self.tool_executor.execute(
             tool_calls, agent_mode="",
@@ -422,8 +452,8 @@ class ControlPlane:
                 "tool_name": tc.get("name", ""), "turn": turn, "id": tc_id,
                 "success": r.success if r else False,
                 "duration_ms": r.duration_ms if r else 0,
-                "result": str(r.data)[:500] if r and r.success and r.data else "",
-                "error": str(r.error)[:500] if r and r.error else "",
+                "result": str(r.data)[:2000] if r and r.success and r.data else "",
+                "error": str(r.error)[:2000] if r and r.error else "",
             }, turn=turn, session_id=session_id)
 
             content = str(r.data) if r and r.success else f"Error: {r.error}" if r and r.error else ""
@@ -437,9 +467,11 @@ class ControlPlane:
         # Inject tool_call results for trace visibility
         for tc in tool_calls:
             r = results.get(tc.get("id", ""))
-            ctx.inject_engine_event("tool_call", {
+            ctx.inject_engine_event("tool_call_end", {
                 "tool_name": tc.get("name", ""),
+                "id": tc.get("id", ""),
                 "params": tc.get("params", {}),
+                "turn": turn,
                 "success": r.success if r else False,
                 "result": str(r.data)[:2000] if r and r.success and r.data else "",
                 "error": str(r.error)[:500] if r and r.error else "",
@@ -678,6 +710,11 @@ class ControlPlane:
                     pass
         except (SessionAbortedError, asyncio.TimeoutError):
             aborted = True
+
+        if not aborted:
+            # invoke() is a one-shot session — auto-close
+            await self._consume_close(state)
+
         session_id = state.get("session_id", "default")
         if aborted:
             state["session_active"] = False
@@ -700,6 +737,7 @@ class ControlPlane:
             async for event in self._execute(state):
                 yield event
         except SessionAbortedError:
+            state["_session_ended"] = True
             state["session_active"] = False
             if self.state_store:
                 await self.state_store.put(session_id, state)
@@ -708,6 +746,34 @@ class ControlPlane:
                 {"session_id": session_id, "reason": "aborted"},
                 session_id=session_id,
             )
+
+    async def close(self, state: AgentState):
+        """Emit session_end + fire hooks + save state. Idempotent.
+
+        Call once per conversation. After close(), the session is marked
+        inactive. Subsequent astream()/invoke() calls with the same
+        session_id will start a new session.
+        """
+        if state.get("_session_ended"):
+            return
+        state["_session_ended"] = True
+        state["session_active"] = False
+
+        session_id = state.get("session_id", "default")
+        ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
+        try:
+            await self._fire_blocking("session_end", ctx)
+        except Exception:
+            pass  # session_end failure should not prevent teardown
+        await self._fire_side("session_end", ctx)
+        await self.state_store.put(session_id, state)
+
+        yield self._make_event("session_end", {"session_id": session_id}, session_id=session_id)
+
+    async def _consume_close(self, state: AgentState):
+        """Coroutine wrapper — consumes close() events for invoke()."""
+        async for _ in self.close(state):
+            pass
 
 
 class SessionAbortedError(Exception):

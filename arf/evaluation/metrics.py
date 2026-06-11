@@ -119,7 +119,7 @@ class OutputQualityMetric:
         # Extract actual final content
         actual_content = ""
         for e in reversed(actual_trace):
-            if e.get("type") in ("model_call_end", "model_call"):
+            if e.get("type") == "model_call_end":
                 content = e.get("data", {}).get("content", "")
                 if content:
                     actual_content = content
@@ -191,7 +191,7 @@ class TrajectorySimilarityMetric:
                     f"[turn {e.get('turn', 0)}] result: "
                     f"{'ok' if e.get('data', {}).get('success') else 'fail'}"
                 )
-            elif t in ("model_call_end", "model_call"):
+            elif t == "model_call_end":
                 content = e.get("data", {}).get("content", "")
                 if content:
                     actual_summary.append(

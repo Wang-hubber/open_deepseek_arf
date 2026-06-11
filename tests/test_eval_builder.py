@@ -6,15 +6,11 @@ import pytest
 
 from arf.evaluation.builder import BenchmarkBuilder
 from arf.evaluation.exceptions import EvalError
-from arf.event_bus import InMemoryEventBus
 from arf.plugins.trace.plugin import TracePlugin
 
 
 def _make_trace_plugin(trace_dir):
-    bus = InMemoryEventBus()
-    p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
-    p.set_event_bus(bus)
-    return p
+    return TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
 
 
 def _write_trace_events(p, session_id, events):
@@ -117,18 +113,18 @@ class TestBenchmarkBuilder:
         _write_trace_events(p, "s1", [
             {"type": "user_input", "turn": 1,
              "data": {"content": "read x"}, "timestamp": 1.0},
-            {"type": "model_call", "turn": 1,
+            {"type": "model_call_end", "turn": 1,
              "data": {"content": "", "tool_calls": [
                  {"name": "read", "params": {"path": "x"}}
              ]}, "timestamp": 1.1},
-            {"type": "tool_call", "turn": 1,
+            {"type": "tool_call_end", "turn": 1,
              "data": {"tool_name": "read", "result": "not found",
                       "success": False}, "timestamp": 1.2},
-            {"type": "model_call", "turn": 2,
+            {"type": "model_call_end", "turn": 2,
              "data": {"content": "", "tool_calls": [
                  {"name": "glob", "params": {"pattern": "*.txt"}}
              ]}, "timestamp": 2.1},
-            {"type": "tool_call", "turn": 2,
+            {"type": "tool_call_end", "turn": 2,
              "data": {"tool_name": "glob", "result": "x.txt",
                       "success": True}, "timestamp": 2.2},
             {"type": "model_call_end", "turn": 2,

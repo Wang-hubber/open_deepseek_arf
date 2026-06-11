@@ -5,11 +5,11 @@ from arf.core.plugin_context import PluginContext
 class TestInjectEngineEvent:
     def test_inject_appends_to_hook_data(self):
         ctx = PluginContext(session_id="test")
-        ctx.inject_engine_event("model_call", {"model": "deepseek", "tokens": 100})
+        ctx.inject_engine_event("model_call_end", {"model": "deepseek", "tokens": 100})
         assert "_engine_events" in ctx.hook_data
         assert len(ctx.hook_data["_engine_events"]) == 1
         evt = ctx.hook_data["_engine_events"][0]
-        assert evt["type"] == "model_call"
+        assert evt["type"] == "model_call_end"
         assert evt["data"]["model"] == "deepseek"
         assert "timestamp" in evt
 
