@@ -119,6 +119,7 @@ class EvalRunner:
         passed = 0
         _last_source_sid: str | None = None
         _eval_sid: str = ""
+        _last_max_turn: int = 0
 
         for i, case in enumerate(benchmark.cases):
             case_start = time.time()
@@ -129,14 +130,20 @@ class EvalRunner:
                 sid = f"eval_{benchmark.name}_{case.id}"
                 _eval_sid = sid
                 _last_source_sid = case.session_id
+                _last_max_turn = 0  # new session, reset turn boundary
             all_pass = True
 
             try:
                 # -- Get actual trace --
                 if chat_fn is not None:
-                    # Online
+                    # Online: filter trace to only this case's turns
+                    pre_turn = _last_max_turn
                     await chat_fn(case.input, session_id=sid)
-                    actual_trace = self._read_trace(sid)
+                    full_trace = self._read_trace(sid)
+                    actual_trace = [e for e in full_trace if e.get("turn", 0) > pre_turn]
+                    turns = {e.get("turn", 0) for e in actual_trace}
+                    if turns:
+                        _last_max_turn = max(turns)
                 else:
                     # Offline
                     sid = self._config.trace_session_ids[i]
