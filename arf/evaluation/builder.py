@@ -11,6 +11,10 @@ class BenchmarkBuilder:
     Takes a TracePlugin instance and reads session trace files to
     construct rich EvalCases with golden_trajectory, expected_tools,
     expected_output_contains, and max_turns.
+
+    Cases are delimited by user_input event positions in the event list,
+    not by turn numbers — this avoids boundary misalignment when turn
+    numbers don't match conversation boundaries.
     """
 
     def __init__(self, trace_plugin):
@@ -21,49 +25,39 @@ class BenchmarkBuilder:
         if not events:
             raise EvalError(f"Session '{session_id}' not found in trace store")
 
-        # Find user_input events and build cases
-        user_events = [e for e in events if e.get("type") == "user_input"]
-        if not user_events:
+        # Find user_input event indices as case boundaries
+        user_indices = [
+            i for i, e in enumerate(events) if e.get("type") == "user_input"
+        ]
+        if not user_indices:
             raise EvalError(f"No user messages found in session '{session_id}'")
 
         cases: list[EvalCase] = []
-        for i, ue in enumerate(user_events):
-            turn = ue.get("turn", i + 1)
+        for i, ui in enumerate(user_indices):
+            start = ui
+            end = user_indices[i + 1] if i + 1 < len(user_indices) else len(events)
+            case_events = events[start:end]
 
-            # Find next user turn boundary
-            next_user_turn = None
-            for ue2 in user_events:
-                if ue2.get("turn", 0) > turn:
-                    next_user_turn = ue2.get("turn")
-                    break
-
-            # Collect tool calls in this case's turns
-            max_turn = next_user_turn if next_user_turn else max(
-                (e.get("turn", 0) for e in events), default=turn
-            )
+            # Collect tool names from this slice
             tool_names: list[str] = []
-            for e in events:
-                et = e.get("turn", 0)
-                if et >= turn and (next_user_turn is None or et < next_user_turn):
-                    if e.get("type") == "tool_call_start":
-                        tn = e.get("data", {}).get("tool_name", "")
-                        if tn:
-                            tool_names.append(tn)
+            for e in case_events:
+                if e.get("type") == "tool_call_start":
+                    tn = e.get("data", {}).get("tool_name", "")
+                    if tn:
+                        tool_names.append(tn)
 
-            # Build golden trajectory turns
-            golden_turns = self._build_golden_turns(events, turn, next_user_turn)
+            # Build golden trajectory from this slice
+            golden_turns = self._build_golden_turns(case_events)
 
-            # Extract expected_tool_calls from golden trajectory (indexed, with params + result)
+            # Extract expected_tool_calls from golden trajectory
             expected_tool_calls = self._build_expected_tool_calls(golden_turns)
 
-            # Extract expected_output_contains from final assistant content
-            expected_output = self._extract_output_contains(
-                events, turn, next_user_turn
-            )
+            # Extract expected_output_contains from final model response
+            expected_output = self._extract_output_contains(case_events)
 
             cases.append(EvalCase(
                 id=f"case_{i}",
-                input=ue.get("data", {}).get("content", ""),
+                input=events[ui].get("data", {}).get("content", ""),
                 expected_tools=tool_names if tool_names else None,
                 expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
                 expected_output_contains=expected_output,
@@ -79,13 +73,16 @@ class BenchmarkBuilder:
         )
 
     @staticmethod
-    def _build_golden_turns(events, start_turn, end_turn):
-        """Extract golden trajectory turns between start_turn and end_turn."""
-        max_turn = end_turn if end_turn else max(
-            (e.get("turn", 0) for e in events), default=start_turn
-        )
+    def _build_golden_turns(events):
+        """Extract golden trajectory turns from a slice of events.
+
+        Groups events by turn number within the slice. Each turn produces
+        one entry with assistant content, tool_calls, tool_results, and
+        assistant_final.
+        """
+        turn_set = sorted({e.get("turn", 0) for e in events if e.get("turn", 0) > 0})
         turns = []
-        for t in range(start_turn, max_turn + 1):
+        for t in turn_set:
             turn_events = [e for e in events if e.get("turn") == t]
             turn_data = BenchmarkBuilder._extract_turn_data(t, turn_events)
             if turn_data:
@@ -120,7 +117,6 @@ class BenchmarkBuilder:
                 })
 
         if tool_results:
-            # last model_call_end after tools = final response
             for e in reversed(events):
                 if e.get("type") == "model_call_end":
                     content = e.get("data", {}).get("content", "")
@@ -165,13 +161,10 @@ class BenchmarkBuilder:
         return calls
 
     @staticmethod
-    def _extract_output_contains(events, start_turn, end_turn):
-        """Extract keywords from final assistant content for expected_output_contains."""
-        max_turn = end_turn if end_turn else max(
-            (e.get("turn", 0) for e in events), default=start_turn
-        )
+    def _extract_output_contains(events):
+        """Extract keywords from the last model_call_end in the event slice."""
         for e in reversed(events):
-            if e.get("turn") == max_turn and e.get("type") == "model_call_end":
+            if e.get("type") == "model_call_end":
                 content = e.get("data", {}).get("content", "")
                 if content:
                     words = content.split()
