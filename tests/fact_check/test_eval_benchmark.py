@@ -22,6 +22,9 @@ class _EventsStore:
         self._events = events
     def load(self, session_id):
         return list(self._events)
+    def read_trace(self, session_id):
+        """TracePlugin-compatible read_trace — alias to load."""
+        return list(self._events)
 
 
 class _FakeEvalAgent:
@@ -83,10 +86,10 @@ class TestTopLevelImports:
         from arf.evaluation import EvalCase
         assert EvalCase is not None
 
-    def test_import_file_trace_store(self):
-        """Doc: from arf.observability.file_trace import FileTraceStore."""
-        from arf.observability.file_trace import FileTraceStore
-        assert FileTraceStore is not None
+    def test_import_trace_plugin(self):
+        """REMOVED 2026-06-11: FileTraceStore deleted. TracePlugin handles trace persistence."""
+        from arf.plugins.trace.plugin import TracePlugin
+        assert TracePlugin is not None
 
     def test_import_metrics(self):
         """Doc: from arf.evaluation import (metrics)."""
@@ -401,13 +404,13 @@ class TestEvalDiffModel:
 class TestBenchmarkBuilder:
     """Doc Section 3.1: BenchmarkBuilder creates EvalBenchmark from traces."""
 
-    def test_constructor_accepts_trace_store(self):
-        """Doc: BenchmarkBuilder(trace_store)."""
+    def test_constructor_accepts_trace_plugin(self):
+        """Doc: BenchmarkBuilder(trace_plugin)."""
         from arf.evaluation.builder import BenchmarkBuilder
         sig = inspect.signature(BenchmarkBuilder.__init__)
         params = list(sig.parameters.keys())
         assert "self" in params
-        assert "trace_store" in params
+        assert "trace_plugin" in params
 
     def test_build_signature(self):
         """Doc: builder.build(session_id='default', name='file_ops_v1') -> EvalBenchmark."""
@@ -1036,12 +1039,11 @@ class TestConfigPaths:
         )
 
     def test_traces_path_in_config(self):
-        """Doc: data/traces/ for FileTraceStore output."""
-        from arf.observability.file_trace import FileTraceStore
-        sig = inspect.signature(FileTraceStore.__init__)
-        default_dir = sig.parameters["dir"].default
-        assert str(default_dir) == "./data/traces", (
-            f"Default should be ./data/traces, got {default_dir}"
+        """Doc: data/traces/ is the default trace output directory."""
+        from arf.core.config_base import ObservabilityConfig
+        cfg = ObservabilityConfig()
+        assert cfg.trace_dir == "./data/traces", (
+            f"Default should be ./data/traces, got {cfg.trace_dir}"
         )
 
 
@@ -1243,12 +1245,12 @@ class TestFindingsBenchmarkBuilder:
     """BenchmarkBuilder 不自动推断 expected_output_contains."""
 
     def test_builder_does_not_populate_expected_output_contains(self):
-        """BenchmarkBuilder.build() 只推断 expected_tools, 不填充 expected_output_contains."""
+        """UPDATED 2026-06-11: BenchmarkBuilder.build() now populates expected_output_contains
+        from final assistant content in golden trajectory."""
         from arf.evaluation.builder import BenchmarkBuilder
         src = inspect.getsource(BenchmarkBuilder.build)
-        assert "expected_output_contains" not in src, (
-            "CONFIRMED: BenchmarkBuilder never sets expected_output_contains. "
-            "Users must manually edit the JSON to add output keywords."
+        assert "expected_output_contains" in src, (
+            "BenchmarkBuilder build() now extracts expected_output_contains from assistant content."
         )
 
     def test_builder_does_infer_expected_tools(self):
