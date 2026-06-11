@@ -256,6 +256,8 @@ class ToolCallResultLLMMetric:
             messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
+            extra_body=judge.extra_body,
+            response_format=judge.response_format,
         )
         try:
             result = json.loads(resp.choices[0].message.content)
@@ -425,6 +427,8 @@ class OutputQualityMetric:
             messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
+            extra_body=judge.extra_body,
+            response_format=judge.response_format,
         )
         try:
             result = json.loads(resp.choices[0].message.content)
@@ -453,6 +457,8 @@ class OutputQualityMetric:
             messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
+            extra_body=judge.extra_body,
+            response_format=judge.response_format,
         )
         try:
             result = json.loads(resp.choices[0].message.content)
@@ -616,6 +622,8 @@ class TrajectorySimilarityMetric:
             messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
+            extra_body=judge.extra_body,
+            response_format=judge.response_format,
         )
         try:
             result = json.loads(resp.choices[0].message.content)
@@ -645,6 +653,8 @@ class TrajectorySimilarityMetric:
             messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
+            extra_body=judge.extra_body,
+            response_format=judge.response_format,
         )
         try:
             result = json.loads(resp.choices[0].message.content)

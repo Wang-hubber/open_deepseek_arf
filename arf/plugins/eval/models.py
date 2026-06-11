@@ -196,6 +196,8 @@ class JudgeModelConfig:
     model: str = "gpt-4"
     temperature: float = 0.0
     max_tokens: int = 2000
+    extra_body: dict | None = None  # passthrough to API (e.g. enable_thinking, max_completion_tokens)
+    response_format: dict | None = None  # e.g. {"type": "json_object"} for strict JSON
     system_prompt: str = (
         "You are an expert evaluator for AI agent behavior. Your role is to "
         "compare an agent's actual output against a reference (golden) standard. "
