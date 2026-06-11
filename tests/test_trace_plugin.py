@@ -47,7 +47,7 @@ class TestTracePlugin:
         events = p.read_trace("s1")
         assert len(events) == 1
         assert events[0]["type"] == "round_start"
-        assert events[0]["turn"] == 1
+        assert events[0]["round"] == 1
         assert events[0]["data"]["key"] == "value"
 
     def test_list_sessions(self, trace_dir):
