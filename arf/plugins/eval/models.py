@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class EvalCase:
     id: str
     input: str
+    session_id: str | None = None  # source trace session — runner groups by this
     expected_tools: list[str] | None = None
     expected_tool_calls: list[dict] | None = None  # indexed [{name, params?, result?}]
     expected_output_contains: list[str] | None = None  # keywords, empty by default — annotators fill
@@ -31,6 +32,7 @@ class EvalBenchmark:
                 {
                     "id": c.id,
                     "input": c.input,
+                    **({"session_id": c.session_id} if c.session_id else {}),
                     **({"expected_tools": c.expected_tools} if c.expected_tools else {}),
                     **({"expected_tool_calls": c.expected_tool_calls} if c.expected_tool_calls else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
@@ -57,6 +59,7 @@ class EvalBenchmark:
                 EvalCase(
                     id=c["id"],
                     input=c["input"],
+                    session_id=c.get("session_id"),
                     expected_tools=c.get("expected_tools"),
                     expected_tool_calls=c.get("expected_tool_calls"),
                     expected_output_contains=c.get("expected_output_contains"),
