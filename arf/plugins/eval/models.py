@@ -75,6 +75,9 @@ class EvalSummary:
     avg_turns: float = 0.0
     avg_tool_calls: float = 0.0
     avg_duration_seconds: float = 0.0
+    total_tokens_in: int = 0
+    total_tokens_out: int = 0
+    total_duration_seconds: float = 0.0
     tool_accuracy: float = 0.0
     output_contains: float = 0.0
     # New metric-specific averages
@@ -113,6 +116,9 @@ class EvalReport:
                 "avg_turns": self.summary.avg_turns,
                 "avg_tool_calls": self.summary.avg_tool_calls,
                 "avg_duration_seconds": self.summary.avg_duration_seconds,
+                "total_tokens_in": self.summary.total_tokens_in,
+                "total_tokens_out": self.summary.total_tokens_out,
+                "total_duration_seconds": self.summary.total_duration_seconds,
                 "tool_accuracy": self.summary.tool_accuracy,
                 "output_contains": self.summary.output_contains,
                 "tool_call_accuracy": self.summary.tool_call_accuracy,
@@ -146,6 +152,9 @@ class EvalReport:
                 pass_rate=s["pass_rate"], avg_turns=s.get("avg_turns", 0.0),
                 avg_tool_calls=s.get("avg_tool_calls", 0.0),
                 avg_duration_seconds=s.get("avg_duration_seconds", 0.0),
+                total_tokens_in=s.get("total_tokens_in", 0),
+                total_tokens_out=s.get("total_tokens_out", 0),
+                total_duration_seconds=s.get("total_duration_seconds", 0.0),
                 tool_accuracy=s.get("tool_accuracy", 0.0),
                 output_contains=s.get("output_contains", 0.0),
                 tool_call_accuracy=s.get("tool_call_accuracy", 0.0),
@@ -184,6 +193,11 @@ class JudgeModelConfig:
     model: str = "gpt-4"
     temperature: float = 0.0
     max_tokens: int = 2000
+    system_prompt: str = (
+        "You are an impartial evaluator for AI agent outputs. "
+        "You assess correctness, completeness, clarity, and adherence to expected procedure. "
+        "Always respond with valid JSON only."
+    )
 
 
 @dataclass

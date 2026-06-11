@@ -769,6 +769,6 @@ class BaseAgent:
 
     async def evaluate(self, benchmark):
         """Run an EvalBenchmark against this agent, returning EvalReport."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         runner = EvalRunner(self, self._event_bus)
         return await runner.run(benchmark)

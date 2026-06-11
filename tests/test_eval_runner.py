@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from arf.evaluation.runner import EvalRunner
-from arf.evaluation.models import EvalConfig, EvalBenchmark, EvalCase
+from arf.plugins.eval.runner import EvalRunner
+from arf.plugins.eval.models import EvalConfig, EvalBenchmark, EvalCase
 
 
 def _make_benchmark(path: str, name="test_bm", cases=None):

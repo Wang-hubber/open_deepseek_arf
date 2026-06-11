@@ -1,11 +1,11 @@
 """Tests for EvalMetric implementations."""
 import json
 import pytest
-from arf.evaluation.metrics import (
+from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric,
     ToolCallResultLLMMetric,
 )
-from arf.evaluation.models import EvalCase
+from arf.plugins.eval.models import EvalCase
 
 
 class TestRuleMetrics:

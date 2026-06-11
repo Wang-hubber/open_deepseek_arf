@@ -1,5 +1,5 @@
 import pytest
-from arf.evaluation.exceptions import EvalError
+from arf.plugins.eval.exceptions import EvalError
 
 
 class TestEvalError:

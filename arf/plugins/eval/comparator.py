@@ -1,6 +1,6 @@
 """EvalComparator — diff two EvalReports for regression detection."""
-from arf.evaluation.models import EvalReport, EvalDiff
-from arf.evaluation.exceptions import EvalError
+from arf.plugins.eval.models import EvalReport, EvalDiff
+from arf.plugins.eval.exceptions import EvalError
 
 _FIELDS = ["pass_rate", "avg_turns", "avg_tool_calls",
            "avg_duration_seconds", "tool_accuracy", "output_contains"]

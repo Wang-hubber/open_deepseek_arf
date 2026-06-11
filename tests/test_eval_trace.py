@@ -1,7 +1,7 @@
 """Unit tests for events_to_trace adapter."""
 import pytest
 from arf.core.events import AgentEvent
-from arf.evaluation.trace_adapter import events_to_trace
+from arf.plugins.eval.trace_adapter import events_to_trace
 
 
 def make_event(turn, type, **data):

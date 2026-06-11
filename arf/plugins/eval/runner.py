@@ -4,11 +4,11 @@ import time
 import uuid
 from pathlib import Path
 
-from arf.evaluation.models import (
+from arf.plugins.eval.models import (
     EvalBenchmark, EvalReport, EvalSummary, EvalConfig, JudgeModelConfig,
 )
-from arf.evaluation.exceptions import EvalError
-from arf.evaluation.metrics import (
+from arf.plugins.eval.exceptions import EvalError
+from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, ToolCallResultLLMMetric,
     TurnEfficiencyMetric,
     OutputQualityMetric, TrajectorySimilarityMetric,
@@ -123,6 +123,7 @@ class EvalRunner:
                         case_metrics[f"{m.name}_error"] = str(exc)[:100]
 
                 duration = time.time() - case_start
+                trace_stats = self._extract_trace_stats(actual_trace)
 
                 # Determine pass/fail
                 sa = case_metrics.get("success_rate", 1.0)
@@ -134,7 +135,13 @@ class EvalRunner:
 
                 # --- Per-case output ---
                 status = "OK" if all_pass else "FAIL"
-                parts = [f"tool_acc={ta:.2f}"]
+                tk_in = trace_stats["tokens_in"]
+                tk_out = trace_stats["tokens_out"]
+                parts = [
+                    f"turns={trace_stats['turns']}",
+                    f"tok={tk_in}/{tk_out}",
+                    f"tool_acc={ta:.2f}",
+                ]
                 te = case_metrics.get("turn_efficiency")
                 if te is not None:
                     parts.append(f"turn_eff={te:.2f}")
@@ -154,6 +161,7 @@ class EvalRunner:
                 duration = time.time() - case_start
                 case_metrics = {"error": str(exc)[:200]}
                 all_pass = False
+                trace_stats = {"turns": 0, "tokens_in": 0, "tokens_out": 0, "tool_calls": 0}
                 print(f"  [ERR] case_{i}: {exc}")
 
             per_case.append({
@@ -162,6 +170,10 @@ class EvalRunner:
                 "metrics": case_metrics,
                 "duration_seconds": duration,
                 "session_id": sid,
+                "turns": trace_stats["turns"],
+                "tokens_in": trace_stats["tokens_in"],
+                "tokens_out": trace_stats["tokens_out"],
+                "tool_calls": trace_stats["tool_calls"],
             })
 
         # --- Summary ---
@@ -174,6 +186,11 @@ class EvalRunner:
 
         print(f"\n {'-' * 50}")
         print(f" Summary: {passed}/{total} passed ({summary.pass_rate:.1%})")
+        print(f"   Avg turns:         {summary.avg_turns:.1f}")
+        print(f"   Avg duration:      {summary.avg_duration_seconds:.1f}s")
+        print(f"   Total duration:    {summary.total_duration_seconds:.1f}s")
+        print(f"   Total tokens:      {summary.total_tokens_in} in / {summary.total_tokens_out} out")
+        print(f"   Avg tool calls:    {summary.avg_tool_calls:.1f}")
         print(f"   Tool accuracy:     {summary.tool_call_accuracy:.2f}")
         print(f"   Turn efficiency:   {summary.turn_efficiency:.2f}")
         if summary.output_quality is not None:
@@ -227,6 +244,29 @@ class EvalRunner:
         return events
 
     @staticmethod
+    def _extract_trace_stats(trace: list[dict]) -> dict:
+        """Extract turn count, token usage, and tool call count from trace events."""
+        turns: set[int] = set()
+        tokens_in = 0
+        tokens_out = 0
+        tool_calls = 0
+        for e in trace:
+            t = e.get("turn", 0)
+            if t > 0:
+                turns.add(t)
+            if e.get("type") == "model_call_end":
+                usage = e.get("data", {}).get("usage", {})
+                tokens_in += usage.get("prompt_tokens", 0)
+                tokens_out += usage.get("completion_tokens", 0)
+                tool_calls += len(e.get("data", {}).get("tool_calls", []))
+        return {
+            "turns": len(turns),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "tool_calls": tool_calls,
+        }
+
+    @staticmethod
     def _populate_summary(summary: EvalSummary, per_case: list[dict]) -> None:
         """Aggregate per-case metrics into summary averages."""
         metric_keys = [
@@ -241,3 +281,20 @@ class EvalRunner:
                     vals.append(v)
             if vals:
                 setattr(summary, key, sum(vals) / len(vals))
+
+        # -- Aggregate trace-level stats --
+        turns_vals = [pc.get("turns", 0) for pc in per_case]
+        if turns_vals:
+            summary.avg_turns = sum(turns_vals) / len(turns_vals)
+
+        duration_vals = [pc.get("duration_seconds", 0.0) for pc in per_case]
+        if duration_vals:
+            summary.avg_duration_seconds = sum(duration_vals) / len(duration_vals)
+            summary.total_duration_seconds = sum(duration_vals)
+
+        tool_call_vals = [pc.get("tool_calls", 0) for pc in per_case]
+        if tool_call_vals:
+            summary.avg_tool_calls = sum(tool_call_vals) / len(tool_call_vals)
+
+        summary.total_tokens_in = sum(pc.get("tokens_in", 0) for pc in per_case)
+        summary.total_tokens_out = sum(pc.get("tokens_out", 0) for pc in per_case)

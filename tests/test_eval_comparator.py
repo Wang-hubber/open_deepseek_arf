@@ -1,9 +1,9 @@
 """Unit tests for EvalComparator."""
 import pytest
 
-from arf.evaluation.models import EvalReport, EvalSummary, EvalDiff
-from arf.evaluation.comparator import EvalComparator
-from arf.evaluation.exceptions import EvalError
+from arf.plugins.eval.models import EvalReport, EvalSummary, EvalDiff
+from arf.plugins.eval.comparator import EvalComparator
+from arf.plugins.eval.exceptions import EvalError
 
 
 class TestEvalComparator:

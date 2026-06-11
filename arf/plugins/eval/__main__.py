@@ -1,4 +1,4 @@
-"""Eval CLI — python -m arf.evaluation run <args>."""
+"""Eval CLI — python -m arf.plugins.eval run <args>."""
 import argparse
 
 
@@ -36,7 +36,7 @@ def main():
     metrics = _parse_metrics(args.metrics)
     has_llm = metrics.get("output_quality") or metrics.get("trajectory_similarity")
 
-    from arf.evaluation.models import EvalConfig, JudgeModelConfig
+    from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
 
     judge = None
     if has_llm:
@@ -62,7 +62,7 @@ def main():
     )
 
     import asyncio
-    from arf.evaluation import EvalRunner
+    from arf.plugins.eval import EvalRunner
 
     runner = EvalRunner(config)
 
