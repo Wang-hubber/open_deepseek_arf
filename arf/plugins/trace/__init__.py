@@ -1,1 +1,1 @@
-"""Trace plugin — lifecycle event recording."""
+"""Trace plugin — unified trajectory-level trace recording."""
