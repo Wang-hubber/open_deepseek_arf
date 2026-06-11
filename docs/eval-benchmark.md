@@ -1,6 +1,8 @@
-# Eval Benchmark — 会话回放与回归检测
+# Eval Benchmark — 测评与回归检测
 
-ARF 提供基于真实会话 trace 的回归测评机制：从 `FileTraceStore` 的会话存档创建 benchmark，通过 `EventBus` 采集真实执行轨迹重放对话，跨配置文件/模型切换对比运行报告。
+> **Eval 是独立的 CLI 模块。接收 benchmark + trace，产出多维量化报告。裁判 LLM 与被测 Agent 完全独立。**
+
+ARF 提供基于 trajectory trace 的多维测评机制：从真实会话 trace 构建 golden benchmark，通过在线执行或离线回放对比实际输出，支持规则匹配和 LLM-as-judge 两种评判方式。
 
 ---
 
@@ -18,43 +20,49 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 
 **问题**：Agent 的"正确行为"很难用静态断言描述。如何从真实用户对话中提取高质量的测试用例？
 
-**方案**：会话回放。`BenchmarkBuilder` 从 `FileTraceStore` 中的真实对话 trace 提取用户消息序列，自动推断预期工具调用，生成可编辑的 benchmark JSON。输出关键词（`expected_output_contains`）需用户手动补充。
+**方案**：会话回放。`BenchmarkBuilder` 从 TracePlugin 中的真实对话 trace 提取完整的 golden trajectory（每轮 assistant 回复、工具调用、工具结果、最终回复），生成可编辑的 benchmark JSON。
 
 ### 1.3 对 ARF 的启示
 
 | OS/CI 概念 | ARF 对应 |
 |-----------|----------|
 | 回归测试套件 | `EvalBenchmark` — 一组 `EvalCase` |
-| 测试运行器 | `EvalRunner.run()` |
+| 测试运行器 | `EvalRunner.run_online()` / `EvalRunner.run_offline()` |
 | 测试报告 | `EvalReport` — per_case + summary |
-| 历史基线 | `EvalReport.to_json()` 持久化到 `reports/` |
+| 历史基线 | `EvalReport.to_json()` 持久化 |
 | 回归检测 | `EvalComparator.compare(baseline, current)` → `EvalDiff` |
 | 会话回放 | `BenchmarkBuilder.build(session_id, name)` |
-| CI 集成 | 命令行 `python -c "runner.run(bm)"` 退出码 |
+| Golden 数据 | `EvalCase.golden_trajectory` — 完整多轮轨迹 |
+| LLM 裁判 | `OutputQualityMetric` / `TrajectorySimilarityMetric` |
 
 ---
 
 ## 2. 架构
 
 ```
-真实对话 → FileTraceStore → memory/traces/{session}.json
+真实对话 → TracePlugin → {trace_dir}/{session}.jsonl
                                     │
                            BenchmarkBuilder.build(session_id, name)
                                     │
                                     ▼
-                           benchmarks/{name}.json (用户可编辑)
+                           benchmarks/{name}.json (含 golden_trajectory, 人类可编辑)
                                     │
-                           EvalRunner.run(benchmark)
+                                    ▼
+                           EvalRunner
+                            ├── online: agent.chat() → 等待 trace
+                            └── offline: 读已有 trace 文件
                                     │
-                     ┌──────────────┼──────────────┐
-                     ▼              ▼              ▼
-               agent.chat()   EventBus采集    metrics.compute()
-                     │              │              │
-                     ▼              ▼              ▼
-               EvalReport A    EvalReport B    EvalComparator.compare(A, B)
-                                                        │
-                                                        ▼
-                                                    EvalDiff
+                           ┌────────┼────────┐
+                           ▼        ▼        ▼
+                      规则 metrics  LLM metrics  summary
+                           │        │        │
+                           ▼        ▼        ▼
+                          EvalReport (终端 + JSON)
+                                    │
+                           EvalComparator.compare(baseline, current)
+                                    │
+                                    ▼
+                                EvalDiff
 ```
 
 ---
@@ -65,37 +73,132 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 
 ```python
 from arf.evaluation import BenchmarkBuilder
-from arf.observability.file_trace import FileTraceStore
+from arf.plugins.trace.plugin import TracePlugin
 
-store = FileTraceStore(agent.event_bus, dir="./memory/traces")
-builder = BenchmarkBuilder(store)
+trace = TracePlugin({"trace_dir": "./data/traces"})
+# trace.set_event_bus(...) 已由 BaseAgent 完成
 
-# 从真实对话会话创建 benchmark
+builder = BenchmarkBuilder(trace)
+
+# 从真实对话 session 创建 benchmark
 benchmark = builder.build(session_id="default", name="file_ops_v1")
 benchmark.to_json("benchmarks/file_ops_v1.json")
 
-# 用户手动编辑 JSON 后可重新加载
-from arf.evaluation import EvalBenchmark
+# 人类编辑 JSON 后重新加载
+from arf.evaluation.models import EvalBenchmark
 benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 ```
 
-### 3.2 运行 Benchmark
+产出的 benchmark JSON 包含 `golden_trajectory`：
 
-```python
-from arf.evaluation import EvalRunner
-
-runner = EvalRunner(agent, agent.event_bus)
-report = await runner.run(benchmark)
-report.to_json("reports/file_ops_v1_baseline.json")
+```json
+{
+  "name": "file_ops_v1",
+  "source_session": "default",
+  "cases": [
+    {
+      "id": "case_0",
+      "input": "帮我读一下 README.md",
+      "expected_tools": ["read"],
+      "expected_output_contains": ["ARF", "Framework"],
+      "max_turns": 1,
+      "golden_trajectory": {
+        "turns": [
+          {
+            "turn": 1,
+            "assistant": {
+              "content": "好的，我来读取",
+              "tool_calls": [{"name": "read", "params": {"path": "README.md"}}]
+            },
+            "tool_results": [
+              {"tool_name": "read", "result": "# ARF Framework...", "success": true}
+            ],
+            "assistant_final": {"content": "README.md 的内容是：ARF 是一个..."}
+          }
+        ]
+      }
+    }
+  ]
+}
 ```
 
-### 3.3 对比运行报告
+人类可直接编辑 `golden_trajectory` 中的 `assistant.content` 来构造 golden answer，删除 `assistant_final` 让测评只关注工具调用。
+
+### 3.2 运行 Eval（Online）
+
+```python
+import asyncio
+from arf.evaluation import EvalRunner
+from arf.evaluation.models import EvalConfig, JudgeModelConfig
+
+config = EvalConfig(
+    benchmark_path="benchmarks/file_ops_v1.json",
+    trace_dir="./data/traces",
+    judge=JudgeModelConfig(
+        api_base="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+        model="deepseek-chat",
+        temperature=0.0,
+    ),
+    metrics={
+        "tool_call_accuracy": True,
+        "turn_efficiency": True,
+        "success_rate": True,
+        "output_quality": True,
+    },
+)
+
+runner = EvalRunner(config)
+report = await runner.run_online(agent.chat)
+report.to_json("reports/file_ops_v1_20260611.json")
+```
+
+### 3.3 运行 Eval（Offline）
+
+```python
+config = EvalConfig(
+    benchmark_path="benchmarks/file_ops_v1.json",
+    trace_dir="./data/traces",
+    mode="offline",
+    trace_session_ids=["s1", "s2", "s3"],  # 对应 benchmark 中的 3 个 cases
+)
+
+runner = EvalRunner(config)
+report = await runner.run_offline()
+```
+
+### 3.4 CLI
+
+```bash
+# Offline
+python -m arf.evaluation run \
+  --benchmark benchmarks/file_ops_v1.json \
+  --trace-dir ./data/traces \
+  --mode offline \
+  --traces s1,s2,s3 \
+  --metrics tool_call_accuracy,turn_efficiency,output_quality \
+  --judge-api-base https://api.deepseek.com \
+  --judge-model deepseek-chat \
+  --output report.json
+
+# Online (Python API)
+python -c "
+import asyncio
+from arf.evaluation import EvalRunner
+from arf.evaluation.models import EvalConfig
+config = EvalConfig(benchmark_path='benchmarks/file_ops_v1.json', ...)
+runner = EvalRunner(config)
+asyncio.run(runner.run_online(agent.chat))
+"
+```
+
+### 3.5 对比运行报告
 
 ```python
 from arf.evaluation import EvalComparator, EvalReport
 
-baseline = EvalReport.from_json("reports/file_ops_v1_baseline.json")
-current = EvalReport.from_json("reports/file_ops_v1_20260528.json")
+baseline = EvalReport.from_json("reports/baseline.json")
+current = EvalReport.from_json("reports/current.json")
 
 diff = EvalComparator().compare(baseline, current)
 print(f"Summary delta: {diff.summary_diff}")
@@ -111,87 +214,102 @@ print(f"Improvements: {diff.improvements}")
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | `str` | 用例 ID，如 `case_0` |
+| `id` | `str` | 用例 ID |
 | `input` | `str` | 用户消息文本 |
-| `expected_tools` | `list[str] \| None` | 预期调用的工具名列表，自动提取 |
-| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词列表 |
+| `expected_tools` | `list[str] \| None` | 预期调用的工具名列表 |
+| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
+| `golden_trajectory` | `dict \| None` | 完整 golden trajectory，可用于 SFT |
 
-### EvalBenchmark
+### JudgeModelConfig
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | `str` | Benchmark 名称 |
-| `source_session` | `str \| None` | 来源 session ID |
-| `created_at` | `float` | 创建时间戳 |
-| `cases` | `list[EvalCase]` | 测试用例列表 |
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `api_base` | `str` | `https://api.openai.com/v1` | OpenAI 兼容 API 地址 |
+| `api_key_env` | `str` | `OPENAI_API_KEY` | API key 环境变量名 |
+| `model` | `str` | `gpt-4` | 裁判模型 |
+| `temperature` | `float` | `0.0` | 裁判需确定性 |
+| `max_tokens` | `int` | `2000` | 回复 token 上限 |
 
-### EvalReport
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `run_id` | `str` | 运行 ID (UUID) |
-| `benchmark_name` | `str` | 关联的 benchmark 名 |
-| `agent_config_hash` | `str` | Agent 配置的 SHA256 摘要 |
-| `timestamp` | `float` | 运行时间戳 |
-| `summary` | `EvalSummary` | 汇总统计 |
-| `per_case` | `list[dict]` | 每个用例的详细结果 (含 trace) |
-
-### EvalSummary
+### EvalConfig
 
 | 字段 | 说明 |
 |------|------|
-| `total` / `passed` / `failed` | 用例计数 |
-| `pass_rate` | 通过率 |
-| `avg_turns` | 平均轮次数 |
-| `avg_tool_calls` | 平均工具调用数 |
-| `avg_duration_seconds` | 平均耗时 |
-| `tool_accuracy` | 工具调用准确率 |
-| `output_contains` | 输出关键词匹配率 |
+| `benchmark_path` | Benchmark JSON 文件路径 |
+| `trace_dir` | Trace 文件目录 |
+| `judge` | `JudgeModelConfig \| None` |
+| `metrics` | 5 维 开关 dict |
+| `mode` | `"online"` / `"offline"` |
+| `trace_session_ids` | offline 模式下的 session ID 列表 |
+
+### EvalReport
+
+| 字段 | 说明 |
+|------|------|
+| `run_id` | UUID |
+| `snapshot_hash` | EnvSnapshot hash，关联配置版本 |
+| `judge_model` | 裁判模型名 |
+| `metrics_enabled` | 启用的 metric 列表 |
+| `mode` | online / offline |
+| `summary` | `EvalSummary` 汇总统计 |
+| `per_case` | 每个用例的详细结果 |
 
 ---
 
-## 5. 指标说明
+## 5. Metrics
 
-### SuccessRateMetric
+### 规则层
 
-trace 所有 turn 中无 error 事件 → 1.0，有 → 0.0
+| Metric | 方法 | 输出 |
+|--------|------|------|
+| `SuccessRateMetric` | trace 中是否有 error 事件 | 0 或 1 |
+| `ToolCallAccuracyMetric` | 实际工具调用序列 vs `expected_tools`，顺序匹配 | 0–1 |
+| `TurnEfficiencyMetric` | 实际 turn 数 vs `max_turns` | 0–1 |
 
-### ToolAccuracyMetric
+### LLM-as-judge
 
-实际调用的工具序列 vs `expected_tools`，按顺序匹配。比例 = 匹配数 / `len(expected_tools)`
+| Metric | 方法 | 输出 |
+|--------|------|------|
+| `OutputQualityMetric` | LLM 对比 final output vs golden，1-5 打分 | score + reason |
+| `TrajectorySimilarityMetric` | LLM 对比完整 actual trajectory vs golden trajectory，1-5 打分 | score + reason |
 
-### TurnEfficiencyMetric
-
-返回 trace 中的 turn 总数
-
-### OutputContainsMetric
-
-最后一个 model_output 中包含 `expected_output_contains` 中关键词的比例
+LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
 
 ---
 
-## 6. 配置
+## 6. 终端输出
 
-```yaml
-# 无需额外配置。eval 模块在 arf/evaluation/ 下自动可用。
-# Benchmark 和 report 的存储路径由 App 层决定，API 接受任意相对/绝对路径：
-#   benchmarks/{name}.json → 用户创建和编辑的 benchmark JSON
-#   reports/{name}.json    → runner 输出的 report JSON
-#   memory/traces/          → FileTraceStore 写入的真实对话 trace
+```
+ Eval Report: file_ops_v1
+ ==================================================
+ Mode: online   Judge: gpt-4   Hash: a1b2c3d4
+
+ Cases: 5 to run
+
+  [OK] case_0: tool_acc=1.00, turn_eff=1.00, quality=4/5   2.3s
+  [OK] case_1: tool_acc=1.00, turn_eff=1.00, quality=5/5   3.1s
+  [FAIL] case_2: tool_acc=0.50, turn_eff=1.00, quality=3/5   4.2s
+         input: 帮我读一下 README.md 和 config.yaml
+  [OK] case_3: tool_acc=1.00, turn_eff=0.50   2.8s
+  [OK] case_4: tool_acc=1.00, turn_eff=1.00, quality=5/5, traj_sim=5/5   1.9s
+
+ --------------------------------------------------
+ Summary: 4/5 passed (80.0%)
+   Tool accuracy:     0.90
+   Turn efficiency:   0.90
+   Output quality:    4.2/5 (LLM)
+   Trajectory sim:    5.0/5 (LLM)
+
+ 1 failed case(s):
+   case case_2: ['tool_call_accuracy']
 ```
 
 ---
 
 ## 7. 演进方向
 
-- **CLI 集成**：`python cli.py eval run <benchmark>` / `python cli.py eval compare <baseline> <current>`
-- **HTML Report**：带瀑布图的可视化对比报告
-- **CI 集成**：退出码 0（通过）/ 1（退化）的 CI 就绪模式
-- **语义相似度 Metric**：用 LLM 评估输出内容的语义差异，而非关键词匹配
-- **增量 Benchmark 更新**：基于真实对话自动追加新用例
-- **并行执行**：支持 `max_parallel` 参数实现多 case 并发运行。前置条件：
-  1. Agent 的 session 级状态隔离 — `_active_sessions`、`EventBus`、`StateStore` 需支持并发访问，或按 session 路由
-  2. 每个 parallel worker 持有独立 agent 实例，或引擎支持 session 级状态分片
-  3. `asyncio.Semaphore(max_parallel)` 控制并发度，`asyncio.gather` 调度多 case
-  4. 当前已删除协议中的 `max_parallel` 参数（避免承诺未实现的能力），待隔离就绪后重新引入
+- **HTML Report**：带 golden vs actual 并排对比的可视化报告
+- **CI 集成**：退出码 0（通过）/ 1（退化）
+- **并行执行**：多 case 并发运行，`asyncio.Semaphore` 控制并发度
+- **Preference 数据导出**：从 golden_trajectory 生成 chosen/rejected 对，导出 RLHF 训练格式
+- **自动 benchmark 生成**：从多个 trajectory 批量构建，按意图聚类去重
