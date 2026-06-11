@@ -1,6 +1,4 @@
 """Unit tests for BenchmarkBuilder."""
-import asyncio
-import json
 import tempfile
 from pathlib import Path
 
@@ -8,26 +6,21 @@ import pytest
 
 from arf.evaluation.builder import BenchmarkBuilder
 from arf.evaluation.exceptions import EvalError
-from arf.observability.file_trace import FileTraceStore
 from arf.event_bus import InMemoryEventBus
-from arf.core.events import AgentEvent
+from arf.plugins.trace.plugin import TracePlugin
 
 
-def _make_store(trace_dir):
-    """Create FileTraceStore within an async context."""
-    async def _make():
-        return FileTraceStore(InMemoryEventBus(), dir=trace_dir)
-    return asyncio.run(_make())
+def _make_trace_plugin(trace_dir):
+    bus = InMemoryEventBus()
+    p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+    p.set_event_bus(bus)
+    return p
 
 
-def _write_trace(dir, session_id, events):
-    p = Path(dir) / f"{session_id}.jsonl"
-    with open(p, "w", encoding="utf-8") as f:
-        for e in events:
-            f.write(json.dumps({
-                "type": e.type, "data": e.data, "turn": e.turn,
-                "timestamp": e.timestamp,
-            }, ensure_ascii=False) + "\n")
+def _write_trace_events(p, session_id, events):
+    for e in events:
+        e.setdefault("session_id", session_id)
+        p._write_event(session_id, e)
 
 
 class TestBenchmarkBuilder:
@@ -37,41 +30,118 @@ class TestBenchmarkBuilder:
             yield Path(td)
 
     def test_build_creates_cases_from_user_inputs(self, trace_dir):
-        _write_trace(trace_dir, "s1", [
-            AgentEvent(type="user_input", turn=1, data={"content": "create file"}),
-            AgentEvent(type="tool_call_start", turn=1, data={"tool_name": "file_writer"}),
-            AgentEvent(type="tool_call_end", turn=1, data={"tool_name": "file_writer",
-                          "success": True}),
-            AgentEvent(type="model_call_end", turn=1, data={"content": "done"}),
-            AgentEvent(type="user_input", turn=3, data={"content": "read it"}),
-            AgentEvent(type="tool_call_start", turn=3, data={"tool_name": "file_reader"}),
-            AgentEvent(type="tool_call_end", turn=3, data={"tool_name": "file_reader",
-                          "success": True}),
+        p = _make_trace_plugin(trace_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "create file"}, "timestamp": 1.0},
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "file_writer"}, "timestamp": 1.1},
+            {"type": "tool_call_end", "turn": 1,
+             "data": {"tool_name": "file_writer", "success": True,
+                      "result": "created"}, "timestamp": 1.2},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "File created successfully"},
+             "timestamp": 1.3},
+            {"type": "user_input", "turn": 3,
+             "data": {"content": "read it"}, "timestamp": 2.0},
+            {"type": "tool_call_start", "turn": 3,
+             "data": {"tool_name": "file_reader"}, "timestamp": 2.1},
+            {"type": "tool_call_end", "turn": 3,
+             "data": {"tool_name": "file_reader", "success": True,
+                      "result": "hello"}, "timestamp": 2.2},
+            {"type": "model_call_end", "turn": 3,
+             "data": {"content": "The file says hello"},
+             "timestamp": 2.3},
         ])
-        store = _make_store(trace_dir)
-        builder = BenchmarkBuilder(store)
+        builder = BenchmarkBuilder(p)
         bm = builder.build("s1", "my_bench")
 
         assert bm.name == "my_bench"
         assert bm.source_session == "s1"
         assert len(bm.cases) == 2
+
+        # Case 0
         assert bm.cases[0].input == "create file"
         assert bm.cases[0].expected_tools == ["file_writer"]
+        assert bm.cases[0].golden_trajectory is not None
+        assert len(bm.cases[0].golden_trajectory["turns"]) >= 1
+        t0 = bm.cases[0].golden_trajectory["turns"][0]
+        assert t0["assistant"]["content"] == "File created successfully"
+        assert len(t0["tool_results"]) == 1
+        assert t0["tool_results"][0]["tool_name"] == "file_writer"
+        assert "File created" in t0["assistant_final"]["content"]
+
+        # Case 1
         assert bm.cases[1].input == "read it"
         assert bm.cases[1].expected_tools == ["file_reader"]
+
         assert bm.created_at > 0
 
     def test_build_session_not_found(self, trace_dir):
-        store = _make_store(trace_dir)
-        builder = BenchmarkBuilder(store)
+        p = _make_trace_plugin(trace_dir)
+        builder = BenchmarkBuilder(p)
         with pytest.raises(EvalError, match="not found"):
             builder.build("nope", "bm")
 
     def test_build_no_user_inputs(self, trace_dir):
-        _write_trace(trace_dir, "s1", [
-            AgentEvent(type="tool_call_start", turn=1, data={"tool_name": "x"}),
+        p = _make_trace_plugin(trace_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "x"}, "timestamp": 1.0},
         ])
-        store = _make_store(trace_dir)
-        builder = BenchmarkBuilder(store)
+        builder = BenchmarkBuilder(p)
         with pytest.raises(EvalError, match="No user messages"):
             builder.build("s1", "bm")
+
+    def test_golden_trajectory_no_tool_calls(self, trace_dir):
+        p = _make_trace_plugin(trace_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "hello"}, "timestamp": 1.0},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "Hi there! How can I help?"},
+             "timestamp": 1.1},
+        ])
+        builder = BenchmarkBuilder(p)
+        bm = builder.build("s1", "chat")
+        assert len(bm.cases) == 1
+        c = bm.cases[0]
+        assert c.expected_tools is None
+        assert c.golden_trajectory is not None
+        t0 = c.golden_trajectory["turns"][0]
+        assert t0["assistant"]["content"] == "Hi there! How can I help?"
+        assert t0["assistant"]["tool_calls"] == []
+
+    def test_multi_turn_golden_trajectory(self, trace_dir):
+        p = _make_trace_plugin(trace_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "read x"}, "timestamp": 1.0},
+            {"type": "model_call", "turn": 1,
+             "data": {"content": "", "tool_calls": [
+                 {"name": "read", "params": {"path": "x"}}
+             ]}, "timestamp": 1.1},
+            {"type": "tool_call", "turn": 1,
+             "data": {"tool_name": "read", "result": "not found",
+                      "success": False}, "timestamp": 1.2},
+            {"type": "model_call", "turn": 2,
+             "data": {"content": "", "tool_calls": [
+                 {"name": "glob", "params": {"pattern": "*.txt"}}
+             ]}, "timestamp": 2.1},
+            {"type": "tool_call", "turn": 2,
+             "data": {"tool_name": "glob", "result": "x.txt",
+                      "success": True}, "timestamp": 2.2},
+            {"type": "model_call_end", "turn": 2,
+             "data": {"content": "Found x.txt via glob"},
+             "timestamp": 2.3},
+        ])
+        builder = BenchmarkBuilder(p)
+        bm = builder.build("s1", "multi")
+        assert len(bm.cases) == 1
+        gt = bm.cases[0].golden_trajectory
+        assert gt is not None
+        assert len(gt["turns"]) == 2
+        assert gt["turns"][0]["turn"] == 1
+        assert gt["turns"][0]["tool_results"][0]["success"] is False
+        assert gt["turns"][1]["turn"] == 2
+        assert gt["turns"][1]["tool_results"][0]["success"] is True
