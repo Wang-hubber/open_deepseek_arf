@@ -36,8 +36,8 @@ Agent ReAct 循环中的一次原子步骤：一次 `model_call` + 可选的 `to
 | 层级 | 控制平面变量 | Trace JSONL 字段 | AgentEvent 字段 | PluginContext | Eval 概念 |
 |------|-------------|-----------------|-----------------|---------------|-----------|
 | session | `session_id` | `session_id` | `session_id` | `session_id` | `EvalCase.session_id` |
-| round | `_interaction_round` | `round` | `data["round"]` | `interaction_round` | case 边界, `max_rounds`, `golden_trajectory.rounds` |
-| turn | `current_turn` | `turn` | `event.turn`, `data["turn"]` | `turn` | round 内的 ReAct steps |
+| round | `_interaction_round` | `round` | `data["round"]` | `interaction_round` | case 边界过滤，Runner `_last_round` |
+| turn | `current_turn` | `turn` | `event.turn`, `data["turn"]` | `turn` | `TurnEfficiencyMetric`, `max_turns`, `golden_trajectory.turns` — eval 评估的就是 ReAct 步数 |
 
 ### 控制平面（`arf/engine/control_plane.py`）
 
@@ -79,10 +79,12 @@ AgentEvent:
 
 ### Eval（`arf/plugins/eval/`）
 
-- `EvalCase.max_rounds` — 期望最大 round 数
-- `golden_trajectory.rounds` — 每个元素是一个 round
-- `RoundEfficiencyMetric` — 按 round 统计效率
-- Runner `_last_round` — 跨 case 跟踪 round 边界
+Eval 平面评估的是 **case → turn** 关系——一次 user_input 到 final_output 中用了多少步 ReAct。因此：
+
+- `EvalCase.max_turns` — 期望最大 ReAct 步数（**保留原名，不改为 max_rounds**）
+- `TurnEfficiencyMetric` / `turn_efficiency` — 越少越强（**保留原名**）
+- `golden_trajectory.turns` — 每步 model_call 是一条 golden turn（**保留原名**）
+- Runner `_last_round` — 跨 case 跟踪 round 边界，用 trace `"round"` 字段
 
 ## 3. 关键规则
 
@@ -115,26 +117,30 @@ Eval Runner:
   _last_round 跟踪上一个 case 的 max round
 ```
 
-## 5. 迁移计划
+## 5. 实施记录
 
-### 5.1 待改文件清单
+已实施（2026-06-11），计划见 `docs/superpowers/plans/2026-06-11-session-round-turn-terminology.md`。
+
+### 5.1 已改
 
 | 文件 | 改动 |
 |------|------|
-| `arf/plugins/trace/plugin.py` | 事件记录：`"turn"` → `"round"`，新增 `"turn"` = `context.turn` |
-| `arf/plugins/eval/models.py` | `max_turns` → `max_rounds`，`avg_turns` → `avg_rounds` |
-| `arf/plugins/eval/builder.py` | `_build_golden_turns()` → `_build_golden_rounds()`，trajectory 中 `turns` → `rounds` |
-| `arf/plugins/eval/runner.py` | `_extract_trace_stats` 中 `turns` → `rounds` |
-| `arf/plugins/eval/metrics.py` | `TurnEfficiencyMetric` → `RoundEfficiencyMetric` |
-| `arf/plugins/eval/comparator.py` | 如有 turn 引用一并修正 |
+| `arf/plugins/trace/plugin.py` | 事件记录 `"round"` = `interaction_round`，`"turn"` = `current_turn` |
+| `arf/plugins/eval/runner.py` | case 边界过滤用 `e.get("round", e.get("turn", 0))` fallback |
+| `tests/test_trace_plugin.py` | 断言更新为 `"round"` 字段 |
 
-### 5.2 兼容策略
+### 5.2 不改的（eval 层命名本就正确）
 
-- **Trace 读取**：优先读 `round`，fallback 到旧 `turn` 字段（兼容已有 trace 文件）
-- **Benchmark JSON**：`from_json` 同时接受 `max_turns`/`max_rounds`，`to_json` 只写 `max_rounds`
+| 保持不变 | 原因 |
+|----------|------|
+| `EvalCase.max_turns` | Eval 评估 ReAct 步数，不是 round 数 |
+| `TurnEfficiencyMetric`, `turn_efficiency` | 衡量 agent 用几步完成，越少越强 |
+| `golden_trajectory.turns` | 每步 model_call 是一条 golden turn |
+| `_build_golden_turns()` | trace 修好后 `"turn"` 是真正的 current_turn |
+| `EvalSummary.avg_turns` | 同上 |
+| `_interaction_round`, `current_turn` | 引擎内部已是正确命名 |
 
-### 5.3 不改的（控制平面内部已是正确命名）
+### 5.3 兼容策略
 
-- `_interaction_round` — 已是 round 的正确名称
-- `current_turn` — 已是 turn 的正确名称
-- `AgentEvent.turn` / `data["turn"]` / `data["round"]` — 已正确对应
+- **Trace 读取**：`e.get("round", e.get("turn", 0))` — 新 trace 有 `"round"`，旧 trace `"turn"` 里存的是 round
+- **Builder/Metrics**：读 `e.get("turn")` 即可——新 trace 存的是真正的 current_turn，旧 trace 存的是 interaction_round（只有 1 个值），行为向后兼容
