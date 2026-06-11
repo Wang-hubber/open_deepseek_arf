@@ -216,10 +216,13 @@ print(f"Improvements: {diff.improvements}")
 |------|------|------|
 | `id` | `str` | 用例 ID |
 | `input` | `str` | 用户消息文本 |
-| `expected_tools` | `list[str] \| None` | 预期调用的工具名列表 |
+| `expected_tools` | `list[str] \| None` | 预期调用的工具名列表（name-only，向后兼容） |
+| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 params/result），按顺序与 actual 索引配对 |
 | `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
 | `golden_trajectory` | `dict \| None` | 完整 golden trajectory，可用于 SFT |
+
+`expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "result": "吃完了"}`。`params` 和 `result` 可选——不标则只比名称。
 
 ### JudgeModelConfig
 
@@ -263,8 +266,16 @@ print(f"Improvements: {diff.improvements}")
 | Metric | 方法 | 输出 |
 |--------|------|------|
 | `SuccessRateMetric` | trace 中是否有 error 事件 | 0 或 1 |
-| `ToolCallAccuracyMetric` | 实际工具调用序列 vs `expected_tools`，顺序匹配 | 0–1 |
+| `ToolCallAccuracyMetric` | 按索引配对：name + params 子集匹配。`expected_tool_calls` 优先，`expected_tools` 兜底 | 0–1 |
 | `TurnEfficiencyMetric` | 实际 turn 数 vs `max_turns` | 0–1 |
+
+**ToolCallAccuracyMetric 匹配策略**：
+
+1. 优先使用 `expected_tool_calls`（如果非空），按索引与 actual 配对
+2. 每个配对先比 `name`，再比 `params`（子集匹配）
+3. 字符串参数用**子串匹配**（`"焖子"` in `"良子的焖子"`），非字符串用 `==`
+4. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
+5. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
 
 ### LLM-as-judge
 
@@ -272,12 +283,83 @@ print(f"Improvements: {diff.improvements}")
 |--------|------|------|
 | `OutputQualityMetric` | LLM 对比 final output vs golden，1-5 打分 | score + reason |
 | `TrajectorySimilarityMetric` | LLM 对比完整 actual trajectory vs golden trajectory，1-5 打分 | score + reason |
+| `ToolCallResultLLMMetric` | LLM 对比 expected vs actual tool results 语义等价，按索引配对 | 0–1 |
+
+**ToolCallResultLLMMetric** 用于评估工具**返回值**的语义一致性。`ToolCallAccuracyMetric` 负责名称和参数（程序化、零开销），`ToolCallResultLLMMetric` 负责结果语义（需 judge LLM）。推荐先跑程序化 metric，只在需要时开启 LLM 裁判。
 
 LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
 
 ---
 
-## 6. 终端输出
+## 6. 人工标注指南
+
+### 6.1 自动构建 → 人工精修
+
+`BenchmarkBuilder.build()` 自动从 trace 提取 `expected_tool_calls`（含 name + params + result）和 `golden_trajectory`。产出的 benchmark JSON 可作为起点，人工标注做三件事：
+
+1. **删**：移除不关键的 turn（如中间探索性的 glob）
+2. **改**：修正 `expected_output_contains` 预期关键词，缩紧 `max_turns`
+3. **标**：给关键 tool_call 写 `params` 约束和 `result` 预期
+
+### 6.2 标注示例
+
+**简单标注（只看工具名）：**
+
+```json
+{
+  "id": "case_0",
+  "input": "读一下 README.md",
+  "expected_tools": ["read"],
+  "max_turns": 1
+}
+```
+
+**带参数约束（子集匹配）：**
+
+```json
+{
+  "id": "case_1",
+  "input": "良子去吃良子的焖子",
+  "expected_tool_calls": [
+    {
+      "name": "eat",
+      "params": {"name": "良子", "path": "良子的焖子"}
+    }
+  ]
+}
+```
+
+`params` 使用子集匹配——actual 多出 `_workspace` 等框架参数不算错。字符串用子串匹配，所以 `"焖子"` 也能命中 `"良子的焖子"`。
+
+**带 result 预期（需开启 ToolCallResultLLMMetric）：**
+
+```json
+{
+  "id": "case_2",
+  "input": "查一下今天天气",
+  "expected_tool_calls": [
+    {
+      "name": "weather",
+      "params": {"city": "北京"},
+      "result": "晴，22°C"
+    }
+  ]
+}
+```
+
+`result` 走 LLM 语义等价判断——"晴天，气温 22 摄氏度" 也能匹配 "晴，22°C"。
+
+### 6.3 标注注意事项
+
+- **索引对齐**：`expected_tool_calls[i]` 对应 actual trace 中第 i 个 `tool_call_start`。如果 expected 和 actual 顺序不同，工具名称匹配会先按名称对齐
+- **多轮对话**：每轮（一个 user input → 最终 text response）一个 EvalCase。如果一轮中有多个 tool_call，全放在同一个 `expected_tool_calls` 数组里按顺序排列
+- **params 标关键字段即可**：不用标全量参数，标对决策有影响的字段（如 `path`、`pattern`、`name`）。框架自动注入的参数（`_workspace`）不要标
+- **result 标预期语义而非精确值**：写 "文件包含 ARF 框架说明" 而不是 "文件内容是 ARF — AI Resources & Runtime Framework\n\n...（3000 字）"。LLM 裁判做语义等价判断
+- **向后兼容**：已有 benchmark 的 `expected_tools` 无需迁移，ToolCallAccuracyMetric 自动 fallback 到 name-only 模式
+
+---
+
+## 7. 终端输出
 
 ```
  Eval Report: file_ops_v1
@@ -306,7 +388,7 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LL
 
 ---
 
-## 7. 演进方向
+## 8. 演进方向
 
 - **HTML Report**：带 golden vs actual 并排对比的可视化报告
 - **CI 集成**：退出码 0（通过）/ 1（退化）
