@@ -435,89 +435,57 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有
 
 ## 8. App 端配置指南
 
-### 8.1 配置文件（`plugins_config.eval`）
+### 8.1 框架默认值（`plugin.yaml`）
 
-App 在 `config.yaml` 中覆盖插件默认值。框架提供的 `plugin.yaml` 默认值被浅层合并覆盖，未覆盖的字段保持默认。
+`arf/plugins/eval/plugin.yaml` 提供全部默认值。App **不修改此文件**——通过 `EvalConfig` 在代码中覆盖所需字段即可。
 
-```yaml
-plugins:
-  eval:
-    enabled: true
-    config:
-      trace_dir: ./data/traces
-      eval_dir: ./data/eval
-      judge:
-        api_base: https://api.deepseek.com
-        api_key_env: DEEPSEEK_API_KEY
-        model: deepseek-chat
-        temperature: 0.0
-        max_tokens: 2000
-        system_prompt: >
-          You are a strict but fair evaluator...
-      prompts:
-        # 覆盖参考式 prompt（可选）
-        output_quality: |
-          ...custom ref prompt...
-        # 覆盖无参考式 prompt（可选）
-        output_quality_free: |
-          ...custom free prompt...
-        trajectory_similarity: |
-          ...custom ref prompt...
-        trajectory_similarity_free: |
-          ...custom free prompt...
-```
-
-### 8.2 代码示例
+### 8.2 使用 EvalConfig 覆盖默认值
 
 ```python
+from arf.plugins.eval import EvalRunner
 from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
 
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
     trace_dir="./data/traces",
+    # judge：开启 LLM 指标时必配
     judge=JudgeModelConfig(
         api_base="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
         model="deepseek-chat",
     ),
+    # metrics：按需开启
     metrics={
         "tool_call_accuracy": True,
         "turn_efficiency": True,
         "success_rate": True,
-        # LLM metrics (optional, needs judge)
-        "tool_call_result_llm": False,
-        "output_quality": True,
-        "trajectory_similarity": True,
+        "output_quality": True,              # LLM，需 judge
+        "trajectory_similarity": True,       # LLM，需 judge
+        "tool_call_result_llm": False,       # LLM，需 judge + 标注了 result
     },
-    # prompts dict is optional — falls back to plugin.yaml defaults
+    # prompts：可选，覆盖默认评分 prompt
+    # prompts={"output_quality": "...", ...},
 )
 
-runner = EvalRunner(config)
-
-# Online: system_prompt + tools 从 agent 运行时获取，由 App 传入
-report = await runner.run_online(
+# system_prompt + tools 从 agent 运行时对象直接取，不放进 EvalConfig
+report = await EvalRunner(config).run_online(
     agent.chat,
-    system_prompt=agent.system_prompt,
-    tools=agent.tools_description,
-)
-
-# Offline: 同样支持传入
-report = await runner.run_offline(
     system_prompt=agent.system_prompt,
     tools=agent.tools_description,
 )
 ```
 
-### 8.3 App 需要注入的关键数据
+### 8.3 App 需要注入的数据总结
 
-| 参数 | 注入位置 | 用途 | 不注入的后果 |
-|------|---------|------|-------------|
-| `judge` | `EvalConfig` | LLM metrics 的 API 配置 | validate() 抛错 |
-| `system_prompt` | `run_online/offline()` | 无参考式 judge 理解 agent 行为约束 | judge 标注缺上下文，评分偏保守 |
-| `tools` | `run_online/offline()` | 无参考式 judge 评估工具选择是否合理 | judge 无法判断工具选择优劣 |
-| `prompts` | `EvalConfig` | 覆盖默认评分 prompt | 使用框架内置 prompt（通常够用） |
+| 参数 | 注入位置 | 来源 | 必填？ |
+|------|---------|------|--------|
+| `judge` | `EvalConfig` | App 配置（API key/mode） | 开启 LLM 指标时必填 |
+| `metrics` | `EvalConfig` | App 决策哪些维度要评估 | 都有默认值 |
+| `prompts` | `EvalConfig` | App 可选覆盖 | 否，不传用框架默认 |
+| `system_prompt` | `run_online()` | `agent.system_prompt`（运行时） | 建议传入，缺则无参考式缺上下文 |
+| `tools` | `run_online()` | `agent.tools_description`（运行时） | 建议传入，缺则无参考式缺上下文 |
 
-`system_prompt` 和 `tools` 不放在 `EvalConfig` 中：它们属于**运行时数据**（只有 agent 在运行时刻才知道组装出的完整 prompt 和已注册的工具描述），App 只需把 agent 对象上的对应字段传入。
+`system_prompt` 和 `tools` 是**运行时数据**，不放进 `EvalConfig`——它们由 agent 在运行时刻组装，App 直接从 agent 对象取即可，无需拷贝。
 
 ### 8.4 Benchmark 构建与标注
 
