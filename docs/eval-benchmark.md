@@ -217,7 +217,7 @@ print(f"Improvements: {diff.improvements}")
 | `id` | `str` | 用例 ID |
 | `input` | `str` | 用户消息文本 |
 | `expected_tools` | `list[str] \| None` | 预期调用的工具名列表（name-only，向后兼容） |
-| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 params/result），按顺序与 actual 索引配对 |
+| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/result），按名称与 actual 配对 |
 | `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
 | `golden_trajectory` | `dict \| None` | 完整 golden trajectory，可用于 SFT |
@@ -266,7 +266,7 @@ print(f"Improvements: {diff.improvements}")
 | Metric | 方法 | 输出 |
 |--------|------|------|
 | `SuccessRateMetric` | trace 中是否有 error 事件 | 0 或 1 |
-| `ToolCallAccuracyMetric` | 按索引配对：name + params 子集匹配。`expected_tool_calls` 优先，`expected_tools` 兜底 | 0–1 |
+| `ToolCallAccuracyMetric` | 按名称配对：name + params 子集匹配。`expected_tool_calls` 优先，`expected_tools` 兜底。同步统计 dependency_order_failures | 0–1 + dep_fail 计数 |
 | `TurnEfficiencyMetric` | 实际 turn 数 vs `max_turns` | 0–1 |
 
 **ToolCallAccuracyMetric 匹配策略**：
@@ -277,6 +277,7 @@ print(f"Improvements: {diff.improvements}")
 4. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
 5. actual 多出 expected 没有的工具 → 降低总分（total 取 max(expected, actual)）
 6. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
+7. 同步扫描 `tool_call_end` 事件：`success=false` 且 `error` 包含依赖关键词（`depends_on`、`blocked`、`not ready`、`not complete`、`dependency`、`must complete`、`waiting for`、`prerequisite`）→ 计入 `dependency_order_failures`
 
 ### LLM-as-judge
 
@@ -284,9 +285,9 @@ print(f"Improvements: {diff.improvements}")
 |--------|------|------|
 | `OutputQualityMetric` | LLM 对比 final output vs golden，1-5 打分 | score + reason |
 | `TrajectorySimilarityMetric` | LLM 对比完整 actual trajectory vs golden trajectory，1-5 打分 | score + reason |
-| `ToolCallResultLLMMetric` | LLM 对比 expected vs actual tool results 语义等价，按索引配对 | 0–1 |
+| `ToolCallResultLLMMetric` | LLM 对比 expected vs actual tool results 语义等价，按名称配对 | 0–1 |
 
-**ToolCallResultLLMMetric** 用于评估工具**返回值**的语义一致性。`ToolCallAccuracyMetric` 负责名称和参数（程序化、零开销），`ToolCallResultLLMMetric` 负责结果语义（需 judge LLM）。推荐先跑程序化 metric，只在需要时开启 LLM 裁判。
+**ToolCallResultLLMMetric** 用于评估工具**返回值**的语义一致性。`ToolCallAccuracyMetric` 负责名称和参数（程序化、零开销），`ToolCallResultLLMMetric` 负责结果语义（需 judge LLM）。`expected.result` 可从 golden trajectory 自动提取，人工标注是可选的优化——当 golden result 太冗长时，人工可以改成松散的语义描述让 LLM 判得更准。推荐先跑程序化 metric，只在需要时开启 LLM 裁判。
 
 LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
 
@@ -352,10 +353,12 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LL
 
 ### 6.3 标注注意事项
 
-- **按名称匹配**：评估时按工具名配对，不关注执行顺序。并行 tool_call 返回顺序不确定也不影响评分的正确性
+- **按名称匹配**：评估时按工具名配对，不关注执行顺序。并行 tool_call 返回顺序不确定也不影响评分
+- **依赖顺序由工具自行校验**：skill 内部工具的依赖关系（如 `plan_create` 必须在 `plan_dispatch` 之前）由框架在运行时 enforce，违反时 `tool_call_end.success=false`，`ToolCallAccuracyMetric` 自动统计为 `dependency_order_failures`
 - **多轮对话**：每轮（一个 user input → 最终 text response）一个 EvalCase。如果一轮中有多个 tool_call，全放在同一个 `expected_tool_calls` 数组里
 - **params 标关键字段即可**：不用标全量参数，标对决策有影响的字段（如 `path`、`pattern`、`name`）。框架自动注入的参数（`_workspace`）不要标
-- **result 标预期语义而非精确值**：写 "文件包含 ARF 框架说明" 而不是 "文件内容是 ARF — AI Resources & Runtime Framework\n\n...（3000 字）"。LLM 裁判做语义等价判断
+- **result 可标可不标**：不标时 `ToolCallResultLLMMetric` 自动跳过（返回 1.0）。如需 LLM 裁判结果语义，写 "返回了用户列表 JSON" 而非原始返回值全文。LLM 做语义等价判断
+- **程序化优先**：工具名称和参数走 `ToolCallAccuracyMetric`（零开销），只在需要判断结果语义时开启 `ToolCallResultLLMMetric`（需 judge LLM）
 - **向后兼容**：已有 benchmark 的 `expected_tools` 无需迁移，ToolCallAccuracyMetric 自动 fallback 到 name-only 模式
 
 ---
