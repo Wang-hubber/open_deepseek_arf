@@ -4,7 +4,7 @@ import uuid
 import hashlib
 
 from arf.evaluation.models import EvalBenchmark, EvalReport, EvalSummary
-from arf.evaluation.metrics import SuccessRateMetric, ToolAccuracyMetric, TurnEfficiencyMetric, OutputContainsMetric
+from arf.evaluation.metrics import SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric
 from arf.evaluation.trace_adapter import events_to_trace
 
 
@@ -14,9 +14,8 @@ class EvalRunner:
         self._bus = event_bus
         self._metrics = [
             SuccessRateMetric(),
-            ToolAccuracyMetric(),
+            ToolCallAccuracyMetric(),
             TurnEfficiencyMetric(),
-            OutputContainsMetric(),
         ]
 
     async def run(self, benchmark: EvalBenchmark) -> EvalReport:
@@ -34,6 +33,13 @@ class EvalRunner:
                 duration = time.time() - t0
                 events = self._bus.events_since(start_idx)
                 trace = events_to_trace(events)
+                # Convert AgentEvent dataclass instances to flat dicts for metrics
+                event_dicts = [
+                    {"type": e.type, "data": e.data,
+                     "timestamp": e.timestamp, "turn": e.turn,
+                     "session_id": e.session_id}
+                    for e in events
+                ]
                 case_result = {
                     "case_id": case.id, "passed": True,
                     "turns": len(trace["turns"]),
@@ -46,7 +52,7 @@ class EvalRunner:
                 }
                 for m in self._metrics:
                     case_result["metrics"].update(
-                        await m.compute(trace, case)
+                        await m.compute(event_dicts, case)
                     )
                 per_case.append(case_result)
                 passed += 1
