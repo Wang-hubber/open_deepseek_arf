@@ -46,6 +46,9 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
                                     │
                                     ▼
                            benchmarks/{name}.json (含 golden_trajectory, 人类可编辑)
+
+  Case 边界：按 user_input 在 JSONL 中的位置索引切分，不依赖 turn 号。
+  第 i 个到第 i+1 个 user_input 之间的所有事件属于 case_i。
                                     │
                                     ▼
                            EvalRunner
@@ -76,7 +79,6 @@ from arf.evaluation import BenchmarkBuilder
 from arf.plugins.trace.plugin import TracePlugin
 
 trace = TracePlugin({"trace_dir": "./data/traces"})
-# trace.set_event_bus(...) 已由 BaseAgent 完成
 
 builder = BenchmarkBuilder(trace)
 
