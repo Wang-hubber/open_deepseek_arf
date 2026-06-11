@@ -58,6 +58,7 @@ class BenchmarkBuilder:
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
+                session_id=session_id,  # builder's source session — runner groups by this
                 expected_tools=tool_names if tool_names else None,
                 expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
                 original_output=original_output,

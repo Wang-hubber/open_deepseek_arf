@@ -117,10 +117,18 @@ class EvalRunner:
         # --- Run cases ---
         per_case = []
         passed = 0
+        _last_source_sid: str | None = None
+        _eval_sid: str = ""
 
         for i, case in enumerate(benchmark.cases):
             case_start = time.time()
-            sid = f"eval_{benchmark.name}_{case.id}"
+            # Follow trace session boundaries: same source → reuse eval session
+            if case.session_id and case.session_id == _last_source_sid:
+                sid = _eval_sid
+            else:
+                sid = f"eval_{benchmark.name}_{case.id}"
+                _eval_sid = sid
+                _last_source_sid = case.session_id
             all_pass = True
 
             try:
