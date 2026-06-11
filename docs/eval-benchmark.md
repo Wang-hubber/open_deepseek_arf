@@ -242,7 +242,9 @@ print(f"Improvements: {diff.improvements}")
 | `api_key_env` | `str` | `OPENAI_API_KEY` | API key 环境变量名 |
 | `model` | `str` | `gpt-4` | 裁判模型 |
 | `temperature` | `float` | `0.0` | 裁判需确定性 |
-| `max_tokens` | `int` | `2000` | 回复 token 上限 |
+| `max_tokens` | `int` | `2000` | 回复 token 上限（已废弃的模型建议用 `extra_body.max_completion_tokens` 替代） |
+| `extra_body` | `dict \| None` | `None` | 透传至 API 的非标准参数（如 `enable_thinking`、`max_completion_tokens`、`reasoning_effort`） |
+| `response_format` | `dict \| None` | `None` | 强制 JSON 输出，如 `{"type": "json_object"}` |
 | `system_prompt` | `str` | *(expert evaluator persona)* | 裁判 system message，所有 LLM 指标共用 |
 
 ### EvalConfig
