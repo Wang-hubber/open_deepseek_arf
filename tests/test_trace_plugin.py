@@ -1,15 +1,12 @@
-"""Tests for TracePlugin — unified trace pathway."""
+"""Tests for TracePlugin — hook-mounted flat trace pathway."""
 import asyncio
 import json
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
 
 from arf.core.plugin_context import PluginContext
-from arf.core.events import AgentEvent
-from arf.event_bus import InMemoryEventBus
 
 
 class TestTracePlugin:
@@ -18,19 +15,12 @@ class TestTracePlugin:
         with tempfile.TemporaryDirectory() as td:
             yield Path(td)
 
-    @pytest.fixture
-    def bus(self):
-        return InMemoryEventBus()
-
-    def _make_plugin(self, trace_dir, bus=None):
+    def _make_plugin(self, trace_dir):
         from arf.plugins.trace.plugin import TracePlugin
-        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
-        if bus is not None:
-            p.set_event_bus(bus)
-        return p
+        return TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
 
-    def test_hooks_declaration(self, trace_dir, bus):
-        p = self._make_plugin(trace_dir, bus)
+    def test_hooks_declaration(self, trace_dir):
+        p = self._make_plugin(trace_dir)
         hooks = p.hooks
         assert hooks["session_start"] == "side"
         assert hooks["session_end"] == "side"
@@ -41,8 +31,8 @@ class TestTracePlugin:
         assert hooks["pre_action"] == "side"
         assert hooks["post_action"] == "side"
 
-    def test_on_hook_writes_jsonl(self, trace_dir, bus):
-        p = self._make_plugin(trace_dir, bus)
+    def test_on_hook_writes_jsonl(self, trace_dir):
+        p = self._make_plugin(trace_dir)
         ctx = PluginContext(
             session_id="s1",
             interaction_round=1,
@@ -60,8 +50,8 @@ class TestTracePlugin:
         assert events[0]["turn"] == 1
         assert events[0]["data"]["key"] == "value"
 
-    def test_list_sessions(self, trace_dir, bus):
-        p = self._make_plugin(trace_dir, bus)
+    def test_list_sessions(self, trace_dir):
+        p = self._make_plugin(trace_dir)
         ctx1 = PluginContext(session_id="s1")
         ctx2 = PluginContext(session_id="s2")
 
@@ -75,10 +65,9 @@ class TestTracePlugin:
         assert "s1" in sessions
         assert "s2" in sessions
 
-    def test_disabled_plugin_does_nothing(self, trace_dir, bus):
+    def test_disabled_plugin_does_nothing(self, trace_dir):
         from arf.plugins.trace.plugin import TracePlugin
         p = TracePlugin({"trace_dir": str(trace_dir), "enabled": False})
-        p.set_event_bus(bus)
         ctx = PluginContext(session_id="s1")
 
         async def _run():
@@ -88,10 +77,18 @@ class TestTracePlugin:
 
         assert p.read_trace("s1") == []
 
-    def test_hook_data_engine_events_recorded(self, trace_dir, bus):
-        p = self._make_plugin(trace_dir, bus)
+    def test_engine_events_flattened(self, trace_dir):
+        """Engine events from _engine_events are flattened into standalone rows."""
+        p = self._make_plugin(trace_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
-        ctx.inject_engine_event("model_call", {"model": "gpt4", "tokens": 100})
+        ctx.inject_engine_event("model_call_start", {"model": "gpt4"})
+        ctx.inject_engine_event("model_call_end", {
+            "model": "gpt4", "content": "hello",
+            "tool_calls": [{"name": "read", "params": {"path": "/x"}}],
+        })
+        ctx.inject_engine_event("tool_call_end", {
+            "tool_name": "read", "success": True, "result": "contents",
+        })
 
         async def _run():
             await p.on_hook("post_action", ctx)
@@ -99,78 +96,53 @@ class TestTracePlugin:
         asyncio.run(_run())
 
         events = p.read_trace("s1")
-        post = [e for e in events if e["type"] == "post_action"]
-        assert len(post) == 1
+        types = [e["type"] for e in events]
 
-    def test_read_trace_nonexistent_session(self, trace_dir, bus):
-        p = self._make_plugin(trace_dir, bus)
+        # Engine events are flattened before post_action hook event
+        assert types == [
+            "model_call_start",
+            "model_call_end",
+            "tool_call_end",
+            "post_action",
+        ]
+
+        # model_call_end has tool_calls — critical for golden trajectory
+        mc = events[1]
+        assert mc["data"]["tool_calls"] == [{"name": "read", "params": {"path": "/x"}}]
+
+        # hook event has no _engine_events (popped before write)
+        post = events[3]
+        assert "_engine_events" not in post["data"]
+
+    def test_read_trace_nonexistent_session(self, trace_dir):
+        p = self._make_plugin(trace_dir)
         assert p.read_trace("nobody") == []
 
-    def test_read_trace_skips_malformed_lines(self, trace_dir, bus):
+    def test_read_trace_skips_malformed_lines(self, trace_dir):
         trace_file = trace_dir / "s1.jsonl"
         trace_file.write_text(
             '{"type": "ok", "data": {}, "turn": 1, '
             '"timestamp": 1.0, "session_id": "s1"}\nnot json\n',
             encoding="utf-8"
         )
-        p = self._make_plugin(trace_dir, bus)
+        p = self._make_plugin(trace_dir)
         events = p.read_trace("s1")
         assert len(events) == 1
         assert events[0]["type"] == "ok"
 
-    @pytest.mark.anyio
-    async def test_eventbus_events_recorded(self, trace_dir, bus):
-        """EventBus events should be written to JSONL by background task."""
-        p = self._make_plugin(trace_dir, bus)
-
-        # Yield control so the consumer task can create its subscription queue
-        await asyncio.sleep(0)
-
-        bus.emit(AgentEvent(
-            type="model_call_end", turn=1,
-            data={"model": "deepseek", "content": "hello"},
-            session_id="s1",
-        ))
-        bus.emit(AgentEvent(
-            type="tool_call_end", turn=1,
-            data={"tool_name": "read", "success": True},
-            session_id="s1",
-        ))
-
-        # Give the async subscription task time to consume
-        await asyncio.sleep(0.2)
-
-        events = p.read_trace("s1")
-        types = [e["type"] for e in events]
-        assert "model_call_end" in types
-        assert "tool_call_end" in types
-
-    def test_shutdown_cancels_task(self, trace_dir, bus):
-        """shutdown() should cancel the background task cleanly."""
+    def test_shutdown_is_noop(self, trace_dir):
+        """shutdown() should be a safe no-op."""
         from arf.plugins.trace.plugin import TracePlugin
         p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
 
         async def _run():
-            p.set_event_bus(bus)
-            assert p._consume_task is not None
-            assert not p._consume_task.done()
             await p.shutdown()
-            assert p._consume_task is None
 
-        asyncio.run(_run())
-
-    def test_shutdown_safe_when_no_task(self, trace_dir, bus):
-        """shutdown() should be safe when no subscription was started."""
-        from arf.plugins.trace.plugin import TracePlugin
-        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
-        # Never called set_event_bus — no consume task
-        async def _run():
-            await p.shutdown()
         asyncio.run(_run())  # Should not raise
 
-    def test_config_hash_injected_in_events(self, trace_dir, bus):
+    def test_config_hash_injected_in_events(self, trace_dir):
         """Every trace event should contain config_hash field."""
-        p = self._make_plugin(trace_dir, bus)
+        p = self._make_plugin(trace_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
 
         async def _run():
@@ -183,9 +155,9 @@ class TestTracePlugin:
         assert "config_hash" in events[0]
         assert len(events[0]["config_hash"]) == 12
 
-    def test_config_hash_stable_across_events(self, trace_dir, bus):
+    def test_config_hash_stable_across_events(self, trace_dir):
         """Same session events should share the same config_hash."""
-        p = self._make_plugin(trace_dir, bus)
+        p = self._make_plugin(trace_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
 
         async def _run():
@@ -197,26 +169,3 @@ class TestTracePlugin:
         events = p.read_trace("s1")
         hashes = {e["config_hash"] for e in events}
         assert len(hashes) == 1  # all the same
-
-    def test_config_hash_present_in_eventbus_events(self, trace_dir, bus):
-        """EventBus events should also have config_hash."""
-        p = self._make_plugin(trace_dir, bus)
-        ctx = PluginContext(session_id="s1", interaction_round=1)
-
-        async def _run():
-            await p.on_hook("round_start", ctx)
-            await asyncio.sleep(0)
-
-        asyncio.run(_run())
-
-        bus.emit(AgentEvent(
-            type="model_call_end", turn=1,
-            data={"model": "test"},
-            session_id="s1",
-        ))
-        import time
-        time.sleep(0.2)
-
-        events = p.read_trace("s1")
-        for e in events:
-            assert "config_hash" in e, f"Missing config_hash in event type={e['type']}"

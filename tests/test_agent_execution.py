@@ -536,12 +536,19 @@ class TestBaseAgentStop:
                     return BaseAgent(config, **overrides)
 
     def test_stop_fires_session_end_shutdown(self):
-        """stop() fires session_end(reason='shutdown') for each active session."""
+        """stop() calls engine.close() for each active session."""
         async def _test():
-            from unittest.mock import AsyncMock
+            from unittest.mock import AsyncMock, MagicMock
 
             hook_runner = MagicMock()
             hook_runner.fire = AsyncMock(return_value=[])
+
+            # Capture events yielded by engine.close()
+            close_events = []
+
+            async def mock_close(state):
+                close_events.append(state.get("session_id"))
+                yield {"type": "session_end", "data": {"session_id": state.get("session_id")}}
 
             agent = self._make_agent(hook_runner=hook_runner)
             agent._engine.invoke = AsyncMock(return_value={
@@ -549,6 +556,7 @@ class TestBaseAgentStop:
                 "messages": [{"role": "assistant", "content": "ok"}],
                 "session_active": True,
             })
+            agent._engine.close = mock_close
             agent._state_store.get = AsyncMock(return_value={
                 "session_id": "s1",
                 "messages": [],
@@ -557,22 +565,14 @@ class TestBaseAgentStop:
             agent._state_store.put = AsyncMock()
             await agent.chat("hi", session_id="s1")
 
-            # chat() cleans _active_sessions on return. Re-add to simulate
-            # an interrupted session that wasn't cleanly shut down.
+            # chat()'s invoke() auto-closes, so re-add to simulate active session
             agent._active_sessions.add("s1")
-
-            # Clear call history from chat()
-            hook_runner.fire.reset_mock()
 
             await agent.stop()
 
-            session_end_calls = [
-                c for c in hook_runner.fire.call_args_list
-                if c[0][0] == "session_end"
-            ]
-            assert len(session_end_calls) == 1
-            assert session_end_calls[0][0][1]["reason"] == "shutdown"
-            assert session_end_calls[0][0][1]["session_id"] == "s1"
+            assert "s1" in close_events, (
+                f"Expected engine.close() for s1, got {close_events}"
+            )
 
         asyncio.run(_test())
 
@@ -958,10 +958,9 @@ class TestEngineCheckpointBehavior:
         }
 
         asyncio.run(engine.invoke(state))
-        # Simplified loop: model_call + execute_tools = 1 turn.
-        # 3 turns × 1 put (turn_end) + 1 put (session_end) = 4 total.
-        assert store.put_call_count == 4, (
-            f"Expected 4 checkpoints for 3-turn scenario with simplified loop, "
+        # 3 turns × 1 put (turn_end) + 1 put (_execute end) + 1 put (close) = 5
+        assert store.put_call_count == 5, (
+            f"Expected 5 checkpoints for 3-turn scenario with close(), "
             f"got {store.put_call_count}"
         )
 

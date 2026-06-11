@@ -33,7 +33,7 @@ class FakeToolExecutor:
 
 class TestEngineEventInjection:
     def test_model_call_injects_event(self):
-        """After model_call, ctx.hook_data._engine_events should have model_call entry."""
+        """After model_call, ctx.hook_data._engine_events should have model_call_start + model_call_end."""
         store = FakeStateStore()
         tools = FakeToolExecutor()
 
@@ -62,17 +62,20 @@ class TestEngineEventInjection:
 
         ctx = asyncio.run(_run())
         events = ctx.hook_data.get("_engine_events", [])
-        assert len(events) >= 1, f"Expected >= 1 engine event, got {len(events)}"
-        model_events = [e for e in events if e["type"] == "model_call"]
-        assert len(model_events) == 1
-        assert model_events[0]["data"]["model"] == "deepseek-v3"
-        assert model_events[0]["data"]["input_tokens"] == 5
-        assert model_events[0]["data"]["output_tokens"] == 5
-        assert model_events[0]["data"]["content"] == "hello"
-        assert "timestamp" in model_events[0]
+        assert len(events) >= 2, f"Expected >= 2 engine events, got {len(events)}"
+
+        start_events = [e for e in events if e["type"] == "model_call_start"]
+        assert len(start_events) == 1
+        assert start_events[0]["data"]["model"] == "deepseek-v3"
+
+        end_events = [e for e in events if e["type"] == "model_call_end"]
+        assert len(end_events) == 1
+        assert end_events[0]["data"]["model"] == "deepseek-v3"
+        assert end_events[0]["data"]["content"] == "hello"
+        assert end_events[0]["data"]["usage"] == {"total_tokens": 10, "prompt_tokens": 5, "completion_tokens": 5}
 
     def test_tool_exec_injects_event(self):
-        """After tool_exec, ctx.hook_data._engine_events should have tool_call entries."""
+        """After tool_exec, ctx.hook_data._engine_events should have tool_call_start + tool_call_end."""
         store = FakeStateStore()
         tools = FakeToolExecutor({
             "tc1": {"success": True, "data": "file content", "duration_ms": 42},
@@ -100,10 +103,15 @@ class TestEngineEventInjection:
 
         ctx = asyncio.run(_run())
         events = ctx.hook_data.get("_engine_events", [])
-        assert len(events) >= 1, f"Expected >= 1 engine event, got {len(events)}"
-        tool_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_events) == 1
-        assert tool_events[0]["data"]["tool_name"] == "read"
-        assert tool_events[0]["data"]["success"] is True
-        assert tool_events[0]["data"]["duration_ms"] == 42
-        assert "path" in tool_events[0]["data"]["params"]
+        assert len(events) >= 2, f"Expected >= 2 engine events, got {len(events)}"
+
+        start_events = [e for e in events if e["type"] == "tool_call_start"]
+        assert len(start_events) == 1
+        assert start_events[0]["data"]["tool_name"] == "read"
+
+        end_events = [e for e in events if e["type"] == "tool_call_end"]
+        assert len(end_events) == 1
+        assert end_events[0]["data"]["tool_name"] == "read"
+        assert end_events[0]["data"]["success"] is True
+        assert end_events[0]["data"]["duration_ms"] == 42
+        assert "path" in end_events[0]["data"]["params"]

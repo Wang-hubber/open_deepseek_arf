@@ -12,15 +12,17 @@ class EnvSnapshotBuilder:
     content-addressed identifier for this exact configuration state.
 
     Usage:
-        builder = EnvSnapshotBuilder("./arf/plugins", ["./agent.yaml"])
+        builder = EnvSnapshotBuilder("./arf/plugins", ["./agent.yaml"], ["."])
         xml_str, hash_val = builder.build()
         # xml_str → save to snapshots/{hash_val}.xml
     """
 
     def __init__(self, plugins_root: str,
-                 extra_files: list[str] | None = None):
+                 extra_files: list[str] | None = None,
+                 extra_roots: list[str] | None = None):
         self._plugins_root = Path(plugins_root)
         self._extra_files = [Path(f) for f in (extra_files or [])]
+        self._extra_roots = [Path(d) for d in (extra_roots or [])]
 
     def build(self) -> tuple[str, str]:
         """Build XML snapshot. Returns (xml_string, sha256_12char_hash)."""
@@ -30,6 +32,11 @@ class EnvSnapshotBuilder:
         agent_el = SubElement(root, "agent")
         for f in self._extra_files:
             self._append_file(agent_el, f, "config")
+
+        # -- Extra roots (app-level tools/ + skills/ outside plugins_root) --
+        for extra_root in self._extra_roots:
+            if extra_root.exists() and extra_root.is_dir():
+                self._scan_extra_root(root, extra_root)
 
         # -- Plugins --
         plugins_el = SubElement(root, "plugins", {
@@ -55,6 +62,36 @@ class EnvSnapshotBuilder:
         return xml_str, hash_val
 
     # -- Internal scanning -----------------------------------------------
+
+    def _scan_extra_root(self, parent: Element, root_dir: Path) -> None:
+        """Scan a non-plugin directory for tools/ and skills/ subdirectories.
+
+        Unlike _scan_plugin which expects a plugin.yaml wrapper, this scans
+        bare tools/ and skills/ directories as found in app project roots.
+        Silently skips directories that don't exist.
+        """
+        name = root_dir.resolve().name or "app"
+        el = SubElement(parent, "resources", {"root": str(root_dir)})
+
+        tools_dir = root_dir / "tools"
+        if tools_dir.exists() and tools_dir.is_dir():
+            tools_el = None
+            for tool_dir in sorted(tools_dir.iterdir()):
+                if not tool_dir.is_dir():
+                    continue
+                if tools_el is None:
+                    tools_el = SubElement(el, "tools")
+                self._scan_tool(tools_el, tool_dir)
+
+        skills_dir = root_dir / "skills"
+        if skills_dir.exists() and skills_dir.is_dir():
+            skills_el = SubElement(el, "skills")
+            for skill_file in sorted(skills_dir.iterdir()):
+                if skill_file.suffix in (".yaml", ".yml"):
+                    self._append_file(
+                        skills_el, skill_file, "skill",
+                        extra={"name": skill_file.stem},
+                    )
 
     def _scan_plugin(self, parent: Element, plugin_dir: Path) -> None:
         name = plugin_dir.name

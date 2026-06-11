@@ -1,9 +1,9 @@
-"""TracePlugin — unified trace pathway for observability, replay, and eval.
+"""TracePlugin — hook-mounted trace pathway for observability, replay, and eval.
 
-Mounted on all hook points (side). Subscribes to EventBus for fine-grained
-engine events. Produces trajectory-level JSONL at {trace_dir}/{session_id}.jsonl.
+Mounted on all hook points (side). Engine events are injected into hook_data
+via ctx.inject_engine_event() and flattened into JSONL rows at post_action.
+Produces trajectory-level JSONL at {trace_dir}/{session_id}.jsonl.
 """
-import asyncio
 import json
 import logging
 import time
@@ -13,19 +13,20 @@ from arf.core.plugin_context import PluginContext
 
 logger = logging.getLogger("arf.plugins.trace")
 
-# Events to skip — high-frequency streaming events, not useful for trace
-_SKIP_TYPES = {"thinking_delta"}
-
 
 class TracePlugin:
-    """Single trace pathway — hook callbacks + EventBus subscription.
+    """Single trace pathway — hook callbacks write flat JSONL.
+
+    Engine events (model_call_start/end, tool_call_start/end) are injected
+    by the engine into hook_data._engine_events and flattened into individual
+    JSONL rows when post_action fires. Hook boundaries (turn_start, turn_end,
+    etc.) are also recorded as standalone rows.
 
     Produces one JSONL file per session. Each line is a self-contained
     JSON object. Append-only, O(1) per write.
 
     Usage:
         plugin = TracePlugin({"trace_dir": "./data/traces"})
-        plugin.set_event_bus(event_bus)  # called by BaseAgent
         # on_hook() called by framework
         events = plugin.read_trace("session_123")
     """
@@ -35,50 +36,17 @@ class TracePlugin:
         self._trace_dir = Path(cfg.get("trace_dir", "./data/traces"))
         self._trace_dir.mkdir(parents=True, exist_ok=True)
         self._enabled = cfg.get("enabled", True)
-        self._event_bus = None
-        self._consume_task: asyncio.Task | None = None
 
         # Config snapshot — lazy, built on first _write_event call
         self._config_hash: str | None = None
         plugins_root = cfg.get("plugins_root", "./arf/plugins")
         extra_files = cfg.get("config_files", [])
+        extra_roots = cfg.get("extra_roots", [])
         from arf.plugins.trace.snapshot import EnvSnapshotBuilder
-        self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files)
-
-    def set_event_bus(self, event_bus) -> None:
-        """Wire EventBus for fine-grained engine event subscription.
-
-        Called by BaseAgent after plugin discovery. Starts the background
-        consume task if the plugin is enabled and an event loop is running.
-
-        Race note: there is a tiny window between create_task() and the
-        subscription queue registering where events may be missed. In
-        production this is harmless — set_event_bus() runs during init,
-        the first emit() happens during invoke(), and there is always a
-        full event loop iteration between them. In tests, await
-        asyncio.sleep(0) after set_event_bus() to flush the task.
-        """
-        self._event_bus = event_bus
-        if self._enabled and self._event_bus:
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            self._consume_task = asyncio.create_task(self._consume_eventbus())
+        self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files, extra_roots)
 
     async def shutdown(self) -> None:
-        """Cancel the EventBus subscription task and wait for cleanup.
-
-        Called by BaseAgent.stop() during teardown. Safe to call
-        even if no subscription was started.
-        """
-        if self._consume_task and not self._consume_task.done():
-            self._consume_task.cancel()
-            try:
-                await self._consume_task
-            except asyncio.CancelledError:
-                pass
-        self._consume_task = None
+        """No-op — kept for PluginProtocol compatibility."""
 
     # -- PluginProtocol --------------------------------------------------
 
@@ -103,14 +71,32 @@ class TracePlugin:
         if not self._enabled:
             return
 
+        session_id = context.session_id
+        interaction_round = context.interaction_round
+
+        # Flatten injected engine events at post_action — the only hook that
+        # fires after all engine events for the turn have been injected.
+        if hook_name == "post_action":
+            engine_events = context.hook_data.pop("_engine_events", [])
+            for ee in engine_events:
+                record = {
+                    "type": ee["type"],
+                    "turn": interaction_round,
+                    "timestamp": ee.get("timestamp", time.time()),
+                    "data": self._sanitize(ee.get("data", {})),
+                    "session_id": session_id,
+                }
+                self._write_event(session_id, record)
+
+        # Hook boundary event
         event = {
             "type": hook_name,
-            "turn": context.interaction_round,
+            "turn": interaction_round,
             "timestamp": time.time(),
             "data": self._sanitize(dict(context.hook_data)),
-            "session_id": context.session_id,
+            "session_id": session_id,
         }
-        self._write_event(context.session_id, event)
+        self._write_event(session_id, event)
 
     # -- Config snapshot -------------------------------------------------
 
@@ -128,27 +114,6 @@ class TracePlugin:
 
         self._config_hash = hash_val
         return hash_val
-
-    # -- EventBus subscription -------------------------------------------
-
-    async def _consume_eventbus(self) -> None:
-        """Background task: consume EventBus events, write to JSONL."""
-        try:
-            async for event in self._event_bus.subscribe():
-                if event.type in _SKIP_TYPES:
-                    continue
-                if event.type in ("session_start", "session_end"):
-                    continue
-                record = {
-                    "type": event.type,
-                    "turn": event.turn,
-                    "timestamp": event.timestamp,
-                    "data": self._sanitize(event.data),
-                    "session_id": event.session_id,
-                }
-                self._write_event(event.session_id, record)
-        except asyncio.CancelledError:
-            pass
 
     # -- Serialization ---------------------------------------------------
 

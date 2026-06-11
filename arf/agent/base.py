@@ -359,11 +359,7 @@ class BaseAgent:
                 if hasattr(p, "set_state_store"):
                     p.set_state_store(state_store)
 
-        # Wire event_bus into TracePlugin for EventBus subscription
-        for p in side_plugins:
-            if p.name == "trace":
-                p.set_event_bus(event_bus)
-                break
+        # Wire event_bus into plugins that need it
 
         self._engine = ControlPlane(
             state_store=state_store,
@@ -637,21 +633,11 @@ class BaseAgent:
             try:
                 state = await self._state_store.get(sid)
                 if state:
-                    state["session_active"] = False
-                    await self._state_store.put(sid, state)
-                if self._hook_runner:
-                    await self._hook_runner.fire("session_end", {
-                        "session_id": sid,
-                        "reason": "shutdown",
-                    })
+                    async for _ in self._engine.close(state):
+                        pass
             except Exception:
                 pass
         self._active_sessions.clear()
-
-        # Shutdown TracePlugin's EventBus subscription task
-        trace = self.trace_store
-        if trace and hasattr(trace, 'shutdown'):
-            await trace.shutdown()
 
     def approve(self, decision_id: str, approved: bool = True) -> bool:
         """Delegate approval to the ApprovalPlugin (if registered)."""
@@ -689,6 +675,8 @@ class BaseAgent:
             "metadata": {},
             "session_active": True,
             "session_title": existing.get("session_title", "") if existing else "",
+            "_session_opened": existing.get("_session_opened", False) if existing else False,
+            "_session_ended": existing.get("_session_ended", False) if existing else False,
         }
 
         self._active_sessions.add(session_id)
@@ -745,6 +733,8 @@ class BaseAgent:
             "metadata": {},
             "session_active": True,
             "session_title": existing.get("session_title", "") if existing else "",
+            "_session_opened": existing.get("_session_opened", False) if existing else False,
+            "_session_ended": existing.get("_session_ended", False) if existing else False,
         }
 
         self._active_sessions.add(session_id)
@@ -767,7 +757,7 @@ class BaseAgent:
             async for event in self._engine.astream(state):
                 yield event
         finally:
-            self._active_sessions.discard(session_id)
+            pass  # session stays active until stop() calls close()
 
     def reconfigure(self, **overrides) -> None:
         if "advanced" in overrides:

@@ -100,27 +100,29 @@ class BenchmarkBuilder:
             etype = e.get("type", "")
             data = e.get("data", {})
 
-            if etype == "model_call":
-                if data.get("content"):
+            if etype == "model_call_end":
+                if data.get("content") and not assistant_content:
                     assistant_content = data["content"]
                 for tc in data.get("tool_calls", []):
                     tool_calls.append({
                         "name": tc.get("name", ""),
                         "params": tc.get("params", {}),
                     })
-            elif etype in ("tool_call", "tool_call_end"):
+            elif etype == "tool_call_end":
                 tool_results.append({
                     "tool_name": data.get("tool_name", ""),
                     "result": data.get("result", ""),
                     "success": data.get("success", False),
                 })
-            elif etype == "model_call_end":
-                content = data.get("content", "")
-                if content:
-                    if not assistant_content:
-                        assistant_content = content
-                    if tool_results:
+
+        if tool_results:
+            # last model_call_end after tools = final response
+            for e in reversed(events):
+                if e.get("type") == "model_call_end":
+                    content = e.get("data", {}).get("content", "")
+                    if content:
                         assistant_final = {"content": content}
+                        break
 
         if not assistant_content and not tool_results:
             return None
@@ -142,9 +144,7 @@ class BenchmarkBuilder:
             (e.get("turn", 0) for e in events), default=start_turn
         )
         for e in reversed(events):
-            if e.get("turn") == max_turn and e.get("type") in (
-                "model_call_end", "model_call"
-            ):
+            if e.get("turn") == max_turn and e.get("type") == "model_call_end":
                 content = e.get("data", {}).get("content", "")
                 if content:
                     words = content.split()
