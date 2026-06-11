@@ -12,3 +12,5 @@ hooks:
 enabled: true
 config:
   trace_dir: ./data/traces
+  plugins_root: ./arf/plugins
+  config_files: []
