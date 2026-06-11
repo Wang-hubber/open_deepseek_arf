@@ -69,6 +69,7 @@ class EvalRunner:
                   f"Behavior should match baseline.\n")
 
         # --- Build metrics ---
+        prompts = self._config.prompts
         metrics = []
         me = self._config.metrics
         if me.get("success_rate"):
@@ -76,13 +77,19 @@ class EvalRunner:
         if me.get("tool_call_accuracy"):
             metrics.append(ToolCallAccuracyMetric())
         if me.get("tool_call_result_llm"):
-            metrics.append(ToolCallResultLLMMetric())
+            metrics.append(ToolCallResultLLMMetric(
+                prompt=prompts.get("tool_call_result_llm"),
+            ))
         if me.get("turn_efficiency"):
             metrics.append(TurnEfficiencyMetric())
         if me.get("output_quality"):
-            metrics.append(OutputQualityMetric())
+            metrics.append(OutputQualityMetric(
+                prompt=prompts.get("output_quality"),
+            ))
         if me.get("trajectory_similarity"):
-            metrics.append(TrajectorySimilarityMetric())
+            metrics.append(TrajectorySimilarityMetric(
+                prompt=prompts.get("trajectory_similarity"),
+            ))
 
         judge = self._config.judge
 
