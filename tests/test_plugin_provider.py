@@ -41,7 +41,7 @@ def _make_mock_plugin_module(counter: list[int], name="test_plugin",
 class TestPluginProvider:
     @pytest.fixture
     def plugins_root(self, tmp_path):
-        """Create a temp plugins dir with planner + todo plugins."""
+        """Create a temp plugins dir with planner + searcher plugins."""
         root = tmp_path / "plugins"
         root.mkdir()
 
@@ -73,42 +73,41 @@ class TestPluginProvider:
             "activation": "kernel",
         }), encoding="utf-8")
 
-        # todo plugin (no skills)
-        todo = root / "todo" / "tools" / "todo"
-        todo.mkdir(parents=True)
-        (todo / "tool.yaml").write_text(yaml.dump({
-            "name": "todo",
-            "description": "Manage task list",
+        # searcher plugin (no skills)
+        searcher = root / "searcher" / "tools" / "searcher"
+        searcher.mkdir(parents=True)
+        (searcher / "tool.yaml").write_text(yaml.dump({
+            "name": "searcher",
+            "description": "Search for content",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "add", "check", "clear"]},
-                    "items": {"type": "array", "items": {"type": "string"}},
+                    "query": {"type": "string"},
                 },
-                "required": ["action"],
+                "required": ["query"],
             },
         }), encoding="utf-8")
-        (todo / "function.py").write_text(
-            "async def execute(action: str, items: list[str] = None) -> dict:\n"
-            "    return {'action': action, 'items': items or []}\n",
+        (searcher / "function.py").write_text(
+            "async def execute(query: str = '', _engine=None) -> dict:\n"
+            "    return {'results': []}\n",
             encoding="utf-8",
         )
 
         return root
 
     def test_scans_enabled_plugin_tools(self, plugins_root):
-        provider = PluginProvider(plugins_root, ["planner", "todo"])
+        provider = PluginProvider(plugins_root, ["planner", "searcher"])
         tools = provider.list_tools()
         names = {t.name for t in tools}
         assert "planner" in names
-        assert "todo" in names
+        assert "searcher" in names
 
     def test_ignores_disabled_plugins(self, plugins_root):
         provider = PluginProvider(plugins_root, ["planner"])
         tools = provider.list_tools()
         names = {t.name for t in tools}
         assert "planner" in names
-        assert "todo" not in names
+        assert "searcher" not in names
 
     def test_scans_plugin_skills(self, plugins_root):
         provider = PluginProvider(plugins_root, ["planner"])
