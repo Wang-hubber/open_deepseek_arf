@@ -389,11 +389,6 @@ class BaseAgent:
         self._event_bus = event_bus
         self._tool_resolver = mcp_manager
 
-        # Auto-create trace store (framework default)
-        trace_dir = str(ctx.trace_dir) if ctx else (_obs_cfg.trace_dir if _obs_cfg else "./data/traces")
-        from arf.observability import FileTraceStore
-        self._trace_store = FileTraceStore(event_bus, dir=trace_dir)
-
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
 
@@ -616,8 +611,12 @@ class BaseAgent:
 
     @property
     def trace_store(self):
-        """FileTraceStore — auto-created by BaseAgent."""
-        return self._trace_store
+        """TracePlugin — auto-discovered side plugin, sole trace pathway."""
+        for plugins in self._engine._side._plugins.values():
+            for p in plugins:
+                if getattr(p, 'name', '') == "trace":
+                    return p
+        return None
 
     async def start(self) -> None:
         """Start FileWatcher and MCP manager (called once event loop is ready)."""
