@@ -382,6 +382,18 @@ class ControlPlane:
         state["messages"].append(assistant_msg)
         state["_pending_tool_calls"] = tool_calls
 
+        # Inject model_call result for trace visibility
+        ctx.inject_engine_event("model_call", {
+            "model": model,
+            "input_tokens": stream_usage.get("prompt_tokens", 0),
+            "output_tokens": stream_usage.get("completion_tokens", 0),
+            "content": content,
+            "tool_calls": [
+                {"name": tc.get("name", ""), "params": tc.get("params", {})}
+                for tc in tool_calls
+            ],
+        })
+
     async def _action_execute_tools(self, state: AgentState, ctx: PluginContext):
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
@@ -421,6 +433,18 @@ class ControlPlane:
             k: {"success": v.success, "data": v.data, "error": v.error}
             for k, v in results.items()
         }
+
+        # Inject tool_call results for trace visibility
+        for tc in tool_calls:
+            r = results.get(tc.get("id", ""))
+            ctx.inject_engine_event("tool_call", {
+                "tool_name": tc.get("name", ""),
+                "params": tc.get("params", {}),
+                "success": r.success if r else False,
+                "result": str(r.data)[:2000] if r and r.success and r.data else "",
+                "error": str(r.error)[:500] if r and r.error else "",
+                "duration_ms": r.duration_ms if r else 0,
+            })
 
     # ==================================================================
     # Helpers
