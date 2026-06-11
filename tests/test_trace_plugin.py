@@ -167,3 +167,56 @@ class TestTracePlugin:
         async def _run():
             await p.shutdown()
         asyncio.run(_run())  # Should not raise
+
+    def test_config_hash_injected_in_events(self, trace_dir, bus):
+        """Every trace event should contain config_hash field."""
+        p = self._make_plugin(trace_dir, bus)
+        ctx = PluginContext(session_id="s1", interaction_round=1)
+
+        async def _run():
+            await p.on_hook("round_start", ctx)
+
+        asyncio.run(_run())
+
+        events = p.read_trace("s1")
+        assert len(events) == 1
+        assert "config_hash" in events[0]
+        assert len(events[0]["config_hash"]) == 12
+
+    def test_config_hash_stable_across_events(self, trace_dir, bus):
+        """Same session events should share the same config_hash."""
+        p = self._make_plugin(trace_dir, bus)
+        ctx = PluginContext(session_id="s1", interaction_round=1)
+
+        async def _run():
+            await p.on_hook("round_start", ctx)
+            await p.on_hook("turn_end", ctx)
+
+        asyncio.run(_run())
+
+        events = p.read_trace("s1")
+        hashes = {e["config_hash"] for e in events}
+        assert len(hashes) == 1  # all the same
+
+    def test_config_hash_present_in_eventbus_events(self, trace_dir, bus):
+        """EventBus events should also have config_hash."""
+        p = self._make_plugin(trace_dir, bus)
+        ctx = PluginContext(session_id="s1", interaction_round=1)
+
+        async def _run():
+            await p.on_hook("round_start", ctx)
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        bus.emit(AgentEvent(
+            type="model_call_end", turn=1,
+            data={"model": "test"},
+            session_id="s1",
+        ))
+        import time
+        time.sleep(0.2)
+
+        events = p.read_trace("s1")
+        for e in events:
+            assert "config_hash" in e, f"Missing config_hash in event type={e['type']}"
