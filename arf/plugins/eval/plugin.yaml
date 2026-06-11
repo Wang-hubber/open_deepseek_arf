@@ -4,8 +4,6 @@ enabled: true
 config:
   trace_dir: ./data/traces
   eval_dir: ./data/eval
-  system_prompt: ""
-  tools: ""
   judge:
     api_base: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY

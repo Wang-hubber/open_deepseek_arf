@@ -229,8 +229,6 @@ class EvalConfig:
     prompts: dict[str, str] = field(default_factory=dict)
     # keys: tool_call_result_llm, output_quality, trajectory_similarity,
     #        output_quality_free, trajectory_similarity_free
-    system_prompt: str = ""  # agent's system prompt, injected by app for no-reference eval
-    tools: str = ""          # available tools listing, injected by app for no-reference eval
 
     def requires_judge(self) -> bool:
         return any([
