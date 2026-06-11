@@ -36,7 +36,7 @@ class TestArfLocalMcpServerConstruction:
             skills_dir=skills_dir,
             models_dir=tmp_path / "models",
             plugins_dir=plugins_dir,
-            plugin_names=["planner", "todo"],
+            plugin_names=["planner", "searcher"],
             remote_servers=[],
         )
         assert server._plugin_provider is not None
