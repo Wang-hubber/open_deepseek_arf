@@ -277,7 +277,8 @@ class ControlPlane:
                 decision = await self._handle_error(e, ctx)
                 if decision.get("action") == "abort":
                     break
-                continue
+                # Fall through to gate/exit checks below — round_end is the last
+                # block in the loop, so continue would skip the break conditions.
 
             # Gate check at round level too
             if self.gate.is_exceeded(current_turn=state.get("current_turn", 0)):
