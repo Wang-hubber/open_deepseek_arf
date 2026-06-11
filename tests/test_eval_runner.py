@@ -1,92 +1,77 @@
-"""Unit tests for EvalRunner with real trace capture."""
+"""Tests for EvalRunner with EvalConfig API."""
+import json
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from arf.core.events import AgentEvent
-from arf.event_bus import InMemoryEventBus
-from arf.evaluation.models import EvalCase, EvalBenchmark
 from arf.evaluation.runner import EvalRunner
+from arf.evaluation.models import EvalConfig, EvalBenchmark, EvalCase
 
 
-class FakeAgent:
-    """Minimal agent stub that emits events and returns a response."""
-    def __init__(self, bus):
-        self.event_bus = bus
-        self.config = "fake_config"
-
-    async def chat(self, user_message: str, session_id: str = "default") -> str:
-        self.event_bus.emit(AgentEvent(
-            type="user_input", turn=1, session_id=session_id,
-            data={"content": user_message},
-        ))
-        self.event_bus.emit(AgentEvent(
-            type="tool_call_start", turn=1, session_id=session_id,
-            data={"tool_name": "file_writer"},
-        ))
-        self.event_bus.emit(AgentEvent(
-            type="tool_call_end", turn=1, session_id=session_id,
-            data={"tool_name": "file_writer", "success": True,
-                  "duration_ms": 10, "result": '{"ok":true}', "error": ""},
-        ))
-        self.event_bus.emit(AgentEvent(
-            type="model_call_end", turn=1, session_id=session_id,
-            data={"model": "test", "content": "File created: x.py",
-                  "usage": {"total_tokens": 50}},
-        ))
-        return "File created: x.py"
+def _make_benchmark(path: str, name="test_bm", cases=None):
+    if cases is None:
+        cases = [EvalCase(id="c0", input="hello")]
+    bm = EvalBenchmark(name=name, cases=cases)
+    bm.to_json(path)
 
 
-class TestEvalRunner:
+class TestEvalRunnerOffline:
     @pytest.fixture
-    def bus(self):
-        return InMemoryEventBus()
+    def tmpdir(self):
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
 
-    @pytest.fixture
-    def agent(self, bus):
-        return FakeAgent(bus)
+    def test_offline_reads_trace_and_produces_report(self, tmpdir):
+        # Setup: write benchmark and trace files
+        bm_path = str(tmpdir / "bm.json")
+        _make_benchmark(bm_path)
 
-    @pytest.fixture
-    def benchmark(self):
-        return EvalBenchmark(
-            name="test_bm",
-            cases=[
-                EvalCase(id="c0", input="create x.py",
-                         expected_tools=["file_writer"]),
-            ],
+        trace_dir = tmpdir / "traces"
+        trace_dir.mkdir()
+        trace_file = trace_dir / "s1.jsonl"
+        trace_file.write_text(json.dumps({
+            "type": "model_call_end", "turn": 1,
+            "data": {"content": "hello world"},
+            "timestamp": 1.0, "session_id": "s1",
+        }) + "\n", encoding="utf-8")
+
+        config = EvalConfig(
+            benchmark_path=bm_path,
+            trace_dir=str(trace_dir),
+            mode="offline",
+            trace_session_ids=["s1"],
+            metrics={
+                "success_rate": True,
+                "tool_call_accuracy": True,
+                "turn_efficiency": True,
+                "output_quality": False,
+                "trajectory_similarity": False,
+            },
         )
 
-    @pytest.mark.anyio
-    async def test_run_captures_trace(self, agent, bus, benchmark):
-        runner = EvalRunner(agent, bus)
-        report = await runner.run(benchmark)
+        import asyncio
+        runner = EvalRunner(config)
+        report = asyncio.run(runner.run_offline())
 
         assert report.benchmark_name == "test_bm"
-        assert report.summary.total == 1
-        assert report.summary.passed == 1
+        assert report.mode == "offline"
         assert len(report.per_case) == 1
-        case = report.per_case[0]
-        assert case["passed"] is True
-        trace = case["trace"]
-        assert len(trace["turns"]) >= 1
+        assert report.per_case[0]["case_id"] == "c0"
+        assert "success_rate" in report.metrics_enabled
+        assert report.per_case[0]["metrics"]["success_rate"] == 1.0
+        assert report.per_case[0]["metrics"]["tool_call_accuracy"] == 1.0
 
-    @pytest.mark.anyio
-    async def test_run_metrics_computed(self, agent, bus, benchmark):
-        runner = EvalRunner(agent, bus)
-        report = await runner.run(benchmark)
-        case = report.per_case[0]
-        assert "metrics" in case
-        # SuccessRateMetric: trace has no errors -> 1.0
-        assert case["metrics"].get("success_rate") == 1.0
 
-    @pytest.mark.anyio
-    async def test_run_case_failure_captured(self, bus, benchmark):
-        class FailingAgent:
-            event_bus = bus
-            config = "fake_config"
-            async def chat(self, user_message="", session_id="default"):
-                raise RuntimeError("model down")
+class TestEvalConfigValidation:
+    def test_llm_metrics_without_judge_raises(self):
+        config = EvalConfig(
+            metrics={"output_quality": True},
+        )
+        with pytest.raises(ValueError, match="LLM-as-judge"):
+            config.validate()
 
-        runner = EvalRunner(FailingAgent(), bus)
-        report = await runner.run(benchmark)
-        assert report.summary.failed == 1
-        assert report.per_case[0]["passed"] is False
-        assert report.per_case[0]["error"] == "model down"
+    def test_offline_without_traces_raises(self):
+        config = EvalConfig(mode="offline", trace_session_ids=[])
+        with pytest.raises(ValueError, match="trace_session_ids"):
+            config.validate()
