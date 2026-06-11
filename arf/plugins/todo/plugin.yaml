@@ -1,7 +1,0 @@
-name: todo
-hooks:
-  - round_start
-  - round_end
-enabled: true
-config:
-  reminder_interval: 5
