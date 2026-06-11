@@ -80,6 +80,13 @@ class SubprocessHookRunner:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                await proc.communicate()
+                stdout, stderr = await proc.communicate()
+                ctx.hook_data.setdefault("_subprocess_results", []).append({
+                    "hook": getattr(hook_def, 'name', 'unknown'),
+                    "command": cmd,
+                    "exit_code": proc.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace")[:2000] if stdout else "",
+                    "stderr": stderr.decode("utf-8", errors="replace")[:2000] if stderr else "",
+                })
         except Exception:
             logger.exception("Subprocess hook '%s' failed", getattr(hook_def, 'name', 'unknown'))
