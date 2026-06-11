@@ -39,6 +39,13 @@ class SuccessRateMetric:
 
 
 class ToolCallAccuracyMetric:
+    """Indexed tool call accuracy: name + params subset matching.
+
+    When expected_tool_calls is set, compares tool calls by index
+    with params subset matching. Falls back to expected_tools (name-only)
+    when expected_tool_calls is None.
+    """
+
     @property
     def name(self) -> str:
         return "tool_call_accuracy"
@@ -48,20 +55,166 @@ class ToolCallAccuracyMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None):
-        if not golden_case.expected_tools:
-            return {"tool_call_accuracy": 1.0}
-        actual_names = []
+        # Collect actual tool calls (tool_call_start events)
+        actual_calls: list[dict] = []
         for e in actual_trace:
             if e.get("type") == "tool_call_start":
-                tn = e.get("data", {}).get("tool_name", "")
-                if tn:
-                    actual_names.append(tn)
+                data = e.get("data", {})
+                actual_calls.append({
+                    "tool_name": data.get("tool_name", ""),
+                    "arguments": self._parse_arguments(data.get("arguments", "{}")),
+                })
+
+        if golden_case.expected_tool_calls:
+            return self._compute_with_params(golden_case.expected_tool_calls, actual_calls)
+        elif golden_case.expected_tools:
+            return self._compute_name_only(golden_case.expected_tools, actual_calls)
+        return {"tool_call_accuracy": 1.0}
+
+    def _compute_with_params(self, expected_calls, actual_calls):
+        total = max(len(expected_calls), len(actual_calls) or 1)
+        matches = 0
+        for i, exp in enumerate(expected_calls):
+            if i >= len(actual_calls):
+                break
+            act = actual_calls[i]
+            if exp.get("name", "") != act["tool_name"]:
+                continue
+            if not self._params_subset(
+                exp.get("params", {}),
+                act["arguments"],
+            ):
+                continue
+            matches += 1
+        return {"tool_call_accuracy": matches / total}
+
+    def _compute_name_only(self, expected_names, actual_calls):
+        actual_names = [a["tool_name"] for a in actual_calls]
         if not actual_names:
             return {"tool_call_accuracy": 0.0}
         matches = sum(
-            1 for a, e in zip(actual_names, golden_case.expected_tools) if a == e
+            1 for a, e in zip(actual_names, expected_names) if a == e
         )
-        return {"tool_call_accuracy": matches / len(golden_case.expected_tools)}
+        return {"tool_call_accuracy": matches / len(expected_names)}
+
+    @staticmethod
+    def _params_subset(expected: dict, actual: dict) -> bool:
+        """True if actual contains all k-v pairs from expected (substring match for values)."""
+        for k, v in expected.items():
+            av = actual.get(k)
+            if av is None:
+                return False
+            if isinstance(v, str) and v not in str(av):
+                return False
+            if not isinstance(v, str) and av != v:
+                return False
+        return True
+
+    @staticmethod
+    def _parse_arguments(arguments):
+        """Parse tool_call_start arguments, which may be a JSON string or dict."""
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str):
+            try:
+                return json.loads(arguments)
+            except (json.JSONDecodeError, TypeError):
+                return {"_raw": arguments}
+        return {}
+
+    def compute_sync(self, actual_trace, golden_case, judge=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+
+
+class ToolCallResultLLMMetric:
+    """LLM-judged semantic equivalence of tool call results.
+
+    Compares expected result strings against actual tool results,
+    using an LLM to determine semantic equivalence. Used alongside
+    ToolCallAccuracyMetric (which handles name + params matching).
+    """
+
+    _PROMPT = (
+        "You are evaluating whether a tool call result matches expectations.\n\n"
+        "Expected result: {expected}\n"
+        "Actual result: {actual}\n\n"
+        "Are these semantically equivalent? Consider: does the actual "
+        "result convey the same information and outcome as the expected "
+        "result, even if worded differently?\n\n"
+        'Respond with ONLY a JSON object: '
+        '{"match": <true or false>, "reason": "<one sentence>"}'
+    )
+
+    @property
+    def name(self) -> str:
+        return "tool_call_result_llm"
+
+    @property
+    def requires_llm(self) -> bool:
+        return True
+
+    async def compute(self, actual_trace, golden_case, judge=None):
+        if not golden_case.expected_tool_calls:
+            return {"tool_call_result_llm": 1.0}
+
+        # Collect actual tool results (tool_call_end events)
+        actual_results: list[dict] = []
+        for e in actual_trace:
+            if e.get("type") == "tool_call_end":
+                data = e.get("data", {})
+                actual_results.append({
+                    "tool_name": data.get("tool_name", ""),
+                    "result": data.get("result", ""),
+                    "success": data.get("success", False),
+                })
+
+        expected_with_results = [
+            e for e in golden_case.expected_tool_calls if e.get("result")
+        ]
+        if not expected_with_results:
+            return {"tool_call_result_llm": 1.0}
+
+        if not judge:
+            return {"tool_call_result_llm": 0.0, "reason": "no judge configured"}
+
+        matches = 0
+        total = len(expected_with_results)
+        for i, exp in enumerate(expected_with_results):
+            if i >= len(actual_results):
+                break
+            act = actual_results[i]
+            if not act["result"]:
+                continue
+            result = await self._call_judge(
+                judge, exp["result"], act["result"]
+            )
+            if result.get("match"):
+                matches += 1
+
+        return {"tool_call_result_llm": matches / total if total > 0 else 1.0}
+
+    async def _call_judge(self, judge, expected_result, actual_result):
+        from openai import OpenAI
+
+        api_key = os.environ.get(judge.api_key_env, "")
+        client = OpenAI(api_key=api_key or "placeholder", base_url=judge.api_base)
+
+        prompt = self._PROMPT.format(
+            expected=expected_result[:1000],
+            actual=actual_result[:1000],
+        )
+        resp = client.chat.completions.create(
+            model=judge.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=judge.temperature,
+            max_tokens=judge.max_tokens,
+        )
+        try:
+            result = json.loads(resp.choices[0].message.content)
+            return {"match": bool(result.get("match", False)),
+                    "reason": result.get("reason", "")}
+        except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
+            return {"match": False, "reason": "judge response parse error"}
 
     def compute_sync(self, actual_trace, golden_case, judge=None):
         return asyncio.run(self.compute(actual_trace, golden_case, judge))

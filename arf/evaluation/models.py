@@ -8,6 +8,7 @@ class EvalCase:
     id: str
     input: str
     expected_tools: list[str] | None = None
+    expected_tool_calls: list[dict] | None = None  # indexed [{name, params?, result?}]
     expected_output_contains: list[str] | None = None
     max_turns: int | None = None
     golden_trajectory: dict | None = None  # full golden trajectory from trace
@@ -30,6 +31,7 @@ class EvalBenchmark:
                     "id": c.id,
                     "input": c.input,
                     **({"expected_tools": c.expected_tools} if c.expected_tools else {}),
+                    **({"expected_tool_calls": c.expected_tool_calls} if c.expected_tool_calls else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
                     **({"golden_trajectory": c.golden_trajectory}
@@ -54,6 +56,7 @@ class EvalBenchmark:
                     id=c["id"],
                     input=c["input"],
                     expected_tools=c.get("expected_tools"),
+                    expected_tool_calls=c.get("expected_tool_calls"),
                     expected_output_contains=c.get("expected_output_contains"),
                     max_turns=c.get("max_turns"),
                     golden_trajectory=c.get("golden_trajectory"),
@@ -188,6 +191,7 @@ class EvalConfig:
     judge: JudgeModelConfig | None = None
     metrics: dict[str, bool] = field(default_factory=lambda: {
         "tool_call_accuracy": True,
+        "tool_call_result_llm": False,
         "turn_efficiency": True,
         "success_rate": True,
         "output_quality": False,
@@ -202,6 +206,7 @@ class EvalConfig:
         return any([
             self.metrics.get("output_quality", False),
             self.metrics.get("trajectory_similarity", False),
+            self.metrics.get("tool_call_result_llm", False),
         ])
 
     def validate(self) -> None:
