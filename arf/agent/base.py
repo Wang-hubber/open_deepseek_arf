@@ -677,6 +677,7 @@ class BaseAgent:
             "session_title": existing.get("session_title", "") if existing else "",
             "_session_opened": existing.get("_session_opened", False) if existing else False,
             "_session_ended": existing.get("_session_ended", False) if existing else False,
+            "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
         }
 
         self._active_sessions.add(session_id)
@@ -735,6 +736,7 @@ class BaseAgent:
             "session_title": existing.get("session_title", "") if existing else "",
             "_session_opened": existing.get("_session_opened", False) if existing else False,
             "_session_ended": existing.get("_session_ended", False) if existing else False,
+            "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
         }
 
         self._active_sessions.add(session_id)

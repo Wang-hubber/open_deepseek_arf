@@ -137,6 +137,18 @@ class ControlPlane:
 
                 ctx = self._make_ctx(state, session_id, turn, "")
 
+                # --- user_input (once per turn, dedup by message index) ---
+                messages = state.get("messages", [])
+                user_count = sum(1 for m in messages if m.get("role") == "user")
+                if user_count > state.get("_last_injected_user_count", 0):
+                    state["_last_injected_user_count"] = user_count
+                    for m in reversed(messages):
+                        if m.get("role") == "user":
+                            ctx.inject_engine_event("user_input", {
+                                "content": m.get("content", ""),
+                            })
+                            break
+
                 # --- turn_start ---
                 try:
                     await self._fire_blocking("turn_start", ctx)
