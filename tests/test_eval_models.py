@@ -76,7 +76,7 @@ class TestEvalBenchmarkJson:
         assert loaded.cases[0].golden_trajectory["turns"][0]["turn"] == 1
 
 
-from arf.evaluation.models import EvalSummary, EvalReport, EvalDiff
+from arf.evaluation.models import EvalSummary, EvalReport, EvalDiff, EvalConfig
 
 
 class TestEvalReportJson:
@@ -122,3 +122,22 @@ class TestEvalDiff:
         )
         assert len(diff.regressions) == 1
         assert diff.summary_diff["pass_rate"] == -0.1
+
+
+class TestEvalConfig:
+    def test_validate_no_judge_with_llm_metrics(self):
+        config = EvalConfig(
+            metrics={"output_quality": True, "trajectory_similarity": False},
+            judge=None,
+        )
+        with pytest.raises(ValueError, match="LLM-as-judge"):
+            config.validate()
+
+    def test_validate_offline_without_traces(self):
+        config = EvalConfig(mode="offline", trace_session_ids=[])
+        with pytest.raises(ValueError, match="trace_session_ids"):
+            config.validate()
+
+    def test_validate_ok(self):
+        config = EvalConfig()
+        config.validate()  # should not raise
