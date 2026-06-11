@@ -2,13 +2,13 @@ name: trace
 hooks:
   - session_start
   - session_end
-  - pre_model_call
-  - pre_tool
-  - post_tool
-  - pre_output
-  - post_permission
+  - round_start
   - round_end
-  - sandbox_persist
+  - turn_start
+  - turn_end
+  - pre_action
+  - post_action
+  - error
 enabled: true
 config:
   trace_dir: ./data/traces
