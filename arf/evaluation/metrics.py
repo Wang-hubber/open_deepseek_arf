@@ -44,7 +44,13 @@ class ToolCallAccuracyMetric:
     Matches expected tool calls against actual calls by name (not index),
     so parallel/out-of-order tool calls are handled correctly.
     Falls back to expected_tools (name-only) when expected_tool_calls is None.
+    Also counts dependency-order failures from tool_call_end error messages.
     """
+
+    _DEPENDENCY_PATTERNS = (
+        "depends_on", "blocked", "not ready", "not complete",
+        "dependency", "must complete", "waiting for", "prerequisite",
+    )
 
     @property
     def name(self) -> str:
@@ -56,6 +62,7 @@ class ToolCallAccuracyMetric:
 
     async def compute(self, actual_trace, golden_case, judge=None):
         actual_calls: list[dict] = []
+        dep_order_failures = 0
         for e in actual_trace:
             if e.get("type") == "tool_call_start":
                 data = e.get("data", {})
@@ -63,12 +70,24 @@ class ToolCallAccuracyMetric:
                     "tool_name": data.get("tool_name", ""),
                     "arguments": self._parse_arguments(data.get("arguments", "{}")),
                 })
+            elif e.get("type") == "tool_call_end":
+                data = e.get("data", {})
+                if not data.get("success") and data.get("error"):
+                    if self._is_dependency_error(data["error"]):
+                        dep_order_failures += 1
 
+        result: dict = {"tool_call_accuracy": 1.0}
         if golden_case.expected_tool_calls:
-            return self._compute_with_params(golden_case.expected_tool_calls, actual_calls)
+            result.update(self._compute_with_params(golden_case.expected_tool_calls, actual_calls))
         elif golden_case.expected_tools:
-            return self._compute_name_only(golden_case.expected_tools, actual_calls)
-        return {"tool_call_accuracy": 1.0}
+            result.update(self._compute_name_only(golden_case.expected_tools, actual_calls))
+        if dep_order_failures > 0:
+            result["dependency_order_failures"] = dep_order_failures
+        return result
+
+    def _is_dependency_error(self, error_msg: str) -> bool:
+        lower = error_msg.lower()
+        return any(p in lower for p in self._DEPENDENCY_PATTERNS)
 
     def _compute_with_params(self, expected_calls, actual_calls):
         total = max(len(expected_calls), len(actual_calls) or 1)

@@ -162,6 +162,51 @@ class TestRuleMetrics:
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 1.0
 
+    def test_dependency_order_failures_counted(self):
+        m = ToolCallAccuracyMetric()
+        trace = [
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "plan_dispatch",
+                      "arguments": '{"step_index": 3}'},
+             "timestamp": 1.0},
+            {"type": "tool_call_end", "turn": 1,
+             "data": {"tool_name": "plan_dispatch",
+                      "success": False,
+                      "error": "step 3 depends_on step 1 which is not complete"},
+             "timestamp": 1.1},
+            {"type": "tool_call_start", "turn": 2,
+             "data": {"tool_name": "plan_create",
+                      "arguments": '{"task": "x", "steps": [...]}'},
+             "timestamp": 2.0},
+        ]
+        c = EvalCase(id="c0", input="plan something",
+                     expected_tool_calls=[
+                         {"name": "plan_create", "params": {}},
+                         {"name": "plan_dispatch", "params": {}},
+                     ])
+        result = m.compute_sync(trace, c)
+        assert result["dependency_order_failures"] == 1
+        # plan_dispatch matched by name, plan_create matched by name = 2/2
+        assert result["tool_call_accuracy"] > 0.5
+
+    def test_dependency_failures_not_counted_for_other_errors(self):
+        m = ToolCallAccuracyMetric()
+        trace = [
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "read",
+                      "arguments": '{"path": "/nonexistent"}'},
+             "timestamp": 1.0},
+            {"type": "tool_call_end", "turn": 1,
+             "data": {"tool_name": "read",
+                      "success": False,
+                      "error": "FileNotFoundError: /nonexistent"},
+             "timestamp": 1.1},
+        ]
+        c = EvalCase(id="c0", input="read nonexistent",
+                     expected_tools=["read"])
+        result = m.compute_sync(trace, c)
+        assert "dependency_order_failures" not in result
+
     # --- TurnEfficiencyMetric ---
 
     def test_turn_efficiency(self):
