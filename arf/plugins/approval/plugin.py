@@ -106,12 +106,14 @@ class ApprovalPlugin:
                     **event_data,
                     "success": False,
                     "blocked": True,
+                    "result": "Blocked: user denied",
                     "error": "Blocked: user denied",
                 })
                 ctx.inject_engine_event("tool_call_end", {
                     **event_data,
                     "success": False,
                     "blocked": True,
+                    "result": "Blocked: user denied",
                     "error": "Blocked: user denied",
                 })
                 ctx.state["messages"].append({
