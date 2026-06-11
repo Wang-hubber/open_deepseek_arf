@@ -152,7 +152,11 @@ config = EvalConfig(
 )
 
 runner = EvalRunner(config)
-report = await runner.run_online(agent.chat)
+report = await runner.run_online(
+    agent.chat,
+    system_prompt=agent.system_prompt,   # agent 运行时组装好的完整 prompt
+    tools=agent.tools_description,       # 已注册的工具描述清单
+)
 report.to_json("reports/file_ops_v1_20260611.json")
 ```
 
@@ -221,11 +225,14 @@ print(f"Improvements: {diff.improvements}")
 | `input` | `str` | 用户消息文本 |
 | `expected_tools` | `list[str] \| None` | 预期调用的工具名列表（name-only，向后兼容） |
 | `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/result），按名称与 actual 配对 |
-| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词 |
+| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词，自动构建时为空（标注人员填写） |
+| `original_output` | `str \| None` | 最后一轮的完整回答原文，供标注人员参考和提炼关键词 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
-| `golden_trajectory` | `dict \| None` | 完整 golden trajectory，可用于 SFT |
+| `golden_trajectory` | `dict \| None` | `{"annotated": <bool>, "turns": [...]}`，annotated 默认 `false` |
 
 `expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "result": "吃完了"}`。`params` 和 `result` 可选——不标则只比名称。
+
+`golden_trajectory.annotated`：标注人员审阅完 trajectory 后手动改为 `true`。`false` 时 LLM 指标自动降级为无参考式独立评估。
 
 ### JudgeModelConfig
 
@@ -247,8 +254,6 @@ print(f"Improvements: {diff.improvements}")
 | `judge` | `JudgeModelConfig \| None` |
 | `metrics` | 6 维 开关 dict |
 | `prompts` | `dict[str, str]` | 覆盖 LLM 指标的 prompt（key: `tool_call_result_llm`/`output_quality`/`output_quality_free`/`trajectory_similarity`/`trajectory_similarity_free`），不传用内置默认 |
-| `system_prompt` | `str` | Agent 的 system prompt，由 App 注入，供无参考式 judge 理解 agent 行为约束 |
-| `tools` | `str` | 可用工具列表及描述，由 App 注入，供无参考式 judge 评估工具选择合理性 |
 | `mode` | `"online"` / `"offline"` |
 | `trace_session_ids` | offline 模式下的 session ID 列表 |
 
@@ -428,7 +433,148 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有
 
 ---
 
-## 8. 演进方向
+## 8. App 端配置指南
+
+### 8.1 配置文件（`plugins_config.eval`）
+
+App 在 `config.yaml` 中覆盖插件默认值。框架提供的 `plugin.yaml` 默认值被浅层合并覆盖，未覆盖的字段保持默认。
+
+```yaml
+plugins:
+  eval:
+    enabled: true
+    config:
+      trace_dir: ./data/traces
+      eval_dir: ./data/eval
+      judge:
+        api_base: https://api.deepseek.com
+        api_key_env: DEEPSEEK_API_KEY
+        model: deepseek-chat
+        temperature: 0.0
+        max_tokens: 2000
+        system_prompt: >
+          You are a strict but fair evaluator...
+      prompts:
+        # 覆盖参考式 prompt（可选）
+        output_quality: |
+          ...custom ref prompt...
+        # 覆盖无参考式 prompt（可选）
+        output_quality_free: |
+          ...custom free prompt...
+        trajectory_similarity: |
+          ...custom ref prompt...
+        trajectory_similarity_free: |
+          ...custom free prompt...
+```
+
+### 8.2 代码示例
+
+```python
+from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
+
+config = EvalConfig(
+    benchmark_path="benchmarks/file_ops_v1.json",
+    trace_dir="./data/traces",
+    judge=JudgeModelConfig(
+        api_base="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+        model="deepseek-chat",
+    ),
+    metrics={
+        "tool_call_accuracy": True,
+        "turn_efficiency": True,
+        "success_rate": True,
+        # LLM metrics (optional, needs judge)
+        "tool_call_result_llm": False,
+        "output_quality": True,
+        "trajectory_similarity": True,
+    },
+    # prompts dict is optional — falls back to plugin.yaml defaults
+)
+
+runner = EvalRunner(config)
+
+# Online: system_prompt + tools 从 agent 运行时获取，由 App 传入
+report = await runner.run_online(
+    agent.chat,
+    system_prompt=agent.system_prompt,
+    tools=agent.tools_description,
+)
+
+# Offline: 同样支持传入
+report = await runner.run_offline(
+    system_prompt=agent.system_prompt,
+    tools=agent.tools_description,
+)
+```
+
+### 8.3 App 需要注入的关键数据
+
+| 参数 | 注入位置 | 用途 | 不注入的后果 |
+|------|---------|------|-------------|
+| `judge` | `EvalConfig` | LLM metrics 的 API 配置 | validate() 抛错 |
+| `system_prompt` | `run_online/offline()` | 无参考式 judge 理解 agent 行为约束 | judge 标注缺上下文，评分偏保守 |
+| `tools` | `run_online/offline()` | 无参考式 judge 评估工具选择是否合理 | judge 无法判断工具选择优劣 |
+| `prompts` | `EvalConfig` | 覆盖默认评分 prompt | 使用框架内置 prompt（通常够用） |
+
+`system_prompt` 和 `tools` 不放在 `EvalConfig` 中：它们属于**运行时数据**（只有 agent 在运行时刻才知道组装出的完整 prompt 和已注册的工具描述），App 只需把 agent 对象上的对应字段传入。
+
+### 8.4 Benchmark 构建与标注
+
+```python
+from arf.plugins.eval import BenchmarkBuilder
+from arf.plugins.trace.plugin import TracePlugin
+
+# 1. 从已有 trace 构建 benchmark
+trace = TracePlugin({"trace_dir": "./data/traces"})
+builder = BenchmarkBuilder(trace)
+benchmark = builder.build(session_id="default", name="file_ops_v1")
+benchmark.to_json("benchmarks/file_ops_v1.json")
+
+# 2. 人工编辑 JSON
+# - 删除无关 turn
+# - 标注 expected_tool_calls[].params / .result
+# - 从 original_output 提炼 expected_output_contains 关键词
+# - golden_trajectory.annotated: false → true
+
+# 3. 加载已标注的 benchmark
+benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
+```
+
+**标注流水线**：
+
+```
+Trace JSONL → Builder 自动提取 → 人工精修 JSON → 运行 Eval
+                ↓                        ↓
+         golden_trajectory          annotated: true
+         original_output            expected_output_contains 填写
+ 
+  annotated=false 时：
+    规则 metric → 正常（不依赖 golden_trajectory）
+    LLM metric  → 降级为无参考式（仅用 system_prompt + tools + user_input）
+ 
+  annotated=true 时：
+    规则 metric → 正常
+    LLM metric  → 参考式（golden vs actual 对比）
+```
+
+### 8.5 运行与对比
+
+```python
+# 单次运行
+runner = EvalRunner(config)
+report = await runner.run_online(agent.chat)
+
+# 对比两次运行（检测回归）
+baseline = EvalReport.from_json("reports/baseline.json")
+current = EvalReport.from_json("reports/current.json")
+diff = EvalComparator().compare(baseline, current)
+print(f"Regressions: {diff.regressions}")
+```
+
+---
+
+## 9. 演进方向
 
 - **HTML Report**：带 golden vs actual 并排对比的可视化报告
 - **CI 集成**：退出码 0（通过）/ 1（退化）

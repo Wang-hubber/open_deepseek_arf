@@ -33,22 +33,30 @@ class EvalRunner:
 
     # -- Public API -------------------------------------------------------
 
-    async def run_online(self, chat_fn) -> EvalReport:
+    async def run_online(self, chat_fn, *,
+                          system_prompt: str = "",
+                          tools: str = "") -> EvalReport:
         """Run benchmark cases via live agent chat. Returns EvalReport.
 
         chat_fn: async def chat_fn(input: str, session_id: str) -> str
+        system_prompt: agent's system prompt, for no-reference judge context
+        tools: available tools listing, for no-reference judge context
         """
         self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
-        return await self._run(chat_fn=chat_fn)
+        return await self._run(chat_fn=chat_fn,
+                               system_prompt=system_prompt, tools=tools)
 
-    async def run_offline(self) -> EvalReport:
+    async def run_offline(self, *, system_prompt: str = "",
+                          tools: str = "") -> EvalReport:
         """Run benchmark cases against existing trace files. Returns EvalReport."""
         self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
-        return await self._run(chat_fn=None)
+        return await self._run(chat_fn=None,
+                               system_prompt=system_prompt, tools=tools)
 
     # -- Internal ---------------------------------------------------------
 
-    async def _run(self, chat_fn=None) -> EvalReport:
+    async def _run(self, chat_fn=None, *,
+                    system_prompt: str = "", tools: str = "") -> EvalReport:
         from arf.plugins.trace.snapshot import EnvSnapshotBuilder
 
         benchmark = self._benchmark
@@ -86,15 +94,15 @@ class EvalRunner:
             metrics.append(OutputQualityMetric(
                 prompt=prompts.get("output_quality"),
                 prompt_free=prompts.get("output_quality_free"),
-                system_prompt=self._config.system_prompt,
-                tools=self._config.tools,
+                system_prompt=system_prompt,
+                tools=tools,
             ))
         if me.get("trajectory_similarity"):
             metrics.append(TrajectorySimilarityMetric(
                 prompt=prompts.get("trajectory_similarity"),
                 prompt_free=prompts.get("trajectory_similarity_free"),
-                system_prompt=self._config.system_prompt,
-                tools=self._config.tools,
+                system_prompt=system_prompt,
+                tools=tools,
             ))
 
         judge = self._config.judge
