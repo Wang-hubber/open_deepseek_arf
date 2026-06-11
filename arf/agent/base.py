@@ -286,13 +286,16 @@ class BaseAgent:
 
         # --- Resolve tool names → namespaced names for permission lists ---
         # Collect base_name → [namespaced_name] mapping from local sources.
+        # Namespace prefixes MUST match what MCP local_server.py registers:
+        #   user__{tool}       — app-level tools (config.tools)
+        #   {plugin}__{tool}   — plugin tools
         _name_map: dict[str, list[str]] = {}
         for t in config.tools:
-            ns = f"arf__{t.name}"
+            ns = f"user__{t.name}"
             _name_map.setdefault(t.name, []).append(ns)
         if self._plugin_provider:
-            for t in self._plugin_provider.list_tools():
-                ns = f"arf__{t.name}"
+            for pname, t in self._plugin_provider.list_tools_with_plugin():
+                ns = f"{pname}__{t.name}"
                 _name_map.setdefault(t.name, []).append(ns)
         for srv in getattr(config, "mcp_servers", []):
             _name_map.setdefault("", [])  # sentinel: external MCP namespace exists
@@ -305,12 +308,12 @@ class BaseAgent:
             if len(matches) > 1:
                 raise ValueError(
                     f"Tool '{name}' is ambiguous — it exists in multiple sources: "
-                    f"{matches}. Use the full namespaced name (e.g. arf__{name}) "
+                    f"{matches}. Use the full namespaced name (e.g. user__{name}) "
                     f"in your permission lists."
                 )
             if matches:
                 return matches[0]
-            return f"arf__{name}"  # unknown source, assume local
+            return f"user__{name}"  # unknown source, assume app tool
 
         _namespaced_deny = [_resolve_perm_name(t) for t in main_permission_lists.deny]
         _namespaced_ask = [_resolve_perm_name(t) for t in main_permission_lists.ask]
