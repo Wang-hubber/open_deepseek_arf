@@ -56,7 +56,7 @@ hooks:
 | Plugin | Hook | 说明 |
 |--------|------|------|
 | `tool_guard` | `pre_action` | 双层防护：`PermissionRegistry` deny→ask→allow 检查 + `PathSandbox` 路径遍历扫描 |
-| `approval` | `pre_action`, `post_permission` | 人机审批通道。`ask_list` 中的工具需人工确认，默认 60s 超时 |
+| `approval` | `pre_action` | 人机审批通道。`ask_list` 中的工具需人工确认，默认 60s 超时 |
 | `session_mode` | `pre_action` | 解析全局 `session_mode`（auto/ask/plan）与 per-agent policy，决定有效模式 |
 | `validate_messages` | `pre_action` | 模型调用前校验消息列表（首条必须 user、role 合法） |
 | `error_handler` | `error` | 五动作恢复路由：fallback（compact/repair）、retry、skip、abort |
@@ -75,7 +75,7 @@ hooks:
 | Plugin | Hook | 说明 |
 |--------|------|------|
 | `checkpoint` | `round_start`, `round_end` | Round 级状态快照。委托 `RoundManager` 进行 begin/close round。支持 undo |
-| `undo` | `round_end`, `sandbox_persist` | 声明 undo 的 Hook 挂载点（实际快照由 checkpoint 完成） |
+| `undo` | `round_end` | 声明 undo 的 Hook 挂载点（实际快照由 checkpoint 完成） |
 | `cancellation` | `turn_start` | 检查外部注入的 `cancel_event`，支持会话中断 |
 
 ### 可观测
