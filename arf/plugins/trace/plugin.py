@@ -38,6 +38,13 @@ class TracePlugin:
         self._event_bus = None
         self._consume_task: asyncio.Task | None = None
 
+        # Config snapshot — lazy, built on first _write_event call
+        self._config_hash: str | None = None
+        plugins_root = cfg.get("plugins_root", "./arf/plugins")
+        extra_files = cfg.get("config_files", [])
+        from arf.plugins.trace.snapshot import EnvSnapshotBuilder
+        self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files)
+
     def set_event_bus(self, event_bus) -> None:
         """Wire EventBus for fine-grained engine event subscription.
 
@@ -105,6 +112,23 @@ class TracePlugin:
         }
         self._write_event(context.session_id, event)
 
+    # -- Config snapshot -------------------------------------------------
+
+    def _ensure_snapshot(self) -> str:
+        """Build and persist config snapshot on first call. Returns hash."""
+        if self._config_hash is not None:
+            return self._config_hash
+
+        xml_str, hash_val = self._snapshot_builder.build()
+        snapshot_dir = self._trace_dir / "snapshots"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_file = snapshot_dir / f"{hash_val}.xml"
+        if not snapshot_file.exists():
+            snapshot_file.write_text(xml_str, encoding="utf-8")
+
+        self._config_hash = hash_val
+        return hash_val
+
     # -- EventBus subscription -------------------------------------------
 
     async def _consume_eventbus(self) -> None:
@@ -144,6 +168,7 @@ class TracePlugin:
             return str(obj)
 
     def _write_event(self, session_id: str, record: dict) -> None:
+        record["config_hash"] = self._ensure_snapshot()
         trace_file = self._trace_dir / f"{session_id}.jsonl"
         try:
             with open(trace_file, "a", encoding="utf-8") as f:
