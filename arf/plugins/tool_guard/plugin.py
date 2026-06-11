@@ -56,14 +56,26 @@ class ToolGuardPlugin:
             result = self._registry.evaluate(name, params, self._lists)
             if result.action == "deny":
                 for tc_cleanup in tool_calls:
-                    ctx.emit("tool_call_start", {
+                    event_data = {
                         "tool_name": tc_cleanup.get("name", ""),
                         "id": tc_cleanup.get("id", ""),
+                    }
+                    ctx.emit("tool_call_start", {
+                        **event_data,
+                        "arguments": tc_cleanup.get("params", {}),
+                    })
+                    ctx.inject_engine_event("tool_call_start", {
+                        **event_data,
                         "arguments": tc_cleanup.get("params", {}),
                     })
                     ctx.emit("tool_call_end", {
-                        "tool_name": tc_cleanup.get("name", ""),
-                        "id": tc_cleanup.get("id", ""),
+                        **event_data,
+                        "success": False,
+                        "blocked": True,
+                        "error": f"Blocked: {result.reason}",
+                    })
+                    ctx.inject_engine_event("tool_call_end", {
+                        **event_data,
                         "success": False,
                         "blocked": True,
                         "error": f"Blocked: {result.reason}",
