@@ -72,12 +72,14 @@ class ToolGuardPlugin:
                         **event_data,
                         "success": False,
                         "blocked": True,
+                        "result": f"Blocked: {result.reason}",
                         "error": f"Blocked: {result.reason}",
                     })
                     ctx.inject_engine_event("tool_call_end", {
                         **event_data,
                         "success": False,
                         "blocked": True,
+                        "result": f"Blocked: {result.reason}",
                         "error": f"Blocked: {result.reason}",
                     })
                 msgs = ctx.state.setdefault("messages", [])
