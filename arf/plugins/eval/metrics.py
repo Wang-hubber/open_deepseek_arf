@@ -151,15 +151,37 @@ class ToolCallResultLLMMetric:
     """
 
     _PROMPT = (
-        "You are evaluating whether a tool call result matches expectations.\n\n"
-        "Expected result: {expected}\n"
-        "Actual result: {actual}\n\n"
-        "Are these semantically equivalent? Consider: does the actual "
-        "result convey the same information and outcome as the expected "
-        "result, even if worded differently?\n\n"
-        'Respond with ONLY a JSON object: '
-        '{"match": <true or false>, "reason": "<one sentence>"}'
+        "You are comparing the output of a tool call against the expected reference output.\n\n"
+        "User's original request: {user_input}\n\n"
+        "Tool: {tool_name}\n"
+        "Expected output:\n<<<EXPECTED>>>\n{expected}\n<<<END>>>\n\n"
+        "Actual output:\n<<<ACTUAL>>>\n{actual}\n<<<END>>>\n\n"
+        "Determine whether the actual output is **semantically equivalent** to the "
+        "expected output. Semantic equivalence means: both outputs convey the same "
+        "functional information — they would lead the agent to the same next decision "
+        "or action, even if wording, formatting, or verbosity differ.\n\n"
+        "Judgment criteria:\n"
+        "- true : Core information is preserved. Minor formatting differences, extra "
+        "details that do not change meaning, or different phrasing of the same facts "
+        "are all acceptable.\n"
+        "- false: Critical information is missing, contradictory facts are present, "
+        "or the actual output is an error/failure while the expected was successful.\n\n"
+        "Edge cases:\n"
+        "- If either output appears truncated, judge based on the available content.\n"
+        "- If the actual output is an error/failure but the expected was successful, "
+        "this is unequivocally false.\n"
+        "- If both are errors/failures of the same type, they are equivalent (true).\n"
+        "- Numeric values: treat ±5% deviation as equivalent unless precision is "
+        "clearly critical to the user's request.\n"
+        "- If the actual output contains the expected output verbatim plus extra "
+        "surrounding context, it is still equivalent.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"match": <bool>, "reason": "<2-3 sentences explaining the key '
+        'similarities or differences that determined your judgment>"}}'
     )
+
+    def __init__(self, prompt: str | None = None):
+        self._prompt = prompt if prompt else self._PROMPT
 
     @property
     def name(self) -> str:
@@ -193,6 +215,7 @@ class ToolCallResultLLMMetric:
         if not judge:
             return {"tool_call_result_llm": 0.0, "reason": "no judge configured"}
 
+        user_input = golden_case.input or ""
         matches = 0
         total = len(expected_with_results)
         for exp in expected_with_results:
@@ -203,7 +226,7 @@ class ToolCallResultLLMMetric:
                 if not act["result"]:
                     continue
                 result = await self._call_judge(
-                    judge, exp["result"], act["result"]
+                    judge, exp_name, user_input, exp["result"], act["result"],
                 )
                 if result.get("match"):
                     matches += 1
@@ -211,15 +234,18 @@ class ToolCallResultLLMMetric:
 
         return {"tool_call_result_llm": matches / total if total > 0 else 1.0}
 
-    async def _call_judge(self, judge, expected_result, actual_result):
+    async def _call_judge(self, judge, tool_name, user_input,
+                            expected_result, actual_result):
         from openai import OpenAI
 
         api_key = os.environ.get(judge.api_key_env, "")
         client = OpenAI(api_key=api_key or "placeholder", base_url=judge.api_base)
 
-        prompt = self._PROMPT.format(
-            expected=expected_result[:1000],
-            actual=actual_result[:1000],
+        prompt = self._prompt.format(
+            user_input=user_input[:500],
+            tool_name=tool_name,
+            expected=expected_result[:1500],
+            actual=actual_result[:1500],
         )
         messages = []
         if judge.system_prompt:
@@ -264,14 +290,43 @@ class TurnEfficiencyMetric:
 
 class OutputQualityMetric:
     _PROMPT = (
-        "You are evaluating an AI agent's final output against a golden reference.\n\n"
-        "Golden answer:\n{golden}\n\n"
-        "Actual answer:\n{actual}\n\n"
-        "Rate the actual answer from 1 (completely wrong) "
-        "to 5 (identical quality). Consider: correctness, completeness, "
-        "clarity, and helpfulness.\n\n"
-        'Respond with ONLY a JSON object: {"score": <int 1-5>, "reason": "<one sentence>"}'
+        "You are evaluating the quality of an AI agent's final answer against "
+        "a golden reference answer.\n\n"
+        "User's original request: {user_input}\n\n"
+        "Golden reference answer:\n<<<GOLDEN>>>\n{golden}\n<<<END>>>\n\n"
+        "Actual answer:\n<<<ACTUAL>>>\n{actual}\n<<<END>>>\n\n"
+        "Rate the actual answer on a 1–5 scale. The goal is NOT verbatim matching "
+        "— a differently worded answer that serves the user equally well should "
+        "score high. Conversely, a verbatim copy that misses the user's intent "
+        "should score low.\n\n"
+        "Scoring rubric (anchor on the behavioral description, not the label):\n"
+        "5 — Excellent: Effectively addresses the user's request. Factually correct, "
+        "complete, clear, and well-structured. A user would be fully satisfied.\n"
+        "4 — Good: Addresses the request but has minor flaws — slightly incomplete, "
+        "mildly verbose, or missing a secondary detail. Still clearly useful.\n"
+        "3 — Adequate: Partially addresses the request. Contains some correct "
+        "information but has notable omissions, unclear phrasing, or minor "
+        "factual issues. A user would need to ask follow-up questions.\n"
+        "2 — Poor: Mostly incorrect, irrelevant, or so incomplete that the core "
+        "request is not meaningfully answered. A user would reject this answer.\n"
+        "1 — Wrong/Harmful: Completely incorrect, contradicts the golden answer "
+        "on key facts, or provides dangerously misleading information.\n\n"
+        "Important distinctions:\n"
+        "- Factual errors are worse than stylistic issues (verbose but correct "
+        "should not drop below 4).\n"
+        "- An answer that is correct but less detailed than the golden answer "
+        "may still score 4 if the essentials are there.\n"
+        "- An answer that adds genuinely useful context beyond the golden "
+        "answer should NOT be penalized — it can still score 5.\n"
+        "- If both answers are functionally identical but phrased differently, "
+        "score 5.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"score": <int 1-5>, "reason": "<2-3 sentences justifying the score '
+        'with specific reference to what the actual answer did well or poorly>"}}'
     )
+
+    def __init__(self, prompt: str | None = None):
+        self._prompt = prompt if prompt else self._PROMPT
 
     @property
     def name(self) -> str:
@@ -303,15 +358,20 @@ class OutputQualityMetric:
         if not golden_content or not actual_content:
             return {"output_quality": 3, "reason": "missing content for comparison"}
 
-        return await self._call_judge(judge, golden_content, actual_content)
+        user_input = golden_case.input or ""
+        return await self._call_judge(judge, user_input, golden_content, actual_content)
 
-    async def _call_judge(self, judge, golden_content, actual_content):
+    async def _call_judge(self, judge, user_input, golden_content, actual_content):
         from openai import OpenAI
 
         api_key = os.environ.get(judge.api_key_env, "")
         client = OpenAI(api_key=api_key, base_url=judge.api_base)
 
-        prompt = self._PROMPT.format(golden=golden_content, actual=actual_content)
+        prompt = self._prompt.format(
+            user_input=user_input[:500],
+            golden=golden_content[:2000],
+            actual=actual_content[:2000],
+        )
         messages = []
         if judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
@@ -334,14 +394,44 @@ class OutputQualityMetric:
 
 class TrajectorySimilarityMetric:
     _PROMPT = (
-        "You are evaluating whether an AI agent followed the correct procedure.\n\n"
-        "Golden trajectory (expected steps):\n{golden}\n\n"
-        "Actual trajectory (what the agent did):\n{actual}\n\n"
-        "Rate how well the actual trajectory matches the golden trajectory "
-        "from 1 (completely wrong steps) to 5 (identical steps/approach). "
-        "Consider: correct tools called, correct order, correct reasoning path.\n\n"
-        'Respond with ONLY a JSON object: {"score": <int 1-5>, "reason": "<one sentence>"}'
+        "You are evaluating whether an AI agent followed a correct procedure "
+        "to fulfill the user's request.\n\n"
+        "User's original request: {user_input}\n\n"
+        "Golden trajectory (reference procedure):\n<<<GOLDEN>>>\n{golden}\n<<<END>>>\n\n"
+        "Actual trajectory (what the agent did):\n<<<ACTUAL>>>\n{actual}\n<<<END>>>\n\n"
+        "The golden trajectory is ONE correct way to solve the problem, not the "
+        "ONLY correct way. The agent may take a different but equally valid path.\n\n"
+        "Trajectory format: each entry represents a turn with [turn N] prefixes. "
+        "Entries show tool calls (call <name>), tool results (result: ok/fail), "
+        "and model outputs (output: <text>).\n\n"
+        "Rate the actual trajectory on a 1–5 scale:\n"
+        "5 — Excellent match: Uses the same key tools/steps in a logical order "
+        "to achieve the goal. Minor variations (extra benign calls, slightly "
+        "different order for independent steps) are acceptable.\n"
+        "4 — Good match: Core approach is correct. Differs in some tool choices "
+        "or order, but still reaches the goal competently.\n"
+        "3 — Partial match: Some correct steps but missing critical tool calls, "
+        "wrong order for dependent steps, or includes clearly unnecessary detours.\n"
+        "2 — Poor match: The approach is largely wrong. Key tools are missing or "
+        "misused. The agent seems to be guessing or going in circles.\n"
+        "1 — No match: Completely wrong approach, irrelevant tool calls, or the "
+        "trajectory fails to address the user's request at all.\n\n"
+        "Weighting guidelines:\n"
+        "- Using the right tools matters more than using them in the exact same "
+        "order (unless the order reflects a hard dependency).\n"
+        "- Extra benign tool calls that don't affect the outcome should not "
+        "significantly lower the score.\n"
+        "- Missing a critical tool that is essential to the solution should drop "
+        "the score by at least 2 points.\n"
+        "- If the actual trajectory achieves the same result through a genuinely "
+        "different but equally sound approach, score 5.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"score": <int 1-5>, "reason": "<2-3 sentences justifying the score '
+        'with specific reference to which steps matched or diverged>"}}'
     )
+
+    def __init__(self, prompt: str | None = None):
+        self._prompt = prompt if prompt else self._PROMPT
 
     @property
     def name(self) -> str:
@@ -381,15 +471,20 @@ class TrajectorySimilarityMetric:
         if not actual_str:
             return {"trajectory_similarity": 3, "reason": "empty actual trajectory"}
 
-        return await self._call_judge(judge, golden_str, actual_str)
+        user_input = golden_case.input or ""
+        return await self._call_judge(judge, user_input, golden_str, actual_str)
 
-    async def _call_judge(self, judge, golden_str, actual_str):
+    async def _call_judge(self, judge, user_input, golden_str, actual_str):
         from openai import OpenAI
 
         api_key = os.environ.get(judge.api_key_env, "")
         client = OpenAI(api_key=api_key, base_url=judge.api_base)
 
-        prompt = self._PROMPT.format(golden=golden_str, actual=actual_str)
+        prompt = self._prompt.format(
+            user_input=user_input[:500],
+            golden=golden_str[:3000],
+            actual=actual_str[:3000],
+        )
         messages = []
         if judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})

@@ -194,9 +194,14 @@ class JudgeModelConfig:
     temperature: float = 0.0
     max_tokens: int = 2000
     system_prompt: str = (
-        "You are an impartial evaluator for AI agent outputs. "
-        "You assess correctness, completeness, clarity, and adherence to expected procedure. "
-        "Always respond with valid JSON only."
+        "You are an expert evaluator for AI agent behavior. Your role is to "
+        "compare an agent's actual output against a reference (golden) standard. "
+        "You are impartial, precise, and consistent. Ground every judgment in the "
+        "specific content provided — never speculate about missing information, "
+        "and clearly state when a comparison cannot be reliably made. "
+        "Every evaluation must be reproducible: another evaluator reading your "
+        "reasoning should arrive at the same conclusion. "
+        "Always respond with valid JSON only, no markdown fences or extra text."
     )
 
 
@@ -218,6 +223,8 @@ class EvalConfig:
     trace_session_ids: list[str] = field(default_factory=list)
     output_path: str | None = None
     timeout_per_case: float = 300.0
+    prompts: dict[str, str] = field(default_factory=dict)
+    # keys: tool_call_result_llm, output_quality, trajectory_similarity
 
     def requires_judge(self) -> bool:
         return any([
