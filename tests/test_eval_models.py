@@ -1,7 +1,7 @@
 """Unit tests for eval data models and JSON serialization."""
 import pytest
 
-from arf.evaluation.models import EvalCase, EvalBenchmark
+from arf.plugins.eval.models import EvalCase, EvalBenchmark
 
 
 class TestEvalCase:
@@ -76,7 +76,7 @@ class TestEvalBenchmarkJson:
         assert loaded.cases[0].golden_trajectory["turns"][0]["turn"] == 1
 
 
-from arf.evaluation.models import EvalSummary, EvalReport, EvalDiff, EvalConfig
+from arf.plugins.eval.models import EvalSummary, EvalReport, EvalDiff, EvalConfig
 
 
 class TestEvalReportJson:

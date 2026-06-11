@@ -44,46 +44,46 @@ class _FakeEvalAgent:
 # ---------------------------------------------------------------------------
 
 class TestTopLevelImports:
-    """Doc Section 3 API Reference: all imports from arf.evaluation."""
+    """Doc Section 3 API Reference: all imports from arf.plugins.eval."""
 
     def test_import_benchmark_builder(self):
-        """Doc: from arf.evaluation import BenchmarkBuilder."""
-        from arf.evaluation import BenchmarkBuilder
+        """Doc: from arf.plugins.eval import BenchmarkBuilder."""
+        from arf.plugins.eval import BenchmarkBuilder
         assert BenchmarkBuilder is not None
 
     def test_import_eval_benchmark(self):
-        """Doc: from arf.evaluation import EvalBenchmark."""
-        from arf.evaluation import EvalBenchmark
+        """Doc: from arf.plugins.eval import EvalBenchmark."""
+        from arf.plugins.eval import EvalBenchmark
         assert EvalBenchmark is not None
 
     def test_import_eval_runner(self):
-        """Doc: from arf.evaluation import EvalRunner."""
-        from arf.evaluation import EvalRunner
+        """Doc: from arf.plugins.eval import EvalRunner."""
+        from arf.plugins.eval import EvalRunner
         assert EvalRunner is not None
 
     def test_import_eval_comparator(self):
-        """Doc: from arf.evaluation import EvalComparator."""
-        from arf.evaluation import EvalComparator
+        """Doc: from arf.plugins.eval import EvalComparator."""
+        from arf.plugins.eval import EvalComparator
         assert EvalComparator is not None
 
     def test_import_eval_report(self):
-        """Doc: from arf.evaluation import EvalReport."""
-        from arf.evaluation import EvalReport
+        """Doc: from arf.plugins.eval import EvalReport."""
+        from arf.plugins.eval import EvalReport
         assert EvalReport is not None
 
     def test_import_eval_diff(self):
-        """Doc: from arf.evaluation import EvalDiff (via EvalComparator)."""
-        from arf.evaluation import EvalDiff
+        """Doc: from arf.plugins.eval import EvalDiff (via EvalComparator)."""
+        from arf.plugins.eval import EvalDiff
         assert EvalDiff is not None
 
     def test_import_eval_summary(self):
-        """Doc: from arf.evaluation import EvalSummary."""
-        from arf.evaluation import EvalSummary
+        """Doc: from arf.plugins.eval import EvalSummary."""
+        from arf.plugins.eval import EvalSummary
         assert EvalSummary is not None
 
     def test_import_eval_case(self):
-        """Doc: from arf.evaluation import EvalCase."""
-        from arf.evaluation import EvalCase
+        """Doc: from arf.plugins.eval import EvalCase."""
+        from arf.plugins.eval import EvalCase
         assert EvalCase is not None
 
     def test_import_trace_plugin(self):
@@ -92,8 +92,8 @@ class TestTopLevelImports:
         assert TracePlugin is not None
 
     def test_import_metrics(self):
-        """Doc: from arf.evaluation import (metrics)."""
-        from arf.evaluation import (
+        """Doc: from arf.plugins.eval import (metrics)."""
+        from arf.plugins.eval import (
             SuccessRateMetric, ToolAccuracyMetric,
             TurnEfficiencyMetric, OutputContainsMetric,
         )
@@ -103,13 +103,13 @@ class TestTopLevelImports:
         assert OutputContainsMetric is not None
 
     def test_import_eval_error(self):
-        """Doc: from arf.evaluation.exceptions import EvalError."""
-        from arf.evaluation.exceptions import EvalError
+        """Doc: from arf.plugins.eval.exceptions import EvalError."""
+        from arf.plugins.eval.exceptions import EvalError
         assert EvalError is not None
 
     def test_import_events_to_trace(self):
-        """Doc: from arf.evaluation.trace_adapter import events_to_trace."""
-        from arf.evaluation.trace_adapter import events_to_trace
+        """Doc: from arf.plugins.eval.trace_adapter import events_to_trace."""
+        from arf.plugins.eval.trace_adapter import events_to_trace
         assert events_to_trace is not None
 
 
@@ -124,14 +124,14 @@ class TestFileExistence:
         """Doc: arf/evaluation/ directory with runner, builder, comparator, etc."""
         root = Path(__file__).parent.parent.parent
         for f in (
-            "arf/evaluation/__init__.py",
-            "arf/evaluation/runner.py",
-            "arf/evaluation/builder.py",
-            "arf/evaluation/comparator.py",
-            "arf/evaluation/metrics.py",
-            "arf/evaluation/models.py",
-            "arf/evaluation/exceptions.py",
-            "arf/evaluation/trace_adapter.py",
+            "arf/plugins/eval/__init__.py",
+            "arf/plugins/eval/runner.py",
+            "arf/plugins/eval/builder.py",
+            "arf/plugins/eval/comparator.py",
+            "arf/plugins/eval/metrics.py",
+            "arf/plugins/eval/models.py",
+            "arf/plugins/eval/exceptions.py",
+            "arf/plugins/eval/trace_adapter.py",
         ):
             assert (root / f).exists(), f"Expected file {f} does not exist"
 
@@ -150,7 +150,7 @@ class TestEvalCaseModel:
 
     def test_eval_case_fields(self):
         """Doc: id: str, input: str, expected_tools, expected_output_contains, max_turns."""
-        from arf.evaluation.models import EvalCase
+        from arf.plugins.eval.models import EvalCase
         field_names = {f.name for f in fields(EvalCase)}
         assert "id" in field_names
         assert "input" in field_names
@@ -160,7 +160,7 @@ class TestEvalCaseModel:
 
     def test_eval_case_types(self):
         """Doc: expected_tools = list[str] | None, max_turns = int | None."""
-        from arf.evaluation.models import EvalCase
+        from arf.plugins.eval.models import EvalCase
         fmap = {f.name: f.type for f in fields(EvalCase)}
         assert fmap["id"] is str or fmap["id"] == "str"
         assert fmap["input"] is str or fmap["input"] == "str"
@@ -171,7 +171,7 @@ class TestEvalCaseModel:
 
     def test_eval_case_construct(self):
         """Doc: EvalCase(id='case_0', input='hello')."""
-        from arf.evaluation.models import EvalCase
+        from arf.plugins.eval.models import EvalCase
         c = EvalCase(id="case_0", input="hello")
         assert c.id == "case_0"
         assert c.input == "hello"
@@ -181,7 +181,7 @@ class TestEvalCaseModel:
 
     def test_eval_case_with_all_fields(self):
         """Doc: All fields can be set."""
-        from arf.evaluation.models import EvalCase
+        from arf.plugins.eval.models import EvalCase
         c = EvalCase(
             id="case_1", input="test",
             expected_tools=["read_file"],
@@ -202,7 +202,7 @@ class TestEvalBenchmarkModel:
 
     def test_eval_benchmark_fields(self):
         """Doc: name, source_session, created_at, cases."""
-        from arf.evaluation.models import EvalBenchmark
+        from arf.plugins.eval.models import EvalBenchmark
         field_names = {f.name for f in fields(EvalBenchmark)}
         assert "name" in field_names
         assert "source_session" in field_names
@@ -211,7 +211,7 @@ class TestEvalBenchmarkModel:
 
     def test_eval_benchmark_construct(self):
         """Doc: EvalBenchmark(name=..., source_session=..., created_at=..., cases=...)."""
-        from arf.evaluation.models import EvalCase, EvalBenchmark
+        from arf.plugins.eval.models import EvalCase, EvalBenchmark
         bm = EvalBenchmark(
             name="file_ops_v1",
             source_session="default",
@@ -226,7 +226,7 @@ class TestEvalBenchmarkModel:
 
     def test_to_json_round_trip(self, tmp_path):
         """Doc: benchmark.to_json(path) and EvalBenchmark.from_json(path)."""
-        from arf.evaluation.models import EvalCase, EvalBenchmark
+        from arf.plugins.eval.models import EvalCase, EvalBenchmark
         bm = EvalBenchmark(
             name="test_bm",
             source_session="sess_1",
@@ -252,7 +252,7 @@ class TestEvalBenchmarkModel:
 
     def test_from_json_missing_optional_fields(self, tmp_path):
         """Doc: from_json handles missing optional fields gracefully."""
-        from arf.evaluation.models import EvalBenchmark
+        from arf.plugins.eval.models import EvalBenchmark
         data = {
             "name": "minimal",
             "cases": [{"id": "c0", "input": "hi"}],
@@ -268,7 +268,7 @@ class TestEvalBenchmarkModel:
 
     def test_to_json_skips_none_fields(self, tmp_path):
         """Doc: to_json omits None optional fields."""
-        from arf.evaluation.models import EvalCase, EvalBenchmark
+        from arf.plugins.eval.models import EvalCase, EvalBenchmark
         bm = EvalBenchmark(
             name="no_optionals",
             cases=[EvalCase(id="c0", input="hi")],
@@ -291,7 +291,7 @@ class TestEvalReportModel:
 
     def test_eval_report_fields(self):
         """Doc: run_id, benchmark_name, agent_config_hash, timestamp, summary, per_case."""
-        from arf.evaluation.models import EvalReport
+        from arf.plugins.eval.models import EvalReport
         field_names = {f.name for f in fields(EvalReport)}
         assert "run_id" in field_names
         assert "benchmark_name" in field_names
@@ -302,7 +302,7 @@ class TestEvalReportModel:
 
     def test_to_json_round_trip(self, tmp_path):
         """Doc: report.to_json(path) and EvalReport.from_json(path)."""
-        from arf.evaluation.models import EvalReport, EvalSummary
+        from arf.plugins.eval.models import EvalReport, EvalSummary
         report = EvalReport(
             run_id="uuid-123",
             benchmark_name="test_bm",
@@ -325,7 +325,7 @@ class TestEvalReportModel:
 
     def test_from_json_missing_summary_fields(self, tmp_path):
         """Doc: from_json handles missing summary fields gracefully."""
-        from arf.evaluation.models import EvalReport
+        from arf.plugins.eval.models import EvalReport
         data = {
             "run_id": "r1",
             "benchmark_name": "bm1",
@@ -354,7 +354,7 @@ class TestEvalSummaryModel:
     def test_eval_summary_fields(self):
         """Doc: total, passed, failed, pass_rate, avg_turns, avg_tool_calls,
         avg_duration_seconds, tool_accuracy, output_contains."""
-        from arf.evaluation.models import EvalSummary
+        from arf.plugins.eval.models import EvalSummary
         field_names = {f.name for f in fields(EvalSummary)}
         for f in ("total", "passed", "failed", "pass_rate", "avg_turns",
                   "avg_tool_calls", "avg_duration_seconds", "tool_accuracy",
@@ -363,7 +363,7 @@ class TestEvalSummaryModel:
 
     def test_eval_summary_defaults(self):
         """Doc: All fields default to 0."""
-        from arf.evaluation.models import EvalSummary
+        from arf.plugins.eval.models import EvalSummary
         s = EvalSummary()
         assert s.total == 0
         assert s.passed == 0
@@ -380,7 +380,7 @@ class TestEvalDiffModel:
 
     def test_eval_diff_fields(self):
         """Doc: diff.summary_diff, diff.regressions, diff.improvements."""
-        from arf.evaluation.models import EvalDiff
+        from arf.plugins.eval.models import EvalDiff
         field_names = {f.name for f in fields(EvalDiff)}
         assert "summary_diff" in field_names
         assert "regressions" in field_names
@@ -390,7 +390,7 @@ class TestEvalDiffModel:
 
     def test_eval_diff_defaults(self):
         """Doc: EvalDiff has sensible defaults."""
-        from arf.evaluation.models import EvalDiff
+        from arf.plugins.eval.models import EvalDiff
         d = EvalDiff(baseline_run_id="b1", current_run_id="c1")
         assert d.summary_diff == {}
         assert d.regressions == []
@@ -406,7 +406,7 @@ class TestBenchmarkBuilder:
 
     def test_constructor_accepts_trace_plugin(self):
         """Doc: BenchmarkBuilder(trace_plugin)."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         sig = inspect.signature(BenchmarkBuilder.__init__)
         params = list(sig.parameters.keys())
         assert "self" in params
@@ -414,7 +414,7 @@ class TestBenchmarkBuilder:
 
     def test_build_signature(self):
         """Doc: builder.build(session_id='default', name='file_ops_v1') -> EvalBenchmark."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         sig = inspect.signature(BenchmarkBuilder.build)
         params = list(sig.parameters.keys())
         assert "session_id" in params
@@ -422,7 +422,7 @@ class TestBenchmarkBuilder:
 
     def test_build_creates_benchmark(self):
         """Doc: build() returns EvalBenchmark with cases from user messages."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         store = _EventsStore([
             {"type": "user_input", "turn": 0, "data": {"content": "hello"}},
             {"type": "user_input", "turn": 1, "data": {"content": "world"}},
@@ -440,8 +440,8 @@ class TestBenchmarkBuilder:
 
     def test_build_raises_on_empty_session(self):
         """Doc: Raises EvalError if session not found."""
-        from arf.evaluation.builder import BenchmarkBuilder
-        from arf.evaluation.exceptions import EvalError
+        from arf.plugins.eval.builder import BenchmarkBuilder
+        from arf.plugins.eval.exceptions import EvalError
         store = _EventsStore([])
         builder = BenchmarkBuilder(store)
         with pytest.raises(EvalError, match="not found"):
@@ -449,8 +449,8 @@ class TestBenchmarkBuilder:
 
     def test_build_raises_on_no_user_messages(self):
         """Doc: Raises EvalError if no user messages found."""
-        from arf.evaluation.builder import BenchmarkBuilder
-        from arf.evaluation.exceptions import EvalError
+        from arf.plugins.eval.builder import BenchmarkBuilder
+        from arf.plugins.eval.exceptions import EvalError
         store = _EventsStore([
             {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "ls"}},
         ])
@@ -460,7 +460,7 @@ class TestBenchmarkBuilder:
 
     def test_build_extracts_tools_from_same_turn(self):
         """Doc: expected_tools extracted from tool_call_start events in same turn."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         store = _EventsStore([
             {"type": "user_input", "turn": 0, "data": {"content": "list files"}},
             {"type": "tool_call_start", "turn": 0, "data": {"tool_name": "list_directory"}},
@@ -482,7 +482,7 @@ class TestEvalRunner:
 
     def test_constructor_accepts_agent_and_event_bus(self):
         """Doc: EvalRunner(agent, agent.event_bus)."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         sig = inspect.signature(EvalRunner.__init__)
         params = list(sig.parameters.keys())
         assert "agent" in params
@@ -490,12 +490,12 @@ class TestEvalRunner:
 
     def test_run_is_async(self):
         """Doc: await runner.run(benchmark) -> EvalReport."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         assert inspect.iscoroutinefunction(EvalRunner.run)
 
     def test_run_signature(self):
         """2026-05-29: run(benchmark) — max_parallel removed (session isolation not ready)."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         sig = inspect.signature(EvalRunner.run)
         params = list(sig.parameters.keys())
         assert "benchmark" in params
@@ -503,8 +503,8 @@ class TestEvalRunner:
 
     def test_run_returns_report(self):
         """Doc: run() returns EvalReport."""
-        from arf.evaluation.runner import EvalRunner
-        from arf.evaluation.models import EvalBenchmark, EvalCase
+        from arf.plugins.eval.runner import EvalRunner
+        from arf.plugins.eval.models import EvalBenchmark, EvalCase
         agent = _FakeEvalAgent(chat_response="response text", config="test_config")
         bus = InMemoryEventBus()
 
@@ -528,8 +528,8 @@ class TestEvalRunner:
 
     def test_run_records_failure(self):
         """Doc: run() records failed cases with error info."""
-        from arf.evaluation.runner import EvalRunner
-        from arf.evaluation.models import EvalBenchmark, EvalCase
+        from arf.plugins.eval.runner import EvalRunner
+        from arf.plugins.eval.models import EvalBenchmark, EvalCase
         agent = _FakeEvalAgent(chat_response=ValueError("agent crashed"), config="test")
         bus = InMemoryEventBus()
 
@@ -559,8 +559,8 @@ class TestEvalComparator:
 
     def test_compare_returns_eval_diff(self):
         """Doc: EvalComparator().compare(baseline, current) -> EvalDiff."""
-        from arf.evaluation.comparator import EvalComparator
-        from arf.evaluation.models import EvalReport, EvalSummary
+        from arf.plugins.eval.comparator import EvalComparator
+        from arf.plugins.eval.models import EvalReport, EvalSummary
 
         baseline = EvalReport(
             run_id="base1", benchmark_name="bm1",
@@ -579,8 +579,8 @@ class TestEvalComparator:
 
     def test_compare_detects_regressions_and_improvements(self):
         """Doc: diff.regressions and diff.improvements per case."""
-        from arf.evaluation.comparator import EvalComparator
-        from arf.evaluation.models import EvalReport, EvalSummary
+        from arf.plugins.eval.comparator import EvalComparator
+        from arf.plugins.eval.models import EvalReport, EvalSummary
 
         baseline = EvalReport(
             run_id="b1", benchmark_name="bm",
@@ -610,9 +610,9 @@ class TestEvalComparator:
 
     def test_compare_raises_on_mismatched_benchmarks(self):
         """Doc: Cannot compare different benchmarks."""
-        from arf.evaluation.comparator import EvalComparator
-        from arf.evaluation.models import EvalReport, EvalSummary
-        from arf.evaluation.exceptions import EvalError
+        from arf.plugins.eval.comparator import EvalComparator
+        from arf.plugins.eval.models import EvalReport, EvalSummary
+        from arf.plugins.eval.exceptions import EvalError
 
         baseline = EvalReport(
             run_id="b1", benchmark_name="bm_a",
@@ -628,8 +628,8 @@ class TestEvalComparator:
     def test_summary_diff_contains_all_fields(self):
         """Doc: summary_diff includes pass_rate, avg_turns, avg_tool_calls,
         avg_duration_seconds, tool_accuracy, output_contains."""
-        from arf.evaluation.comparator import EvalComparator
-        from arf.evaluation.models import EvalReport, EvalSummary
+        from arf.plugins.eval.comparator import EvalComparator
+        from arf.plugins.eval.models import EvalReport, EvalSummary
         b = EvalReport(run_id="b", benchmark_name="x", agent_config_hash="h", timestamp=1.0,
                        summary=EvalSummary(pass_rate=0.8, avg_turns=1.0, avg_tool_calls=2.0,
                                            avg_duration_seconds=3.0, tool_accuracy=0.9, output_contains=0.7))
@@ -654,7 +654,7 @@ class TestSuccessRateMetric:
 
     def test_no_errors_returns_1(self):
         """Doc: trace 所有 turn 中无 error 事件 → 1.0."""
-        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.plugins.eval.metrics import SuccessRateMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = SuccessRateMetric()
@@ -669,7 +669,7 @@ class TestSuccessRateMetric:
 
     def test_with_errors_returns_0(self):
         """Doc: trace 有 error 事件 → 0.0."""
-        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.plugins.eval.metrics import SuccessRateMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = SuccessRateMetric()
@@ -687,7 +687,7 @@ class TestSuccessRateMetric:
 
     def test_empty_trace_returns_1(self):
         """Doc: Empty trace has no errors → 1.0."""
-        from arf.evaluation.metrics import SuccessRateMetric
+        from arf.plugins.eval.metrics import SuccessRateMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = SuccessRateMetric()
@@ -705,7 +705,7 @@ class TestToolAccuracyMetric:
 
     def test_exact_match(self):
         """Doc: 匹配数 / len(expected_tools)."""
-        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.plugins.eval.metrics import ToolAccuracyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = ToolAccuracyMetric()
@@ -720,7 +720,7 @@ class TestToolAccuracyMetric:
 
     def test_partial_match(self):
         """Doc: sequence-ordered partial match."""
-        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.plugins.eval.metrics import ToolAccuracyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = ToolAccuracyMetric()
@@ -735,7 +735,7 @@ class TestToolAccuracyMetric:
 
     def test_no_expected_tools_returns_1(self):
         """Doc: expected_tools None → 1.0."""
-        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.plugins.eval.metrics import ToolAccuracyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = ToolAccuracyMetric()
@@ -749,7 +749,7 @@ class TestToolAccuracyMetric:
 
     def test_no_actual_calls_returns_0(self):
         """Doc: No actual tool calls → 0.0 when tools expected."""
-        from arf.evaluation.metrics import ToolAccuracyMetric
+        from arf.plugins.eval.metrics import ToolAccuracyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = ToolAccuracyMetric()
@@ -767,7 +767,7 @@ class TestTurnEfficiencyMetric:
 
     def test_returns_turn_count(self):
         """Doc: Returns trace turn count."""
-        from arf.evaluation.metrics import TurnEfficiencyMetric
+        from arf.plugins.eval.metrics import TurnEfficiencyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = TurnEfficiencyMetric()
@@ -781,7 +781,7 @@ class TestTurnEfficiencyMetric:
 
     def test_empty_trace_returns_0(self):
         """Doc: Empty trace returns 0."""
-        from arf.evaluation.metrics import TurnEfficiencyMetric
+        from arf.plugins.eval.metrics import TurnEfficiencyMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = TurnEfficiencyMetric()
@@ -799,7 +799,7 @@ class TestOutputContainsMetric:
 
     def test_all_keywords_present(self):
         """Doc: All keywords found in last model_output."""
-        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.plugins.eval.metrics import OutputContainsMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = OutputContainsMetric()
@@ -817,7 +817,7 @@ class TestOutputContainsMetric:
 
     def test_partial_keywords(self):
         """Doc: Partial keyword match returns proportion."""
-        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.plugins.eval.metrics import OutputContainsMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = OutputContainsMetric()
@@ -834,7 +834,7 @@ class TestOutputContainsMetric:
 
     def test_no_expected_keywords_returns_1(self):
         """Doc: expected_output_contains None → 1.0."""
-        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.plugins.eval.metrics import OutputContainsMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = OutputContainsMetric()
@@ -848,7 +848,7 @@ class TestOutputContainsMetric:
 
     def test_case_insensitive_matching(self):
         """Doc: Case-insensitive keyword matching."""
-        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.plugins.eval.metrics import OutputContainsMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = OutputContainsMetric()
@@ -863,7 +863,7 @@ class TestOutputContainsMetric:
 
     def test_uses_last_turn_with_output(self):
         """Doc: Uses last non-empty model_output."""
-        from arf.evaluation.metrics import OutputContainsMetric
+        from arf.plugins.eval.metrics import OutputContainsMetric
         from arf.core.protocols.evaluation import EvalCase
 
         metric = OutputContainsMetric()
@@ -889,7 +889,7 @@ class TestTraceAdapter:
 
     def test_events_to_trace_basic(self):
         """Doc: Converts events into {turns: [...]}."""
-        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.plugins.eval.trace_adapter import events_to_trace
         from arf.core.events import AgentEvent
 
         events = [
@@ -909,7 +909,7 @@ class TestTraceAdapter:
 
     def test_events_to_trace_with_error(self):
         """Doc: Error events populate turn.error."""
-        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.plugins.eval.trace_adapter import events_to_trace
         from arf.core.events import AgentEvent
 
         events = [
@@ -920,7 +920,7 @@ class TestTraceAdapter:
 
     def test_events_to_trace_multiple_turns(self):
         """Doc: Multiple turns are sorted."""
-        from arf.evaluation.trace_adapter import events_to_trace
+        from arf.plugins.eval.trace_adapter import events_to_trace
         from arf.core.events import AgentEvent
 
         events = [
@@ -942,7 +942,7 @@ class TestRunnerHashConfig:
 
     def test_hash_config_returns_12_char_hex(self):
         """Doc: agent_config_hash = SHA256 digest, truncated to 12 chars."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         agent = _FakeEvalAgent(config="test_config_string")
         h = EvalRunner._hash_config(agent)
         assert isinstance(h, str)
@@ -952,7 +952,7 @@ class TestRunnerHashConfig:
 
     def test_hash_config_fallback(self):
         """Doc: Hash failure returns 'unknown'."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
 
         class BadConfigAgent:
             @property
@@ -972,8 +972,8 @@ class TestRunnerBuildSummary:
 
     def test_build_summary_counts(self):
         """Doc: Summary computes total, passed, failed, rates."""
-        from arf.evaluation.runner import EvalRunner
-        from arf.evaluation.models import EvalBenchmark
+        from arf.plugins.eval.runner import EvalRunner
+        from arf.plugins.eval.models import EvalBenchmark
 
         per_case = [
             {"case_id": "c0", "passed": True, "turns": 2, "tool_calls": 3, "duration_seconds": 1.0, "metrics": {"tool_accuracy": 1.0, "output_contains": 1.0}},
@@ -998,11 +998,11 @@ class TestRunnerBuildSummary:
 # ---------------------------------------------------------------------------
 
 class TestModuleExports:
-    """Doc: All public symbols exported from arf.evaluation."""
+    """Doc: All public symbols exported from arf.plugins.eval."""
 
     def test_init_exports_all_documented_names(self):
-        """Doc: arf.evaluation exports all documented classes."""
-        import arf.evaluation
+        """Doc: arf.plugins.eval exports all documented classes."""
+        import arf.plugins.eval
         expected = {
             "EvalRunner", "BenchmarkBuilder", "EvalComparator",
             "SuccessRateMetric", "ToolAccuracyMetric", "TurnEfficiencyMetric",
@@ -1010,7 +1010,7 @@ class TestModuleExports:
             "EvalCase", "EvalBenchmark", "EvalReport", "EvalSummary", "EvalDiff",
             "EvalError", "events_to_trace",
         }
-        exported = set(arf.evaluation.__all__)
+        exported = set(arf.plugins.eval.__all__)
         missing = expected - exported
         assert not missing, f"Missing from __all__: {missing}"
 
@@ -1073,7 +1073,7 @@ class TestEvaluationProtocol:
     def test_protocol_eval_report_aligned_with_impl(self):
         """Protocol and implementation EvalReport now use the same field names (fixed 2026-05-29)."""
         from arf.core.protocols.evaluation import EvalReport as ProtoReport
-        from arf.evaluation.models import EvalReport as ImplReport
+        from arf.plugins.eval.models import EvalReport as ImplReport
         proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
         impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
         # Both use benchmark_name now
@@ -1094,12 +1094,12 @@ class TestEvalError:
 
     def test_eval_error_is_exception(self):
         """Doc: EvalError extends Exception."""
-        from arf.evaluation.exceptions import EvalError
+        from arf.plugins.eval.exceptions import EvalError
         assert issubclass(EvalError, Exception)
 
     def test_eval_error_raises(self):
         """Doc: EvalError can be raised."""
-        from arf.evaluation.exceptions import EvalError
+        from arf.plugins.eval.exceptions import EvalError
         with pytest.raises(EvalError):
             raise EvalError("test error")
 
@@ -1113,12 +1113,12 @@ class TestDefaultEvalRunnerFixed:
 
     def test_eval_runner_imports(self):
         """EvalRunner is the canonical runner class."""
-        from arf.evaluation.runner import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         assert EvalRunner is not None
 
     def test_default_eval_runner_does_not_exist(self):
         """DefaultEvalRunner was removed — only EvalRunner exists."""
-        import arf.evaluation.runner as mod
+        import arf.plugins.eval.runner as mod
         names = [n for n in dir(mod) if "Eval" in n or "Runner" in n]
         assert "DefaultEvalRunner" not in names
 
@@ -1163,7 +1163,7 @@ class TestProtocolEvalSummaryAligned:
 
     def test_protocol_has_output_contains(self):
         from arf.core.protocols.evaluation import EvalSummary as ProtoSummary
-        from arf.evaluation.models import EvalSummary as ImplSummary
+        from arf.plugins.eval.models import EvalSummary as ImplSummary
         impl_fields = {f.name for f in ImplSummary.__dataclass_fields__.values()}
         proto_fields = {f.name for f in ProtoSummary.__dataclass_fields__.values()}
         assert "output_contains" in impl_fields
@@ -1173,7 +1173,7 @@ class TestProtocolEvalSummaryAligned:
 
     def test_protocol_and_impl_eval_summary_aligned(self):
         from arf.core.protocols.evaluation import EvalSummary as ProtoSummary
-        from arf.evaluation.models import EvalSummary as ImplSummary
+        from arf.plugins.eval.models import EvalSummary as ImplSummary
         impl_fields = {f.name for f in ImplSummary.__dataclass_fields__.values()}
         proto_fields = {f.name for f in ProtoSummary.__dataclass_fields__.values()}
         # All implementation fields should be in protocol (protocol may have extras)
@@ -1214,7 +1214,7 @@ class TestProtocolNewExports:
     def test_protocol_eval_report_uses_benchmark_name(self):
         """Protocol EvalReport now uses benchmark_name (matching impl)."""
         from arf.core.protocols.evaluation import EvalReport as ProtoReport
-        from arf.evaluation.models import EvalReport as ImplReport
+        from arf.plugins.eval.models import EvalReport as ImplReport
         proto_fields = {f.name for f in ProtoReport.__dataclass_fields__.values()}
         impl_fields = {f.name for f in ImplReport.__dataclass_fields__.values()}
         assert "benchmark_name" in proto_fields
@@ -1224,7 +1224,7 @@ class TestProtocolNewExports:
         """Protocol EvalRunner.run matches implementation signature.
         max_parallel removed 2026-05-29 — session isolation not ready."""
         from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
-        from arf.evaluation.runner import EvalRunner as ImplRunner
+        from arf.plugins.eval.runner import EvalRunner as ImplRunner
         import inspect
         proto_sig = inspect.signature(ProtoRunner.run)
         impl_sig = inspect.signature(ImplRunner.run)
@@ -1247,7 +1247,7 @@ class TestFindingsBenchmarkBuilder:
     def test_builder_does_not_populate_expected_output_contains(self):
         """UPDATED 2026-06-11: BenchmarkBuilder.build() now populates expected_output_contains
         from final assistant content in golden trajectory."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         src = inspect.getsource(BenchmarkBuilder.build)
         assert "expected_output_contains" in src, (
             "BenchmarkBuilder build() now extracts expected_output_contains from assistant content."
@@ -1255,7 +1255,7 @@ class TestFindingsBenchmarkBuilder:
 
     def test_builder_does_infer_expected_tools(self):
         """BenchmarkBuilder 确实从 tool_call_start 事件推断 expected_tools."""
-        from arf.evaluation.builder import BenchmarkBuilder
+        from arf.plugins.eval.builder import BenchmarkBuilder
         src = inspect.getsource(BenchmarkBuilder.build)
         assert "expected_tools" in src
         assert "tool_call_start" in src
@@ -1286,7 +1286,7 @@ class TestFindingsEvalRunnerSignature:
     def test_protocol_eval_runner_matches_impl(self):
         """Protocol EvalRunner.run matches implementation signature."""
         from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
-        from arf.evaluation.runner import EvalRunner as ImplRunner
+        from arf.plugins.eval.runner import EvalRunner as ImplRunner
         import inspect
         proto_sig = inspect.signature(ProtoRunner.run)
         impl_sig = inspect.signature(ImplRunner.run)
@@ -1301,7 +1301,7 @@ class TestFindingsEvalRunnerSignature:
         """FIXED 2026-05-29: max_parallel 已从协议和实现中删除.
         参数在 session 级状态隔离就绪前不承诺该能力."""
         from arf.core.protocols.evaluation import EvalRunner as ProtoRunner
-        from arf.evaluation.runner import EvalRunner as ImplRunner
+        from arf.plugins.eval.runner import EvalRunner as ImplRunner
         import inspect
         proto_sig = inspect.signature(ProtoRunner.run)
         impl_sig = inspect.signature(ImplRunner.run)

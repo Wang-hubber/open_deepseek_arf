@@ -4,3 +4,13 @@ enabled: true
 config:
   trace_dir: ./data/traces
   eval_dir: ./data/eval
+  judge:
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4
+    temperature: 0.0
+    max_tokens: 2000
+    system_prompt: >
+      You are an impartial evaluator for AI agent outputs.
+      You assess correctness, completeness, clarity, and adherence to expected procedure.
+      Always respond with valid JSON only.

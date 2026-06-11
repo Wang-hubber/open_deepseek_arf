@@ -37,7 +37,7 @@ class EvalPlugin:
     async def run_eval(self, trace_session_id: str,
                         model_config: dict[str, Any]) -> dict[str, Any]:
         """Replay a trace against a target model and compute metrics."""
-        from arf.evaluation import EvalRunner
+        from arf.plugins.eval.runner import EvalRunner
         runner = EvalRunner(
             trace_dir=str(self._trace_dir),
             eval_dir=str(self._eval_dir),

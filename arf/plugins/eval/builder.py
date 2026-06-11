@@ -1,8 +1,8 @@
 """BenchmarkBuilder — create EvalBenchmark from trace sessions."""
 import time
 
-from arf.evaluation.exceptions import EvalError
-from arf.evaluation.models import EvalCase, EvalBenchmark
+from arf.plugins.eval.exceptions import EvalError
+from arf.plugins.eval.models import EvalCase, EvalBenchmark
 
 
 class BenchmarkBuilder:

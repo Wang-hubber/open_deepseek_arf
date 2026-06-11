@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from arf.evaluation.builder import BenchmarkBuilder
-from arf.evaluation.exceptions import EvalError
+from arf.plugins.eval.builder import BenchmarkBuilder
+from arf.plugins.eval.exceptions import EvalError
 from arf.plugins.trace.plugin import TracePlugin
 
 

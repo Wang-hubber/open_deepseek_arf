@@ -221,9 +221,13 @@ class ToolCallResultLLMMetric:
             expected=expected_result[:1000],
             actual=actual_result[:1000],
         )
+        messages = []
+        if judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         resp = client.chat.completions.create(
             model=judge.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
         )
@@ -308,9 +312,13 @@ class OutputQualityMetric:
         client = OpenAI(api_key=api_key, base_url=judge.api_base)
 
         prompt = self._PROMPT.format(golden=golden_content, actual=actual_content)
+        messages = []
+        if judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         resp = client.chat.completions.create(
             model=judge.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
         )
@@ -382,9 +390,13 @@ class TrajectorySimilarityMetric:
         client = OpenAI(api_key=api_key, base_url=judge.api_base)
 
         prompt = self._PROMPT.format(golden=golden_str, actual=actual_str)
+        messages = []
+        if judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         resp = client.chat.completions.create(
             model=judge.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=judge.temperature,
             max_tokens=judge.max_tokens,
         )
