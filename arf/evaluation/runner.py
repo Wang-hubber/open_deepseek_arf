@@ -1,110 +1,240 @@
-"""EvalRunner — run benchmarks against agent, capture real traces via EventBus."""
+"""EvalRunner — execute benchmarks, collect metrics, produce reports."""
+import json
 import time
 import uuid
-import hashlib
+from pathlib import Path
 
-from arf.evaluation.models import EvalBenchmark, EvalReport, EvalSummary
-from arf.evaluation.metrics import SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric
-from arf.evaluation.trace_adapter import events_to_trace
+from arf.evaluation.models import (
+    EvalBenchmark, EvalReport, EvalSummary, EvalConfig, JudgeModelConfig,
+)
+from arf.evaluation.exceptions import EvalError
+from arf.evaluation.metrics import (
+    SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric,
+    OutputQualityMetric, TrajectorySimilarityMetric,
+)
 
 
 class EvalRunner:
-    def __init__(self, agent, event_bus) -> None:
-        self._agent = agent
-        self._bus = event_bus
-        self._metrics = [
-            SuccessRateMetric(),
-            ToolCallAccuracyMetric(),
-            TurnEfficiencyMetric(),
-        ]
+    """Run evaluation benchmarks against an agent.
 
-    async def run(self, benchmark: EvalBenchmark) -> EvalReport:
-        config_hash = self._hash_config(self._agent)
+    Usage:
+        config = EvalConfig(benchmark_path="bm.json", trace_dir="./data/traces",
+                             judge=JudgeModelConfig(model="gpt-4"))
+        runner = EvalRunner(config)
+        report = await runner.run_online(agent.chat)
+    """
 
+    def __init__(self, config: EvalConfig):
+        config.validate()
+        self._config = config
+        self._benchmark: EvalBenchmark | None = None
+        self._trace_dir = Path(config.trace_dir)
+
+    # -- Public API -------------------------------------------------------
+
+    async def run_online(self, chat_fn) -> EvalReport:
+        """Run benchmark cases via live agent chat. Returns EvalReport.
+
+        chat_fn: async def chat_fn(input: str, session_id: str) -> str
+        """
+        self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
+        return await self._run(chat_fn=chat_fn)
+
+    async def run_offline(self) -> EvalReport:
+        """Run benchmark cases against existing trace files. Returns EvalReport."""
+        self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
+        return await self._run(chat_fn=None)
+
+    # -- Internal ---------------------------------------------------------
+
+    async def _run(self, chat_fn=None) -> EvalReport:
+        from arf.plugins.trace.snapshot import EnvSnapshotBuilder
+
+        benchmark = self._benchmark
+        mode = "offline" if chat_fn is None else "online"
+
+        # --- Snapshot hash ---
+        try:
+            _, current_hash = EnvSnapshotBuilder(
+                "./arf/plugins"
+            ).build()
+        except Exception:
+            current_hash = "unknown"
+
+        # Hash check: warn if unchanged (testing config change effects)
+        bm_hash = getattr(benchmark, 'config_hash', None) or current_hash
+        if bm_hash == current_hash:
+            print(f"\n  Config unchanged (hash={current_hash}). "
+                  f"Behavior should match baseline.\n")
+
+        # --- Build metrics ---
+        metrics = []
+        me = self._config.metrics
+        if me.get("success_rate"):
+            metrics.append(SuccessRateMetric())
+        if me.get("tool_call_accuracy"):
+            metrics.append(ToolCallAccuracyMetric())
+        if me.get("turn_efficiency"):
+            metrics.append(TurnEfficiencyMetric())
+        if me.get("output_quality"):
+            metrics.append(OutputQualityMetric())
+        if me.get("trajectory_similarity"):
+            metrics.append(TrajectorySimilarityMetric())
+
+        judge = self._config.judge
+
+        # --- Header ---
+        judge_str = f"{judge.model}" if judge else "none"
+        print(f"\n Eval Report: {benchmark.name}")
+        print(f" {'=' * 50}")
+        print(f" Mode: {mode}   Judge: {judge_str}   Hash: {current_hash}")
+        print(f"\n Cases: {len(benchmark.cases)} to run\n")
+
+        # --- Run cases ---
         per_case = []
         passed = 0
 
-        for case in benchmark.cases:
-            start_idx = self._bus.event_count()
-            session_id = f"eval_{benchmark.name}_{case.id}"
-            t0 = time.time()
-            try:
-                response = await self._agent.chat(case.input, session_id=session_id)
-                duration = time.time() - t0
-                events = self._bus.events_since(start_idx)
-                trace = events_to_trace(events)
-                # Convert AgentEvent dataclass instances to flat dicts for metrics
-                event_dicts = [
-                    {"type": e.type, "data": e.data,
-                     "timestamp": e.timestamp, "turn": e.turn,
-                     "session_id": e.session_id}
-                    for e in events
-                ]
-                case_result = {
-                    "case_id": case.id, "passed": True,
-                    "turns": len(trace["turns"]),
-                    "tool_calls": sum(len(t["tool_calls"]) for t in trace["turns"]),
-                    "duration_seconds": duration,
-                    "trace": trace,
-                    "metrics": {},
-                    "error": None,
-                    "response": response,
-                }
-                for m in self._metrics:
-                    case_result["metrics"].update(
-                        await m.compute(event_dicts, case)
-                    )
-                per_case.append(case_result)
-                passed += 1
-            except Exception as exc:
-                per_case.append({
-                    "case_id": case.id, "passed": False,
-                    "turns": 0, "tool_calls": 0,
-                    "duration_seconds": time.time() - t0,
-                    "trace": {"turns": []},
-                    "metrics": {},
-                    "error": str(exc),
-                    "response": "",
-                })
+        for i, case in enumerate(benchmark.cases):
+            case_start = time.time()
+            sid = f"eval_{benchmark.name}_{case.id}"
+            all_pass = True
 
-        summary = self._build_summary(per_case, benchmark)
-        return EvalReport(
+            try:
+                # -- Get actual trace --
+                if chat_fn is not None:
+                    # Online
+                    await chat_fn(case.input, session_id=sid)
+                    actual_trace = self._read_trace(sid)
+                else:
+                    # Offline
+                    sid = self._config.trace_session_ids[i]
+                    actual_trace = self._read_trace(sid)
+
+                # -- Compute metrics --
+                case_metrics = {}
+                for m in metrics:
+                    try:
+                        result = await m.compute(actual_trace, case, judge)
+                        case_metrics.update(result)
+                    except Exception as exc:
+                        case_metrics[f"{m.name}_error"] = str(exc)[:100]
+
+                duration = time.time() - case_start
+
+                # Determine pass/fail
+                sa = case_metrics.get("success_rate", 1.0)
+                ta = case_metrics.get("tool_call_accuracy", 1.0)
+                all_pass = sa > 0.0 and ta >= 0.5
+
+                if all_pass:
+                    passed += 1
+
+                # --- Per-case output ---
+                status = "OK" if all_pass else "FAIL"
+                parts = [f"tool_acc={ta:.2f}"]
+                te = case_metrics.get("turn_efficiency")
+                if te is not None:
+                    parts.append(f"turn_eff={te:.2f}")
+                oq = case_metrics.get("output_quality")
+                if oq is not None and isinstance(oq, (int, float)):
+                    parts.append(f"quality={oq}/5")
+                ts = case_metrics.get("trajectory_similarity")
+                if ts is not None and isinstance(ts, (int, float)):
+                    parts.append(f"traj_sim={ts}/5")
+                parts.append(f"{duration:.1f}s")
+
+                print(f"  [{status}] case_{i}: {', '.join(parts)}")
+                if not all_pass:
+                    print(f"         input: {case.input[:80]}")
+
+            except Exception as exc:
+                duration = time.time() - case_start
+                case_metrics = {"error": str(exc)[:200]}
+                all_pass = False
+                print(f"  [ERR] case_{i}: {exc}")
+
+            per_case.append({
+                "case_id": case.id,
+                "passed": all_pass,
+                "metrics": case_metrics,
+                "duration_seconds": duration,
+                "session_id": sid,
+            })
+
+        # --- Summary ---
+        total = len(benchmark.cases)
+        summary = EvalSummary(
+            total=total, passed=passed, failed=total - passed,
+            pass_rate=passed / total if total else 0.0,
+        )
+        self._populate_summary(summary, per_case)
+
+        print(f"\n {'-' * 50}")
+        print(f" Summary: {passed}/{total} passed ({summary.pass_rate:.1%})")
+        print(f"   Tool accuracy:     {summary.tool_call_accuracy:.2f}")
+        print(f"   Turn efficiency:   {summary.turn_efficiency:.2f}")
+        if summary.output_quality is not None:
+            print(f"   Output quality:    {summary.output_quality:.1f}/5 (LLM)")
+        if summary.trajectory_similarity is not None:
+            print(f"   Trajectory sim:    {summary.trajectory_similarity:.1f}/5 (LLM)")
+
+        # Show failures
+        failures = [pc for pc in per_case if not pc["passed"]]
+        if failures:
+            print(f"\n {len(failures)} failed case(s):")
+            for f in failures:
+                ms = f.get("metrics", {})
+                reasons = [k for k, v in ms.items()
+                          if isinstance(v, (int, float)) and v < 0.5]
+                print(f"   case {f['case_id']}: {reasons}")
+
+        report = EvalReport(
             run_id=str(uuid.uuid4()),
             benchmark_name=benchmark.name,
-            agent_config_hash=config_hash,
+            agent_config_hash=current_hash,
             timestamp=time.time(),
+            judge_model=judge_str,
+            metrics_enabled=[m.name for m in metrics],
+            mode=mode,
+            snapshot_hash=current_hash,
             summary=summary,
             per_case=per_case,
         )
 
-    def _build_summary(self, per_case: list[dict], benchmark: EvalBenchmark) -> EvalSummary:
-        total = len(per_case)
-        passed_cnt = sum(1 for c in per_case if c["passed"])
-        turn_counts = [c["turns"] for c in per_case if c["passed"]]
-        tool_counts = [c["tool_calls"] for c in per_case if c["passed"]]
-        durations = [c["duration_seconds"] for c in per_case]
+        if self._config.output_path:
+            report.to_json(self._config.output_path)
+            print(f"\n Report saved to {self._config.output_path}")
 
-        return EvalSummary(
-            total=total,
-            passed=passed_cnt,
-            failed=total - passed_cnt,
-            pass_rate=passed_cnt / total if total else 0.0,
-            avg_turns=sum(turn_counts) / len(turn_counts) if turn_counts else 0.0,
-            avg_tool_calls=sum(tool_counts) / len(tool_counts) if tool_counts else 0.0,
-            avg_duration_seconds=sum(durations) / len(durations) if durations else 0.0,
-            tool_accuracy=self._avg_metric(per_case, "tool_accuracy"),
-            output_contains=self._avg_metric(per_case, "output_contains"),
-        )
+        return report
 
-    @staticmethod
-    def _avg_metric(per_case: list[dict], key: str) -> float:
-        vals = [c["metrics"].get(key, 0.0) for c in per_case if c["passed"]]
-        return sum(vals) / len(vals) if vals else 0.0
+    def _read_trace(self, session_id: str) -> list[dict]:
+        """Read trace events from a JSONL file."""
+        trace_file = self._trace_dir / f"{session_id}.jsonl"
+        if not trace_file.exists():
+            return []
+        events = []
+        with open(trace_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return events
 
     @staticmethod
-    def _hash_config(agent) -> str:
-        try:
-            raw = str(getattr(agent, "config", ""))
-            return hashlib.sha256(raw.encode()).hexdigest()[:12]
-        except Exception:
-            return "unknown"
+    def _populate_summary(summary: EvalSummary, per_case: list[dict]) -> None:
+        """Aggregate per-case metrics into summary averages."""
+        metric_keys = [
+            "tool_call_accuracy", "turn_efficiency", "success_rate",
+            "output_quality", "trajectory_similarity",
+        ]
+        for key in metric_keys:
+            vals = []
+            for pc in per_case:
+                v = pc.get("metrics", {}).get(key)
+                if v is not None and isinstance(v, (int, float)):
+                    vals.append(v)
+            if vals:
+                setattr(summary, key, sum(vals) / len(vals))
