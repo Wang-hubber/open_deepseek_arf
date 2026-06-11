@@ -9,9 +9,10 @@ class EvalCase:
     input: str
     expected_tools: list[str] | None = None
     expected_tool_calls: list[dict] | None = None  # indexed [{name, params?, result?}]
-    expected_output_contains: list[str] | None = None
+    expected_output_contains: list[str] | None = None  # keywords, empty by default — annotators fill
+    original_output: str | None = None  # golden final answer preserved for annotator reference
     max_turns: int | None = None
-    golden_trajectory: dict | None = None  # full golden trajectory from trace
+    golden_trajectory: dict | None = None  # {"annotated": bool, "turns": [...]}, annotated defaults to false
 
 
 @dataclass
@@ -33,6 +34,7 @@ class EvalBenchmark:
                     **({"expected_tools": c.expected_tools} if c.expected_tools else {}),
                     **({"expected_tool_calls": c.expected_tool_calls} if c.expected_tool_calls else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
+                    **({"original_output": c.original_output} if c.original_output else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
                     **({"golden_trajectory": c.golden_trajectory}
                        if c.golden_trajectory else {}),
@@ -58,6 +60,7 @@ class EvalBenchmark:
                     expected_tools=c.get("expected_tools"),
                     expected_tool_calls=c.get("expected_tool_calls"),
                     expected_output_contains=c.get("expected_output_contains"),
+                    original_output=c.get("original_output"),
                     max_turns=c.get("max_turns"),
                     golden_trajectory=c.get("golden_trajectory"),
                 )
@@ -224,7 +227,10 @@ class EvalConfig:
     output_path: str | None = None
     timeout_per_case: float = 300.0
     prompts: dict[str, str] = field(default_factory=dict)
-    # keys: tool_call_result_llm, output_quality, trajectory_similarity
+    # keys: tool_call_result_llm, output_quality, trajectory_similarity,
+    #        output_quality_free, trajectory_similarity_free
+    system_prompt: str = ""  # agent's system prompt, injected by app for no-reference eval
+    tools: str = ""          # available tools listing, injected by app for no-reference eval
 
     def requires_judge(self) -> bool:
         return any([
