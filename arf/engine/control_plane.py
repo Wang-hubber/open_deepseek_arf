@@ -171,6 +171,7 @@ class ControlPlane:
                         aborted = True
                         break
                     if decision.get("action") == "skip":
+                        await self._fire_side("post_action", ctx)
                         continue
 
                 # --- dispatch: model_call ---
@@ -188,6 +189,7 @@ class ControlPlane:
                         await self.state_store.put(session_id, state)
                         continue
                     elif action == "skip":
+                        await self._fire_side("post_action", ctx)
                         continue
                     elif action == "fallback":
                         await self.state_store.put(session_id, state)
@@ -212,6 +214,7 @@ class ControlPlane:
                             aborted = True
                             break
                         if decision.get("action") == "skip":
+                            await self._fire_side("post_action", ctx)
                             continue
 
                     try:
@@ -224,6 +227,7 @@ class ControlPlane:
                             aborted = True
                             break
                         elif action == "skip":
+                            await self._fire_side("post_action", ctx)
                             continue
                         else:
                             break
