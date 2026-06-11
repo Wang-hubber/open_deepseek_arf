@@ -325,8 +325,46 @@ class OutputQualityMetric:
         'with specific reference to what the actual answer did well or poorly>"}}'
     )
 
-    def __init__(self, prompt: str | None = None):
+    _PROMPT_FREE = (
+        "You are evaluating the quality of an AI agent's final answer. "
+        "You do NOT have a golden reference — evaluate the answer on its own merits.\n\n"
+        "Agent system prompt: {system_prompt}\n"
+        "Available tools and descriptions: {tools}\n\n"
+        "User's original request: {user_input}\n\n"
+        "Agent's final answer:\n<<<ANSWER>>>\n{actual}\n<<<END>>>\n\n"
+        "Rate the answer on a 1–5 scale. The answer should be judged against "
+        "what a reasonable agent with these instructions and tools SHOULD produce.\n\n"
+        "Scoring rubric:\n"
+        "5 — Excellent: Fully addresses the user's request. Correct, complete, "
+        "well-structured, and aligned with the system prompt's constraints. "
+        "If the system prompt limits behavior (e.g., brevity), compliance "
+        "with that constraint IS quality.\n"
+        "4 — Good: Addresses the core request but has minor flaws — slightly "
+        "incomplete, mildly verbose, or missing a secondary detail.\n"
+        "3 — Adequate: Partially addresses the request. Notable omissions or "
+        "unclear phrasing. A user would need follow-up questions.\n"
+        "2 — Poor: Mostly does not address the request. Key information missing "
+        "or wrong. A user would reject this answer.\n"
+        "1 — Wrong/Harmful: Completely irrelevant, contradicts the user's "
+        "request, or violates explicit system prompt prohibitions.\n\n"
+        "Critical rules:\n"
+        "- If the system prompt explicitly restricts behavior (format, length, "
+        "content), compliance with those restrictions is REQUIRED for a high "
+        "score. A brief answer that follows instructions is NOT a flaw — the "
+        "constraint IS the expected behavior.\n"
+        "- If system prompt or tools fields are empty, you are missing key "
+        "context — note this in your reason and judge conservatively.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"score": <int 1-5>, "reason": "<2-3 sentences>"}}'
+    )
+
+    def __init__(self, prompt: str | None = None,
+                 prompt_free: str | None = None,
+                 system_prompt: str = "", tools: str = ""):
         self._prompt = prompt if prompt else self._PROMPT
+        self._prompt_free = prompt_free if prompt_free else self._PROMPT_FREE
+        self._system_prompt = system_prompt
+        self._tools = tools
 
     @property
     def name(self) -> str:
@@ -337,15 +375,6 @@ class OutputQualityMetric:
         return True
 
     async def compute(self, actual_trace, golden_case, judge=None):
-        # Extract golden final content
-        golden_content = ""
-        gt = golden_case.golden_trajectory
-        if gt and gt.get("turns"):
-            last_turn = gt["turns"][-1]
-            golden_content = last_turn.get("assistant_final", {}).get("content", "")
-            if not golden_content:
-                golden_content = last_turn.get("assistant", {}).get("content", "")
-
         # Extract actual final content
         actual_content = ""
         for e in reversed(actual_trace):
@@ -354,12 +383,27 @@ class OutputQualityMetric:
                 if content:
                     actual_content = content
                     break
-
-        if not golden_content or not actual_content:
-            return {"output_quality": 3, "reason": "missing content for comparison"}
+        if not actual_content:
+            return {"output_quality": 3, "reason": "missing actual content"}
 
         user_input = golden_case.input or ""
-        return await self._call_judge(judge, user_input, golden_content, actual_content)
+        gt = golden_case.golden_trajectory
+
+        # Reference mode: golden_trajectory is annotated and has golden content
+        if gt and gt.get("annotated") and gt.get("turns"):
+            last_turn = gt["turns"][-1]
+            golden_content = last_turn.get("assistant_final", {}).get("content", "")
+            if not golden_content:
+                golden_content = last_turn.get("assistant", {}).get("content", "")
+            if golden_content:
+                return await self._call_judge(
+                    judge, user_input, golden_content, actual_content,
+                )
+
+        # No-reference mode: evaluate on its own merits
+        return await self._call_judge_free(
+            judge, user_input, actual_content,
+        )
 
     async def _call_judge(self, judge, user_input, golden_content, actual_content):
         from openai import OpenAI
@@ -370,6 +414,34 @@ class OutputQualityMetric:
         prompt = self._prompt.format(
             user_input=user_input[:500],
             golden=golden_content[:2000],
+            actual=actual_content[:2000],
+        )
+        messages = []
+        if judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        resp = client.chat.completions.create(
+            model=judge.model,
+            messages=messages,
+            temperature=judge.temperature,
+            max_tokens=judge.max_tokens,
+        )
+        try:
+            result = json.loads(resp.choices[0].message.content)
+            return {"output_quality": int(result["score"]), "reason": result["reason"]}
+        except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
+            return {"output_quality": 3, "reason": "judge response parse error"}
+
+    async def _call_judge_free(self, judge, user_input, actual_content):
+        from openai import OpenAI
+
+        api_key = os.environ.get(judge.api_key_env, "")
+        client = OpenAI(api_key=api_key, base_url=judge.api_base)
+
+        prompt = self._prompt_free.format(
+            system_prompt=self._system_prompt[:2000],
+            tools=self._tools[:2000],
+            user_input=user_input[:500],
             actual=actual_content[:2000],
         )
         messages = []
@@ -430,8 +502,50 @@ class TrajectorySimilarityMetric:
         'with specific reference to which steps matched or diverged>"}}'
     )
 
-    def __init__(self, prompt: str | None = None):
+    _PROMPT_FREE = (
+        "You are evaluating whether an AI agent followed a reasonable procedure "
+        "to fulfill the user's request. You do NOT have a golden trajectory — "
+        "evaluate the actual steps on their own merits.\n\n"
+        "Agent system prompt: {system_prompt}\n"
+        "Available tools and descriptions: {tools}\n\n"
+        "User's original request: {user_input}\n\n"
+        "Agent's actual trajectory:\n<<<TRAJECTORY>>>\n{actual}\n<<<END>>>\n\n"
+        "Trajectory format: each entry shows [turn N] with tool calls "
+        "(call <name>), results (result: ok/fail), and outputs "
+        "(output: <text>).\n\n"
+        "Rate the trajectory on a 1–5 scale:\n"
+        "5 — Excellent: Efficient, logical sequence. Uses the most appropriate "
+        "tools from the available set. No unnecessary steps. If the system "
+        "prompt constrains behavior, follows it precisely.\n"
+        "4 — Good: Reasonable approach. Minor inefficiency or a slightly "
+        "suboptimal tool choice, but still achieves the goal well.\n"
+        "3 — Adequate: Gets the job done but with unnecessary detours, repeated "
+        "calls, or clearly suboptimal tools given the available set.\n"
+        "2 — Poor: Significant issues — wrong tools, confused backtracking, "
+        "or failing to make meaningful progress toward the goal.\n"
+        "1 — Wrong: Inappropriate approach. Tool choices are irrelevant to the "
+        "request. The agent seems to be guessing or ignoring the user.\n\n"
+        "Weighting guidelines:\n"
+        "- Tool choice should be evaluated against the AVAILABLE tools listed "
+        "above, not against an ideal unlimited tool set. If the right tool "
+        "doesn't exist, judge whether the agent made the best of what it had.\n"
+        "- System prompt constraints are EXPECTED behavior. If told to never "
+        "use a certain tool, using it is a flaw regardless of effectiveness.\n"
+        "- Extra benign steps that show exploration but don't derail the task "
+        "should not significantly lower the score.\n"
+        "- If system prompt or tools fields are empty, you are missing key "
+        "context — note this in your reason and judge conservatively.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"score": <int 1-5>, "reason": "<2-3 sentences>"}}'
+    )
+
+    def __init__(self, prompt: str | None = None,
+                 prompt_free: str | None = None,
+                 system_prompt: str = "", tools: str = ""):
         self._prompt = prompt if prompt else self._PROMPT
+        self._prompt_free = prompt_free if prompt_free else self._PROMPT_FREE
+        self._system_prompt = system_prompt
+        self._tools = tools
 
     @property
     def name(self) -> str:
@@ -442,10 +556,6 @@ class TrajectorySimilarityMetric:
         return True
 
     async def compute(self, actual_trace, golden_case, judge=None):
-        golden_str = json.dumps(
-            golden_case.golden_trajectory, ensure_ascii=False, indent=2
-        ) if golden_case.golden_trajectory else "{}"
-
         # Summarize actual trace: tool calls + model outputs
         actual_summary = []
         for e in actual_trace:
@@ -472,7 +582,19 @@ class TrajectorySimilarityMetric:
             return {"trajectory_similarity": 3, "reason": "empty actual trajectory"}
 
         user_input = golden_case.input or ""
-        return await self._call_judge(judge, user_input, golden_str, actual_str)
+        gt = golden_case.golden_trajectory
+
+        # Reference mode: golden_trajectory is annotated
+        if gt and gt.get("annotated") and gt.get("turns"):
+            golden_str = json.dumps(gt, ensure_ascii=False, indent=2)
+            return await self._call_judge(
+                judge, user_input, golden_str, actual_str,
+            )
+
+        # No-reference mode
+        return await self._call_judge_free(
+            judge, user_input, actual_str,
+        )
 
     async def _call_judge(self, judge, user_input, golden_str, actual_str):
         from openai import OpenAI
@@ -483,6 +605,35 @@ class TrajectorySimilarityMetric:
         prompt = self._prompt.format(
             user_input=user_input[:500],
             golden=golden_str[:3000],
+            actual=actual_str[:3000],
+        )
+        messages = []
+        if judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        resp = client.chat.completions.create(
+            model=judge.model,
+            messages=messages,
+            temperature=judge.temperature,
+            max_tokens=judge.max_tokens,
+        )
+        try:
+            result = json.loads(resp.choices[0].message.content)
+            return {"trajectory_similarity": int(result["score"]),
+                    "reason": result["reason"]}
+        except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
+            return {"trajectory_similarity": 3, "reason": "judge response parse error"}
+
+    async def _call_judge_free(self, judge, user_input, actual_str):
+        from openai import OpenAI
+
+        api_key = os.environ.get(judge.api_key_env, "")
+        client = OpenAI(api_key=api_key, base_url=judge.api_base)
+
+        prompt = self._prompt_free.format(
+            system_prompt=self._system_prompt[:2000],
+            tools=self._tools[:2000],
+            user_input=user_input[:500],
             actual=actual_str[:3000],
         )
         messages = []

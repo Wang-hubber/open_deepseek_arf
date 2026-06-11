@@ -85,10 +85,16 @@ class EvalRunner:
         if me.get("output_quality"):
             metrics.append(OutputQualityMetric(
                 prompt=prompts.get("output_quality"),
+                prompt_free=prompts.get("output_quality_free"),
+                system_prompt=self._config.system_prompt,
+                tools=self._config.tools,
             ))
         if me.get("trajectory_similarity"):
             metrics.append(TrajectorySimilarityMetric(
                 prompt=prompts.get("trajectory_similarity"),
+                prompt_free=prompts.get("trajectory_similarity_free"),
+                system_prompt=self._config.system_prompt,
+                tools=self._config.tools,
             ))
 
         judge = self._config.judge

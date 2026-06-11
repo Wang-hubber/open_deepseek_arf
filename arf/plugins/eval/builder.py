@@ -52,17 +52,18 @@ class BenchmarkBuilder:
             # Extract expected_tool_calls from golden trajectory
             expected_tool_calls = self._build_expected_tool_calls(golden_turns)
 
-            # Extract expected_output_contains from final model response
-            expected_output = self._extract_output_contains(case_events)
+            # Extract original_output from final model response (for annotator reference)
+            original_output = self._extract_original_output(case_events)
 
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
                 expected_tools=tool_names if tool_names else None,
                 expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
-                expected_output_contains=expected_output,
+                original_output=original_output,
+                # expected_output_contains left None — annotators fill keywords
                 max_turns=len(golden_turns) if golden_turns else None,
-                golden_trajectory={"turns": golden_turns} if golden_turns else None,
+                golden_trajectory={"annotated": False, "turns": golden_turns} if golden_turns else None,
             ))
 
         return EvalBenchmark(
@@ -161,14 +162,11 @@ class BenchmarkBuilder:
         return calls
 
     @staticmethod
-    def _extract_output_contains(events):
-        """Extract keywords from the last model_call_end in the event slice."""
+    def _extract_original_output(events):
+        """Extract the full text of the last model_call_end as golden reference for annotators."""
         for e in reversed(events):
             if e.get("type") == "model_call_end":
                 content = e.get("data", {}).get("content", "")
                 if content:
-                    words = content.split()
-                    if len(words) >= 3:
-                        return [" ".join(words[:3])]
-                    return [content[:50]]
+                    return content
         return None

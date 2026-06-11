@@ -1,8 +1,8 @@
 # Eval Benchmark — 测评与回归检测
 
-> **Eval 是独立的 CLI 模块。接收 benchmark + trace，产出多维量化报告。裁判 LLM 与被测 Agent 完全独立。**
+> **Eval 是 `arf/plugins/eval/` 下的独立插件模块。接收 benchmark + trace，产出多维量化报告。裁判 LLM 与被测 Agent 完全独立。不挂载任何 lifecycle hook。**
 
-ARF 提供基于 trajectory trace 的多维测评机制：从真实会话 trace 构建 golden benchmark，通过在线执行或离线回放对比实际输出，支持规则匹配和 LLM-as-judge 两种评判方式。
+ARF 提供基于 trajectory trace 的多维测评机制：从真实会话 trace 构建 golden benchmark，通过在线执行或离线回放对比实际输出，支持规则匹配和 LLM-as-judge 两种评判方式。插件配置（judge 默认值、裁判 prompts）集中在 `plugin.yaml`。
 
 ---
 
@@ -75,7 +75,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 ### 3.1 Benchmark 创建
 
 ```python
-from arf.evaluation import BenchmarkBuilder
+from arf.plugins.eval import BenchmarkBuilder
 from arf.plugins.trace.plugin import TracePlugin
 
 trace = TracePlugin({"trace_dir": "./data/traces"})
@@ -87,7 +87,7 @@ benchmark = builder.build(session_id="default", name="file_ops_v1")
 benchmark.to_json("benchmarks/file_ops_v1.json")
 
 # 人类编辑 JSON 后重新加载
-from arf.evaluation.models import EvalBenchmark
+from arf.plugins.eval.models import EvalBenchmark
 benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 ```
 
@@ -105,6 +105,7 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
       "expected_output_contains": ["ARF", "Framework"],
       "max_turns": 1,
       "golden_trajectory": {
+        "annotated": false,
         "turns": [
           {
             "turn": 1,
@@ -124,14 +125,14 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 }
 ```
 
-人类可直接编辑 `golden_trajectory` 中的 `assistant.content` 来构造 golden answer，删除 `assistant_final` 让测评只关注工具调用。
+人类可直接编辑 `golden_trajectory` 中的 `assistant.content` 来构造 golden answer，将 `annotated` 设为 `true` 启用参考式评测，或保留 `false` 让 judge 走无参考式独立评估。
 
 ### 3.2 运行 Eval（Online）
 
 ```python
 import asyncio
-from arf.evaluation import EvalRunner
-from arf.evaluation.models import EvalConfig, JudgeModelConfig
+from arf.plugins.eval import EvalRunner
+from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
 
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
@@ -173,7 +174,7 @@ report = await runner.run_offline()
 
 ```bash
 # Offline
-python -m arf.evaluation run \
+python -m arf.plugins.eval run \
   --benchmark benchmarks/file_ops_v1.json \
   --trace-dir ./data/traces \
   --mode offline \
@@ -186,8 +187,8 @@ python -m arf.evaluation run \
 # Online (Python API)
 python -c "
 import asyncio
-from arf.evaluation import EvalRunner
-from arf.evaluation.models import EvalConfig
+from arf.plugins.eval import EvalRunner
+from arf.plugins.eval.models import EvalConfig
 config = EvalConfig(benchmark_path='benchmarks/file_ops_v1.json', ...)
 runner = EvalRunner(config)
 asyncio.run(runner.run_online(agent.chat))
@@ -197,7 +198,7 @@ asyncio.run(runner.run_online(agent.chat))
 ### 3.5 对比运行报告
 
 ```python
-from arf.evaluation import EvalComparator, EvalReport
+from arf.plugins.eval import EvalComparator, EvalReport
 
 baseline = EvalReport.from_json("reports/baseline.json")
 current = EvalReport.from_json("reports/current.json")
@@ -235,6 +236,7 @@ print(f"Improvements: {diff.improvements}")
 | `model` | `str` | `gpt-4` | 裁判模型 |
 | `temperature` | `float` | `0.0` | 裁判需确定性 |
 | `max_tokens` | `int` | `2000` | 回复 token 上限 |
+| `system_prompt` | `str` | *(expert evaluator persona)* | 裁判 system message，所有 LLM 指标共用 |
 
 ### EvalConfig
 
@@ -243,7 +245,10 @@ print(f"Improvements: {diff.improvements}")
 | `benchmark_path` | Benchmark JSON 文件路径 |
 | `trace_dir` | Trace 文件目录 |
 | `judge` | `JudgeModelConfig \| None` |
-| `metrics` | 5 维 开关 dict |
+| `metrics` | 6 维 开关 dict |
+| `prompts` | `dict[str, str]` | 覆盖 LLM 指标的 prompt（key: `tool_call_result_llm`/`output_quality`/`output_quality_free`/`trajectory_similarity`/`trajectory_similarity_free`），不传用内置默认 |
+| `system_prompt` | `str` | Agent 的 system prompt，由 App 注入，供无参考式 judge 理解 agent 行为约束 |
+| `tools` | `str` | 可用工具列表及描述，由 App 注入，供无参考式 judge 评估工具选择合理性 |
 | `mode` | `"online"` / `"offline"` |
 | `trace_session_ids` | offline 模式下的 session ID 列表 |
 
@@ -258,6 +263,23 @@ print(f"Improvements: {diff.improvements}")
 | `mode` | online / offline |
 | `summary` | `EvalSummary` 汇总统计 |
 | `per_case` | 每个用例的详细结果 |
+
+`per_case[i]` 除 `case_id`、`passed`、`metrics`、`duration_seconds`、`session_id` 外，还包含从 trace 自动提取的统计：
+`turns`（去重 turn 数）、`tokens_in` / `tokens_out`（所有 `model_call_end` 的 usage 总和）、`tool_calls`（工具调用次数）。
+
+### EvalSummary
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `total` / `passed` / `failed` | `int` | 基础计数 |
+| `pass_rate` | `float` | 通过率 |
+| `avg_turns` | `float` | 平均 turn 数 |
+| `avg_tool_calls` | `float` | 平均工具调用次数 |
+| `avg_duration_seconds` | `float` | 平均耗时 |
+| `total_tokens_in` | `int` | 全部 token 输入总量 |
+| `total_tokens_out` | `int` | 全部 token 输出总量 |
+| `total_duration_seconds` | `float` | 总耗时 |
+| `tool_call_accuracy` 等 | `float` | 各指标均值 |
 
 ---
 
@@ -291,7 +313,14 @@ print(f"Improvements: {diff.improvements}")
 
 **ToolCallResultLLMMetric** 用于评估工具**返回值**的语义一致性。`ToolCallAccuracyMetric` 负责名称和参数（程序化、零开销），`ToolCallResultLLMMetric` 负责结果语义（需 judge LLM）。`expected.result` 可从 golden trajectory 自动提取，人工标注是可选的优化——当 golden result 太冗长时，人工可以改成松散的语义描述让 LLM 判得更准。推荐先跑程序化 metric，只在需要时开启 LLM 裁判。
 
-LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
+LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有内置的评分 prompt（含行为锚定的 1-5 评分标尺、边界案例指导、2-3 句推理要求），可通过 `EvalConfig.prompts` 按 key 覆盖。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
+
+**裁判 prompt 默认值在 `arf/plugins/eval/plugin.yaml` 的 `config.prompts` 下集中管理**，五个 key：
+- `tool_call_result_llm` — 判断工具返回值是否语义等价，传入 user_input + tool_name + expected/actual 结果
+- `output_quality` — 参考式 (annotated=true)：1-5 评分最终回答质量 vs golden
+- `output_quality_free` — 无参考式 (annotated=false)：1-5 独立评分，以 system_prompt + tools 为约束
+- `trajectory_similarity` — 参考式 (annotated=true)：1-5 评分路径相似度 vs golden
+- `trajectory_similarity_free` — 无参考式 (annotated=false)：1-5 独立评估解题路径
 
 ---
 
@@ -374,15 +403,20 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LL
 
  Cases: 5 to run
 
-  [OK] case_0: tool_acc=1.00, turn_eff=1.00, quality=4/5   2.3s
-  [OK] case_1: tool_acc=1.00, turn_eff=1.00, quality=5/5   3.1s
-  [FAIL] case_2: tool_acc=0.50, turn_eff=1.00, quality=3/5   4.2s
+  [OK] case_0: turns=1, tok=120/85, tool_acc=1.00, turn_eff=1.00, quality=4/5, 2.3s
+  [OK] case_1: turns=1, tok=150/96, tool_acc=1.00, turn_eff=1.00, quality=5/5, 3.1s
+  [FAIL] case_2: turns=2, tok=310/178, tool_acc=0.50, turn_eff=1.00, quality=3/5, 4.2s
          input: 帮我读一下 README.md 和 config.yaml
-  [OK] case_3: tool_acc=1.00, turn_eff=0.50   2.8s
-  [OK] case_4: tool_acc=1.00, turn_eff=1.00, quality=5/5, traj_sim=5/5   1.9s
+  [OK] case_3: turns=1, tok=95/44, tool_acc=1.00, turn_eff=0.50, 2.8s
+  [OK] case_4: turns=2, tok=220/130, tool_acc=1.00, turn_eff=1.00, quality=5/5, traj_sim=5/5, 1.9s
 
  --------------------------------------------------
  Summary: 4/5 passed (80.0%)
+   Avg turns:         1.4
+   Avg duration:      2.9s
+   Total duration:    14.3s
+   Total tokens:      895 in / 533 out
+   Avg tool calls:    1.6
    Tool accuracy:     0.90
    Turn efficiency:   0.90
    Output quality:    4.2/5 (LLM)

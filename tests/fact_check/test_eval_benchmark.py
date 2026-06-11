@@ -1,4 +1,4 @@
-"""Fact-check tests: Eval/Benchmark — docs/eval-benchmark.md vs arf/evaluation/.
+"""Fact-check tests: Eval/Benchmark — docs/eval-benchmark.md vs arf/plugins/eval/.
 
 Each test validates a specific claim made in the documentation against actual code.
 PASS = doc/code consistent. FAIL = discrepancy found (fact-check finding).
@@ -118,10 +118,10 @@ class TestTopLevelImports:
 # ---------------------------------------------------------------------------
 
 class TestFileExistence:
-    """Doc references these specific files in arf/evaluation/."""
+    """Doc references these specific files in arf/plugins/eval/."""
 
     def test_evaluation_files_exist(self):
-        """Doc: arf/evaluation/ directory with runner, builder, comparator, etc."""
+        """Doc: arf/plugins/eval/ directory with runner, builder, comparator, etc."""
         root = Path(__file__).parent.parent.parent
         for f in (
             "arf/plugins/eval/__init__.py",
@@ -1090,7 +1090,7 @@ class TestEvaluationProtocol:
 # ---------------------------------------------------------------------------
 
 class TestEvalError:
-    """Doc: EvalError from arf/evaluation/exceptions.py."""
+    """Doc: EvalError from arf/plugins/eval/exceptions.py."""
 
     def test_eval_error_is_exception(self):
         """Doc: EvalError extends Exception."""

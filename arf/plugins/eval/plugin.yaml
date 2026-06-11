@@ -4,6 +4,8 @@ enabled: true
 config:
   trace_dir: ./data/traces
   eval_dir: ./data/eval
+  system_prompt: ""
+  tools: ""
   judge:
     api_base: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
@@ -117,3 +119,62 @@ config:
 
       Respond with ONLY a JSON object (no markdown fences, no extra text):
       {{"score": <int 1-5>, "reason": "<2-3 sentences justifying the score with specific reference to which steps matched or diverged>"}}
+    output_quality_free: |
+      You are evaluating the quality of an AI agent's final answer.
+      You do NOT have a golden reference — evaluate the answer on its own merits.
+
+      Agent system prompt: {system_prompt}
+      Available tools and descriptions: {tools}
+
+      User's original request: {user_input}
+
+      Agent's final answer:
+      <<<ANSWER>>>
+      {actual}
+      <<<END>>>
+
+      Rate the answer on a 1–5 scale. The answer should be judged against what a reasonable agent with these instructions and tools SHOULD produce.
+
+      Scoring rubric:
+      5 — Excellent: Fully addresses the user's request. Correct, complete, well-structured, and aligned with the system prompt's constraints. If the system prompt limits behavior (e.g., brevity), compliance with that constraint IS quality.
+      4 — Good: Addresses the core request but has minor flaws — slightly incomplete, mildly verbose, or missing a secondary detail.
+      3 — Adequate: Partially addresses the request. Notable omissions or unclear phrasing. A user would need follow-up questions.
+      2 — Poor: Mostly does not address the request. Key information missing or wrong. A user would reject this answer.
+      1 — Wrong/Harmful: Completely irrelevant, contradicts the user's request, or violates explicit system prompt prohibitions.
+
+      Critical rules:
+      - If the system prompt explicitly restricts behavior (format, length, content), compliance with those restrictions is REQUIRED for a high score. A brief answer that follows instructions is NOT a flaw — the constraint IS the expected behavior.
+      - If system prompt or tools fields are empty, you are missing key context — note this in your reason and judge conservatively.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": <int 1-5>, "reason": "<2-3 sentences>"}}
+    trajectory_similarity_free: |
+      You are evaluating whether an AI agent followed a reasonable procedure to fulfill the user's request. You do NOT have a golden trajectory — evaluate the actual steps on their own merits.
+
+      Agent system prompt: {system_prompt}
+      Available tools and descriptions: {tools}
+
+      User's original request: {user_input}
+
+      Agent's actual trajectory:
+      <<<TRAJECTORY>>>
+      {actual}
+      <<<END>>>
+
+      Trajectory format: each entry shows [turn N] with tool calls (call <name>), results (result: ok/fail), and outputs (output: <text>).
+
+      Rate the trajectory on a 1–5 scale:
+      5 — Excellent: Efficient, logical sequence. Uses the most appropriate tools from the available set. No unnecessary steps. If the system prompt constrains behavior, follows it precisely.
+      4 — Good: Reasonable approach. Minor inefficiency or a slightly suboptimal tool choice, but still achieves the goal well.
+      3 — Adequate: Gets the job done but with unnecessary detours, repeated calls, or clearly suboptimal tools given the available set.
+      2 — Poor: Significant issues — wrong tools, confused backtracking, or failing to make meaningful progress toward the goal.
+      1 — Wrong: Inappropriate approach. Tool choices are irrelevant to the request. The agent seems to be guessing or ignoring the user.
+
+      Weighting guidelines:
+      - Tool choice should be evaluated against the AVAILABLE tools listed above, not against an ideal unlimited tool set. If the right tool doesn't exist, judge whether the agent made the best of what it had.
+      - System prompt constraints are EXPECTED behavior. If told to never use a certain tool, using it is a flaw regardless of effectiveness.
+      - Extra benign steps that show exploration but don't derail the task should not significantly lower the score.
+      - If system prompt or tools fields are empty, you are missing key context — note this in your reason and judge conservatively.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": <int 1-5>, "reason": "<2-3 sentences>"}}
