@@ -114,8 +114,10 @@ config:
 | `_action_call_model()` 结束 | `model_call_end` | model, turn, content, reasoning, tool_calls[], usage |
 | `_action_execute_tools()` 开始 | `tool_call_start` | tool_name, id, arguments, turn |
 | `_action_execute_tools()` 结束 | `tool_call_end` | tool_name, id, params, turn, success, result, error, duration_ms |
+| `ToolGuardPlugin`（deny） | `tool_call_start` + `tool_call_end` | tool_name, id, arguments, success=false, blocked=true, error |
+| `ApprovalPlugin`（denied/timeout） | `tool_call_start` + `tool_call_end` | tool_name, id, arguments, success=false, blocked=true, error |
 
-注入的事件在 `round_start`（user_input）和 `post_action`（model/tool 事件）时被 TracePlugin 展平为独立 JSONL 行。
+注入的事件在 `round_start`（user_input）和 `post_action`（model/tool 事件）时被 TracePlugin 展平为独立 JSONL 行。被安全策略阻止的工具调用（guard deny、approval denied/timeout）也通过 `inject_engine_event` 注入，确保 trace 和 benchmark 中不丢失。
 
 ### 2.4 会话生命周期
 

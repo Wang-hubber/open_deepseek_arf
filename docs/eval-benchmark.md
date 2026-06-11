@@ -299,7 +299,7 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。如果开启 LL
 
 ### 6.1 自动构建 → 人工精修
 
-`BenchmarkBuilder.build()` 自动从 trace 提取 `expected_tool_calls`（含 name + params + result）和 `golden_trajectory`。产出的 benchmark JSON 可作为起点，人工标注做三件事：
+`BenchmarkBuilder.build()` 自动从 trace 提取 `expected_tool_calls`（含 name + params + result）和 `golden_trajectory`。被安全策略阻止的工具调用（`blocked: true`）也会被包含——这是正确行为的一部分。产出的 benchmark JSON 可作为起点，人工标注做三件事：
 
 1. **删**：移除不关键的 turn（如中间探索性的 glob）
 2. **改**：修正 `expected_output_contains` 预期关键词，缩紧 `max_turns`
