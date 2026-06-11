@@ -41,14 +41,10 @@ hooks:
 | `round_start` | 每轮开始 | strategy、memory_retrieval、checkpoint |
 | `turn_start` | 每次迭代开始 | cancellation、metrics |
 | `pre_action` | 调度前（模型调用或工具执行前） | session_mode、tool_guard、approval、validate_messages |
-| `post_action` | 调度后 | sandbox_persist、metrics |
-| `post_permission` | 权限检查后 | approval |
-| `pre_tool_exec` | 工具执行前 | — |
-| `post_tool_exec` | 工具执行后 | — |
+| `post_action` | 调度后 | metrics |
 | `turn_end` | 迭代结束 | metrics |
-| `round_end` | 轮次结束 | compaction、checkpoint、memory、todo、undo |
+| `round_end` | 轮次结束 | compaction、checkpoint、memory、undo |
 | `session_end` | 会话结束 | checkpoint、memory_extraction、metrics |
-| `sandbox_persist` | 沙箱持久化 | undo |
 | `error` | 异常发生时 | error_handler |
 
 ---
@@ -73,7 +69,6 @@ hooks:
 | `memory_extraction` | `session_end` | 会话结束时写入长期记忆（需注入 writer） |
 | `memory_retrieval` | `round_start` | 每轮开始时检索相关记忆注入 `context_summary`（需注入 retriever） |
 | `compaction` | `round_end` | Token 感知上下文压缩。达到阈值时保留最近 N 条消息，旧轮次 LLM 摘要。冷却 2 轮 |
-| `todo` | `round_end` | 周期性提醒 Agent 同步 TODO 列表 |
 
 ### 状态与回滚
 
@@ -103,8 +98,7 @@ hooks:
 
 | Plugin | 提供内容 |
 |--------|---------|
-| `file_tools` | glob、grep、read、subagent 工具 + `file_tools.yaml` Skill |
-| `subagent` | `subagent` 工具（max_turns: 10, timeout: 120） |
+| `file_tools` | glob、grep、read 工具 + `file_tools.yaml` Skill |
 | `plan_solve` | `plan_create`, `plan_dispatch`, `plan_summarize`, `plan_status` 工具族 + `plan_solve.yaml` Skill + PlanSolvePlugin |
 
 ---
@@ -161,8 +155,8 @@ class MyPlugin(PluginProtocol):
 
 | 状态 | 数量 | Plugin |
 |------|------|--------|
-| **完整实现** | 18 | approval, cancellation, checkpoint, compaction, error_handler, eval, memory, memory_extraction, memory_retrieval, metrics, plan_solve, session_mode, todo, tool_guard, trace, undo, validate_messages, memory |
-| **工具/Skill 提供者** | 2 | file_tools, subagent |
+| **完整实现** | 17 | approval, cancellation, checkpoint, compaction, error_handler, eval, memory, memory_extraction, memory_retrieval, metrics, plan_solve, session_mode, tool_guard, trace, undo, validate_messages |
+| **工具/Skill 提供者** | 1 | file_tools |
 | **Stub（空实现）** | 2 | sandbox_persist, secure_archive |
 
 ---
