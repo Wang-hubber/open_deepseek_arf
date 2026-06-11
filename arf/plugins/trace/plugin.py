@@ -43,15 +43,35 @@ class TracePlugin:
 
         Called by BaseAgent after plugin discovery. Starts the background
         consume task if the plugin is enabled and an event loop is running.
+
+        Race note: there is a tiny window between create_task() and the
+        subscription queue registering where events may be missed. In
+        production this is harmless — set_event_bus() runs during init,
+        the first emit() happens during invoke(), and there is always a
+        full event loop iteration between them. In tests, await
+        asyncio.sleep(0) after set_event_bus() to flush the task.
         """
         self._event_bus = event_bus
         if self._enabled and self._event_bus:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                return  # no running event loop — called from sync test
-                        # context; will be started by BaseAgent in production
+                return
             self._consume_task = asyncio.create_task(self._consume_eventbus())
+
+    async def shutdown(self) -> None:
+        """Cancel the EventBus subscription task and wait for cleanup.
+
+        Called by BaseAgent.stop() during teardown. Safe to call
+        even if no subscription was started.
+        """
+        if self._consume_task and not self._consume_task.done():
+            self._consume_task.cancel()
+            try:
+                await self._consume_task
+            except asyncio.CancelledError:
+                pass
+        self._consume_task = None
 
     # -- PluginProtocol --------------------------------------------------
 

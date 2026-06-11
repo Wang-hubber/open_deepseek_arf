@@ -144,3 +144,26 @@ class TestTracePlugin:
         types = [e["type"] for e in events]
         assert "model_call_end" in types
         assert "tool_call_end" in types
+
+    def test_shutdown_cancels_task(self, trace_dir, bus):
+        """shutdown() should cancel the background task cleanly."""
+        from arf.plugins.trace.plugin import TracePlugin
+        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+
+        async def _run():
+            p.set_event_bus(bus)
+            assert p._consume_task is not None
+            assert not p._consume_task.done()
+            await p.shutdown()
+            assert p._consume_task is None
+
+        asyncio.run(_run())
+
+    def test_shutdown_safe_when_no_task(self, trace_dir, bus):
+        """shutdown() should be safe when no subscription was started."""
+        from arf.plugins.trace.plugin import TracePlugin
+        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+        # Never called set_event_bus — no consume task
+        async def _run():
+            await p.shutdown()
+        asyncio.run(_run())  # Should not raise

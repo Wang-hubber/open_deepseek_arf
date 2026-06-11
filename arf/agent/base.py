@@ -648,6 +648,11 @@ class BaseAgent:
                 pass
         self._active_sessions.clear()
 
+        # Shutdown TracePlugin's EventBus subscription task
+        trace = self.trace_store
+        if trace and hasattr(trace, 'shutdown'):
+            await trace.shutdown()
+
     def approve(self, decision_id: str, approved: bool = True) -> bool:
         """Delegate approval to the ApprovalPlugin (if registered)."""
         plugin = self._engine._blocking.get_plugin("approval")
