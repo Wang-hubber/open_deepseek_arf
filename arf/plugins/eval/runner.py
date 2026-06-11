@@ -137,12 +137,13 @@ class EvalRunner:
                 # -- Get actual trace --
                 if chat_fn is not None:
                     # Online: filter trace to only this case's rounds
-                    # (trace "turn" field = engine interaction_round)
+                    # (trace "round" field = engine interaction_round,
+                    #  fallback to old "turn" for backward compat)
                     prev_round = _last_round
                     await chat_fn(case.input, session_id=sid)
                     full_trace = self._read_trace(sid)
-                    actual_trace = [e for e in full_trace if e.get("turn", 0) > prev_round]
-                    rounds = {e.get("turn", 0) for e in actual_trace}
+                    actual_trace = [e for e in full_trace if e.get("round", e.get("turn", 0)) > prev_round]
+                    rounds = {e.get("round", e.get("turn", 0)) for e in actual_trace}
                     if rounds:
                         _last_round = max(rounds)
                 else:
