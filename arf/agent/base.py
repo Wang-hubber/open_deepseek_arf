@@ -654,7 +654,7 @@ class BaseAgent:
         if existing:
             messages = existing["messages"] + [{"role": "user", "content": user_message}]
             summary = existing.get("context_summary", "")
-            interaction = existing.get("interaction_round", 0) + 1
+            interaction = existing.get("interaction_round", 0)
         else:
             messages = [{"role": "user", "content": user_message}]
             summary = ""
@@ -713,7 +713,7 @@ class BaseAgent:
         if existing:
             messages = existing["messages"] + [{"role": "user", "content": user_message}]
             summary = existing.get("context_summary", "")
-            interaction = existing.get("interaction_round", 0) + 1
+            interaction = existing.get("interaction_round", 0)
         else:
             messages = [{"role": "user", "content": user_message}]
             summary = ""
