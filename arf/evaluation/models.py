@@ -81,6 +81,7 @@ class EvalSummary:
     tool_call_accuracy: float = 0.0
     turn_efficiency: float = 0.0
     success_rate: float = 0.0
+    tool_call_result_llm: float | None = None  # 0-1 LLM judge
     output_quality: float | None = None  # 1-5 LLM judge
     trajectory_similarity: float | None = None  # 1-5 LLM judge
 
@@ -117,6 +118,7 @@ class EvalReport:
                 "tool_call_accuracy": self.summary.tool_call_accuracy,
                 "turn_efficiency": self.summary.turn_efficiency,
                 "success_rate": self.summary.success_rate,
+                "tool_call_result_llm": self.summary.tool_call_result_llm,
                 "output_quality": self.summary.output_quality,
                 "trajectory_similarity": self.summary.trajectory_similarity,
             },
@@ -149,6 +151,7 @@ class EvalReport:
                 tool_call_accuracy=s.get("tool_call_accuracy", 0.0),
                 turn_efficiency=s.get("turn_efficiency", 0.0),
                 success_rate=s.get("success_rate", 0.0),
+                tool_call_result_llm=s.get("tool_call_result_llm"),
                 output_quality=s.get("output_quality"),
                 trajectory_similarity=s.get("trajectory_similarity"),
             ),

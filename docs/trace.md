@@ -1,8 +1,8 @@
 # Trace & Observability
 
-> **原则：Engine 只负责执行。Trace 通过 hook 挂载，是观测的唯一通路。**
+> **原则：引擎负责注入数据，TracePlugin 负责消费落盘，EventBus 只做实时推送。三者各司其职。**
 
-ARF 将 Trace 作为一等框架能力。TracePlugin 作为 side plugin 挂载在所有 hook 点上，同时订阅 EventBus 捕获细粒度引擎事件，产出 trajectory 级别的 JSONL 轨迹文件。每条 session 对应一个 `{session_id}.jsonl` 文件，可支撑调试回放、测评数据集构建和调优。
+ARF 将 Trace 作为一等框架能力。TracePlugin 作为 side plugin 挂载在所有 hook 点，引擎通过 `ctx.inject_engine_event()` 注入事件到 `hook_data`，TracePlugin 在 `round_start` 和 `post_action` 展平写入 JSONL。每条 session 对应一个 `{session_id}.jsonl` 文件，可支撑调试回放、测评数据集构建和调优。
 
 ---
 
@@ -30,7 +30,7 @@ Google Dapper（2010）论文引发了分布式追踪浪潮。OpenTelemetry（20
 
 ### 1.3 对 ARF 的启发
 
-eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn）。systemd-journal 的键值对存储影响了 trace 事件的 flat dict 设计——每行 JSON 自包含，O(1) 追加。
+eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计——生产者 emit 事件，消费者按需订阅（SSE、streaming）。systemd-journal 的键值对存储影响了 trace 事件的 flat dict 设计——每行 JSON 自包含，O(1) 追加。OpenTelemetry 的 span 模型影响了事件的分层结构（session → round → turn）。
 
 ---
 
@@ -41,32 +41,38 @@ eBPF 的事件驱动模型影响了 ARF 的 EventBus 设计。OpenTelemetry 的 
 ```
 ControlPlane
     │
-    ├── _fire_side("session_start", ctx) ──→ TracePlugin.on_hook()
-    ├── _fire_side("pre_action", ctx)    ──→ TracePlugin.on_hook()
-    ├── _action_call_model()
-    │       └── ctx.inject_engine_event("model_call", {...})
-    ├── _action_execute_tools()
-    │       └── ctx.inject_engine_event("tool_call", {...})
-    ├── _fire_side("post_action", ctx)   ──→ TracePlugin.on_hook()
+    ├── ctx.inject_engine_event("user_input", {...})          ← round_start 前
+    ├── ctx.inject_engine_event("model_call_start", {...})    ← _action_call_model 开头
+    ├── ctx.inject_engine_event("model_call_end", {...})      ← _action_call_model 结尾
+    ├── ctx.inject_engine_event("tool_call_start", {...})     ← _action_execute_tools 开头
+    ├── ctx.inject_engine_event("tool_call_end", {...})       ← _action_execute_tools 结尾
     │
-    └── _make_event(...) ──→ EventBus ──→ TracePlugin._consume_eventbus()
-                                                  │
-                                                  ▼
-                                      {trace_dir}/{session_id}.jsonl
-                                                +
-                                      {trace_dir}/snapshots/{hash}.xml
+    ├── _fire_side("round_start", ctx)  ──→ TracePlugin.on_hook()   ← 展平 user_input
+    └── _fire_side("post_action", ctx)  ──→ TracePlugin.on_hook()   ← 展平 model_* + tool_*
+                                                      │
+                                                      ▼
+                                          {trace_dir}/{session_id}.jsonl
+                                                    +
+                                          {trace_dir}/snapshots/{hash}.xml
+
+
+EventBus（独立通道，不落盘）
+    │
+    ├── _make_event("model_call_end", ...) ──→ SSE 实时推送给 CLI/Web
+    ├── _make_event("thinking_delta", ...) ──→ SSE 流式文本
+    └── ...
+
 ```
 
-**TracePlugin 使用两条输入源：**
+**职责分离：**
 
-1. **Hook 回调（on_hook）** — 记录 hook 边界事件 + `ctx.hook_data`（包含 engine 事件、子进程 hook 结果等）
-2. **EventBus 订阅（_consume_eventbus）** — 后台 asyncio task 捕获细粒度引擎事件（`model_call_start/end`、`tool_call_start/end`、`error` 等）
-
-两者统一写入同一个 JSONL 文件。过滤掉高频噪声：`thinking_delta`（仅 SSE 流）、`session_start/end`（hook 回调已覆盖）。
+- **引擎**：通过 `ctx.inject_engine_event()` 注入事件到 `hook_data._engine_events`。引擎不知道 Trace 何时消费、如何落盘
+- **TracePlugin**：作为 side hook 挂载。在 `round_start` 展平 `user_input`，在 `post_action` 展平 `model_call_*` 和 `tool_call_*`。异步消费、异步落盘，不阻塞主循环
+- **EventBus**：纯实时推送通道。`_make_event()` emit 到 Bus，SSE/streaming 消费者订阅。非持久化，不落盘
 
 ### 2.2 TracePlugin
 
-`arf/plugins/trace/plugin.py`。Mount 为 8 个 lifecre hook 的 side plugin，BaseAgent 通过 `PluginProvider` 自动发现。
+`arf/plugins/trace/plugin.py`。Mount 为 8 个 lifecycle hook 的 side plugin。
 
 **配置（plugin.yaml）：**
 
@@ -84,75 +90,102 @@ hooks:
 enabled: true
 config:
   trace_dir: ./data/traces
-  plugins_root: ./arf/plugins
-  config_files: []
+  plugins_root: ./arf/plugins          # 扫描框架内置插件配置
+  config_files:                        # agent 级配置文件
+    - ./agent.yaml
+    - ./pyproject.toml
+  extra_roots:                         # 扫描 app 级 tools/ skills/
+    - .
 ```
 
 **公开 API：**
 
-- `plugin.set_event_bus(bus)` — BaseAgent 在 init 阶段调用，启动 EventBus 订阅后台 task
 - `plugin.read_trace(session_id) → list[dict]` — 读取指定 session 的完整轨迹
 - `plugin.list_sessions() → list[str]` — 列出所有已记录的 session ID
-- `plugin.shutdown()` — BaseAgent.stop() 时调用，取消后台 task
 
 ### 2.3 事件注入
 
-Engine 在关键节点通过 `PluginContext.inject_engine_event()` 将内部事件注入 `hook_data`：
+引擎在关键节点通过 `PluginContext.inject_engine_event()` 将内部事件注入 `hook_data._engine_events`：
 
 | 注入点 | 事件类型 | 包含字段 |
 |--------|---------|---------|
-| `_action_call_model()` 结束 | `model_call` | model, input_tokens, output_tokens, content, tool_calls |
-| `_action_execute_tools()` 结束 | `tool_call` | tool_name, params, success, result, error, duration_ms |
+| `_execute()` round 循环开始 | `user_input` | content |
+| `_action_call_model()` 开始 | `model_call_start` | model, turn |
+| `_action_call_model()` 结束 | `model_call_end` | model, turn, content, reasoning, tool_calls[], usage |
+| `_action_execute_tools()` 开始 | `tool_call_start` | tool_name, id, arguments, turn |
+| `_action_execute_tools()` 结束 | `tool_call_end` | tool_name, id, params, turn, success, result, error, duration_ms |
 
-子进程 hook 的执行结果（stdout/stderr/exit_code）由 `SubprocessHookRunner` 写入 `hook_data["_subprocess_results"]`，TracePlugin 通过 hook 回调记录。
+注入的事件在 `round_start`（user_input）和 `post_action`（model/tool 事件）时被 TracePlugin 展平为独立 JSONL 行。
 
-### 2.4 Trajectory JSONL 格式
+### 2.4 会话生命周期
 
-每条 JSONL 记录是一帧，自包含且可独立解析：
+```
+首次 astream():
+  _execute() → session_start（仅一次，_session_opened 门控）
+  round_start → + user_input 展平
+  turn loop → post_action → + model_* + tool_* 展平
+  _execute() 返回（不 emit session_end）
+
+后续 astream():
+  _execute() → session_start 跳过（_session_opened=True 已持久化）
+  ...同上...
+
+CLI /exit → BaseAgent.stop():
+  engine.close(state) → session_end + hooks + 落盘
+  invoke() 自动 close（one-shot session）
+```
+
+`session_start` 通过 `state["_session_opened"]` 标记确保整段对话只触发一次。`session_end` 通过 `ControlPlane.close()` 显式触发，`invoke()` 自动调用，`astream()` 需要 App 通过 `stop()` 触发。
+
+### 2.5 Trajectory JSONL 格式
+
+每条 JSONL 记录是独立的顶层事件，展平后无嵌套：
 
 ```jsonl
-{"type": "session_start", "turn": 0, "timestamp": 1718000000.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {...}}
-{"type": "round_start", "turn": 1, "timestamp": 1718000000.1, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
-{"type": "model_call", "turn": 1, "timestamp": 1718000002.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"model": "deepseek-v3", "input_tokens": 1234, "output_tokens": 200, "content": "...", "tool_calls": [...]}}
-{"type": "tool_call", "turn": 1, "timestamp": 1718000002.5, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"tool_name": "read", "params": {...}, "success": true, "result": "...", "duration_ms": 150}}
-{"type": "post_action", "turn": 1, "timestamp": 1718000002.6, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"_engine_events": [...], "_subprocess_results": [...]}}
-{"type": "session_end", "turn": 5, "timestamp": 1718000030.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"reason": "completed"}}
+{"type": "session_start", "turn": 0, "timestamp": 1718000000.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
+{"type": "user_input", "turn": 1, "timestamp": 1718000000.1, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"content": "帮我读一下 README.md"}}
+{"type": "round_start", "turn": 1, "timestamp": 1718000000.2, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
+{"type": "model_call_start", "turn": 1, "timestamp": 1718000001.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"model": "deepseek-v3", "turn": 1}}
+{"type": "model_call_end", "turn": 1, "timestamp": 1718000002.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"model": "deepseek-v3", "content": "好的，我来读取", "reasoning": "", "tool_calls": [{"name": "read", "params": {"path": "README.md"}}], "usage": {"total_tokens": 150}}}
+{"type": "tool_call_start", "turn": 1, "timestamp": 1718000002.1, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"tool_name": "read", "id": "call_abc", "arguments": "{\"path\": \"README.md\"}", "turn": 1}}
+{"type": "tool_call_end", "turn": 1, "timestamp": 1718000002.5, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"tool_name": "read", "id": "call_abc", "params": {"path": "README.md"}, "success": true, "result": "# ARF Framework...", "duration_ms": 150}}
+{"type": "post_action", "turn": 1, "timestamp": 1718000002.6, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
+{"type": "session_end", "turn": 1, "timestamp": 1718000030.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
 ```
 
 **每帧保证：**
-- 独立可解析（JSONL 逐行）
-- 可按 `turn` 分段、按 `type` 过滤
+- 扁平——每行都是独立的顶层事件，无 `_engine_events` 嵌套
+- 独立可解析（JSONL 逐行），按 `type` 过滤
 - `config_hash` 关联到 `snapshots/{hash}.xml` 配置快照
-- 模型输入输出完整 → 可构建 SFT 样本
-- 工具调用参数/结果完整 → 可构建 function-calling 样本
-- 子进程 hook 结果可见
+- `model_call_end.data.tool_calls` 包含完整的工具调用参数 → 可构建 function-calling 样本
+- `tool_call_end.data.result` 包含工具返回值（截断至 2000 字符）
 
-### 2.5 配置快照
+### 2.6 配置快照
 
 `EnvSnapshotBuilder`（`arf/plugins/trace/snapshot.py`）在首次 `_write_event()` 调用时懒加载构建：
 
 1. 扫描 `plugins_root` 下的 plugin.yaml、tool.yaml、function.py、skill.yaml
-2. 包含 `config_files` 中指定的额外文件（如 agent.yaml）
-3. 生成语义分组的 XML，SHA256 前 12 位 hex 作为 hash
-4. 去重存储：`snapshots/{hash}.xml`，同配置复用
+2. 扫描 `config_files` 中指定的 agent 级配置文件（如 `agent.yaml`、`pyproject.toml`）
+3. 扫描 `extra_roots` 目录下的 `tools/` 和 `skills/` 子目录（适用于 app 级资源）
+4. 生成语义分组的 XML，SHA256 前 12 位 hex 作为 hash
+5. 去重存储：`snapshots/{hash}.xml`，同配置复用
 
 每条 trace 事件自动注入 `config_hash` 字段，确保轨迹与配置版本永不错配。
 
-### 2.6 事件类型
+### 2.7 事件类型
 
-`AgentEvent`（`arf/core/events.py`）：
-
-| 事件 | 触发时机 |
-|------|----------|
-| `session_start` / `session_end` | 会话生命周期 |
-| `round_start` / `round_end` | 交互轮次边界 |
-| `turn_start` / `turn_end` | 每次 agent 迭代 |
-| `pre_action` / `post_action` | 模型调用/工具执行前后 |
-| `model_call_start` / `model_call_end` | 模型调用 |
-| `tool_call_start` / `tool_call_end` | 工具调用 |
-| `thinking_delta` | 流式文本增量（仅 SSE，不入磁盘） |
-| `error` | 执行异常 |
-| `gate_exceeded` | 超出 turn/token 预算 |
+| 事件 | 触发时机 | 来源 |
+|------|----------|------|
+| `session_start` / `session_end` | 会话生命周期 | `_execute()` gate / `close()` |
+| `user_input` | 每轮用户输入 | `_execute()` round 循环 |
+| `round_start` / `round_end` | 交互轮次边界 | hook 回调 |
+| `turn_start` / `turn_end` | 每次 agent 迭代 | hook 回调 |
+| `pre_action` / `post_action` | 模型调用/工具执行前后 | hook 回调 |
+| `model_call_start` / `model_call_end` | 模型调用 | inject_engine_event → post_action 展平 |
+| `tool_call_start` / `tool_call_end` | 工具调用 | inject_engine_event → post_action 展平 |
+| `thinking_delta` | 流式文本增量 | 仅 EventBus/SSE，不入磁盘 |
+| `error` | 执行异常 | `_make_event` → EventBus |
+| `gate_exceeded` | 超出 turn/token 预算 | `_make_event` → EventBus |
 
 ---
 
