@@ -57,7 +57,7 @@ ARF is the **engineering companion** to the research paper [*"Parameter Is All Y
 
 **For framework users** — want to build on ARF:
 
-- [Research Roadmap](#part-i--research-roadmap) → [Framework Skeletons](#harness-as-kernel--framework-skeletons) → [Control Plane](#the-control-plane--structured-state--lifecycle) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 7-unit step-by-step guide from zero to production Agent
+- [Research Roadmap](#part-i--research-roadmap) → [Framework Skeletons](#harness-as-kernel--framework-skeletons) → [Control Plane](#the-control-plane--structured-state--lifecycle) → [Plugin System](#plugin-system--reflex-arcs-not-cognitive-modules) → then head to the [ARF App tutorial](https://gitee.com/dalaydata/arf_app_021) for a 11-unit step-by-step guide from zero to production Agent
 
 <br/>
 
