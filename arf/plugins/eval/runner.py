@@ -223,6 +223,9 @@ class EvalRunner:
                 if not all_pass:
                     print(f"         input: {case.input[:80]}")
 
+            except EvalJudgeError:
+                print(f"\n  [ABORT] Judge API failure at case_{i}, aborting run")
+                raise
             except Exception as exc:
                 duration = time.time() - case_start
                 case_metrics = {"error": str(exc)[:200]}
