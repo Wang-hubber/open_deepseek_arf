@@ -133,15 +133,17 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 import asyncio
 from arf.plugins.eval import EvalRunner
 from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
+from arf.core.model_registry import ResolvedModelConfig
 
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
     trace_dir="./data/traces",
-    judge=JudgeModelConfig(
+    judge=JudgeModelConfig(),  # 仅语义配置，模型连接由 judge_model 提供
+    judge_model=ResolvedModelConfig(
+        model="deepseek-chat",
         api_base="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
-        model="deepseek-chat",
-        temperature=0.0,
+        kwargs={"temperature": 0.0, "max_tokens": 2000},
     ),
     metrics={
         "tool_call_accuracy": True,
@@ -151,6 +153,8 @@ config = EvalConfig(
     },
 )
 
+# EvalRunner 也可接收 agent_config 自动 resolve judge_model：
+# runner = EvalRunner(config, agent_config=agent.config)
 runner = EvalRunner(config)
 report = await runner.run_online(
     agent.chat,
@@ -177,7 +181,7 @@ report = await runner.run_offline()
 ### 3.4 CLI
 
 ```bash
-# Offline
+# Offline — judge 模型连接通过 CLI flags 构建 ResolvedModelConfig
 python -m arf.plugins.eval run \
   --benchmark benchmarks/file_ops_v1.json \
   --trace-dir ./data/traces \
@@ -185,16 +189,17 @@ python -m arf.plugins.eval run \
   --traces s1,s2,s3 \
   --metrics tool_call_accuracy,turn_efficiency,output_quality \
   --judge-api-base https://api.deepseek.com \
+  --judge-api-key-env DEEPSEEK_API_KEY \
   --judge-model deepseek-chat \
   --output report.json
 
-# Online (Python API)
+# Online (Python API) — judge_model 可从 agent_config 自动 resolve
 python -c "
 import asyncio
 from arf.plugins.eval import EvalRunner
 from arf.plugins.eval.models import EvalConfig
 config = EvalConfig(benchmark_path='benchmarks/file_ops_v1.json', ...)
-runner = EvalRunner(config)
+runner = EvalRunner(config, agent_config=agent.config)
 asyncio.run(runner.run_online(agent.chat))
 "
 ```
@@ -224,28 +229,35 @@ print(f"Improvements: {diff.improvements}")
 | `id` | `str` | 用例 ID |
 | `input` | `str` | 用户消息文本 |
 | `expected_tools` | `list[str] \| None` | 预期调用的工具名列表（name-only，向后兼容） |
-| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/result），按名称与 actual 配对 |
+| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/blocked/success/result），按名称与 actual 配对 |
 | `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词，自动构建时为空（标注人员填写） |
 | `original_output` | `str \| None` | 最后一轮的完整回答原文，供标注人员参考和提炼关键词 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
 | `golden_trajectory` | `dict \| None` | `{"annotated": <bool>, "turns": [...]}`，annotated 默认 `false` |
 
-`expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "result": "吃完了"}`。`params` 和 `result` 可选——不标则只比名称。
+`expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "blocked": false, "success": true, "result": "吃完了"}`。`params`、`blocked`、`success`、`result` 均可选——不标（None）则该维度不参与匹配。
 
 `golden_trajectory.annotated`：标注人员审阅完 trajectory 后手动改为 `true`。`false` 时 LLM 指标自动降级为无参考式独立评估。
 
 ### JudgeModelConfig
 
+JudgeModelConfig 仅包含**语义配置**——裁判的行为和提示词。模型连接信息（`api_base`、`api_key_env`、`model`、`temperature` 等）通过 `agent_config` 的 `model_defs` 注入为 `ResolvedModelConfig`（即 `EvalConfig.judge_model` 字段）。
+
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `api_base` | `str` | `https://api.openai.com/v1` | OpenAI 兼容 API 地址 |
-| `api_key_env` | `str` | `OPENAI_API_KEY` | API key 环境变量名 |
-| `model` | `str` | `gpt-4` | 裁判模型 |
-| `temperature` | `float` | `0.0` | 裁判需确定性 |
-| `max_tokens` | `int` | `2000` | 回复 token 上限（已废弃的模型建议用 `extra_body.max_completion_tokens` 替代） |
-| `extra_body` | `dict \| None` | `None` | 透传至 API 的非标准参数（如 `enable_thinking`、`max_completion_tokens`、`reasoning_effort`） |
-| `response_format` | `dict \| None` | `None` | 强制 JSON 输出，如 `{"type": "json_object"}` |
 | `system_prompt` | `str` | *(expert evaluator persona)* | 裁判 system message，所有 LLM 指标共用 |
+| `response_format` | `dict \| None` | `None` | 强制 JSON 输出，如 `{"type": "json_object"}` |
+
+### ResolvedModelConfig（裁判模型连接）
+
+由 `agent_config.get_plugin_model_config("eval")` resolve，或 CLI 通过 `--judge-model`/`--judge-api-base`/`--judge-api-key-env` 构建，存储在 `EvalConfig.judge_model`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `model` | `str` | 裁判模型名（如 `deepseek-chat`） |
+| `api_base` | `str` | OpenAI 兼容 API 地址 |
+| `api_key_env` | `str` | API key 环境变量名 |
+| `kwargs` | `dict` | 透传给 `ModelAdapter` 的额外参数（`temperature`、`max_tokens` 等） |
 
 ### EvalConfig
 
@@ -253,7 +265,8 @@ print(f"Improvements: {diff.improvements}")
 |------|------|
 | `benchmark_path` | Benchmark JSON 文件路径 |
 | `trace_dir` | Trace 文件目录 |
-| `judge` | `JudgeModelConfig \| None` |
+| `judge` | `JudgeModelConfig \| None` — 裁判语义配置（prompt、response_format） |
+| `judge_model` | `ResolvedModelConfig \| None` — 裁判模型连接信息，由 `agent_config.get_plugin_model_config("eval")` resolve |
 | `metrics` | 6 维 开关 dict |
 | `prompts` | `dict[str, str]` | 覆盖 LLM 指标的 prompt（key: `tool_call_result_llm`/`output_quality`/`output_quality_free`/`trajectory_similarity`/`trajectory_similarity_free`），不传用内置默认 |
 | `mode` | `"online"` / `"offline"` |
@@ -297,7 +310,7 @@ print(f"Improvements: {diff.improvements}")
 | Metric | 方法 | 输出 |
 |--------|------|------|
 | `SuccessRateMetric` | trace 中是否有 error 事件 | 0 或 1 |
-| `ToolCallAccuracyMetric` | 按名称配对：name + params 子集匹配。`expected_tool_calls` 优先，`expected_tools` 兜底。同步统计 dependency_order_failures | 0–1 + dep_fail 计数 |
+| `ToolCallAccuracyMetric` | 按名称配对：name + params + blocked + success + result 多字段匹配。`expected_tool_calls` 优先，`expected_tools` 兜底。同步统计 dependency_order_failures | 0–1 + dep_fail 计数 |
 | `TurnEfficiencyMetric` | 实际 turn 数 vs `max_turns` | 0–1 |
 
 **ToolCallAccuracyMetric 匹配策略**：
@@ -305,10 +318,13 @@ print(f"Improvements: {diff.improvements}")
 1. 优先使用 `expected_tool_calls`（如果非空），按**名称**与 actual 配对（不关注执行顺序）
 2. 每个 expected item 在 actual 中找同名的、params 子集匹配的，找到即算命中
 3. 字符串参数用**子串匹配**（`"焖子"` in `"良子的焖子"`），非字符串用 `==`
-4. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
-5. actual 多出 expected 没有的工具 → 降低总分（total 取 max(expected, actual)）
-6. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
-7. 同步扫描 `tool_call_end` 事件：`success=false` 且 `error` 包含依赖关键词（`depends_on`、`blocked`、`not ready`、`not complete`、`dependency`、`must complete`、`waiting for`、`prerequisite`）→ 计入 `dependency_order_failures`
+4. `expected.blocked` 非 None 时需匹配 actual 的 blocked 状态（用于标注安全策略拦截的场景）
+5. `expected.success` 非 None 时需匹配 actual 的 success 状态
+6. `expected.result` 非 None 时走子串匹配（`expected.result` in `actual.result`）
+7. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
+8. actual 多出 expected 没有的工具 → 降低总分（total 取 max(expected, actual)）
+9. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
+10. 同步扫描 `tool_call_end` 事件：`success=false` 且 `error` 包含依赖关键词（`depends_on`、`blocked`、`not ready`、`not complete`、`dependency`、`must complete`、`waiting for`、`prerequisite`）→ 计入 `dependency_order_failures`
 
 ### LLM-as-judge
 
@@ -320,7 +336,11 @@ print(f"Improvements: {diff.improvements}")
 
 **ToolCallResultLLMMetric** 用于评估工具**返回值**的语义一致性。`ToolCallAccuracyMetric` 负责名称和参数（程序化、零开销），`ToolCallResultLLMMetric` 负责结果语义（需 judge LLM）。`expected.result` 可从 golden trajectory 自动提取，人工标注是可选的优化——当 golden result 太冗长时，人工可以改成松散的语义描述让 LLM 判得更准。推荐先跑程序化 metric，只在需要时开启 LLM 裁判。
 
-LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有内置的评分 prompt（含行为锚定的 1-5 评分标尺、边界案例指导、2-3 句推理要求），可通过 `EvalConfig.prompts` 按 key 覆盖。如果开启 LLM metric 但未配置 `judge` → `EvalConfig.validate()` 抛错。
+LLM metrics 通过 `ModelAdapter`（而非 raw OpenAI client）调用 judge LLM，由 `EvalRunner` 在构造时从 `EvalConfig.judge_model` 构建。`temperature=0.0`。每个指标有内置的评分 prompt（含行为锚定的 1-5 评分标尺、边界案例指导、2-3 句推理要求），可通过 `EvalConfig.prompts` 按 key 覆盖。Judge API 调用失败时抛出 `EvalJudgeError`（fatal），Runner 会 [ABORT] 终止整个 run，防止在无效裁判下继续执行浪费资源。
+
+如果开启 LLM metric 但未配置 `judge` 或 `judge_model` → `EvalConfig.validate()` 抛错。
+
+不可评估时（如 `output_quality` 缺 actual content、`trajectory_similarity` 缺 trajectory），LLM metrics 返回 `None` 而非伪造的默认分（如 `3`），由 `EvalSummary` 的 `avg_*` 计算跳过 `None` 值。
 
 **裁判 prompt 默认值在 `arf/plugins/eval/plugin.yaml` 的 `config.prompts` 下集中管理**，五个 key：
 - `tool_call_result_llm` — 判断工具返回值是否语义等价，传入 user_input + tool_name + expected/actual 结果
@@ -389,6 +409,25 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有
 
 `result` 走 LLM 语义等价判断——"晴天，气温 22 摄氏度" 也能匹配 "晴，22°C"。
 
+**带 blocked/success 预期（验证安全策略或工具执行状态）：**
+
+```json
+{
+  "id": "case_3",
+  "input": "读一下 /etc/passwd",
+  "expected_tool_calls": [
+    {
+      "name": "read",
+      "params": {"path": "/etc/passwd"},
+      "blocked": true,
+      "success": false
+    }
+  ]
+}
+```
+
+`blocked` / `success` / `result` 在 `ToolCallAccuracyMetric` 中走程序化匹配（不走 LLM），仅在标注了非 None 值时生效。`result` 在程序化 metric 中走子串匹配，如需语义等价判断请开启 `ToolCallResultLLMMetric`。
+
 ### 6.3 标注注意事项
 
 - **按名称匹配**：评估时按工具名配对，不关注执行顺序。并行 tool_call 返回顺序不确定也不影响评分
@@ -447,30 +486,43 @@ LLM metrics 使用 OpenAI API 兼容接口，`temperature=0.0`。每个指标有
 from arf.plugins.eval import EvalRunner
 from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
 
+# 方式 1：通过 agent_config 自动 resolve judge_model（推荐）
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
     trace_dir="./data/traces",
-    # judge：开启 LLM 指标时必配
-    judge=JudgeModelConfig(
-        api_base="https://api.deepseek.com",
-        api_key_env="DEEPSEEK_API_KEY",
-        model="deepseek-chat",
-    ),
-    # metrics：按需开启
+    judge=JudgeModelConfig(),  # 仅语义配置（可用默认），模型连接由 agent_config 提供
     metrics={
         "tool_call_accuracy": True,
         "turn_efficiency": True,
         "success_rate": True,
-        "output_quality": True,              # LLM，需 judge
-        "trajectory_similarity": True,       # LLM，需 judge
-        "tool_call_result_llm": False,       # LLM，需 judge + 标注了 result
+        "output_quality": True,              # LLM，需 judge + judge_model
+        "trajectory_similarity": True,       # LLM，需 judge + judge_model
+        "tool_call_result_llm": False,       # LLM，需 judge + judge_model + 标注了 result
     },
     # prompts：可选，覆盖默认评分 prompt
     # prompts={"output_quality": "...", ...},
 )
 
+runner = EvalRunner(config, agent_config=agent.config)
+
+# 方式 2：手动构建 ResolvedModelConfig
+from arf.core.model_registry import ResolvedModelConfig
+config = EvalConfig(
+    benchmark_path="benchmarks/file_ops_v1.json",
+    trace_dir="./data/traces",
+    judge=JudgeModelConfig(),
+    judge_model=ResolvedModelConfig(
+        model="deepseek-chat",
+        api_base="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+        kwargs={"temperature": 0.0, "max_tokens": 2000},
+    ),
+    metrics={...},
+)
+runner = EvalRunner(config)
+
 # system_prompt + tools 从 agent 运行时对象直接取，不放进 EvalConfig
-report = await EvalRunner(config).run_online(
+report = await runner.run_online(
     agent.chat,
     system_prompt=agent.system_prompt,
     tools=agent.tools_description,
@@ -481,7 +533,9 @@ report = await EvalRunner(config).run_online(
 
 | 参数 | 注入位置 | 来源 | 必填？ |
 |------|---------|------|--------|
-| `judge` | `EvalConfig` | App 配置（API key/mode） | 开启 LLM 指标时必填 |
+| `judge` | `EvalConfig` | App 配置（语义：prompt、response_format） | 开启 LLM 指标时必填（可用默认） |
+| `judge_model` | `EvalConfig` 或 `agent_config` | `agent.yaml` 的 `plugins_config.eval` 或 CLI flags | 开启 LLM 指标时必填 |
+| `agent_config` | `EvalRunner(...)` | agent.config（含 `get_plugin_model_config("eval")`） | 推荐传入，自动 resolve judge_model |
 | `metrics` | `EvalConfig` | App 决策哪些维度要评估 | 都有默认值 |
 | `prompts` | `EvalConfig` | App 可选覆盖 | 否，不传用框架默认 |
 | `system_prompt` | `run_online()` | `agent.system_prompt`（运行时） | 建议传入，缺则无参考式缺上下文 |

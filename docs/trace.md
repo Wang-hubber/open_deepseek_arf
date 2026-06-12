@@ -67,7 +67,7 @@ EventBus（独立通道，不落盘）
 **职责分离：**
 
 - **引擎**：通过 `ctx.inject_engine_event()` 注入事件到 `hook_data._engine_events`。引擎不知道 Trace 何时消费、如何落盘
-- **TracePlugin**：作为 side hook 挂载。在 `round_start` 展平 `user_input`，在 `post_action` 展平 `model_call_*` 和 `tool_call_*`。异步消费、异步落盘，不阻塞主循环
+- **TracePlugin**：作为 side hook 挂载。在 `round_start` 展平 `user_input`，在 `post_action` 展平 `model_call_*` 和 `tool_call_*`。In-process side plugins 现在被 `SubprocessHookRunner.fire()` await 到完成后才返回给调用者，保证 trace 落盘在读操作之前完成（外部 subprocess hooks 仍为 fire-and-forget）
 - **EventBus**：纯实时推送通道。`_make_event()` emit 到 Bus，SSE/streaming 消费者订阅。非持久化，不落盘
 
 ### 2.2 TracePlugin
