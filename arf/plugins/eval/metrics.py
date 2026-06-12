@@ -71,9 +71,22 @@ class ToolCallAccuracyMetric:
                 actual_calls.append({
                     "tool_name": data.get("tool_name", ""),
                     "arguments": self._parse_arguments(data.get("arguments", "{}")),
+                    "blocked": False,
+                    "success": True,
+                    "result": "",
                 })
-            elif e.get("type") == "tool_call_end":
+
+        # Pair tool_call_end events with their start events (same order)
+        end_idx = 0
+        for e in actual_trace:
+            if e.get("type") == "tool_call_end":
                 data = e.get("data", {})
+                if end_idx < len(actual_calls):
+                    actual_calls[end_idx]["blocked"] = data.get("blocked", False)
+                    actual_calls[end_idx]["success"] = data.get("success", True)
+                    actual_calls[end_idx]["result"] = data.get("result", "")
+                    actual_calls[end_idx]["error"] = data.get("error", "")
+                end_idx += 1
                 if not data.get("success") and data.get("error"):
                     if self._is_dependency_error(data["error"]):
                         dep_order_failures += 1
@@ -97,10 +110,19 @@ class ToolCallAccuracyMetric:
         for exp in expected_calls:
             exp_name = exp.get("name", "")
             exp_params = exp.get("params", {})
+            exp_blocked = exp.get("blocked")   # None = don't check
+            exp_success = exp.get("success")   # None = don't check
+            exp_result = exp.get("result")     # None = don't check
             for act in actual_calls:
                 if act["tool_name"] != exp_name:
                     continue
                 if not self._params_subset(exp_params, act["arguments"]):
+                    continue
+                if exp_blocked is not None and act["blocked"] != exp_blocked:
+                    continue
+                if exp_success is not None and act["success"] != exp_success:
+                    continue
+                if exp_result is not None and exp_result not in str(act.get("result", "")):
                     continue
                 matches += 1
                 break  # found a match, move to next expected
