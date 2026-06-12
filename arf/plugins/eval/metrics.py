@@ -18,6 +18,7 @@ class EvalMetric(Protocol):
         actual_trace: list[dict],
         golden_case: "EvalCase",
         judge: "JudgeModelConfig | None" = None,
+        judge_adapter: "ModelAdapter | None" = None,
     ) -> dict[str, float | str]: ...
 
 
@@ -30,7 +31,7 @@ class SuccessRateMetric:
     def requires_llm(self) -> bool:
         return False
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         errors = sum(1 for e in actual_trace if e.get("type") == "error")
         return {"success_rate": 0.0 if errors > 0 else 1.0}
 
@@ -60,7 +61,7 @@ class ToolCallAccuracyMetric:
     def requires_llm(self) -> bool:
         return False
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         actual_calls: list[dict] = []
         dep_order_failures = 0
         for e in actual_trace:
@@ -191,7 +192,7 @@ class ToolCallResultLLMMetric:
     def requires_llm(self) -> bool:
         return True
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         if not golden_case.expected_tool_calls:
             return {"tool_call_result_llm": 1.0}
 
@@ -279,7 +280,7 @@ class TurnEfficiencyMetric:
     def requires_llm(self) -> bool:
         return False
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         turn_set = {e.get("turn", 0) for e in actual_trace if e.get("turn", 0) > 0}
         actual_turns = len(turn_set)
         if golden_case.max_turns:
@@ -376,7 +377,7 @@ class OutputQualityMetric:
     def requires_llm(self) -> bool:
         return True
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         # Extract actual final content
         actual_content = ""
         for e in reversed(actual_trace):
@@ -561,7 +562,7 @@ class TrajectorySimilarityMetric:
     def requires_llm(self) -> bool:
         return True
 
-    async def compute(self, actual_trace, golden_case, judge=None):
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         # Summarize actual trace: tool calls + model outputs
         actual_summary = []
         for e in actual_trace:

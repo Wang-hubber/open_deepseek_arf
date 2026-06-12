@@ -3,7 +3,9 @@ import json
 import time
 import uuid
 from pathlib import Path
+import os
 
+from arf.core.model_adapter import ModelAdapter
 from arf.plugins.eval.models import (
     EvalBenchmark, EvalReport, EvalSummary, EvalConfig, JudgeModelConfig,
 )
@@ -25,11 +27,29 @@ class EvalRunner:
         report = await runner.run_online(agent.chat)
     """
 
-    def __init__(self, config: EvalConfig):
+    def __init__(self, config: EvalConfig, agent_config=None):
         config.validate()
         self._config = config
         self._benchmark: EvalBenchmark | None = None
         self._trace_dir = Path(config.trace_dir)
+        # Resolve judge_model from agent_config if available
+        if agent_config is not None and config.judge_model is None:
+            resolved = agent_config.get_plugin_model_config("eval")
+            if resolved is not None:
+                config.judge_model = resolved
+        # Build judge ModelAdapter if judge_model is set
+        self._judge_adapter = None
+        if config.judge_model is not None:
+            jm = config.judge_model
+            adapter_kwargs = dict(jm.kwargs)
+            if config.judge and config.judge.response_format:
+                adapter_kwargs["response_format"] = config.judge.response_format
+            self._judge_adapter = ModelAdapter({
+                "base_url": jm.api_base,
+                "api_key": os.environ.get(jm.api_key_env, ""),
+                "model_name": jm.model,
+                **adapter_kwargs,
+            })
 
     # -- Public API -------------------------------------------------------
 
@@ -106,9 +126,11 @@ class EvalRunner:
             ))
 
         judge = self._config.judge
+        judge_adapter = self._judge_adapter
 
         # --- Header ---
-        judge_str = f"{judge.model}" if judge else "none"
+        judge_model = self._config.judge_model
+        judge_str = judge_model.model if judge_model else "none"
         print(f"\n Eval Report: {benchmark.name}")
         print(f" {'=' * 50}")
         print(f" Mode: {mode}   Judge: {judge_str}   Hash: {current_hash}")
@@ -155,7 +177,10 @@ class EvalRunner:
                 case_metrics = {}
                 for m in metrics:
                     try:
-                        result = await m.compute(actual_trace, case, judge)
+                        if m.requires_llm and judge_adapter is not None:
+                            result = await m.compute(actual_trace, case, judge, judge_adapter)
+                        else:
+                            result = await m.compute(actual_trace, case, judge)
                         case_metrics.update(result)
                     except Exception as exc:
                         case_metrics[f"{m.name}_error"] = str(exc)[:100]
