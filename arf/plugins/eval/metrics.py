@@ -3,6 +3,8 @@ import asyncio
 import json
 from typing import Protocol, runtime_checkable
 
+from arf.plugins.eval.exceptions import EvalJudgeError
+
 
 @runtime_checkable
 class EvalMetric(Protocol):
@@ -254,6 +256,10 @@ class ToolCallResultLLMMetric:
                     "reason": result.get("reason", "")}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"match": False, "reason": "judge response parse error"}
+        except Exception as e:
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
 
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
@@ -375,7 +381,7 @@ class OutputQualityMetric:
                     actual_content = content
                     break
         if not actual_content:
-            return {"output_quality": 3, "reason": "missing actual content"}
+            return {"output_quality": None, "reason": "missing actual content"}
 
         user_input = golden_case.input or ""
         gt = golden_case.golden_trajectory
@@ -412,7 +418,11 @@ class OutputQualityMetric:
             result = json.loads(content)
             return {"output_quality": int(result["score"]), "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
-            return {"output_quality": 3, "reason": "judge response parse error"}
+            return {"output_quality": None, "reason": "judge response parse error"}
+        except Exception as e:
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
 
     async def _call_judge_free(self, judge, judge_adapter, user_input, actual_content):
         prompt = self._prompt_free.format(
@@ -431,7 +441,11 @@ class OutputQualityMetric:
             result = json.loads(content)
             return {"output_quality": int(result["score"]), "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
-            return {"output_quality": 3, "reason": "judge response parse error"}
+            return {"output_quality": None, "reason": "judge response parse error"}
+        except Exception as e:
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
 
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
@@ -552,7 +566,7 @@ class TrajectorySimilarityMetric:
         actual_str = "\n".join(actual_summary)
 
         if not actual_str:
-            return {"trajectory_similarity": 3, "reason": "empty actual trajectory"}
+            return {"trajectory_similarity": None, "reason": "empty actual trajectory"}
 
         user_input = golden_case.input or ""
         gt = golden_case.golden_trajectory
@@ -586,7 +600,11 @@ class TrajectorySimilarityMetric:
             return {"trajectory_similarity": int(result["score"]),
                     "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
-            return {"trajectory_similarity": 3, "reason": "judge response parse error"}
+            return {"trajectory_similarity": None, "reason": "judge response parse error"}
+        except Exception as e:
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
 
     async def _call_judge_free(self, judge, judge_adapter, user_input, actual_str):
         prompt = self._prompt_free.format(
@@ -606,7 +624,11 @@ class TrajectorySimilarityMetric:
             return {"trajectory_similarity": int(result["score"]),
                     "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
-            return {"trajectory_similarity": 3, "reason": "judge response parse error"}
+            return {"trajectory_similarity": None, "reason": "judge response parse error"}
+        except Exception as e:
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
 
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
