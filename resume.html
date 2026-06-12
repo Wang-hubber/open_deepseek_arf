@@ -399,7 +399,7 @@
     </div>
 
     <p style="font-size:14px; color: var(--text); margin-top: 12px;">
-      这不是一个观点——它是一个<strong>可验证的假设</strong>。我的计划很明确：把它做出来，然后做实验去验证。为此我写了论文框架来理清思路，搭建了 ARF 框架来作为实验"台架"，写了 7 单元教学课程来让这个思路对其他人也可理解、可复现。
+      这不是一个观点——它是一个<strong>可验证的假设</strong>。我的计划很明确：把它做出来，然后做实验去验证。为此我写了论文框架来理清思路，搭建了 ARF 框架来作为实验"台架"，写了 11 单元教学课程来让这个思路对其他人也可理解、可复现。
     </p>
 
     <p style="font-size:14px; color: var(--text); margin-top: 6px;">
@@ -431,6 +431,7 @@
         <li><strong>三层机械层</strong>：感知编码器·传递任务与环境信息（ResourceRegistry + SystemPromptProvider）→ 行动执行器·把决策落地（SandboxManager + FunctionBackend rollback）→ 非条件反射层·提供必要的安全防护（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应研究框架中第 5 节设计准则的完整工程实现。</li>
         <li><strong>Plugin 体系</strong>：9 个 Hook 挂载点。Memory、Compaction、Trace 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断。</li>
         <li><strong>全链路可观测 + 安全三道防线</strong>：JSONL Trace / Token 统计 / 离线评估回放。deny_patterns 正则 &gt; deny/ask/allow 列表 &gt; PathCheckToolGuard 路径扫描——纯 YAML 声明式，模型不可绕过。</li>
+        <li><strong>代码规模</strong>：框架核心 11,314 行（147 文件 · 22 模块）· 测试 9,866 行（574 tests）· 框架设计文档 5,349 行（15 篇）</li>
       </ul>
       <div class="tech-tags">Python 3.11+ · FastAPI · asyncio · Pydantic · Protocol 接口隔离 · MCP 协议</div>
     </div>
@@ -440,12 +441,13 @@
         <span class="project-name">ARF App 教学项目</span>
       </div>
       <div class="project-url">https://gitee.com/dalaydata/arf_app_021</div>
-      <div class="project-tagline">从 0 到 1 构建 ARF 应用的 7 单元渐进式教程</div>
+      <div class="project-tagline">从 0 到 1 构建 ARF 应用的 11 单元渐进式教程</div>
       <ul class="bullet-list">
-        <li>单元 1-7 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优</li>
+        <li>单元 1-11 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优 → Trace 可观测 → Eval 测评 → LLM-as-Judge → 版本持久化</li>
         <li>每个单元包含完整可运行代码快照，严格"本单元只讲本单元"的边界约束</li>
         <li>用"良子与焖子"的叙事串联安全概念——把枯燥的权限控制变成故事</li>
         <li>同时作为 ARF 框架的用户验收测试，在真实使用中验证 API 设计的完备性</li>
+        <li><strong>代码规模</strong>：App 代码 5,124 行（43 文件）· 单元文档 6,494 行</li>
       </ul>
     </div>
   </section>

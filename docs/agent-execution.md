@@ -218,7 +218,7 @@ The `_execute_action()` method routes execution based on the step name returned 
 
 ### 2.5 The 9 Hook Points
 
-The ControlPlane fires hooks at 9 lifecycle points. Each point has two hook runners: **blocking** (in-process, sequential, error-propagating) and **side** (fire-and-forget, concurrent, error-tolerant).
+The ControlPlane fires hooks at 9 lifecycle points. Each point has two hook runners: **blocking** (in-process, sequential, error-propagating) and **side** (in-process plugins awaited to completion; external subprocess hooks fire-and-forget, error-tolerant).
 
 | # | Hook Point | When | Fire Mechanism | Context Payload | Design Purpose |
 |---|-----------|------|---------------|-----------------|---------------|
@@ -248,13 +248,15 @@ The engine uses two parallel hook runners:
 - Runs plugins sequentially in registration order
 - On first plugin exception: subsequent plugins in the same `fire()` call are skipped, exception propagates to the engine's error handler
 - Used for plugins that must execute before the engine can continue (ToolGuardPlugin, ApprovalPlugin)
+- ApprovalPlugin has two resolution paths: inline callback (`chat()` path — calls `_chat_handler` directly) and event-wait (`astream()` path — emits `approval_required`, waits for `approve()` via `asyncio.Event`)
 - Provides `get_plugin(name)` for direct plugin access (e.g., `BaseAgent.approve()` delegates to ApprovalPlugin)
 
 **SubprocessHookRunner** (`arf/hooks/runner.py`) -- for side plugins:
 
 - Registers plugins that declare `hook_mode == "side"` and external `HookDefinition` scripts
-- Fires plugins concurrently via `asyncio.ensure_future` -- fire-and-forget
-- Never blocks the engine, never throws (exceptions are logged)
+- In-process side plugins: awaited via `asyncio.gather` — all must complete before `fire()` returns, so side effects (e.g., trace writes) are guaranteed visible
+- External subprocess hooks: fire-and-forget via `asyncio.ensure_future`, never block
+- Never throws (exceptions are logged) for both in-process and subprocess hooks
 - External hook scripts receive runtime environment variables: `ARF_RUNTIME` (JSON), `ARF_SESSION_ID`, `ARF_ROUND`, `ARF_MEMORY_DIR`, `ARF_WORKSPACE`, `ARF_TRACE_DIR`, `ARF_SYSTEM_MODEL`
 - Hook commands support `$ARF_{KEY}` placeholder substitution from runtime + context merged dict
 
@@ -521,13 +523,24 @@ The `_handle_error()` method (`control_plane.py:484`) is called when any hook or
 
 **Public API**:
 
-- `chat(user_message, session_id)` -> `str`: Sync invocation. Manages session lifecycle (recovery, hooks), builds state, calls `engine.invoke(state)`, returns the last assistant message text.
-- `astream(user_message, session_id)` -> `AsyncGenerator[AgentEvent]`: Streaming variant. Same lifecycle management, delegates to `engine.astream(state)`.
+- `chat(user_message, session_id, on_approval=None)` -> `str`: Sync invocation. Manages session lifecycle (recovery, hooks), builds state, calls `engine.invoke(state)`, returns the last assistant message text. Since `invoke()` blocks without yielding events (no consumer for `approval_required` events), `chat()` supports an inline `on_approval(tool_name, params) -> bool` callback for approval decisions. Without `on_approval`, any ask-list tool triggers a `RuntimeError` immediately (not a silent 60s timeout).
+- `astream(user_message, session_id)` -> `AsyncGenerator[AgentEvent]`: Streaming variant. Same lifecycle management, delegates to `engine.astream(state)`. Approval uses event-based flow (`approval_required` event → consumer calls `approve(decision_id, approved)`).
 - `start()`: Start FileWatcher and MCP manager (must be called after the event loop is running).
 - `stop()`: Stop FileWatcher, MCP manager, close all active sessions (fires `session_end(reason="shutdown")` hooks).
 - `approve(decision_id, approved)`: Delegate approval to the ApprovalPlugin (if registered).
 - `reconfigure(**overrides)`: Update config at runtime.
 - `evaluate(benchmark)`: Run an EvalBenchmark against this agent.
+
+**Approval flow — chat() vs astream()**:
+
+`chat()` uses `engine.invoke()` which runs the ControlPlane loop to completion without yielding intermediate events. The normal approval path (`pre_action` → `approval_required` event → consumer calls `approve()`) depends on an event consumer, which doesn't exist in the `invoke()` path. Instead, `chat()`:
+
+1. Sets `ApprovalPlugin._chat_handler = on_approval` and `_chat_mode = True` before `invoke()`
+2. When ApprovalPlugin encounters an ask-list tool, it checks `_chat_handler` first — if present, calls it directly (supporting both sync and async callables via `iscoroutine` check) to get the approval decision inline
+3. If `_chat_mode` is True but no `_chat_handler` is set, raises `RuntimeError` immediately (fail-fast, no silent timeout)
+4. Clears both attributes in `finally` after `invoke()` returns
+
+`astream()` uses `engine.astream()` which yields events to a consumer — the event-based `approval_required` → `approve()` flow works normally.
 
 **External hook system**: BaseAgent also maintains its own `SubprocessHookRunner` (separate from ControlPlane's side runner) which fires:
 - `session_start` (if new session, before engine invoke)

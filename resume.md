@@ -19,7 +19,7 @@
 
 这不是一个观点——它是一个**可验证的假设**。我的计划很明确：把它做出来，用实验验证。
 
-为此我完成了三件事：（1）写了论文框架 **"Parameter Is All You Need"**，提出从"一切皆在上下文"到"一切皆可参数化"的范式转换；（2）系统梳理了 **Agent 行为策略内生选择**的前沿研究——元控制器架构、RL 自适应机制、行业三条路线；（3）搭建了 **ARF 框架**作为实验台架，写了 7 单元教学课程让思路对他人可理解、可复现。
+为此我完成了三件事：（1）写了论文框架 **"Parameter Is All You Need"**，提出从"一切皆在上下文"到"一切皆可参数化"的范式转换；（2）系统梳理了 **Agent 行为策略内生选择**的前沿研究——元控制器架构、RL 自适应机制、行业三条路线；（3）搭建了 **ARF 框架**作为实验台架，写了 11 单元教学课程让思路对他人可理解、可复现。
 
 接下来的实验——固定状态接口 vs 传统提示、零认知 Harness 基准、在线 LoRA 记忆保持、后训练身份鲁棒性、内生策略选择器 vs 外部编排——每一项都在这个台架上跑。详细研究框架与近期 TODO → https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md。
 
@@ -53,18 +53,20 @@ ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Cla
 - **Plugin 体系**：9 个 Hook 生命周期挂载点。Memory、Compaction、Trace、HumanLoop、Checkpoint 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断
 - **安全防线**：deny_patterns 正则 > deny/ask/allow 列表 > PathCheckToolGuard 路径扫描——纯 YAML 声明式配置，模型不可绕过
 - **全链路可观测**：JSONL Trace、Token 统计、离线评估回放
+- **代码量**：框架核心 11,314 行（147 文件 22 模块）· 测试 9,866 行（574 tests）· 框架设计文档 5,349 行（15 篇）
 - 技术栈：Python 3.11+ · FastAPI · asyncio · Pydantic · Protocol 接口隔离 · MCP 协议
 
 ### ARF App 教学项目
 
 https://gitee.com/dalaydata/arf_app_021
 
-**从 0 到 1 构建 ARF 应用的 7 单元渐进式教程**
+**从 0 到 1 构建 ARF 应用的 11 单元渐进式教程**
 
-- 单元 1-7 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优
+- 单元 1-11 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优 → Trace 可观测 → Eval 测评 → LLM-as-Judge → 版本持久化
 - 每个单元包含完整可运行代码快照，严格"本单元只讲本单元"的边界约束
 - 用"良子与焖子"的叙事串联安全概念——把枯燥的权限控制变成故事
 - 同时作为 ARF 框架的用户验收测试，在真实使用中验证 API 设计的完备性
+- **代码量**：App 代码 5,124 行（43 文件）· 单元文档 6,494 行
 
 ---
 
