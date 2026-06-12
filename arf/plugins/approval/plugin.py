@@ -52,6 +52,40 @@ class ApprovalPlugin:
                     denied.append(tc)
                 continue
 
+            # Inline approval handler (chat() path)
+            approval_handler = ctx.state.get("_approval_handler")
+            if approval_handler is not None:
+                ctx.emit("approval_required", {
+                    "decision_id": decision_id,
+                    "tool_name": name,
+                    "params": tc.get("params", {}),
+                })
+                try:
+                    approved = await approval_handler(name, tc.get("params", {}))
+                except Exception:
+                    approved = False
+                if approved:
+                    ctx.emit("approval_resolved", {
+                        "decision_id": decision_id,
+                        "approved": True,
+                    })
+                else:
+                    denied.append(tc)
+                    ctx.emit("approval_resolved", {
+                        "decision_id": decision_id,
+                        "approved": False,
+                        "reason": "handler_denied",
+                    })
+                continue
+
+            # chat() without handler → fatal, can't wait for external approve()
+            if ctx.state.get("_chat_mode"):
+                raise RuntimeError(
+                    f"Approval required for tool '{name}' but chat() has no "
+                    f"on_approval handler. Pass on_approval=... to chat() "
+                    f"or use astream() + approve()."
+                )
+
             ctx.emit("approval_required", {
                 "decision_id": decision_id,
                 "tool_name": name,
