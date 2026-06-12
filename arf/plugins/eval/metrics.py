@@ -1,7 +1,6 @@
 """Evaluation metrics — rule-based and LLM-as-judge."""
 import asyncio
 import json
-import os
 from typing import Protocol, runtime_checkable
 
 
@@ -35,8 +34,8 @@ class SuccessRateMetric:
         errors = sum(1 for e in actual_trace if e.get("type") == "error")
         return {"success_rate": 0.0 if errors > 0 else 1.0}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
 
 
 class ToolCallAccuracyMetric:
@@ -139,8 +138,8 @@ class ToolCallAccuracyMetric:
                 return {"_raw": arguments}
         return {}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
 
 
 class ToolCallResultLLMMetric:
@@ -227,7 +226,7 @@ class ToolCallResultLLMMetric:
                 if not act["result"]:
                     continue
                 result = await self._call_judge(
-                    judge, exp_name, user_input, exp["result"], act["result"],
+                    judge, judge_adapter, exp_name, user_input, exp["result"], act["result"],
                 )
                 if result.get("match"):
                     matches += 1
@@ -235,13 +234,8 @@ class ToolCallResultLLMMetric:
 
         return {"tool_call_result_llm": matches / total if total > 0 else 1.0}
 
-    async def _call_judge(self, judge, tool_name, user_input,
+    async def _call_judge(self, judge, judge_adapter, tool_name, user_input,
                             expected_result, actual_result):
-        from openai import OpenAI
-
-        api_key = os.environ.get(judge.api_key_env, "")
-        client = OpenAI(api_key=api_key or "placeholder", base_url=judge.api_base)
-
         prompt = self._prompt.format(
             user_input=user_input[:500],
             tool_name=tool_name,
@@ -249,26 +243,20 @@ class ToolCallResultLLMMetric:
             actual=actual_result[:1500],
         )
         messages = []
-        if judge.system_prompt:
+        if judge and judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
         messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=judge.model,
-            messages=messages,
-            temperature=judge.temperature,
-            max_tokens=judge.max_tokens,
-            extra_body=judge.extra_body,
-            response_format=judge.response_format,
-        )
         try:
-            result = json.loads(resp.choices[0].message.content)
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
             return {"match": bool(result.get("match", False)),
                     "reason": result.get("reason", "")}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"match": False, "reason": "judge response parse error"}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
 
 
 class TurnEfficiencyMetric:
@@ -287,8 +275,8 @@ class TurnEfficiencyMetric:
             return {"turn_efficiency": min(1.0, golden_case.max_turns / max(actual_turns, 1))}
         return {"turn_efficiency": 1.0}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
 
 
 class OutputQualityMetric:
@@ -400,49 +388,33 @@ class OutputQualityMetric:
                 golden_content = last_turn.get("assistant", {}).get("content", "")
             if golden_content:
                 return await self._call_judge(
-                    judge, user_input, golden_content, actual_content,
+                    judge, judge_adapter, user_input, golden_content, actual_content,
                 )
 
         # No-reference mode: evaluate on its own merits
         return await self._call_judge_free(
-            judge, user_input, actual_content,
+            judge, judge_adapter, user_input, actual_content,
         )
 
-    async def _call_judge(self, judge, user_input, golden_content, actual_content):
-        from openai import OpenAI
-
-        api_key = os.environ.get(judge.api_key_env, "")
-        client = OpenAI(api_key=api_key, base_url=judge.api_base)
-
+    async def _call_judge(self, judge, judge_adapter, user_input, golden_content, actual_content):
         prompt = self._prompt.format(
             user_input=user_input[:500],
             golden=golden_content[:2000],
             actual=actual_content[:2000],
         )
         messages = []
-        if judge.system_prompt:
+        if judge and judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
         messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=judge.model,
-            messages=messages,
-            temperature=judge.temperature,
-            max_tokens=judge.max_tokens,
-            extra_body=judge.extra_body,
-            response_format=judge.response_format,
-        )
         try:
-            result = json.loads(resp.choices[0].message.content)
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
             return {"output_quality": int(result["score"]), "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"output_quality": 3, "reason": "judge response parse error"}
 
-    async def _call_judge_free(self, judge, user_input, actual_content):
-        from openai import OpenAI
-
-        api_key = os.environ.get(judge.api_key_env, "")
-        client = OpenAI(api_key=api_key, base_url=judge.api_base)
-
+    async def _call_judge_free(self, judge, judge_adapter, user_input, actual_content):
         prompt = self._prompt_free.format(
             system_prompt=self._system_prompt[:2000],
             tools=self._tools[:2000],
@@ -450,25 +422,19 @@ class OutputQualityMetric:
             actual=actual_content[:2000],
         )
         messages = []
-        if judge.system_prompt:
+        if judge and judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
         messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=judge.model,
-            messages=messages,
-            temperature=judge.temperature,
-            max_tokens=judge.max_tokens,
-            extra_body=judge.extra_body,
-            response_format=judge.response_format,
-        )
         try:
-            result = json.loads(resp.choices[0].message.content)
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
             return {"output_quality": int(result["score"]), "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"output_quality": 3, "reason": "judge response parse error"}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
 
 
 class TrajectorySimilarityMetric:
@@ -595,50 +561,34 @@ class TrajectorySimilarityMetric:
         if gt and gt.get("annotated") and gt.get("turns"):
             golden_str = json.dumps(gt, ensure_ascii=False, indent=2)
             return await self._call_judge(
-                judge, user_input, golden_str, actual_str,
+                judge, judge_adapter, user_input, golden_str, actual_str,
             )
 
         # No-reference mode
         return await self._call_judge_free(
-            judge, user_input, actual_str,
+            judge, judge_adapter, user_input, actual_str,
         )
 
-    async def _call_judge(self, judge, user_input, golden_str, actual_str):
-        from openai import OpenAI
-
-        api_key = os.environ.get(judge.api_key_env, "")
-        client = OpenAI(api_key=api_key, base_url=judge.api_base)
-
+    async def _call_judge(self, judge, judge_adapter, user_input, golden_str, actual_str):
         prompt = self._prompt.format(
             user_input=user_input[:500],
             golden=golden_str[:3000],
             actual=actual_str[:3000],
         )
         messages = []
-        if judge.system_prompt:
+        if judge and judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
         messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=judge.model,
-            messages=messages,
-            temperature=judge.temperature,
-            max_tokens=judge.max_tokens,
-            extra_body=judge.extra_body,
-            response_format=judge.response_format,
-        )
         try:
-            result = json.loads(resp.choices[0].message.content)
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
             return {"trajectory_similarity": int(result["score"]),
                     "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"trajectory_similarity": 3, "reason": "judge response parse error"}
 
-    async def _call_judge_free(self, judge, user_input, actual_str):
-        from openai import OpenAI
-
-        api_key = os.environ.get(judge.api_key_env, "")
-        client = OpenAI(api_key=api_key, base_url=judge.api_base)
-
+    async def _call_judge_free(self, judge, judge_adapter, user_input, actual_str):
         prompt = self._prompt_free.format(
             system_prompt=self._system_prompt[:2000],
             tools=self._tools[:2000],
@@ -646,23 +596,17 @@ class TrajectorySimilarityMetric:
             actual=actual_str[:3000],
         )
         messages = []
-        if judge.system_prompt:
+        if judge and judge.system_prompt:
             messages.append({"role": "system", "content": judge.system_prompt})
         messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=judge.model,
-            messages=messages,
-            temperature=judge.temperature,
-            max_tokens=judge.max_tokens,
-            extra_body=judge.extra_body,
-            response_format=judge.response_format,
-        )
         try:
-            result = json.loads(resp.choices[0].message.content)
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
             return {"trajectory_similarity": int(result["score"]),
                     "reason": result["reason"]}
         except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
             return {"trajectory_similarity": 3, "reason": "judge response parse error"}
 
-    def compute_sync(self, actual_trace, golden_case, judge=None):
-        return asyncio.run(self.compute(actual_trace, golden_case, judge))
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
