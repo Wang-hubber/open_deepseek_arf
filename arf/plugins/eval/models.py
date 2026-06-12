@@ -189,18 +189,7 @@ class EvalDiff:
 
 @dataclass
 class JudgeModelConfig:
-    """OpenAI API-compatible judge LLM configuration.
-
-    Independent of the ARF ModelAdapter — the judge should not share
-    a model with the agent under evaluation.
-    """
-    api_base: str = "https://api.openai.com/v1"
-    api_key_env: str = "OPENAI_API_KEY"
-    model: str = "gpt-4"
-    temperature: float = 0.0
-    max_tokens: int = 2000
-    extra_body: dict | None = None  # passthrough to API (e.g. enable_thinking, max_completion_tokens)
-    response_format: dict | None = None  # e.g. {"type": "json_object"} for strict JSON
+    """Judge semantic configuration — model connection info comes from model_defs."""
     system_prompt: str = (
         "You are an expert evaluator for AI agent behavior. Your role is to "
         "compare an agent's actual output against a reference (golden) standard. "
@@ -211,6 +200,7 @@ class JudgeModelConfig:
         "reasoning should arrive at the same conclusion. "
         "Always respond with valid JSON only, no markdown fences or extra text."
     )
+    response_format: dict | None = None
 
 
 @dataclass
