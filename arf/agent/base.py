@@ -1,5 +1,6 @@
 """BaseAgent — assembles all Protocol implementations into a running Agent."""
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from arf.agent.config import AgentConfig, AdvancedConfig
 from arf.agent.app_context import AppContext
@@ -649,7 +650,8 @@ class BaseAgent:
             return False
         return plugin.approve(decision_id, approved)
 
-    async def chat(self, user_message: str, session_id: str = "default") -> str:
+    async def chat(self, user_message: str, session_id: str = "default",
+                   on_approval: Callable | None = None) -> str:
         from arf.core.state import AgentState
         session_id, existing, is_new_session = await self._resolve_session(session_id)
 
@@ -681,6 +683,8 @@ class BaseAgent:
             "_session_opened": existing.get("_session_opened", False) if existing else False,
             "_session_ended": existing.get("_session_ended", False) if existing else False,
             "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
+            "_chat_mode": True,
+            "_approval_handler": on_approval,
         }
 
         self._active_sessions.add(session_id)
