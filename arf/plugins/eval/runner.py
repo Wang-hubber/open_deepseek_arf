@@ -28,15 +28,15 @@ class EvalRunner:
     """
 
     def __init__(self, config: EvalConfig, agent_config=None):
-        config.validate()
         self._config = config
         self._benchmark: EvalBenchmark | None = None
         self._trace_dir = Path(config.trace_dir)
-        # Resolve judge_model from agent_config if available
+        # Resolve judge_model from agent_config before validate()
         if agent_config is not None and config.judge_model is None:
             resolved = agent_config.get_plugin_model_config("eval")
             if resolved is not None:
                 config.judge_model = resolved
+        config.validate()
         # Build judge ModelAdapter if judge_model is set
         self._judge_adapter = None
         if config.judge_model is not None:
