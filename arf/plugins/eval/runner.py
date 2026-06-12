@@ -9,7 +9,7 @@ from arf.core.model_adapter import ModelAdapter
 from arf.plugins.eval.models import (
     EvalBenchmark, EvalReport, EvalSummary, EvalConfig, JudgeModelConfig,
 )
-from arf.plugins.eval.exceptions import EvalError
+from arf.plugins.eval.exceptions import EvalError, EvalJudgeError
 from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, ToolCallResultLLMMetric,
     TurnEfficiencyMetric,
@@ -139,6 +139,7 @@ class EvalRunner:
         # --- Run cases ---
         per_case = []
         passed = 0
+        _run_sid_suffix = uuid.uuid4().hex[:8]
         _last_source_sid: str | None = None
         _eval_sid: str = ""
         _last_round: int = 0
@@ -149,7 +150,7 @@ class EvalRunner:
             if case.session_id and case.session_id == _last_source_sid:
                 sid = _eval_sid
             else:
-                sid = f"eval_{benchmark.name}_{case.id}"
+                sid = f"eval_{benchmark.name}_{case.id}_{_run_sid_suffix}"
                 _eval_sid = sid
                 _last_source_sid = case.session_id
                 _last_round = 0  # new session, reset round boundary
@@ -182,6 +183,8 @@ class EvalRunner:
                         else:
                             result = await m.compute(actual_trace, case, judge)
                         case_metrics.update(result)
+                    except EvalJudgeError:
+                        raise
                     except Exception as exc:
                         case_metrics[f"{m.name}_error"] = str(exc)[:100]
 
