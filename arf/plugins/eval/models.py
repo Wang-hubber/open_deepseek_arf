@@ -209,6 +209,7 @@ class EvalConfig:
     benchmark_path: str = ""
     trace_dir: str = "./data/traces"
     judge: JudgeModelConfig | None = None
+    judge_model: "ResolvedModelConfig | None" = None  # model connection from plugins_config.eval
     metrics: dict[str, bool] = field(default_factory=lambda: {
         "tool_call_accuracy": True,
         "tool_call_result_llm": False,
@@ -233,9 +234,15 @@ class EvalConfig:
         ])
 
     def validate(self) -> None:
-        if self.requires_judge() and self.judge is None:
-            raise ValueError(
-                "LLM-as-judge metrics enabled but no judge model configured"
-            )
+        if self.requires_judge():
+            if self.judge is None:
+                raise ValueError(
+                    "LLM-as-judge metrics enabled but no judge configured"
+                )
+            if self.judge_model is None:
+                raise ValueError(
+                    "LLM-as-judge metrics enabled but no judge_model configured. "
+                    "Set plugins_config.eval in agent.yaml or use --judge-* CLI flags."
+                )
         if self.mode == "offline" and not self.trace_session_ids:
             raise ValueError("Offline mode requires trace_session_ids")

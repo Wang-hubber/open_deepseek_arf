@@ -141,3 +141,41 @@ class TestEvalConfig:
     def test_validate_ok(self):
         config = EvalConfig()
         config.validate()  # should not raise
+
+    def test_validate_judge_model_required_with_llm_metrics(self):
+        """When LLM metrics enabled, both judge and judge_model must be present."""
+        from arf.plugins.eval.models import JudgeModelConfig
+
+        # Missing judge_model
+        config = EvalConfig(
+            metrics={"output_quality": True},
+            judge=JudgeModelConfig(),
+            judge_model=None,
+        )
+        with pytest.raises(ValueError, match="judge_model"):
+            config.validate()
+
+    def test_validate_ok_with_judge_model(self):
+        """validate() passes when both judge and judge_model are provided."""
+        from arf.core.model_registry import ResolvedModelConfig
+        from arf.plugins.eval.models import JudgeModelConfig
+
+        config = EvalConfig(
+            metrics={"output_quality": True, "tool_call_result_llm": True},
+            judge=JudgeModelConfig(),
+            judge_model=ResolvedModelConfig(
+                model="gpt-4",
+                api_base="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+            ),
+        )
+        config.validate()  # should not raise
+
+    def test_validate_ok_no_judge_when_no_llm_metrics(self):
+        """When no LLM metrics, judge and judge_model can both be None."""
+        config = EvalConfig(
+            metrics={"success_rate": True, "tool_call_accuracy": True},
+            judge=None,
+            judge_model=None,
+        )
+        config.validate()  # should not raise
