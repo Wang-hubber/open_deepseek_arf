@@ -683,11 +683,15 @@ class BaseAgent:
             "_session_opened": existing.get("_session_opened", False) if existing else False,
             "_session_ended": existing.get("_session_ended", False) if existing else False,
             "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
-            "_chat_mode": True,
-            "_approval_handler": on_approval,
         }
 
         self._active_sessions.add(session_id)
+
+        # Wire approval handler for chat() path (non-streaming, no event consumer)
+        approval_plugin = self._engine._blocking.get_plugin("approval")
+        if approval_plugin is not None:
+            approval_plugin._chat_handler = on_approval
+            approval_plugin._chat_mode = True
 
         try:
             if self._hook_runner:
@@ -710,6 +714,9 @@ class BaseAgent:
                     return m.get("content", "")
             return ""
         finally:
+            if approval_plugin is not None:
+                approval_plugin._chat_handler = None
+                approval_plugin._chat_mode = False
             self._active_sessions.discard(session_id)
 
     async def astream(self, user_message: str, session_id: str = "default"):

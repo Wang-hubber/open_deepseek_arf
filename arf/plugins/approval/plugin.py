@@ -18,6 +18,8 @@ class ApprovalPlugin:
         self._ask_list = set(cfg.get("ask_list", []))
         self._pending: dict[str, asyncio.Event] = {}
         self._results: dict[str, bool] = {}
+        self._chat_handler = None
+        self._chat_mode = False
 
     @property
     def name(self) -> str:
@@ -53,15 +55,14 @@ class ApprovalPlugin:
                 continue
 
             # Inline approval handler (chat() path)
-            approval_handler = ctx.state.get("_approval_handler")
-            if approval_handler is not None:
+            if self._chat_handler is not None:
                 ctx.emit("approval_required", {
                     "decision_id": decision_id,
                     "tool_name": name,
                     "params": tc.get("params", {}),
                 })
                 try:
-                    approved = await approval_handler(name, tc.get("params", {}))
+                    approved = await self._chat_handler(name, tc.get("params", {}))
                 except Exception:
                     approved = False
                 if approved:
@@ -79,7 +80,7 @@ class ApprovalPlugin:
                 continue
 
             # chat() without handler → fatal, can't wait for external approve()
-            if ctx.state.get("_chat_mode"):
+            if self._chat_mode:
                 raise RuntimeError(
                     f"Approval required for tool '{name}' but chat() has no "
                     f"on_approval handler. Pass on_approval=... to chat() "
