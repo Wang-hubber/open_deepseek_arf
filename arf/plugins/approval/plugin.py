@@ -62,7 +62,11 @@ class ApprovalPlugin:
                     "params": tc.get("params", {}),
                 })
                 try:
-                    approved = await self._chat_handler(name, tc.get("params", {}))
+                    result = self._chat_handler(name, tc.get("params", {}))
+                    if asyncio.iscoroutine(result):
+                        approved = await result
+                    else:
+                        approved = result
                 except Exception:
                     approved = False
                 if approved:
