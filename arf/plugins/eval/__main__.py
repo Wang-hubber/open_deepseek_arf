@@ -37,13 +37,17 @@ def main():
     has_llm = metrics.get("output_quality") or metrics.get("trajectory_similarity")
 
     from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
+    from arf.core.model_registry import ResolvedModelConfig
 
     judge = None
+    judge_model = None
     if has_llm:
-        judge = JudgeModelConfig(
+        judge = JudgeModelConfig()
+        judge_model = ResolvedModelConfig(
+            model=args.judge_model,
             api_base=args.judge_api_base,
             api_key_env=args.judge_api_key_env,
-            model=args.judge_model,
+            kwargs={"temperature": 0.0, "max_tokens": 2000},
         )
 
     trace_ids = []
@@ -56,6 +60,7 @@ def main():
         mode=args.mode,
         trace_session_ids=trace_ids,
         judge=judge,
+        judge_model=judge_model,
         metrics=metrics,
         output_path=args.output,
         timeout_per_case=args.timeout,
