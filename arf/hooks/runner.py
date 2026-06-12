@@ -44,17 +44,30 @@ class SubprocessHookRunner:
                 setattr(self._runtime, k, v)
 
     async def fire(self, event_type: str, ctx: PluginContext) -> None:
-        """Fire all side plugins concurrently. Never blocks, never throws."""
+        """Fire all side plugins concurrently and wait for completion.
+
+        In-process plugins run via asyncio.gather — all must finish before
+        the caller proceeds, so side effects (e.g. trace writes) are visible.
+        Subprocess hooks remain fire-and-forget.
+        """
         plugins = self._plugins.get(event_type, [])
         hook_defs = self._hook_defs.get(event_type, [])
 
-        # Subprocess-based external hooks
+        tasks: list[asyncio.Task] = []
+
+        # Subprocess-based external hooks (fire-and-forget)
         for hd in hook_defs:
             asyncio.ensure_future(self._run_subprocess_hook(hd, ctx))
 
-        # In-process side plugins
+        # In-process side plugins — await completion so side effects
+        # (trace writes, metrics) are visible when the caller proceeds.
         for plugin in plugins:
-            asyncio.ensure_future(self._safe_fire_in_process(plugin, event_type, ctx))
+            tasks.append(
+                asyncio.ensure_future(self._safe_fire_in_process(plugin, event_type, ctx))
+            )
+
+        if tasks:
+            await asyncio.gather(*tasks)
 
     async def _safe_fire_in_process(self, plugin, event_type, ctx):
         try:
