@@ -43,7 +43,7 @@ ARF is the **engineering companion** to the research paper [*"Parameter Is All Y
 - **As an MVP**: ARF implements the hard-line in full — safety, error recovery, archival, tracing, evaluation, action execution, hook surface, and agent orchestration. The soft-line (LoRA MOE routing + online SFT pipeline) is the target of experiments 1–4.
 - **As a research scaffold**: ARF provides the unified testbed for all five experiments — five per-dimension validations (strategy, identity, memory, knowledge, TFlow communication) plus the culminating HOT (LoRA MOE) vs COLD (ICL-only) Harness comparison.
 
-**Companion project — [ARF App](https://gitee.com/dalaydata/arf_app_021)**: A 7-unit progressive tutorial that teaches building on ARF from zero to a production Agent — covering Hello ARF, session management, tools, approval, guardrails, memory, and agent tuning. Each unit includes runnable code snapshots. The tutorial doubles as user-acceptance testing for the framework, validating API design completeness through real usage.
+**Companion project — [ARF App](https://gitee.com/dalaydata/arf_app_021)**: A 11-unit progressive tutorial that teaches building on ARF from zero to a production Agent — covering Hello ARF → Session Management → Tools → Approval → Guardrails → Memory → Agent Tuning → Trace → Eval → LLM as Judge → Version Persistence. Each unit includes runnable code snapshots. The tutorial doubles as user-acceptance testing for the framework, validating API design completeness through real usage.
 
 <br/>
 

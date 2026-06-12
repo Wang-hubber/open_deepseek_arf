@@ -43,7 +43,7 @@ ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式
 - **作为 MVP**：ARF 实现了完整硬线——安全、错误恢复、存档、追踪、测评、Action 执行、Hook 体系、Agent 编排。软线（LoRA MOE 路由 + 在线 SFT 管线）为实验一至四的建设目标。
 - **作为研究脚手架**：ARF 为全部五项实验提供统一台架——五个单维度验证（策略、身份、记忆、知识、TFlow 通信）加终局对比（热机 LoRA MOE vs 冷启动纯 ICL Harness）。
 
-**配套教学项目 — [ARF App](https://gitee.com/dalaydata/arf_app_021)**：7 单元渐进式教程，覆盖从零构建 ARF 应用到生产级 Agent 的完整链路——Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优。每单元含可运行代码快照。教程同时作为框架的用户验收测试，在真实使用中验证 API 设计的完备性。
+**配套教学项目 — [ARF App](https://gitee.com/dalaydata/arf_app_021)**：11 单元渐进式教程，覆盖从零构建 ARF 应用到生产级 Agent 的完整链路——Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优 → Trace 轨迹 → Eval 测评 → LLM as Judge → 版本持久化。每单元含可运行代码快照。教程同时作为框架的用户验收测试，在真实使用中验证 API 设计的完备性。
 
 <br/>
 
