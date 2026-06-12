@@ -50,6 +50,7 @@ agent_models:
     def test_agent_config_resolves_plugin_model(self):
         """get_plugin_model_config should resolve plugin model ref."""
         from arf.agent.config import AgentConfig
+        from arf.core.model_registry import ResolvedModelConfig
 
         config_yaml = """
 name: test_agent
@@ -65,10 +66,10 @@ plugins_config:
 """
         cfg = AgentConfig(**yaml.safe_load(config_yaml))
         pcfg = cfg.get_plugin_model_config("compaction")
-        assert pcfg is not None
-        assert pcfg["model"] == "flash"
-        assert pcfg["api_base"] == "https://x.com"
-        assert pcfg["kwargs"]["temperature"] == 0.7
+        assert isinstance(pcfg, ResolvedModelConfig)
+        assert pcfg.model == "flash"
+        assert pcfg.api_base == "https://x.com"
+        assert pcfg.kwargs["temperature"] == 0.7
 
     def test_agent_config_returns_none_for_old_format(self):
         """When model_defs is empty, get_model_registry returns None."""
@@ -86,3 +87,103 @@ models:
         assert cfg.get_model_registry() is None
         assert cfg.get_agent_model_configs() is None
         assert cfg.get_plugin_model_config("compaction") is None
+
+    def test_plugin_model_config_returns_resolved_model_config(self):
+        """get_plugin_model_config should return ResolvedModelConfig, not dict."""
+        from arf.agent.config import AgentConfig
+        from arf.core.model_registry import ResolvedModelConfig
+
+        config_yaml = """
+name: test_agent
+model_defs:
+  - model: flash
+    api_base: https://x.com
+    api_key_env: K
+    kwargs:
+      temperature: 0.7
+plugins_config:
+  compaction:
+    model: flash
+"""
+        cfg = AgentConfig(**yaml.safe_load(config_yaml))
+        pcfg = cfg.get_plugin_model_config("compaction")
+        assert isinstance(pcfg, ResolvedModelConfig)
+        assert pcfg.model == "flash"
+        assert pcfg.api_base == "https://x.com"
+        assert pcfg.kwargs["temperature"] == 0.7
+
+    def test_plugin_model_config_inline_mode(self):
+        """When model name not in model_defs, treat plugin config as inline definition."""
+        from arf.agent.config import AgentConfig
+        from arf.core.model_registry import ResolvedModelConfig
+
+        config_yaml = """
+name: test_agent
+model_defs:
+  - model: pro
+    api_base: https://x.com
+    api_key_env: K
+plugins_config:
+  eval:
+    model: gpt-4
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    kwargs:
+      temperature: 0.0
+"""
+        cfg = AgentConfig(**yaml.safe_load(config_yaml))
+        pcfg = cfg.get_plugin_model_config("eval")
+        assert isinstance(pcfg, ResolvedModelConfig)
+        assert pcfg.model == "gpt-4"
+        assert pcfg.api_base == "https://api.openai.com/v1"
+        assert pcfg.api_key_env == "OPENAI_API_KEY"
+        assert pcfg.kwargs["temperature"] == 0.0
+
+    def test_plugin_model_config_inline_defaults(self):
+        """Inline mode uses framework defaults for api_base/api_key_env when omitted."""
+        from arf.agent.config import AgentConfig
+        from arf.core.model_registry import ResolvedModelConfig
+
+        config_yaml = """
+name: test_agent
+model_defs:
+  - model: pro
+    api_base: https://x.com
+    api_key_env: K
+plugins_config:
+  eval:
+    model: local-model
+    kwargs:
+      temperature: 0.0
+"""
+        cfg = AgentConfig(**yaml.safe_load(config_yaml))
+        pcfg = cfg.get_plugin_model_config("eval")
+        assert pcfg.api_base == "https://api.deepseek.com"
+        assert pcfg.api_key_env == "DEEPSEEK_API_KEY"
+
+    def test_plugin_model_config_ref_with_overrides(self):
+        """Reference mode: kwargs merge (definition base + plugin overrides)."""
+        from arf.agent.config import AgentConfig
+        from arf.core.model_registry import ResolvedModelConfig
+
+        config_yaml = """
+name: test_agent
+model_defs:
+  - model: flash
+    api_base: https://x.com
+    api_key_env: K
+    kwargs:
+      temperature: 0.7
+      reasoning_effort: high
+plugins_config:
+  eval:
+    model: flash
+    kwargs:
+      temperature: 0.0
+      max_tokens: 2000
+"""
+        cfg = AgentConfig(**yaml.safe_load(config_yaml))
+        pcfg = cfg.get_plugin_model_config("eval")
+        assert pcfg.kwargs["temperature"] == 0.0       # overridden
+        assert pcfg.kwargs["max_tokens"] == 2000        # added
+        assert pcfg.kwargs["reasoning_effort"] == "high"  # preserved

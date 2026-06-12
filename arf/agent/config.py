@@ -116,23 +116,38 @@ class AgentConfig(BaseModel):
         refs = self.agent_models or [{"model": n} for n in registry.list_names()]
         return registry.resolve_list(refs)
 
-    def get_plugin_model_config(self, plugin_name: str) -> dict | None:
-        """Resolve a plugin's model reference. Returns resolved config dict or None."""
+    def get_plugin_model_config(self, plugin_name: str) -> "ResolvedModelConfig | None":
+        """Resolve a plugin's model reference, returning ResolvedModelConfig or None.
+
+        Supports two modes:
+        - Reference: model name found in model_defs -> resolve + merge overrides
+        - Inline: model name NOT in model_defs -> treat plugin_cfg as full definition
+        """
+        from arf.core.model_registry import ResolvedModelConfig
+
         registry = self.get_model_registry()
         if not registry:
             return None
         plugin_cfg = self.plugins_config.get(plugin_name, {})
-        if isinstance(plugin_cfg, dict) and "model" in plugin_cfg:
-            name = plugin_cfg["model"]
-            overrides = {k: v for k, v in plugin_cfg.items() if k != "model"}
-            cfg = registry.resolve(name)
-            return {
-                "model": cfg.model,
-                "api_base": overrides.get("api_base", cfg.api_base),
-                "api_key_env": overrides.get("api_key_env", cfg.api_key_env),
-                "kwargs": {**cfg.kwargs, **overrides.get("kwargs", {})},
-            }
-        return None
+        if not isinstance(plugin_cfg, dict) or "model" not in plugin_cfg:
+            return None
+        model_name = plugin_cfg["model"]
+        overrides = {k: v for k, v in plugin_cfg.items() if k != "model"}
+        if registry.has(model_name):
+            cfg = registry.resolve(model_name)
+            return ResolvedModelConfig(
+                model=cfg.model,
+                api_base=overrides.get("api_base", cfg.api_base),
+                api_key_env=overrides.get("api_key_env", cfg.api_key_env),
+                kwargs={**cfg.kwargs, **overrides.get("kwargs", {})},
+            )
+        else:
+            return ResolvedModelConfig(
+                model=model_name,
+                api_base=overrides.get("api_base", "https://api.deepseek.com"),
+                api_key_env=overrides.get("api_key_env", "DEEPSEEK_API_KEY"),
+                kwargs=overrides.get("kwargs", {}),
+            )
 
     def effective_advanced(self) -> AdvancedConfig:
         if self.advanced is not None:
