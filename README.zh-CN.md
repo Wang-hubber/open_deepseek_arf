@@ -57,7 +57,7 @@ ARF 是研究论文 **[《Parameter Is All You Need——Harness 的全新范式
 
 **框架使用者** — 想基于 ARF 构建应用：
 
-- [研究路线图](#第一部分--研究路线图) → [框架骨架](#harness-即内核框架骨架) → [控制平面](#控制平面--结构化-state--生命周期) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，7 单元渐进式教程，从零到生产级 Agent
+- [研究路线图](#第一部分--研究路线图) → [框架骨架](#harness-即内核框架骨架) → [控制平面](#控制平面--结构化-state--生命周期) → [Plugin 体系](#plugin-体系反射弧非认知模块) → 然后移步 [ARF App 教学项目](https://gitee.com/dalaydata/arf_app_021)，11 单元渐进式教程，从零到生产级 Agent
 
 <br/>
 
