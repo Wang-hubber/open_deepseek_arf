@@ -53,21 +53,29 @@ class BaseAgent:
         ctx = app_context
         from pathlib import Path as _Path
 
-        # Resolve data root early — all data paths derive from here.
-        # Priority: config.data_path > ctx.root > cwd
-        if config.data_path and config.data_path != ".":
-            _data_root = str(_Path(config.data_path).resolve())
+        # Resolve data root early — all runtime data paths derive from here.
+        # Priority: config.data_path > ctx.root > cwd.
+        # When data_path is explicitly set, it IS the data directory (no extra nesting).
+        # When falling back to ctx.root, add "data/" subdir to separate from app source.
+        _explicit_data_path = config.data_path and config.data_path != "."
+        if _explicit_data_path:
+            _data_dir = str(_Path(config.data_path).resolve())
         elif ctx:
-            _data_root = str(ctx.root.resolve())
+            _data_dir = str(ctx.root.resolve() / "data")
         else:
-            _data_root = str(_Path(".").resolve())
+            _data_dir = str(_Path(".").resolve() / "data")
+
+        # workspace root for sandbox boundary
+        _data_root = str(_Path(config.data_path).resolve()) if _explicit_data_path else (
+            str(ctx.root.resolve()) if ctx else str(_Path(".").resolve())
+        )
 
         # Absorb removed protocol keys to prevent leakage into **override_protocols
         override_protocols.pop("transaction_ctx", None)
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        default_state_dir = str(_Path(_data_root) / "data" / "state")
+        default_state_dir = str(_Path(_data_dir) / "state")
         state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
 
         # 2. Resources — MCP-based unified management
@@ -147,16 +155,16 @@ class BaseAgent:
         self._file_watcher = file_watcher
 
         # 3. Data & workspace paths
-        _mem_dir = str(_Path(_data_root) / "data" / "memory")
-        _trace_dir = str(_Path(_data_root) / "data" / "traces")
+        _mem_dir = str(_Path(_data_dir) / "memory")
+        _trace_dir = str(_Path(_data_dir) / "traces")
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
             memory_dir=_mem_dir,
             workspace_dir=_data_root,
-            state_dir=str(_Path(_data_root) / "data" / "state"),
+            state_dir=str(_Path(_data_dir) / "state"),
             trace_dir=_trace_dir,
-            files_dir=str(_Path(_data_root) / "data" / "files"),
+            files_dir=str(_Path(_data_dir) / "files"),
             system_model="quick",
             model_configs={
                 m.type: {
@@ -371,7 +379,7 @@ class BaseAgent:
             max_turns=(adv.max_turns if adv else 50),
             workspace_dir=_workspace_root,
             memory_dir=_mem_dir,
-            state_dir=str(_Path(_data_root) / "data" / "state"),
+            state_dir=str(_Path(_data_dir) / "state"),
             trace_dir=_trace_dir,
             mcp_tool_resolver=_mcp_tool_resolver,
             call_timeout=(adv.call_timeout if adv else 120.0),
