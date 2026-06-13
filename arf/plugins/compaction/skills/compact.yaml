@@ -1,0 +1,15 @@
+name: compact
+description: Manual context compaction trigger
+prompt: |
+  # Context Compaction
+
+  When the conversation history gets long, use `compact` to summarize old messages
+  and free context window space. After compaction, the conversation continues
+  with a summary of earlier context.
+
+  Compaction is also triggered automatically when token usage exceeds the threshold.
+  Prefer manual compaction before reaching the automatic trigger point for a
+  smoother experience.
+tools:
+  - compact
+activation: kernel

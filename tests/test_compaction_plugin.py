@@ -108,20 +108,66 @@ class TestCompactionPlugin:
         # No compaction due to cooldown
         assert len(state.get("messages", [])) == len(messages)
 
-    def test_summarize_tool_output_short(self):
-        """Short output should be returned as-is."""
+    def test_compact_produces_boundary_marker(self):
+        """Compaction should insert compact_boundary + isCompactSummary messages."""
+        from arf.testing import InMemoryStateStore
         from arf.plugins.compaction.plugin import CompactionPlugin
 
-        plugin = CompactionPlugin()
-        result = asyncio.run(plugin.summarize_tool_output("read", "short", 1))
-        assert result == "short"
+        store = InMemoryStateStore()
+        messages = (
+            [{"role": "user", "content": "old msg"}] * 10 +
+            [{"role": "assistant", "content": "old reply"}] * 10
+        )
+        asyncio.run(store.put("test", {
+            "messages": messages,
+            "last_token_usage": 999,
+        }))
 
-    def test_summarize_tool_output_long_truncation(self):
-        """Long output should be truncated and saved to disk."""
+        plugin = CompactionPlugin({"threshold": 0.01, "window_size": 100, "keep_count": 2})
+        plugin.set_state_store(store)
+        ctx = PluginContext(session_id="test", interaction_round=5)
+
+        asyncio.run(plugin.on_hook("round_end", ctx))
+
+        state = asyncio.run(store.get("test"))
+        new_msgs = state.get("messages", [])
+
+        # First message should be compact_boundary
+        assert new_msgs[0]["role"] == "system"
+        assert new_msgs[0].get("subtype") == "compact_boundary"
+        assert "compactMetadata" in new_msgs[0]
+        assert new_msgs[0]["compactMetadata"]["trigger"] == "auto"
+
+        # Second message should be isCompactSummary
+        assert new_msgs[1]["role"] == "user"
+        assert new_msgs[1].get("isCompactSummary") is True
+
+        # Messages should be fewer than original
+        assert len(new_msgs) < len(messages)
+
+    def test_compact_boundary_metadata(self):
+        """compact_boundary should include metadata about the compaction."""
+        from arf.testing import InMemoryStateStore
         from arf.plugins.compaction.plugin import CompactionPlugin
 
-        plugin = CompactionPlugin({"workspace": "/tmp/arf-test-workspace"})
-        long_output = "x" * 3000
-        result = asyncio.run(plugin.summarize_tool_output("grep", long_output, 1))
-        assert "truncated" in result.lower()
-        assert len(result) < len(long_output)
+        store = InMemoryStateStore()
+        messages = (
+            [{"role": "user", "content": "msg"}] * 8 +
+            [{"role": "assistant", "content": "reply"}] * 8
+        )
+        asyncio.run(store.put("test", {
+            "messages": messages,
+            "last_token_usage": 999,
+        }))
+
+        plugin = CompactionPlugin({"threshold": 0.01, "window_size": 100, "keep_count": 3})
+        plugin.set_state_store(store)
+        ctx = PluginContext(session_id="test", interaction_round=5)
+
+        asyncio.run(plugin.on_hook("round_end", ctx))
+
+        state = asyncio.run(store.get("test"))
+        boundary = state["messages"][0]
+        meta = boundary["compactMetadata"]
+        assert meta["trigger"] == "auto"
+        assert meta["compactedCount"] > 0

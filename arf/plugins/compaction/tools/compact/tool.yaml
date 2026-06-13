@@ -1,0 +1,9 @@
+name: compact
+description: Manually trigger context compaction. Summarizes old messages and inserts a compact boundary marker, keeping recent messages intact. Use when the conversation is getting long and you want to free context space.
+parameters:
+  type: object
+  properties: {}
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
