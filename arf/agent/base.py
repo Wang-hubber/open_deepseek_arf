@@ -182,10 +182,13 @@ class BaseAgent:
         _workspace_override = override_protocols.pop("workspace_root", None)
         if _workspace_override:
             _workspace_root = str(Path(_workspace_override).resolve())
+            _allow_paths_list = None
         elif config.allow_paths:
             _workspace_root = str(Path(config.allow_paths[0]).resolve())
+            _allow_paths_list = config.allow_paths if len(config.allow_paths) > 1 else None
         else:
             _workspace_root = _data_root
+            _allow_paths_list = None
         sandbox_cfg = adv.sandbox if adv else None
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
@@ -209,7 +212,9 @@ class BaseAgent:
 
             # Build per-tool directory boundaries from tool.yaml allowed_dir
             from arf.sandbox.directory_boundary import DirectoryBoundary
-            default_boundary = DirectoryBoundary(_workspace_root)
+            default_boundary = DirectoryBoundary(
+                _allow_paths_list if _allow_paths_list else _workspace_root
+            )
             tool_boundaries: dict[str, DirectoryBoundary] = {}
             all_tool_defs = []
             try:

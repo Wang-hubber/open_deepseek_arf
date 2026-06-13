@@ -93,13 +93,13 @@ allow_paths:                  # 允许操作的文件路径，默认 = [data_pat
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `data_path` | app root | 数据存储根目录（state/trace/memory 落在此路径下） |
-| `allow_paths` | `[data_path]` | 文件操作沙箱边界，支持多路径 |
+| `allow_paths` | `[data_path]` | 文件操作沙箱边界，支持多路径。`PathCheckToolGuard` 只放行 resolve 后落在列表内的路径 |
 
 不传则自动 fallback 到项目根目录，完全向后兼容。传了则两者独立：
 
 ```yaml
-data_path: ./builtin           # 数据隔离到 builtin/data/
-allow_paths: [.]               # 操作范围覆盖项目根
+data_path: ./builtin               # 数据隔离到 builtin/
+allow_paths: [., /shared/ws]       # 操作范围覆盖项目根 + 共享工作区
 ```
 
 ### 控制平面集成
