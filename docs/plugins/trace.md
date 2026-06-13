@@ -40,7 +40,9 @@
 - `read_trace(session_id)` — 读取指定会话的完整 JSONL trace
 - `list_sessions()` — 枚举所有已记录的会话
 
-## 配置
+## 配置快照
+
+首次 trace 写入时自动生成配置快照，保存到 `{trace_dir}/snapshots/{hash}.xml`。内容寻址——相同配置复用同一快照文件。
 
 ```yaml
 plugins:
@@ -48,5 +50,7 @@ plugins:
 
 plugins_config:
   trace:
-    trace_dir: ./data/traces
+    trace_dir: ./data/traces      # 可手动覆盖，默认随 data_path
 ```
+
+框架启动时自动注入 computed `trace_dir`（来自 `data_path`），无需手动配置。仅在需要独立路径时才覆盖。

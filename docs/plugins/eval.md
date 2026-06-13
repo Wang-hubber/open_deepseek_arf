@@ -25,6 +25,18 @@
 | `OutputQualityMetric` | LLM 评分 1-5（支持带/不带参考） |
 | `TrajectorySimilarityMetric` | 与 golden_trajectory 的相似度（LLM 评分 1-5） |
 
+## 产物目录
+
+```
+eval/                              # 默认 ./eval/，永久存储（非运行时数据）
+├── snapshots/
+│   └── a1b2c3d4e5f6.xml           # 配置快照（内容寻址，同配置复用）
+├── my_benchmark.json               # benchmark 定义
+└── report_my_benchmark.json        # eval report（含 snapshot_hash）
+```
+
+每次 eval 运行时自动保存配置快照到 `{eval_dir}/snapshots/{hash}.xml`。
+
 ## 配置
 
 ```yaml
@@ -33,6 +45,8 @@ plugins:
 
 plugins_config:
   eval:
+    eval_dir: ./eval              # 产物目录（默认 ./eval/）
+    trace_dir: ./data/traces       # 读取 trace 的来源
     judge:
       model: deepseek-v4
       system_prompt: "You are an expert evaluator..."
