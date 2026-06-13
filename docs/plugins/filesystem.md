@@ -1,6 +1,6 @@
 # Filesystem Plugin 工具参考
 
-> ARF 内置文件系统操作插件，完全对齐 MCP `@modelcontextprotocol/server-filesystem` v0.2.0 API。
+> ARF 内置文件系统操作插件。核心对齐 MCP `@modelcontextprotocol/server-filesystem` v0.2.0 API，扩展 `search_content`（内容搜索）、`delete_file`（删除）。
 > 纯 Python 实现，零外部依赖。安全由框架层 `PathCheckToolGuard` 统一拦截。
 
 ## 工具清单
@@ -21,6 +21,7 @@
 | `list_directory_with_sizes` | Get a detailed listing including file sizes. Results distinguish between files and directories with `[FILE]` and `[DIR]` prefixes. Includes summary with total files, directories, and combined size. | 列出目录内容并显示文件大小（人类可读格式）。支持按名称或大小排序。末尾输出统计摘要（文件数、目录数、总大小）。 |
 | `directory_tree` | Get a recursive tree view of files and directories as a JSON structure. Each entry includes name, type (file/directory), and children for directories. Files have no children array, directories always have a children array (may be empty). | 递归生成目录树，返回 JSON 结构。每个节点包含 name、type（`"file"` / `"directory"`）和可选的 children 数组。目录始终有 children（可能为空），文件不含 children。支持 excludePatterns 过滤。 |
 | `search_files` | Recursively search for files and directories matching a glob pattern. Use patterns like `*.ext` to match files in current directory, and `**/*.ext` to match files in all subdirectories. Returns full paths to all matching items. | 递归搜索匹配 glob 模式的文件和目录。`*.py` 只匹配当前目录，`**/*.py` 匹配所有子目录。自动排除 `.git`、`__pycache__`、`node_modules` 等常见忽略目录。最多返回 500 条结果。 |
+| `search_content` | Search for text patterns within file contents. Recursively searches files under the given path. Supports literal text search (default) or regex mode. Respects include/exclude glob patterns. | 递归搜索文件内容。默认字面量匹配，`regex=true` 切换正则模式。支持 `include`（文件名 glob 过滤）和 `excludePatterns`（排除 glob）。自动跳过二进制文件。最多返回 100 条结果。 |
 
 ### 信息
 
