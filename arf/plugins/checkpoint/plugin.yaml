@@ -1,5 +1,0 @@
-name: checkpoint
-enabled: true
-description: "Round-level checkpoint and undo via RoundManager"
-config:
-  max_undo_depth: 3

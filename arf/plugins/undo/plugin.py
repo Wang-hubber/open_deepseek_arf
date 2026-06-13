@@ -21,4 +21,4 @@ class UndoPlugin:
         return {"round_end": "blocking"}
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
-        pass  # checkpoint snapshots handled by CheckpointPlugin
+        pass  # round-end hooks handled by engine checkpoint infrastructure
