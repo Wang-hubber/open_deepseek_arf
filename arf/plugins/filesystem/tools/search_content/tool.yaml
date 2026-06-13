@@ -1,0 +1,32 @@
+name: search_content
+description: Search for text patterns within file contents. Recursively searches files under the given path. Supports literal text search (default) or regex mode. Respects include/exclude glob patterns.
+parameters:
+  type: object
+  properties:
+    pattern:
+      type: string
+      description: Text or regex pattern to search for
+    path:
+      type: string
+      description: Directory path to search in
+    regex:
+      type: boolean
+      description: Treat pattern as regex (default: false — literal text search)
+      default: false
+    include:
+      type: string
+      description: Comma-separated glob patterns to filter files (e.g. "*.py,*.md")
+    excludePatterns:
+      type: array
+      items:
+        type: string
+      description: Glob patterns to exclude from search
+    maxResults:
+      type: integer
+      description: Maximum results to return
+      default: 100
+  required:
+    - pattern
+    - path
+annotations:
+  readOnlyHint: true
