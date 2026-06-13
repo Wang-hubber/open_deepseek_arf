@@ -78,6 +78,39 @@ plugins_config:
 
 不再有 `_SPECIAL_PLUGINS` — 所有 Plugin 待遇一致。
 
+### 沙箱与工作区边界
+
+`workspace_root` 控制文件操作的沙箱边界，与数据路径（state/trace/memory）独立。配置优先级：
+
+```yaml
+# agent.yaml
+advanced:
+  sandbox:
+    workspace_root: /project/root    # 操作边界（可选，默认 = app root）
+```
+
+```python
+# 构造时覆盖（最高优先级）
+agent = BaseAgent(config, app_context=ctx, workspace_root="/project/root")
+```
+
+| 配置路径 | 优先级 | 说明 |
+|---------|--------|------|
+| `BaseAgent(workspace_root=...)` | 1（最高） | 构造时覆盖 |
+| `advanced.sandbox.workspace_root` | 2 | agent.yaml |
+| `AppContext.root` | 3（默认） | 操作边界 = 数据根目录 |
+
+典型场景：builtin agent 需要数据隔离（`builtin/data/`）但操作范围覆盖项目根：
+
+```yaml
+app_context:
+  root: ./builtin            # data → builtin/data/
+
+advanced:
+  sandbox:
+    workspace_root: .         # 操作边界 → 项目根
+```
+
 ### 控制平面集成
 
 部分能力已从 Plugin 吸收到 `ControlPlane` 内建：
