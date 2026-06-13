@@ -10,7 +10,7 @@
 
 | Plugin | 类型 | Hook 挂载点 | 说明 |
 |--------|------|------------|------|
-| `tool_guard` | blocking | `pre_action` | 双层安全：PermissionRegistry deny→ask→allow + PathSandbox 路径遍历拦截 |
+| `tool_guard` | blocking | `pre_action` | 模式感知安全：auto 放行、plan 只读（readOnlyHint）、ask 列表匹配 + PathSandbox |
 | `approval` | blocking | `pre_action` | 人机审批。ask_list 中的工具需人工确认，60s 超时，支持内联 chat |
 | `error_handler` | blocking | `error` | 五动作恢复路由：fallback(compact/repair)、retry(指数退避)、skip、abort |
 | `compaction` | blocking | `round_end` | Token 感知上下文压缩。达阈值时 LLM 摘要旧轮次，带冷却机制 |
@@ -56,10 +56,32 @@
 
 `BaseAgent.build_engine()` 自动通过 `PluginProvider` 发现和加载 Plugin。`AgentConfig.plugins: [...]` 白名单控制激活。Plugin 按 hook mode 分为 blocking / side 两组，分别交给 `InProcessHookRunner` 和 `SubprocessHookRunner`。
 
+### 配置
+
+所有 Plugin 统一通过 `AgentConfig.plugins_config` 配置，`PluginProvider` 自动合并 `plugin.yaml` 默认值。工具名使用裸名，框架在运行时通过 `set_name_resolver()` 注入解析器。
+
+```yaml
+plugins:
+  - tool_guard
+  - approval
+  - compaction
+
+plugins_config:
+  tool_guard:
+    deny: [rm, bash]
+    ask: [write_file, delete_file]
+    sandbox_check: true
+  compaction:
+    threshold: 0.8
+    keep_count: 10
+```
+
+不再有 `_SPECIAL_PLUGINS` — 所有 Plugin 待遇一致。
+
 ### 控制平面集成
 
 部分能力已从 Plugin 吸收到 `ControlPlane` 内建：
-- **session_mode** — `SessionModeManager` 内建于 ControlPlane，`set_session_mode()` 发射 `session_policy_switch` 事件
+- **session_mode** — `SessionModeManager` 内建于 ControlPlane，`set_session_mode()` 发射 `session_policy_switch` 事件。`effective_mode` 在 `pre_action` 前注入 `ctx.hook_data`
 - **validate_messages** — `ControlPlane._validate_messages()` 在每次 call_model 前校验消息合约
 
 ---
@@ -110,3 +132,4 @@ class MyPlugin:
 - blocking Hook 抛异常会中止当前 turn，路由到 error_handler
 - side Hook 异常静默吞掉，仅日志记录
 - 工具型 Plugin 不需要 `plugin.py`，只需 `tools/` + `skills/` 目录
+- **每个 Tool 的 `tool.yaml` 必须声明 `annotations.readOnlyHint`**（`true`/`false`）。plan 模式下未声明的工具会被拒绝
