@@ -34,6 +34,7 @@ class ToolGuardPlugin:
         )
         self._registry = PermissionRegistry()
         self._sandbox = PathSandbox() if cfg.get("sandbox_check", True) else None
+        self._name_resolver = None  # injected by base.py after plugin construction
 
     @property
     def name(self) -> str:
@@ -42,6 +43,10 @@ class ToolGuardPlugin:
     @property
     def hooks(self) -> dict[str, str]:
         return {"pre_action": "blocking"}
+
+    def set_name_resolver(self, resolver) -> None:
+        """Inject tool name → namespaced name resolver (called by base.py)."""
+        self._name_resolver = resolver
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if ctx.current_step != "execute_tools":
@@ -52,8 +57,11 @@ class ToolGuardPlugin:
             name = tc.get("name", "")
             params = tc.get("params", {})
 
+            # Resolve bare names → namespaced names at check time
+            resolved_name = self._name_resolver(name) if self._name_resolver else name
+
             # Layer 1: Permission policy (deny/ask/allow)
-            result = self._registry.evaluate(name, params, self._lists)
+            result = self._registry.evaluate(resolved_name, params, self._lists)
             if result.action == "deny":
                 for tc_cleanup in tool_calls:
                     event_data = {

@@ -316,44 +316,14 @@ class BaseAgent:
                 return matches[0]
             return f"user__{name}"  # unknown source, assume app tool
 
-        _namespaced_deny = [_resolve_perm_name(t) for t in main_permission_lists.deny]
-        _namespaced_ask = [_resolve_perm_name(t) for t in main_permission_lists.ask]
-        _namespaced_allow = [_resolve_perm_name(t) for t in main_permission_lists.allow]
-
-        # Merge deny_patterns from two config sources:
-        # 1. permissions.deny_patterns — string patterns from PermissionsConfig
-        # 2. content_guard.dangerous_patterns — structured rules from ContentGuardConfig
-        _all_deny_patterns = list(main_permission_lists.deny_patterns)
-        if gr_cfg and gr_cfg.content_guard:
-            for dp in gr_cfg.content_guard.dangerous_patterns:
-                _all_deny_patterns.append(dp.pattern)
-
-        # Blocking plugins run in registration order:
-        # 1. ToolGuardPlugin — deny (immediate rejection) + allow (bypass)
-        # 2. ApprovalPlugin — ask (human-in-the-loop wait)
+        # All plugins are treated equally — no SPECIAL handling.
+        # tool_guard and approval get their config from plugins_config in agent.yaml.
+        # Namespace resolution for tool names is injected at runtime via set_name_resolver().
         blocking_plugins: list = []
-        if _namespaced_deny or _namespaced_allow or _all_deny_patterns:
-            from arf.plugins.tool_guard.plugin import ToolGuardPlugin
-            blocking_plugins.append(ToolGuardPlugin({
-                "deny": _namespaced_deny,
-                "allow": _namespaced_allow,
-                "deny_patterns": _all_deny_patterns,
-                "sandbox_check": False,  # PathCheckToolGuard handles this
-            }))
-        if _namespaced_ask:
-            from arf.plugins.approval.plugin import ApprovalPlugin
-            blocking_plugins.append(ApprovalPlugin({"ask_list": _namespaced_ask}))
-
-        # Auto-discovered framework plugins (blocking + side).
-        # tool_guard and approval are constructed separately with merged
-        # permission config — skip their auto-discovered instances.
-        _SPECIAL_PLUGINS = {"tool_guard", "approval", "session_mode"}
-        _obs_cfg = adv.observability if adv else None
         side_plugins: list = []
+        _obs_cfg = adv.observability if adv else None
         if self._plugin_provider:
             for p in self._plugin_provider.list_plugins():
-                if p.name in _SPECIAL_PLUGINS:
-                    continue
                 has_side = any(m == "side" for m in p.hooks.values())
                 has_blocking = any(m == "blocking" for m in p.hooks.values())
                 if has_blocking:
@@ -362,6 +332,9 @@ class BaseAgent:
                     side_plugins.append(p)
                 if hasattr(p, "set_state_store"):
                     p.set_state_store(state_store)
+                # Inject name resolver so plugins can resolve bare → namespaced tool names
+                if hasattr(p, "set_name_resolver"):
+                    p.set_name_resolver(_resolve_perm_name)
 
         # Wire event_bus into plugins that need it
 
