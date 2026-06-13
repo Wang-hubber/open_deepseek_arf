@@ -1,4 +1,4 @@
-"""ToolGuardPlugin — merged permission policy + parameter security check."""
+"""ToolGuardPlugin — mode-aware permission policy + parameter security check."""
 from arf.core.plugin_context import PluginContext
 from arf.session import PermissionLists, PermissionRegistry
 from arf.sandbox.path_sandbox import PathSandbox
@@ -17,11 +17,13 @@ class SandboxViolation(ToolGuardError):
 
 
 class ToolGuardPlugin:
-    """Unified tool permission + security check plugin.
+    """Mode-aware tool permission + security check plugin.
 
-    Two-layer enforcement:
-      Layer 1 — Permission policy (deny/ask/allow lists)
-      Layer 2 — Sandbox security (path traversal, suspicious parameters)
+    Three-layer enforcement gated by effective_mode:
+      auto  — all tools allowed (skip checks)
+      plan  — read-only tools allowed (via readOnlyHint annotation);
+              side-effect tools denied
+      ask   — standard deny/ask/allow list matching
     """
 
     def __init__(self, config: dict | None = None):
@@ -59,6 +61,15 @@ class ToolGuardPlugin:
         if ctx.current_step != "execute_tools":
             return
 
+        # Read effective session mode (set by ControlPlane before pre_action)
+        effective_mode = ctx.hook_data.get("effective_mode", "ask")
+
+        # Build lookup: tool_name → annotations dict from MCP tool definitions
+        tool_annotations: dict[str, dict] = {}
+        for td in ctx.tool_definitions:
+            tname = td.get("name", "")
+            tool_annotations[tname] = td.get("annotations", {})
+
         tool_calls = ctx.state.get("_pending_tool_calls", [])
         for tc in tool_calls:
             name = tc.get("name", "")
@@ -67,44 +78,23 @@ class ToolGuardPlugin:
             # Resolve bare names → namespaced names at check time
             resolved_name = self._name_resolver(name) if self._name_resolver else name
 
-            # Layer 1: Permission policy (deny/ask/allow)
+            # --- auto mode: all tools allowed, skip checks ---
+            if effective_mode == "auto":
+                continue
+
+            # --- plan mode: read-only tools only ---
+            if effective_mode == "plan":
+                ann = tool_annotations.get(name, {})
+                if ann.get("readOnlyHint") is not True:
+                    self._block_all(tool_calls, ctx,
+                                    f"PLAN mode: tool '{name}' has side effects")
+                    raise PermissionDenied(f"Tool '{name}' denied in plan mode")
+                continue
+
+            # --- ask mode: standard list-based permission checks ---
             result = self._registry.evaluate(resolved_name, params, self._lists)
             if result.action == "deny":
-                for tc_cleanup in tool_calls:
-                    event_data = {
-                        "tool_name": tc_cleanup.get("name", ""),
-                        "id": tc_cleanup.get("id", ""),
-                    }
-                    ctx.emit("tool_call_start", {
-                        **event_data,
-                        "arguments": tc_cleanup.get("params", {}),
-                    })
-                    ctx.inject_engine_event("tool_call_start", {
-                        **event_data,
-                        "arguments": tc_cleanup.get("params", {}),
-                    })
-                    ctx.emit("tool_call_end", {
-                        **event_data,
-                        "success": False,
-                        "blocked": True,
-                        "result": f"Blocked: {result.reason}",
-                        "error": f"Blocked: {result.reason}",
-                    })
-                    ctx.inject_engine_event("tool_call_end", {
-                        **event_data,
-                        "success": False,
-                        "blocked": True,
-                        "result": f"Blocked: {result.reason}",
-                        "error": f"Blocked: {result.reason}",
-                    })
-                msgs = ctx.state.setdefault("messages", [])
-                for tc_cleanup in tool_calls:
-                    msgs.append({
-                        "role": "tool",
-                        "tool_call_id": tc_cleanup.get("id", ""),
-                        "content": f"[blocked] {result.reason}",
-                    })
-                ctx.state["_pending_tool_calls"] = []
+                self._block_all(tool_calls, ctx, result.reason)
                 raise PermissionDenied(f"Tool '{name}' denied")
 
             # Layer 2: Security check (path traversal, injection)
@@ -123,4 +113,46 @@ class ToolGuardPlugin:
                                 "content": "[blocked] sandbox violation",
                             })
                         ctx.state["_pending_tool_calls"] = []
-                        raise SandboxViolation(f"Tool '{name}' sandbox violation")
+                        raise SandboxViolation(f"Tool '{name}': sandbox violation in param '{key}'")
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _block_all(self, tool_calls: list, ctx: PluginContext, reason: str) -> None:
+        """Inject blocked events + messages for all pending tool calls."""
+        for tc in tool_calls:
+            event_data = {
+                "tool_name": tc.get("name", ""),
+                "id": tc.get("id", ""),
+            }
+            ctx.emit("tool_call_start", {
+                **event_data,
+                "arguments": tc.get("params", {}),
+            })
+            ctx.inject_engine_event("tool_call_start", {
+                **event_data,
+                "arguments": tc.get("params", {}),
+            })
+            ctx.emit("tool_call_end", {
+                **event_data,
+                "success": False,
+                "blocked": True,
+                "result": f"Blocked: {reason}",
+                "error": f"Blocked: {reason}",
+            })
+            ctx.inject_engine_event("tool_call_end", {
+                **event_data,
+                "success": False,
+                "blocked": True,
+                "result": f"Blocked: {reason}",
+                "error": f"Blocked: {reason}",
+            })
+        msgs = ctx.state.setdefault("messages", [])
+        for tc in tool_calls:
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", ""),
+                "content": f"[blocked] {reason}",
+            })
+        ctx.state["_pending_tool_calls"] = []
