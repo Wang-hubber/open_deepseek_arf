@@ -64,6 +64,9 @@ class BaseAgent:
             _data_dir = str(ctx.root.resolve() / "data")
         else:
             _data_dir = str(_Path(".").resolve() / "data")
+        # Auto-create data directory + subdirs if they don't exist
+        for _sub in ("state", "traces", "memory", "files"):
+            (_Path(_data_dir) / _sub).mkdir(parents=True, exist_ok=True)
 
         # workspace root for sandbox boundary
         _data_root = str(_Path(config.data_path).resolve()) if _explicit_data_path else (
