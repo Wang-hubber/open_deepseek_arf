@@ -11,6 +11,7 @@ from arf.core.plugin_context import PluginContext
 from arf.engine.gate import GateChecker
 from arf.hooks.in_process_runner import InProcessHookRunner
 from arf.hooks.runner import SubprocessHookRunner
+from arf.session import SessionModeManager, SessionMode
 
 logger = logging.getLogger("arf.engine")
 
@@ -38,6 +39,7 @@ class ControlPlane:
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
+        session_mode_manager: SessionModeManager | None = None,
     ):
         self.loop_strategy = None  # removed — kept for compat during migration
         self.gate = GateChecker(max_turns=max_turns)
@@ -56,6 +58,7 @@ class ControlPlane:
         self._mcp_tool_resolver = mcp_tool_resolver
         self._call_timeout = call_timeout
         self._session_timeout = session_timeout
+        self._session_mode_manager = session_mode_manager or SessionModeManager(global_mode=SessionMode.ASK)
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -69,6 +72,40 @@ class ControlPlane:
 
     def set_cancel_event(self, event: asyncio.Event) -> None:
         self._cancel_event = event
+
+    # ==================================================================
+    # Session policy (was SessionModePlugin — absorbed into ControlPlane)
+    # ==================================================================
+
+    @property
+    def session_mode(self) -> SessionMode:
+        """Current global session mode (auto/ask/plan)."""
+        return self._session_mode_manager.global_mode
+
+    async def set_session_mode(self, mode: SessionMode | str, session_id: str = "") -> None:
+        """Switch session policy at runtime, emitting session_policy_switch event.
+
+        The app layer can consume session_policy_switch events to trigger
+        UI transitions. The event carries the new mode and allows the app
+        to echo back confirmation via external input.
+        """
+        if isinstance(mode, str):
+            mode = SessionMode(mode)
+        old_mode = self._session_mode_manager.global_mode
+        if mode == old_mode:
+            return
+        self._session_mode_manager.set_global(mode)
+        event = self._make_event("session_policy_switch", {
+            "mode": mode.value,
+            "previous_mode": old_mode.value,
+        }, session_id=session_id)
+        if self.event_bus:
+            await self.event_bus.emit(event)
+        logger.info("Session policy switched: %s → %s (session=%s)", old_mode.value, mode.value, session_id)
+
+    def resolve_effective_mode(self, agent_policy=None) -> SessionMode:
+        """Resolve effective permission mode for the current agent."""
+        return self._session_mode_manager.resolve(agent_policy)
 
     # ==================================================================
     # Core execution loop
@@ -205,6 +242,8 @@ class ControlPlane:
                 # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
                 if has_tool_calls:
                     ctx.current_step = "execute_tools"
+                    # Inject effective session mode into hook_data (absorbed from SessionModePlugin)
+                    ctx.hook_data["effective_mode"] = self._session_mode_manager.resolve(None)
                     try:
                         async for event in self._fire_and_drain("pre_action", ctx):
                             yield event

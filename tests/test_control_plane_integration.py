@@ -4,7 +4,6 @@ from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
 from arf.plugins.validate_messages.plugin import ValidateMessagesPlugin
-from arf.plugins.session_mode.plugin import SessionModePlugin
 from arf.plugins.tool_guard.plugin import ToolGuardPlugin
 from arf.plugins.trace.plugin import TracePlugin
 
@@ -37,7 +36,6 @@ def _make_plugins():
         "blocking": [
             ErrorHandlerPlugin(),
             ValidateMessagesPlugin(),
-            SessionModePlugin(),
             ToolGuardPlugin({"deny_list": ["rm"]}),
         ],
         "side": [trace],
