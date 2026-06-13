@@ -1,109 +1,70 @@
 # Plugin 体系
 
-> **Plugin ≠ Tool.** Tool 是 Agent 调用的 MCP 资源。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发，如同生物的反射弧。
+> **Plugin ≠ Tool.** Tool 是 Agent 调用的 MCP 资源。Plugin 是挂载在 Hook 点上的行为——在框架生命周期事件时自动触发。
 >
-> 框架无 Plugin 也能运行完整的 Agent Loop。Plugin 添加预设或可定制的能力。当 Plugin 需要智能（记忆提取、上下文摘要），它通过标准 `_call_model` 接口调用模型——**智能来自模型，而非 Plugin**。
+> 框架无 Plugin 也能运行完整的 Agent Loop。Plugin 添加可插拔的能力。
 
 ---
 
-## 一、架构机制
+## 当前 Plugin（10 个）
+
+| Plugin | 类型 | Hook 挂载点 | 说明 |
+|--------|------|------------|------|
+| `tool_guard` | blocking | `pre_action` | 双层安全：PermissionRegistry deny→ask→allow + PathSandbox 路径遍历拦截 |
+| `approval` | blocking | `pre_action` | 人机审批。ask_list 中的工具需人工确认，60s 超时，支持内联 chat |
+| `error_handler` | blocking | `error` | 五动作恢复路由：fallback(compact/repair)、retry(指数退避)、skip、abort |
+| `compaction` | blocking | `round_end` | Token 感知上下文压缩。达阈值时 LLM 摘要旧轮次，带冷却机制 |
+| `memory` | side | `round_end`, `session_end` | 长期记忆提取。子进程调用模型，原子写入 memory.md |
+| `trace` | side | 全部 9 个 hook | 跨切面 JSONL 事件记录。内容寻址配置快照 |
+| `undo` | blocking | `round_start`, `round_end` | Round 级 checkpoint + 回滚。状态深拷贝 + 工作区文件快照 |
+| `plan_solve` | blocking | `pre_action`, `round_start` | DAG 依赖校验 + 断点检测。提供 plan_create/dispatch/summarize/status 工具族 |
+| `filesystem` | 工具/Skill 提供者 | 无（纯工具插件） | 14 个 MCP 对齐文件操作工具（read/write/edit/search/list/delete/move） |
+| `eval` | 离线 | 无（显式调用） | 回放 trace、6 种 LLM 指标、diff 报告 |
+
+---
+
+## 9 个 Hook 注入点
+
+| Hook | 触发时机 | 挂载 Plugin |
+|------|---------|------------|
+| `session_start` | 会话初始化 | trace |
+| `round_start` | 每轮开始 | undo（begin_round）、plan_solve、trace |
+| `turn_start` | 每次迭代开始 | trace |
+| `pre_action` | 模型调用 / 工具执行前 | tool_guard、approval、plan_solve、trace |
+| `post_action` | 模型调用 / 工具执行后 | trace |
+| `turn_end` | 迭代结束 | trace |
+| `round_end` | 轮次结束 | compaction、memory、undo（close_round）、trace |
+| `session_end` | 会话结束 | memory、trace |
+| `error` | 异常发生时 | error_handler、trace |
+
+**blocking** — 引擎等待执行完毕，异常传播到 error_handler。用于安全、状态修改。
+**side** — 引擎不等待，异常被静默吞掉。用于日志、指标、记忆提取。
+
+---
+
+## 架构
 
 ### 自动发现
 
-`PluginLoader` 扫描 `arf/plugins/{name}/` 目录，每个子目录即一个 Plugin。无需手动注册。发现规则：
+`PluginProvider` 扫描 `arf/plugins/{name}/`，每个子目录即一个 Plugin：
 
-1. 查找 `plugin.yaml`（fallback `config.yaml`）获取元数据和配置
-2. 查找 `plugin.py`，动态导入，定位以 `Plugin` 结尾的类（实现了 `PluginProtocol`）
-3. 若只有 `plugin.yaml` 而无 `plugin.py`，该 Plugin 为 Tool/Skill 提供者（如 `file_tools`、`planner`），不参与生命周期 Hook
+1. 查找 `plugin.yaml` 获取元数据和配置
+2. 查找 `plugin.py`，动态导入，定位 `*Plugin` 类（实现 `PluginProtocol`）
+3. 若只有 `tools/` 和 `skills/` 而无 `plugin.py`，该 Plugin 为工具/Skill 提供者（如 `filesystem`）
 
 ### 注册与加载
 
-`PluginProvider`（`arf/resources/providers/plugin_provider.py`）统一管理 Plugin 的发现和加载。`BaseAgent` 初始化时自动调用 `load_all_plugins()`，按 `enabled: true/false` 过滤。
+`BaseAgent.build_engine()` 自动通过 `PluginProvider` 发现和加载 Plugin。`AgentConfig.plugins: [...]` 白名单控制激活。Plugin 按 hook mode 分为 blocking / side 两组，分别交给 `InProcessHookRunner` 和 `SubprocessHookRunner`。
 
-### Hook 挂载
+### 控制平面集成
 
-每个 Plugin 通过 `hooks` 字段声明挂载点：
-
-```yaml
-hooks:
-  round_end: blocking
-  session_start: side
-```
-
-- **blocking**：引擎等待 Hook 执行完毕才继续。用于状态修改、安全检查、审批。
-- **side**：引擎不等待，异步执行。用于日志、指标、记忆提取等不阻塞主循环的操作。
-
-9 个 Hook 注入点构成控制平面的挂载面：
-
-| Hook | 触发时机 | 典型 Plugin |
-|------|---------|------------|
-| `session_start` | 会话初始化 | checkpoint、validate_messages |
-| `round_start` | 每轮开始 | strategy、memory_retrieval、checkpoint |
-| `turn_start` | 每次迭代开始 | cancellation、metrics |
-| `pre_action` | 调度前（模型调用或工具执行前） | session_mode、tool_guard、approval、validate_messages |
-| `post_action` | 调度后 | metrics |
-| `turn_end` | 迭代结束 | metrics |
-| `round_end` | 轮次结束 | compaction、checkpoint、memory、undo |
-| `session_end` | 会话结束 | checkpoint、memory_extraction、metrics |
-| `error` | 异常发生时 | error_handler |
+部分能力已从 Plugin 吸收到 `ControlPlane` 内建：
+- **session_mode** — `SessionModeManager` 内建于 ControlPlane，`set_session_mode()` 发射 `session_policy_switch` 事件
+- **validate_messages** — `ControlPlane._validate_messages()` 在每次 call_model 前校验消息合约
 
 ---
 
-## 二、内置 Plugin
-
-### 核心安全
-
-| Plugin | Hook | 说明 |
-|--------|------|------|
-| `tool_guard` | `pre_action` | 双层防护：`PermissionRegistry` deny→ask→allow 检查 + `PathSandbox` 路径遍历扫描 |
-| `approval` | `pre_action` | 人机审批通道。`ask_list` 中的工具需人工确认，默认 60s 超时 |
-| `session_mode` | `pre_action` | 解析全局 `session_mode`（auto/ask/plan）与 per-agent policy，决定有效模式 |
-| `validate_messages` | `pre_action` | 模型调用前校验消息列表（首条必须 user、role 合法） |
-| `error_handler` | `error` | 五动作恢复路由：fallback（compact/repair）、retry、skip、abort |
-
-### 记忆与上下文
-
-| Plugin | Hook | 说明 |
-|--------|------|------|
-| `memory` | `round_end`, `session_end` | 定期长期记忆提取。每 N 轮将对话写入临时 JSON，子进程调用模型提取事实，原子写入 `memory.md` |
-| `memory_extraction` | `session_end` | 会话结束时写入长期记忆（需注入 writer） |
-| `memory_retrieval` | `round_start` | 每轮开始时检索相关记忆注入 `context_summary`（需注入 retriever） |
-| `compaction` | `round_end` | Token 感知上下文压缩。达到阈值时保留最近 N 条消息，旧轮次 LLM 摘要。冷却 2 轮 |
-
-### 状态与回滚
-
-| Plugin | Hook | 说明 |
-|--------|------|------|
-| `checkpoint` | `round_start`, `round_end` | Round 级状态快照。委托 `RoundManager` 进行 begin/close round。支持 undo |
-| `undo` | `round_end` | 声明 undo 的 Hook 挂载点（实际快照由 checkpoint 完成） |
-| `cancellation` | `turn_start` | 检查外部注入的 `cancel_event`，支持会话中断 |
-
-### 可观测
-
-| Plugin | Hook | 说明 |
-|--------|------|------|
-| `trace` | 全部 9 个 Hook（side） | 跨切面 JSONL 事件记录。每个 Hook 调用写入 `{trace_dir}/{session_id}.jsonl` |
-| `metrics` | `turn_start`, `post_action`（side） | 采集 turn 级别耗时指标 |
-| `eval` | 离线 | 回放 trace，计算指标，diff 报告。通过 `EvalRunner` 执行 |
-
-### 调度与策略
-
-| Plugin | Hook | 说明 |
-|--------|------|------|
-| `plan_solve` | `pre_action`, `round_start` | DAG 依赖校验 + 断点检测。提供 `plan_create`、`plan_dispatch`、`plan_summarize`、`plan_status` 工具族 |
-
-### 工具型 Plugin
-
-以下 Plugin 无 `plugin.py`，仅提供 Tool/Skill 定义：
-
-| Plugin | 提供内容 |
-|--------|---------|
-| `file_tools` | glob、grep、read 工具 + `file_tools.yaml` Skill |
-| `plan_solve` | `plan_create`, `plan_dispatch`, `plan_summarize`, `plan_status` 工具族 + `plan_solve.yaml` Skill + PlanSolvePlugin |
-
----
-
-## 三、Plugin 开发
+## Plugin 开发
 
 ### 最小 Plugin
 
@@ -113,56 +74,39 @@ arf/plugins/my_plugin/
 └── plugin.py       # PluginProtocol 实现
 ```
 
-**plugin.yaml**：
+**plugin.yaml**:
 
 ```yaml
 name: my_plugin
-version: "1.0"
 enabled: true
 hooks:
-  round_end: side
+  - round_end
 config:
   threshold: 0.5
 ```
 
-**plugin.py**：
+**plugin.py**:
 
 ```python
-from arf.core.protocols.plugin import PluginProtocol
-
-class MyPlugin(PluginProtocol):
-    name = "my_plugin"
-    hooks = {"round_end": "side"}
-
+class MyPlugin:
     def __init__(self, config: dict | None = None):
-        self.config = config or {}
+        self._cfg = config or {}
 
-    async def on_hook(self, hook_name: str, context: dict) -> None:
-        if hook_name == "round_end":
-            # Plugin logic here
-            ...
+    @property
+    def name(self) -> str:
+        return "my_plugin"
+
+    @property
+    def hooks(self) -> dict[str, str]:
+        return {"round_end": "side"}
+
+    async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
+        pass
 ```
 
 ### 关键约束
 
-- Plugin 不应做认知判断。需要"理解"时，调用 `context["call_model"]()` 让模型处理
-- blocking Hook 抛异常会中止当前 turn。side Hook 异常被静默吞掉
-- 配置文件中的参数通过 `config` dict 自动注入构造函数
-
----
-
-## 四、当前状态
-
-| 状态 | 数量 | Plugin |
-|------|------|--------|
-| **完整实现** | 17 | approval, cancellation, checkpoint, compaction, error_handler, eval, memory, memory_extraction, memory_retrieval, metrics, plan_solve, session_mode, tool_guard, trace, undo, validate_messages |
-| **工具/Skill 提供者** | 1 | file_tools |
-| **Stub（空实现）** | 2 | sandbox_persist, secure_archive |
-
----
-
-## 五、演进方向
-
-- **参数化记忆插件**：将 `memory_extraction`/`memory_retrieval` 从文件读写演进到 LoRA 权重更新（见 [演进方向](../paper/reading_summary/parameterized-memory.md)）
-- **异步 Plugin 执行**：当前 blocking Hook 是同步阻塞的。可通过双缓冲机制让 side Hook 在后台更高效地执行 SFT 更新
-- **sandbox_persist 实现**：工具执行后的沙箱差异持久化，当前为空 stub
+- Plugin 不应做认知判断。需要智能时通过 `_call_model` 接口调用模型
+- blocking Hook 抛异常会中止当前 turn，路由到 error_handler
+- side Hook 异常静默吞掉，仅日志记录
+- 工具型 Plugin 不需要 `plugin.py`，只需 `tools/` + `skills/` 目录
