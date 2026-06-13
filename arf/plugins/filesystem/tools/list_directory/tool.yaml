@@ -1,0 +1,12 @@
+name: list_directory
+description: Get a listing of all files and directories in a specified path. Results distinguish between files and directories with [FILE] and [DIR] prefixes.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Directory path to list
+  required:
+    - path
+annotations:
+  readOnlyHint: true
