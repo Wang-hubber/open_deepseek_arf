@@ -1,0 +1,18 @@
+name: delete_file
+description: Delete a file or directory. Use recursive=true to delete non-empty directories. Exercise caution — deletions are permanent.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to delete
+    recursive:
+      type: boolean
+      description: Delete directories recursively
+      default: false
+  required:
+    - path
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
