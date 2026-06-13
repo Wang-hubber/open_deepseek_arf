@@ -1,0 +1,17 @@
+name: directory_tree
+description: Get a recursive tree view of files and directories as a JSON structure. Each entry includes name, type (file/directory), and children for directories. Files have no children array, directories always have a children array (may be empty).
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Starting directory path
+    excludePatterns:
+      type: array
+      items:
+        type: string
+      description: Glob patterns to exclude
+  required:
+    - path
+annotations:
+  readOnlyHint: true
