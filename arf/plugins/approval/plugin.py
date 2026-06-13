@@ -43,6 +43,12 @@ class ApprovalPlugin:
         if ctx.current_step != "execute_tools":
             return
 
+        # Approval only applies in ask mode. In auto everything passes;
+        # in plan tool_guard already blocked side-effect tools.
+        effective_mode = ctx.hook_data.get("effective_mode", "ask")
+        if effective_mode != "ask":
+            return
+
         tool_calls = ctx.state.get("_pending_tool_calls", [])
         denied: list[dict] = []
 
