@@ -8,32 +8,43 @@ from pathlib import Path
 class DirectoryBoundary:
     """A whitelist directory boundary for path validation.
 
-    Tools use this to declare their safe operating directory.
+    Accepts a single root path or a list of allowed paths.
     PathCheckToolGuard validates paths against this boundary.
     """
 
-    def __init__(self, root: str | Path) -> None:
-        self._root = Path(root).resolve()
+    def __init__(self, root: str | Path | list[str]) -> None:
+        if isinstance(root, list):
+            self._roots = [Path(r).resolve() for r in root]
+            self._root = self._roots[0] if self._roots else Path(".").resolve()
+        else:
+            self._roots = [Path(root).resolve()]
+            self._root = self._roots[0]
 
     @property
     def root(self) -> Path:
         return self._root
 
+    @property
+    def roots(self) -> list[Path]:
+        return list(self._roots)
+
     def contains(self, path_str: str) -> bool:
-        """Return True if path_str resolves within root.
+        """Return True if path_str resolves within any allowed root.
 
         Rejects paths with ``..`` traversal before resolution.
         """
         if ".." in Path(path_str).parts:
             return False
-        resolved = (self._root / path_str).resolve()
-        return resolved.is_relative_to(self._root)
+        for r in self._roots:
+            resolved = (r / path_str).resolve()
+            if resolved.is_relative_to(r):
+                return True
+        return False
 
     def has_symlink(self, path_str: str) -> bool:
         """Check whether any segment of path_str is a symlink.
 
-        Walks each component from root downward, checking is_symlink()
-        before resolving further.
+        Walks each component from the first root downward.
         """
         parts = Path(path_str).parts
         current = self._root
@@ -44,8 +55,8 @@ class DirectoryBoundary:
         return False
 
     def resolve(self, path_str: str) -> Path:
-        """Resolve path_str against root and return the fully resolved Path."""
+        """Resolve path_str against default root and return the fully resolved Path."""
         return (self._root / path_str).resolve()
 
     def __repr__(self) -> str:
-        return f"DirectoryBoundary(root={self._root})"
+        return f"DirectoryBoundary(roots={[str(r) for r in self._roots]})"
