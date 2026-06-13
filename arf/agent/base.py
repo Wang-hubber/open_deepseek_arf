@@ -376,10 +376,22 @@ class BaseAgent:
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
 
-        # Wire call_model into compaction plugin for LLM summarization
+        # Wire call_model + model context window into compaction plugin
         for bp in blocking_plugins:
-            if bp.name == "compaction" and hasattr(bp, "set_call_model"):
-                bp.set_call_model(self._engine._call_model)
+            if bp.name == "compaction":
+                if hasattr(bp, "set_call_model"):
+                    bp.set_call_model(self._engine._call_model)
+                if hasattr(bp, "set_model_context_window"):
+                    # Read context_window from resolved model configs (new format)
+                    # or legacy config.models (old format). Fall back to 128K.
+                    model_cfgs = config.get_agent_model_configs()
+                    if model_cfgs:
+                        ctx_win = model_cfgs[0].context_window
+                    elif config.models:
+                        ctx_win = config.models[0].context_window
+                    else:
+                        ctx_win = 131_072
+                    bp.set_model_context_window(ctx_win)
                 break
 
         # ---- Active session tracking ----

@@ -60,8 +60,23 @@ plugins_config:
   compaction:
     model: deepseek-v4-flash    # 用于生成摘要的模型
     threshold: 0.75             # 触发阈值（window_size 的百分比）
-    window_size: 131072         # Context window token 上限
     keep_count: 8              # 压缩后保留的最近非工具消息数
+```
+
+### window_size 优先级
+
+compaction 的上下文窗口大小按以下优先级确定：
+
+1. **ModelConfig.context_window** — 框架自动注入当前模型配置的 `context_window` 字段
+2. **plugins_config.window_size** — agent.yaml 手动覆盖
+3. **plugin.yaml 默认值** — 131072（128K）
+
+通常无需手动配置 `window_size`——框架从模型配置自动读取。只有当模型配置的 `context_window` 不准确时才需要覆盖。`agent.yaml` 中：
+
+```yaml
+model_defs:
+  - model: deepseek-v4
+    context_window: 163840    # ← compaction 自动使用这个值
 ```
 
 ## 触发方式

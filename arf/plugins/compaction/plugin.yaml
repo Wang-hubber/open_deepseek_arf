@@ -4,5 +4,5 @@ hooks:
 enabled: true
 config:
   threshold: 0.75
-  window_size: 131072
+  window_size: 131072     # fallback — overridden by ModelConfig.context_window
   keep_count: 8

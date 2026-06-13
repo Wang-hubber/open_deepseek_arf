@@ -31,6 +31,7 @@ class CompactionPlugin:
         self.threshold: float = cfg.get("threshold", 0.75)
         self.window_size: int = cfg.get("window_size", DEFAULT_WINDOW_SIZE)
         self.keep_count: int = cfg.get("keep_count", 8)
+        self._model_context_window: int | None = None  # injected from ModelConfig
         self._call_model = None
         self._state_store = None
         self._cooldown: dict[str, int] = {}
@@ -49,6 +50,17 @@ class CompactionPlugin:
 
     def set_state_store(self, state_store) -> None:
         self._state_store = state_store
+
+    def set_model_context_window(self, context_window: int) -> None:
+        """Inject model context window size (from ModelConfig.context_window).
+        Takes precedence over plugin.yaml window_size.
+        """
+        self._model_context_window = context_window
+
+    @property
+    def effective_window_size(self) -> int:
+        """Model context window if injected, otherwise plugin config fallback."""
+        return self._model_context_window or self.window_size
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if hook_name == "round_end":
@@ -80,7 +92,7 @@ class CompactionPlugin:
             return
 
         last_usage = state.get("last_token_usage", 0)
-        limit = int(self.threshold * self.window_size)
+        limit = int(self.threshold * self.effective_window_size)
         if last_usage <= limit:
             return
 
