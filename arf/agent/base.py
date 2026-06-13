@@ -51,13 +51,23 @@ class BaseAgent:
         self.config = config
         adv = config.effective_advanced()
         ctx = app_context
+        from pathlib import Path as _Path
+
+        # Resolve data root early — all data paths derive from here.
+        # Priority: config.data_path > ctx.root > cwd
+        if config.data_path and config.data_path != ".":
+            _data_root = str(_Path(config.data_path).resolve())
+        elif ctx:
+            _data_root = str(ctx.root.resolve())
+        else:
+            _data_root = str(_Path(".").resolve())
 
         # Absorb removed protocol keys to prevent leakage into **override_protocols
         override_protocols.pop("transaction_ctx", None)
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        default_state_dir = str(ctx.state_dir) if ctx else "./data/state"
+        default_state_dir = str(_Path(_data_root) / "data" / "state")
         state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
 
         # 2. Resources — MCP-based unified management
@@ -136,19 +146,17 @@ class BaseAgent:
         ) if watch_enabled else None
         self._file_watcher = file_watcher
 
-        # 3. Plugin runtime
-        from pathlib import Path as _Path
-        _mem_dir = str(ctx.memory_dir) if ctx else "./data/memory"
-        _workspace_dir = str(ctx.root) if ctx else "."
-        _trace_dir = str(ctx.trace_dir) if ctx else "./data/traces"
+        # 3. Data & workspace paths
+        _mem_dir = str(_Path(_data_root) / "data" / "memory")
+        _trace_dir = str(_Path(_data_root) / "data" / "traces")
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
             memory_dir=_mem_dir,
-            workspace_dir=_workspace_dir,
-            state_dir=str(ctx.state_dir) if ctx else "./data/state",
+            workspace_dir=_data_root,
+            state_dir=str(_Path(_data_root) / "data" / "state"),
             trace_dir=_trace_dir,
-            files_dir=str(ctx.files_dir) if ctx else "./data/files",
+            files_dir=str(_Path(_data_root) / "data" / "files"),
             system_model="quick",
             model_configs={
                 m.type: {
@@ -161,18 +169,16 @@ class BaseAgent:
         )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        # workspace_root: controls sandbox boundary. Priority:
-        #   1. override_protocols kwarg (construction-time)
-        #   2. advanced.sandbox.workspace_root (agent.yaml)
-        #   3. ctx.root (default — data and boundary share the same root)
+        # workspace_root: sandbox boundary for file operations.
+        # Priority: config.allow_paths[0] > override_protocols > data_root
         _workspace_override = override_protocols.pop("workspace_root", None)
-        sandbox_cfg = adv.sandbox if adv else None
         if _workspace_override:
             _workspace_root = str(Path(_workspace_override).resolve())
-        elif sandbox_cfg and sandbox_cfg.workspace_root:
-            _workspace_root = str(Path(sandbox_cfg.workspace_root).resolve())
+        elif config.allow_paths:
+            _workspace_root = str(Path(config.allow_paths[0]).resolve())
         else:
-            _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
+            _workspace_root = _data_root
+        sandbox_cfg = adv.sandbox if adv else None
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
             input_guard = NoneInputGuard()
@@ -209,7 +215,6 @@ class BaseAgent:
                     tool_boundaries[name] = DirectoryBoundary(allowed_dir)
         # SandboxManager — session-level isolation
         from arf.sandbox.sandbox_manager import SandboxManager
-        sandbox_cfg = adv.sandbox if adv else None
         sandbox_manager = SandboxManager(
             workspace_root=_workspace_root,
             blacklist=(sandbox_cfg.blacklist if sandbox_cfg else None),
@@ -366,7 +371,7 @@ class BaseAgent:
             max_turns=(adv.max_turns if adv else 50),
             workspace_dir=_workspace_root,
             memory_dir=_mem_dir,
-            state_dir=str(ctx.state_dir) if ctx else "./data/state",
+            state_dir=str(_Path(_data_root) / "data" / "state"),
             trace_dir=_trace_dir,
             mcp_tool_resolver=_mcp_tool_resolver,
             call_timeout=(adv.call_timeout if adv else 120.0),

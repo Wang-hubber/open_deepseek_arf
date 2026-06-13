@@ -85,6 +85,8 @@ class AgentConfig(BaseModel):
     role: str = ""
     task: str = ""
     description: str = ""
+    data_path: str = "."                      # data directory (state/trace/memory)
+    allow_paths: list[str] = Field(default_factory=list)  # allowed file operation paths (empty = same as data_path)
     system_prompt: SystemPromptConfig = Field(default_factory=SystemPromptConfig)
     models: list[ModelConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
     model_defs: list[dict] = Field(default_factory=list)      # NEW: top-level model definitions {model, api_base, api_key_env, kwargs}
