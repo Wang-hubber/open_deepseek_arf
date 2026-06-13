@@ -336,6 +336,11 @@ class BaseAgent:
                 if hasattr(p, "set_name_resolver"):
                     p.set_name_resolver(_resolve_perm_name)
 
+        # Ensure tool_guard runs before approval — security gating must happen
+        # before any interactive approval flow.
+        _PLUGIN_PRIORITY = {"tool_guard": 0, "approval": 1}
+        blocking_plugins.sort(key=lambda p: _PLUGIN_PRIORITY.get(p.name, 50))
+
         # Wire event_bus into plugins that need it
 
         self._engine = ControlPlane(
