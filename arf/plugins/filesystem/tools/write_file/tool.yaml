@@ -1,0 +1,18 @@
+name: write_file
+description: Create a new file or completely overwrite an existing file with new content. Handles text content with proper UTF-8 encoding.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: File path to write
+    content:
+      type: string
+      description: Content to write to the file
+  required:
+    - path
+    - content
+annotations:
+  readOnlyHint: false
+  idempotentHint: true
+  destructiveHint: true
