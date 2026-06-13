@@ -1121,7 +1121,7 @@ class TestRoundManager:
         shutil.rmtree("data/checkpoints", ignore_errors=True)
 
     def test_begin_round_creates_snapshot(self):
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=3)
         assert rm.count() == 0
         state = {"session_id": "s1", "agent_name": "main",
@@ -1136,7 +1136,7 @@ class TestRoundManager:
         """undo(1) pops the newest round, returns its state_snapshot.
         RoundManager snapshots at round-START state, so the popped
         snapshot is what the state was when the round began."""
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=3)
 
         original = {"session_id": "s1", "agent_name": "main",
@@ -1156,7 +1156,7 @@ class TestRoundManager:
         assert rm.count() == 1  # one round remaining
 
     def test_undo_multi_step_restores_target(self):
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=5)
         for i in range(5):
             rm.begin_round({"session_id": "s1", "round": i, "messages": [],
@@ -1168,7 +1168,7 @@ class TestRoundManager:
         assert rm.count() == 2  # 5 - 3 = 2 remaining
 
     def test_undo_too_many_returns_none(self):
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=3)
         rm.begin_round({"session_id": "s1", "agent_name": "main",
                         "messages": [], "current_turn": 0})
@@ -1176,7 +1176,7 @@ class TestRoundManager:
         assert rm.undo(0) is None
 
     def test_close_round_marks_closed(self):
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
         rm = RoundManager(max_undo_depth=3)
         rm.begin_round({"session_id": "s1", "agent_name": "main",
                         "messages": [], "current_turn": 0})

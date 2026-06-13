@@ -31,7 +31,7 @@ def clean_round_manager():
     memory/checkpoints/ dir that may have leftover data.
     """
     import tempfile
-    from arf.engine.round_manager import RoundManager
+    from arf.plugins.undo.round_manager import RoundManager
 
     td = tempfile.mkdtemp()
     persist = Path(td) / "rounds.json"
@@ -227,7 +227,7 @@ class TestRoundManagerPersistence:
         ws.mkdir()
         (ws / "file.txt").write_text("hello")
 
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
 
         with patch.object(RoundManager, "_PERSIST_FILE", persist):
             rm = RoundManager(max_undo_depth=3)
@@ -252,7 +252,7 @@ class TestRoundManagerPersistence:
         ws.mkdir()
         (ws / "v1.txt").write_text("v1")
 
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
 
         with patch.object(RoundManager, "_PERSIST_FILE", persist):
             rm = RoundManager(max_undo_depth=3)
@@ -280,7 +280,7 @@ class TestRoundManagerPersistence:
         persist.parent.mkdir(parents=True, exist_ok=True)
         persist.write_text("not valid json {{{", encoding="utf-8")
 
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
 
         with patch.object(RoundManager, "_PERSIST_FILE", persist):
             rm = RoundManager()
@@ -294,7 +294,7 @@ class TestRoundManagerPersistence:
         td = tempfile.mkdtemp()
         persist = Path(td) / "nonexistent" / "rounds.json"
 
-        from arf.engine.round_manager import RoundManager
+        from arf.plugins.undo.round_manager import RoundManager
 
         with patch.object(RoundManager, "_PERSIST_FILE", persist):
             rm = RoundManager()
@@ -307,7 +307,7 @@ class TestRoundTransactionDefaults:
     """RoundTransaction dataclass defaults."""
 
     def test_defaults(self):
-        from arf.engine.round_manager import RoundTransaction
+        from arf.plugins.undo.round_manager import RoundTransaction
 
         tx = RoundTransaction(
             round_id="s1/0",

@@ -385,6 +385,11 @@ class BaseAgent:
             session_timeout=(adv.session_timeout if adv else None),
             session_mode_manager=session_mode_manager,
         )
+        # Wire undo plugin into ControlPlane for round-level checkpoint + rollback
+        for bp in blocking_plugins:
+            if bp.name == "undo":
+                self._engine.set_undo_plugin(bp)
+                break
         self._hook_runner = hook_runner
         self._state_store = state_store
         self._event_bus = event_bus
