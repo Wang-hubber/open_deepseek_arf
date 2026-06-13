@@ -118,7 +118,7 @@ class ControlPlane:
             "previous_mode": old_mode.value,
         }, session_id=session_id)
         if self.event_bus:
-            await self.event_bus.emit(event)
+            self.event_bus.emit(event)
         logger.info("Session policy switched: %s → %s (session=%s)", old_mode.value, mode.value, session_id)
 
     def resolve_effective_mode(self, agent_policy=None) -> SessionMode:
