@@ -398,6 +398,12 @@ class BaseAgent:
         # ---- Auto-inject model API call ----
         self._inject_model_calls(config)
 
+        # Wire call_model into compaction plugin for LLM summarization
+        for bp in blocking_plugins:
+            if bp.name == "compaction" and hasattr(bp, "set_call_model"):
+                bp.set_call_model(self._engine._call_model)
+                break
+
         # ---- Active session tracking ----
         self._active_sessions: set[str] = set()
 

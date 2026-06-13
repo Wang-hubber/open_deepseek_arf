@@ -1,13 +1,17 @@
-"""CompactionPlugin — context compaction as a hook-mounted plugin.
+"""CompactionPlugin — structured context compaction with boundary markers.
 
-Replaces inline compaction logic in GraphEngine.
-Mounted on: round_end hook.
+Follows Claude Code compaction protocol:
+  - Inserts compact_boundary system message + isCompactSummary user message
+  - Emits compaction_start / compaction_end events with full metadata
+  - Supports auto (threshold) and manual (tool-call) triggers
+  - Full history preserved in trace; state holds active-context messages only
 """
+
 import logging
-from pathlib import Path
 
 from arf.core.plugin_context import PluginContext
 from arf.core.state import AgentState
+from arf.plugins.compaction.summarizer import summarize
 
 logger = logging.getLogger("arf.plugins.compaction")
 
@@ -15,11 +19,11 @@ DEFAULT_WINDOW_SIZE = 131_072
 
 
 class CompactionPlugin:
-    """Summarizes old turns when context nears the token limit.
+    """Structured context compaction mounted on round_end hook.
 
-    Fires on round_end. Checks last_token_usage against threshold * window_size.
-    When triggered, keeps the last keep_count non-tool messages and summarizes
-    older messages via a configurable LLM summarizer.
+    When token usage exceeds threshold * window_size, old messages are
+    summarized via LLM and replaced with a compact_boundary marker +
+    summary message. The full history is preserved in the trace JSONL.
     """
 
     def __init__(self, config: dict | None = None) -> None:
@@ -27,10 +31,10 @@ class CompactionPlugin:
         self.threshold: float = cfg.get("threshold", 0.75)
         self.window_size: int = cfg.get("window_size", DEFAULT_WINDOW_SIZE)
         self.keep_count: int = cfg.get("keep_count", 8)
-        self._summarizer = None
+        self._call_model = None
         self._state_store = None
-        self._workspace = Path(cfg.get("workspace", "./data/state"))
         self._cooldown: dict[str, int] = {}
+        self._compaction_count: dict[str, int] = {}
 
     @property
     def name(self) -> str:
@@ -40,18 +44,29 @@ class CompactionPlugin:
     def hooks(self) -> dict[str, str]:
         return {"round_end": "blocking"}
 
-    def set_summarizer(self, summarizer) -> None:
-        self._summarizer = summarizer
+    def set_call_model(self, call_model) -> None:
+        self._call_model = call_model
 
     def set_state_store(self, state_store) -> None:
         self._state_store = state_store
 
-    async def on_hook(self, hook_name: str, context: PluginContext) -> None:
+    async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if hook_name == "round_end":
-            await self._maybe_compact(context)
+            await self._maybe_compact(ctx)
 
-    async def _maybe_compact(self, context: PluginContext) -> None:
-        sid = context.session_id
+    async def compact_now(self, ctx: PluginContext, trigger: str = "manual") -> dict:
+        """Public API for manual compaction via tool call.
+
+        Returns metadata dict suitable for tool response.
+        """
+        return await self._compact(ctx, trigger)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    async def _maybe_compact(self, ctx: PluginContext) -> None:
+        sid = ctx.session_id
         cooldown = self._cooldown.get(sid, 0)
         if cooldown > 0:
             self._cooldown[sid] = cooldown - 1
@@ -69,52 +84,105 @@ class CompactionPlugin:
         if last_usage <= limit:
             return
 
+        await self._compact(ctx, "auto")
+
+    async def _compact(self, ctx: PluginContext, trigger: str) -> dict:
+        sid = ctx.session_id
+        if not self._state_store:
+            return {"ok": False, "error": "No state_store available"}
+
+        state: AgentState = await self._state_store.get(sid)
+        if not state:
+            return {"ok": False, "error": "No state found"}
+
         msgs = state.get("messages", [])
-        ua_indices = [i for i, m in enumerate(msgs)
-                      if isinstance(m, dict) and m.get("role") != "tool"]
+        last_usage = state.get("last_token_usage", 0)
+        round_num = state.get("interaction_round", ctx.interaction_round)
+
+        # Find split point: keep last N non-tool messages
+        ua_indices = [
+            i for i, m in enumerate(msgs)
+            if isinstance(m, dict) and m.get("role") != "tool"
+        ]
         if len(ua_indices) <= self.keep_count:
-            return
+            return {"ok": True, "compacted": 0, "reason": "below_keep_count"}
 
         split = ua_indices[-self.keep_count]
         old_msgs = msgs[:split]
-        recent = msgs[split:]
+        recent_msgs = msgs[split:]
 
-        summary = state.get("context_summary", "")
-        if self._summarizer and old_msgs:
+        # Emit compaction_start event
+        ctx.inject_engine_event("compaction_start", {
+            "trigger": trigger,
+            "pre_tokens": last_usage,
+            "total_messages": len(msgs),
+            "compacting_count": len(old_msgs),
+            "keeping_count": len(recent_msgs),
+            "round": round_num,
+        })
+
+        # Generate summary
+        existing = state.get("context_summary", "")
+        summary_text = ""
+        if self._call_model:
             try:
-                new_summary = await self._summarizer(old_msgs)
-                prefix = "\n[Earlier]" if not summary else ""
-                summary = f"{summary}{prefix}: {new_summary}" if summary else f"[Earlier]: {new_summary}"
-                logger.info("Compaction: %d msgs summarized, summary now %d chars",
-                            len(old_msgs), len(summary))
+                summary_text = await summarize(
+                    self._call_model, old_msgs, existing_summary=existing
+                )
             except Exception:
-                logger.exception("Compaction summarizer failed")
+                logger.exception("Compaction summarizer failed, using fallback")
+                summary_text = existing + "\n(compaction failed — truncated)"
 
-        new_state = {**state, "messages": recent, "context_summary": summary}
+        # Build boundary marker + summary messages (Claude Code protocol)
+        compact_boundary = {
+            "role": "system",
+            "content": "",
+            "subtype": "compact_boundary",
+            "compactMetadata": {
+                "trigger": trigger,
+                "preTokens": last_usage,
+                "compactedCount": len(old_msgs),
+                "summaryLength": len(summary_text),
+                "round": round_num,
+            },
+        }
+        compact_summary = {
+            "role": "user",
+            "content": summary_text,
+            "isCompactSummary": True,
+        }
+
+        # Replace old messages with boundary + summary in state
+        new_msgs = [compact_boundary, compact_summary] + recent_msgs
+        new_state = {**state, "messages": new_msgs, "context_summary": summary_text}
+
         await self._state_store.put(sid, new_state)
+
+        # Track stats
+        count = self._compaction_count.get(sid, 0) + 1
+        self._compaction_count[sid] = count
         self._cooldown[sid] = 2
-        logger.info("Compaction: %d msgs compacted for session %s", len(old_msgs), sid)
 
-    async def summarize_tool_output(self, tool_name: str, output: str,
-                                     turn: int) -> str:
-        """Summarize long tool output. Kept as public method for engine to call."""
-        MAX_CHARS = 2000
-        if len(output) <= MAX_CHARS:
-            return output
+        # Emit compaction_end event
+        ctx.inject_engine_event("compaction_end", {
+            "trigger": trigger,
+            "compacted_count": len(old_msgs),
+            "kept_count": len(recent_msgs),
+            "summary_length": len(summary_text),
+            "total_compactions": count,
+            "round": round_num,
+        })
 
-        out_dir = self._workspace / "tool_outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"turn_{turn}_{tool_name}.txt"
-        out_path.write_text(output, encoding="utf-8")
+        logger.info(
+            "Compaction #%d (%s): %d msgs compacted → %d chars summary, %d msgs kept (session=%s)",
+            count, trigger, len(old_msgs), len(summary_text), len(recent_msgs), sid,
+        )
 
-        truncated = output[:MAX_CHARS]
-        if self._summarizer:
-            try:
-                summary = await self._summarizer([
-                    {"role": "tool",
-                     "content": f"Tool {tool_name} output (full at {out_path}):\n{truncated}"}
-                ])
-                return f"[Tool output summarized — full at {out_path}]\n{summary}"
-            except Exception:
-                logger.exception("Tool output summarization failed")
-        return f"[Tool output truncated — full at {out_path}]\n{truncated}..."
+        return {
+            "ok": True,
+            "compacted": len(old_msgs),
+            "kept": len(recent_msgs),
+            "summary_length": len(summary_text),
+            "total_compactions": count,
+            "trigger": trigger,
+        }

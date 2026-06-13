@@ -614,11 +614,14 @@ class ControlPlane:
 
         Internal tool_calls use {id, name, params} for convenience.
         API expects {id, type: "function", function: {name, arguments}}.
+        Strips internal metadata fields (subtype, compactMetadata, isCompactSummary)
+        from messages before sending to the API.
         """
+        _STRIP_FIELDS = {"subtype", "compactMetadata", "isCompactSummary"}
         msgs = [{"role": "system", "content": system_prompt}]
         for m in messages:
+            cleaned = {k: v for k, v in m.items() if k not in _STRIP_FIELDS}
             if m.get("role") == "assistant" and "tool_calls" in m:
-                converted = dict(m)
                 api_tcs = []
                 for tc in m["tool_calls"]:
                     api_tcs.append({
@@ -629,10 +632,8 @@ class ControlPlane:
                             "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
                         },
                     })
-                converted["tool_calls"] = api_tcs
-                msgs.append(converted)
-            else:
-                msgs.append(m)
+                cleaned["tool_calls"] = api_tcs
+            msgs.append(cleaned)
         return msgs
 
     def _validate_messages(self, state: AgentState) -> None:
