@@ -3,7 +3,7 @@ hooks: []  # offline, not hook-mounted
 enabled: true
 config:
   trace_dir: ./data/traces
-  eval_dir: ./data/eval
+  eval_dir: ./eval
   judge:
     system_prompt: >
       You are an expert evaluator for AI agent behavior. Your role is to

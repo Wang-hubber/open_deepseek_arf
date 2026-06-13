@@ -20,7 +20,7 @@ class EvalPlugin:
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
         self._trace_dir = Path(cfg.get("trace_dir", "./data/traces"))
-        self._eval_dir = Path(cfg.get("eval_dir", "./data/eval"))
+        self._eval_dir = Path(cfg.get("eval_dir", "./eval"))
         self._eval_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -30,6 +30,15 @@ class EvalPlugin:
     @property
     def hooks(self) -> dict[str, str]:
         return {}  # offline — not hook-mounted
+
+    def set_trace_dir(self, trace_dir: str) -> None:
+        """Override trace read directory (called by base.py)."""
+        self._trace_dir = Path(trace_dir)
+
+    def set_eval_dir(self, eval_dir: str) -> None:
+        """Override eval output directory (called by base.py)."""
+        self._eval_dir = Path(eval_dir)
+        self._eval_dir.mkdir(parents=True, exist_ok=True)
 
     async def on_hook(self, hook_name: str, context) -> None:
         pass  # no-op for offline plugin
