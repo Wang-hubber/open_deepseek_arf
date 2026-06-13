@@ -1,0 +1,12 @@
+name: read_media_file
+description: Read an image or audio file. Returns the base64 encoded data and MIME type. Supports PNG, JPG, GIF, WebP, BMP, SVG (images) and MP3, WAV, OGG, FLAC (audio).
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to the media file
+  required:
+    - path
+annotations:
+  readOnlyHint: true
