@@ -7,7 +7,7 @@ prompt: |
 
   Read operations: `read_text_file` (text), `read_media_file` (images/audio), `read_multiple_files` (batch read)
   List operations: `list_directory`, `list_directory_with_sizes`, `directory_tree`
-  Search: `search_files` to find files by glob pattern
+  Search: `search_files` to find files by glob pattern, `search_content` to grep file contents
   Write operations: `write_file` (create/overwrite), `edit_file` (selective edit with diff preview), `create_directory`
   File management: `move_file` (move/rename), `delete_file` (delete files/dirs)
   Info: `get_file_info` (metadata), `list_allowed_directories` (accessible paths)
@@ -26,4 +26,5 @@ tools:
   - move_file
   - delete_file
   - edit_file
+  - search_content
 activation: kernel
