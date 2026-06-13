@@ -347,7 +347,7 @@ class BaseAgent:
         # Auto-discovered framework plugins (blocking + side).
         # tool_guard and approval are constructed separately with merged
         # permission config — skip their auto-discovered instances.
-        _SPECIAL_PLUGINS = {"tool_guard", "approval"}
+        _SPECIAL_PLUGINS = {"tool_guard", "approval", "session_mode"}
         _obs_cfg = adv.observability if adv else None
         side_plugins: list = []
         if self._plugin_provider:
@@ -383,6 +383,7 @@ class BaseAgent:
             mcp_tool_resolver=_mcp_tool_resolver,
             call_timeout=(adv.call_timeout if adv else 120.0),
             session_timeout=(adv.session_timeout if adv else None),
+            session_mode_manager=session_mode_manager,
         )
         self._hook_runner = hook_runner
         self._state_store = state_store

@@ -1,5 +1,0 @@
-name: session_mode
-enabled: true
-description: "Resolve AUTO/PLAN/ASK mode at pre_dispatch(execute_tools)"
-config:
-  default_mode: ask

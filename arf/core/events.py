@@ -19,6 +19,7 @@ EventType = Literal[
     "undo_executed",        # undo boundary marker — trace never deletes, only marks
     "rollback_executed",    # tool rollback completed (with rolled_back list)
     "error",
+    "session_policy_switch",  # Session mode changed (auto/ask/plan) — app-consumable mode transition
     # Protection (TODO #10)
     "rate_limited",         # TokenBucket refused — rate limit hit
     "circuit_opened",       # CircuitBreaker → OPEN (tripped)
