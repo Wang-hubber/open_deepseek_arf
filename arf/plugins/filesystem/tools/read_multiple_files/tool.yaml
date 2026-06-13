@@ -1,0 +1,15 @@
+name: read_multiple_files
+description: Read the contents of multiple files simultaneously. Each file's content is returned with its path as reference. Failed reads for individual files won't stop the entire operation.
+parameters:
+  type: object
+  properties:
+    paths:
+      type: array
+      items:
+        type: string
+      description: Array of file paths to read
+      minItems: 1
+  required:
+    - paths
+annotations:
+  readOnlyHint: true
