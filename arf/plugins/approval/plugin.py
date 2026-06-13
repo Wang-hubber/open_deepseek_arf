@@ -31,8 +31,13 @@ class ApprovalPlugin:
         return {"pre_action": "blocking"}
 
     def set_name_resolver(self, resolver) -> None:
-        """Inject tool name → namespaced name resolver (called by base.py)."""
+        """Inject tool name → namespaced name resolver (called by base.py).
+
+        Resolves both the callback AND the list entries so that bare names
+        in plugins_config are converted to namespaced names before matching.
+        """
         self._name_resolver = resolver
+        self._ask_list = {resolver(t) for t in self._ask_list}
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if ctx.current_step != "execute_tools":
