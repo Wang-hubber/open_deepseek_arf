@@ -84,22 +84,44 @@ plugins_config:
 
 ```yaml
 # agent.yaml
-data_path: ./data            # 数据目录（state/trace/memory），默认 = app root
-allow_paths:                  # 允许操作的文件路径，默认 = [data_path]
+data_path: ./runtime          # 运行时数据（state/trace/memory），默认 = app root
+allow_paths:                   # 允许操作的文件路径，默认 = [data_path]
   - /project/root
   - /shared/workspaces
 ```
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `data_path` | app root | 数据存储根目录（state/trace/memory 落在此路径下） |
-| `allow_paths` | `[data_path]` | 文件操作沙箱边界，支持多路径。`PathCheckToolGuard` 只放行 resolve 后落在列表内的路径 |
+| `data_path` | app root | 运行时数据根目录。初始化时自动创建 state/traces/memory/files 子目录 |
+| `allow_paths` | `[data_path]` | 文件操作沙箱边界。`DirectoryBoundary` 多路径支持，`PathCheckToolGuard` 只放行 resolve 后落在列表内的路径 |
 
-不传则自动 fallback 到项目根目录，完全向后兼容。传了则两者独立：
+不传则回退到 `AppContext.root`，完全向后兼容。典型场景：
 
 ```yaml
-data_path: ./builtin               # 数据隔离到 builtin/
-allow_paths: [., /shared/ws]       # 操作范围覆盖项目根 + 共享工作区
+data_path: ./builtin               # 运行时数据隔离
+allow_paths: [.]                   # 操作范围覆盖项目根
+```
+
+#### 路径自动注入
+
+框架启动时将 computed path 注入对应 Plugin，确保一致性：
+
+| Plugin | 注入项 | 来源 |
+|--------|--------|------|
+| `trace` | `set_trace_dir()` | `{data_path}/traces/` |
+| `compaction` | `set_model_context_window()` | `ModelConfig.context_window` |
+| `undo` | `set_undo_plugin()` | ControlPlane 引用 |
+
+#### Eval 产物
+
+Eval 是永久产物，不属于运行时数据，默认路径独立：
+
+```
+eval/                          # 可通过 plugins_config.eval.eval_dir 覆盖
+├── snapshots/
+│   └── a1b2c3d4.xml           # 配置快照（内容寻址，同配置复用）
+├── my_benchmark.json           # benchmark 定义
+└── report_my_benchmark.json    # eval report（含 snapshot_hash）
 ```
 
 ### 控制平面集成
