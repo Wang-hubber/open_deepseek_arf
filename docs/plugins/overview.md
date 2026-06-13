@@ -78,37 +78,28 @@ plugins_config:
 
 不再有 `_SPECIAL_PLUGINS` — 所有 Plugin 待遇一致。
 
-### 沙箱与工作区边界
+### 数据路径与操作边界
 
-`workspace_root` 控制文件操作的沙箱边界，与数据路径（state/trace/memory）独立。配置优先级：
+`data_path` 和 `allow_paths` 是 `AgentConfig` 的顶层字段，控制数据存储位置和文件操作范围。
 
 ```yaml
 # agent.yaml
-advanced:
-  sandbox:
-    workspace_root: /project/root    # 操作边界（可选，默认 = app root）
+data_path: ./data            # 数据目录（state/trace/memory），默认 = app root
+allow_paths:                  # 允许操作的文件路径，默认 = [data_path]
+  - /project/root
+  - /shared/workspaces
 ```
 
-```python
-# 构造时覆盖（最高优先级）
-agent = BaseAgent(config, app_context=ctx, workspace_root="/project/root")
-```
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `data_path` | app root | 数据存储根目录（state/trace/memory 落在此路径下） |
+| `allow_paths` | `[data_path]` | 文件操作沙箱边界，支持多路径 |
 
-| 配置路径 | 优先级 | 说明 |
-|---------|--------|------|
-| `BaseAgent(workspace_root=...)` | 1（最高） | 构造时覆盖 |
-| `advanced.sandbox.workspace_root` | 2 | agent.yaml |
-| `AppContext.root` | 3（默认） | 操作边界 = 数据根目录 |
-
-典型场景：builtin agent 需要数据隔离（`builtin/data/`）但操作范围覆盖项目根：
+不传则自动 fallback 到项目根目录，完全向后兼容。传了则两者独立：
 
 ```yaml
-app_context:
-  root: ./builtin            # data → builtin/data/
-
-advanced:
-  sandbox:
-    workspace_root: .         # 操作边界 → 项目根
+data_path: ./builtin           # 数据隔离到 builtin/data/
+allow_paths: [.]               # 操作范围覆盖项目根
 ```
 
 ### 控制平面集成
