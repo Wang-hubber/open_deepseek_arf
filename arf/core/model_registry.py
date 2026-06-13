@@ -12,6 +12,7 @@ class ResolvedModelConfig:
     model: str
     api_base: str = "https://api.deepseek.com"
     api_key_env: str = "DEEPSEEK_API_KEY"
+    context_window: int = 131_072
     kwargs: dict = field(default_factory=dict)
 
 
@@ -40,6 +41,7 @@ class ModelRegistry:
                 model=raw["model"],
                 api_base=raw.get("api_base", "https://api.deepseek.com"),
                 api_key_env=raw.get("api_key_env", "DEEPSEEK_API_KEY"),
+                context_window=raw.get("context_window", 131_072),
                 kwargs=raw.get("kwargs", {}),
             )
             self._defs[cfg.model] = cfg
