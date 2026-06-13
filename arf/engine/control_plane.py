@@ -73,6 +73,24 @@ class ControlPlane:
     def set_cancel_event(self, event: asyncio.Event) -> None:
         self._cancel_event = event
 
+    def set_undo_plugin(self, undo_plugin) -> None:
+        """Inject undo plugin for round-level checkpoint + rollback."""
+        self._undo_plugin = undo_plugin
+
+    def undo(self, steps: int, session_id: str = "",
+             workspace_dir: str = "") -> dict | None:
+        """Roll back N rounds. Delegates to UndoPlugin's RoundManager."""
+        if not hasattr(self, "_undo_plugin") or self._undo_plugin is None:
+            return None
+        return self._undo_plugin.undo(steps, session_id=session_id,
+                                      workspace_dir=workspace_dir or self._workspace_dir)
+
+    def checkpoint_count(self) -> int:
+        """Number of available undo checkpoints."""
+        if not hasattr(self, "_undo_plugin") or self._undo_plugin is None:
+            return 0
+        return self._undo_plugin.checkpoint_count()
+
     # ==================================================================
     # Session policy (was SessionModePlugin — absorbed into ControlPlane)
     # ==================================================================

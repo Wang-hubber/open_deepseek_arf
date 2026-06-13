@@ -1,4 +1,7 @@
 name: undo
 hooks:
+  - round_start
   - round_end
 enabled: true
+config:
+  max_undo_depth: 3

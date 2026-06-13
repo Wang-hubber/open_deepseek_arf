@@ -1,16 +1,24 @@
-"""UndoPlugin — mount points for undo/rollback operations.
+"""UndoPlugin — round-level checkpoint and rollback via RoundManager.
 
-CheckpointPlugin handles round-level snapshots. The undo tool function
-handles the actual undo rollback. This plugin registers the lifecycle
-hooks declared in plugin.yaml so the hooks system knows about them.
+Hooks:
+  round_start  — begin_round(): snapshot state + workspace files
+  round_end    — close_round(): mark round complete
+
+Public API:
+  undo(steps, session_id, workspace_dir) → AgentState | None
+  checkpoint_count() → int
 """
 
 from arf.core.plugin_context import PluginContext
+from arf.plugins.undo.round_manager import RoundManager
+from arf.core.state import AgentState
 
 
 class UndoPlugin:
     def __init__(self, config: dict | None = None):
-        pass
+        cfg = config or {}
+        max_undo = cfg.get("max_undo_depth", 3)
+        self._rm = RoundManager(max_undo_depth=max_undo)
 
     @property
     def name(self) -> str:
@@ -18,7 +26,23 @@ class UndoPlugin:
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"round_end": "blocking"}
+        return {"round_start": "blocking", "round_end": "blocking"}
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
-        pass  # round-end hooks handled by engine checkpoint infrastructure
+        if hook_name == "round_start":
+            self._rm.begin_round(
+                ctx.state,
+                workspace_dir=getattr(ctx, "workspace_dir", ""),
+            )
+        elif hook_name == "round_end":
+            self._rm.close_round()
+
+    def undo(self, steps: int, session_id: str = "",
+             workspace_dir: str = "") -> AgentState | None:
+        return self._rm.undo(steps, workspace_dir=workspace_dir)
+
+    def checkpoint_count(self) -> int:
+        return self._rm.count()
+
+    def get_round_manager(self) -> RoundManager:
+        return self._rm
