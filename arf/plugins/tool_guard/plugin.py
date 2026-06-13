@@ -1,7 +1,11 @@
 """ToolGuardPlugin — mode-aware permission policy + parameter security check."""
+import logging
+
 from arf.core.plugin_context import PluginContext
 from arf.session import PermissionLists, PermissionRegistry
 from arf.sandbox.path_sandbox import PathSandbox
+
+logger = logging.getLogger("arf.plugins.tool_guard")
 
 
 class ToolGuardError(Exception):
@@ -85,7 +89,19 @@ class ToolGuardPlugin:
             # --- plan mode: read-only tools only ---
             if effective_mode == "plan":
                 ann = tool_annotations.get(name, {})
-                if ann.get("readOnlyHint") is not True:
+                hint = ann.get("readOnlyHint")
+                if hint is None:
+                    # Tool didn't declare — assume side effect (safe default)
+                    logger.warning(
+                        "Tool '%s' has no readOnlyHint annotation — "
+                        "denied in plan mode. Add 'annotations: {readOnlyHint: true/false}' "
+                        "to its tool.yaml.", name)
+                    self._block_all(tool_calls, ctx,
+                                    f"PLAN mode: tool '{name}' has no readOnlyHint annotation "
+                                    f"(assumed side effect)")
+                    raise PermissionDenied(
+                        f"Tool '{name}' denied in plan mode: missing readOnlyHint annotation")
+                if hint is not True:
                     self._block_all(tool_calls, ctx,
                                     f"PLAN mode: tool '{name}' has side effects")
                     raise PermissionDenied(f"Tool '{name}' denied in plan mode")
