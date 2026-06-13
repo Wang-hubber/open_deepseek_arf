@@ -1,3 +1,0 @@
-name: sandbox_persist
-enabled: true
-description: "Persist workspace after tool execution"
