@@ -34,7 +34,7 @@ class TracePlugin:
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
         self._trace_dir = Path(cfg.get("trace_dir", "./data/traces"))
-        self._trace_dir.mkdir(parents=True, exist_ok=True)
+        self._enabled = cfg.get("enabled", True)
         self._enabled = cfg.get("enabled", True)
 
         # Config snapshot — lazy, built on first _write_event call
@@ -44,6 +44,11 @@ class TracePlugin:
         extra_roots = cfg.get("extra_roots", [])
         from arf.plugins.trace.snapshot import EnvSnapshotBuilder
         self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files, extra_roots)
+
+    def set_trace_dir(self, trace_dir: str) -> None:
+        """Override trace directory (called by base.py with computed _trace_dir)."""
+        self._trace_dir = Path(trace_dir)
+        self._trace_dir.mkdir(parents=True, exist_ok=True)
 
     async def shutdown(self) -> None:
         """No-op — kept for PluginProtocol compatibility."""
