@@ -2,7 +2,8 @@ name: tool_guard
 enabled: true
 description: "Unified tool permission + security check"
 config:
-  deny_list: []
-  ask_list: []
-  allow_list: []
+  deny: []
+  ask: []
+  allow: []
+  deny_patterns: []
   sandbox_check: true
