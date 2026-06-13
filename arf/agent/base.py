@@ -161,7 +161,13 @@ class BaseAgent:
         )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
+        # workspace_root: override_protocols (or ctx.root) controls sandbox boundary.
+        # Data paths (state/trace/memory) always derive from ctx.root.
+        _workspace_override = override_protocols.pop("workspace_root", None)
+        if _workspace_override:
+            _workspace_root = str(Path(_workspace_override).resolve())
+        else:
+            _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
             input_guard = NoneInputGuard()
@@ -354,7 +360,7 @@ class BaseAgent:
             cancel_event=None,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
-            workspace_dir=str(ctx.workspace_dir) if ctx else "./workspace",
+            workspace_dir=_workspace_root,
             memory_dir=_mem_dir,
             state_dir=str(ctx.state_dir) if ctx else "./data/state",
             trace_dir=_trace_dir,
