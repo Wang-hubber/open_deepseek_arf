@@ -20,6 +20,7 @@ class ApprovalPlugin:
         self._results: dict[str, bool] = {}
         self._chat_handler = None
         self._chat_mode = False
+        self._name_resolver = None  # injected by base.py after plugin construction
 
     @property
     def name(self) -> str:
@@ -28,6 +29,10 @@ class ApprovalPlugin:
     @property
     def hooks(self) -> dict[str, str]:
         return {"pre_action": "blocking"}
+
+    def set_name_resolver(self, resolver) -> None:
+        """Inject tool name → namespaced name resolver (called by base.py)."""
+        self._name_resolver = resolver
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if ctx.current_step != "execute_tools":
@@ -38,7 +43,8 @@ class ApprovalPlugin:
 
         for tc in tool_calls:
             name = tc.get("name", "")
-            if name not in self._ask_list:
+            resolved = self._name_resolver(name) if self._name_resolver else name
+            if resolved not in self._ask_list:
                 continue
 
             decision_id = f"{ctx.session_id}_{name}_{id(tc)}"
