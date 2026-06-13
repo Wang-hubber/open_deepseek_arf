@@ -161,11 +161,16 @@ class BaseAgent:
         )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        # workspace_root: override_protocols (or ctx.root) controls sandbox boundary.
-        # Data paths (state/trace/memory) always derive from ctx.root.
+        # workspace_root: controls sandbox boundary. Priority:
+        #   1. override_protocols kwarg (construction-time)
+        #   2. advanced.sandbox.workspace_root (agent.yaml)
+        #   3. ctx.root (default — data and boundary share the same root)
         _workspace_override = override_protocols.pop("workspace_root", None)
+        sandbox_cfg = adv.sandbox if adv else None
         if _workspace_override:
             _workspace_root = str(Path(_workspace_override).resolve())
+        elif sandbox_cfg and sandbox_cfg.workspace_root:
+            _workspace_root = str(Path(sandbox_cfg.workspace_root).resolve())
         else:
             _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
         gr_cfg = adv.guardrails if adv else None
@@ -185,7 +190,6 @@ class BaseAgent:
             default_boundary = None
             tool_boundaries: dict = {}
         else:
-            sandbox_cfg = adv.sandbox if adv else None
             checks = sandbox_cfg.checks.model_dump() if sandbox_cfg and sandbox_cfg.checks else None
             tool_guard = PathCheckToolGuard(checks=checks)
 

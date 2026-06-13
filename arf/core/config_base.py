@@ -157,6 +157,12 @@ class PathCheckFlags(BaseModel):
 
 
 class SandboxConfig(BaseModel):
+    workspace_root: str | None = Field(
+        default=None,
+        description="Override sandbox boundary (separate from data root). "
+                    "When set, file operations are confined to this path while "
+                    "data (state/trace/memory) stays under AppContext.root."
+    )
     checks: PathCheckFlags = Field(default_factory=PathCheckFlags)
     blacklist: list[str] = Field(
         default_factory=lambda: [".git", "__pycache__", "logs", ".env"],
