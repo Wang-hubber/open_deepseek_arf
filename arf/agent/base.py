@@ -477,6 +477,24 @@ class BaseAgent:
 
         return session_id, existing, is_new_session
 
+    @staticmethod
+    def _matches_perm(tool_name: str, perm_set: set[str]) -> bool:
+        """Check if a namespaced tool name matches any entry in *perm_set*.
+
+        Permission lists use bare names (e.g. ``write_file``) while MCP tool
+        names are namespaced (``filesystem__write_file`` or ``user__write_file``).
+        This matches both the full namespaced name AND the bare suffix.
+        """
+        if not perm_set:
+            return False
+        if tool_name in perm_set:
+            return True
+        if "__" in tool_name:
+            bare = tool_name.split("__", 1)[1]
+            if bare in perm_set:
+                return True
+        return False
+
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
 
@@ -497,13 +515,17 @@ class BaseAgent:
                 if self.config.effective_advanced().guardrails and \
                    self.config.effective_advanced().guardrails.permissions else True
 
-            deny_set = pl.deny
-            if strict:
-                allowed = pl.allow | pl.ask
-                visible = [t for t in tools
-                           if t.get('name', '') in allowed and t.get('name', '') not in deny_set]
-            else:
-                visible = [t for t in tools if t.get('name', '') not in deny_set]
+            allowed = pl.allow | pl.ask
+            visible = []
+            for t in tools:
+                name = t.get('name', '')
+                if self._matches_perm(name, pl.deny):
+                    continue  # never show denied tools
+                if strict:
+                    if self._matches_perm(name, allowed):
+                        visible.append(t)
+                else:
+                    visible.append(t)
 
         lines: list[str] = []
         if visible:
