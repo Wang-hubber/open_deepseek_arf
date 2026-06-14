@@ -127,13 +127,10 @@ class TestPluginProvider:
         assert tools[0].name == "planner"
 
 
-class TestPluginClassDoubleInstantiation:
-    """P1: PluginProvider._load() instantiates the same plugin class twice
-    when the plugin is enabled — once in the always-loaded pass (lines 73-96)
-    and again in the enabled-gated pass (lines 130-152).
-
-    After the fix, list_plugins() returns exactly one instance per plugin.
-    """
+class TestPluginClassInstantiation:
+    """PluginProvider._load() loads plugin classes only for enabled plugins.
+    Disabled plugins are skipped entirely (class, tools, and skills).
+    Each enabled plugin is instantiated exactly once."""
 
     @pytest.fixture
     def plugins_root(self, tmp_path):
@@ -174,9 +171,10 @@ class TestPluginClassDoubleInstantiation:
             f"Plugin class __init__ called {sum(counter)} times, expected 1"
         )
 
-    def test_disabled_plugin_still_discovered(self, plugins_root):
-        """Disabled plugins still have class loaded (always-loaded pass),
-        but tools/skills are skipped."""
+    def test_disabled_plugin_not_loaded(self, plugins_root):
+        """Disabled plugins are NOT loaded — class, tools, and skills
+        are all gated by the enabled list.  Prevents blocking plugins
+        like undo from running when the user didn't opt in."""
         self._create_plugin_dir(plugins_root, "disabled_plugin")
 
         counter: list[int] = []
@@ -190,12 +188,8 @@ class TestPluginClassDoubleInstantiation:
             provider = PluginProvider(str(plugins_root), [])
             plugins = provider.list_plugins()
 
-        assert len(plugins) == 1, (
-            f"Disabled plugin should still be discovered once, "
-            f"got {len(plugins)}"
-        )
-        assert sum(counter) == 1, (
-            f"Disabled plugin instantiated {sum(counter)} times, expected 1"
+        assert len(plugins) == 0, (
+            f"Disabled plugin should NOT be loaded, got {len(plugins)}"
         )
 
     def test_two_enabled_plugins_each_instantiated_once(self, plugins_root):
