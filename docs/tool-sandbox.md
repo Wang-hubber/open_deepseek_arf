@@ -332,6 +332,29 @@ deny_patterns（参数内容危险模式匹配）
 
 `PermissionLists` 支持热替换——引擎在代理切换（handoff）时调用 `swap_lists()` 切换权限列表。
 
+#### Inventory 工具可见性控制
+
+`$INVENTORY` 占位符在启动时由 `_build_inventory_from_mcp()` 填充为工具列表，填充行为由 `strict_inventory` 配置控制：
+
+| `strict_inventory` | 模型可见工具 | 适用场景 |
+|---------------------|-------------|----------|
+| `true`（默认） | `allow ∪ ask`（白名单，去 deny 交集） | 明确限定 Agent 行为边界 |
+| `false` | 全部工具 − `deny` | Agent 需要广泛工具访问 |
+
+白名单模式的核心优势：**Agent 根本不知道不允许用的工具存在**——即使模型产生幻觉也不会调用未列出的工具。比执行时拦截更安全、更省 token。
+
+```yaml
+guardrails:
+  permissions:
+    strict_inventory: true   # 默认：按 allow + ask 过滤 $INVENTORY
+    allow: [read_text_file, directory_tree, web_search, web_fetch]
+    ask: [write_file, delete_file, move_file]
+    deny: [bash, python_exec]
+    # deny 中的工具始终不可见、不可用
+```
+
+与执行时权限的配合：`$INVENTORY` 可见性控制"模型知道什么"，`tool_guard` 控制"模型能执行什么"——两层独立但互补。即使 `strict_inventory: false` 让模型看到所有工具，`tool_guard` 仍会在执行时拦截 deny 列表中的调用。
+
 #### PLAN 模式与副作用检测
 
 `arf/session/mode_manager.py` 提供 `has_side_effect(tool_name)` 函数，用于 PLAN 模式下的只读/写判断：
@@ -514,6 +537,7 @@ advanced:
         #   pattern: "..."
         #   replacement: "..."
     permissions:
+      strict_inventory: true       # true=仅 allow+ask 可见, false=全部非 deny 可见
       deny: []
       ask: [file_writer, file_deleter, python_exec]
       allow: [file_reader, web_search, web_fetch, …]
