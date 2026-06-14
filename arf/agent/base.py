@@ -160,11 +160,27 @@ class BaseAgent:
         # 3. Data & workspace paths
         _mem_dir = str(_Path(_data_dir) / "memory")
         _trace_dir = str(_Path(_data_dir) / "traces")
+
+        # workspace_root: sandbox boundary for file operations.
+        # Priority: config.allow_paths[0] > override_protocols > data_root
+        # Must be resolved BEFORE PluginRuntime so hooks get the correct
+        # workspace directory (not data_root, which holds trace/memory/state).
+        _workspace_override = override_protocols.pop("workspace_root", None)
+        if _workspace_override:
+            _workspace_root = str(Path(_workspace_override).resolve())
+            _allow_paths_list = None
+        elif config.allow_paths:
+            _workspace_root = str(Path(config.allow_paths[0]).resolve())
+            _allow_paths_list = config.allow_paths if len(config.allow_paths) > 1 else None
+        else:
+            _workspace_root = _data_root
+            _allow_paths_list = None
+
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
             memory_dir=_mem_dir,
-            workspace_dir=_data_root,
+            workspace_dir=_workspace_root,
             state_dir=str(_Path(_data_dir) / "state"),
             trace_dir=_trace_dir,
             files_dir=str(_Path(_data_dir) / "files"),
@@ -180,18 +196,6 @@ class BaseAgent:
         )
 
         # 4. Guardrails — driven by adv.guardrails config, defaults match existing behavior
-        # workspace_root: sandbox boundary for file operations.
-        # Priority: config.allow_paths[0] > override_protocols > data_root
-        _workspace_override = override_protocols.pop("workspace_root", None)
-        if _workspace_override:
-            _workspace_root = str(Path(_workspace_override).resolve())
-            _allow_paths_list = None
-        elif config.allow_paths:
-            _workspace_root = str(Path(config.allow_paths[0]).resolve())
-            _allow_paths_list = config.allow_paths if len(config.allow_paths) > 1 else None
-        else:
-            _workspace_root = _data_root
-            _allow_paths_list = None
         sandbox_cfg = adv.sandbox if adv else None
         gr_cfg = adv.guardrails if adv else None
         if gr_cfg and gr_cfg.input == "none":
