@@ -658,6 +658,8 @@ class ControlPlane:
 
         Trace-captures every recovery decision. Raises SessionAbortedError
         when the decision is 'abort' so invoke()/astream() can clean up.
+        Flushes pending trace events before abort so error evidence is
+        persisted to JSONL.
         """
         ctx.hook_data["exception"] = exc
         try:
@@ -665,6 +667,7 @@ class ControlPlane:
         except Exception as hook_err:
             self._emit_error_event(ctx, exc, f"error_hook_failed: {hook_err}")
             self._emit_decision_event(ctx, exc, "abort", "error_hook_failed")
+            await self._flush_trace(ctx)
             raise SessionAbortedError(
                 f"Error handler hook failed: {hook_err}"
             ) from exc
@@ -672,6 +675,7 @@ class ControlPlane:
         if not decision:
             self._emit_error_event(ctx, exc, "no_recovery_decision")
             self._emit_decision_event(ctx, exc, "abort", "no_recovery_decision")
+            await self._flush_trace(ctx)
             raise SessionAbortedError(
                 f"No recovery decision from error_handler: {exc}"
             ) from exc
@@ -679,6 +683,7 @@ class ControlPlane:
         reason = decision.get("reason", "")
         self._emit_decision_event(ctx, exc, action, reason)
         if action == "abort":
+            await self._flush_trace(ctx)
             raise SessionAbortedError(
                 f"Error handler decided abort: {exc}"
             ) from exc
@@ -752,6 +757,19 @@ class ControlPlane:
         self._side.update_runtime(
             session_id=ctx.session_id, interaction_round=ctx.interaction_round)
         await self._side.fire(event_type, ctx)
+
+    async def _flush_trace(self, ctx: PluginContext) -> None:
+        """Fire post_action hooks to flush pending trace events to JSONL.
+
+        Called before raising SessionAbortedError so error decision events
+        injected by _emit_decision_event are persisted. Failure to flush
+        is itself swallowed — we're already in an error path.
+        """
+        try:
+            await self._fire_blocking("post_action", ctx)
+            await self._fire_side("post_action", ctx)
+        except Exception:
+            pass
 
     def _cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()
