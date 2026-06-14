@@ -64,7 +64,14 @@ class PluginProvider:
 
             enabled = plugin_dir.name in self._enabled
 
-            # Plugin class discovery — always loaded, not gated by config.plugins.
+            # Only load plugin classes for enabled plugins.  Previously
+            # plugin classes were "always loaded, not gated", but this
+            # caused blocking plugins (e.g. undo) to register hooks and
+            # run even when the user didn't opt in — blocking on_hook
+            # calls on every round_start, snapshotting the workspace.
+            if not enabled:
+                continue
+
             plugin_yaml = plugin_dir / "plugin.yaml"
             plugin_config = {}
             if plugin_yaml.exists():
@@ -94,10 +101,6 @@ class PluginProvider:
                 except Exception as e:
                     logger.warning("Failed to load plugin from %s: %s",
                                    plugin_dir.name, e)
-
-            # Tools, skills, hooks — gated by config.plugins.
-            if not enabled:
-                continue
 
             tools_dir = plugin_dir / "tools"
             if tools_dir.exists() and tools_dir.is_dir():
