@@ -195,11 +195,15 @@ class ConcurrentToolExecutor:
         else:
             boundary = self._default_boundary
 
-        # Path safety check
+        # Path safety check — only scan model-supplied params, not
+        # framework DI params (_workspace, _engine, _agent_mode, etc.).
+        # Framework controls these values; checking them against the
+        # security boundary is checking the framework against itself.
+        check_params = {k: v for k, v in params.items() if not k.startswith("_")}
         if self._tool_guard is not None and boundary is not None:
             path_params = await self._get_path_param_names(tool_name)
             gr = await self._tool_guard.check(
-                tool_name, params, boundary, path_param_names=path_params)
+                tool_name, check_params, boundary, path_param_names=path_params)
             if not gr.allowed:
                 return ToolResult(
                     tool_name=tool_name,
