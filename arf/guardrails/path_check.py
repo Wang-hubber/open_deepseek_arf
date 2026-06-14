@@ -37,13 +37,17 @@ class ResourceQuota:
 class PathCheckToolGuard:
     """Blocks dangerous paths in tool parameters using DirectoryBoundary.
 
+    Security model: a path is safe if it (a) contains no ``..`` traversal,
+    (b) resolves within the allowed directory boundary, and (c) contains
+    no symlink that escapes the boundary.  Absolute paths that satisfy all
+    three conditions are permitted — the boundary check is the real guard.
+
     Checks (in order, first failure wins):
     1. Path traversal (``..`` in segments)
-    2. Absolute paths (starts with ``/``)
-    3. Path depth exceeds quota
-    4. Path count exceeds quota
-    5. Symlink traversal
-    6. Boundary containment (whitelist)
+    2. Path depth exceeds quota
+    3. Path count exceeds quota
+    4. Symlink traversal
+    5. Boundary containment (whitelist)
     """
 
     def __init__(
@@ -54,7 +58,6 @@ class PathCheckToolGuard:
         self._quota = quota
         self._checks = checks or {
             "path_traversal": True,
-            "absolute_path": True,
             "workspace_containment": True,
             "symlink": True,
         }
@@ -104,9 +107,6 @@ class PathCheckToolGuard:
 
         if self._checks.get("path_traversal") and ".." in parts:
             return GuardResult(allowed=False, reason=f"Path traversal blocked: '{v}'")
-
-        if self._checks.get("absolute_path") and cleaned.startswith("/"):
-            return GuardResult(allowed=False, reason=f"Absolute path blocked: '{v}'")
 
         if self._quota and self._quota.max_path_depth is not None:
             depth = len(parts)
