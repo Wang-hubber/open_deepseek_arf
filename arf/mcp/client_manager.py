@@ -237,13 +237,13 @@ class McpClientManager:
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         """Execute a tool.  Local tools run in-process."""
-        parts = tool_name.split("__", 1)
-        if len(parts) != 2:
+        from arf.core.tool_naming import split_name
+
+        source, local_name = split_name(tool_name)
+        if not source:
             return ToolResult(
                 tool_name=tool_name, success=False,
                 error=f"Tool '{tool_name}' missing namespace prefix")
-
-        source, local_name = parts
         clean_params = _filter_serializable(params)
 
         # ---- local: user__ ----

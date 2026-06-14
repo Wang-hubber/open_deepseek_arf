@@ -55,11 +55,12 @@ class ArfLocalMcpServer:
     # -- tools/call (remote only) --
 
     async def call_tool(self, name: str, params: dict) -> dict:
-        parts = name.split("__", 1)
-        if len(parts) != 2:
+        from arf.core.tool_naming import split_name
+
+        source, local_name = split_name(name)
+        if not source:
             return {"success": False, "error": f"Tool '{name}' missing namespace prefix"}
 
-        source, local_name = parts
         client = self._remote_clients.get(source)
         if client:
             return await client.call_tool(local_name, params)
