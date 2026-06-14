@@ -25,6 +25,8 @@ class RecoveryConfig(BaseModel):
 class AdvancedConfig(BaseModel):
     """All internal framework mechanisms with production-grade defaults."""
     max_turns: int = 50
+    max_tokens: int = 100_000       # cumulative token budget per session
+    tool_timeout: float = 300.0     # per-tool execution timeout (5 min)
     max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
     call_timeout: float = 120.0       # per-call timeout, None = no limit
     session_timeout: float | None = None  # overall invoke timeout, None = no limit

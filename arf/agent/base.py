@@ -289,6 +289,7 @@ class BaseAgent:
                 tool_boundaries=tool_boundaries,
                 default_boundary=default_boundary,
                 sandbox_manager=sandbox_manager,
+                tool_timeout=(adv.tool_timeout if adv else 300.0),
             ),
         )
 
@@ -395,6 +396,7 @@ class BaseAgent:
             cancel_event=None,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
+            max_tokens=(adv.max_tokens if adv else 100_000),
             workspace_dir=_workspace_root,
             memory_dir=_mem_dir,
             state_dir=str(_Path(_data_dir) / "state"),
