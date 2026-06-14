@@ -1,18 +1,29 @@
-"""McpClientManager -- Agent-side entry point for MCP resource management.
+"""McpClientManager — Agent-side entry point for MCP resource management.
 
-Manages a local MCP server subprocess via stdio JSON-RPC, implementing the
-ToolResolver protocol so it can drop into ConcurrentToolExecutor and
-GraphEngine without interface changes.
+Routes local tools (user__ and {plugin}__ namespaces) in-process via
+ToolProvider / PluginProvider.  Only remote MCP servers (server__ namespace)
+go through a stdio subprocess for isolation — and only when at least one
+remote server is configured.
+
+Implements the ToolResolver protocol so it can drop into
+ConcurrentToolExecutor and GraphEngine without interface changes.
 """
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 
 from arf.mcp.protocol import StdioFraming, JsonRpcRequest
+from arf.mcp.remote_client import McpRemoteClient
 from arf.core.config_base import McpServerConfig
 from arf.core.protocols.resources import ToolDefinition, ToolResolver
 from arf.core.results import ToolResult
+from arf.resources.providers.tool_provider import ToolProvider
+from arf.resources.providers.skill_provider import SkillProvider
+from arf.resources.providers.plugin_provider import PluginProvider
+
+logger = logging.getLogger("arf.mcp")
 
 
 def _filter_serializable(params: dict) -> dict:
@@ -27,11 +38,24 @@ def _filter_serializable(params: dict) -> dict:
     return clean
 
 
-class McpClientManager:
-    """Manages a local MCP server subprocess via stdio JSON-RPC.
+def _tc_to_dict(tc) -> dict:
+    """ToolConfig → dict, preserving the original name (namespace added by caller)."""
+    if hasattr(tc, "model_dump"):
+        return tc.model_dump()
+    if isinstance(tc, dict):
+        return dict(tc)
+    return {"name": getattr(tc, "name", ""),
+            "description": getattr(tc, "description", ""),
+            "parameters": getattr(tc, "parameters", {})}
 
-    Implements the ToolResolver protocol so it can drop into
-    ConcurrentToolExecutor and GraphEngine without interface changes.
+
+class McpClientManager:
+    """Unified tool / skill resolver.
+
+    Local tools (ToolProvider + PluginProvider) are resolved **in-process**
+    — zero serialization overhead, zero pipe-deadlock risk.  Only remote
+    MCP servers use a subprocess for isolation, and only when at least one
+    ``mcp_servers`` entry is configured.
     """
 
     def __init__(
@@ -46,30 +70,52 @@ class McpClientManager:
     ) -> None:
         self._tools_dir = tools_dir
         self._skills_dir = skills_dir
-        self._models_dir = models_dir
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
         self._plugin_names = plugin_names
         self._plugin_configs = plugin_configs or {}
+
+        # ---- local providers (in-process, always available) ----
+        self._tool_provider = ToolProvider(tools_dir)
+        self._skill_provider = SkillProvider(skills_dir)
+        self._plugin_provider: PluginProvider | None = None
+        if plugin_names:
+            self._plugin_provider = PluginProvider(
+                plugins_dir, plugin_names, plugin_configs)
+
+        # ---- remote MCP (subprocess, only when mcp_servers is non-empty) ----
         self._process: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
+        self._remote_started: bool = False
+        self._remote_healthy: bool = False
+        self._remote_request_id: int = 0
+        self._remote_lock: asyncio.Lock = asyncio.Lock()
+
         self._started = False
-        self._healthy = False
-        self._request_id = 0
-        self._send_lock = asyncio.Lock()
+
+    # ==================================================================
+    # Lifecycle
+    # ==================================================================
 
     async def start(self) -> None:
-        """Spawn the local MCP server subprocess and establish stdio connection."""
+        """Start remote MCP connections (if any).  Local providers need no start."""
         if self._started:
+            return
+        self._started = True
+
+        if not self._mcp_servers:
+            return  # nothing remote to start
+
+        await self._remote_start()
+
+    async def _remote_start(self) -> None:
+        """Spawn the local-server subprocess for remote MCP servers."""
+        if self._remote_started:
             return
 
         config_json = json.dumps({
-            "tools_dir": str(self._tools_dir),
-            "skills_dir": str(self._skills_dir),
-            "models_dir": str(self._models_dir),
-            "plugins_dir": str(self._plugins_dir),
-            "plugin_names": self._plugin_names,
-            "plugin_configs": self._plugin_configs,
+            # tools / skills / plugins are NOT forwarded — the subprocess
+            # only handles remote servers now
             "remote_servers": [s.model_dump() for s in self._mcp_servers],
         })
 
@@ -80,28 +126,19 @@ class McpClientManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Drain stderr in a background task — if the pipe buffer fills,
-        # the subprocess blocks on write(stderr) and deadlocks with the
-        # parent waiting on stdout. This drains stderr lines to the
-        # "arf.mcp.local_server" logger so plugin loading errors are visible.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         try:
             if self._process.stdin:
                 self._process.stdin.write(config_json.encode() + b"\n")
                 await self._process.stdin.drain()
-                self._healthy = True
+                self._remote_healthy = True
         except (BrokenPipeError, ConnectionResetError, OSError):
-            self._healthy = False
-        self._started = True
+            self._remote_healthy = False
+        self._remote_started = True
 
     async def _drain_stderr(self) -> None:
-        """Read stderr lines from the subprocess and log them.
-
-        Keeps the stderr pipe from filling up, which would deadlock the
-        subprocess (blocked on write) with the parent (blocked on read).
-        """
-        import logging
+        """Read stderr lines from the subprocess and log them."""
         _log = logging.getLogger("arf.mcp.local_server")
         try:
             while self._process and self._process.stderr:
@@ -113,7 +150,7 @@ class McpClientManager:
             pass
 
     async def stop(self) -> None:
-        """Terminate the subprocess and clean up."""
+        """Terminate the remote subprocess and clean up."""
         if self._process:
             try:
                 self._process.terminate()
@@ -125,26 +162,155 @@ class McpClientManager:
                 except (ProcessLookupError, asyncio.TimeoutError):
                     pass
             self._process = None
-        if hasattr(self, '_stderr_task') and self._stderr_task:
+        if self._stderr_task:
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):
                 pass
             self._stderr_task = None
+        self._remote_started = False
         self._started = False
+
+    @property
+    def healthy(self) -> bool:
+        # Local providers are always healthy (no subprocess to hang).
+        # Remote health only matters when remote servers are configured.
+        if not self._mcp_servers:
+            return True
+        return self._remote_healthy
+
+    # ==================================================================
+    # Tool listing (in-process for local, subprocess for remote)
+    # ==================================================================
+
+    def _list_local_tools(self) -> list[dict]:
+        """List local tools (user__ + plugin__ namespaces) — synchronous."""
+        results: list[dict] = []
+
+        # App tools: user__ namespace
+        for t in self._tool_provider.list():
+            d = _tc_to_dict(t)
+            d["name"] = f"user__{d['name']}"
+            results.append(d)
+
+        # Plugin tools: {plugin}__ namespace
+        if self._plugin_provider:
+            for pname, t in self._plugin_provider.list_tools_with_plugin():
+                d = _tc_to_dict(t)
+                d["name"] = f"{pname}__{d['name']}"
+                results.append(d)
+
+        return results
+
+    def _list_local_resources(self) -> list[dict]:
+        """List local resources (skills) — synchronous."""
+        results: list[dict] = []
+        for s in self._skill_provider.list():
+            d = _tc_to_dict(s)
+            d["uri"] = f"skills/{d.get('name', '')}.yaml"
+            results.append(d)
+        return results
+
+    async def _list_remote_tools(self) -> list[dict]:
+        """List tools from the remote subprocess."""
+        result = await self._remote_send("tools/list", {})
+        return result.get("tools", [])
+
+    # ==================================================================
+    # ToolResolver protocol
+    # ==================================================================
+
+    async def get_tool_definitions(
+        self, query_context: str = "", top_k: int = 10,
+    ) -> list[ToolDefinition]:
+        """Get all tools.  Local tools are resolved in-process."""
+        tools_data: list[dict] = list(self._list_local_tools())
+
+        if self._remote_started:
+            try:
+                remote_tools = await self._list_remote_tools()
+                tools_data.extend(remote_tools)
+            except Exception:
+                logger.debug("Failed to list remote tools", exc_info=True)
+
+        return [
+            ToolDefinition(
+                name=t.get("name", ""),
+                description=t.get("description", ""),
+                parameters=t.get("parameters", {}),
+            )
+            for t in tools_data
+        ]
+
+    async def execute(self, tool_name: str, params: dict) -> ToolResult:
+        """Execute a tool.  Local tools run in-process."""
+        parts = tool_name.split("__", 1)
+        if len(parts) != 2:
+            return ToolResult(
+                tool_name=tool_name, success=False,
+                error=f"Tool '{tool_name}' missing namespace prefix")
+
+        source, local_name = parts
+        clean_params = _filter_serializable(params)
+
+        # ---- local: user__ ----
+        if source == "user":
+            return await self._tool_provider.execute(local_name, clean_params)
+
+        # ---- local: {plugin}__ ----
+        if self._plugin_provider:
+            result = await self._plugin_provider.execute_plugin_tool(
+                source, local_name, clean_params)
+            if result is not None:
+                return result
+
+        # ---- remote: {server}__ ----
+        if self._remote_started:
+            try:
+                remote_result = await self._remote_send("tools/call", {
+                    "name": tool_name,
+                    "arguments": clean_params,
+                })
+                return ToolResult(
+                    tool_name=tool_name,
+                    success=remote_result.get("success", False),
+                    data=remote_result.get("data", {}),
+                    error=remote_result.get("error"),
+                )
+            except Exception as e:
+                return ToolResult(
+                    tool_name=tool_name, success=False, error=str(e))
+
+        return ToolResult(
+            tool_name=tool_name, success=False,
+            error=f"Unknown source: {source}")
+
+    # ---- Sync wrapper for startup ----
+
+    def get_tool_definitions_sync(self) -> list[ToolDefinition]:
+        """Synchronous tool listing — local providers only (no subprocess)."""
+        tools_data = self._list_local_tools()
+        return [
+            ToolDefinition(
+                name=t.get("name", ""),
+                description=t.get("description", ""),
+                parameters=t.get("parameters", {}),
+            )
+            for t in tools_data
+        ]
+
+    # ==================================================================
+    # Remote subprocess communication (only when mcp_servers configured)
+    # ==================================================================
 
     @staticmethod
     def _consume_frame(buffer: bytes) -> tuple[str | None, bytes]:
-        """Decode first complete frame in *buffer*, returning
-        ``(payload, remaining_bytes)``.  Returns ``(None, buffer)`` when
-        no complete frame is available yet.
-        """
+        """Decode first complete frame in *buffer*."""
         decoded = StdioFraming.decode(buffer)
         if decoded is None:
             return None, buffer
 
-        # Re-parse the header so we know how many bytes to consume.
         header_end = buffer.find(b"\r\n\r\n")
         if header_end == -1:
             return None, buffer
@@ -158,26 +324,18 @@ class McpClientManager:
         consumed = header_end + 4 + content_length
         return decoded, buffer[consumed:]
 
-    async def _send_request(self, method: str, params: dict,
-                            timeout: float = 15.0) -> dict:
-        """Send a JSON-RPC request and return the result dict.
-
-        Serialized via ``_send_lock`` so only one request is in-flight at a
-        time.  Response id is verified against the sent request id; mismatched
-        (stale) responses are discarded and the correct one is waited for.
-
-        *timeout* is the overall request deadline (per-read timeouts are
-        10s).  A hung subprocess returns ``{}`` after *timeout* seconds.
-        """
+    async def _remote_send(self, method: str, params: dict,
+                           timeout: float = 15.0) -> dict:
+        """Send a JSON-RPC request to the remote subprocess."""
         async def _do_request() -> dict:
-            self._request_id += 1
-            sent_id = self._request_id
+            self._remote_request_id += 1
+            sent_id = self._remote_request_id
             req = JsonRpcRequest(id=sent_id, method=method, params=params)
             payload = req.model_dump_json(by_alias=True)
             framed = StdioFraming.encode(payload)
 
-            async with self._send_lock:
-                if not self._healthy:
+            async with self._remote_lock:
+                if not self._remote_healthy:
                     return {}
 
                 if self._process and self._process.stdin:
@@ -185,7 +343,7 @@ class McpClientManager:
                         self._process.stdin.write(framed)
                         await self._process.stdin.drain()
                     except (BrokenPipeError, ConnectionResetError, OSError):
-                        self._healthy = False
+                        self._remote_healthy = False
                         return {}
 
                 if not (self._process and self._process.stdout):
@@ -195,11 +353,10 @@ class McpClientManager:
                 while True:
                     try:
                         chunk = await asyncio.wait_for(
-                            self._process.stdout.read(4096), timeout=10.0
-                        )
+                            self._process.stdout.read(4096), timeout=10.0)
                     except (asyncio.TimeoutError, ConnectionResetError,
                             BrokenPipeError, OSError):
-                        self._healthy = False
+                        self._remote_healthy = False
                         return {}
 
                     if not chunk:
@@ -209,22 +366,20 @@ class McpClientManager:
                     while True:
                         decoded, buf = self._consume_frame(buf)
                         if decoded is None:
-                            break  # need more data
+                            break
 
                         resp = json.loads(decoded)
                         resp_id = resp.get("id")
-
                         if resp_id != sent_id:
-                            logger = __import__('logging').getLogger("arf.mcp")
-                            logger.debug("Discarding stale response id=%s, expected=%s",
-                                         resp_id, sent_id)
-                            continue  # discard, try next frame in buf
+                            logger.debug(
+                                "Discarding stale response id=%s, expected=%s",
+                                resp_id, sent_id)
+                            continue
 
                         if "result" in resp:
                             return resp["result"]
                         if "error" in resp:
                             return {"error": resp["error"].get("message", "MCP error")}
-                        # response with neither result nor error — malformed, discard
                         break
 
                 return {}
@@ -232,69 +387,5 @@ class McpClientManager:
         try:
             return await asyncio.wait_for(_do_request(), timeout=timeout)
         except asyncio.TimeoutError:
-            self._healthy = False
+            self._remote_healthy = False
             return {}
-
-    @property
-    def healthy(self) -> bool:
-        return self._healthy
-
-    # -- ToolResolver protocol --
-
-    async def get_tool_definitions(
-        self, query_context: str = "", top_k: int = 10,
-    ) -> list[ToolDefinition]:
-        """Get all tools (MCP tools/list). Implements ToolResolver protocol."""
-        try:
-            result = await self._send_request("tools/list", {})
-            tools_data = result.get("tools", [])
-            return [
-                ToolDefinition(
-                    name=t.get("name", ""),
-                    description=t.get("description", ""),
-                    parameters=t.get("parameters", {}),
-                )
-                for t in tools_data
-            ]
-        except Exception:
-            return []
-
-    async def execute(self, tool_name: str, params: dict) -> ToolResult:
-        """Execute a tool (MCP tools/call). Implements ToolResolver protocol."""
-        try:
-            # Filter non-serializable values (DI objects like _engine, _state_store)
-            # rather than hardcoding a blacklist — serializable params pass through.
-            clean_params = _filter_serializable(params)
-            result = await self._send_request("tools/call", {
-                "name": tool_name,
-                "arguments": clean_params,
-            })
-            return ToolResult(
-                tool_name=tool_name,
-                success=result.get("success", False),
-                data=result.get("data", {}),
-                error=result.get("error"),
-            )
-        except Exception as e:
-            return ToolResult(tool_name=tool_name, success=False, error=str(e))
-
-    # -- Sync wrappers for startup --
-
-    def get_tool_definitions_sync(self,
-                                   timeout: float = 20.0) -> list[ToolDefinition]:
-        """Sync wrapper — safe to call from any context including async.
-
-        Blocks at most *timeout* seconds. Returns ``[]`` if the subprocess
-        is unhealthy or hangs.
-        """
-        from threading import Thread
-        result: list[ToolDefinition] = []
-        def _run() -> None:
-            nonlocal result
-            result = asyncio.run(self.get_tool_definitions())
-        t = Thread(target=_run)
-        t.start()
-        t.join(timeout=timeout)
-        if t.is_alive():
-            self._healthy = False
-        return result
