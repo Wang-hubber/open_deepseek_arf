@@ -84,6 +84,15 @@ class ToolGuardPlugin:
 
             # --- auto mode: all tools allowed, skip checks ---
             if effective_mode == "auto":
+                if resolved_name in self._lists.ask:
+                    logger.warning(
+                        "Auto mode: tool '%s' is in the ask list but "
+                        "session_mode=auto requires zero user interaction. "
+                        "The tool will be auto-allowed. Either move it to "
+                        "the allow list or switch to ask/plan mode if "
+                        "confirmation is required.",
+                        name,
+                    )
                 continue
 
             # --- plan mode: read-only tools only ---
