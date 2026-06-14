@@ -227,6 +227,11 @@ class EvalRunner:
                 oq = case_metrics.get("output_quality")
                 if oq is not None and isinstance(oq, (int, float)):
                     parts.append(f"quality={oq}/5")
+                oq_reason = case_metrics.get("reason", "")
+                if oq_reason:
+                    # Show first sentence of judge reasoning
+                    reason_short = oq_reason.split(".")[0][:120]
+                    parts.append(f"reason=\"{reason_short}\"")
                 ts = case_metrics.get("trajectory_similarity")
                 if ts is not None and isinstance(ts, (int, float)):
                     parts.append(f"traj_sim={ts}/5")
