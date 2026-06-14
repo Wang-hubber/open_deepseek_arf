@@ -36,6 +36,10 @@ class EvalRunner:
             resolved = agent_config.get_plugin_model_config("eval")
             if resolved is not None:
                 config.judge_model = resolved
+        # Auto-create default judge when judge_model is resolved but
+        # judge (system_prompt wrapper) is still None
+        if config.judge_model is not None and config.judge is None:
+            config.judge = JudgeModelConfig()
         config.validate()
         # Build judge ModelAdapter if judge_model is set
         self._judge_adapter = None
