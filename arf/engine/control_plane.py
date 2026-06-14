@@ -364,10 +364,19 @@ class ControlPlane:
         model = state.get("current_model", "")
 
         # Tool definitions via local MCP
+        # Wrapped in a hard timeout so a hung MCP subprocess doesn't
+        # block the entire model call. MCP failures are non-fatal —
+        # the model proceeds without tool definitions.
         tools: list[dict] = []
         if self._mcp_tool_resolver:
             try:
-                tools = await self._mcp_tool_resolver(state)
+                tools = await asyncio.wait_for(
+                    self._mcp_tool_resolver(state), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("MCP tool resolution timed out after 5s")
+                self._emit_mcp_error_event(
+                    session_id, TimeoutError("MCP tool resolution timed out"))
             except Exception as e:
                 logger.exception("MCP tool resolution failed")
                 self._emit_mcp_error_event(session_id, e)
