@@ -52,6 +52,7 @@ class McpClientManager:
         self._plugin_names = plugin_names
         self._plugin_configs = plugin_configs or {}
         self._process: asyncio.subprocess.Process | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._started = False
         self._healthy = False
         self._request_id = 0
@@ -78,6 +79,13 @@ class McpClientManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+        # Drain stderr in a background task — if the pipe buffer fills,
+        # the subprocess blocks on write(stderr) and deadlocks with the
+        # parent waiting on stdout. This drains stderr lines to the
+        # "arf.mcp.local_server" logger so plugin loading errors are visible.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
         try:
             if self._process.stdin:
                 self._process.stdin.write(config_json.encode() + b"\n")
@@ -86,6 +94,23 @@ class McpClientManager:
         except (BrokenPipeError, ConnectionResetError, OSError):
             self._healthy = False
         self._started = True
+
+    async def _drain_stderr(self) -> None:
+        """Read stderr lines from the subprocess and log them.
+
+        Keeps the stderr pipe from filling up, which would deadlock the
+        subprocess (blocked on write) with the parent (blocked on read).
+        """
+        import logging
+        _log = logging.getLogger("arf.mcp.local_server")
+        try:
+            while self._process and self._process.stderr:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                _log.debug("%s", line.decode(errors="replace").rstrip())
+        except Exception:
+            pass
 
     async def stop(self) -> None:
         """Terminate the subprocess and clean up."""
@@ -100,6 +125,13 @@ class McpClientManager:
                 except (ProcessLookupError, asyncio.TimeoutError):
                     pass
             self._process = None
+        if hasattr(self, '_stderr_task') and self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
         self._started = False
 
     @staticmethod
