@@ -674,11 +674,8 @@ class ControlPlane:
         decision = ctx.hook_data.get("_recovery_decision", {})
         if not decision:
             self._emit_error_event(ctx, exc, "no_recovery_decision")
-            self._emit_decision_event(ctx, exc, "abort", "no_recovery_decision")
             await self._flush_trace(ctx)
-            raise SessionAbortedError(
-                f"No recovery decision from error_handler: {exc}"
-            ) from exc
+            raise  # re-raise original exception — no recovery strategy
         action = decision.get("action", "abort")
         reason = decision.get("reason", "")
         self._emit_decision_event(ctx, exc, action, reason)
@@ -792,27 +789,37 @@ class ControlPlane:
     # ==================================================================
 
     async def invoke(self, state: AgentState) -> AgentState:
-        aborted = False
-        try:
-            if self._session_timeout:
-                await asyncio.wait_for(
-                    self._consume_execute(state), timeout=self._session_timeout
-                )
-            else:
-                async for _ in self._execute(state):
-                    pass
-        except (SessionAbortedError, asyncio.TimeoutError):
-            aborted = True
-
-        if not aborted:
-            # invoke() is a one-shot session — auto-close
-            await self._consume_close(state)
-
         session_id = state.get("session_id", "default")
-        if aborted:
+        try:
+            try:
+                if self._session_timeout:
+                    await asyncio.wait_for(
+                        self._consume_execute(state), timeout=self._session_timeout
+                    )
+                else:
+                    async for _ in self._execute(state):
+                        pass
+            except (SessionAbortedError, asyncio.TimeoutError):
+                state["session_active"] = False
+                state["_aborted"] = True
+                state["_error"] = "Session aborted via error_handler decision or timeout"
+                if self.state_store:
+                    await self.state_store.put(session_id, state)
+            else:
+                # invoke() is a one-shot session — auto-close
+                await self._consume_close(state)
+        except Exception as exc:
+            # Unknown error — no recovery strategy, save state and re-raise
+            # so the caller (chat/astream consumer) can see the real exception.
             state["session_active"] = False
+            state["_aborted"] = True
+            state["_error"] = str(exc)
+            logging.getLogger("arf").exception(
+                "invoke() session %s failed with unhandled error", session_id)
             if self.state_store:
                 await self.state_store.put(session_id, state)
+            raise
+
         if self.state_store:
             saved = await self.state_store.get(session_id)
             if saved:
@@ -827,18 +834,37 @@ class ControlPlane:
     async def astream(self, state: AgentState):
         session_id = state.get("session_id", "default")
         try:
-            async for event in self._execute(state):
-                yield event
-        except SessionAbortedError:
+            try:
+                async for event in self._execute(state):
+                    yield event
+            except SessionAbortedError:
+                state["_session_ended"] = True
+                state["session_active"] = False
+                state["_aborted"] = True
+                state["_error"] = "Session aborted via error_handler decision"
+                if self.state_store:
+                    await self.state_store.put(session_id, state)
+                yield self._make_event(
+                    "session_end",
+                    {"session_id": session_id, "reason": "aborted"},
+                    session_id=session_id,
+                )
+        except Exception as exc:
+            # Unknown error — no recovery strategy, propagate to caller
             state["_session_ended"] = True
             state["session_active"] = False
+            state["_aborted"] = True
+            state["_error"] = str(exc)
+            logging.getLogger("arf").exception(
+                "astream() session %s failed with unhandled error", session_id)
             if self.state_store:
                 await self.state_store.put(session_id, state)
             yield self._make_event(
                 "session_end",
-                {"session_id": session_id, "reason": "aborted"},
+                {"session_id": session_id, "reason": "error", "error": str(exc)},
                 session_id=session_id,
             )
+            raise
 
     async def close(self, state: AgentState):
         """Emit session_end + fire hooks + save state. Idempotent.
