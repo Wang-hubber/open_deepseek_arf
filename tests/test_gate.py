@@ -37,3 +37,22 @@ class TestGateChecker:
         gate = GateChecker()
         assert not gate.is_exceeded(current_turn=49)
         assert gate.is_exceeded(current_turn=50)
+
+    def test_not_exceeded_when_below_max_tokens(self):
+        gate = GateChecker(max_turns=50, max_tokens=100000)
+        assert not gate.is_exceeded(current_turn=10, total_tokens=50000)
+
+    def test_exceeded_when_above_max_tokens(self):
+        gate = GateChecker(max_turns=50, max_tokens=100000)
+        assert gate.is_exceeded(current_turn=10, total_tokens=100000)
+
+    def test_reason_returns_max_tokens_when_exceeded(self):
+        gate = GateChecker(max_turns=50, max_tokens=100000)
+        gate.is_exceeded(current_turn=10, total_tokens=100000)
+        assert gate.reason == "max_tokens"
+
+    def test_turns_take_priority_over_tokens(self):
+        """When both limits are set, first one hit wins."""
+        gate = GateChecker(max_turns=30, max_tokens=100000)
+        gate.is_exceeded(current_turn=30, total_tokens=50000)
+        assert gate.reason == "max_turns"
