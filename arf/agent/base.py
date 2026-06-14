@@ -761,7 +761,19 @@ class BaseAgent:
                     "round": interaction,
                 })
 
-            result = await self._engine.invoke(state)
+            try:
+                result = await self._engine.invoke(state)
+            except Exception:
+                # Unknown/unhandled error from engine — save state and re-raise
+                # so the caller can distinguish "model silent" from "call failed".
+                if self._engine and self._state_store:
+                    state["session_active"] = False
+                raise
+
+            if result.get("_aborted"):
+                error_msg = result.get("_error", "session aborted")
+                raise RuntimeError(f"Agent session aborted: {error_msg}")
+
             for m in reversed(result.get("messages", [])):
                 if m.get("role") == "assistant":
                     return m.get("content", "")
