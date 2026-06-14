@@ -112,12 +112,22 @@ class RoundManager:
 
     # -- internal --
 
+    # Directories and file patterns excluded from workspace snapshots.
+    # .venv, __pycache__, node_modules etc. can contain 10k+ files and
+    # are never user-modifiable workspace content.
+    _SNAPSHOT_EXCLUDE = {".git", ".venv", "__pycache__", "node_modules",
+                         ".mypy_cache", ".pytest_cache", "*.pyc", "*.pyo",
+                         "data"}
+
     def _snapshot_workspace(self, workspace: Path, round_num: int,
                             state_snapshot: dict | None = None) -> str | None:
         """Copy workspace files to data/checkpoints/{round_num}/.
 
         If *state_snapshot* is provided, also writes state.json into the
         checkpoint directory for crash-safe undo recovery.
+
+        Excludes large generated directories (_SNAPSHOT_EXCLUDE) so
+        snapshotting the project root doesn't copy .venv or framework code.
         """
         ckpt_dir = Path("data/checkpoints") / str(round_num)
         if ckpt_dir.exists():
@@ -126,11 +136,17 @@ class RoundManager:
 
         if workspace.exists():
             for f in workspace.rglob("*"):
-                if f.is_file() and ".git" not in f.parts:
-                    rel = f.relative_to(workspace)
-                    dest = ckpt_dir / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(f, dest)
+                if not f.is_file():
+                    continue
+                parts = set(f.parts)
+                if parts & self._SNAPSHOT_EXCLUDE:
+                    continue
+                if any(f.match(p) for p in self._SNAPSHOT_EXCLUDE if p.startswith("*")):
+                    continue
+                rel = f.relative_to(workspace)
+                dest = ckpt_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest)
 
         if state_snapshot is not None:
             (ckpt_dir / "state.json").write_text(
