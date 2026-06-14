@@ -253,9 +253,23 @@ class BaseAgent:
         session_mode_manager = SessionModeManager(global_mode=global_mode)
         permission_registry = PermissionRegistry()
 
-        # Main agent permission lists
-        perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else None
-        main_permission_lists = PermissionLists.from_config(perm_cfg)
+        # Main agent permission lists — built from advanced.guardrails.permissions
+        # and merged with plugins_config.tool_guard / plugins_config.approval so
+        # the same allow/ask/deny entries feed both inventory filtering AND
+        # runtime tool_guard enforcement.
+        perm_cfg = gr_cfg.permissions.model_dump() if gr_cfg and gr_cfg.permissions else {}
+        # Merge in tool_guard plugin config
+        tg_cfg = config.plugins_config.get("tool_guard", {})
+        for key in ("allow", "ask", "deny"):
+            extras = tg_cfg.get(key, [])
+            if extras:
+                perm_cfg.setdefault(key, []).extend(extras)
+        # Merge in approval plugin config (ask_list)
+        ap_cfg = config.plugins_config.get("approval", {})
+        ap_ask = ap_cfg.get("ask_list", [])
+        if ap_ask:
+            perm_cfg.setdefault("ask", []).extend(ap_ask)
+        main_permission_lists = PermissionLists.from_config(perm_cfg or None)
 
         # Main agent policy from permissions config
         main_policy_raw = gr_cfg.permissions.policy if gr_cfg and gr_cfg.permissions else None
