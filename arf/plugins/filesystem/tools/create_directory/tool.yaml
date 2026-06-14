@@ -1,13 +1,16 @@
 name: create_directory
-description: Create a new directory or ensure a directory exists. Can create multiple nested directories in one operation. If the directory already exists, this operation will succeed silently.
+description: Create a new directory or ensure a directory exists. Can create multiple
+  nested directories in one operation. If the directory already exists, this operation
+  will succeed silently.
 parameters:
   type: object
   properties:
     path:
       type: string
       description: Directory path to create
+      format: path
   required:
-    - path
+  - path
 annotations:
   readOnlyHint: false
   idempotentHint: true

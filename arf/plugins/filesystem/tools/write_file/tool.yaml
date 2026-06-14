@@ -5,6 +5,7 @@ parameters:
   properties:
     path:
       type: string
+      format: path
       description: File path to write
     content:
       type: string

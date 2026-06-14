@@ -1,17 +1,20 @@
 name: move_file
-description: Move or rename files and directories. Can move files between directories and rename them in a single operation. Fails if the destination exists.
+description: Move or rename files and directories. Can move files between directories
+  and rename them in a single operation. Fails if the destination exists.
 parameters:
   type: object
   properties:
     source:
       type: string
       description: Source path
+      format: path
     destination:
       type: string
       description: Destination path
+      format: path
   required:
-    - source
-    - destination
+  - source
+  - destination
 annotations:
   readOnlyHint: false
   idempotentHint: false

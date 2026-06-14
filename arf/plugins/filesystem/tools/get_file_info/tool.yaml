@@ -1,12 +1,14 @@
 name: get_file_info
-description: Retrieve detailed metadata about a file or directory. Returns size, creation time, last modified time, last accessed time, type, and permissions.
+description: Retrieve detailed metadata about a file or directory. Returns size, creation
+  time, last modified time, last accessed time, type, and permissions.
 parameters:
   type: object
   properties:
     path:
       type: string
       description: Path to the file or directory
+      format: path
   required:
-    - path
+  - path
 annotations:
   readOnlyHint: true
