@@ -43,19 +43,39 @@ class ModelAdapter:
     _PROVIDER_KEYS = frozenset({"thinking_enabled", "reasoning_effort"})
 
     def __init__(self, config: dict, context_window: int = 1048576):
-        self.client = AsyncOpenAI(
-            base_url=config.get("base_url"),
-            api_key=config.get("api_key", "") or "sk-placeholder",
-            timeout=httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0),
-        )
+        self._config = config
+        self._timeout = httpx.Timeout(
+            connect=10.0, read=300.0, write=30.0, pool=10.0)
+        self._context_window = int(config.get("context_window", context_window))
+        self._init_client()
         self.model_name = config.get("model_name", "")
-        self.context_window = int(config.get("context_window", context_window))
+        self.context_window = self._context_window
         self.default_params = {}
         for k, v in config.items():
             if k not in self._META_KEYS:
                 if k not in self._KNOWN_PARAMS and k not in self._PROVIDER_KEYS and k not in self._CTRL_KEYS:
                     logger.warning("Unknown config key '%s' -- will be forwarded to API as-is", k)
                 self.default_params[k] = v
+
+    def _init_client(self) -> None:
+        """Create (or recreate) the AsyncOpenAI client with fresh connections."""
+        self.client = AsyncOpenAI(
+            base_url=self._config.get("base_url"),
+            api_key=self._config.get("api_key", "") or "sk-placeholder",
+            timeout=self._timeout,
+        )
+
+    async def _reset_client(self) -> None:
+        """Close the old client and create a new one.
+
+        Called before retrying after a connection-level error so we don't
+        reuse a stale pooled connection that the server already closed.
+        """
+        try:
+            await self.client.close()
+        except Exception:
+            pass
+        self._init_client()
 
     # ---- retry helpers --------------------------------------------------
 
@@ -93,6 +113,11 @@ class ModelAdapter:
                         "API call attempt %d/%d failed with %s, retrying in %.1fs",
                         attempt + 1, MAX_RETRIES + 1, type(e).__name__, delay,
                     )
+                    # Connection-level errors (pooled connection stale /
+                    # server-side RST) survive across retries because the
+                    # dead connection stays in the pool.  Reset the client
+                    # to force a fresh TCP connection on the next attempt.
+                    await self._reset_client()
                     await asyncio.sleep(delay)
                     continue
                 raise ModelAdapterError(
