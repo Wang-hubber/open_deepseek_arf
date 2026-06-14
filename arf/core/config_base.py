@@ -94,6 +94,9 @@ class PermissionsConfig(BaseModel):
     allow: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    strict_inventory: bool = True
+    """When True (default), $INVENTORY only lists tools in allow+ask.
+    Set to False to show all non-denied tools (legacy)."""
 
 
 class RegexPatternConfig(BaseModel):
