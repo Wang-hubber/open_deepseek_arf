@@ -135,7 +135,9 @@ class GuardrailsConfig(BaseModel):
     output: Literal["none", "regex_clean", "llm_classifier"] = "regex_clean"
     tool_params: Literal["none", "path_check", "command_check"] = "path_check"
     content_guard: ContentGuardConfig = Field(default_factory=ContentGuardConfig)
-    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    strict_inventory: bool = True
+    """When True (default), $INVENTORY only lists tools in allow+ask.
+    Set to False to show all non-denied tools."""
     output_patterns: list[RegexPatternConfig] = Field(
         default_factory=list,
         description="Custom regex patterns for output sanitization. "
