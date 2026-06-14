@@ -4,6 +4,7 @@ import asyncio
 import os
 import logging
 
+import httpx
 from openai import AsyncOpenAI, APIStatusError
 
 logger = logging.getLogger("arf.model_adapter")
@@ -45,6 +46,7 @@ class ModelAdapter:
         self.client = AsyncOpenAI(
             base_url=config.get("base_url"),
             api_key=config.get("api_key", "") or "sk-placeholder",
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0),
         )
         self.model_name = config.get("model_name", "")
         self.context_window = int(config.get("context_window", context_window))
