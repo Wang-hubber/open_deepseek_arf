@@ -32,6 +32,7 @@ class ControlPlane:
         cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
+        max_tokens: int = 100_000,
         workspace_dir: str = "",
         memory_dir: str = "./data/memory",
         state_dir: str = "./data/state",
@@ -42,7 +43,7 @@ class ControlPlane:
         session_mode_manager: SessionModeManager | None = None,
     ):
         self.loop_strategy = None  # removed — kept for compat during migration
-        self.gate = GateChecker(max_turns=max_turns)
+        self.gate = GateChecker(max_turns=max_turns, max_tokens=max_tokens)
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.event_bus = event_bus
