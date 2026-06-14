@@ -8,6 +8,7 @@ parameters:
       description: Text or regex pattern to search for
     path:
       type: string
+      format: path
       description: Directory path to search in
     regex:
       type: boolean

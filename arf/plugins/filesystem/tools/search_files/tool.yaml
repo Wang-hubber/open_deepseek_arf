@@ -1,11 +1,14 @@
 name: search_files
-description: Recursively search for files and directories matching a glob pattern. Use patterns like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. Returns full paths to all matching items.
+description: Recursively search for files and directories matching a glob pattern.
+  Use patterns like '*.ext' to match files in current directory, and '**/*.ext' to
+  match files in all subdirectories. Returns full paths to all matching items.
 parameters:
   type: object
   properties:
     path:
       type: string
       description: Starting directory for search
+      format: path
     pattern:
       type: string
       description: Glob-style search pattern
@@ -15,7 +18,7 @@ parameters:
         type: string
       description: Glob patterns to exclude from results
   required:
-    - path
-    - pattern
+  - path
+  - pattern
 annotations:
   readOnlyHint: true

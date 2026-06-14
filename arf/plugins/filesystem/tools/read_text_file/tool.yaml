@@ -1,11 +1,14 @@
 name: read_text_file
-description: Read the complete contents of a file as UTF-8 text. Use the head parameter to read only the first N lines, or the tail parameter to read only the last N lines. Cannot specify both head and tail simultaneously.
+description: Read the complete contents of a file as UTF-8 text. Use the head parameter
+  to read only the first N lines, or the tail parameter to read only the last N lines.
+  Cannot specify both head and tail simultaneously.
 parameters:
   type: object
   properties:
     path:
       type: string
       description: File path to read
+      format: path
     head:
       type: integer
       description: Return only the first N lines
@@ -13,6 +16,6 @@ parameters:
       type: integer
       description: Return only the last N lines
   required:
-    - path
+  - path
 annotations:
   readOnlyHint: true
