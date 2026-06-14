@@ -119,6 +119,16 @@ class RoundManager:
                          ".mypy_cache", ".pytest_cache", "*.pyc", "*.pyo",
                          "data"}
 
+    # KNOWN_ISSUE: full workspace file copy on every round_start is a
+    # heavy blocking I/O.  rglob + shutil.copy2 scales with workspace
+    # size — acceptable when workspace is a small shared_workspaces/
+    # dir but dangerous when workspace = project root (ctx.root).
+    # _SNAPSHOT_EXCLUDE blacklists generated dirs as a partial
+    # mitigation but is not a real fix.
+    #
+    # TODO: replace with copy-on-write overlay or inotify-based change
+    # tracking so undo snapshots complete in O(changed_files) instead
+    # of O(workspace_size).
     def _snapshot_workspace(self, workspace: Path, round_num: int,
                             state_snapshot: dict | None = None) -> str | None:
         """Copy workspace files to data/checkpoints/{round_num}/.
