@@ -70,7 +70,7 @@ GraphEngine（权限判断 — auth）
     │       ├─ PathCheckToolGuard.check(tool_name, params, boundary)
     │       │   （硬阻断，安全 — are params safe?）
     │       │   两层白名单：全局 workspace_root + per-tool allowed_dir 提权
-    │       │   检查项：路径穿越 / 绝对路径 / symlink / 边界逃逸
+    │       │   检查项：路径穿越 / symlink / 边界逃逸
     │       │   自动跳过文件内容字符串（含换行或 >500 字符）
     │       ├─ ContentGuard.check_dangerous()（硬阻断 — is the intent safe?）
     │       │   CP1：工具执行前检测危险行为模式
@@ -173,7 +173,6 @@ advanced:
   sandbox:
     checks:
       path_traversal: true          # 目录穿越（..）
-      absolute_path: true           # 绝对路径（/）
       workspace_containment: true   # 工作区逃逸（白名单）
       symlink: true                 # 符号链接检测
 ```
@@ -181,11 +180,10 @@ advanced:
 检查顺序（首次失败即返回）：
 1. **内容跳过** — 含换行符或长度 >500 字符的字符串视为内容而非路径，避免 `/* CSS 注释 */` 等被误判
 2. **路径穿越**（`..`）
-3. **绝对路径**（以 `/` 开头）
-4. **路径深度** — 超过 `ResourceQuota.max_path_depth` 则阻断
-5. **路径数量** — 超过 `ResourceQuota.max_path_count` 则阻断
-6. **符号链接穿越** — 通过 `boundary.has_symlink()` 检测
-7. **白名单边界逃逸** — 通过 `boundary.contains()` 验证
+3. **路径深度** — 超过 `ResourceQuota.max_path_depth` 则阻断
+4. **路径数量** — 超过 `ResourceQuota.max_path_count` 则阻断
+5. **符号链接穿越** — 通过 `boundary.has_symlink()` 检测
+6. **白名单边界逃逸** — 通过 `boundary.contains()` 验证
 
 #### ResourceQuota
 
@@ -269,7 +267,7 @@ ContentGuard 默认启用。可通过 `agent.yaml` 中 `content_guard.enabled: f
 
 | 区域 | 权限 | 实现方式 |
 |------|------|----------|
-| 框架资源（`arf/`） | 约定只读 | 不在工具可写路径内；`PathCheckToolGuard` 阻断绝对路径间接保护 |
+| 框架资源（`arf/`） | 约定只读 | 不在工具可写路径内；`PathCheckToolGuard` 通过 boundary containment 间接保护 |
 | 用户工作区 | 读写 | 所有内置文件工具硬编码 `WORKSPACE = Path("workspaces/default")` |
 | 系统资源标记 | UI 提示 | 前端对系统工具/技能显示"(只读)"标签 |
 
@@ -465,7 +463,7 @@ SandboxManager 不是替代 `PathCheckToolGuard` 或 `ContentGuard`，而是在�
 |--------|------|------|
 | SandboxManager | 会话级文件系统隔离 | 目录复制 + 路径重定向 |
 | DirectoryBoundary | 白名单路径校验 | 路径解析 + 白名单验证 |
-| PathCheckToolGuard | 工具参数安全检查 | 路径穿越/绝对路径/symlink 检测 |
+| PathCheckToolGuard | 工具参数安全检查 | 路径穿越/symlink/边界逃逸 检测 |
 | ContentGuard | 危险行为 + 敏感信息 | 模式匹配 + 脱敏替换 |
 
 四层防护协同工作：SandboxManager 将非 whitelist 工具限制到隔离目录，DirectoryBoundary 验证路径在白名单内，PathCheckToolGuard 检测路径攻击，ContentGuard 检测危险行为模式。
@@ -530,7 +528,6 @@ advanced:
     auto_destroy: false          # 会话结束时自动清理沙箱（默认 false）
     checks:
       path_traversal: true       # 目录穿越（..）
-      absolute_path: true        # 绝对路径（/）
       workspace_containment: true # 工作区逃逸（白名单）
       symlink: true              # 符号链接检测
 
