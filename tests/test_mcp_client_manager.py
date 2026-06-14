@@ -76,6 +76,7 @@ class TestMcpClientManager:
         )
         tools = mgr.get_tool_definitions_sync()
         assert isinstance(tools, list)
+        # Tools are now plain dicts, not ToolDefinition objects
 
     def test_list_local_tools(self, tmp_path):
         """Local tools are listed in-process without a subprocess."""

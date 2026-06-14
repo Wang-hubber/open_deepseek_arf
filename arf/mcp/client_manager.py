@@ -17,7 +17,6 @@ from pathlib import Path
 from arf.mcp.protocol import StdioFraming, JsonRpcRequest
 from arf.mcp.remote_client import McpRemoteClient
 from arf.core.config_base import McpServerConfig
-from arf.core.protocols.resources import ToolDefinition, ToolResolver
 from arf.core.results import ToolResult
 from arf.resources.providers.tool_provider import ToolProvider
 from arf.resources.providers.skill_provider import SkillProvider
@@ -223,8 +222,8 @@ class McpClientManager:
 
     async def get_tool_definitions(
         self, query_context: str = "", top_k: int = 10,
-    ) -> list[ToolDefinition]:
-        """Get all tools.  Local tools are resolved in-process."""
+    ) -> list[dict]:
+        """Get all tools as plain dicts.  Local tools are resolved in-process."""
         tools_data: list[dict] = list(self._list_local_tools())
 
         if self._remote_started:
@@ -234,14 +233,7 @@ class McpClientManager:
             except Exception:
                 logger.debug("Failed to list remote tools", exc_info=True)
 
-        return [
-            ToolDefinition(
-                name=t.get("name", ""),
-                description=t.get("description", ""),
-                parameters=t.get("parameters", {}),
-            )
-            for t in tools_data
-        ]
+        return tools_data
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         """Execute a tool.  Local tools run in-process."""
@@ -288,17 +280,9 @@ class McpClientManager:
 
     # ---- Sync wrapper for startup ----
 
-    def get_tool_definitions_sync(self) -> list[ToolDefinition]:
+    def get_tool_definitions_sync(self) -> list[dict]:
         """Synchronous tool listing — local providers only (no subprocess)."""
-        tools_data = self._list_local_tools()
-        return [
-            ToolDefinition(
-                name=t.get("name", ""),
-                description=t.get("description", ""),
-                parameters=t.get("parameters", {}),
-            )
-            for t in tools_data
-        ]
+        return self._list_local_tools()
 
     # ==================================================================
     # Remote subprocess communication (only when mcp_servers configured)
