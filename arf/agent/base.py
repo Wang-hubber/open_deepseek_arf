@@ -329,23 +329,23 @@ class BaseAgent:
 
         # --- Resolve tool names → namespaced names for permission lists ---
         # Collect base_name → [namespaced_name] mapping from local sources.
-        # Namespace prefixes MUST match what MCP local_server.py registers:
-        #   user__{tool}       — app-level tools (config.tools)
-        #   {plugin}__{tool}   — plugin tools
+        from arf.core.tool_naming import split_name, join_name
+
         _name_map: dict[str, list[str]] = {}
         for t in config.tools:
-            ns = f"user__{t.name}"
+            ns = join_name("user", t.name)
             _name_map.setdefault(t.name, []).append(ns)
         if self._plugin_provider:
             for pname, t in self._plugin_provider.list_tools_with_plugin():
-                ns = f"{pname}__{t.name}"
+                ns = join_name(pname, t.name)
                 _name_map.setdefault(t.name, []).append(ns)
         for srv in getattr(config, "mcp_servers", []):
             _name_map.setdefault("", [])  # sentinel: external MCP namespace exists
 
         def _resolve_perm_name(name: str) -> str:
             """Resolve a permission-list name to a namespaced tool name."""
-            if "__" in name:
+            ns, _ = split_name(name)
+            if ns:
                 return name  # already namespaced
             matches = _name_map.get(name, [])
             if len(matches) > 1:
@@ -356,7 +356,7 @@ class BaseAgent:
                 )
             if matches:
                 return matches[0]
-            return f"user__{name}"  # unknown source, assume app tool
+            return join_name("user", name)  # unknown source, assume app tool
 
         # All plugins are treated equally — no SPECIAL handling.
         # tool_guard and approval get their config from plugins_config in agent.yaml.
@@ -479,21 +479,9 @@ class BaseAgent:
 
     @staticmethod
     def _matches_perm(tool_name: str, perm_set: set[str]) -> bool:
-        """Check if a namespaced tool name matches any entry in *perm_set*.
-
-        Permission lists use bare names (e.g. ``write_file``) while MCP tool
-        names are namespaced (``filesystem__write_file`` or ``user__write_file``).
-        This matches both the full namespaced name AND the bare suffix.
-        """
-        if not perm_set:
-            return False
-        if tool_name in perm_set:
-            return True
-        if "__" in tool_name:
-            bare = tool_name.split("__", 1)[1]
-            if bare in perm_set:
-                return True
-        return False
+        """Check if a namespaced tool name matches any entry in *perm_set*."""
+        from arf.core.tool_naming import matches_perm
+        return matches_perm(tool_name, perm_set)
 
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
