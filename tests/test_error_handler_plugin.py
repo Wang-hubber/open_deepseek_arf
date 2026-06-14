@@ -37,14 +37,14 @@ async def test_error_handler_context_overflow_fallback():
 
 
 @pytest.mark.anyio
-async def test_error_handler_default_abort():
+async def test_error_handler_unknown_error_no_decision():
+    """Unknown errors leave _recovery_decision unset — engine re-raises."""
     plugin = ErrorHandlerPlugin()
     ctx = _make_ctx(ValueError("something unexpected"))
 
     await plugin.on_hook("error", ctx)
 
-    decision = ctx.hook_data["_recovery_decision"]
-    assert decision["action"] == "abort"
+    assert "_recovery_decision" not in ctx.hook_data
 
 
 @pytest.mark.anyio

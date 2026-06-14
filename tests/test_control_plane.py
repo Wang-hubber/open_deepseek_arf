@@ -190,19 +190,28 @@ async def test_mcp_resolution_success_no_error_event():
 
 @pytest.mark.anyio
 async def test_error_handler_abort_emits_trace_event():
-    """When error_handler decides abort, trace captures the error with decision."""
+    """When error_handler decides abort, trace captures the error with decision.
+
+    Uses a connection error (known transport error type) that the error_handler
+    retries and then aborts. Unknown errors re-raise instead of aborting —
+    those are tested separately."""
     from arf.event_bus import InMemoryEventBus
     from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
+    # Use a connection error so error_handler matches transport strategy
+    from arf.core.model_adapter import ModelAdapterError
 
     event_bus = InMemoryEventBus()
 
+    # ModelAdapterError with status 502 triggers transport retry → abort
     cp = ControlPlane(
         max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
-        call_model=_FakeCallModel([RuntimeError("API server crashed")]),
+        call_model=_FakeCallModel([
+            ModelAdapterError(502, "connection refused")
+        ]),
         event_bus=event_bus,
-        blocking_plugins=[ErrorHandlerPlugin()],
+        blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
     final = await cp.invoke(_basic_state())
@@ -247,13 +256,17 @@ async def test_error_handler_skip_emits_trace_event():
 async def test_abort_cleans_session_active_flag():
     """When error_handler decides abort, invoke() catches SessionAbortedError
     and sets session_active = False before returning."""
+    from arf.core.model_adapter import ModelAdapterError
+    from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
+
     state = _basic_state()
 
     cp = ControlPlane(
         max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
-        call_model=_FakeCallModel([RuntimeError("fatal error")]),
+        call_model=_FakeCallModel([ModelAdapterError(502, "connection timeout")]),
+        blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
     final = await cp.invoke(state)
@@ -263,13 +276,17 @@ async def test_abort_cleans_session_active_flag():
 @pytest.mark.anyio
 async def test_abort_returns_partial_state():
     """After abort, invoke() returns the partial state (messages before crash)."""
+    from arf.core.model_adapter import ModelAdapterError
+    from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
+
     state = _basic_state()
 
     cp = ControlPlane(
         max_turns=5,
         state_store=InMemoryStateStore(),
         tool_executor=_NoopToolExecutor(),
-        call_model=_FakeCallModel([RuntimeError("fatal error")]),
+        call_model=_FakeCallModel([ModelAdapterError(502, "connection timeout")]),
+        blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
     final = await cp.invoke(state)
@@ -286,6 +303,7 @@ async def test_abort_returns_partial_state():
 async def test_call_timeout_triggers_error_handler_abort():
     """asyncio.TimeoutError from non-streaming call → error_handler → abort."""
     from arf.event_bus import InMemoryEventBus
+    from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
 
     event_bus = InMemoryEventBus()
 
@@ -299,6 +317,7 @@ async def test_call_timeout_triggers_error_handler_abort():
         call_model=_hanging_model,
         event_bus=event_bus,
         call_timeout=0.2,
+        blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
     final = await cp.invoke(_basic_state())
