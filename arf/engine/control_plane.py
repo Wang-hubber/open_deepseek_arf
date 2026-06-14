@@ -194,7 +194,10 @@ class ControlPlane:
                 state["current_turn"] = turn
 
                 # Gate check at top — bounds every iteration including retry/skip
-                if self.gate.is_exceeded(current_turn=turn):
+                if self.gate.is_exceeded(
+                    current_turn=turn,
+                    total_tokens=state.get("_total_tokens", 0),
+                ):
                     yield self._make_event(
                         "gate_exceeded",
                         {"reason": self.gate.reason, "current_turn": turn},
@@ -318,7 +321,10 @@ class ControlPlane:
                     break
 
                 # Gate check — terminate if budget exceeded
-                if self.gate.is_exceeded(current_turn=turn):
+                if self.gate.is_exceeded(
+                    current_turn=turn,
+                    total_tokens=state.get("_total_tokens", 0),
+                ):
                     yield self._make_event(
                         "gate_exceeded",
                         {"reason": self.gate.reason, "current_turn": turn},
@@ -338,7 +344,10 @@ class ControlPlane:
                 # block in the loop, so continue would skip the break conditions.
 
             # Gate check at round level too
-            if self.gate.is_exceeded(current_turn=state.get("current_turn", 0)):
+            if self.gate.is_exceeded(
+                current_turn=state.get("current_turn", 0),
+                total_tokens=state.get("_total_tokens", 0),
+            ):
                 yield self._make_event(
                     "gate_exceeded",
                     {"reason": self.gate.reason, "current_turn": state.get("current_turn")},
@@ -471,6 +480,7 @@ class ControlPlane:
 
         if stream_usage and stream_usage.get("total_tokens", 0) > 0:
             state["last_token_usage"] = stream_usage["total_tokens"]
+            state["_total_tokens"] = state.get("_total_tokens", 0) + stream_usage["total_tokens"]
 
         yield self._make_event("model_call_end", {
             "model": model, "turn": turn,
