@@ -124,17 +124,13 @@ class BaseAgent:
 
         # MCP tool resolver wrapper for ControlPlane
         async def _mcp_tool_resolver(state):
-            """Resolve tool definitions from MCP for ControlPlane dispatch."""
+            """Resolve tool definitions from MCP for ControlPlane dispatch.
+
+            Tools are plain dicts: {"name": ..., "description": ..., "parameters": ...}.
+            McpClientManager handles local/remote dispatch internally.
+            """
             try:
-                tools = await mcp_manager.get_tool_definitions(query_context="", top_k=50)
-                return [
-                    {
-                        "name": t.name if hasattr(t, "name") else t.get("name", ""),
-                        "description": t.description if hasattr(t, "description") else t.get("description", ""),
-                        "parameters": t.parameters if hasattr(t, "parameters") else t.get("parameters", {}),
-                    }
-                    for t in (tools or [])
-                ]
+                return await mcp_manager.get_tool_definitions(query_context="", top_k=50)
             except Exception:
                 return []
 
@@ -239,8 +235,8 @@ class BaseAgent:
             except Exception:
                 pass
             for tdef in all_tool_defs:
-                allowed_dir = getattr(tdef, 'allowed_dir', None)
-                name = getattr(tdef, 'name', '')
+                allowed_dir = tdef.get('allowed_dir')
+                name = tdef.get('name', '')
                 if allowed_dir and name:
                     tool_boundaries[name] = DirectoryBoundary(allowed_dir)
         # SandboxManager — session-level isolation
