@@ -480,22 +480,34 @@ class BaseAgent:
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
 
-        Filters out denied tools so the model only sees what it can actually
-        use.  Tools in the allow and ask lists are both shown (ask tools
-        require confirmation in ask mode but are still usable; in auto mode
-        ask is auto-allowed).
+        By default (strict_inventory=True) only shows tools explicitly listed
+        in allow or ask — the agent sees a minimal, permission-gated toolset.
+        When strict_inventory=False, shows all non-denied tools.
         """
         try:
             tools = self._mcp_manager.get_tool_definitions_sync()
         except Exception:
             return ""
 
-        deny_set = self._main_permission_lists.deny if self._main_permission_lists else set()
+        if not self._main_permission_lists:
+            visible = tools
+        else:
+            pl = self._main_permission_lists
+            strict = self.config.effective_advanced().guardrails.permissions.strict_inventory \
+                if self.config.effective_advanced().guardrails and \
+                   self.config.effective_advanced().guardrails.permissions else True
+
+            deny_set = pl.deny
+            if strict:
+                allowed = pl.allow | pl.ask
+                visible = [t for t in tools
+                           if t.get('name', '') in allowed and t.get('name', '') not in deny_set]
+            else:
+                visible = [t for t in tools if t.get('name', '') not in deny_set]
 
         lines: list[str] = []
-        if tools:
+        if visible:
             lines.append("## Available Tools\n")
-            visible = [t for t in tools if t.get('name', '') not in deny_set]
             for t in visible:
                 lines.append(f"- `{t['name']}`: {t.get('description', '')}")
         return "\n".join(lines) if lines else ""
