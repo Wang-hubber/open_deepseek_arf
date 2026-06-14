@@ -126,70 +126,81 @@ class McpClientManager:
         consumed = header_end + 4 + content_length
         return decoded, buffer[consumed:]
 
-    async def _send_request(self, method: str, params: dict) -> dict:
+    async def _send_request(self, method: str, params: dict,
+                            timeout: float = 15.0) -> dict:
         """Send a JSON-RPC request and return the result dict.
 
         Serialized via ``_send_lock`` so only one request is in-flight at a
         time.  Response id is verified against the sent request id; mismatched
         (stale) responses are discarded and the correct one is waited for.
+
+        *timeout* is the overall request deadline (per-read timeouts are
+        10s).  A hung subprocess returns ``{}`` after *timeout* seconds.
         """
-        self._request_id += 1
-        sent_id = self._request_id
-        req = JsonRpcRequest(id=sent_id, method=method, params=params)
-        payload = req.model_dump_json(by_alias=True)
-        framed = StdioFraming.encode(payload)
+        async def _do_request() -> dict:
+            self._request_id += 1
+            sent_id = self._request_id
+            req = JsonRpcRequest(id=sent_id, method=method, params=params)
+            payload = req.model_dump_json(by_alias=True)
+            framed = StdioFraming.encode(payload)
 
-        async with self._send_lock:
-            if not self._healthy:
-                return {}
-
-            if self._process and self._process.stdin:
-                try:
-                    self._process.stdin.write(framed)
-                    await self._process.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    self._healthy = False
+            async with self._send_lock:
+                if not self._healthy:
                     return {}
 
-            if not (self._process and self._process.stdout):
-                return {}
+                if self._process and self._process.stdin:
+                    try:
+                        self._process.stdin.write(framed)
+                        await self._process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        self._healthy = False
+                        return {}
 
-            buf = b""
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        self._process.stdout.read(4096), timeout=10.0
-                    )
-                except (asyncio.TimeoutError, ConnectionResetError,
-                        BrokenPipeError, OSError):
-                    self._healthy = False
+                if not (self._process and self._process.stdout):
                     return {}
 
-                if not chunk:
-                    return {}
-                buf += chunk
-
+                buf = b""
                 while True:
-                    decoded, buf = self._consume_frame(buf)
-                    if decoded is None:
-                        break  # need more data
+                    try:
+                        chunk = await asyncio.wait_for(
+                            self._process.stdout.read(4096), timeout=10.0
+                        )
+                    except (asyncio.TimeoutError, ConnectionResetError,
+                            BrokenPipeError, OSError):
+                        self._healthy = False
+                        return {}
 
-                    resp = json.loads(decoded)
-                    resp_id = resp.get("id")
+                    if not chunk:
+                        return {}
+                    buf += chunk
 
-                    if resp_id != sent_id:
-                        logger = __import__('logging').getLogger("arf.mcp")
-                        logger.debug("Discarding stale response id=%s, expected=%s",
-                                     resp_id, sent_id)
-                        continue  # discard, try next frame in buf
+                    while True:
+                        decoded, buf = self._consume_frame(buf)
+                        if decoded is None:
+                            break  # need more data
 
-                    if "result" in resp:
-                        return resp["result"]
-                    if "error" in resp:
-                        return {"error": resp["error"].get("message", "MCP error")}
-                    # response with neither result nor error — malformed, discard
-                    break
+                        resp = json.loads(decoded)
+                        resp_id = resp.get("id")
 
+                        if resp_id != sent_id:
+                            logger = __import__('logging').getLogger("arf.mcp")
+                            logger.debug("Discarding stale response id=%s, expected=%s",
+                                         resp_id, sent_id)
+                            continue  # discard, try next frame in buf
+
+                        if "result" in resp:
+                            return resp["result"]
+                        if "error" in resp:
+                            return {"error": resp["error"].get("message", "MCP error")}
+                        # response with neither result nor error — malformed, discard
+                        break
+
+                return {}
+
+        try:
+            return await asyncio.wait_for(_do_request(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._healthy = False
             return {}
 
     @property
@@ -237,8 +248,13 @@ class McpClientManager:
 
     # -- Sync wrappers for startup --
 
-    def get_tool_definitions_sync(self) -> list[ToolDefinition]:
-        """Sync wrapper — safe to call from any context including async."""
+    def get_tool_definitions_sync(self,
+                                   timeout: float = 20.0) -> list[ToolDefinition]:
+        """Sync wrapper — safe to call from any context including async.
+
+        Blocks at most *timeout* seconds. Returns ``[]`` if the subprocess
+        is unhealthy or hangs.
+        """
         from threading import Thread
         result: list[ToolDefinition] = []
         def _run() -> None:
@@ -246,5 +262,7 @@ class McpClientManager:
             result = asyncio.run(self.get_tool_definitions())
         t = Thread(target=_run)
         t.start()
-        t.join()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            self._healthy = False
         return result
