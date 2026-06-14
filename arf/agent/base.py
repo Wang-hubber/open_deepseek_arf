@@ -161,17 +161,27 @@ class BaseAgent:
         _mem_dir = str(_Path(_data_dir) / "memory")
         _trace_dir = str(_Path(_data_dir) / "traces")
 
-        # workspace_root: sandbox boundary for file operations.
-        # Priority: config.allow_paths[0] > override_protocols > data_root
-        # Must be resolved BEFORE PluginRuntime so hooks get the correct
-        # workspace directory (not data_root, which holds trace/memory/state).
+        # Two distinct concepts, previously conflated:
+        #
+        # _workspace_root — the model's worldview root (ctx.root).
+        #   Used for: relative path resolution (_resolve_path_params),
+        #   _workspace injection, PluginRuntime, SandboxManager.
+        #   The model sees the filesystem from ctx.root via directory_tree;
+        #   relative paths it produces are naturally relative to that root.
+        #
+        # _allow_paths_list — the security boundary (config.allow_paths).
+        #   Used for: DirectoryBoundary construction. PathCheckToolGuard
+        #   validates resolved paths against these whitelist directories.
+        #   When not configured, boundary falls back to _workspace_root.
+        #
+        # Must be resolved BEFORE PluginRuntime.
         _workspace_override = override_protocols.pop("workspace_root", None)
         if _workspace_override:
             _workspace_root = str(Path(_workspace_override).resolve())
             _allow_paths_list = None
         elif config.allow_paths:
-            _workspace_root = str(Path(config.allow_paths[0]).resolve())
-            _allow_paths_list = config.allow_paths if len(config.allow_paths) > 1 else None
+            _workspace_root = str(ctx.root.resolve()) if ctx else str(Path(".").resolve())
+            _allow_paths_list = config.allow_paths
         else:
             _workspace_root = _data_root
             _allow_paths_list = None
