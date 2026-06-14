@@ -59,6 +59,7 @@ class ConcurrentToolExecutor:
         tool_boundaries: dict[str, DirectoryBoundary] | None = None,
         default_boundary: DirectoryBoundary | None = None,
         sandbox_manager=None,
+        tool_timeout: float = 300.0,
     ) -> None:
         self._resolver = tool_resolver
         self._strategy = strategy
@@ -67,6 +68,7 @@ class ConcurrentToolExecutor:
         self._tool_boundaries = tool_boundaries or {}
         self._default_boundary = default_boundary
         self._sandbox_manager = sandbox_manager
+        self._tool_timeout = tool_timeout
         self._path_param_cache: dict[str, set[str]] = {}
 
     async def _get_path_param_names(self, tool_name: str) -> set[str] | None:
@@ -134,7 +136,7 @@ class ConcurrentToolExecutor:
                     continue
 
                 _resolve_path_params(params, workspace_dir)
-                results[tc["id"]] = await self._resolver.execute(
+                results[tc["id"]] = await self._execute_with_timeout(
                     tc["name"], params
                 )
             return results
@@ -160,7 +162,7 @@ class ConcurrentToolExecutor:
                     if guard_blocked:
                         return tc["id"], guard_blocked
                     _resolve_path_params(params, workspace_dir)
-                    return tc["id"], await self._resolver.execute(
+                    return tc["id"], await self._execute_with_timeout(
                         tc["name"], params
                     )
             tasks = [_run(tc) for tc in tool_calls]
@@ -213,3 +215,18 @@ class ConcurrentToolExecutor:
                 )
 
         return None
+
+    async def _execute_with_timeout(
+        self, name: str, params: dict,
+    ) -> ToolResult:
+        try:
+            return await asyncio.wait_for(
+                self._resolver.execute(name, params),
+                timeout=self._tool_timeout,
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                tool_name=name,
+                success=False,
+                error=f"Tool '{name}' timed out after {self._tool_timeout:.0f}s",
+            )
