@@ -17,9 +17,12 @@ class GateChecker:
         self.max_consecutive_errors = max_consecutive_errors
         self._reason = ""
 
-    def is_exceeded(self, current_turn: int = 0, **stats) -> bool:
+    def is_exceeded(self, current_turn: int = 0, total_tokens: int = 0, **stats) -> bool:
         if current_turn >= self.max_turns:
             self._reason = "max_turns"
+            return True
+        if self.max_tokens is not None and total_tokens >= self.max_tokens:
+            self._reason = "max_tokens"
             return True
         self._reason = ""
         return False
