@@ -99,6 +99,9 @@ class ModelAdapter:
                         "API call attempt %d/%d failed with %d, retrying in %.1fs",
                         attempt + 1, MAX_RETRIES + 1, e.status_code, delay,
                     )
+                    # Server-side 5xx / 429 can also leave pooled connections
+                    # in a bad state. Reset to force fresh TCP on retry.
+                    await self._reset_client()
                     await asyncio.sleep(delay)
                     continue
                 raise ModelAdapterError(
@@ -113,10 +116,8 @@ class ModelAdapter:
                         "API call attempt %d/%d failed with %s, retrying in %.1fs",
                         attempt + 1, MAX_RETRIES + 1, type(e).__name__, delay,
                     )
-                    # Connection-level errors (pooled connection stale /
-                    # server-side RST) survive across retries because the
-                    # dead connection stays in the pool.  Reset the client
-                    # to force a fresh TCP connection on the next attempt.
+                    # Reset the HTTP client before retrying — stale pooled
+                    # connections survive across retries if not drained.
                     await self._reset_client()
                     await asyncio.sleep(delay)
                     continue
