@@ -11,7 +11,7 @@ parameters:
       description: Directory path to search in
     regex:
       type: boolean
-      description: Treat pattern as regex (default: false — literal text search)
+      description: "Treat pattern as regex (default: false — literal text search)"
       default: false
     include:
       type: string
