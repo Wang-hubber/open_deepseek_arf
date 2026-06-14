@@ -480,18 +480,23 @@ class BaseAgent:
     def _build_inventory_from_mcp(self) -> str:
         """Build inventory section from MCP tool list. Called at startup.
 
-        Returns empty string if MCP is not available yet. This runs during
-        __init__ before the event loop is ready — the real MCP connection
-        happens in start(). Check _mcp_manager.healthy after start().
+        Filters out denied tools so the model only sees what it can actually
+        use.  Tools in the allow and ask lists are both shown (ask tools
+        require confirmation in ask mode but are still usable; in auto mode
+        ask is auto-allowed).
         """
         try:
             tools = self._mcp_manager.get_tool_definitions_sync()
         except Exception:
             return ""
+
+        deny_set = self._main_permission_lists.deny if self._main_permission_lists else set()
+
         lines: list[str] = []
         if tools:
             lines.append("## Available Tools\n")
-            for t in tools:
+            visible = [t for t in tools if t.get('name', '') not in deny_set]
+            for t in visible:
                 lines.append(f"- `{t['name']}`: {t.get('description', '')}")
         return "\n".join(lines) if lines else ""
 
