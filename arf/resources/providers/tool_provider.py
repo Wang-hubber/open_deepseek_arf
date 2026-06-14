@@ -72,7 +72,11 @@ class ToolProvider:
         except (ValueError, TypeError):
             return
         yaml_params = set((cfg.parameters or {}).get("properties", {}).keys())
-        fn_params = {name for name in sig.parameters if not name.startswith("_")}
+        fn_params = {
+            name for name, p in sig.parameters.items()
+            if not name.startswith("_")
+            and p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+        }
         extra_in_yaml = yaml_params - fn_params
         if extra_in_yaml:
             logger.warning(
