@@ -200,8 +200,8 @@ class EvalRunner:
                     prev_round = _last_round
                     await chat_fn(case.input, session_id=sid)
                     full_trace = self._read_trace(sid)
-                    actual_trace = [e for e in full_trace if e.get("round", e.get("turn", 0)) > prev_round]
-                    rounds = {e.get("round", e.get("turn", 0)) for e in actual_trace}
+                    actual_trace = [e for e in full_trace if (e.get("round") or e.get("turn") or 0) > prev_round]
+                    rounds = {e.get("round") or e.get("turn") or 0 for e in actual_trace}
                     if rounds:
                         _last_round = max(rounds)
                 else:
@@ -369,7 +369,7 @@ class EvalRunner:
         tokens_out = 0
         tool_calls = 0
         for e in trace:
-            t = e.get("turn", 0)
+            t = e.get("turn") or 0
             if t > 0:
                 turns.add(t)
             if e.get("type") == "model_call_end":

@@ -280,7 +280,7 @@ class TurnEfficiencyMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        turn_set = {e.get("turn", 0) for e in actual_trace if e.get("turn", 0) > 0}
+        turn_set = {e.get("turn") or 0 for e in actual_trace if (e.get("turn") or 0) > 0}
         actual_turns = len(turn_set)
         if golden_case.max_turns:
             return {"turn_efficiency": min(1.0, golden_case.max_turns / max(actual_turns, 1))}
