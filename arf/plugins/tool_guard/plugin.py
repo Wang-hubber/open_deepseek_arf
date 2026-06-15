@@ -123,9 +123,14 @@ class ToolGuardPlugin:
                 raise PermissionDenied(f"Tool '{name}' denied")
 
             # Layer 2: Security check (path traversal, injection)
+            # Only check path-annotated params — content-type params legitimately
+            # contain ".." (e.g. relative paths in config files, Python code).
             if self._sandbox:
+                ann = tool_annotations.get(resolved_name, {})
+                param_props = ann.get("parameters", {}).get("properties", {})
                 for key, value in params.items():
-                    if isinstance(value, str) and ".." in value:
+                    is_path = param_props.get(key, {}).get("format") == "path"
+                    if is_path and isinstance(value, str) and ".." in value:
                         ctx.emit("guard_block", {
                             "tool_name": name,
                             "reason": f"sandbox: {key} contains suspicious path",
