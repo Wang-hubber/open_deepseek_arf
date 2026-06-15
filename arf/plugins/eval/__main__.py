@@ -9,6 +9,8 @@ def _parse_metrics(metrics_str: str) -> dict[str, bool]:
         "success_rate": False,
         "output_quality": False,
         "trajectory_similarity": False,
+        "tool_call_result_llm": False,
+        "output_contains": False,
     }
     for name in metrics_str.split(","):
         name = name.strip()
@@ -20,7 +22,7 @@ def _parse_metrics(metrics_str: str) -> dict[str, bool]:
 def main():
     parser = argparse.ArgumentParser(description="ARF Eval Runner")
     parser.add_argument("--benchmark", required=True, help="Path to EvalBenchmark JSON")
-    parser.add_argument("--trace-dir", default="./data/traces", help="Trace directory")
+    parser.add_argument("--data-dir", default="./data", help="Session data directory")
     parser.add_argument("--mode", default="online", choices=["online", "offline"])
     parser.add_argument("--traces", default="", help="Comma-separated session IDs (offline)")
     parser.add_argument("--judge-api-base", default="https://api.openai.com/v1")
@@ -56,7 +58,7 @@ def main():
 
     config = EvalConfig(
         benchmark_path=args.benchmark,
-        trace_dir=args.trace_dir,
+        data_dir=args.data_dir,
         mode=args.mode,
         trace_session_ids=trace_ids,
         judge=judge,
