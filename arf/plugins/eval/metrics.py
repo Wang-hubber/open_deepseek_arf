@@ -657,7 +657,7 @@ class TrajectorySimilarityMetric:
                 except json.JSONDecodeError:
                     continue
                 t = e.get("type", "")
-                turn = e.get("turn", 0)
+                turn = e.get("turn") or 0
                 if t == "tool_call_start":
                     summary.append(
                         f"[turn {turn}] call {e.get('data', {}).get('tool_name', '?')}"
