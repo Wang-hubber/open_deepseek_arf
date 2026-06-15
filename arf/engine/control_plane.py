@@ -689,12 +689,11 @@ class ControlPlane:
             raise MessageContractError("Messages must start with user role")
 
     async def _handle_error(self, exc: Exception, ctx: PluginContext) -> dict:
-        """Fire error hook on blocking runner.
+        """Fire error hook. Returns recovery decision or raises.
 
-        Trace-captures every recovery decision. Raises SessionAbortedError
-        when the decision is 'abort' so invoke()/astream() can clean up.
-        Flushes pending trace events before abort so error evidence is
-        persisted to JSONL.
+        Trace-captures every decision. Raises SessionAbortedError when
+        no recovery strategy exists. Flushes trace before re-raising so
+        error evidence persists to JSONL.
         """
         ctx.hook_data["exception"] = exc
         try:
@@ -706,19 +705,15 @@ class ControlPlane:
             raise SessionAbortedError(
                 f"Error handler hook failed: {hook_err}"
             ) from exc
-        decision = ctx.hook_data.get("_recovery_decision", {})
+
+        decision = ctx.hook_data.get("_recovery_decision")
         if not decision:
             self._emit_error_event(ctx, exc, "no_recovery_decision")
             await self._flush_trace(ctx)
-            raise  # re-raise original exception — no recovery strategy
-        action = decision.get("action", "abort")
+            raise  # unknown error — re-raise original
+
         reason = decision.get("reason", "")
-        self._emit_decision_event(ctx, exc, action, reason)
-        if action == "abort":
-            await self._flush_trace(ctx)
-            raise SessionAbortedError(
-                f"Error handler decided abort: {exc}"
-            ) from exc
+        self._emit_decision_event(ctx, exc, decision.get("recovery", "unknown"), reason)
         return decision
 
     async def _dispatch_error(self, exc: Exception, state: dict, ctx: PluginContext) -> bool:
@@ -793,17 +788,6 @@ class ControlPlane:
         )
         if self.event_bus:
             self.event_bus.emit(event)
-
-    @staticmethod
-    def _default_error_action(exc: Exception) -> dict:
-        """Default recovery decision based on exception type."""
-        name = type(exc).__name__
-        if name in ("PermissionDenied", "ApprovalDenied", "SandboxViolation",
-                     "ApprovalTimeout"):
-            # Guard/approval blocked the tool — model should see the
-            # tool_result and respond, not abort the turn.
-            return {"action": "skip"}
-        return {"action": "abort", "params": {"user_message": str(exc)}}
 
     def _emit_mcp_error_event(self, session_id: str, exc: Exception) -> None:
         """Emit MCP error to trace — MCP failures should be visible."""
