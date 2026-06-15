@@ -7,15 +7,12 @@ activation: kernel
 parameters:
   type: object
   properties:
-    session_id:
-      type: string
-      default: "default"
     memory_dir:
       type: string
       default: "./data/memory"
-    state_dir:
+    data_dir:
       type: string
-      default: "./data/state"
+      default: "./data"
     force:
       type: boolean
       default: false
