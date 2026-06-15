@@ -253,6 +253,9 @@ class ControlPlane:
                 # Snapshot pending_tool_calls BEFORE execute_tools pops them
                 pending_tool_calls = list(state.get("_pending_tool_calls", []))
                 has_tool_calls = bool(pending_tool_calls)
+                import logging
+                _log = logging.getLogger("arf.engine")
+                _log.warning("turn=%s has_tool_calls=%s pending=%s", turn, has_tool_calls, [t.get("name","") for t in pending_tool_calls])
 
                 # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
                 if has_tool_calls:
@@ -306,6 +309,7 @@ class ControlPlane:
 
                 # Text-only response (no tool_calls) → round complete
                 if not has_tool_calls:
+                    _log.warning("turn=%s BREAK: no tool_calls, exiting turn loop", turn)
                     break
 
                 # Gate check — terminate if budget exceeded
