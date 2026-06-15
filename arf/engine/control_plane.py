@@ -486,7 +486,10 @@ class ControlPlane:
         # Append assistant message
         content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
         tool_calls = self._parse_tool_calls(resp)
+        reasoning = resp.get("reasoning", "") if isinstance(resp, dict) else ""
         assistant_msg: dict = {"role": "assistant", "content": content}
+        if reasoning:
+            assistant_msg["reasoning_content"] = reasoning
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
         state["messages"].append(assistant_msg)
