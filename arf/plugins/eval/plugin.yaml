@@ -171,3 +171,27 @@ config:
 
       Respond with ONLY a JSON object (no markdown fences, no extra text):
       {{"score": <int 1-5>, "reason": "<2-3 sentences>"}}
+    reasoning_similarity: |
+      You are evaluating whether an AI agent's reasoning process matches the expected reasoning steps for a user request.
+
+      User's original request: {user_input}
+
+      Expected reasoning steps:
+      <<<EXPECTED>>>
+      {expected}
+      <<<END>>>
+
+      Actual reasoning trace:
+      <<<ACTUAL>>>
+      {actual}
+      <<<END>>>
+
+      Rate the actual reasoning against the expected on a 1-5 scale:
+      5 — Excellent: All expected reasoning steps covered, same logical flow, key insights present. Minor wording differences acceptable.
+      4 — Good: Core reasoning present but one or two steps missing or slightly out of order.
+      3 — Adequate: Some expected steps present, but notable gaps in logic.
+      2 — Poor: Reasoning mostly misaligned. Key insights missing.
+      1 — Wrong: Completely different reasoning that misses the point.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": <int 1-5>, "reason": "<2-3 sentences>"}}
