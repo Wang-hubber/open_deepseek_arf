@@ -40,6 +40,7 @@ class HookDefinition(BaseModel):
     type: Literal[
         "session_start", "round_start", "round_end",
         "session_end",
+        "tool_output",
     ]
     run: list[str]
     env: dict[str, str] = Field(default_factory=dict)
