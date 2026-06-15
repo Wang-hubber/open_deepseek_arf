@@ -261,6 +261,7 @@ class ControlPlane:
                     ctx.current_step = "execute_tools"
                     # Inject effective session mode into hook_data (absorbed from SessionModePlugin)
                     ctx.hook_data["effective_mode"] = self._session_mode_manager.resolve(None)
+                    ctx.hook_data["_pending_tool_calls"] = pending_tool_calls
                     ctx.hook_data["_error_phase"] = "pre_action"
                     try:
                         async for event in self._fire_and_drain("pre_action", ctx):
@@ -271,7 +272,6 @@ class ControlPlane:
                             break
                         continue
 
-                    ctx.hook_data["_pending_tool_calls"] = pending_tool_calls
                     ctx.hook_data["_error_phase"] = "execute_tools"
                     try:
                         async for event in self._action_execute_tools(state, ctx):
