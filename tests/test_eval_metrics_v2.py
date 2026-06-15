@@ -3,7 +3,7 @@ import json
 import pytest
 from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, TurnEfficiencyMetric,
-    ToolCallResultLLMMetric,
+    ToolCallResultLLMMetric, ExecutionAccuracyMetric, ReasoningSimilarityMetric,
 )
 from arf.plugins.eval.models import EvalCase
 
@@ -33,7 +33,11 @@ class TestRuleMetrics:
             {"type": "tool_call_start", "turn": 2,
              "data": {"tool_name": "glob"}, "timestamp": 2.0},
         ]
-        c = EvalCase(id="c0", input="hi", expected_tools=["read", "glob"])
+        c = EvalCase(id="c0", input="hi",
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {}},
+                         {"type": "tool", "name": "glob", "params": {}},
+                     ])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 1.0
 
@@ -43,7 +47,11 @@ class TestRuleMetrics:
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "read"}, "timestamp": 1.0},
         ]
-        c = EvalCase(id="c0", input="hi", expected_tools=["read", "glob"])
+        c = EvalCase(id="c0", input="hi",
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {}},
+                         {"type": "tool", "name": "glob", "params": {}},
+                     ])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.5
 
@@ -57,7 +65,8 @@ class TestRuleMetrics:
     def test_no_actual_tools_returns_0(self):
         m = ToolCallAccuracyMetric()
         trace = []
-        c = EvalCase(id="c0", input="hi", expected_tools=["read"])
+        c = EvalCase(id="c0", input="hi",
+                     expected_execution=[{"type": "tool", "name": "read", "params": {}}])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.0
 
@@ -72,8 +81,8 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="eat 良子",
-                     expected_tool_calls=[
-                         {"name": "eat",
+                     expected_execution=[
+                         {"type": "tool", "name": "eat",
                           "params": {"name": "良子", "path": "良子的焖子"}},
                      ])
         result = m.compute_sync(trace, c)
@@ -89,8 +98,8 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="read file",
-                     expected_tool_calls=[
-                         {"name": "read", "params": {"path": "/tmp/x"}},
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {"path": "/tmp/x"}},
                      ])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 1.0
@@ -104,8 +113,8 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="eat",
-                     expected_tool_calls=[
-                         {"name": "eat",
+                     expected_execution=[
+                         {"type": "tool", "name": "eat",
                           "params": {"name": "良子", "path": "良子的焖子"}},
                      ])
         result = m.compute_sync(trace, c)
@@ -120,8 +129,8 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="read",
-                     expected_tool_calls=[
-                         {"name": "eat", "params": {"path": "/tmp/x"}},
+                     expected_execution=[
+                         {"type": "tool", "name": "eat", "params": {"path": "/tmp/x"}},
                      ])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.0
@@ -139,8 +148,8 @@ class TestRuleMetrics:
              "timestamp": 2.0},
         ]
         c = EvalCase(id="c0", input="read",
-                     expected_tool_calls=[
-                         {"name": "read", "params": {"path": "/tmp/x"}},
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {"path": "/tmp/x"}},
                      ])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.5
@@ -155,8 +164,8 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="eat",
-                     expected_tool_calls=[
-                         {"name": "eat",
+                     expected_execution=[
+                         {"type": "tool", "name": "eat",
                           "params": {"name": "良子", "path": "焖子"}},
                      ])
         result = m.compute_sync(trace, c)
@@ -180,9 +189,9 @@ class TestRuleMetrics:
              "timestamp": 2.0},
         ]
         c = EvalCase(id="c0", input="plan something",
-                     expected_tool_calls=[
-                         {"name": "plan_create", "params": {}},
-                         {"name": "plan_dispatch", "params": {}},
+                     expected_execution=[
+                         {"type": "tool", "name": "plan_create", "params": {}},
+                         {"type": "tool", "name": "plan_dispatch", "params": {}},
                      ])
         result = m.compute_sync(trace, c)
         assert result["dependency_order_failures"] == 1
@@ -203,7 +212,7 @@ class TestRuleMetrics:
              "timestamp": 1.1},
         ]
         c = EvalCase(id="c0", input="read nonexistent",
-                     expected_tools=["read"])
+                     expected_execution=[{"type": "tool", "name": "read", "params": {}}])
         result = m.compute_sync(trace, c)
         assert "dependency_order_failures" not in result
 
@@ -241,8 +250,8 @@ class TestToolCallResultLLMMetric:
         """expected_tool_calls without result fields should return 1.0."""
         m = ToolCallResultLLMMetric()
         c = EvalCase(id="c0", input="hi",
-                     expected_tool_calls=[
-                         {"name": "read", "params": {"path": "/x"}},
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {"path": "/x"}},
                      ])
         result = m.compute_sync([], c, judge=None)
         assert result["tool_call_result_llm"] == 1.0
@@ -250,8 +259,8 @@ class TestToolCallResultLLMMetric:
     def test_no_judge_returns_0(self):
         m = ToolCallResultLLMMetric()
         c = EvalCase(id="c0", input="hi",
-                     expected_tool_calls=[
-                         {"name": "read", "params": {},
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {},
                           "result": "found file"},
                      ])
         trace = [
@@ -262,3 +271,69 @@ class TestToolCallResultLLMMetric:
         ]
         result = m.compute_sync(trace, c, judge=None)
         assert result["tool_call_result_llm"] == 0.0
+
+
+class TestExecutionAccuracyMetric:
+    def test_name(self):
+        m = ExecutionAccuracyMetric()
+        assert m.name == "execution_accuracy"
+
+    def test_no_expected_returns_1(self):
+        m = ExecutionAccuracyMetric()
+        c = EvalCase(id="c0", input="hi")
+        trace = [{"type": "tool_call_start", "turn": 1,
+                  "data": {"tool_name": "read"}, "timestamp": 1.0}]
+        result = m.compute_sync(trace, c)
+        assert result["execution_accuracy"] == 1.0
+
+    def test_exact_match(self):
+        m = ExecutionAccuracyMetric()
+        trace = [
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "read",
+                      "arguments": '{"path": "/x"}'}, "timestamp": 1.0},
+        ]
+        c = EvalCase(id="c0", input="hi",
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {"path": "/x"}},
+                     ])
+        result = m.compute_sync(trace, c)
+        assert result["execution_accuracy"] == 1.0
+
+    def test_partial_match(self):
+        m = ExecutionAccuracyMetric()
+        trace = [
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "read",
+                      "arguments": '{"path": "/x"}'}, "timestamp": 1.0},
+        ]
+        c = EvalCase(id="c0", input="hi",
+                     expected_execution=[
+                         {"type": "tool", "name": "read", "params": {"path": "/x"}},
+                         {"type": "tool", "name": "write", "params": {"path": "/y"}},
+                     ])
+        result = m.compute_sync(trace, c)
+        assert result["execution_accuracy"] == 0.5
+
+
+class TestReasoningSimilarityMetric:
+    def test_name(self):
+        m = ReasoningSimilarityMetric()
+        assert m.name == "reasoning_similarity"
+
+    def test_requires_llm(self):
+        m = ReasoningSimilarityMetric()
+        assert m.requires_llm is True
+
+    def test_empty_expected_returns_none(self):
+        m = ReasoningSimilarityMetric()
+        c = EvalCase(id="c0", input="hi")
+        result = m.compute_sync([], c)
+        assert result["reasoning_similarity"] is None
+
+    def test_no_judge_returns_none(self):
+        m = ReasoningSimilarityMetric()
+        c = EvalCase(id="c0", input="hi",
+                     expected_reasoning=["step 1"])
+        result = m.compute_sync([], c)
+        assert result["reasoning_similarity"] is None

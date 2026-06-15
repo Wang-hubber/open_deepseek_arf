@@ -28,7 +28,7 @@ class TestBenchmarkBuilder:
     def test_build_creates_cases_from_user_inputs(self, data_dir):
         p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
-            {"type": "user_input", "turn": 1,
+            {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "create file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "file_writer"}, "timestamp": 1.1},
@@ -36,9 +36,10 @@ class TestBenchmarkBuilder:
              "data": {"tool_name": "file_writer", "success": True,
                       "result": "created"}, "timestamp": 1.2},
             {"type": "model_call_end", "turn": 1,
-             "data": {"content": "File created successfully"},
+             "data": {"content": "File created successfully",
+                      "tool_calls": [{"name": "file_writer", "params": {}}]},
              "timestamp": 1.3},
-            {"type": "user_input", "turn": 3,
+            {"type": "user_input", "turn": 3, "round": 2,
              "data": {"content": "read it"}, "timestamp": 2.0},
             {"type": "tool_call_start", "turn": 3,
              "data": {"tool_name": "file_reader"}, "timestamp": 2.1},
@@ -46,7 +47,8 @@ class TestBenchmarkBuilder:
              "data": {"tool_name": "file_reader", "success": True,
                       "result": "hello"}, "timestamp": 2.2},
             {"type": "model_call_end", "turn": 3,
-             "data": {"content": "The file says hello"},
+             "data": {"content": "The file says hello",
+                      "tool_calls": [{"name": "file_reader", "params": {}}]},
              "timestamp": 2.3},
         ])
         builder = BenchmarkBuilder(p)
@@ -58,16 +60,16 @@ class TestBenchmarkBuilder:
 
         # Case 0
         assert bm.cases[0].input == "create file"
-        assert bm.cases[0].expected_tools == ["file_writer"]
+        assert bm.cases[0].expected_execution == [{"type": "tool", "name": "file_writer", "params": {},
+                                                     "result_preview": "created", "success": True}]
         assert bm.cases[0].expected_output_contains == []
         assert bm.cases[0].max_turns == 1
-        # expected_tool_calls is None because model_call_end events lack
-        # explicit tool_calls — pairing needs both sources to populate
-        assert bm.cases[0].expected_tool_calls is None
+        assert bm.cases[0].source_round == 1
 
         # Case 1
         assert bm.cases[1].input == "read it"
-        assert bm.cases[1].expected_tools == ["file_reader"]
+        assert bm.cases[1].expected_execution == [{"type": "tool", "name": "file_reader", "params": {},
+                                                     "result_preview": "hello", "success": True}]
 
         assert bm.created_at > 0
 
@@ -90,7 +92,7 @@ class TestBenchmarkBuilder:
     def test_golden_trajectory_no_tool_calls(self, data_dir):
         p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
-            {"type": "user_input", "turn": 1,
+            {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
              "data": {"content": "Hi there! How can I help?"},
@@ -100,15 +102,14 @@ class TestBenchmarkBuilder:
         bm = builder.build("s1", "chat")
         assert len(bm.cases) == 1
         c = bm.cases[0]
-        assert c.expected_tools is None
-        assert c.expected_tool_calls is None
+        assert c.expected_execution == []
         assert c.expected_output_contains == []
         assert c.max_turns == 1
 
     def test_multi_turn_golden_trajectory(self, data_dir):
         p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
-            {"type": "user_input", "turn": 1,
+            {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "read x"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
              "data": {"content": "", "tool_calls": [
@@ -134,8 +135,79 @@ class TestBenchmarkBuilder:
         c = bm.cases[0]
         assert c.expected_output_contains == []
         assert c.max_turns == 2
-        assert len(c.expected_tool_calls) == 2
-        assert c.expected_tool_calls[0]["name"] == "read"
-        assert c.expected_tool_calls[0]["success"] is False
-        assert c.expected_tool_calls[1]["name"] == "glob"
-        assert c.expected_tool_calls[1]["success"] is True
+        assert len(c.expected_execution) == 2
+        assert c.expected_execution[0]["name"] == "read"
+        assert c.expected_execution[0]["success"] is False
+        assert c.expected_execution[0]["result_preview"] == "not found"
+        assert c.expected_execution[1]["name"] == "glob"
+        assert c.expected_execution[1]["success"] is True
+        assert c.expected_execution[1]["result_preview"] == "x.txt"
+
+    def test_annotate_mode_placeholders(self, data_dir):
+        p = _make_trace_plugin(data_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1, "round": 1,
+             "data": {"content": "hello"}, "timestamp": 1.0},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "Hi!"}, "timestamp": 1.1},
+        ])
+        builder = BenchmarkBuilder(p)
+        bm = builder.build("s1", "annot", annotate_mode=True)
+        c = bm.cases[0]
+        assert c.expected_reasoning == ["[待标注] 该轮预期推理步骤..."]
+        assert "[待标注]" in c.expected_output_contains[0]
+
+    def test_feedback_extraction(self, data_dir):
+        p = _make_trace_plugin(data_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1, "round": 1,
+             "data": {"content": "write file"}, "timestamp": 1.0},
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "write"}, "timestamp": 1.1},
+            {"type": "tool_call_end", "turn": 1,
+             "data": {"tool_name": "write", "success": True,
+                      "result": "done"}, "timestamp": 1.2},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "Done!",
+                      "tool_calls": [{"name": "write", "params": {}}]},
+             "timestamp": 1.3},
+            {"type": "user_annotation", "round": 1,
+             "data": {"feedback": "good", "reason": "works",
+                      "annotated_at": "2025-01-01T00:00:00",
+                      "round": 1},
+             "timestamp": 2.0},
+        ])
+        builder = BenchmarkBuilder(p)
+        bm = builder.build("s1", "fb_test")
+        c = bm.cases[0]
+        assert c.feedback == {"rating": "good", "reason": "works",
+                              "annotated_at": "2025-01-01T00:00:00"}
+        assert c.source_round == 1
+
+    def test_feedback_latest_wins(self, data_dir):
+        p = _make_trace_plugin(data_dir)
+        _write_trace_events(p, "s1", [
+            {"type": "user_input", "turn": 1, "round": 1,
+             "data": {"content": "write file"}, "timestamp": 1.0},
+            {"type": "tool_call_start", "turn": 1,
+             "data": {"tool_name": "write"}, "timestamp": 1.1},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "Done!",
+                      "tool_calls": [{"name": "write", "params": {}}]},
+             "timestamp": 1.2},
+            {"type": "tool_call_end", "turn": 1,
+             "data": {"tool_name": "write", "success": True,
+                      "result": "done"}, "timestamp": 1.3},
+            {"type": "user_annotation", "round": 1,
+             "data": {"feedback": "bad", "reason": "broken",
+                      "round": 1},
+             "timestamp": 2.0},
+            {"type": "user_annotation", "round": 1,
+             "data": {"feedback": "good", "reason": "fixed",
+                      "round": 1},
+             "timestamp": 3.0},
+        ])
+        builder = BenchmarkBuilder(p)
+        bm = builder.build("s1", "latest")
+        c = bm.cases[0]
+        assert c.feedback == {"rating": "good", "reason": "fixed", "annotated_at": ""}
