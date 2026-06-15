@@ -1,6 +1,6 @@
 """move_file tool — move/rename files and directories."""
-
 import os
+import shutil
 
 
 async def execute(source: str, destination: str, **kwargs) -> dict:
@@ -15,7 +15,7 @@ async def execute(source: str, destination: str, **kwargs) -> dict:
         os.makedirs(dest_parent, exist_ok=True)
 
     try:
-        os.rename(source, destination)
+        shutil.move(source, destination)
     except OSError as e:
         return {"ok": False, "error": str(e)}
 
