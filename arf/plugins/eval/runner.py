@@ -21,7 +21,7 @@ class EvalRunner:
     """Run evaluation benchmarks against an agent.
 
     Usage:
-        config = EvalConfig(benchmark_path="bm.json", trace_dir="./data/traces",
+        config = EvalConfig(benchmark_path="bm.json", data_dir="./data",
                              judge=JudgeModelConfig(model="gpt-4"))
         runner = EvalRunner(config)
         report = await runner.run_online(agent.chat)
@@ -30,7 +30,7 @@ class EvalRunner:
     def __init__(self, config: EvalConfig, agent_config=None):
         self._config = config
         self._benchmark: EvalBenchmark | None = None
-        self._trace_dir = Path(config.trace_dir)
+        self._data_dir = Path(config.data_dir)
         # Resolve judge_model from agent_config before validate()
         if agent_config is not None and config.judge_model is None:
             resolved = agent_config.get_plugin_model_config("eval")
@@ -315,8 +315,8 @@ class EvalRunner:
         return report
 
     def _read_trace(self, session_id: str) -> list[dict]:
-        """Read trace events from a JSONL file."""
-        trace_file = self._trace_dir / f"{session_id}.jsonl"
+        """Read trace events from a session-scoped JSONL file."""
+        trace_file = self._data_dir / session_id / "traces" / f"{session_id}.jsonl"
         if not trace_file.exists():
             return []
         events = []

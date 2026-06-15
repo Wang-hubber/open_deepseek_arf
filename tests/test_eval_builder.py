@@ -9,8 +9,8 @@ from arf.plugins.eval.exceptions import EvalError
 from arf.plugins.trace.plugin import TracePlugin
 
 
-def _make_trace_plugin(trace_dir):
-    return TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+def _make_trace_plugin(data_dir):
+    return TracePlugin({"data_dir": str(data_dir), "enabled": True})
 
 
 def _write_trace_events(p, session_id, events):
@@ -21,12 +21,12 @@ def _write_trace_events(p, session_id, events):
 
 class TestBenchmarkBuilder:
     @pytest.fixture
-    def trace_dir(self):
+    def data_dir(self):
         with tempfile.TemporaryDirectory() as td:
             yield Path(td)
 
-    def test_build_creates_cases_from_user_inputs(self, trace_dir):
-        p = _make_trace_plugin(trace_dir)
+    def test_build_creates_cases_from_user_inputs(self, data_dir):
+        p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
             {"type": "user_input", "turn": 1,
              "data": {"content": "create file"}, "timestamp": 1.0},
@@ -73,14 +73,14 @@ class TestBenchmarkBuilder:
 
         assert bm.created_at > 0
 
-    def test_build_session_not_found(self, trace_dir):
-        p = _make_trace_plugin(trace_dir)
+    def test_build_session_not_found(self, data_dir):
+        p = _make_trace_plugin(data_dir)
         builder = BenchmarkBuilder(p)
         with pytest.raises(EvalError, match="not found"):
             builder.build("nope", "bm")
 
-    def test_build_no_user_inputs(self, trace_dir):
-        p = _make_trace_plugin(trace_dir)
+    def test_build_no_user_inputs(self, data_dir):
+        p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "x"}, "timestamp": 1.0},
@@ -89,8 +89,8 @@ class TestBenchmarkBuilder:
         with pytest.raises(EvalError, match="No user messages"):
             builder.build("s1", "bm")
 
-    def test_golden_trajectory_no_tool_calls(self, trace_dir):
-        p = _make_trace_plugin(trace_dir)
+    def test_golden_trajectory_no_tool_calls(self, data_dir):
+        p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
             {"type": "user_input", "turn": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
@@ -108,8 +108,8 @@ class TestBenchmarkBuilder:
         assert t0["assistant"]["content"] == "Hi there! How can I help?"
         assert t0["assistant"]["tool_calls"] == []
 
-    def test_multi_turn_golden_trajectory(self, trace_dir):
-        p = _make_trace_plugin(trace_dir)
+    def test_multi_turn_golden_trajectory(self, data_dir):
+        p = _make_trace_plugin(data_dir)
         _write_trace_events(p, "s1", [
             {"type": "user_input", "turn": 1,
              "data": {"content": "read x"}, "timestamp": 1.0},
