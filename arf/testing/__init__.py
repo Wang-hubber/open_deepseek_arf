@@ -53,9 +53,10 @@ class InMemoryToolResolver:
 
 class InMemoryToolExecutor:
     """ConcurrentToolExecutor for testing. Records all calls."""
-    def __init__(self) -> None:
+    def __init__(self, tools: dict | None = None) -> None:
         self.calls: list = []
         self.results: dict[str, dict] = {}
+        self._tools = tools or {}
 
     def set_result(self, call_id: str, success: bool = True, data: dict | None = None, error: str | None = None) -> None:
         self.results[call_id] = {"success": success, "data": data or {}, "error": error}
