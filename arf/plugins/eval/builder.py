@@ -1,5 +1,7 @@
 """BenchmarkBuilder — create EvalBenchmark from trace sessions."""
+import json
 import time
+from pathlib import Path
 
 from arf.plugins.eval.exceptions import EvalError
 from arf.plugins.eval.models import EvalCase, EvalBenchmark
@@ -10,20 +12,26 @@ class BenchmarkBuilder:
 
     Takes a TracePlugin instance and reads session trace files to
     construct rich EvalCases with expected_tools, expected_output_contains,
-    and max_turns. Annotators read trace files directly for full context.
-
-    Cases are delimited by user_input event positions in the event list,
-    not by turn numbers — this avoids boundary misalignment when turn
-    numbers don't match conversation boundaries.
+    and max_turns. A frozen trace snapshot is written alongside the benchmark
+    so later session activity doesn't corrupt the golden reference.
     """
 
     def __init__(self, trace_plugin):
         self._trace = trace_plugin
 
-    def build(self, session_id: str, name: str) -> EvalBenchmark:
+    def build(self, session_id: str, name: str, *,
+              benchmark_dir: str = "benchmarks") -> EvalBenchmark:
         events = self._trace.read_trace(session_id)
         if not events:
             raise EvalError(f"Session '{session_id}' not found in trace store")
+
+        # Write frozen trace snapshot — later session activity won't corrupt it
+        bm_dir = Path(benchmark_dir)
+        bm_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = bm_dir / f"{name}.trace.jsonl"
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
         # Find user_input event indices as case boundaries
         user_indices = [
@@ -38,7 +46,6 @@ class BenchmarkBuilder:
             end = user_indices[i + 1] if i + 1 < len(user_indices) else len(events)
             case_events = events[start:end]
 
-            # Collect tool names from this slice
             tool_names: list[str] = []
             for e in case_events:
                 if e.get("type") == "tool_call_start":
@@ -46,19 +53,16 @@ class BenchmarkBuilder:
                     if tn:
                         tool_names.append(tn)
 
-            # Build golden trajectory from this slice
             golden_turns = self._build_golden_turns(case_events)
-
-            # Extract expected_tool_calls from golden trajectory
             expected_tool_calls = self._build_expected_tool_calls(golden_turns)
 
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
-                session_id=session_id,  # builder's source session — runner groups by this
+                session_id=session_id,
                 expected_tools=tool_names if tool_names else None,
                 expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
-                expected_output_contains=[],  # activated — annotator fills keywords
+                expected_output_contains=[],
                 max_turns=len(golden_turns) if golden_turns else None,
             ))
 
@@ -67,6 +71,7 @@ class BenchmarkBuilder:
             source_session=session_id,
             created_at=time.time(),
             cases=cases,
+            trace_snapshot_path=str(snapshot_path),
         )
 
     @staticmethod

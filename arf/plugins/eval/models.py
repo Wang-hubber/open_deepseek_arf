@@ -20,12 +20,14 @@ class EvalBenchmark:
     source_session: str | None = None
     created_at: float = 0.0
     cases: list[EvalCase] = field(default_factory=list)
+    trace_snapshot_path: str | None = None  # relative to benchmark JSON, frozen trace copy
 
     def to_json(self, path: str) -> None:
         data = {
             "name": self.name,
             "source_session": self.source_session,
             "created_at": self.created_at,
+            **({"trace_snapshot_path": self.trace_snapshot_path} if self.trace_snapshot_path else {}),
             "cases": [
                 {
                     "id": c.id,
@@ -50,6 +52,7 @@ class EvalBenchmark:
             name=data["name"],
             source_session=data.get("source_session"),
             created_at=data.get("created_at", 0.0),
+            trace_snapshot_path=data.get("trace_snapshot_path"),
             cases=[
                 EvalCase(
                     id=c["id"],
