@@ -15,7 +15,7 @@ async def execute(session_id: str = "", memory_dir: str = "",
     if not state_file.exists():
         return {"ok": False, "error": f"No session state found: {state_file}"}
 
-    state = json.loads(state_file.read_text())
+    state = json.loads(state_file.read_text(encoding="utf-8"))
     messages = state.get("messages", [])
     if not messages:
         return {"ok": False, "error": "No messages to extract from"}

@@ -15,7 +15,7 @@ async def execute(
     if not plan_file.exists():
         return {"ok": False, "error": f"no plan found at {workspace}"}
 
-    plan = json.loads(plan_file.read_text())
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
     steps = plan.get("steps", [])
 
     pending_steps = [s["index"] for s in steps if s["status"] in ("pending", "running")]

@@ -94,7 +94,7 @@ def main():
     parser.add_argument("--session-id", default="default")
     args = parser.parse_args()
 
-    messages = json.loads(Path(args.session_file).read_text())
+    messages = json.loads(Path(args.session_file).read_text(encoding="utf-8"))
     memory_dir = Path(args.memory_dir)
     memory_file = memory_dir / "memory.md"
     template_path = Path(__file__).parent / "prompt.md"

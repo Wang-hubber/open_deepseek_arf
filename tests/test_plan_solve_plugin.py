@@ -167,7 +167,7 @@ class TestPlanCreate:
 
         plan_path = Path(ws) / "plan.json"
         assert plan_path.exists()
-        plan = json.loads(plan_path.read_text())
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
         assert plan["status"] == "executing"
         assert len(plan["steps"]) == 1
         assert plan["steps"][0]["status"] == "pending"

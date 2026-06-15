@@ -110,7 +110,7 @@ class FakeModelAdapter:
         if not trace_file.exists():
             return cls(default=FakeResponse(content="trace not found"))
 
-        with open(trace_file) as f:
+        with open(trace_file, encoding="utf-8") as f:
             events = json.load(f)
 
         responses = []

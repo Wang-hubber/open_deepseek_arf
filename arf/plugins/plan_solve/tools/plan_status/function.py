@@ -14,7 +14,7 @@ async def execute(
     if not plan_file.exists():
         return {"ok": False, "error": f"no plan found at {workspace}"}
 
-    plan = json.loads(plan_file.read_text())
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
     return {
         "ok": True,
         "plan_id": plan["plan_id"],

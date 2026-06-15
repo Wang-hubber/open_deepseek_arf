@@ -44,7 +44,7 @@ class PlanSolvePlugin:
         if not plan_file.exists():
             return
 
-        plan = json.loads(plan_file.read_text())
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
         tool_calls = ctx.state.get("_pending_tool_calls", [])
         removed_ids = set()
 
@@ -93,7 +93,7 @@ class PlanSolvePlugin:
         if not plan_file.exists():
             return
 
-        plan = json.loads(plan_file.read_text())
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
         if plan.get("status") != "executing":
             return
 

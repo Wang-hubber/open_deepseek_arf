@@ -21,7 +21,7 @@ async def execute(
     if not plan_file.exists():
         return {"ok": False, "error": f"no plan found at {workspace}"}
 
-    plan = json.loads(plan_file.read_text())
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
     step = _find_step(plan, step_index)
     if step is None:
         return {"ok": False, "error": f"step {step_index} not found in plan"}
