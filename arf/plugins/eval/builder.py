@@ -104,7 +104,7 @@ class BenchmarkBuilder:
         one entry with assistant content, tool_calls, tool_results, and
         assistant_final.
         """
-        turn_set = sorted({e.get("turn", 0) for e in events if e.get("turn", 0) > 0})
+        turn_set = sorted({e.get("turn") or 0 for e in events if (e.get("turn") or 0) > 0})
         turns = []
         for t in turn_set:
             turn_events = [e for e in events if e.get("turn") == t]
