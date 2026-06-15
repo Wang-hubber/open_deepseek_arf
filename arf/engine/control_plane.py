@@ -168,6 +168,7 @@ class ControlPlane:
         while not aborted:
             if self._cancelled():
                 state["_session_ended"] = True
+                ctx.inject_engine_event("session_cancelled", {"reason": "cancelled"})
                 yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
                 break
 
@@ -207,6 +208,14 @@ class ControlPlane:
                     current_turn=turn,
                     total_tokens=state.get("_total_tokens", 0),
                 ):
+                    ctx.inject_engine_event("gate_check", {
+                        "limit": self.gate.reason,
+                        "current_turn": turn,
+                        "max_turns": self.gate.max_turns,
+                        "total_tokens": state.get("_total_tokens", 0),
+                        "max_tokens": self.gate.max_tokens,
+                        "exceeded": True,
+                    })
                     yield self._make_event(
                         "gate_exceeded",
                         {"reason": self.gate.reason, "current_turn": turn},
@@ -253,9 +262,10 @@ class ControlPlane:
                 # Snapshot pending_tool_calls BEFORE execute_tools pops them
                 pending_tool_calls = list(state.get("_pending_tool_calls", []))
                 has_tool_calls = bool(pending_tool_calls)
-                import logging
-                _log = logging.getLogger("arf.engine")
-                _log.warning("turn=%s has_tool_calls=%s pending=%s", turn, has_tool_calls, [t.get("name","") for t in pending_tool_calls])
+                ctx.inject_engine_event("turn_decision", {
+                    "has_tool_calls": has_tool_calls,
+                    "pending_tools": [t.get("name", "") for t in pending_tool_calls],
+                })
 
                 # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
                 if has_tool_calls:
@@ -309,7 +319,7 @@ class ControlPlane:
 
                 # Text-only response (no tool_calls) → round complete
                 if not has_tool_calls:
-                    _log.warning("turn=%s BREAK: no tool_calls, exiting turn loop", turn)
+                    ctx.inject_engine_event("turn_exit", {"reason": "no_tool_calls"})
                     break
 
                 # Gate check — terminate if budget exceeded
@@ -317,6 +327,14 @@ class ControlPlane:
                     current_turn=turn,
                     total_tokens=state.get("_total_tokens", 0),
                 ):
+                    ctx.inject_engine_event("gate_check", {
+                        "limit": self.gate.reason,
+                        "current_turn": turn,
+                        "max_turns": self.gate.max_turns,
+                        "total_tokens": state.get("_total_tokens", 0),
+                        "max_tokens": self.gate.max_tokens,
+                        "exceeded": True,
+                    })
                     yield self._make_event(
                         "gate_exceeded",
                         {"reason": self.gate.reason, "current_turn": turn},
@@ -326,21 +344,32 @@ class ControlPlane:
 
             # --- round_end ---
             ctx.hook_data["_error_phase"] = "round_end"
+            round_end_error_recovered = False
             try:
                 await self._fire_blocking("round_end", ctx)
                 await self._fire_side("round_end", ctx)
             except Exception as e:
                 if await self._dispatch_error(e, state, ctx):
                     break
-                continue
-                # Fall through to gate/exit checks below — round_end is the last
-                # block in the loop, so continue would skip the break conditions.
+                ctx.inject_engine_event("round_end_warning", {
+                    "detail": f"round_end hook error recovered: {e}",
+                })
+                round_end_error_recovered = True
+                # Fall through to gate/exit checks below
 
             # Gate check at round level too
             if self.gate.is_exceeded(
                 current_turn=state.get("current_turn", 0),
                 total_tokens=state.get("_total_tokens", 0),
             ):
+                ctx.inject_engine_event("gate_check", {
+                    "limit": self.gate.reason,
+                    "current_turn": state.get("current_turn", 0),
+                    "max_turns": self.gate.max_turns,
+                    "total_tokens": state.get("_total_tokens", 0),
+                    "max_tokens": self.gate.max_tokens,
+                    "exceeded": True,
+                })
                 yield self._make_event(
                     "gate_exceeded",
                     {"reason": self.gate.reason, "current_turn": state.get("current_turn")},
@@ -351,6 +380,10 @@ class ControlPlane:
             # No new user input after round — exit round loop
             msgs = state.get("messages", [])
             if msgs and msgs[-1].get("role") != "user":
+                ctx.inject_engine_event("round_exit", {
+                    "reason": "no_user_input",
+                    "last_message_role": msgs[-1].get("role") if msgs else "N/A",
+                })
                 break
 
         # Save state for continuation (session_end emitted by close())
@@ -420,6 +453,23 @@ class ControlPlane:
                             "name": chunk.get("name", ""),
                             "params": json.loads(chunk.get("arguments", "{}")),
                         })
+                    elif chunk.get("type") == "tool_call_chunk":
+                        # Safety net: some providers may not yield final "tool_call"
+                        # events. Accumulate from incremental chunks keyed by id.
+                        tc_id = chunk.get("id", "")
+                        updated = False
+                        for tc in stream_tool_calls:
+                            if tc.get("id") == tc_id:
+                                tc["name"] = chunk.get("name", "") or tc["name"]
+                                tc["_raw_args"] = chunk.get("arguments", "{}")
+                                updated = True
+                                break
+                        if not updated:
+                            stream_tool_calls.append({
+                                "id": tc_id,
+                                "name": chunk.get("name", ""),
+                                "_raw_args": chunk.get("arguments", "{}"),
+                            })
                     elif chunk.get("type") == "error":
                         yield self._make_event("error", {
                             "phase": "stream_model",
@@ -436,9 +486,17 @@ class ControlPlane:
                             "total_tokens": chunk.get("total_tokens", 0),
                         }
                 # Build resp from streamed data if streaming produced anything.
-                # resp stays None only on explicit error (line 431) or empty stream,
+                # resp stays None only on explicit error or truly empty stream,
                 # both of which fall back to non-streaming below.
-                if full_text or stream_tool_calls:
+                # Normalize tool calls: parse _raw_args from tool_call_chunk fallback
+                for tc in stream_tool_calls:
+                    if "params" not in tc and "_raw_args" in tc:
+                        try:
+                            tc["params"] = json.loads(tc.pop("_raw_args"))
+                        except (json.JSONDecodeError, TypeError):
+                            tc["params"] = {}
+                    tc.pop("_raw_args", None)
+                if full_text or full_reasoning or stream_tool_calls:
                     resp = {
                         "content": full_text,
                         "reasoning": full_reasoning,
@@ -730,6 +788,12 @@ class ControlPlane:
         try:
             decision = await self._handle_error(exc, ctx)
         except Exception:
+            ctx.inject_engine_event("error_dispatch", {
+                "exception": type(exc).__name__,
+                "message": str(exc)[:300],
+                "decision": "fatal",
+                "reason": "error_handler raised exception",
+            })
             return True
 
         recovery = decision.get("recovery", "")
@@ -742,6 +806,12 @@ class ControlPlane:
                     logger.warning(
                         "Recovery handler '%s' failed: %s. Original error: %s",
                         recovery, handler_exc, exc)
+                    ctx.inject_engine_event("error_dispatch", {
+                        "exception": type(exc).__name__,
+                        "message": str(exc)[:300],
+                        "decision": "fatal",
+                        "reason": f"recovery handler '{recovery}' failed: {handler_exc}",
+                    })
                     return True  # handler failure → break, don't mask original error
             else:
                 logger.warning("No recovery handler registered for '%s'", recovery)

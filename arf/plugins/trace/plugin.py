@@ -79,21 +79,21 @@ class TracePlugin:
         interaction_round = context.interaction_round
         current_turn = context.turn
 
-        # Flatten injected engine events at round_start (user_input) and
-        # post_action (model_call_*, tool_call_*).
-        if hook_name in ("round_start", "post_action"):
-            engine_events = context.hook_data.pop("_engine_events", [])
-            for ee in engine_events:
-                effective_turn = None if ee["type"] == "user_annotation" else current_turn
-                record = {
-                    "type": ee["type"],
-                    "round": interaction_round,
-                    "turn": effective_turn,
-                    "timestamp": ee.get("timestamp", time.time()),
-                    "data": self._sanitize(ee.get("data", {})),
-                    "session_id": session_id,
-                }
-                self._write_event(session_id, record)
+        # Flatten injected engine events at every hook boundary so
+        # diagnostic events (gate_check, turn_exit, round_exit, etc.)
+        # are captured even when the loop breaks before post_action.
+        engine_events = context.hook_data.pop("_engine_events", [])
+        for ee in engine_events:
+            effective_turn = None if ee["type"] == "user_annotation" else current_turn
+            record = {
+                "type": ee["type"],
+                "round": interaction_round,
+                "turn": effective_turn,
+                "timestamp": ee.get("timestamp", time.time()),
+                "data": self._sanitize(ee.get("data", {})),
+                "session_id": session_id,
+            }
+            self._write_event(session_id, record)
 
         # Hook boundary event
         event = {
