@@ -57,7 +57,7 @@ class FileStateStore:
         # Don't persist ephemeral tool_results across restarts
         data.pop("tool_results", None)
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.rename(path)
+        tmp.replace(path)
 
     async def get(self, session_id: str) -> AgentState | None:
         path = self._path(session_id)
