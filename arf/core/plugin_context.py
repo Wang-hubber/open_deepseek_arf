@@ -83,7 +83,7 @@ class PluginContext:
         self,
         feedback: str,
         reason: str = "",
-        round: int | None = None,
+        target_round: int | None = None,
     ) -> None:
         """Inject a user feedback annotation into the trace stream.
 
@@ -93,10 +93,10 @@ class PluginContext:
         Args:
             feedback: "thumbs_up" or "thumbs_down"
             reason: optional free-text explanation
-            round: target round to annotate, defaults to current round
+            target_round: target round to annotate, defaults to current round
         """
         from datetime import datetime, timezone
-        target_round = round if round is not None else self.interaction_round
+        target_round = target_round if target_round is not None else self.interaction_round
         data = {
             "round": target_round,
             "feedback": feedback,
