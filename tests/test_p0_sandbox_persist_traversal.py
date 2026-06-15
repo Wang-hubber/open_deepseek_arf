@@ -191,7 +191,7 @@ class TestPersistStillUncalled:
             if "__pycache__" in str(pyfile):
                 continue
             try:
-                tree = ast.parse(pyfile.read_text())
+                tree = ast.parse(pyfile.read_text(encoding="utf-8"))
             except SyntaxError:
                 continue
             for node in ast.walk(tree):

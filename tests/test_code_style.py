@@ -14,7 +14,7 @@ class TestModuleDocstrings:
     def test_all_modules_have_docstrings(self):
         missing = []
         for p in _py_files():
-            tree = ast.parse(p.read_text())
+            tree = ast.parse(p.read_text(encoding="utf-8"))
             docstring = ast.get_docstring(tree)
             if docstring is None:
                 missing.append(str(p.relative_to(ARF_DIR.parent)))
@@ -30,7 +30,7 @@ class TestModuleDocstrings:
         for p in core_files:
             if not p.exists():
                 continue
-            tree = ast.parse(p.read_text())
+            tree = ast.parse(p.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     for arg in node.args.args:

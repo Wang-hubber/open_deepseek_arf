@@ -151,7 +151,7 @@ class TestFileStateStore:
             })
 
             # Read the raw file
-            raw = json.loads((data_dir / "s1" / "state" / "s1.json").read_text())
+            raw = json.loads((data_dir / "s1" / "state" / "s1.json").read_text(encoding="utf-8"))
             assert "tool_results" not in raw, (
                 "tool_results must NOT be persisted across restarts"
             )

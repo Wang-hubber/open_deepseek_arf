@@ -75,7 +75,7 @@ class PluginProvider:
             plugin_yaml = plugin_dir / "plugin.yaml"
             plugin_config = {}
             if plugin_yaml.exists():
-                plugin_config = yaml.safe_load(plugin_yaml.read_text()) or {}
+                plugin_config = yaml.safe_load(plugin_yaml.read_text(encoding="utf-8")) or {}
 
             plugin_py = plugin_dir / "plugin.py"
             if plugin_py.exists():
