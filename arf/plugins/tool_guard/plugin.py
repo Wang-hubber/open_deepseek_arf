@@ -125,7 +125,7 @@ class ToolGuardPlugin:
             # Layer 2: Security check (path traversal, injection)
             if self._sandbox:
                 for key, value in params.items():
-                    if isinstance(value, str) and (".." in value or value.startswith("/")):
+                    if isinstance(value, str) and ".." in value:
                         ctx.emit("guard_block", {
                             "tool_name": name,
                             "reason": f"sandbox: {key} contains suspicious path",
