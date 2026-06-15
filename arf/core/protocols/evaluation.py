@@ -7,9 +7,13 @@ from dataclasses import dataclass, field
 class EvalCase:
     id: str
     input: str
-    expected_tools: list[str] | None = None
-    expected_output_contains: list[str] | None = None
+    session_id: str | None = None
+    expected_reasoning: list[str] = field(default_factory=list)
+    expected_execution: list[dict] = field(default_factory=list)
+    expected_output_contains: list[str] = field(default_factory=list)
     max_turns: int | None = None
+    feedback: dict | None = None
+    source_round: int | None = None
 
 
 @dataclass
