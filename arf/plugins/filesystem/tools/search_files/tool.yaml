@@ -1,8 +1,8 @@
 name: search_files
 description: PREFERRED exploration tool. Search for files/directories by name with glob
-  patterns. Use keywords from the task: "*agent_name*" to find configs, "*trace*" for
-  trace dirs, "*.yaml" for configs. Much faster and lighter than directory_tree. Use
-  '**/*.ext' to search all subdirectories. Returns full paths to all matching items.
+  patterns. Use keywords from the task ("*agent_name*", "*trace*", "*.yaml") to find
+  relevant files. Much faster and lighter than directory_tree. Use '**/*.ext' to
+  search all subdirectories. Returns full paths to all matching items.
 parameters:
   type: object
   properties:
