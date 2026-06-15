@@ -78,8 +78,7 @@ class BaseAgent:
 
         # 1. Core infrastructure
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
-        default_state_dir = str(_Path(_data_dir) / "state")
-        state_store = override_protocols.pop("state_store", FileStateStore(default_state_dir))
+        state_store = override_protocols.pop("state_store", FileStateStore(_data_dir))
 
         # 2. Resources — MCP-based unified management
         # McpClientManager replaces ToolProvider + SkillProvider +

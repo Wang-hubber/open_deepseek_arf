@@ -37,21 +37,21 @@ class InMemoryStateStore:
 class FileStateStore:
     """JSON-file-backed store. Survives process restarts.
 
-    Writes state to ``<state_dir>/<session_id>.json`` on every put().
-    Atomically writes to a temp file then renames to avoid corruption.
+    Writes state to ``<data_dir>/<session_id>/state/<session_id>.json`` on every put().
     """
 
-    def __init__(self, state_dir: str | Path = "./data/state") -> None:
-        self._dir = Path(state_dir)
+    def __init__(self, data_dir: str | Path = "./data") -> None:
+        self._dir = Path(data_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
-        return self._dir / f"{session_id}.json"
+        p = self._dir / session_id / "state"
+        p.mkdir(parents=True, exist_ok=True)
+        return p / f"{session_id}.json"
 
     async def put(self, session_id: str, state: AgentState) -> None:
         import copy
         path = self._path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         data = copy.deepcopy(dict(state))
         # Don't persist ephemeral tool_results across restarts
@@ -77,4 +77,8 @@ class FileStateStore:
             pass
 
     async def list_sessions(self) -> list[str]:
-        return sorted(p.stem for p in self._dir.glob("*.json"))
+        sessions = []
+        for d in self._dir.iterdir():
+            if d.is_dir() and (d / "state").exists():
+                sessions.append(d.name)
+        return sorted(sessions)
