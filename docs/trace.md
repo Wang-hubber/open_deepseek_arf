@@ -152,6 +152,7 @@ CLI /exit → BaseAgent.stop():
 {"type": "tool_call_start", "turn": 1, "timestamp": 1718000002.1, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"tool_name": "read", "id": "call_abc", "arguments": "{\"path\": \"README.md\"}", "turn": 1}}
 {"type": "tool_call_end", "turn": 1, "timestamp": 1718000002.5, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"tool_name": "read", "id": "call_abc", "params": {"path": "README.md"}, "success": true, "result": "# ARF Framework...", "duration_ms": 150}}
 {"type": "post_action", "turn": 1, "timestamp": 1718000002.6, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
+{"type": "user_annotation", "round": 1, "turn": null, "timestamp": 1718000005.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {"round": 1, "feedback": "thumbs_up", "reason": "正确读取了文件", "annotated_at": "2026-06-15T10:30:00"}}
 {"type": "session_end", "turn": 1, "timestamp": 1718000030.0, "config_hash": "a1b2c3d4", "session_id": "abc123", "data": {}}
 ```
 
@@ -161,6 +162,8 @@ CLI /exit → BaseAgent.stop():
 - `config_hash` 关联到 `snapshots/{hash}.xml` 配置快照
 - `model_call_end.data.tool_calls` 包含完整的工具调用参数 → 可构建 function-calling 样本
 - `tool_call_end.data.result` 包含工具返回值——长结果经 CompactionPlugin externalization 后为 preview + 磁盘路径，完整内容在 `data/{sid}/tool_outputs/`
+- `user_annotation` 事件 `turn` 为 `null`——反馈是 per-round 而非 per-turn
+- 同一 round 可有多条 `user_annotation` 事件（用户改注），`BenchmarkBuilder` 取 timestamp 最新的为准
 
 ### 2.6 配置快照
 
@@ -188,6 +191,7 @@ CLI /exit → BaseAgent.stop():
 | `thinking_delta` | 流式文本增量 | 仅 EventBus/SSE，不入磁盘 |
 | `error` | 执行异常 | `_make_event` → EventBus |
 | `gate_exceeded` | 超出 turn/token 预算 | `_make_event` → EventBus |
+| `user_annotation` | 用户反馈标注（点赞/点踩） | `ctx.inject_user_annotation()` → inject_engine_event + emit |
 
 ---
 
