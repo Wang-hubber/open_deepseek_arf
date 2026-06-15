@@ -92,6 +92,29 @@ async def test_error_handler_guard_denial_skip_with_noop():
 
 
 @pytest.mark.anyio
+async def test_error_handler_sandbox_pre_action_injects_tool_error():
+    """SandboxViolation in pre_action with pending tool calls → inject_tool_error."""
+    from arf.plugins.tool_guard.plugin import SandboxViolation
+    plugin = ErrorHandlerPlugin()
+    ctx = _make_ctx(
+        SandboxViolation("path escapes workspace"),
+        hook_name="error",
+    )
+    ctx.state = {}
+    ctx.hook_data["_error_phase"] = "pre_action"
+    ctx.hook_data["_pending_tool_calls"] = [
+        {"id": "tc1", "name": "directory_tree"},
+    ]
+
+    await plugin.on_hook("error", ctx)
+
+    decision = ctx.hook_data["_recovery_decision"]
+    assert "action" not in decision
+    assert decision["recovery"] == "inject_tool_error"
+    assert "path escapes workspace" in decision["params"]["error"]
+
+
+@pytest.mark.anyio
 async def test_error_handler_message_contract_repair():
     """MessageContract violation → fallback with persist_state + repair."""
     plugin = ErrorHandlerPlugin()
