@@ -756,3 +756,133 @@ class OutputContainsMetric:
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
         import asyncio
         return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
+
+
+class ExecutionAccuracyMetric:
+    """Rule-based: compares expected_execution tool entries against actual
+    tool calls by name + params subset matching. Returns 1.0 when empty."""
+
+    @property
+    def name(self) -> str:
+        return "execution_accuracy"
+
+    @property
+    def requires_llm(self) -> bool:
+        return False
+
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        expected = [
+            e for e in golden_case.expected_execution
+            if e.get("type") == "tool"
+        ]
+        if not expected:
+            return {"execution_accuracy": 1.0}
+
+        actual_calls: list[dict] = []
+        for e in actual_trace:
+            if e.get("type") == "tool_call_start":
+                data = e.get("data", {})
+                actual_calls.append({
+                    "tool_name": data.get("tool_name", ""),
+                    "arguments": ToolCallAccuracyMetric._parse_arguments(
+                        data.get("arguments", "{}")
+                    ),
+                })
+
+        matches = 0
+        for exp in expected:
+            exp_name = exp.get("name", "")
+            exp_params = exp.get("params", {})
+            for act in actual_calls:
+                if act["tool_name"] != exp_name:
+                    continue
+                if ToolCallAccuracyMetric._params_subset(exp_params, act["arguments"]):
+                    matches += 1
+                    break
+
+        return {"execution_accuracy": matches / len(expected)}
+
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        import asyncio
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
+
+
+class ReasoningSimilarityMetric:
+    """LLM-judged: compares expected_reasoning against actual model reasoning
+    traces. Degradable — N/A when no judge or expected_reasoning empty."""
+
+    _PROMPT = (
+        "You are evaluating whether an AI agent's reasoning process matches "
+        "the expected reasoning steps for a user request.\n\n"
+        "User's original request: {user_input}\n\n"
+        "Expected reasoning steps:\n<<<EXPECTED>>>\n{expected}\n<<<END>>>\n\n"
+        "Actual reasoning trace:\n<<<ACTUAL>>>\n{actual}\n<<<END>>>\n\n"
+        "Rate the actual reasoning against the expected on a 1-5 scale:\n"
+        "5 — Excellent: All expected reasoning steps covered, same logical "
+        "flow, key insights present. Minor wording differences acceptable.\n"
+        "4 — Good: Core reasoning present but one or two steps missing or "
+        "slightly out of order.\n"
+        "3 — Adequate: Some expected steps present, but notable gaps in logic.\n"
+        "2 — Poor: Reasoning mostly misaligned. Key insights missing.\n"
+        "1 — Wrong: Completely different reasoning that misses the point.\n\n"
+        "Respond with ONLY a JSON object (no markdown fences, no extra text):\n"
+        '{{"score": <int 1-5>, "reason": "<2-3 sentences>"}}'
+    )
+
+    def __init__(self, prompt: str | None = None):
+        self._prompt = prompt if prompt else self._PROMPT
+
+    @property
+    def name(self) -> str:
+        return "reasoning_similarity"
+
+    @property
+    def requires_llm(self) -> bool:
+        return True
+
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        expected = golden_case.expected_reasoning
+        if not expected:
+            return {"reasoning_similarity": None, "reason": "no expected_reasoning"}
+
+        if judge_adapter is None:
+            return {"reasoning_similarity": None, "reason": "no judge model"}
+
+        actual_reasoning_parts: list[str] = []
+        for e in actual_trace:
+            if e.get("type") == "model_call_end":
+                reasoning = e.get("data", {}).get("reasoning", "")
+                if reasoning:
+                    actual_reasoning_parts.append(reasoning)
+
+        actual_str = "\n".join(actual_reasoning_parts) if actual_reasoning_parts else "(no reasoning recorded)"
+        expected_str = "\n".join(f"{i+1}. {s}" for i, s in enumerate(expected))
+
+        prompt = self._prompt.format(
+            user_input=golden_case.input[:500],
+            expected=expected_str[:2000],
+            actual=actual_str[:2000],
+        )
+        messages = []
+        if judge and judge.system_prompt:
+            messages.append({"role": "system", "content": judge.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        import json
+        try:
+            response = await judge_adapter.chat_complete(messages=messages)
+            content = response.content or ""
+            result = json.loads(content)
+            return {"reasoning_similarity": int(result["score"]),
+                    "reason": result.get("reason", "")}
+        except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
+            return {"reasoning_similarity": None, "reason": "judge response parse error"}
+        except Exception as e:
+            from arf.plugins.eval.exceptions import EvalJudgeError
+            raise EvalJudgeError(
+                f"Judge API call failed for {self.name}: {e}"
+            ) from e
+
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        import asyncio
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
