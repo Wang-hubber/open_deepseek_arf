@@ -148,11 +148,12 @@ class ControlPlane:
         # --- session_start (only on first call) ---
         if not state.get("_session_opened"):
             yield self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
+            ctx.hook_data["_error_phase"] = "session_start"
             try:
                 await self._fire_blocking("session_start", ctx)
                 await self._fire_side("session_start", ctx)
             except Exception as e:
-                await self._handle_error(e, ctx)
+                await self._dispatch_error(e, state, ctx)
             state["_session_opened"] = True
 
         # --- user_input (once per astream call) ---
@@ -189,12 +190,14 @@ class ControlPlane:
                         })
                         break
 
+            ctx.hook_data["_error_phase"] = "round_start"
             try:
                 await self._fire_blocking("round_start", ctx)
                 await self._fire_side("round_start", ctx)
             except Exception as e:
-                decision = await self._handle_error(e, ctx)
-                break  # abort on any error — don't retry round_start
+                if await self._dispatch_error(e, state, ctx):
+                    break
+                continue
 
             # --- turn loop ---
             while True:
@@ -216,54 +219,38 @@ class ControlPlane:
                 ctx = self._make_ctx(state, session_id, turn, "")
 
                 # --- turn_start ---
+                ctx.hook_data["_error_phase"] = "turn_start"
                 try:
                     await self._fire_blocking("turn_start", ctx)
                     await self._fire_side("turn_start", ctx)
                 except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    if decision.get("action") == "abort":
+                    if await self._dispatch_error(e, state, ctx):
                         aborted = True
                         break
                     continue
 
                 # --- pre_action: call_model ---
                 ctx.current_step = "call_model"
+                ctx.hook_data["_error_phase"] = "pre_action"
                 try:
                     async for event in self._fire_and_drain("pre_action", ctx):
                         yield event
                 except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    if decision.get("action") == "abort":
+                    if await self._dispatch_error(e, state, ctx):
                         aborted = True
                         break
-                    if decision.get("action") == "skip":
-                        await self._fire_side("post_action", ctx)
-                        continue
+                    continue
 
                 # --- dispatch: model_call ---
+                ctx.hook_data["_error_phase"] = "model_call"
                 try:
                     async for event in self._action_call_model(state, ctx):
                         yield event
                 except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    action = decision.get("action", "abort")
-                    if action == "abort":
+                    if await self._dispatch_error(e, state, ctx):
                         aborted = True
                         break
-                    elif action == "retry":
-                        state["current_turn"] = turn - 1
-                        await self.state_store.put(session_id, state)
-                        continue
-                    elif action == "skip":
-                        await self._fire_side("post_action", ctx)
-                        continue
-                    elif action == "fallback":
-                        await self.state_store.put(session_id, state)
-                        continue
-                    elif action == "rollback":
-                        break
-                    else:
-                        break
+                    continue
 
                 # Snapshot pending_tool_calls BEFORE execute_tools pops them
                 pending_tool_calls = list(state.get("_pending_tool_calls", []))
@@ -274,58 +261,45 @@ class ControlPlane:
                     ctx.current_step = "execute_tools"
                     # Inject effective session mode into hook_data (absorbed from SessionModePlugin)
                     ctx.hook_data["effective_mode"] = self._session_mode_manager.resolve(None)
+                    ctx.hook_data["_error_phase"] = "pre_action"
                     try:
                         async for event in self._fire_and_drain("pre_action", ctx):
                             yield event
                     except Exception as e:
-                        decision = await self._handle_error(e, ctx)
-                        if decision.get("action") == "abort":
+                        if await self._dispatch_error(e, state, ctx):
                             aborted = True
                             break
-                        if decision.get("action") == "skip":
-                            await self._fire_side("post_action", ctx)
-                            continue
+                        continue
 
+                    ctx.hook_data["_pending_tool_calls"] = pending_tool_calls
+                    ctx.hook_data["_error_phase"] = "execute_tools"
                     try:
                         async for event in self._action_execute_tools(state, ctx):
                             yield event
                     except Exception as e:
-                        decision = await self._handle_error(e, ctx)
-                        action = decision.get("action", "abort")
-                        if action == "abort":
+                        if await self._dispatch_error(e, state, ctx):
                             aborted = True
                             break
-                        # Tool execution failed → inject error as tool_result so
-                        # the model sees the error and can retry in the next turn.
-                        for tc in pending_tool_calls:
-                            state["messages"].append({
-                                "role": "tool",
-                                "tool_call_id": tc.get("id", ""),
-                                "content": f"Error executing tool '{tc.get('name', '')}': {e}",
-                            })
-                        if action == "skip":
-                            await self._fire_side("post_action", ctx)
-                            continue
-                        break
+                        continue
 
                 # --- post_dispatch ---
+                ctx.hook_data["_error_phase"] = "post_action"
                 try:
                     await self._fire_blocking("post_action", ctx)
                     await self._fire_side("post_action", ctx)
                 except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    if decision.get("action") == "abort":
+                    if await self._dispatch_error(e, state, ctx):
                         aborted = True
                         break
                     continue
 
                 # --- turn_end ---
+                ctx.hook_data["_error_phase"] = "turn_end"
                 try:
                     await self._fire_blocking("turn_end", ctx)
                     await self._fire_side("turn_end", ctx)
                 except Exception as e:
-                    decision = await self._handle_error(e, ctx)
-                    if decision.get("action") == "abort":
+                    if await self._dispatch_error(e, state, ctx):
                         aborted = True
                         break
                     continue
@@ -349,13 +323,14 @@ class ControlPlane:
                     break
 
             # --- round_end ---
+            ctx.hook_data["_error_phase"] = "round_end"
             try:
                 await self._fire_blocking("round_end", ctx)
                 await self._fire_side("round_end", ctx)
             except Exception as e:
-                decision = await self._handle_error(e, ctx)
-                if decision.get("action") == "abort":
+                if await self._dispatch_error(e, state, ctx):
                     break
+                continue
                 # Fall through to gate/exit checks below — round_end is the last
                 # block in the loop, so continue would skip the break conditions.
 
