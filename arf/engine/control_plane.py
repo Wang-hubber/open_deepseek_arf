@@ -435,9 +435,10 @@ class ControlPlane:
                             "completion_tokens": chunk.get("completion_tokens", 0),
                             "total_tokens": chunk.get("total_tokens", 0),
                         }
-                if resp is None:
-                    pass  # errored mid-stream, skip building resp
-                else:
+                # Build resp from streamed data if streaming produced anything.
+                # resp stays None only on explicit error (line 431) or empty stream,
+                # both of which fall back to non-streaming below.
+                if full_text or stream_tool_calls:
                     resp = {
                         "content": full_text,
                         "reasoning": full_reasoning,
