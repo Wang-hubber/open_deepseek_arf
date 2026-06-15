@@ -20,12 +20,12 @@ class BenchmarkBuilder:
         self._trace = trace_plugin
 
     def build(self, session_id: str, name: str, *,
-              benchmark_dir: str = "benchmarks") -> EvalBenchmark:
+              benchmark_dir: str = "benchmarks",
+              annotate_mode: bool = False) -> EvalBenchmark:
         events = self._trace.read_trace(session_id)
         if not events:
             raise EvalError(f"Session '{session_id}' not found in trace store")
 
-        # Write frozen trace snapshot — later session activity won't corrupt it
         bm_dir = Path(benchmark_dir)
         bm_dir.mkdir(parents=True, exist_ok=True)
         snapshot_path = bm_dir / f"{name}.trace.jsonl"
@@ -33,12 +33,18 @@ class BenchmarkBuilder:
             for e in events:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
-        # Find user_input event indices as case boundaries
         user_indices = [
             i for i, e in enumerate(events) if e.get("type") == "user_input"
         ]
         if not user_indices:
             raise EvalError(f"No user messages found in session '{session_id}'")
+
+        # Collect user_annotation events by target round
+        annotations_by_round: dict[int, list[dict]] = {}
+        for e in events:
+            if e.get("type") == "user_annotation":
+                r = e.get("data", {}).get("round", 0)
+                annotations_by_round.setdefault(r, []).append(e)
 
         cases: list[EvalCase] = []
         for i, ui in enumerate(user_indices):
@@ -46,24 +52,40 @@ class BenchmarkBuilder:
             end = user_indices[i + 1] if i + 1 < len(user_indices) else len(events)
             case_events = events[start:end]
 
-            tool_names: list[str] = []
-            for e in case_events:
-                if e.get("type") == "tool_call_start":
-                    tn = e.get("data", {}).get("tool_name", "")
-                    if tn:
-                        tool_names.append(tn)
+            source_round = events[ui].get("round", 0)
 
             golden_turns = self._build_golden_turns(case_events)
-            expected_tool_calls = self._build_expected_tool_calls(golden_turns)
+            expected_execution = self._build_expected_execution(golden_turns)
+
+            # Feedback: latest user_annotation for this round
+            feedback = None
+            round_annotations = annotations_by_round.get(source_round, [])
+            if round_annotations:
+                latest = max(round_annotations, key=lambda e: e.get("timestamp", 0))
+                data = latest.get("data", {})
+                feedback = {
+                    "rating": data.get("feedback", ""),
+                    "reason": data.get("reason", ""),
+                    "annotated_at": data.get("annotated_at", ""),
+                }
+
+            if annotate_mode:
+                expected_reasoning = ["[待标注] 该轮预期推理步骤..."]
+                expected_output = ["[待标注] 该轮预期输出关键词..."]
+            else:
+                expected_reasoning = []
+                expected_output = []
 
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
                 session_id=session_id,
-                expected_tools=tool_names if tool_names else None,
-                expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
-                expected_output_contains=[],
+                source_round=source_round,
+                expected_reasoning=expected_reasoning,
+                expected_execution=expected_execution,
+                expected_output_contains=expected_output,
                 max_turns=len(golden_turns) if golden_turns else None,
+                feedback=feedback,
             ))
 
         return EvalBenchmark(
@@ -140,29 +162,26 @@ class BenchmarkBuilder:
         }
 
     @staticmethod
-    def _build_expected_tool_calls(golden_turns):
-        """Build expected_tool_calls list from golden trajectory turns.
-
-        Pairs assistant.tool_calls[i] with tool_results[i] by index.
-        Returns [{"name": ..., "params": {...}, "result_preview": "...", "success": ...}].
-        """
-        calls = []
+    def _build_expected_execution(golden_turns):
+        """Build expected_execution list from golden trajectory turns."""
+        entries = []
         for turn in golden_turns:
             tool_calls = turn.get("assistant", {}).get("tool_calls", [])
             tool_results = turn.get("tool_results", [])
             for i, tc in enumerate(tool_calls):
                 info: dict = {
+                    "type": "tool",
                     "name": tc.get("name", ""),
                     "params": tc.get("params", {}),
                 }
                 if i < len(tool_results):
                     tr = tool_results[i]
                     result_text = tr.get("result", "")
-                    if len(result_text) > 200:
+                    if isinstance(result_text, str) and len(result_text) > 200:
                         info["result_preview"] = result_text[:200] + "..."
-                    else:
-                        info["result_preview"] = result_text
+                    elif result_text:
+                        info["result_preview"] = str(result_text)
                     info["success"] = tr.get("success", False)
-                calls.append(info)
-        return calls
+                entries.append(info)
+        return entries
 
