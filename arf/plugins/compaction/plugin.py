@@ -17,6 +17,10 @@ logger = logging.getLogger("arf.plugins.compaction")
 
 DEFAULT_WINDOW_SIZE = 131_072
 
+_DEFAULT_EXCLUDE_TOOLS = frozenset({
+    "read_file", "search_content", "search_files", "directory_tree",
+})
+
 
 class CompactionPlugin:
     """Structured context compaction mounted on round_end hook.
@@ -37,13 +41,27 @@ class CompactionPlugin:
         self._cooldown: dict[str, int] = {}
         self._compaction_count: dict[str, int] = {}
 
+        # -- tool_output externalization config --
+        to_cfg = cfg.get("tool_output", {})
+        self._to_enabled: bool = to_cfg.get("enabled", True)
+        self._to_threshold: int = to_cfg.get("threshold", 500)
+        self._to_preview_head: int = to_cfg.get("preview_head", 500)
+        self._to_preview_tail: int = to_cfg.get("preview_tail", 200)
+        self._to_exclude: frozenset = frozenset(
+            to_cfg.get("exclude_tools", [])
+        ) | _DEFAULT_EXCLUDE_TOOLS
+        self._data_dir: str = cfg.get("data_dir", "./data")
+
     @property
     def name(self) -> str:
         return "compaction"
 
     @property
     def hooks(self) -> dict[str, str]:
-        return {"round_end": "blocking"}
+        return {
+            "round_end": "blocking",
+            "tool_output": "blocking",
+        }
 
     def set_call_model(self, call_model) -> None:
         self._call_model = call_model
@@ -57,6 +75,9 @@ class CompactionPlugin:
         """
         self._model_context_window = context_window
 
+    def set_data_dir(self, data_dir: str) -> None:
+        self._data_dir = data_dir
+
     @property
     def effective_window_size(self) -> int:
         """Model context window if injected, otherwise plugin config fallback."""
@@ -65,6 +86,8 @@ class CompactionPlugin:
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if hook_name == "round_end":
             await self._maybe_compact(ctx)
+        elif hook_name == "tool_output":
+            await self._externalize_tool_outputs(ctx)
 
     async def compact_now(self, ctx: PluginContext, trigger: str = "manual") -> dict:
         """Public API for manual compaction via tool call.
@@ -72,6 +95,46 @@ class CompactionPlugin:
         Returns metadata dict suitable for tool response.
         """
         return await self._compact(ctx, trigger)
+
+    async def _externalize_tool_outputs(self, ctx: PluginContext) -> None:
+        """Externalize large tool outputs to disk, keeping preview in context."""
+        import hashlib
+        from pathlib import Path
+
+        if not self._to_enabled:
+            return
+
+        raw_results = ctx.hook_data.get("_raw_tool_results", {})
+        session_id = ctx.session_id
+        turn = ctx.turn or 0
+
+        for tc_id, r in raw_results.items():
+            tool_name = r.get("tool_name", "")
+            if tool_name in self._to_exclude:
+                continue
+
+            result_data = r.get("data", "")
+            if not result_data or len(result_data) <= self._to_threshold:
+                continue
+
+            # Externalize: write full to disk, replace with preview
+            content_hash = hashlib.sha1(result_data.encode()).hexdigest()[:8]
+            output_dir = Path(self._data_dir) / session_id / "tool_outputs"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"turn_{turn}_{tool_name}_{content_hash}.txt"
+            output_path.write_text(result_data, encoding="utf-8")
+
+            preview_head = result_data[:self._to_preview_head]
+            preview_tail = ""
+            if len(result_data) > self._to_preview_head + self._to_preview_tail:
+                preview_tail = result_data[-self._to_preview_tail:]
+
+            tail_part = f"\n...\n{preview_tail}" if preview_tail else ""
+            new_data = (
+                f"[Tool output externalized — {len(result_data)} chars, full at {output_path}]\n"
+                f"{preview_head}{tail_part}"
+            )
+            r["data"] = new_data
 
     # ------------------------------------------------------------------
     # Internal

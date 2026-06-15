@@ -34,6 +34,7 @@ class PluginContext:
 
     # Directories
     workspace_dir: str = "."
+    data_dir: str = "./data"
     memory_dir: str = "./data/memory"
     state_dir: str = "./data/state"
     trace_dir: str = "./data/traces"
@@ -86,6 +87,7 @@ class PluginContext:
             "current_step": self.current_step,
             "model": self.model,
             "workspace_dir": self.workspace_dir,
+            "data_dir": self.data_dir,
             "memory_dir": self.memory_dir,
             "state_dir": self.state_dir,
             "trace_dir": self.trace_dir,
