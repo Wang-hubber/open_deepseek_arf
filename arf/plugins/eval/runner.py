@@ -141,10 +141,17 @@ class EvalRunner:
         if me.get("output_contains", True):
             metrics.append(OutputContainsMetric())
 
-        # Wire trace_dir to metrics that need it
+        # Wire trace_dir and trace_snapshot_path to metrics that need them
+        snapshot_path = getattr(benchmark, "trace_snapshot_path", None)
+        if snapshot_path and not Path(snapshot_path).is_absolute():
+            # Resolve relative to benchmark JSON directory
+            bm_dir = Path(self._config.benchmark_path).parent
+            snapshot_path = str(bm_dir / snapshot_path)
         for m in metrics:
             if hasattr(m, "set_trace_dir"):
                 m.set_trace_dir(str(self._data_dir))
+            if snapshot_path and hasattr(m, "set_trace_snapshot_path"):
+                m.set_trace_snapshot_path(snapshot_path)
 
         judge = self._config.judge
         judge_adapter = self._judge_adapter

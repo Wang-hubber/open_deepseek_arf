@@ -385,9 +385,13 @@ class OutputQualityMetric:
         self._system_prompt = system_prompt
         self._tools = tools
         self._trace_dir = "./data"
+        self._trace_snapshot_path: str | None = None
 
     def set_trace_dir(self, trace_dir: str) -> None:
         self._trace_dir = trace_dir
+
+    def set_trace_snapshot_path(self, path: str | None) -> None:
+        self._trace_snapshot_path = path
 
     @property
     def name(self) -> str:
@@ -411,10 +415,8 @@ class OutputQualityMetric:
 
         user_input = golden_case.input or ""
 
-        # Reference mode: load golden output from trace file via session_id
-        golden_content = None
-        if golden_case.session_id:
-            golden_content = self._load_golden_final_output(golden_case.session_id)
+        # Reference mode: trace snapshot first, session trace as fallback
+        golden_content = self._load_golden_final_output(golden_case.session_id)
         if golden_content:
             return await self._call_judge(
                 judge, judge_adapter, user_input, golden_content, actual_content,
@@ -425,11 +427,23 @@ class OutputQualityMetric:
             judge, judge_adapter, user_input, actual_content,
         )
 
-    def _load_golden_final_output(self, session_id: str) -> str | None:
-        """Load the final model output from a trace file."""
+    def _resolve_trace_path(self, session_id: str | None) -> Path | None:
+        """Resolve trace path: snapshot first, then session-scoped trace fallback."""
         from pathlib import Path
-        trace_file = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
-        if not trace_file.exists():
+        if self._trace_snapshot_path:
+            p = Path(self._trace_snapshot_path)
+            if p.exists():
+                return p
+        if session_id:
+            p = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
+            if p.exists():
+                return p
+        return None
+
+    def _load_golden_final_output(self, session_id: str | None) -> str | None:
+        """Load the final model output from trace snapshot or session trace file."""
+        trace_file = self._resolve_trace_path(session_id)
+        if trace_file is None:
             return None
         content = None
         with open(trace_file, encoding="utf-8") as f:
@@ -579,9 +593,13 @@ class TrajectorySimilarityMetric:
         self._system_prompt = system_prompt
         self._tools = tools
         self._trace_dir = "./data"
+        self._trace_snapshot_path: str | None = None
 
     def set_trace_dir(self, trace_dir: str) -> None:
         self._trace_dir = trace_dir
+
+    def set_trace_snapshot_path(self, path: str | None) -> None:
+        self._trace_snapshot_path = path
 
     @property
     def name(self) -> str:
@@ -619,10 +637,8 @@ class TrajectorySimilarityMetric:
 
         user_input = golden_case.input or ""
 
-        # Reference mode: load golden trajectory from trace file
-        golden_str = None
-        if golden_case.session_id:
-            golden_str = self._load_golden_trajectory(golden_case.session_id)
+        # Reference mode: trace snapshot first, session trace as fallback
+        golden_str = self._load_golden_trajectory(golden_case.session_id)
         if golden_str:
             return await self._call_judge(
                 judge, judge_adapter, user_input, golden_str, actual_str,
@@ -633,10 +649,19 @@ class TrajectorySimilarityMetric:
             judge, judge_adapter, user_input, actual_str,
         )
 
-    def _load_golden_trajectory(self, session_id: str) -> str | None:
+    def _load_golden_trajectory(self, session_id: str | None) -> str | None:
         from pathlib import Path
-        trace_file = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
-        if not trace_file.exists():
+        # Snapshot first, session trace as fallback
+        trace_file = None
+        if self._trace_snapshot_path:
+            p = Path(self._trace_snapshot_path)
+            if p.exists():
+                trace_file = p
+        if trace_file is None and session_id:
+            p = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
+            if p.exists():
+                trace_file = p
+        if trace_file is None:
             return None
         summary = []
         with open(trace_file, encoding="utf-8") as f:

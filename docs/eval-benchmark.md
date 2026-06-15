@@ -113,7 +113,7 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 }
 ```
 
-`golden_trajectory` 和 `original_output` 已从 benchmark 中移除——完整轨迹保留在 `data/{sid}/traces/{sid}.jsonl`，LLM metrics 的 reference 模式通过 `session_id` 按需读取。人类标注时直接查看 trace 文件。
+`golden_trajectory` 和 `original_output` 已从 benchmark 中移除。`BenchmarkBuilder.build()` 自动将 session trace 完整复制为 `{benchmark_dir}/{name}.trace.jsonl` 快照（`EvalBenchmark.trace_snapshot_path`），防止后续对话污染 golden reference。LLM metrics 评测时优先读快照，fallback 到 `session_id` 路径。人类标注直接查看 trace 快照文件。
 
 ### 3.2 运行 Eval（Online）
 
