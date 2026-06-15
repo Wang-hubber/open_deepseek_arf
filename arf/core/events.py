@@ -26,6 +26,7 @@ EventType = Literal[
     "circuit_half_open",    # CircuitBreaker → HALF_OPEN (probing)
     "circuit_closed",       # CircuitBreaker → CLOSED (recovered)
     "breaker_blocked",      # CircuitBreaker OPEN blocked a request
+    "user_annotation",
 ]
 
 @dataclass
