@@ -43,9 +43,8 @@ class SuccessRateMetric:
 class ToolCallAccuracyMetric:
     """Name-based tool call accuracy: name + params subset matching.
 
-    Matches expected tool calls against actual calls by name (not index),
-    so parallel/out-of-order tool calls are handled correctly.
-    Falls back to expected_tools (name-only) when expected_tool_calls is None.
+    Matches expected tool entries from expected_execution against actual calls
+    by name (not index), so parallel/out-of-order tool calls are handled correctly.
     Also counts dependency-order failures from tool_call_end error messages.
     """
 
@@ -91,11 +90,15 @@ class ToolCallAccuracyMetric:
                     if self._is_dependency_error(data["error"]):
                         dep_order_failures += 1
 
+        # Extract tool entries from expected_execution
+        expected_tool_entries = [
+            e for e in golden_case.expected_execution
+            if e.get("type") == "tool"
+        ]
+
         result: dict = {"tool_call_accuracy": 1.0}
-        if golden_case.expected_tool_calls:
-            result.update(self._compute_with_params(golden_case.expected_tool_calls, actual_calls))
-        elif golden_case.expected_tools:
-            result.update(self._compute_name_only(golden_case.expected_tools, actual_calls))
+        if expected_tool_entries:
+            result.update(self._compute_with_execution(expected_tool_entries, actual_calls))
         if dep_order_failures > 0:
             result["dependency_order_failures"] = dep_order_failures
         return result
@@ -104,38 +107,20 @@ class ToolCallAccuracyMetric:
         lower = error_msg.lower()
         return any(p in lower for p in self._DEPENDENCY_PATTERNS)
 
-    def _compute_with_params(self, expected_calls, actual_calls):
-        total = max(len(expected_calls), len(actual_calls) or 1)
+    def _compute_with_execution(self, expected_entries, actual_calls):
+        total = max(len(expected_entries), len(actual_calls) or 1)
         matches = 0
-        for exp in expected_calls:
+        for exp in expected_entries:
             exp_name = exp.get("name", "")
             exp_params = exp.get("params", {})
-            exp_blocked = exp.get("blocked")   # None = don't check
-            exp_success = exp.get("success")   # None = don't check
-            exp_result = exp.get("result")     # None = don't check
             for act in actual_calls:
                 if act["tool_name"] != exp_name:
                     continue
                 if not self._params_subset(exp_params, act["arguments"]):
                     continue
-                if exp_blocked is not None and act["blocked"] != exp_blocked:
-                    continue
-                if exp_success is not None and act["success"] != exp_success:
-                    continue
-                if exp_result is not None and exp_result not in str(act.get("result", "")):
-                    continue
                 matches += 1
-                break  # found a match, move to next expected
+                break
         return {"tool_call_accuracy": matches / total}
-
-    def _compute_name_only(self, expected_names, actual_calls):
-        actual_names = [a["tool_name"] for a in actual_calls]
-        if not actual_names:
-            return {"tool_call_accuracy": 0.0}
-        matches = sum(
-            1 for a, e in zip(actual_names, expected_names) if a == e
-        )
-        return {"tool_call_accuracy": matches / len(expected_names)}
 
     @staticmethod
     def _params_subset(expected: dict, actual: dict) -> bool:
@@ -216,7 +201,11 @@ class ToolCallResultLLMMetric:
         return True
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        if not golden_case.expected_tool_calls:
+        expected_with_results = [
+            e for e in golden_case.expected_execution
+            if e.get("type") == "tool" and e.get("result")
+        ]
+        if not expected_with_results:
             return {"tool_call_result_llm": 1.0}
 
         # Collect actual tool results (tool_call_end events)
@@ -229,12 +218,6 @@ class ToolCallResultLLMMetric:
                     "result": data.get("result", ""),
                     "success": data.get("success", False),
                 })
-
-        expected_with_results = [
-            e for e in golden_case.expected_tool_calls if e.get("result")
-        ]
-        if not expected_with_results:
-            return {"tool_call_result_llm": 1.0}
 
         if not judge:
             return {"tool_call_result_llm": 0.0, "reason": "no judge configured"}
