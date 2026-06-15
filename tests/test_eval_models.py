@@ -7,14 +7,17 @@ from arf.plugins.eval.models import EvalCase, EvalBenchmark
 class TestEvalCase:
     def test_minimal(self):
         c = EvalCase(id="c1", input="hello")
-        assert c.expected_tools is None
-        assert c.expected_output_contains is None
+        assert c.expected_execution == []
+        assert c.expected_output_contains == []
+        assert c.feedback is None
+        assert c.source_round is None
 
     def test_full(self):
         c = EvalCase(id="c1", input="hello",
-                     expected_tools=["file_writer"],
+                     expected_execution=[{"type": "tool", "name": "file_writer", "params": {}}],
                      expected_output_contains=["hello.py"],
-                     max_turns=3)
+                     max_turns=3,
+                     expected_reasoning=["step 1"])
         assert c.max_turns == 3
 
 
@@ -27,7 +30,7 @@ class TestEvalBenchmarkJson:
             created_at=1716812345.0,
             cases=[
                 EvalCase(id="c0", input="create hello.py",
-                         expected_tools=["file_writer"],
+                         expected_execution=[{"type": "tool", "name": "file_writer", "params": {}}],
                          expected_output_contains=["hello.py"]),
                 EvalCase(id="c1", input="read it back"),
             ],
@@ -41,11 +44,32 @@ class TestEvalBenchmarkJson:
         assert loaded.source_session == "default"
         assert len(loaded.cases) == 2
         assert loaded.cases[0].input == "create hello.py"
-        assert loaded.cases[0].expected_tools == ["file_writer"]
+        assert loaded.cases[0].expected_execution == [{"type": "tool", "name": "file_writer", "params": {}}]
 
     def test_from_json_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             EvalBenchmark.from_json(str(tmp_path / "nope.json"))
+
+    def test_feedback_roundtrip(self, benchmark, tmp_path):
+        benchmark.cases[0].feedback = {"rating": "good", "reason": "works well"}
+        p = tmp_path / "bm.json"
+        benchmark.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+        assert loaded.cases[0].feedback == {"rating": "good", "reason": "works well"}
+
+    def test_source_round_roundtrip(self, benchmark, tmp_path):
+        benchmark.cases[0].source_round = 1
+        p = tmp_path / "bm.json"
+        benchmark.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+        assert loaded.cases[0].source_round == 1
+
+    def test_expected_reasoning_roundtrip(self, benchmark, tmp_path):
+        benchmark.cases[0].expected_reasoning = ["step 1", "step 2"]
+        p = tmp_path / "bm.json"
+        benchmark.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+        assert loaded.cases[0].expected_reasoning == ["step 1", "step 2"]
 
     def test_defaults(self):
         bm = EvalBenchmark(name="test")
