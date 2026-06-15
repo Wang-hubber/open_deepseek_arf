@@ -1,5 +1,8 @@
 name: search_content
-description: Search for text patterns within file contents. Recursively searches files under the given path. Supports literal text search (default) or regex mode. Respects include/exclude glob patterns.
+description: PREFERRED content-discovery tool. Search file CONTENTS for text or regex
+  patterns. Use keywords from the task (agent name, function names, config keys) to
+  find relevant files fast. Supports literal text and regex modes. Respects include/
+  exclude glob patterns to narrow scope.
 parameters:
   type: object
   properties:

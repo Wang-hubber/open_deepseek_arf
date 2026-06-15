@@ -1,7 +1,8 @@
 name: search_files
-description: Recursively search for files and directories matching a glob pattern.
-  Use patterns like '*.ext' to match files in current directory, and '**/*.ext' to
-  match files in all subdirectories. Returns full paths to all matching items.
+description: PREFERRED exploration tool. Search for files/directories by name with glob
+  patterns. Use keywords from the task: "*agent_name*" to find configs, "*trace*" for
+  trace dirs, "*.yaml" for configs. Much faster and lighter than directory_tree. Use
+  '**/*.ext' to search all subdirectories. Returns full paths to all matching items.
 parameters:
   type: object
   properties:
