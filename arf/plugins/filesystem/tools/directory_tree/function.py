@@ -43,11 +43,14 @@ def _should_exclude(relpath: str, is_dir: bool, patterns: list[str]) -> bool:
     return False
 
 
+DEFAULT_EXCLUDES = [".git", ".venv", "venv", "__pycache__", "*.pyc", "node_modules"]
+
+
 async def execute(path: str, excludePatterns: list[str] | None = None, **kwargs) -> dict:
     if not os.path.isdir(path):
         return {"ok": False, "error": f"Not a directory: {path}"}
 
-    exclude = excludePatterns or []
+    exclude = list(DEFAULT_EXCLUDES) + (excludePatterns or [])
     tree = _build_tree(path, path, exclude)
 
     return {"ok": True, "tree": tree}

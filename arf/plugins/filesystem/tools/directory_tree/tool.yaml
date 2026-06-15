@@ -1,7 +1,8 @@
 name: directory_tree
-description: Get a recursive tree view of files and directories as a JSON structure.
-  Each entry includes name, type (file/directory), and children for directories. Files
-  have no children array, directories always have a children array (may be empty).
+description: Recursive tree view of a SPECIFIC directory. Use as FALLBACK only — prefer
+  search_files with keyword patterns first (e.g. search for "*config*" or "*trace*"
+  instead of tree-listing the whole project). Always target a specific subdirectory (never
+  "." or project root). Each entry includes name, type (file/directory), and children.
 parameters:
   type: object
   properties:
