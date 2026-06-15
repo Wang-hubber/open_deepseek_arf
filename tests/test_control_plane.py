@@ -218,7 +218,7 @@ async def test_error_handler_abort_emits_trace_event():
 
     errors = event_bus.collected("error")
     assert len(errors) >= 1
-    assert any("abort" in e.data.get("detail", "").lower() for e in errors)
+    assert any("no_recovery" in e.data.get("detail", "").lower() for e in errors)
 
 
 @pytest.mark.anyio
@@ -245,7 +245,7 @@ async def test_error_handler_skip_emits_trace_event():
 
     errors = event_bus.collected("error")
     assert len(errors) >= 1
-    assert any("skip" in e.data.get("detail", "").lower() for e in errors)
+    assert any("noop" in e.data.get("detail", "").lower() for e in errors)
 
 
 # ============================================================
@@ -325,4 +325,4 @@ async def test_call_timeout_triggers_error_handler_abort():
     assert not final.get("session_active", True)
     errors = event_bus.collected("error")
     assert len(errors) >= 1
-    assert any("abort" in e.data.get("detail", "").lower() for e in errors)
+    assert any("no_recovery" in e.data.get("detail", "").lower() for e in errors)
