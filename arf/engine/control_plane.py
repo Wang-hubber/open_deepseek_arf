@@ -64,7 +64,13 @@ class ControlPlane:
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
         self._interaction_round = 0
-        self._recovery_handlers: dict[str, Callable] = {}
+        self._recovery_handlers: dict[str, Callable] = {
+            "retry_turn":          self._recovery_retry_turn,
+            "inject_tool_error":   self._recovery_inject_tool_error,
+            "post_action_drain":   self._recovery_post_action_drain,
+            "persist_state":       self._recovery_persist_state,
+            "noop":                self._recovery_noop,
+        }
 
     def set_call_model(self, call_model) -> None:
         self._call_model = call_model
@@ -731,6 +737,39 @@ class ControlPlane:
                 logger = logging.getLogger("arf.engine")
                 logger.warning("No recovery handler registered for '%s'", recovery)
         return False
+
+    # ==================================================================
+    # Recovery handlers
+    # ==================================================================
+
+    async def _recovery_noop(self, state: dict, ctx: PluginContext, params: dict) -> None:
+        """No-op recovery — take no action."""
+        pass
+
+    async def _recovery_retry_turn(self, state: dict, ctx: PluginContext, params: dict) -> None:
+        """Decrement current_turn and persist so the turn loop retries."""
+        state["current_turn"] = max(0, state.get("current_turn", 1) - 1)
+        session_id = state.get("session_id", "default")
+        await self.state_store.put(session_id, state)
+
+    async def _recovery_persist_state(self, state: dict, ctx: PluginContext, params: dict) -> None:
+        """Persist the current state to the state store."""
+        session_id = state.get("session_id", "default")
+        await self.state_store.put(session_id, state)
+
+    async def _recovery_inject_tool_error(self, state: dict, ctx: PluginContext, params: dict) -> None:
+        """Inject tool error results into messages so the model sees them."""
+        error_text = params.get("error", "Tool execution failed")
+        for tc in (ctx.hook_data.get("_pending_tool_calls") or []):
+            state.setdefault("messages", []).append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", ""),
+                "content": f"Error executing tool '{tc.get('name', '')}': {error_text}",
+            })
+
+    async def _recovery_post_action_drain(self, state: dict, ctx: PluginContext, params: dict) -> None:
+        """Fire side hooks for post_action to drain pending trace events."""
+        await self._fire_side("post_action", ctx)
 
     def _emit_decision_event(self, ctx: PluginContext, exc: Exception,
                              action: str, reason: str) -> None:
