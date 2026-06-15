@@ -441,6 +441,8 @@ class BaseAgent:
                     else:
                         ctx_win = 131_072
                     bp.set_model_context_window(ctx_win)
+                if hasattr(bp, "set_data_dir"):
+                    bp.set_data_dir(str(_Path(_data_dir)))
                 break
 
         # Wire computed trace_dir into TracePlugin
