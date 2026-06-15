@@ -2,7 +2,7 @@
 
 > **原则：引擎负责注入数据，TracePlugin 负责消费落盘，EventBus 只做实时推送。三者各司其职。**
 
-ARF 将 Trace 作为一等框架能力。TracePlugin 作为 side plugin 挂载在所有 hook 点，引擎通过 `ctx.inject_engine_event()` 注入事件到 `hook_data`，TracePlugin 在 `round_start` 和 `post_action` 展平写入 JSONL。每条 session 对应一个 `{session_id}.jsonl` 文件，可支撑调试回放、测评数据集构建和调优。
+ARF 将 Trace 作为一等框架能力。TracePlugin 作为 side plugin 挂载在所有 hook 点，引擎通过 `ctx.inject_engine_event()` 注入事件到 `hook_data`，TracePlugin 在 `round_start` 和 `post_action` 展平写入 JSONL。每条 session 对应 `data/{session_id}/traces/{session_id}.jsonl`，snapshots 存储在 `data/snapshots/{hash}.xml`。可支撑调试回放、测评数据集构建和调优。
 
 ---
 
@@ -51,9 +51,9 @@ ControlPlane
     └── _fire_side("post_action", ctx)  ──→ TracePlugin.on_hook()   ← 展平 model_* + tool_*
                                                       │
                                                       ▼
-                                          {trace_dir}/{session_id}.jsonl
+                              {data_dir}/{session_id}/traces/{session_id}.jsonl
                                                     +
-                                          {trace_dir}/snapshots/{hash}.xml
+                                          {data_dir}/snapshots/{hash}.xml
 
 
 EventBus（独立通道，不落盘）
@@ -89,7 +89,7 @@ hooks:
   - post_action
 enabled: true
 config:
-  trace_dir: ./data/traces
+  data_dir: ./data
   plugins_root: ./arf/plugins          # 扫描框架内置插件配置
   config_files:                        # agent 级配置文件
     - ./agent.yaml
@@ -160,7 +160,7 @@ CLI /exit → BaseAgent.stop():
 - 独立可解析（JSONL 逐行），按 `type` 过滤
 - `config_hash` 关联到 `snapshots/{hash}.xml` 配置快照
 - `model_call_end.data.tool_calls` 包含完整的工具调用参数 → 可构建 function-calling 样本
-- `tool_call_end.data.result` 包含工具返回值（截断至 2000 字符）
+- `tool_call_end.data.result` 包含工具返回值——长结果经 CompactionPlugin externalization 后为 preview + 磁盘路径，完整内容在 `data/{sid}/tool_outputs/`
 
 ### 2.6 配置快照
 
