@@ -11,6 +11,19 @@ from arf.resources.cache import ResourceCache
 
 logger = logging.getLogger("arf.tools")
 
+# Reserved param names — framework injects these, tools must not define them.
+# Names starting with '_' are framework-internal (e.g. _workspace, _engine).
+# session_id is the one non-underscore param the engine injects.
+_RESERVED_PARAM_NAMES: frozenset[str] = frozenset({
+    "session_id",
+    "agent_name",
+    "round",
+    "turn",
+    "rounds",
+    "turns",
+    "session_name",
+})
+
 
 class ToolProvider:
     """Scans tools/ directory. Each tool is a subdirectory with tool.yaml + function.py.
@@ -106,6 +119,17 @@ class ToolProvider:
             raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             cfg = ToolConfig(**raw)
             name = cfg.name
+
+            # Reject reserved param names — framework injection would clobber them
+            tool_params = set((cfg.parameters or {}).get("properties", {}).keys())
+            conflicts = {p for p in tool_params if p.startswith("_")} | (tool_params & _RESERVED_PARAM_NAMES)
+            if conflicts:
+                logger.error(
+                    "Tool '%s' defines reserved param names (framework-injected): %s. "
+                    "Rename these params to avoid conflicts.",
+                    name, sorted(conflicts),
+                )
+                continue  # skip this tool — don't register it
 
             func_path = tool_dir / "function.py"
             if func_path.exists():

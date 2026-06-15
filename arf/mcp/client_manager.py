@@ -223,7 +223,11 @@ class McpClientManager:
     async def get_tool_definitions(
         self, query_context: str = "", top_k: int = 10,
     ) -> list[dict]:
-        """Get all tools as plain dicts.  Local tools are resolved in-process."""
+        """Get all tools as plain dicts.  Local tools are resolved in-process.
+
+        Filters out tools whose parameter names conflict with framework-injected
+        params (e.g. session_id, _workspace).
+        """
         tools_data: list[dict] = list(self._list_local_tools())
 
         if self._remote_started:
@@ -233,7 +237,20 @@ class McpClientManager:
             except Exception:
                 logger.debug("Failed to list remote tools", exc_info=True)
 
-        return tools_data
+        # Filter tools with reserved param names (framework-injected params)
+        from arf.resources.providers.tool_provider import _RESERVED_PARAM_NAMES
+        clean: list[dict] = []
+        for t in tools_data:
+            params = t.get("parameters", {}).get("properties", {})
+            conflicts = {p for p in params if p.startswith("_")} | (set(params) & _RESERVED_PARAM_NAMES)
+            if conflicts:
+                logger.warning(
+                    "Skipping tool '%s': params %s conflict with framework-injected params",
+                    t.get("name", "?"), sorted(conflicts),
+                )
+                continue
+            clean.append(t)
+        return clean
 
     async def execute(self, tool_name: str, params: dict) -> ToolResult:
         """Execute a tool.  Local tools run in-process."""
