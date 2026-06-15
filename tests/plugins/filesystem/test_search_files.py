@@ -13,7 +13,7 @@ def test_search_py_files(tmp_path):
 
     result = asyncio.run(execute(path=str(tmp_path), pattern="*.py"))
     assert result["ok"] is True
-    assert result["count"] == 1  # only top-level
+    assert result["count"] == 2  # always recursive — *.py matches subdir too
 
 
 def test_search_recursive(tmp_path):

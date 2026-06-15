@@ -24,8 +24,7 @@ async def execute(
         for rel in glob.glob(pattern, root_dir=path, recursive=True):
             if _matches_any(rel, excludes):
                 continue
-            full = os.path.join(path, rel)
-            matches.append(full)
+            matches.append(rel)
             if len(matches) >= MAX_RESULTS:
                 truncated = True
                 break
