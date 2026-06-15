@@ -29,6 +29,11 @@ parameters:
       type: boolean
       description: Preview changes using git-style diff without applying
       default: false
+    encoding:
+      type: string
+      description: Text encoding for reading and writing the file (default utf-8).
+        Use gbk for older Chinese files from Notepad.
+      default: utf-8
   required:
   - path
   - edits

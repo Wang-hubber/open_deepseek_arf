@@ -1,9 +1,9 @@
-"""read_text_file tool — read file content as UTF-8 text."""
-
+"""read_text_file tool — read file content as text."""
 import os
 
 
-async def execute(path: str, head: int | None = None, tail: int | None = None, **kwargs) -> dict:
+async def execute(path: str, head: int | None = None, tail: int | None = None,
+                  encoding: str = "utf-8", **kwargs) -> dict:
     if head is not None and tail is not None:
         return {"ok": False, "error": "Cannot specify both head and tail parameters simultaneously"}
 
@@ -11,10 +11,10 @@ async def execute(path: str, head: int | None = None, tail: int | None = None, *
         return {"ok": False, "error": f"Not a file: {path}"}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding=encoding) as f:
             lines = f.readlines()
-    except UnicodeDecodeError:
-        return {"ok": False, "error": f"Cannot read {path} as UTF-8 text — file may be binary"}
+    except (UnicodeDecodeError, LookupError) as e:
+        return {"ok": False, "error": f"Cannot read {path} as {encoding} text — {e}"}
     except OSError as e:
         return {"ok": False, "error": str(e)}
 
