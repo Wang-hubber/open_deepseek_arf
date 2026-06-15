@@ -31,6 +31,10 @@ class EvalPlugin:
     def hooks(self) -> dict[str, str]:
         return {}  # offline — not hook-mounted
 
+    def set_data_dir(self, data_dir: str) -> None:
+        """Override trace read directory (called by base.py)."""
+        self._trace_dir = Path(data_dir) / "traces"
+
     def set_trace_dir(self, trace_dir: str) -> None:
         """Override trace read directory (called by base.py)."""
         self._trace_dir = Path(trace_dir)

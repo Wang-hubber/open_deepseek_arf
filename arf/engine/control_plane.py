@@ -34,9 +34,8 @@ class ControlPlane:
         max_turns: int = 50,
         max_tokens: int = 100_000,
         workspace_dir: str = "",
+        data_dir: str = "./data",
         memory_dir: str = "./data/memory",
-        state_dir: str = "./data/state",
-        trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
@@ -53,9 +52,8 @@ class ControlPlane:
         self._system_prompt = system_prompt
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
+        self._data_dir = data_dir
         self._memory_dir = memory_dir
-        self._state_dir = state_dir
-        self._trace_dir = trace_dir
         self._mcp_tool_resolver = mcp_tool_resolver
         self._call_timeout = call_timeout
         self._session_timeout = session_timeout
@@ -612,9 +610,8 @@ class ControlPlane:
             system_prompt=self._system_prompt,
             model=state.get("current_model", ""),
             workspace_dir=self._workspace_dir,
+            data_dir=self._data_dir,
             memory_dir=self._memory_dir,
-            state_dir=self._state_dir,
-            trace_dir=self._trace_dir,
             event_bus=self.event_bus,
         )
 
