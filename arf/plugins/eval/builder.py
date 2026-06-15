@@ -9,8 +9,8 @@ class BenchmarkBuilder:
     """Build EvalBenchmark datasets from recorded trajectories.
 
     Takes a TracePlugin instance and reads session trace files to
-    construct rich EvalCases with golden_trajectory, expected_tools,
-    expected_output_contains, and max_turns.
+    construct rich EvalCases with expected_tools, expected_output_contains,
+    and max_turns. Annotators read trace files directly for full context.
 
     Cases are delimited by user_input event positions in the event list,
     not by turn numbers — this avoids boundary misalignment when turn
@@ -52,19 +52,14 @@ class BenchmarkBuilder:
             # Extract expected_tool_calls from golden trajectory
             expected_tool_calls = self._build_expected_tool_calls(golden_turns)
 
-            # Extract original_output from final model response (for annotator reference)
-            original_output = self._extract_original_output(case_events)
-
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
                 session_id=session_id,  # builder's source session — runner groups by this
                 expected_tools=tool_names if tool_names else None,
                 expected_tool_calls=expected_tool_calls if expected_tool_calls else None,
-                original_output=original_output,
-                # expected_output_contains left None — annotators fill keywords
+                expected_output_contains=[],  # activated — annotator fills keywords
                 max_turns=len(golden_turns) if golden_turns else None,
-                golden_trajectory={"annotated": False, "turns": golden_turns} if golden_turns else None,
             ))
 
         return EvalBenchmark(
@@ -144,7 +139,7 @@ class BenchmarkBuilder:
         """Build expected_tool_calls list from golden trajectory turns.
 
         Pairs assistant.tool_calls[i] with tool_results[i] by index.
-        Returns [{"name": ..., "params": {...}, "result": "..."}, ...].
+        Returns [{"name": ..., "params": {...}, "result_preview": "...", "success": ...}].
         """
         calls = []
         for turn in golden_turns:
@@ -157,17 +152,12 @@ class BenchmarkBuilder:
                 }
                 if i < len(tool_results):
                     tr = tool_results[i]
-                    info["result"] = tr.get("result", "")
+                    result_text = tr.get("result", "")
+                    if len(result_text) > 200:
+                        info["result_preview"] = result_text[:200] + "..."
+                    else:
+                        info["result_preview"] = result_text
                     info["success"] = tr.get("success", False)
                 calls.append(info)
         return calls
 
-    @staticmethod
-    def _extract_original_output(events):
-        """Extract the full text of the last model_call_end as golden reference for annotators."""
-        for e in reversed(events):
-            if e.get("type") == "model_call_end":
-                content = e.get("data", {}).get("content", "")
-                if content:
-                    return content
-        return None

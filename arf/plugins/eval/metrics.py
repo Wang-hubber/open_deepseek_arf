@@ -406,7 +406,7 @@ class OutputQualityMetric:
             return {"output_quality": None, "reason": "missing actual content"}
 
         user_input = golden_case.input or ""
-        gt = golden_case.golden_trajectory
+        gt = getattr(golden_case, "golden_trajectory", None)
 
         # Reference mode: golden_trajectory is annotated and has golden content
         if gt and gt.get("annotated") and gt.get("turns"):
@@ -591,7 +591,7 @@ class TrajectorySimilarityMetric:
             return {"trajectory_similarity": None, "reason": "empty actual trajectory"}
 
         user_input = golden_case.input or ""
-        gt = golden_case.golden_trajectory
+        gt = getattr(golden_case, "golden_trajectory", None)
 
         # Reference mode: golden_trajectory is annotated
         if gt and gt.get("annotated") and gt.get("turns"):
