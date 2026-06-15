@@ -79,6 +79,33 @@ class PluginContext:
             "data": data,
         })
 
+    def inject_user_annotation(
+        self,
+        feedback: str,
+        reason: str = "",
+        round: int | None = None,
+    ) -> None:
+        """Inject a user feedback annotation into the trace stream.
+
+        Fire-and-forget — does not block engine execution. Supports both
+        immediate (same round) and delayed (past round) annotation.
+
+        Args:
+            feedback: "thumbs_up" or "thumbs_down"
+            reason: optional free-text explanation
+            round: target round to annotate, defaults to current round
+        """
+        from datetime import datetime, timezone
+        target_round = round if round is not None else self.interaction_round
+        data = {
+            "round": target_round,
+            "feedback": feedback,
+            "reason": reason,
+            "annotated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.inject_engine_event("user_annotation", data)
+        self.emit("user_annotation", data)
+
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
