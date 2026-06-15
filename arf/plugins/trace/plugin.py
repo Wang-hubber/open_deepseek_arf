@@ -84,10 +84,11 @@ class TracePlugin:
         if hook_name in ("round_start", "post_action"):
             engine_events = context.hook_data.pop("_engine_events", [])
             for ee in engine_events:
+                effective_turn = None if ee["type"] == "user_annotation" else current_turn
                 record = {
                     "type": ee["type"],
                     "round": interaction_round,
-                    "turn": current_turn,
+                    "turn": effective_turn,
                     "timestamp": ee.get("timestamp", time.time()),
                     "data": self._sanitize(ee.get("data", {})),
                     "session_id": session_id,
