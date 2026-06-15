@@ -1324,7 +1324,7 @@ class TestFileStateStore:
         async def run():
             tmp = tempfile.mkdtemp()
             try:
-                store = FileStateStore(state_dir=tmp)
+                store = FileStateStore(data_dir=tmp)
                 await store.put("s1", {
                     "session_id": "s1",
                     "messages": [],
@@ -1348,7 +1348,7 @@ class TestFileStateStore:
         async def run():
             tmp = tempfile.mkdtemp()
             try:
-                store = FileStateStore(state_dir=tmp)
+                store = FileStateStore(data_dir=tmp)
                 await store.put("s1", {"messages": [{"role": "user", "content": "a"}],
                                        "current_turn": 0})
                 # The final path should exist, not just .tmp
