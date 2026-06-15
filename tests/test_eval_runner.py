@@ -27,8 +27,8 @@ class TestEvalRunnerOffline:
         bm_path = str(tmpdir / "bm.json")
         _make_benchmark(bm_path)
 
-        trace_dir = tmpdir / "traces"
-        trace_dir.mkdir()
+        trace_dir = tmpdir / "s1" / "traces"
+        trace_dir.mkdir(parents=True)
         trace_file = trace_dir / "s1.jsonl"
         trace_file.write_text(json.dumps({
             "type": "model_call_end", "turn": 1,
@@ -38,7 +38,7 @@ class TestEvalRunnerOffline:
 
         config = EvalConfig(
             benchmark_path=bm_path,
-            trace_dir=str(trace_dir),
+            data_dir=str(tmpdir),
             mode="offline",
             trace_session_ids=["s1"],
             metrics={

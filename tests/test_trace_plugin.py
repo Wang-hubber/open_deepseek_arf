@@ -11,16 +11,16 @@ from arf.core.plugin_context import PluginContext
 
 class TestTracePlugin:
     @pytest.fixture
-    def trace_dir(self):
+    def data_dir(self):
         with tempfile.TemporaryDirectory() as td:
             yield Path(td)
 
-    def _make_plugin(self, trace_dir):
+    def _make_plugin(self, data_dir):
         from arf.plugins.trace.plugin import TracePlugin
-        return TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+        return TracePlugin({"data_dir": str(data_dir), "enabled": True})
 
-    def test_hooks_declaration(self, trace_dir):
-        p = self._make_plugin(trace_dir)
+    def test_hooks_declaration(self, data_dir):
+        p = self._make_plugin(data_dir)
         hooks = p.hooks
         assert hooks["session_start"] == "side"
         assert hooks["session_end"] == "side"
@@ -31,8 +31,8 @@ class TestTracePlugin:
         assert hooks["pre_action"] == "side"
         assert hooks["post_action"] == "side"
 
-    def test_on_hook_writes_jsonl(self, trace_dir):
-        p = self._make_plugin(trace_dir)
+    def test_on_hook_writes_jsonl(self, data_dir):
+        p = self._make_plugin(data_dir)
         ctx = PluginContext(
             session_id="s1",
             interaction_round=1,
@@ -50,8 +50,8 @@ class TestTracePlugin:
         assert events[0]["round"] == 1
         assert events[0]["data"]["key"] == "value"
 
-    def test_list_sessions(self, trace_dir):
-        p = self._make_plugin(trace_dir)
+    def test_list_sessions(self, data_dir):
+        p = self._make_plugin(data_dir)
         ctx1 = PluginContext(session_id="s1")
         ctx2 = PluginContext(session_id="s2")
 
@@ -65,9 +65,9 @@ class TestTracePlugin:
         assert "s1" in sessions
         assert "s2" in sessions
 
-    def test_disabled_plugin_does_nothing(self, trace_dir):
+    def test_disabled_plugin_does_nothing(self, data_dir):
         from arf.plugins.trace.plugin import TracePlugin
-        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": False})
+        p = TracePlugin({"data_dir": str(data_dir), "enabled": False})
         ctx = PluginContext(session_id="s1")
 
         async def _run():
@@ -77,9 +77,9 @@ class TestTracePlugin:
 
         assert p.read_trace("s1") == []
 
-    def test_engine_events_flattened(self, trace_dir):
+    def test_engine_events_flattened(self, data_dir):
         """Engine events from _engine_events are flattened into standalone rows."""
-        p = self._make_plugin(trace_dir)
+        p = self._make_plugin(data_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
         ctx.inject_engine_event("model_call_start", {"model": "gpt4"})
         ctx.inject_engine_event("model_call_end", {
@@ -114,35 +114,37 @@ class TestTracePlugin:
         post = events[3]
         assert "_engine_events" not in post["data"]
 
-    def test_read_trace_nonexistent_session(self, trace_dir):
-        p = self._make_plugin(trace_dir)
+    def test_read_trace_nonexistent_session(self, data_dir):
+        p = self._make_plugin(data_dir)
         assert p.read_trace("nobody") == []
 
-    def test_read_trace_skips_malformed_lines(self, trace_dir):
+    def test_read_trace_skips_malformed_lines(self, data_dir):
+        trace_dir = data_dir / "s1" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
         trace_file = trace_dir / "s1.jsonl"
         trace_file.write_text(
             '{"type": "ok", "data": {}, "turn": 1, '
             '"timestamp": 1.0, "session_id": "s1"}\nnot json\n',
             encoding="utf-8"
         )
-        p = self._make_plugin(trace_dir)
+        p = self._make_plugin(data_dir)
         events = p.read_trace("s1")
         assert len(events) == 1
         assert events[0]["type"] == "ok"
 
-    def test_shutdown_is_noop(self, trace_dir):
+    def test_shutdown_is_noop(self, data_dir):
         """shutdown() should be a safe no-op."""
         from arf.plugins.trace.plugin import TracePlugin
-        p = TracePlugin({"trace_dir": str(trace_dir), "enabled": True})
+        p = TracePlugin({"data_dir": str(data_dir), "enabled": True})
 
         async def _run():
             await p.shutdown()
 
         asyncio.run(_run())  # Should not raise
 
-    def test_config_hash_injected_in_events(self, trace_dir):
+    def test_config_hash_injected_in_events(self, data_dir):
         """Every trace event should contain config_hash field."""
-        p = self._make_plugin(trace_dir)
+        p = self._make_plugin(data_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
 
         async def _run():
@@ -155,9 +157,9 @@ class TestTracePlugin:
         assert "config_hash" in events[0]
         assert len(events[0]["config_hash"]) == 12
 
-    def test_config_hash_stable_across_events(self, trace_dir):
+    def test_config_hash_stable_across_events(self, data_dir):
         """Same session events should share the same config_hash."""
-        p = self._make_plugin(trace_dir)
+        p = self._make_plugin(data_dir)
         ctx = PluginContext(session_id="s1", interaction_round=1)
 
         async def _run():

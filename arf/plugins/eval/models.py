@@ -207,7 +207,7 @@ class JudgeModelConfig:
 class EvalConfig:
     """Evaluation runner configuration."""
     benchmark_path: str = ""
-    trace_dir: str = "./data/traces"
+    data_dir: str = "./data"
     eval_dir: str = "./eval"
     judge: JudgeModelConfig | None = None
     judge_model: "ResolvedModelConfig | None" = None  # model connection from plugins_config.eval

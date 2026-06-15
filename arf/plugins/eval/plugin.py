@@ -19,7 +19,7 @@ class EvalPlugin:
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        self._trace_dir = Path(cfg.get("trace_dir", "./data/traces"))
+        self._data_dir = Path(cfg.get("data_dir", "./data"))
         self._eval_dir = Path(cfg.get("eval_dir", "./eval"))
         self._eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,9 +31,9 @@ class EvalPlugin:
     def hooks(self) -> dict[str, str]:
         return {}  # offline — not hook-mounted
 
-    def set_trace_dir(self, trace_dir: str) -> None:
-        """Override trace read directory (called by base.py)."""
-        self._trace_dir = Path(trace_dir)
+    def set_data_dir(self, data_dir: str) -> None:
+        """Override data directory (called by base.py)."""
+        self._data_dir = Path(data_dir)
 
     def set_eval_dir(self, eval_dir: str) -> None:
         """Override eval output directory (called by base.py)."""
@@ -48,7 +48,7 @@ class EvalPlugin:
         """Replay a trace against a target model and compute metrics."""
         from arf.plugins.eval.runner import EvalRunner
         runner = EvalRunner(
-            trace_dir=str(self._trace_dir),
+            data_dir=str(self._data_dir),
             eval_dir=str(self._eval_dir),
         )
         result = await runner.run(
@@ -60,6 +60,9 @@ class EvalPlugin:
     def list_traces(self) -> list[str]:
         """List available trace sessions for evaluation."""
         traces = []
-        for f in self._trace_dir.glob("*.jsonl"):
-            traces.append(f.stem)
+        for d in self._data_dir.iterdir():
+            trace_dir = d / "traces"
+            if d.is_dir() and trace_dir.exists():
+                for f in trace_dir.glob("*.jsonl"):
+                    traces.append(f.stem)
         return sorted(traces)

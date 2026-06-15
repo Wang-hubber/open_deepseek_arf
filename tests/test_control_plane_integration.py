@@ -30,7 +30,7 @@ class _RecordingCallModel:
 
 
 def _make_plugins():
-    trace = TracePlugin({"trace_dir": "/tmp/test_traces"})
+    trace = TracePlugin({"data_dir": "/tmp/test_traces"})
     return {
         "blocking": [
             ErrorHandlerPlugin(),

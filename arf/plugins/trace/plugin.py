@@ -2,7 +2,7 @@
 
 Mounted on all hook points (side). Engine events are injected into hook_data
 via ctx.inject_engine_event() and flattened into JSONL rows at post_action.
-Produces trajectory-level JSONL at {trace_dir}/{session_id}.jsonl.
+Produces trajectory-level JSONL at {data_dir}/{session_id}/traces/{session_id}.jsonl.
 """
 import json
 import logging
@@ -26,15 +26,14 @@ class TracePlugin:
     JSON object. Append-only, O(1) per write.
 
     Usage:
-        plugin = TracePlugin({"trace_dir": "./data/traces"})
+        plugin = TracePlugin({"data_dir": "./data"})
         # on_hook() called by framework
         events = plugin.read_trace("session_123")
     """
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        self._trace_dir = Path(cfg.get("trace_dir", "./data/traces"))
-        self._enabled = cfg.get("enabled", True)
+        self._data_dir = Path(cfg.get("data_dir", "./data"))
         self._enabled = cfg.get("enabled", True)
 
         # Config snapshot — lazy, built on first _write_event call
@@ -45,10 +44,10 @@ class TracePlugin:
         from arf.plugins.trace.snapshot import EnvSnapshotBuilder
         self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files, extra_roots)
 
-    def set_trace_dir(self, trace_dir: str) -> None:
-        """Override trace directory (called by base.py with computed _trace_dir)."""
-        self._trace_dir = Path(trace_dir)
-        self._trace_dir.mkdir(parents=True, exist_ok=True)
+    def set_data_dir(self, data_dir: str) -> None:
+        """Override data directory (called by base.py with computed data_dir)."""
+        self._data_dir = Path(data_dir)
+        self._data_dir.mkdir(parents=True, exist_ok=True)
 
     async def shutdown(self) -> None:
         """No-op — kept for PluginProtocol compatibility."""
@@ -114,7 +113,7 @@ class TracePlugin:
             return self._config_hash
 
         xml_str, hash_val = self._snapshot_builder.build()
-        snapshot_dir = self._trace_dir / "snapshots"
+        snapshot_dir = self._data_dir / "snapshots"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         snapshot_file = snapshot_dir / f"{hash_val}.xml"
         if not snapshot_file.exists():
@@ -142,7 +141,9 @@ class TracePlugin:
 
     def _write_event(self, session_id: str, record: dict) -> None:
         record["config_hash"] = self._ensure_snapshot()
-        trace_file = self._trace_dir / f"{session_id}.jsonl"
+        trace_dir = self._data_dir / session_id / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_file = trace_dir / f"{session_id}.jsonl"
         try:
             with open(trace_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -154,7 +155,7 @@ class TracePlugin:
 
     def read_trace(self, session_id: str) -> list[dict]:
         """Read all trace events for a session. Returns [] if not found."""
-        trace_file = self._trace_dir / f"{session_id}.jsonl"
+        trace_file = self._data_dir / session_id / "traces" / f"{session_id}.jsonl"
         if not trace_file.exists():
             return []
         events: list[dict] = []
@@ -171,4 +172,8 @@ class TracePlugin:
 
     def list_sessions(self) -> list[str]:
         """Return all session IDs that have trace files."""
-        return [p.stem for p in self._trace_dir.glob("*.jsonl")]
+        sessions = []
+        for d in self._data_dir.iterdir():
+            if d.is_dir() and (d / "traces").exists():
+                sessions.append(d.name)
+        return sessions

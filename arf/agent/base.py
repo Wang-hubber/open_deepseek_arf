@@ -446,10 +446,10 @@ class BaseAgent:
                     bp.set_model_context_window(ctx_win)
                 break
 
-        # Wire computed trace_dir into TracePlugin
+        # Wire computed data_dir into TracePlugin
         for sp in side_plugins:
-            if sp.name == "trace" and hasattr(sp, "set_trace_dir"):
-                sp.set_trace_dir(_trace_dir)
+            if sp.name == "trace" and hasattr(sp, "set_data_dir"):
+                sp.set_data_dir(str(_data_dir))
                 break
 
         # ---- Active session tracking ----

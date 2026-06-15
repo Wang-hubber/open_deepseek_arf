@@ -30,7 +30,7 @@ class TestMinimalFramework:
 
         store = InMemoryStateStore()
         compaction = CompactionPlugin({"threshold": 0.99})  # high threshold
-        trace = TracePlugin({"trace_dir": "/tmp/arf-test-traces"})
+        trace = TracePlugin({"data_dir": "/tmp/arf-test-traces"})
 
         for p in [compaction]:
             if hasattr(p, 'set_state_store'):
