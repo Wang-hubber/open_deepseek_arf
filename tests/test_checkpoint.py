@@ -102,25 +102,25 @@ class TestFileStateStore:
     """FileStateStore — persists to JSON files, survives restarts."""
 
     @pytest.fixture
-    def state_dir(self, tmp_path):
-        return tmp_path / "state"
+    def data_dir(self, tmp_path):
+        return tmp_path
 
-    def test_put_creates_file(self, state_dir):
+    def test_put_creates_file(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {"session_id": "s1", "messages": []})
-            expected_file = state_dir / "s1.json"
+            expected_file = data_dir / "s1" / "state" / "s1.json"
             assert expected_file.exists()
 
         asyncio.run(_test())
 
-    def test_put_and_get_roundtrip(self, state_dir):
+    def test_put_and_get_roundtrip(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             original = {
                 "session_id": "s1",
                 "agent_name": "test",
@@ -139,11 +139,11 @@ class TestFileStateStore:
 
         asyncio.run(_test())
 
-    def test_put_omits_tool_results(self, state_dir):
+    def test_put_omits_tool_results(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {
                 "session_id": "s1",
                 "messages": [],
@@ -151,18 +151,18 @@ class TestFileStateStore:
             })
 
             # Read the raw file
-            raw = json.loads((state_dir / "s1.json").read_text())
+            raw = json.loads((data_dir / "s1" / "state" / "s1.json").read_text())
             assert "tool_results" not in raw, (
                 "tool_results must NOT be persisted across restarts"
             )
 
         asyncio.run(_test())
 
-    def test_put_original_dict_not_mutated(self, state_dir):
+    def test_put_original_dict_not_mutated(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             original = {
                 "session_id": "s1",
                 "messages": [],
@@ -176,46 +176,47 @@ class TestFileStateStore:
 
         asyncio.run(_test())
 
-    def test_atomic_write_no_tmp_residue(self, state_dir):
+    def test_atomic_write_no_tmp_residue(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {"session_id": "s1", "messages": []})
 
             # No .tmp file should be left behind
-            tmp_files = list(state_dir.glob("*.tmp"))
+            tmp_files = list((data_dir / "s1" / "state").glob("*.tmp"))
             assert len(tmp_files) == 0, f"Temporary files left behind: {tmp_files}"
 
         asyncio.run(_test())
 
-    def test_get_nonexistent_returns_none(self, state_dir):
+    def test_get_nonexistent_returns_none(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             assert await store.get("nonexistent") is None
 
         asyncio.run(_test())
 
-    def test_corrupted_json_returns_none(self, state_dir):
+    def test_corrupted_json_returns_none(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            state_dir.mkdir(parents=True, exist_ok=True)
-            (state_dir / "bad.json").write_text("this is not json {{{", encoding="utf-8")
+            bad_state_dir = data_dir / "bad" / "state"
+            bad_state_dir.mkdir(parents=True, exist_ok=True)
+            (bad_state_dir / "bad.json").write_text("this is not json {{{", encoding="utf-8")
 
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             result = await store.get("bad")
             assert result is None, "Corrupted JSON should return None gracefully"
 
         asyncio.run(_test())
 
-    def test_overwrite_updates_file(self, state_dir):
+    def test_overwrite_updates_file(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {"session_id": "s1", "current_turn": 0})
             await store.put("s1", {"session_id": "s1", "current_turn": 5})
 
@@ -224,32 +225,32 @@ class TestFileStateStore:
 
         asyncio.run(_test())
 
-    def test_delete_removes_file(self, state_dir):
+    def test_delete_removes_file(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {"session_id": "s1", "messages": []})
             await store.delete("s1")
 
-            assert not (state_dir / "s1.json").exists()
+            assert not (data_dir / "s1" / "state" / "s1.json").exists()
 
         asyncio.run(_test())
 
-    def test_delete_nonexistent_no_error(self, state_dir):
+    def test_delete_nonexistent_no_error(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.delete("nonexistent")
 
         asyncio.run(_test())  # Should not raise
 
-    def test_multiple_sessions_independent(self, state_dir):
+    def test_multiple_sessions_independent(self, data_dir):
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            store = FileStateStore(state_dir)
+            store = FileStateStore(data_dir)
             await store.put("s1", {"session_id": "s1", "current_turn": 1})
             await store.put("s2", {"session_id": "s2", "current_turn": 2})
 
@@ -264,7 +265,7 @@ class TestFileStateStore:
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            auto_dir = tmp_path / "will_be_created" / "state"
+            auto_dir = tmp_path / "will_be_created"
             store = FileStateStore(auto_dir)
             await store.put("s1", {"session_id": "s1", "messages": []})
             assert auto_dir.exists()
@@ -279,8 +280,8 @@ class TestCrashRecoveryScenario:
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            state_dir = tmp_path / "state"
-            store = FileStateStore(state_dir)
+            data_dir = tmp_path
+            store = FileStateStore(data_dir)
 
             # Simulate a running session
             await store.put("s1", {
@@ -303,8 +304,8 @@ class TestCrashRecoveryScenario:
         from arf.engine.checkpoint import FileStateStore
 
         async def _test():
-            state_dir = tmp_path / "state"
-            store = FileStateStore(state_dir)
+            data_dir = tmp_path
+            store = FileStateStore(data_dir)
 
             # Normal shutdown: mark inactive
             await store.put("s1", {

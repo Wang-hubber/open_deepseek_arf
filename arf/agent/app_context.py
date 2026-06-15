@@ -50,11 +50,13 @@ class AppContext:
 
     @property
     def state_dir(self) -> Path:
-        return self.data_dir / "state"
+        """Deprecated: sessions now scoped under data/{sid}/state/."""
+        return self.data_dir
 
     @property
     def trace_dir(self) -> Path:
-        return self.data_dir / "traces"
+        """Deprecated: sessions now scoped under data/{sid}/traces/."""
+        return self.data_dir
 
     @property
     def memory_dir(self) -> Path:

@@ -34,9 +34,8 @@ class ControlPlane:
         max_turns: int = 50,
         max_tokens: int = 100_000,
         workspace_dir: str = "",
+        data_dir: str = "./data",
         memory_dir: str = "./data/memory",
-        state_dir: str = "./data/state",
-        trace_dir: str = "./data/traces",
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
@@ -53,9 +52,8 @@ class ControlPlane:
         self._system_prompt = system_prompt
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
+        self._data_dir = data_dir
         self._memory_dir = memory_dir
-        self._state_dir = state_dir
-        self._trace_dir = trace_dir
         self._mcp_tool_resolver = mcp_tool_resolver
         self._call_timeout = call_timeout
         self._session_timeout = session_timeout
@@ -503,6 +501,7 @@ class ControlPlane:
         })
 
     async def _action_execute_tools(self, state: AgentState, ctx: PluginContext):
+        """Execute tool calls, allow tool_output hooks to transform results, commit."""
         session_id = state.get("session_id", "default")
         turn = state.get("current_turn", 0)
         tool_calls = state.pop("_pending_tool_calls", [])
@@ -523,43 +522,69 @@ class ControlPlane:
                 "turn": turn,
             })
 
+        # -- Execute tools --
         results = await self.tool_executor.execute(
             tool_calls, agent_mode="",
             engine=self, state_store=self.state_store,
             workspace_dir=self._workspace_dir,
         )
 
+        # -- Store raw results in hook_data for tool_output hooks --
+        raw_results: dict[str, dict] = {}
         for tc in tool_calls:
             r = results.get(tc.get("id", ""))
-            tc_id = tc.get("id", "")
-            yield self._make_event("tool_call_end", {
-                "tool_name": tc.get("name", ""), "turn": turn, "id": tc_id,
+            raw_results[tc["id"]] = {
+                "tool_name": tc.get("name", ""),
                 "success": r.success if r else False,
+                "data": str(r.data) if r and r.success and r.data else "",
+                "error": str(r.error) if r and r.error else "",
                 "duration_ms": r.duration_ms if r else 0,
-                "result": str(r.data)[:2000] if r and r.success and r.data else "",
-                "error": str(r.error)[:2000] if r and r.error else "",
+                "turn": turn,
+            }
+        ctx.hook_data["_raw_tool_results"] = raw_results
+
+        # -- Fire tool_output hook: plugins can modify _raw_tool_results --
+        ctx.hook_data["_error_phase"] = "tool_output"
+        try:
+            await self._fire_blocking("tool_output", ctx)
+            await self._fire_side("tool_output", ctx)
+        except Exception:
+            # Results remain in _raw_tool_results; commit with raw data on error
+            pass
+
+        # -- Commit: use hook-modified results --
+        for tc in tool_calls:
+            r = ctx.hook_data["_raw_tool_results"].get(tc["id"], {})
+            tc_id = tc.get("id", "")
+
+            yield self._make_event("tool_call_end", {
+                "tool_name": r.get("tool_name", ""), "turn": turn, "id": tc_id,
+                "success": r.get("success", False),
+                "duration_ms": r.get("duration_ms", 0),
+                "result": r.get("data", ""),
+                "error": r.get("error", ""),
             }, turn=turn, session_id=session_id)
 
-            content = str(r.data) if r and r.success else f"Error: {r.error}" if r and r.error else ""
+            content = r.get("data", "") if r.get("success") else f"Error: {r.get('error', '')}"
             state["messages"].append({"role": "tool", "tool_call_id": tc["id"], "content": content})
 
         state["tool_results"] = {
-            k: {"success": v.success, "data": v.data, "error": v.error}
-            for k, v in results.items()
+            tc_id: {"success": d["success"], "data": d["data"], "error": d["error"]}
+            for tc_id, d in raw_results.items()
         }
 
-        # Inject tool_call results for trace visibility
+        # Inject trace events (with hook-modified data)
         for tc in tool_calls:
-            r = results.get(tc.get("id", ""))
+            r = ctx.hook_data["_raw_tool_results"].get(tc["id"], {})
             ctx.inject_engine_event("tool_call_end", {
-                "tool_name": tc.get("name", ""),
+                "tool_name": r.get("tool_name", ""),
                 "id": tc.get("id", ""),
                 "params": tc.get("params", {}),
                 "turn": turn,
-                "success": r.success if r else False,
-                "result": str(r.data)[:2000] if r and r.success and r.data else "",
-                "error": str(r.error)[:500] if r and r.error else "",
-                "duration_ms": r.duration_ms if r else 0,
+                "success": r.get("success", False),
+                "result": r.get("data", ""),
+                "error": r.get("error", ""),
+                "duration_ms": r.get("duration_ms", 0),
             })
 
     # ==================================================================
@@ -612,9 +637,8 @@ class ControlPlane:
             system_prompt=self._system_prompt,
             model=state.get("current_model", ""),
             workspace_dir=self._workspace_dir,
+            data_dir=self._data_dir,
             memory_dir=self._memory_dir,
-            state_dir=self._state_dir,
-            trace_dir=self._trace_dir,
             event_bus=self.event_bus,
         )
 
