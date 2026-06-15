@@ -64,6 +64,7 @@ class ControlPlane:
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
         self._interaction_round = 0
+        self._recovery_handlers: dict[str, Callable] = {}
 
     def set_call_model(self, call_model) -> None:
         self._call_model = call_model
@@ -259,7 +260,8 @@ class ControlPlane:
                         break
 
                 # Snapshot pending_tool_calls BEFORE execute_tools pops them
-                has_tool_calls = bool(state.get("_pending_tool_calls"))
+                pending_tool_calls = list(state.get("_pending_tool_calls", []))
+                has_tool_calls = bool(pending_tool_calls)
 
                 # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
                 if has_tool_calls:
@@ -287,11 +289,18 @@ class ControlPlane:
                         if action == "abort":
                             aborted = True
                             break
-                        elif action == "skip":
+                        # Tool execution failed → inject error as tool_result so
+                        # the model sees the error and can retry in the next turn.
+                        for tc in pending_tool_calls:
+                            state["messages"].append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": f"Error executing tool '{tc.get('name', '')}': {e}",
+                            })
+                        if action == "skip":
                             await self._fire_side("post_action", ctx)
                             continue
-                        else:
-                            break
+                        break
 
                 # --- post_dispatch ---
                 try:
@@ -705,6 +714,20 @@ class ControlPlane:
                 f"Error handler decided abort: {exc}"
             ) from exc
         return decision
+
+    async def _dispatch_error(self, exc: Exception, state: dict, ctx) -> bool:
+        """Unified error dispatch. Returns True if the loop should break."""
+        try:
+            decision = await self._handle_error(exc, ctx)
+        except SessionAbortedError:
+            return True
+
+        recovery = decision.get("recovery", "")
+        if recovery:
+            handler = self._recovery_handlers.get(recovery)
+            if handler:
+                await handler(state, ctx, decision.get("params", {}))
+        return False
 
     def _emit_decision_event(self, ctx: PluginContext, exc: Exception,
                              action: str, reason: str) -> None:
