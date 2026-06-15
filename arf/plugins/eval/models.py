@@ -211,6 +211,7 @@ class EvalConfig:
         "success_rate": True,
         "output_quality": False,
         "trajectory_similarity": False,
+        "output_contains": True,
     })
     mode: str = "online"
     trace_session_ids: list[str] = field(default_factory=list)

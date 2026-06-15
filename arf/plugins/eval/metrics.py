@@ -384,6 +384,10 @@ class OutputQualityMetric:
         self._prompt_free = prompt_free if prompt_free else self._PROMPT_FREE
         self._system_prompt = system_prompt
         self._tools = tools
+        self._trace_dir = "./data"
+
+    def set_trace_dir(self, trace_dir: str) -> None:
+        self._trace_dir = trace_dir
 
     @property
     def name(self) -> str:
@@ -406,23 +410,42 @@ class OutputQualityMetric:
             return {"output_quality": None, "reason": "missing actual content"}
 
         user_input = golden_case.input or ""
-        gt = getattr(golden_case, "golden_trajectory", None)
 
-        # Reference mode: golden_trajectory is annotated and has golden content
-        if gt and gt.get("annotated") and gt.get("turns"):
-            last_turn = gt["turns"][-1]
-            golden_content = last_turn.get("assistant_final", {}).get("content", "")
-            if not golden_content:
-                golden_content = last_turn.get("assistant", {}).get("content", "")
-            if golden_content:
-                return await self._call_judge(
-                    judge, judge_adapter, user_input, golden_content, actual_content,
-                )
+        # Reference mode: load golden output from trace file via session_id
+        golden_content = None
+        if golden_case.session_id:
+            golden_content = self._load_golden_final_output(golden_case.session_id)
+        if golden_content:
+            return await self._call_judge(
+                judge, judge_adapter, user_input, golden_content, actual_content,
+            )
 
         # No-reference mode: evaluate on its own merits
         return await self._call_judge_free(
             judge, judge_adapter, user_input, actual_content,
         )
+
+    def _load_golden_final_output(self, session_id: str) -> str | None:
+        """Load the final model output from a trace file."""
+        from pathlib import Path
+        trace_file = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
+        if not trace_file.exists():
+            return None
+        content = None
+        with open(trace_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("type") == "model_call_end":
+                    c = e.get("data", {}).get("content", "")
+                    if c:
+                        content = c
+        return content
 
     async def _call_judge(self, judge, judge_adapter, user_input, golden_content, actual_content):
         prompt = self._prompt.format(
@@ -555,6 +578,10 @@ class TrajectorySimilarityMetric:
         self._prompt_free = prompt_free if prompt_free else self._PROMPT_FREE
         self._system_prompt = system_prompt
         self._tools = tools
+        self._trace_dir = "./data"
+
+    def set_trace_dir(self, trace_dir: str) -> None:
+        self._trace_dir = trace_dir
 
     @property
     def name(self) -> str:
@@ -591,11 +618,12 @@ class TrajectorySimilarityMetric:
             return {"trajectory_similarity": None, "reason": "empty actual trajectory"}
 
         user_input = golden_case.input or ""
-        gt = getattr(golden_case, "golden_trajectory", None)
 
-        # Reference mode: golden_trajectory is annotated
-        if gt and gt.get("annotated") and gt.get("turns"):
-            golden_str = json.dumps(gt, ensure_ascii=False, indent=2)
+        # Reference mode: load golden trajectory from trace file
+        golden_str = None
+        if golden_case.session_id:
+            golden_str = self._load_golden_trajectory(golden_case.session_id)
+        if golden_str:
             return await self._call_judge(
                 judge, judge_adapter, user_input, golden_str, actual_str,
             )
@@ -604,6 +632,37 @@ class TrajectorySimilarityMetric:
         return await self._call_judge_free(
             judge, judge_adapter, user_input, actual_str,
         )
+
+    def _load_golden_trajectory(self, session_id: str) -> str | None:
+        from pathlib import Path
+        trace_file = Path(self._trace_dir) / session_id / "traces" / f"{session_id}.jsonl"
+        if not trace_file.exists():
+            return None
+        summary = []
+        with open(trace_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = e.get("type", "")
+                turn = e.get("turn", 0)
+                if t == "tool_call_start":
+                    summary.append(
+                        f"[turn {turn}] call {e.get('data', {}).get('tool_name', '?')}"
+                    )
+                elif t == "tool_call_end":
+                    summary.append(
+                        f"[turn {turn}] result: {'ok' if e.get('data', {}).get('success') else 'fail'}"
+                    )
+                elif t == "model_call_end":
+                    content = e.get("data", {}).get("content", "")
+                    if content:
+                        summary.append(f"[turn {turn}] output: {content[:200]}")
+        return "\n".join(summary) if summary else None
 
     async def _call_judge(self, judge, judge_adapter, user_input, golden_str, actual_str):
         prompt = self._prompt.format(
@@ -653,4 +712,39 @@ class TrajectorySimilarityMetric:
             ) from e
 
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))
+
+
+class OutputContainsMetric:
+    """Check that actual output contains all expected keywords (rule-based)."""
+
+    @property
+    def name(self) -> str:
+        return "output_contains"
+
+    @property
+    def requires_llm(self) -> bool:
+        return False
+
+    async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        expected = golden_case.expected_output_contains
+        if not expected:
+            return {"output_contains": 1.0}
+
+        actual_content = ""
+        for e in reversed(actual_trace):
+            if e.get("type") == "model_call_end":
+                content = e.get("data", {}).get("content", "")
+                if content:
+                    actual_content = content
+                    break
+
+        if not actual_content:
+            return {"output_contains": 0.0}
+
+        matches = sum(1 for kw in expected if kw in actual_content)
+        return {"output_contains": matches / len(expected)}
+
+    def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        import asyncio
         return asyncio.run(self.compute(actual_trace, golden_case, judge, judge_adapter))

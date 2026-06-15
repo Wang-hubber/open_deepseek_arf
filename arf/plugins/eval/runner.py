@@ -14,6 +14,7 @@ from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, ToolCallResultLLMMetric,
     TurnEfficiencyMetric,
     OutputQualityMetric, TrajectorySimilarityMetric,
+    OutputContainsMetric,
 )
 
 
@@ -137,6 +138,13 @@ class EvalRunner:
                 system_prompt=system_prompt,
                 tools=tools,
             ))
+        if me.get("output_contains", True):
+            metrics.append(OutputContainsMetric())
+
+        # Wire trace_dir to metrics that need it
+        for m in metrics:
+            if hasattr(m, "set_trace_dir"):
+                m.set_trace_dir(str(self._data_dir))
 
         judge = self._config.judge
         judge_adapter = self._judge_adapter
@@ -359,6 +367,7 @@ class EvalRunner:
         metric_keys = [
             "tool_call_accuracy", "turn_efficiency", "success_rate",
             "output_quality", "trajectory_similarity",
+            "output_contains",
         ]
         for key in metric_keys:
             vals = []
