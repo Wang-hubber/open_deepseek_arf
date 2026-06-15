@@ -1,8 +1,15 @@
 name: compaction
 hooks:
   - round_end
+  - tool_output
 enabled: true
 config:
   threshold: 0.75
   window_size: 131072     # fallback — overridden by ModelConfig.context_window
   keep_count: 8
+  tool_output:
+    enabled: true
+    threshold: 500
+    preview_head: 500
+    preview_tail: 200
+    exclude_tools: []
