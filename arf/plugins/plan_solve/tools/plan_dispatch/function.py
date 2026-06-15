@@ -42,7 +42,7 @@ async def execute(
     step["status"] = "running"
     step["started_at"] = time.time()
     plan["updated_at"] = time.time()
-    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Emit started event (if engine has event_bus)
     if _engine and hasattr(_engine, "event_bus") and _engine.event_bus:
@@ -87,7 +87,7 @@ async def execute(
         step["error"] = str(exc)
         step["finished_at"] = time.time()
         plan["updated_at"] = time.time()
-        plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+        plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"ok": False, "error": f"sub-agent crashed: {exc}", "step_index": step_index}
 
     # Extract result from last assistant message
@@ -102,7 +102,7 @@ async def execute(
     step["sub_session_id"] = session_id
     step["finished_at"] = time.time()
     plan["updated_at"] = time.time()
-    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Emit finished event
     if _engine and hasattr(_engine, "event_bus") and _engine.event_bus:

@@ -56,7 +56,7 @@ async def execute(
     workspace = Path(_workspace) if _workspace else Path("workspace/default")
     workspace.mkdir(parents=True, exist_ok=True)
     plan_file = workspace / "plan.json"
-    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {
         "ok": True,

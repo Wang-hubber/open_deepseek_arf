@@ -56,7 +56,7 @@ class MemoryPlugin:
         tmp_dir = memory_dir / "state"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_file = tmp_dir / f"extract_{session_id}.json"
-        tmp_file.write_text(json.dumps(messages, ensure_ascii=False))
+        tmp_file.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
         # Dispatch extractor
         extractor = (
