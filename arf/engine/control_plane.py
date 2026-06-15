@@ -710,7 +710,9 @@ class ControlPlane:
         if not decision:
             self._emit_error_event(ctx, exc, "no_recovery_decision")
             await self._flush_trace(ctx)
-            raise  # unknown error — re-raise original
+            raise SessionAbortedError(
+                f"No recovery strategy: {exc}"
+            ) from exc
 
         reason = decision.get("reason", "")
         self._emit_decision_event(ctx, exc, decision.get("recovery", "unknown"), reason)
@@ -720,7 +722,7 @@ class ControlPlane:
         """Unified error dispatch. Returns True if the loop should break."""
         try:
             decision = await self._handle_error(exc, ctx)
-        except SessionAbortedError:
+        except Exception:
             return True
 
         recovery = decision.get("recovery", "")

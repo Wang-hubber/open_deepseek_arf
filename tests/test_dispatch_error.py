@@ -59,16 +59,17 @@ class TestDispatchError:
         assert result is True
 
     @pytest.mark.anyio
-    async def test_handle_error_raises_unknown_exception_propagates(self):
-        """Unknown exception from _handle_error propagates to caller."""
+    async def test_handle_error_raises_returns_true(self):
+        """When _handle_error raises, _dispatch_error returns True (break)."""
         cp = ControlPlane(
             state_store=InMemoryStateStore(),
             tool_executor=InMemoryToolExecutor({}),
         )
         cp._handle_error = _make_handle_error_raises(ValueError("unknown"))
 
-        with pytest.raises(ValueError, match="unknown"):
-            await cp._dispatch_error(ValueError("bad"), {}, _make_ctx())
+        result = await cp._dispatch_error(ValueError("bad"), {}, _make_ctx())
+
+        assert result is True
 
     @pytest.mark.anyio
     async def test_recovery_handler_receives_state_ctx_params(self):
