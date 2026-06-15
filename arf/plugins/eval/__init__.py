@@ -4,7 +4,7 @@ from arf.plugins.eval.builder import BenchmarkBuilder
 from arf.plugins.eval.comparator import EvalComparator
 from arf.plugins.eval.metrics import (
     SuccessRateMetric, ToolCallAccuracyMetric, ToolCallResultLLMMetric,
-    TurnEfficiencyMetric,
+    TurnEfficiencyMetric, ExecutionAccuracyMetric, ReasoningSimilarityMetric,
     OutputQualityMetric, TrajectorySimilarityMetric,
 )
 from arf.plugins.eval.models import (
@@ -17,7 +17,8 @@ from arf.plugins.eval.trace_adapter import events_to_trace
 __all__ = [
     "EvalRunner", "BenchmarkBuilder", "EvalComparator",
     "SuccessRateMetric", "ToolCallAccuracyMetric", "ToolCallResultLLMMetric",
-    "TurnEfficiencyMetric", "OutputQualityMetric", "TrajectorySimilarityMetric",
+    "TurnEfficiencyMetric", "ExecutionAccuracyMetric", "ReasoningSimilarityMetric",
+    "OutputQualityMetric", "TrajectorySimilarityMetric",
     "EvalCase", "EvalBenchmark", "EvalReport", "EvalSummary", "EvalDiff",
     "EvalConfig", "JudgeModelConfig",
     "EvalError", "events_to_trace",
