@@ -64,8 +64,10 @@ class BaseAgent:
             _data_dir = str(ctx.root.resolve() / "data")
         else:
             _data_dir = str(_Path(".").resolve() / "data")
-        # Auto-create data directory + subdirs if they don't exist
-        for _sub in ("state", "traces", "memory", "files"):
+        # Auto-create data directory + subdirs if they don't exist.
+        # state + traces are session-scoped (created lazily by FileStateStore / TracePlugin).
+        # memory/ is used by MemoryPlugin for memory.md.
+        for _sub in ("memory",):
             (_Path(_data_dir) / _sub).mkdir(parents=True, exist_ok=True)
 
         # workspace root for sandbox boundary
