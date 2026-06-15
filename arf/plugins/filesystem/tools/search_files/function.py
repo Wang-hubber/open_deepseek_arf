@@ -19,8 +19,9 @@ async def execute(
     truncated = False
 
     try:
-        recursive = "**" in pattern
-        for rel in glob.glob(pattern, root_dir=path, recursive=recursive):
+        if not pattern.startswith("**"):
+            pattern = f"**/{pattern}"
+        for rel in glob.glob(pattern, root_dir=path, recursive=True):
             if _matches_any(rel, excludes):
                 continue
             full = os.path.join(path, rel)
