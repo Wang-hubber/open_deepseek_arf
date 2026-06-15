@@ -5,14 +5,13 @@ from pathlib import Path
 
 
 async def execute(session_id: str = "", memory_dir: str = "",
-                  state_dir: str = "", force: bool = False) -> dict:
+                  data_dir: str = "", force: bool = False) -> dict:
     """Read session state from FileStateStore, spawn extractor subprocess.
 
-    Uses *state_dir* (not _state_store) because _-prefixed DI objects
-    are stripped at the MCP boundary and never reach tool functions.
+    *session_id* is injected by the engine — not declared as a tool param.
     """
-    state_path = Path(state_dir or "./data/state")
-    state_file = state_path / f"{session_id}.json"
+    data_path = Path(data_dir or "./data")
+    state_file = data_path / session_id / "state" / f"{session_id}.json"
     if not state_file.exists():
         return {"ok": False, "error": f"No session state found: {state_file}"}
 
