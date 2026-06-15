@@ -52,6 +52,6 @@ async def execute(
 
     plan["status"] = "done"
     plan["updated_at"] = time.time()
-    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {"ok": True, "summary": summary.strip(), "plan_id": plan["plan_id"]}
