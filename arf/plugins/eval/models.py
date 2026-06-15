@@ -40,7 +40,7 @@ class EvalBenchmark:
                     **({"expected_execution": c.expected_execution} if c.expected_execution else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
-                    **({"feedback": c.feedback} if c.feedback else {}),
+                    **({"feedback": c.feedback} if c.feedback is not None else {}),
                 }
                 for c in self.cases
             ],
