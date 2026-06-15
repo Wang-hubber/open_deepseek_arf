@@ -59,13 +59,11 @@ class TestBenchmarkBuilder:
         # Case 0
         assert bm.cases[0].input == "create file"
         assert bm.cases[0].expected_tools == ["file_writer"]
-        assert bm.cases[0].golden_trajectory is not None
-        assert len(bm.cases[0].golden_trajectory["turns"]) >= 1
-        t0 = bm.cases[0].golden_trajectory["turns"][0]
-        assert t0["assistant"]["content"] == "File created successfully"
-        assert len(t0["tool_results"]) == 1
-        assert t0["tool_results"][0]["tool_name"] == "file_writer"
-        assert "File created" in t0["assistant_final"]["content"]
+        assert bm.cases[0].expected_output_contains == []
+        assert bm.cases[0].max_turns == 1
+        # expected_tool_calls is None because model_call_end events lack
+        # explicit tool_calls — pairing needs both sources to populate
+        assert bm.cases[0].expected_tool_calls is None
 
         # Case 1
         assert bm.cases[1].input == "read it"
@@ -103,10 +101,9 @@ class TestBenchmarkBuilder:
         assert len(bm.cases) == 1
         c = bm.cases[0]
         assert c.expected_tools is None
-        assert c.golden_trajectory is not None
-        t0 = c.golden_trajectory["turns"][0]
-        assert t0["assistant"]["content"] == "Hi there! How can I help?"
-        assert t0["assistant"]["tool_calls"] == []
+        assert c.expected_tool_calls is None
+        assert c.expected_output_contains == []
+        assert c.max_turns == 1
 
     def test_multi_turn_golden_trajectory(self, data_dir):
         p = _make_trace_plugin(data_dir)
@@ -134,10 +131,11 @@ class TestBenchmarkBuilder:
         builder = BenchmarkBuilder(p)
         bm = builder.build("s1", "multi")
         assert len(bm.cases) == 1
-        gt = bm.cases[0].golden_trajectory
-        assert gt is not None
-        assert len(gt["turns"]) == 2
-        assert gt["turns"][0]["turn"] == 1
-        assert gt["turns"][0]["tool_results"][0]["success"] is False
-        assert gt["turns"][1]["turn"] == 2
-        assert gt["turns"][1]["tool_results"][0]["success"] is True
+        c = bm.cases[0]
+        assert c.expected_output_contains == []
+        assert c.max_turns == 2
+        assert len(c.expected_tool_calls) == 2
+        assert c.expected_tool_calls[0]["name"] == "read"
+        assert c.expected_tool_calls[0]["success"] is False
+        assert c.expected_tool_calls[1]["name"] == "glob"
+        assert c.expected_tool_calls[1]["success"] is True
