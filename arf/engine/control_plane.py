@@ -715,7 +715,7 @@ class ControlPlane:
             ) from exc
         return decision
 
-    async def _dispatch_error(self, exc: Exception, state: dict, ctx) -> bool:
+    async def _dispatch_error(self, exc: Exception, state: dict, ctx: PluginContext) -> bool:
         """Unified error dispatch. Returns True if the loop should break."""
         try:
             decision = await self._handle_error(exc, ctx)
@@ -727,6 +727,9 @@ class ControlPlane:
             handler = self._recovery_handlers.get(recovery)
             if handler:
                 await handler(state, ctx, decision.get("params", {}))
+            else:
+                logger = logging.getLogger("arf.engine")
+                logger.warning("No recovery handler registered for '%s'", recovery)
         return False
 
     def _emit_decision_event(self, ctx: PluginContext, exc: Exception,
