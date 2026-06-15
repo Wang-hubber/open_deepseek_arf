@@ -15,6 +15,7 @@ from arf.plugins.eval.metrics import (
     TurnEfficiencyMetric,
     OutputQualityMetric, TrajectorySimilarityMetric,
     OutputContainsMetric,
+    ExecutionAccuracyMetric, ReasoningSimilarityMetric,
 )
 
 
@@ -140,6 +141,12 @@ class EvalRunner:
             ))
         if me.get("output_contains", True):
             metrics.append(OutputContainsMetric())
+        if me.get("execution_accuracy", True):
+            metrics.append(ExecutionAccuracyMetric())
+        if me.get("reasoning_similarity"):
+            metrics.append(ReasoningSimilarityMetric(
+                prompt=prompts.get("reasoning_similarity"),
+            ))
 
         # Wire trace_dir and trace_snapshot_path to metrics that need them
         snapshot_path = getattr(benchmark, "trace_snapshot_path", None)
@@ -250,6 +257,12 @@ class EvalRunner:
                 ts = case_metrics.get("trajectory_similarity")
                 if ts is not None and isinstance(ts, (int, float)):
                     parts.append(f"traj_sim={ts}/5")
+                ea = case_metrics.get("execution_accuracy")
+                if ea is not None and isinstance(ea, (int, float)):
+                    parts.append(f"exec_acc={ea:.2f}")
+                rs = case_metrics.get("reasoning_similarity")
+                if rs is not None and isinstance(rs, (int, float)):
+                    parts.append(f"reason_sim={rs}/5")
                 parts.append(f"{duration:.1f}s")
 
                 print(f"  [{status}] case_{i}: {', '.join(parts)}")
@@ -299,6 +312,9 @@ class EvalRunner:
             print(f"   Output quality:    {summary.output_quality:.1f}/5 (LLM)")
         if summary.trajectory_similarity is not None:
             print(f"   Trajectory sim:    {summary.trajectory_similarity:.1f}/5 (LLM)")
+        print(f"   Execution accuracy: {summary.execution_accuracy:.2f}")
+        if summary.reasoning_similarity is not None:
+            print(f"   Reasoning sim:     {summary.reasoning_similarity:.1f}/5 (LLM)")
 
         # Show failures
         failures = [pc for pc in per_case if not pc["passed"]]
@@ -375,6 +391,7 @@ class EvalRunner:
             "tool_call_accuracy", "turn_efficiency", "success_rate",
             "output_quality", "trajectory_similarity",
             "output_contains",
+            "execution_accuracy", "reasoning_similarity",
         ]
         for key in metric_keys:
             vals = []
