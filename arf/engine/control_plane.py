@@ -732,9 +732,14 @@ class ControlPlane:
         if recovery:
             handler = self._recovery_handlers.get(recovery)
             if handler:
-                await handler(state, ctx, decision.get("params", {}))
+                try:
+                    await handler(state, ctx, decision.get("params", {}))
+                except Exception as handler_exc:
+                    logger.warning(
+                        "Recovery handler '%s' failed: %s. Original error: %s",
+                        recovery, handler_exc, exc)
+                    return True  # handler failure → break, don't mask original error
             else:
-                logger = logging.getLogger("arf.engine")
                 logger.warning("No recovery handler registered for '%s'", recovery)
         return False
 
