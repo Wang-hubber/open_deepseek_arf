@@ -8,10 +8,12 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
-    expected_tools: list[str] | None = None
-    expected_tool_calls: list[dict] | None = None  # [{name, params, result_preview?, success?}]
-    expected_output_contains: list[str] | None = None
+    expected_reasoning: list[str] = field(default_factory=list)
+    expected_execution: list[dict] = field(default_factory=list)
+    expected_output_contains: list[str] = field(default_factory=list)
     max_turns: int | None = None
+    feedback: dict | None = None
+    source_round: int | None = None
 
 
 @dataclass
@@ -33,10 +35,12 @@ class EvalBenchmark:
                     "id": c.id,
                     "input": c.input,
                     **({"session_id": c.session_id} if c.session_id else {}),
-                    **({"expected_tools": c.expected_tools} if c.expected_tools else {}),
-                    **({"expected_tool_calls": c.expected_tool_calls} if c.expected_tool_calls else {}),
+                    **({"source_round": c.source_round} if c.source_round is not None else {}),
+                    **({"expected_reasoning": c.expected_reasoning} if c.expected_reasoning else {}),
+                    **({"expected_execution": c.expected_execution} if c.expected_execution else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
+                    **({"feedback": c.feedback} if c.feedback else {}),
                 }
                 for c in self.cases
             ],
@@ -58,10 +62,12 @@ class EvalBenchmark:
                     id=c["id"],
                     input=c["input"],
                     session_id=c.get("session_id"),
-                    expected_tools=c.get("expected_tools"),
-                    expected_tool_calls=c.get("expected_tool_calls"),
-                    expected_output_contains=c.get("expected_output_contains"),
+                    source_round=c.get("source_round"),
+                    expected_reasoning=c.get("expected_reasoning", []),
+                    expected_execution=c.get("expected_execution", []),
+                    expected_output_contains=c.get("expected_output_contains", []),
                     max_turns=c.get("max_turns"),
+                    feedback=c.get("feedback"),
                 )
                 for c in data.get("cases", [])
             ],
@@ -89,6 +95,8 @@ class EvalSummary:
     tool_call_result_llm: float | None = None  # 0-1 LLM judge
     output_quality: float | None = None  # 1-5 LLM judge
     trajectory_similarity: float | None = None  # 1-5 LLM judge
+    execution_accuracy: float = 0.0
+    reasoning_similarity: float | None = None
 
 
 @dataclass
@@ -129,6 +137,8 @@ class EvalReport:
                 "tool_call_result_llm": self.summary.tool_call_result_llm,
                 "output_quality": self.summary.output_quality,
                 "trajectory_similarity": self.summary.trajectory_similarity,
+                "execution_accuracy": self.summary.execution_accuracy,
+                "reasoning_similarity": self.summary.reasoning_similarity,
             },
             "per_case": self.per_case,
             "judge_model": self.judge_model,
@@ -165,6 +175,8 @@ class EvalReport:
                 tool_call_result_llm=s.get("tool_call_result_llm"),
                 output_quality=s.get("output_quality"),
                 trajectory_similarity=s.get("trajectory_similarity"),
+                execution_accuracy=s.get("execution_accuracy", 0.0),
+                reasoning_similarity=s.get("reasoning_similarity"),
             ),
             per_case=data.get("per_case", []),
             judge_model=data.get("judge_model", ""),
@@ -212,6 +224,8 @@ class EvalConfig:
         "tool_call_result_llm": False,
         "turn_efficiency": True,
         "success_rate": True,
+        "execution_accuracy": True,
+        "reasoning_similarity": False,
         "output_quality": False,
         "trajectory_similarity": False,
         "output_contains": True,
@@ -229,6 +243,7 @@ class EvalConfig:
             self.metrics.get("output_quality", False),
             self.metrics.get("trajectory_similarity", False),
             self.metrics.get("tool_call_result_llm", False),
+            self.metrics.get("reasoning_similarity", False),
         ])
 
     def validate(self) -> None:
