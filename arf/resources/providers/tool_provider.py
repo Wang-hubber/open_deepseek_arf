@@ -79,7 +79,11 @@ class ToolProvider:
     # -- internal --
 
     def _validate_yaml_against_fn(self, cfg: ToolConfig, fn: callable, func_path: Path) -> None:
-        """Warn when tool.yaml parameters don't match function.py signature."""
+        """Warn when tool.yaml parameters don't match function.py signature.
+
+        Engine-injected params (session_id, _engine, _state_store, etc.) are
+        excluded from the comparison — the engine provides them, not the model.
+        """
         try:
             sig = inspect.signature(fn)
         except (ValueError, TypeError):
@@ -88,6 +92,8 @@ class ToolProvider:
         fn_params = {
             name for name, p in sig.parameters.items()
             if not name.startswith("_")
+            and name != "session_id"
+            and name != "kwargs"
             and p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
         }
         extra_in_yaml = yaml_params - fn_params
