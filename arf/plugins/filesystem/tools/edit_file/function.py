@@ -97,7 +97,8 @@ def _try_whitespace_flexible_match(
 
 
 async def execute(
-    path: str, edits: list[dict], dryRun: bool = False, **kwargs
+    path: str, edits: list[dict], dryRun: bool = False,
+    encoding: str = "utf-8", **kwargs
 ) -> dict:
     """Apply one or more text edits to a file and return a unified diff.
 
@@ -120,12 +121,12 @@ async def execute(
         return {"ok": False, "error": f"Not a file: {path}"}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding=encoding) as f:
             original_content = f.read()
-    except UnicodeDecodeError:
+    except (UnicodeDecodeError, LookupError) as e:
         return {
             "ok": False,
-            "error": f"Cannot read {path} as UTF-8 text — file may be binary",
+            "error": f"Cannot read {path} as {encoding} text — {e}",
         }
     except OSError as e:
         return {"ok": False, "error": str(e)}
@@ -170,7 +171,7 @@ async def execute(
             tmpdir = os.path.dirname(path) or "."
             fd, tmpname = tempfile.mkstemp(dir=tmpdir, prefix=".edit_", suffix=".tmp")
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding=encoding) as f:
                     f.write(modified_content)
                 os.replace(tmpname, path)
             except Exception:

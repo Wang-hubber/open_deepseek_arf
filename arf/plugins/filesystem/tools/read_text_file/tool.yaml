@@ -1,5 +1,5 @@
 name: read_text_file
-description: Read the complete contents of a file as UTF-8 text. Use the head parameter
+description: Read the complete contents of a file as text. Use the head parameter
   to read only the first N lines, or the tail parameter to read only the last N lines.
   Cannot specify both head and tail simultaneously.
 parameters:
@@ -15,6 +15,11 @@ parameters:
     tail:
       type: integer
       description: Return only the last N lines
+    encoding:
+      type: string
+      description: Text encoding (default utf-8). Use gbk for older Chinese files
+        from Notepad, gb2312 for simplified Chinese, shift_jis for Japanese, etc.
+      default: utf-8
   required:
   - path
 annotations:
