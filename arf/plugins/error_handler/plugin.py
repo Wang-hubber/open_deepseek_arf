@@ -82,10 +82,19 @@ class ErrorHandlerPlugin:
             }
             return
 
-        # 4. Guard/approval denials -> noop (model sees tool_result, responds)
+        # 4. Guard/approval denials -> model should see error and respond
         if exc_name in ("PermissionDenied", "ApprovalDenied",
                         "SandboxViolation", "ApprovalTimeout"):
-            ctx.hook_data["_recovery_decision"] = {"recovery": "noop"}
+            phase = ctx.hook_data.get("_error_phase", "")
+            # pre_action with pending tool calls: inject error so model retries
+            if phase == "pre_action" and ctx.hook_data.get("_pending_tool_calls"):
+                ctx.hook_data["_recovery_decision"] = {
+                    "recovery": "inject_tool_error",
+                    "reason": "guard blocked tool call in pre_action",
+                    "params": {"error": str(exc)},
+                }
+            else:
+                ctx.hook_data["_recovery_decision"] = {"recovery": "noop"}
             return
 
         # 5. Tool execution failure -> inject error so model can retry
