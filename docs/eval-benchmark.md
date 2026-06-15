@@ -32,7 +32,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 | 历史基线 | `EvalReport.to_json()` 持久化 |
 | 回归检测 | `EvalComparator.compare(baseline, current)` → `EvalDiff` |
 | 会话回放 | `BenchmarkBuilder.build(session_id, name)` |
-| Golden 数据 | `EvalCase.golden_trajectory` — 完整多轮轨迹 |
+| Golden 数据 | `data/{sid}/traces/{sid}.jsonl` — 原始 trace 文件，按需读取 |
 | LLM 裁判 | `OutputQualityMetric` / `TrajectorySimilarityMetric` |
 
 ---
@@ -40,12 +40,12 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 ## 2. 架构
 
 ```
-真实对话 → TracePlugin → {trace_dir}/{session}.jsonl
+真实对话 → TracePlugin → data/{sid}/traces/{sid}.jsonl
                                     │
                            BenchmarkBuilder.build(session_id, name)
                                     │
                                     ▼
-                           benchmarks/{name}.json (含 golden_trajectory, 人类可编辑)
+                           benchmarks/{name}.json (评测合约，仅含 expected_tools/expected_output_contains/max_turns)
 
   Case 边界：按 user_input 在 JSONL 中的位置索引切分，不依赖 turn 号。
   第 i 个到第 i+1 个 user_input 之间的所有事件属于 case_i。
@@ -78,7 +78,7 @@ ARF 的 `EvalRunner` 直接对应回归测试运行器：输入 benchmark（测�
 from arf.plugins.eval import BenchmarkBuilder
 from arf.plugins.trace.plugin import TracePlugin
 
-trace = TracePlugin({"trace_dir": "./data/traces"})
+trace = TracePlugin({"data_dir": "./data"})
 
 builder = BenchmarkBuilder(trace)
 
@@ -91,7 +91,7 @@ from arf.plugins.eval.models import EvalBenchmark
 benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 ```
 
-产出的 benchmark JSON 包含 `golden_trajectory`：
+产出的 benchmark JSON 包含评测合约字段：
 
 ```json
 {
@@ -101,31 +101,19 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
     {
       "id": "case_0",
       "input": "帮我读一下 README.md",
+      "session_id": "default",
       "expected_tools": ["read"],
       "expected_output_contains": ["ARF", "Framework"],
       "max_turns": 1,
-      "golden_trajectory": {
-        "annotated": false,
-        "turns": [
-          {
-            "turn": 1,
-            "assistant": {
-              "content": "好的，我来读取",
-              "tool_calls": [{"name": "read", "params": {"path": "README.md"}}]
-            },
-            "tool_results": [
-              {"tool_name": "read", "result": "# ARF Framework...", "success": true}
-            ],
-            "assistant_final": {"content": "README.md 的内容是：ARF 是一个..."}
-          }
-        ]
-      }
+      "expected_tool_calls": [
+        {"name": "read", "params": {"path": "README.md"}, "result_preview": "# ARF Framework\n\nARF 是一个...", "success": true}
+      ]
     }
   ]
 }
 ```
 
-人类可直接编辑 `golden_trajectory` 中的 `assistant.content` 来构造 golden answer，将 `annotated` 设为 `true` 启用参考式评测，或保留 `false` 让 judge 走无参考式独立评估。
+`golden_trajectory` 和 `original_output` 已从 benchmark 中移除——完整轨迹保留在 `data/{sid}/traces/{sid}.jsonl`，LLM metrics 的 reference 模式通过 `session_id` 按需读取。人类标注时直接查看 trace 文件。
 
 ### 3.2 运行 Eval（Online）
 
@@ -137,7 +125,7 @@ from arf.core.model_registry import ResolvedModelConfig
 
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
-    trace_dir="./data/traces",
+    trace_dir="./data",
     judge=JudgeModelConfig(),  # 仅语义配置，模型连接由 judge_model 提供
     judge_model=ResolvedModelConfig(
         model="deepseek-chat",
@@ -169,7 +157,7 @@ report.to_json("reports/file_ops_v1_20260611.json")
 ```python
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
-    trace_dir="./data/traces",
+    trace_dir="./data",
     mode="offline",
     trace_session_ids=["s1", "s2", "s3"],  # 对应 benchmark 中的 3 个 cases
 )
@@ -228,16 +216,15 @@ print(f"Improvements: {diff.improvements}")
 |------|------|------|
 | `id` | `str` | 用例 ID |
 | `input` | `str` | 用户消息文本 |
+| `session_id` | `str \| None` | 来源 trace session，LLM metrics 通过它读取完整 trace 做 reference 评测 |
 | `expected_tools` | `list[str] \| None` | 预期调用的工具名列表（name-only，向后兼容） |
-| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/blocked/success/result），按名称与 actual 配对 |
-| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词，自动构建时为空（标注人员填写） |
-| `original_output` | `str \| None` | 最后一轮的完整回答原文，供标注人员参考和提炼关键词 |
+| `expected_tool_calls` | `list[dict] \| None` | 预期工具调用（含 name/params/blocked/success/result_preview），按名称与 actual 配对 |
+| `expected_output_contains` | `list[str] \| None` | 预期输出包含的关键词，Builder 初始化为空列表 |
 | `max_turns` | `int \| None` | 预期最大轮次数 |
-| `golden_trajectory` | `dict \| None` | `{"annotated": <bool>, "turns": [...]}`，annotated 默认 `false` |
 
-`expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "blocked": false, "success": true, "result": "吃完了"}`。`params`、`blocked`、`success`、`result` 均可选——不标（None）则该维度不参与匹配。
+`expected_tool_calls[i]` 结构：`{"name": "eat", "params": {"name": "良子"}, "blocked": false, "success": true, "result_preview": "吃完了..."}`。`params`、`blocked`、`success`、`result_preview` 均可选——不标（None）则该维度不参与匹配。
 
-`golden_trajectory.annotated`：标注人员审阅完 trajectory 后手动改为 `true`。`false` 时 LLM 指标自动降级为无参考式独立评估。
+*已移除字段：`golden_trajectory`、`original_output`。完整轨迹保留在 `data/{sid}/traces/{sid}.jsonl`，LLM metrics reference 模式通过 `session_id` 按需读取。*
 
 ### JudgeModelConfig
 
@@ -264,7 +251,7 @@ JudgeModelConfig 仅包含**语义配置**——裁判的行为和提示词。�
 | 字段 | 说明 |
 |------|------|
 | `benchmark_path` | Benchmark JSON 文件路径 |
-| `trace_dir` | Trace 文件目录 |
+| `trace_dir` | Session 数据目录（默认 `./data`），trace 路径为 `{trace_dir}/{sid}/traces/{sid}.jsonl` |
 | `judge` | `JudgeModelConfig \| None` — 裁判语义配置（prompt、response_format） |
 | `judge_model` | `ResolvedModelConfig \| None` — 裁判模型连接信息，由 `agent_config.get_plugin_model_config("eval")` resolve |
 | `metrics` | 6 维 开关 dict |
@@ -310,8 +297,9 @@ JudgeModelConfig 仅包含**语义配置**——裁判的行为和提示词。�
 | Metric | 方法 | 输出 |
 |--------|------|------|
 | `SuccessRateMetric` | trace 中是否有 error 事件 | 0 或 1 |
-| `ToolCallAccuracyMetric` | 按名称配对：name + params + blocked + success + result 多字段匹配。`expected_tool_calls` 优先，`expected_tools` 兜底。同步统计 dependency_order_failures | 0–1 + dep_fail 计数 |
+| `ToolCallAccuracyMetric` | 按名称配对：name + params + blocked + success + result_preview 多字段匹配。`expected_tool_calls` 优先，`expected_tools` 兜底。同步统计 dependency_order_failures | 0–1 + dep_fail 计数 |
 | `TurnEfficiencyMetric` | 实际 turn 数 vs `max_turns` | 0–1 |
+| `OutputContainsMetric` | 实际最终输出是否包含 `expected_output_contains` 所有关键词（子串匹配） | 0–1 |
 
 **ToolCallAccuracyMetric 匹配策略**：
 
@@ -320,7 +308,7 @@ JudgeModelConfig 仅包含**语义配置**——裁判的行为和提示词。�
 3. 字符串参数用**子串匹配**（`"焖子"` in `"良子的焖子"`），非字符串用 `==`
 4. `expected.blocked` 非 None 时需匹配 actual 的 blocked 状态（用于标注安全策略拦截的场景）
 5. `expected.success` 非 None 时需匹配 actual 的 success 状态
-6. `expected.result` 非 None 时走子串匹配（`expected.result` in `actual.result`）
+6. `expected.result_preview` 非 None 时走子串匹配（`expected.result_preview` in `actual.result`）
 7. actual 可以多出额外参数（如框架注入的 `_workspace`），不影响匹配
 8. actual 多出 expected 没有的工具 → 降低总分（total 取 max(expected, actual)）
 9. `expected_tool_calls=None` 时退化为 `expected_tools` 的 name-only 模式
@@ -338,16 +326,18 @@ JudgeModelConfig 仅包含**语义配置**——裁判的行为和提示词。�
 
 LLM metrics 通过 `ModelAdapter`（而非 raw OpenAI client）调用 judge LLM，由 `EvalRunner` 在构造时从 `EvalConfig.judge_model` 构建。`temperature=0.0`。每个指标有内置的评分 prompt（含行为锚定的 1-5 评分标尺、边界案例指导、2-3 句推理要求），可通过 `EvalConfig.prompts` 按 key 覆盖。Judge API 调用失败时抛出 `EvalJudgeError`（fatal），Runner 会 [ABORT] 终止整个 run，防止在无效裁判下继续执行浪费资源。
 
+Reference 模式（`OutputQualityMetric`、`TrajectorySimilarityMetric`）：通过 `golden_case.session_id` 从 `data/{sid}/traces/{sid}.jsonl` 按需读取 golden 数据，不再依赖 benchmark JSON 中的 `golden_trajectory` 字段。无 `session_id` 时自动降级为 no-reference 模式。
+
 如果开启 LLM metric 但未配置 `judge` 或 `judge_model` → `EvalConfig.validate()` 抛错。
 
 不可评估时（如 `output_quality` 缺 actual content、`trajectory_similarity` 缺 trajectory），LLM metrics 返回 `None` 而非伪造的默认分（如 `3`），由 `EvalSummary` 的 `avg_*` 计算跳过 `None` 值。
 
 **裁判 prompt 默认值在 `arf/plugins/eval/plugin.yaml` 的 `config.prompts` 下集中管理**，五个 key：
 - `tool_call_result_llm` — 判断工具返回值是否语义等价，传入 user_input + tool_name + expected/actual 结果
-- `output_quality` — 参考式 (annotated=true)：1-5 评分最终回答质量 vs golden
-- `output_quality_free` — 无参考式 (annotated=false)：1-5 独立评分，以 system_prompt + tools 为约束
-- `trajectory_similarity` — 参考式 (annotated=true)：1-5 评分路径相似度 vs golden
-- `trajectory_similarity_free` — 无参考式 (annotated=false)：1-5 独立评估解题路径
+- `output_quality` — 参考式（有 session_id 且 trace 可读）：1-5 评分最终回答质量 vs golden
+- `output_quality_free` — 无参考式（无 session_id / trace 缺失）：1-5 独立评分，以 system_prompt + tools 为约束
+- `trajectory_similarity` — 参考式（有 session_id 且 trace 可读）：1-5 评分路径相似度 vs golden
+- `trajectory_similarity_free` — 无参考式（无 session_id / trace 缺失）：1-5 独立评估解题路径
 
 ---
 
@@ -355,11 +345,12 @@ LLM metrics 通过 `ModelAdapter`（而非 raw OpenAI client）调用 judge LLM�
 
 ### 6.1 自动构建 → 人工精修
 
-`BenchmarkBuilder.build()` 自动从 trace 提取 `expected_tool_calls`（含 name + params + result）和 `golden_trajectory`。被安全策略阻止的工具调用（`blocked: true`）也会被包含——这是正确行为的一部分。产出的 benchmark JSON 可作为起点，人工标注做三件事：
+`BenchmarkBuilder.build()` 自动从 trace 提取 `expected_tool_calls`（含 name + params + result_preview）。被安全策略阻止的工具调用（`blocked: true`）也会被包含——这是正确行为的一部分。产出的 benchmark JSON 可作为起点，人工标注做三件事：
 
 1. **删**：移除不关键的 turn（如中间探索性的 glob）
 2. **改**：修正 `expected_output_contains` 预期关键词，缩紧 `max_turns`
-3. **标**：给关键 tool_call 写 `params` 约束和 `result` 预期
+3. **标**：给关键 tool_call 写 `params` 约束和 `result_preview` 预期
+4. **查**：需要完整上下文时查看 `data/{sid}/traces/{sid}.jsonl` 原始 trace 文件
 
 ### 6.2 标注示例
 
@@ -436,7 +427,7 @@ LLM metrics 通过 `ModelAdapter`（而非 raw OpenAI client）调用 judge LLM�
 - **params 标关键字段即可**：不用标全量参数，标对决策有影响的字段（如 `path`、`pattern`、`name`）。框架自动注入的参数（`_workspace`）不要标
 - **result 可标可不标**：不标时 `ToolCallResultLLMMetric` 自动跳过（返回 1.0）。如需 LLM 裁判结果语义，写 "返回了用户列表 JSON" 而非原始返回值全文。LLM 做语义等价判断
 - **程序化优先**：工具名称和参数走 `ToolCallAccuracyMetric`（零开销），只在需要判断结果语义时开启 `ToolCallResultLLMMetric`（需 judge LLM）
-- **向后兼容**：已有 benchmark 的 `expected_tools` 无需迁移，ToolCallAccuracyMetric 自动 fallback 到 name-only 模式
+- **Backward compatible**: existing benchmark `expected_tools` don't need migration — `ToolCallAccuracyMetric` auto-fallbacks to name-only mode. `golden_trajectory` and `original_output` fields in old benchmarks are silently ignored.
 
 ---
 
@@ -489,7 +480,7 @@ from arf.plugins.eval.models import EvalConfig, JudgeModelConfig
 # 方式 1：通过 agent_config 自动 resolve judge_model（推荐）
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
-    trace_dir="./data/traces",
+    trace_dir="./data",
     judge=JudgeModelConfig(),  # 仅语义配置（可用默认），模型连接由 agent_config 提供
     metrics={
         "tool_call_accuracy": True,
@@ -509,7 +500,7 @@ runner = EvalRunner(config, agent_config=agent.config)
 from arf.core.model_registry import ResolvedModelConfig
 config = EvalConfig(
     benchmark_path="benchmarks/file_ops_v1.json",
-    trace_dir="./data/traces",
+    trace_dir="./data",
     judge=JudgeModelConfig(),
     judge_model=ResolvedModelConfig(
         model="deepseek-chat",
@@ -550,16 +541,13 @@ from arf.plugins.eval import BenchmarkBuilder
 from arf.plugins.trace.plugin import TracePlugin
 
 # 1. 从已有 trace 构建 benchmark
-trace = TracePlugin({"trace_dir": "./data/traces"})
+trace = TracePlugin({"data_dir": "./data"})
 builder = BenchmarkBuilder(trace)
 benchmark = builder.build(session_id="default", name="file_ops_v1")
 benchmark.to_json("benchmarks/file_ops_v1.json")
 
-# 2. 人工编辑 JSON
-# - 删除无关 turn
-# - 标注 expected_tool_calls[].params / .result
-# - 从 original_output 提炼 expected_output_contains 关键词
-# - golden_trajectory.annotated: false → true
+# 2. 人工编辑 JSON — 删除无关 turn、标注 expected_output_contains 关键词
+#    需要完整上下文时查看 data/default/traces/default.jsonl
 
 # 3. 加载已标注的 benchmark
 benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
@@ -570,16 +558,12 @@ benchmark = EvalBenchmark.from_json("benchmarks/file_ops_v1.json")
 ```
 Trace JSONL → Builder 自动提取 → 人工精修 JSON → 运行 Eval
                 ↓                        ↓
-         golden_trajectory          annotated: true
-         original_output            expected_output_contains 填写
- 
-  annotated=false 时：
-    规则 metric → 正常（不依赖 golden_trajectory）
-    LLM metric  → 降级为无参考式（仅用 system_prompt + tools + user_input）
- 
-  annotated=true 时：
-    规则 metric → 正常
-    LLM metric  → 参考式（golden vs actual 对比）
+         expected_tool_calls       expected_output_contains 填写
+         (含 result_preview)       
+
+  LLM 指标两种模式：
+    session_id 有效且 trace 可读 → 参考式（golden vs actual 对比）
+    无 session_id / trace 缺失   → 无参考式（仅用 system_prompt + tools + user_input）
 ```
 
 ### 8.5 运行与对比
@@ -603,5 +587,5 @@ print(f"Regressions: {diff.regressions}")
 - **HTML Report**：带 golden vs actual 并排对比的可视化报告
 - **CI 集成**：退出码 0（通过）/ 1（退化）
 - **并行执行**：多 case 并发运行，`asyncio.Semaphore` 控制并发度
-- **Preference 数据导出**：从 golden_trajectory 生成 chosen/rejected 对，导出 RLHF 训练格式
+- **Preference 数据导出**：从 trace 文件批量生成 chosen/rejected 对，导出 RLHF 训练格式
 - **自动 benchmark 生成**：从多个 trajectory 批量构建，按意图聚类去重
