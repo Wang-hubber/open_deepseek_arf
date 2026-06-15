@@ -56,7 +56,7 @@ class InMemoryToolExecutor:
     def __init__(self, tools: dict | None = None) -> None:
         self.calls: list = []
         self.results: dict[str, dict] = {}
-        self._tools = tools or {}
+        # tools param accepted for caller convenience (not yet used internally)
 
     def set_result(self, call_id: str, success: bool = True, data: dict | None = None, error: str | None = None) -> None:
         self.results[call_id] = {"success": success, "data": data or {}, "error": error}
