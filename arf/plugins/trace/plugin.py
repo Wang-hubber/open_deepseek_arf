@@ -45,6 +45,11 @@ class TracePlugin:
         from arf.plugins.trace.snapshot import EnvSnapshotBuilder
         self._snapshot_builder = EnvSnapshotBuilder(plugins_root, extra_files, extra_roots)
 
+    def set_data_dir(self, data_dir: str) -> None:
+        """Override data directory (called by base.py with computed _data_dir)."""
+        self._trace_dir = Path(data_dir) / "traces"
+        self._trace_dir.mkdir(parents=True, exist_ok=True)
+
     def set_trace_dir(self, trace_dir: str) -> None:
         """Override trace directory (called by base.py with computed _trace_dir)."""
         self._trace_dir = Path(trace_dir)

@@ -153,8 +153,7 @@ class BaseAgent:
         self._file_watcher = file_watcher
 
         # 3. Data & workspace paths
-        _mem_dir = str(_Path(_data_dir) / "memory")
-        _trace_dir = str(_Path(_data_dir) / "traces")
+        mem_dir = str(_Path(_data_dir) / "memory")
 
         # Two distinct concepts, previously conflated:
         #
@@ -184,10 +183,10 @@ class BaseAgent:
         from arf.core.plugin_runtime import PluginRuntime
 
         plugin_runtime = PluginRuntime(
-            memory_dir=_mem_dir,
+            memory_dir=mem_dir,
             workspace_dir=_workspace_root,
             state_dir=str(_Path(_data_dir) / "state"),
-            trace_dir=_trace_dir,
+            trace_dir=str(_Path(_data_dir) / "traces"),
             files_dir=str(_Path(_data_dir) / "files"),
             system_model="quick",
             model_configs={
@@ -406,9 +405,8 @@ class BaseAgent:
             max_turns=(adv.max_turns if adv else 50),
             max_tokens=(adv.max_tokens if adv else 100_000),
             workspace_dir=_workspace_root,
-            memory_dir=_mem_dir,
-            state_dir=str(_Path(_data_dir) / "state"),
-            trace_dir=_trace_dir,
+            memory_dir=mem_dir,
+            data_dir=str(_Path(_data_dir)),
             mcp_tool_resolver=_mcp_tool_resolver,
             call_timeout=(adv.call_timeout if adv else 120.0),
             session_timeout=(adv.session_timeout if adv else None),
@@ -447,8 +445,8 @@ class BaseAgent:
 
         # Wire computed trace_dir into TracePlugin
         for sp in side_plugins:
-            if sp.name == "trace" and hasattr(sp, "set_trace_dir"):
-                sp.set_trace_dir(_trace_dir)
+            if sp.name == "trace" and hasattr(sp, "set_data_dir"):
+                sp.set_data_dir(str(_data_dir))
                 break
 
         # ---- Active session tracking ----
