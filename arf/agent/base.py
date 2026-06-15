@@ -185,6 +185,7 @@ class BaseAgent:
         plugin_runtime = PluginRuntime(
             memory_dir=mem_dir,
             workspace_dir=_workspace_root,
+            data_dir=str(_Path(_data_dir)),
             state_dir=str(_Path(_data_dir) / "state"),
             trace_dir=str(_Path(_data_dir) / "traces"),
             files_dir=str(_Path(_data_dir) / "files"),
