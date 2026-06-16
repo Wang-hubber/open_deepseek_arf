@@ -15,6 +15,84 @@ from arf.plugins.compaction.summarizer import summarize
 
 logger = logging.getLogger("arf.plugins.compaction")
 
+
+def _find_round_boundaries(messages: list[dict]) -> list[int]:
+    """Return indices of user messages that start new rounds.
+
+    Skips isCompactSummary markers — those are compaction artifacts, not real rounds.
+    """
+    boundaries = []
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "user" and not m.get("isCompactSummary"):
+            boundaries.append(i)
+    return boundaries
+
+
+def _truncate_tool_messages(
+    messages: list[dict],
+    keep_rounds: int,
+    data_dir: str,
+    session_id: str,
+    preview_chars: int,
+) -> tuple[list[dict], int]:
+    """Truncate tool messages from rounds before the keep window.
+
+    Returns (modified_messages, truncated_count).
+    Tool results before the keep window are written to disk and replaced with
+    a preview + path reference. Messages at or after the cutoff are untouched.
+    """
+    import hashlib
+    from pathlib import Path
+
+    boundaries = _find_round_boundaries(messages)
+    if len(boundaries) <= keep_rounds:
+        return messages, 0
+
+    cutoff = boundaries[-keep_rounds]  # first message index of keep window
+    new_msgs = list(messages)
+    truncated_count = 0
+
+    for i in range(cutoff):
+        m = new_msgs[i]
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        content = m.get("content", "")
+        if not isinstance(content, str) or not content:
+            continue
+
+        # Determine round number for file path (which user msg precedes this tool msg)
+        round_num = 0
+        for b_idx, b in enumerate(boundaries):
+            if b <= i:
+                round_num = b_idx
+            else:
+                break
+
+        tool_name = m.get("name", "unknown")
+        content_hash = hashlib.sha1(content.encode()).hexdigest()[:8]
+        output_dir = Path(data_dir) / session_id / "tool_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"round_{round_num}_{tool_name}_{content_hash}.txt"
+
+        try:
+            output_path.write_text(content, encoding="utf-8")
+        except OSError:
+            logger.warning("Truncation: failed to write tool output to %s", output_path)
+            continue
+
+        preview = content[:preview_chars]
+        new_msgs[i] = {
+            **m,
+            "content": (
+                f"[Tool output truncated — {len(content)} chars, full at {output_path}]\n"
+                f"{preview}..."
+            ),
+        }
+        truncated_count += 1
+
+    return new_msgs, truncated_count
+
+
 DEFAULT_WINDOW_SIZE = 131_072
 
 
