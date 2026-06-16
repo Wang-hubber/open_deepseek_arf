@@ -447,29 +447,37 @@ class ControlPlane:
                                 {"content": text, "reasoning": reasoning},
                                 turn=turn, session_id=session_id,
                             )
-                    elif chunk.get("type") == "tool_call":
-                        stream_tool_calls.append({
-                            "id": chunk.get("id", ""),
-                            "name": chunk.get("name", ""),
-                            "params": json.loads(chunk.get("arguments", "{}")),
-                        })
-                    elif chunk.get("type") == "tool_call_chunk":
-                        # Safety net: some providers may not yield final "tool_call"
-                        # events. Accumulate from incremental chunks keyed by id.
+                    elif chunk.get("type") in ("tool_call", "tool_call_chunk"):
+                        # Deduplicate by id — streaming yields incremental
+                        # "tool_call_chunk" events followed by a final "tool_call"
+                        # event for the same call. Update in-place if exists.
                         tc_id = chunk.get("id", "")
-                        updated = False
+                        tc_name = chunk.get("name", "")
+                        is_final = chunk.get("type") == "tool_call"
+                        existing = None
                         for tc in stream_tool_calls:
                             if tc.get("id") == tc_id:
-                                tc["name"] = chunk.get("name", "") or tc["name"]
-                                tc["_raw_args"] = chunk.get("arguments", "{}")
-                                updated = True
+                                existing = tc
                                 break
-                        if not updated:
-                            stream_tool_calls.append({
-                                "id": tc_id,
-                                "name": chunk.get("name", ""),
-                                "_raw_args": chunk.get("arguments", "{}"),
-                            })
+                        if is_final:
+                            params = json.loads(chunk.get("arguments", "{}"))
+                            if existing:
+                                existing["name"] = tc_name or existing["name"]
+                                existing["params"] = params
+                                existing.pop("_raw_args", None)
+                            else:
+                                stream_tool_calls.append({
+                                    "id": tc_id, "name": tc_name, "params": params,
+                                })
+                        else:
+                            if existing:
+                                existing["name"] = tc_name or existing["name"]
+                                existing["_raw_args"] = chunk.get("arguments", "{}")
+                            else:
+                                stream_tool_calls.append({
+                                    "id": tc_id, "name": tc_name,
+                                    "_raw_args": chunk.get("arguments", "{}"),
+                                })
                     elif chunk.get("type") == "error":
                         yield self._make_event("error", {
                             "phase": "stream_model",
