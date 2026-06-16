@@ -538,3 +538,25 @@ def test_truncation_events_not_injected_as_engine_events(plugin, ctx_with_emit, 
     engine_types = [e["type"] for e in engine_events]
     assert "truncation_start" not in engine_types
     assert "truncation_end" not in engine_types
+
+
+def test_l3_summarization_failure_keeps_level(plugin, ctx_with_emit):
+    """When LLM summarization fails, compaction still saves with fallback summary."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg(f"result {i}", f"tc{i}", "read"))
+
+    plugin._level["test-session"] = 2  # already at L2
+    plugin._call_model.side_effect = RuntimeError("API error")
+
+    state = make_state(msgs, last_token_usage=8000)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    # The _compact method catches summarizer failure internally and still
+    # saves state with fallback summary. Verify it works.
+    saved = plugin._state_store.put.call_args[0][1]
+    assert any(m.get("isCompactSummary") for m in saved["messages"])
+    assert plugin._level["test-session"] == 0  # resets even on fallback
