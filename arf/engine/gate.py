@@ -7,7 +7,7 @@ class GateChecker:
     def __init__(
         self,
         max_turns: int = 50,
-        max_tokens: int | None = None,
+        max_tokens: int | None = None,  # None = no token budget limit
         max_time_seconds: int | None = None,
         max_consecutive_errors: int | None = None,
     ):
