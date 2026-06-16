@@ -137,7 +137,7 @@ class ControlPlane:
     # Core execution loop
     # ==================================================================
 
-    async def _execute(self, state: AgentState):
+    async def _execute(self, state: AgentState, stop_on_text: bool = False):
         session_id = state.get("session_id", "default")
         self._current_session_id = session_id
         self._interaction_round = state.get("interaction_round", 0)
@@ -167,7 +167,8 @@ class ControlPlane:
 
         # --- round loop ---
         aborted = False
-        while not aborted:
+        completed = False
+        while not aborted and not completed:
             if self._cancelled():
                 state["_session_ended"] = True
                 ctx.inject_engine_event("session_cancelled", {"reason": "cancelled"})
@@ -322,6 +323,8 @@ class ControlPlane:
                 # Text-only response (no tool_calls) → round complete
                 if not has_tool_calls:
                     ctx.inject_engine_event("turn_exit", {"reason": "no_tool_calls"})
+                    if stop_on_text:
+                        completed = True
                     break
 
                 # Gate check — terminate if budget exceeded
@@ -1012,11 +1015,11 @@ class ControlPlane:
         async for _ in self._execute(state):
             pass
 
-    async def astream(self, state: AgentState):
+    async def astream(self, state: AgentState, stop_on_text: bool = False):
         session_id = state.get("session_id", "default")
         try:
             try:
-                async for event in self._execute(state):
+                async for event in self._execute(state, stop_on_text=stop_on_text):
                     yield event
             except SessionAbortedError:
                 state["_session_ended"] = True

@@ -14,7 +14,7 @@ class TestSSEStreamAdapter:
         """Each event is emitted as ``data: <json>\\n\\n``."""
         agent = MagicMock()
 
-        async def fake_astream(_msg, _sid="default"):
+        async def fake_astream(_msg, _sid="default", **_kw):
             yield AgentEvent(type="session_start", session_id="s1", turn=0,
                              data={"ok": True})
             yield AgentEvent(type="text", session_id="s1", turn=1,
@@ -44,7 +44,7 @@ class TestSSEStreamAdapter:
         """No events means no SSE chunks."""
         agent = MagicMock()
 
-        async def empty_astream(_msg, _sid="default"):
+        async def empty_astream(_msg, _sid="default", **_kw):
             if False:
                 yield  # pragma: no cover
 
@@ -60,7 +60,7 @@ class TestNDJSONStreamAdapter:
         """Each event is ``<json>\\n`` — one line per event."""
         agent = MagicMock()
 
-        async def fake_astream(_msg, _sid="default"):
+        async def fake_astream(_msg, _sid="default", **_kw):
             yield AgentEvent(type="session_start", session_id="s2", turn=0,
                              data={"ok": True})
             yield AgentEvent(type="tool_call_start", session_id="s2", turn=1,
