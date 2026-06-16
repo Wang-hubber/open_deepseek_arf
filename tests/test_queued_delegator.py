@@ -234,3 +234,23 @@ class TestRunnerException:
         assert any(p["task_id"] == r1["task_id"] and "error" in p for p in pending)
 
         barrier.set()
+
+
+class TestReset:
+    @pytest.fixture
+    def d(self):
+        return QueuedTaskDelegator(max_concurrent=2)
+
+    @pytest.mark.anyio
+    async def test_reset_clears_all_state(self, d):
+        async def runner(task: dict) -> dict:
+            return {"started": True}
+
+        await d.dispatch("s1", {"n": 1}, runner)
+        await asyncio.sleep(0)
+        await d.complete("s1", "task_1", {"result": "done"})
+
+        d.reset()
+
+        assert await d.get_pending("s1") == []
+        assert await d.queue_status("s1") == {"running": [], "queued": [], "max_concurrent": 2}
