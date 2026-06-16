@@ -11,6 +11,7 @@ EventType = Literal[
     "model_call_start", "model_call_end",
     "tool_call_start", "tool_call_end", "tool_call_result",  # tool_call_result — used by ReplayController
     "compaction_start", "compaction_end",
+    "truncation_start", "truncation_end",
     "approval_required",
     "approval_resolved",
     "guard_block",          # SessionModeManager / PermissionRegistry / PathCheckToolGuard blocked a tool
