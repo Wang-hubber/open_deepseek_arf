@@ -1,3 +1,4 @@
+from __future__ import annotations
 """ToolProvider — scan tools/{name}/ for tool.yaml + function.py."""
 import importlib.util
 import inspect
