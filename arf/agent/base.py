@@ -46,6 +46,28 @@ def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
     return text
 
 
+def _derive_gate_max_tokens(config: AgentConfig) -> int:
+    """Derive session token budget from model context_window instead of hardcoded 100k.
+
+    Uses 75% of the smallest model's context_window as the gate limit.
+    Falls back to 200_000 if no model configs are available.
+    """
+    ctx_windows = []
+    if config.model_defs:
+        for md in config.model_defs:
+            if isinstance(md, dict):
+                cw = md.get("context_window", 0)
+                if cw:
+                    ctx_windows.append(cw)
+    if config.models:
+        for m in config.models:
+            if getattr(m, "context_window", 0):
+                ctx_windows.append(m.context_window)
+    if ctx_windows:
+        return int(min(ctx_windows) * 0.75)
+    return 200_000
+
+
 class BaseAgent:
     def __init__(self, config: AgentConfig, app_context: AppContext | None = None, **override_protocols) -> None:
         self.config = config
@@ -406,7 +428,7 @@ class BaseAgent:
             cancel_event=None,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
-            max_tokens=(adv.max_tokens if adv else 100_000),
+            max_tokens=(adv.max_tokens if adv else _derive_gate_max_tokens(config)),
             workspace_dir=_workspace_root,
             memory_dir=mem_dir,
             data_dir=str(_Path(_data_dir)),
