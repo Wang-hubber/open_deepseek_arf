@@ -17,10 +17,6 @@ logger = logging.getLogger("arf.plugins.compaction")
 
 DEFAULT_WINDOW_SIZE = 131_072
 
-_DEFAULT_EXCLUDE_TOOLS = frozenset({
-    "read_file", "search_content", "search_files", "directory_tree",
-})
-
 
 class CompactionPlugin:
     """Structured context compaction mounted on round_end hook.
@@ -32,25 +28,31 @@ class CompactionPlugin:
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
+
+        # L3 LLM compaction
         self.threshold: float = cfg.get("threshold", 0.75)
-        self.window_size: int = cfg.get("window_size", DEFAULT_WINDOW_SIZE)
+        self.window_size: int = cfg.get("window_size", 131_072)
         self.keep_count: int = cfg.get("keep_count", 8)
-        self._model_context_window: int | None = None  # injected from ModelConfig
+
+        # Truncation (L1/L2 + safeguard)
+        tr_cfg = cfg.get("truncation", {})
+        self.l1_threshold: float = tr_cfg.get("l1_threshold", 0.50)
+        self.l2_threshold: float = tr_cfg.get("l2_threshold", 0.70)
+        self._preview_chars: int = tr_cfg.get("preview_chars", 100)
+        self._window_ratio: float = tr_cfg.get("window_ratio", 0.15)
+
+        # Infrastructure (injected)
+        self._model_context_window: int | None = None
         self._call_model = None
         self._state_store = None
+        self._data_dir: str = cfg.get("data_dir", "./data")
+
+        # Per-session state
+        self._level: dict[str, int] = {}              # 0=clean, 1=L1, 2=L2
         self._cooldown: dict[str, int] = {}
         self._compaction_count: dict[str, int] = {}
-
-        # -- tool_output externalization config --
-        to_cfg = cfg.get("tool_output", {})
-        self._to_enabled: bool = to_cfg.get("enabled", True)
-        self._to_threshold: int = to_cfg.get("threshold", 500)
-        self._to_preview_head: int = to_cfg.get("preview_head", 500)
-        self._to_preview_tail: int = to_cfg.get("preview_tail", 200)
-        self._to_exclude: frozenset = frozenset(
-            to_cfg.get("exclude_tools", [])
-        ) | _DEFAULT_EXCLUDE_TOOLS
-        self._data_dir: str = cfg.get("data_dir", "./data")
+        self._truncation_count: dict[str, int] = {}
+        self._avg_tools_per_round: dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -85,9 +87,55 @@ class CompactionPlugin:
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
         if hook_name == "round_end":
-            await self._maybe_compact(ctx)
+            await self._maybe_truncate_or_compact(ctx)
         elif hook_name == "tool_output":
-            await self._externalize_tool_outputs(ctx)
+            await self._safeguard(ctx)
+
+    async def _safeguard(self, ctx: PluginContext) -> None:
+        """Dynamic-threshold safeguard: truncate single oversized tool results.
+
+        Only fires for extreme outputs that would skip multiple compaction levels.
+        Threshold = window * window_ratio / avg_tools_per_round, floored at 500 chars.
+        """
+        import hashlib
+        from pathlib import Path
+
+        raw_results = ctx.hook_data.get("_raw_tool_results", {})
+        session_id = ctx.session_id
+        turn = ctx.turn or 0
+
+        threshold = (self.effective_window_size * self._window_ratio) / max(
+            self._avg_tools_per_round.get(session_id, 1.0), 1.0
+        )
+        threshold = max(int(threshold), 500)
+
+        for tc_id, r in raw_results.items():
+            result_data = r.get("data", "")
+            if not result_data or len(result_data) <= threshold:
+                continue
+
+            tool_name = r.get("tool_name", "")
+            content_hash = hashlib.sha1(result_data.encode()).hexdigest()[:8]
+            output_dir = Path(self._data_dir) / session_id / "tool_outputs"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"turn_{turn}_{tool_name}_{content_hash}.txt"
+
+            try:
+                output_path.write_text(result_data, encoding="utf-8")
+            except OSError:
+                logger.warning("Safeguard: failed to write tool output to %s", output_path)
+                continue
+
+            preview = result_data[:self._preview_chars]
+            new_data = (
+                f"[Tool output truncated — {len(result_data)} chars, full at {output_path}]\n"
+                f"{preview}..."
+            )
+            r["data"] = new_data
+            logger.debug(
+                "Safeguard: truncated %s output (%d chars) session=%s turn=%d",
+                tool_name, len(result_data), session_id, turn,
+            )
 
     async def compact_now(self, ctx: PluginContext, trigger: str = "manual") -> dict:
         """Public API for manual compaction via tool call.
@@ -96,49 +144,24 @@ class CompactionPlugin:
         """
         return await self._compact(ctx, trigger)
 
-    async def _externalize_tool_outputs(self, ctx: PluginContext) -> None:
-        """Externalize large tool outputs to disk, keeping preview in context."""
-        import hashlib
-        from pathlib import Path
-
-        if not self._to_enabled:
-            return
-
-        raw_results = ctx.hook_data.get("_raw_tool_results", {})
-        session_id = ctx.session_id
-        turn = ctx.turn or 0
-
-        for tc_id, r in raw_results.items():
-            tool_name = r.get("tool_name", "")
-            if tool_name in self._to_exclude:
-                continue
-
-            result_data = r.get("data", "")
-            if not result_data or len(result_data) <= self._to_threshold:
-                continue
-
-            # Externalize: write full to disk, replace with preview
-            content_hash = hashlib.sha1(result_data.encode()).hexdigest()[:8]
-            output_dir = Path(self._data_dir) / session_id / "tool_outputs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / f"turn_{turn}_{tool_name}_{content_hash}.txt"
-            output_path.write_text(result_data, encoding="utf-8")
-
-            preview_head = result_data[:self._to_preview_head]
-            preview_tail = ""
-            if len(result_data) > self._to_preview_head + self._to_preview_tail:
-                preview_tail = result_data[-self._to_preview_tail:]
-
-            tail_part = f"\n...\n{preview_tail}" if preview_tail else ""
-            new_data = (
-                f"[Tool output externalized — {len(result_data)} chars, full at {output_path}]\n"
-                f"{preview_head}{tail_part}"
-            )
-            r["data"] = new_data
-
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    async def _maybe_truncate_or_compact(self, ctx: PluginContext) -> None:
+        """Progressive compaction state machine (full impl in later tasks).
+
+        For now: maintain EMA, then delegate to existing _maybe_compact logic.
+        """
+        sid = ctx.session_id
+        # Maintain EMA for safeguard
+        raw = ctx.hook_data.get("_raw_tool_results", {})
+        actual_count = len(raw)
+        prev_avg = self._avg_tools_per_round.get(sid, 1.0)
+        self._avg_tools_per_round[sid] = 0.7 * prev_avg + 0.3 * actual_count
+
+        # Delegate to existing compaction for now
+        await self._maybe_compact(ctx)
 
     async def _maybe_compact(self, ctx: PluginContext) -> None:
         sid = ctx.session_id
