@@ -73,6 +73,11 @@ def test_safeguard_truncates_oversized_output(plugin, ctx_with_emit, tmp_data_di
     assert "[Tool output truncated" in r["data"]
     assert "full at" in r["data"]
     assert r["data"].startswith("[Tool output truncated")
+    # Verify safeguard_triggered event was emitted
+    safeguard_events = [e for e in ctx_with_emit._pending_events if e.type == "safeguard_triggered"]
+    assert len(safeguard_events) == 1
+    assert safeguard_events[0].data["tool_name"] == "search"
+    assert safeguard_events[0].data["original_chars"] == 5000
     # Check content was written to disk
     content_hash = hashlib.sha1(big_data.encode()).hexdigest()[:8]
     expected_file = Path(tmp_data_dir) / "test-session" / "tool_outputs" / f"turn_3_search_{content_hash}.txt"
