@@ -558,6 +558,14 @@ class ControlPlane:
             "usage": stream_usage,
         }, turn=turn, session_id=session_id)
 
+        # Context stats for frontend dashboard
+        yield self._make_event("context_stats", {
+            "prompt_tokens": stream_usage.get("prompt_tokens", 0),
+            "session_tokens": state.get("_total_tokens", 0),
+            "round": state.get("interaction_round", 0),
+            "turn": turn,
+        }, turn=turn, session_id=session_id)
+
         # Append assistant message
         content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
         tool_calls = self._parse_tool_calls(resp)
