@@ -366,8 +366,9 @@ class CompactionPlugin:
         recent_msgs = msgs[split:]
 
         # Emit compaction_start event
-        ctx.inject_engine_event("compaction_start", {
+        ctx.emit("compaction_start", {
             "trigger": trigger,
+            "level": "L3",
             "pre_tokens": last_usage,
             "total_messages": len(msgs),
             "compacting_count": len(old_msgs),
@@ -418,8 +419,9 @@ class CompactionPlugin:
         self._cooldown[sid] = 2
 
         # Emit compaction_end event
-        ctx.inject_engine_event("compaction_end", {
+        ctx.emit("compaction_end", {
             "trigger": trigger,
+            "level": "L3",
             "compacted_count": len(old_msgs),
             "kept_count": len(recent_msgs),
             "summary_length": len(summary_text),

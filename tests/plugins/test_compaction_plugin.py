@@ -468,3 +468,73 @@ def test_cooldown_blocks_l3(plugin, ctx_with_emit):
     # Cooldown decremented, no additional compaction
     assert plugin._cooldown["test-session"] == 1
     assert plugin._state_store.put.call_count == first_call_count
+
+
+# --- Event emission tests ---
+
+def test_truncation_emits_events(plugin, ctx_with_emit, tmp_data_dir):
+    """L1 truncation emits truncation_start and truncation_end via ctx.emit()."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    state = make_state(msgs, last_token_usage=5500)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    events = ctx_with_emit._pending_events
+    event_types = [e.type for e in events]
+    assert "truncation_start" in event_types
+    assert "truncation_end" in event_types
+
+    start_ev = next(e for e in events if e.type == "truncation_start")
+    assert start_ev.data["level"] == "L1"
+    assert start_ev.data["trigger"] == "auto"
+    assert start_ev.data["pre_tokens"] == 5500
+
+    end_ev = next(e for e in events if e.type == "truncation_end")
+    assert end_ev.data["level"] == "L1"
+    assert end_ev.data["truncated_count"] > 0
+
+
+def test_compaction_emits_events(plugin, ctx_with_emit):
+    """L3 compaction emits compaction_start/end via ctx.emit() with level L3."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg(f"result {i}", f"tc{i}", "read"))
+
+    state = make_state(msgs, last_token_usage=8000)
+    plugin._call_model.return_value = {"content": "compact summary"}
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    events = ctx_with_emit._pending_events
+    event_types = [e.type for e in events]
+    assert "compaction_start" in event_types
+    assert "compaction_end" in event_types
+
+    start_ev = next(e for e in events if e.type == "compaction_start")
+    assert start_ev.data["level"] == "L3"
+
+
+def test_truncation_events_not_injected_as_engine_events(plugin, ctx_with_emit, tmp_data_dir):
+    """Truncation events go to ctx.emit() only, NOT inject_engine_event."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    state = make_state(msgs, last_token_usage=5500)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    # ctx.emit() events are in _pending_events, not hook_data._engine_events
+    engine_events = ctx_with_emit.hook_data.get("_engine_events", [])
+    engine_types = [e["type"] for e in engine_events]
+    assert "truncation_start" not in engine_types
+    assert "truncation_end" not in engine_types
