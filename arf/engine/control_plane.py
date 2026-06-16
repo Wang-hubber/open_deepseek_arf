@@ -1030,6 +1030,13 @@ class ControlPlane:
                     {"session_id": session_id, "reason": "aborted"},
                     session_id=session_id,
                 )
+            else:
+                if not state.get("_session_ended"):
+                    yield self._make_event(
+                        "session_end",
+                        {"session_id": session_id, "reason": "completed"},
+                        session_id=session_id,
+                    )
         except Exception as exc:
             # Unknown error — no recovery strategy, propagate to caller
             state["_session_ended"] = True
