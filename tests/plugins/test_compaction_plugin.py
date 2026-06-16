@@ -560,3 +560,68 @@ def test_l3_summarization_failure_keeps_level(plugin, ctx_with_emit):
     saved = plugin._state_store.put.call_args[0][1]
     assert any(m.get("isCompactSummary") for m in saved["messages"])
     assert plugin._level["test-session"] == 0  # resets even on fallback
+
+
+# --- Full chain integration ---
+
+def test_full_l1_l2_l3_cascade(plugin, ctx_with_emit, tmp_data_dir):
+    """Multi-round conversation triggers complete L1->L2->L3 cascade with reset."""
+    # Build 10 rounds
+    msgs = [make_msg("system", "sys")]
+    for i in range(10):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 3000, f"tc{i}", "search"))
+
+    plugin._call_model.return_value = {"content": "final summary"}
+
+    # Round 1: L1 fires (55% > 50%)
+    state = make_state(msgs, last_token_usage=5500)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+    assert plugin._level["test-session"] == 1
+    l1_events = [e for e in ctx_with_emit._pending_events if e.type == "truncation_start"]
+    assert len(l1_events) == 1 and l1_events[0].data["level"] == "L1"
+
+    # Round 2: L2 fires (75% > 70%, level=1)
+    saved = plugin._state_store.put.call_args[0][1]
+    state2 = make_state(saved["messages"], last_token_usage=7500)
+    ctx2 = PluginContext(session_id="test-session", interaction_round=8)
+    ctx2._pending_events = []
+    ctx2.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx2, state2))
+    assert plugin._level["test-session"] == 2
+    l2_events = [e for e in ctx2._pending_events if e.type == "truncation_start"]
+    assert len(l2_events) == 1 and l2_events[0].data["level"] == "L2"
+
+    # Round 3: L3 fires (80% > 75%), resets level
+    saved2 = plugin._state_store.put.call_args[0][1]
+    state3 = make_state(saved2["messages"], last_token_usage=8000)
+    ctx3 = PluginContext(session_id="test-session", interaction_round=9)
+    ctx3._pending_events = []
+    ctx3.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx3, state3))
+    assert plugin._level["test-session"] == 0  # reset
+    assert plugin._cooldown["test-session"] == 2
+    l3_events = [e for e in ctx3._pending_events if e.type == "compaction_start"]
+    assert len(l3_events) == 1 and l3_events[0].data["level"] == "L3"
+
+    # Round 4-5: Cooldown prevents further compaction
+    ctx4 = PluginContext(session_id="test-session", interaction_round=10)
+    ctx4._pending_events = []
+    ctx4.hook_data["_raw_tool_results"] = {}
+    saved3 = plugin._state_store.put.call_args[0][1]
+    state4 = make_state(saved3["messages"], last_token_usage=8000)
+    put_before = plugin._state_store.put.call_count
+    asyncio.run(_run_round_end(plugin, ctx4, state4))
+    assert plugin._cooldown["test-session"] == 1
+    assert plugin._state_store.put.call_count == put_before  # no save
+
+    # After cooldown expired, L1 can fire again on new compacted messages
+    plugin._cooldown["test-session"] = 0
+    ctx5 = PluginContext(session_id="test-session", interaction_round=11)
+    ctx5._pending_events = []
+    ctx5.hook_data["_raw_tool_results"] = {}
+    state5 = make_state(saved3["messages"], last_token_usage=5500)
+    asyncio.run(_run_round_end(plugin, ctx5, state5))
+    assert plugin._level["test-session"] == 1  # L1 fires again
