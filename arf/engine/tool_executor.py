@@ -79,8 +79,7 @@ class ConcurrentToolExecutor:
         params but none matched — nothing to check.
         """
         if tool_name in self._path_param_cache:
-            result = self._path_param_cache[tool_name]
-            return result if result else None
+            return self._path_param_cache[tool_name]
 
         try:
             defs = await self._resolver.get_tool_definitions(
@@ -98,8 +97,7 @@ class ConcurrentToolExecutor:
                     path_names.add(pname)
             self._path_param_cache[name] = path_names
 
-        result = self._path_param_cache.get(tool_name)
-        return result if result else None
+        return self._path_param_cache.get(tool_name)
 
     async def execute(
         self,
