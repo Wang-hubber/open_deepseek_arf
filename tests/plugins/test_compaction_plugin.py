@@ -104,3 +104,180 @@ def test_safeguard_write_failure_skips(plugin, ctx_with_emit, tmp_data_dir):
 
     r = ctx_with_emit.hook_data["_raw_tool_results"]["t1"]
     assert r["data"] == big_data  # unchanged
+
+
+# --- Message helpers ---
+
+def make_msg(role: str, content: str, **kwargs) -> dict:
+    m = {"role": role, "content": content}
+    m.update(kwargs)
+    return m
+
+
+def make_tool_msg(content: str, tool_call_id: str = "tc1", tool_name: str = "read") -> dict:
+    return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": content}
+
+
+# --- Round boundary tests ---
+
+def test_find_round_boundaries():
+    """User messages (non-isCompactSummary) mark round starts."""
+    msgs = [
+        make_msg("system", "You are a helpful assistant"),
+        make_msg("user", "First question"),
+        make_msg("assistant", "First answer"),
+        make_msg("user", "Second question"),
+        make_msg("assistant", "Second answer"),
+        make_msg("user", "Third question"),
+        make_msg("assistant", "Third answer"),
+    ]
+    from arf.plugins.compaction.plugin import _find_round_boundaries
+    boundaries = _find_round_boundaries(msgs)
+    assert boundaries == [1, 3, 5]  # indices of user messages
+
+
+def test_find_round_boundaries_skips_compact_summary():
+    """isCompactSummary user messages are NOT round boundaries."""
+    msgs = [
+        make_msg("user", "summary", isCompactSummary=True),
+        make_msg("user", "Real question"),
+    ]
+    from arf.plugins.compaction.plugin import _find_round_boundaries
+    boundaries = _find_round_boundaries(msgs)
+    assert boundaries == [1]  # only the real question
+
+
+def test_find_round_boundaries_empty():
+    from arf.plugins.compaction.plugin import _find_round_boundaries
+    assert _find_round_boundaries([]) == []
+
+
+# --- Truncation tests ---
+
+def test_truncate_tool_messages_l1(plugin, ctx_with_emit, tmp_data_dir):
+    """L1 truncation keeps keep_count*2 rounds (6 rounds), truncates tool msgs before."""
+    keep_count = 3
+    # Build 8 rounds (user+assistant+tool per round), keep 6
+    msgs = [make_msg("system", "system prompt")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Question {i}"))
+        msgs.append(make_msg("assistant", f"Answer {i}"))
+        msgs.append(make_tool_msg(f"Tool result for round {i}: " + "x" * 2000, f"tc{i}", "search"))
+    # Rounds at indices: 1, 4, 7, 10, 13, 16, 19, 22
+
+    from arf.plugins.compaction.plugin import _truncate_tool_messages
+    new_msgs, truncated_count = _truncate_tool_messages(
+        msgs, keep_rounds=keep_count * 2,  # 6
+        data_dir=tmp_data_dir,
+        session_id="test-session",
+        preview_chars=100,
+    )
+
+    # First 2 rounds (indices 1-6) should have tool results truncated
+    # Rounds 3-8 (indices 7+) should be intact
+    # Round 1 tool at index 3
+    assert "[Tool output truncated" in new_msgs[3]["content"]
+    # Round 6 tool at index 18
+    assert "[Tool output truncated" not in new_msgs[18]["content"]
+    # Last round tool intact
+    assert new_msgs[22]["content"] == msgs[22]["content"]
+    assert truncated_count == 2  # 2 tool messages truncated
+
+
+def test_truncate_tool_messages_l2(plugin, ctx_with_emit, tmp_data_dir):
+    """L2 truncation tightens to keep_count rounds (3 rounds)."""
+    keep_count = 3
+    msgs = [make_msg("system", "system prompt")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Question {i}"))
+        msgs.append(make_msg("assistant", f"Answer {i}"))
+        msgs.append(make_tool_msg(f"Tool result {i}: " + "x" * 2000, f"tc{i}", "search"))
+
+    from arf.plugins.compaction.plugin import _truncate_tool_messages
+    new_msgs, truncated_count = _truncate_tool_messages(
+        msgs, keep_rounds=keep_count,
+        data_dir=tmp_data_dir,
+        session_id="test-session",
+        preview_chars=100,
+    )
+
+    # First 5 rounds truncated, last 3 intact
+    assert truncated_count == 5
+
+
+def test_truncate_writes_to_disk(plugin, ctx_with_emit, tmp_data_dir):
+    """Truncated content is written to tool_outputs/ directory."""
+    big_content = "IMPORTANT_DATA_" + "x" * 2000
+    msgs = [
+        make_msg("user", "Q1"),
+        make_msg("assistant", "A1"),
+        make_tool_msg(big_content, "tc1", "grep"),
+        make_msg("user", "Q2"),
+        make_msg("assistant", "A2"),
+        make_tool_msg("small", "tc2", "read"),
+    ]
+
+    from arf.plugins.compaction.plugin import _truncate_tool_messages
+    new_msgs, _ = _truncate_tool_messages(
+        msgs, keep_rounds=1,
+        data_dir=tmp_data_dir,
+        session_id="test-session",
+        preview_chars=100,
+    )
+
+    # Verify file written
+    content_hash = hashlib.sha1(big_content.encode()).hexdigest()[:8]
+    expected_file = Path(tmp_data_dir) / "test-session" / "tool_outputs" / f"round_0_grep_{content_hash}.txt"
+    assert expected_file.exists()
+    assert expected_file.read_text() == big_content
+
+    # Truncated message has preview (100 chars) + path reference
+    truncated = new_msgs[2]
+    assert "[Tool output truncated" in truncated["content"]
+    assert "IMPORTANT_DATA_" in truncated["content"]
+    assert "..." in truncated["content"]
+
+
+def test_truncate_nothing_when_under_keep_count(plugin, tmp_data_dir):
+    """No truncation when rounds <= keep_rounds."""
+    msgs = [
+        make_msg("user", "Q1"),
+        make_msg("assistant", "A1"),
+        make_tool_msg("result", "tc1", "read"),
+    ]
+
+    from arf.plugins.compaction.plugin import _truncate_tool_messages
+    new_msgs, truncated_count = _truncate_tool_messages(
+        msgs, keep_rounds=5,
+        data_dir=tmp_data_dir,
+        session_id="test-session",
+        preview_chars=100,
+    )
+
+    assert truncated_count == 0
+    assert new_msgs == msgs
+
+
+def test_truncate_skips_non_tool_messages(plugin, tmp_data_dir):
+    """Only tool-role messages get truncated."""
+    msgs = [
+        make_msg("user", "Q1"),
+        make_msg("assistant", "A1 long answer " + "y" * 2000),
+        make_tool_msg("tool output " + "x" * 2000, "tc1", "read"),
+        make_msg("user", "Q2"),
+        make_msg("assistant", "A2"),
+        make_tool_msg("small", "tc2", "read"),
+    ]
+
+    from arf.plugins.compaction.plugin import _truncate_tool_messages
+    new_msgs, _ = _truncate_tool_messages(
+        msgs, keep_rounds=1,
+        data_dir=tmp_data_dir,
+        session_id="test-session",
+        preview_chars=100,
+    )
+
+    # Assistant message content is NOT truncated (not a tool message)
+    assert new_msgs[1]["content"] == msgs[1]["content"]
+    # Tool message IS truncated
+    assert "[Tool output truncated" in new_msgs[2]["content"]
