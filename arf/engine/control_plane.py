@@ -478,6 +478,15 @@ class ControlPlane:
                                     "id": tc_id, "name": tc_name,
                                     "_raw_args": chunk.get("arguments", "{}"),
                                 })
+                        # Yield tool_call_chunk so frontend can show progress
+                        if not is_final:
+                            yield self._make_event(
+                                "tool_call_chunk",
+                                {"id": tc_id, "name": tc_name,
+                                 "arguments": chunk.get("arguments", "{}"),
+                                 "delta": chunk.get("delta", "")},
+                                turn=turn, session_id=session_id,
+                            )
                     elif chunk.get("type") == "error":
                         yield self._make_event("error", {
                             "phase": "stream_model",
