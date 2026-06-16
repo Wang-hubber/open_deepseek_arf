@@ -3,6 +3,7 @@
 Usage:
     from arf.testing import InMemoryStateStore, InMemoryEventBus, ...
 """
+from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.event_bus import InMemoryEventBus
 
@@ -82,4 +83,5 @@ __all__ = [
     "InMemoryStateStore", "InMemoryEventBus",
     "InMemoryGuardRunner",
     "InMemoryToolResolver", "InMemoryToolExecutor",
+    "QueuedTaskDelegator",
 ]
