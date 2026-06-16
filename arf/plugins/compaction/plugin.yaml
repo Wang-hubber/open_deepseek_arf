@@ -7,9 +7,8 @@ config:
   threshold: 0.75
   window_size: 131072     # fallback — overridden by ModelConfig.context_window
   keep_count: 8
-  tool_output:
-    enabled: true
-    threshold: 500
-    preview_head: 500
-    preview_tail: 200
-    exclude_tools: []
+  truncation:
+    l1_threshold: 0.50
+    l2_threshold: 0.70
+    preview_chars: 100
+    window_ratio: 0.15   # safeguard threshold = window * ratio / avg_tools_per_round
