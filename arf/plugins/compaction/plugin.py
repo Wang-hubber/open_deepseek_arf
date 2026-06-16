@@ -210,6 +210,11 @@ class CompactionPlugin:
                 f"{preview}..."
             )
             r["data"] = new_data
+            ctx.emit("safeguard_triggered", {
+                "tool_name": tool_name,
+                "original_chars": len(result_data),
+                "round": ctx.interaction_round,
+            })
             logger.debug(
                 "Safeguard: truncated %s output (%d chars) session=%s turn=%d",
                 tool_name, len(result_data), session_id, turn,
