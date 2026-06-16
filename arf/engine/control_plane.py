@@ -32,7 +32,7 @@ class ControlPlane:
         cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
-        max_tokens: int | None = None,
+        max_tokens: int | None = None,  # None = no token budget limit
         window_size: int = 131072,
         workspace_dir: str = "",
         data_dir: str = "./data",

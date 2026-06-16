@@ -421,7 +421,7 @@ class BaseAgent:
             cancel_event=None,
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
-            max_tokens=(adv.max_tokens if adv else None),
+            max_tokens=adv.max_tokens,
             window_size=_resolve_window_size(config),
             workspace_dir=_workspace_root,
             memory_dir=mem_dir,
