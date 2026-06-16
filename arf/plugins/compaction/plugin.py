@@ -227,22 +227,22 @@ class CompactionPlugin:
     # ------------------------------------------------------------------
 
     async def _maybe_truncate_or_compact(self, ctx: PluginContext) -> None:
-        """Progressive compaction state machine (full impl in later tasks).
+        """Progressive compaction state machine.
 
-        For now: maintain EMA, then delegate to existing _maybe_compact logic.
+        Checks token usage against L1/L2/L3 thresholds and escalates:
+          L1 (50%): truncate early-round tool results, keep keep_count*2 rounds
+          L2 (70%): tighten to keep_count rounds
+          L3 (75%): full LLM summarization, reset state
         """
         sid = ctx.session_id
-        # Maintain EMA for safeguard
+
+        # Maintain EMA for safeguard threshold
         raw = ctx.hook_data.get("_raw_tool_results", {})
         actual_count = len(raw)
         prev_avg = self._avg_tools_per_round.get(sid, 1.0)
         self._avg_tools_per_round[sid] = 0.7 * prev_avg + 0.3 * actual_count
 
-        # Delegate to existing compaction for now
-        await self._maybe_compact(ctx)
-
-    async def _maybe_compact(self, ctx: PluginContext) -> None:
-        sid = ctx.session_id
+        # Cooldown check (post-L3)
         cooldown = self._cooldown.get(sid, 0)
         if cooldown > 0:
             self._cooldown[sid] = cooldown - 1
@@ -251,16 +251,94 @@ class CompactionPlugin:
         if not self._state_store:
             return
 
-        state: AgentState = await self._state_store.get(sid)
+        state = await self._state_store.get(sid)
         if not state:
             return
 
         last_usage = state.get("last_token_usage", 0)
-        limit = int(self.threshold * self.effective_window_size)
-        if last_usage <= limit:
+        window = self.effective_window_size
+        level = self._level.get(sid, 0)
+
+        # L3: LLM compaction (fires from any level if >75%)
+        if last_usage > int(self.threshold * window):
+            await self._compact(ctx, "auto")
+            self._level[sid] = 0
+            self._cooldown[sid] = 2
             return
 
-        await self._compact(ctx, "auto")
+        # L2: tighten truncation (fires at level 0 or 1 if >70%)
+        if last_usage > int(self.l2_threshold * window) and level <= 1:
+            await self._do_truncation(ctx, state, level="L2", keep_rounds=self.keep_count)
+            self._level[sid] = 2
+            return
+
+        # L1: initial truncation (fires only at level 0 if >50%)
+        if last_usage > int(self.l1_threshold * window) and level == 0:
+            await self._do_truncation(ctx, state, level="L1", keep_rounds=self.keep_count * 2)
+            self._level[sid] = 1
+            return
+
+    async def _do_truncation(
+        self, ctx: PluginContext, state: dict, *, level: str, keep_rounds: int
+    ) -> None:
+        """Execute truncation: emit events, truncate, save state."""
+        sid = ctx.session_id
+        msgs = state.get("messages", [])
+        last_usage = state.get("last_token_usage", 0)
+        round_num = state.get("interaction_round", ctx.interaction_round)
+
+        boundaries = _find_round_boundaries(msgs)
+        truncating_rounds = max(0, len(boundaries) - keep_rounds)
+
+        # Emit truncation_start
+        ctx.emit("truncation_start", {
+            "trigger": "auto",
+            "level": level,
+            "pre_tokens": last_usage,
+            "total_messages": len(msgs),
+            "truncating_rounds": truncating_rounds,
+            "keeping_rounds": min(keep_rounds, len(boundaries)),
+            "round": round_num,
+        })
+
+        new_msgs, truncated_count = _truncate_tool_messages(
+            msgs,
+            keep_rounds=keep_rounds,
+            data_dir=self._data_dir,
+            session_id=sid,
+            preview_chars=self._preview_chars,
+        )
+
+        # Safety estimate for token count
+        updated_usage = int(last_usage * 0.6)
+        new_state = {**state, "messages": new_msgs, "last_token_usage": updated_usage}
+        await self._state_store.put(sid, new_state)
+
+        # Track stats
+        count = self._truncation_count.get(sid, 0) + 1
+        self._truncation_count[sid] = count
+
+        # Estimate freed chars
+        freed_chars = sum(
+            len(msgs[i].get("content", "")) - len(new_msgs[i].get("content", ""))
+            for i in range(len(msgs))
+        )
+
+        # Emit truncation_end
+        ctx.emit("truncation_end", {
+            "trigger": "auto",
+            "level": level,
+            "truncated_count": truncated_count,
+            "kept_count": len(new_msgs) - truncated_count,
+            "freed_chars": freed_chars,
+            "total_truncations": count,
+            "round": round_num,
+        })
+
+        logger.info(
+            "Truncation %s #%d: %d tool msgs truncated, %d rounds kept (session=%s)",
+            level, count, truncated_count, min(keep_rounds, len(boundaries)), sid,
+        )
 
     async def _compact(self, ctx: PluginContext, trigger: str) -> dict:
         sid = ctx.session_id
