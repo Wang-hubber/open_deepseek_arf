@@ -835,7 +835,8 @@ class BaseAgent:
                 approval_plugin._chat_mode = False
             self._active_sessions.discard(session_id)
 
-    async def astream(self, user_message: str, session_id: str = "default"):
+    async def astream(self, user_message: str, session_id: str = "default",
+                      stop_on_text: bool = False):
         from arf.core.state import AgentState
         session_id, existing, is_new_session = await self._resolve_session(session_id)
 
@@ -886,7 +887,7 @@ class BaseAgent:
                     "round": interaction,
                 })
 
-            async for event in self._engine.astream(state):
+            async for event in self._engine.astream(state, stop_on_text=stop_on_text):
                 yield event
         finally:
             pass  # session stays active until stop() calls close()

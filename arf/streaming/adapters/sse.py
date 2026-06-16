@@ -33,9 +33,11 @@ class SSEStreamAdapter:
 
     async def stream(
         self, user_message: str, session_id: str = "default",
+        stop_on_text: bool = False,
     ) -> AsyncIterator[bytes]:
         """Yield ``data: <json>\\n\\n`` chunks from *agent.astream()*."""
-        async for event in self._agent.astream(user_message, session_id):
+        async for event in self._agent.astream(user_message, session_id,
+                                                stop_on_text=stop_on_text):
             payload = event_to_dict(event)
             line = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             yield line.encode("utf-8")
