@@ -9,7 +9,7 @@ class TestDispatch:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=2)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_dispatch_returns_dispatched_when_slot_available(self, d):
         called = []
 
@@ -25,7 +25,7 @@ class TestDispatch:
         await asyncio.sleep(0)
         assert len(called) == 1
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_dispatch_queues_when_slots_full(self, d):
         barrier = asyncio.Event()
 
@@ -46,7 +46,7 @@ class TestDispatch:
 
         barrier.set()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_session_isolation(self, d):
         async def runner(task: dict) -> dict:
             return {"started": True}
@@ -67,7 +67,7 @@ class TestComplete:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=2)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_complete_releases_slot_and_dequeues(self, d):
         barrier = asyncio.Event()
         started = []
@@ -90,7 +90,7 @@ class TestComplete:
 
         barrier.set()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_complete_stores_result_in_pending(self, d):
         async def runner(task: dict) -> dict:
             return {"started": True}
@@ -111,7 +111,7 @@ class TestGetPending:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=2)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_pending_clears_after_read(self, d):
         async def runner(task: dict) -> dict:
             return {"started": True}
@@ -126,7 +126,7 @@ class TestGetPending:
         second = await d.get_pending("s1")
         assert len(second) == 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_pending_unknown_session_returns_empty(self, d):
         assert await d.get_pending("no_such_session") == []
 
@@ -136,12 +136,12 @@ class TestQueueStatus:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=2)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_queue_status_empty_session(self, d):
         status = await d.queue_status("s1")
         assert status == {"running": [], "queued": [], "max_concurrent": 2}
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_queue_status_shows_running_and_queued(self, d):
         barrier = asyncio.Event()
 
@@ -166,7 +166,7 @@ class TestCancel:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=1)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cancel_removes_queued_task(self, d):
         barrier = asyncio.Event()
 
@@ -186,11 +186,11 @@ class TestCancel:
 
         barrier.set()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cancel_unknown_task_returns_false(self, d):
         assert await d.cancel("s1", "nonexistent") is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_cancel_does_not_affect_running(self, d):
         async def runner(task: dict) -> dict:
             return {"started": True}
@@ -207,7 +207,7 @@ class TestRunnerException:
     def d(self):
         return QueuedTaskDelegator(max_concurrent=2)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_runner_exception_auto_releases_slot(self, d):
         barrier = asyncio.Event()
 
@@ -220,12 +220,17 @@ class TestRunnerException:
 
         r1 = await d.dispatch("s1", {"n": 1}, bad_runner)
         await d.dispatch("s1", {"n": 2}, good_runner)
-        r3 = await d.dispatch("s1", {"n": 3}, good_runner)
+        await d.dispatch("s1", {"n": 3}, good_runner)
 
-        # bad_runner fails -> wrapper calls complete with error -> slot freed -> r3 dequeued
-        await asyncio.sleep(0.1)
+        # Poll for error landing in pending results (avoids fixed sleep)
+        for _ in range(50):
+            pending = await d.get_pending("s1")
+            if any(p["task_id"] == r1["task_id"] and "error" in p for p in pending):
+                break
+            await asyncio.sleep(0)
+        else:
+            pending = await d.get_pending("s1")
 
-        pending = await d.get_pending("s1")
         assert any(p["task_id"] == r1["task_id"] and "error" in p for p in pending)
 
         barrier.set()
