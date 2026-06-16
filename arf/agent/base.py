@@ -46,6 +46,21 @@ def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
     return text
 
 
+def _resolve_window_size(config: AgentConfig) -> int:
+    """Extract context window size from model config. Falls back to 131072."""
+    if config.model_defs:
+        for md in config.model_defs:
+            if isinstance(md, dict):
+                cw = md.get("context_window", 0)
+                if cw:
+                    return cw
+    if config.models:
+        for m in config.models:
+            if getattr(m, "context_window", 0):
+                return m.context_window
+    return 131_072
+
+
 class BaseAgent:
     def __init__(self, config: AgentConfig, app_context: AppContext | None = None, **override_protocols) -> None:
         self.config = config
@@ -407,6 +422,7 @@ class BaseAgent:
             system_prompt=system_prompt,
             max_turns=(adv.max_turns if adv else 50),
             max_tokens=(adv.max_tokens if adv else None),
+            window_size=_resolve_window_size(config),
             workspace_dir=_workspace_root,
             memory_dir=mem_dir,
             data_dir=str(_Path(_data_dir)),
