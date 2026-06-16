@@ -32,7 +32,8 @@ class ControlPlane:
         cancel_event: asyncio.Event | None = None,
         system_prompt: str = "",
         max_turns: int = 50,
-        max_tokens: int = 100_000,
+        max_tokens: int | None = None,
+        window_size: int = 131072,
         workspace_dir: str = "",
         data_dir: str = "./data",
         memory_dir: str = "./data/memory",
@@ -43,6 +44,7 @@ class ControlPlane:
     ):
         self.loop_strategy = None  # removed — kept for compat during migration
         self.gate = GateChecker(max_turns=max_turns, max_tokens=max_tokens)
+        self.window_size = window_size
         self.state_store = state_store
         self.tool_executor = tool_executor
         self.event_bus = event_bus
@@ -562,6 +564,7 @@ class ControlPlane:
         yield self._make_event("context_stats", {
             "prompt_tokens": stream_usage.get("prompt_tokens", 0),
             "session_tokens": state.get("_total_tokens", 0),
+            "window_size": self.window_size,
             "round": state.get("interaction_round", 0),
             "turn": turn,
         }, turn=turn, session_id=session_id)
