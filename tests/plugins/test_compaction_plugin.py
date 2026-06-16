@@ -281,3 +281,190 @@ def test_truncate_skips_non_tool_messages(plugin, tmp_data_dir):
     assert new_msgs[1]["content"] == msgs[1]["content"]
     # Tool message IS truncated
     assert "[Tool output truncated" in new_msgs[2]["content"]
+
+
+# --- State machine tests ---
+
+def make_state(messages: list[dict], last_token_usage: int = 0) -> dict:
+    return {"messages": messages, "last_token_usage": last_token_usage, "interaction_round": 1}
+
+
+async def _run_round_end(plugin, ctx, state):
+    """Helper: set up state_store mock and run round_end hook."""
+    plugin._state_store.get.return_value = state
+    await plugin.on_hook("round_end", ctx)
+
+
+def test_state_machine_l1_triggers_at_50pct(plugin, ctx_with_emit, tmp_data_dir):
+    """At >50% tokens, L1 truncation fires and level goes to 1."""
+    # Build 8 rounds with tool results
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    state = make_state(msgs, last_token_usage=5500)  # 55% of 10000
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}  # no tools this round
+
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    assert plugin._level["test-session"] == 1
+    # Verify state was saved with truncated messages
+    saved_state = plugin._state_store.put.call_args[0][1]
+    saved_msgs = saved_state["messages"]
+    # First 2 rounds' tool results should be truncated (keep_count*2 = 6 rounds kept)
+    assert "[Tool output truncated" in saved_msgs[3]["content"]  # round 0 tool
+    assert "[Tool output truncated" in saved_msgs[6]["content"]  # round 1 tool
+    # Rounds 2-7 intact
+    assert "[Tool output truncated" not in saved_msgs[9]["content"]
+
+
+def test_state_machine_l1_only_fires_once(plugin, ctx_with_emit, tmp_data_dir):
+    """L1 at level 0 only; at level 1, >50% does NOT fire L1 again."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    # First L1 trigger
+    state = make_state(msgs, last_token_usage=5500)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+    assert plugin._level["test-session"] == 1
+    first_call_count = plugin._state_store.put.call_count
+
+    # Second call at same level — should skip (L1 already done)
+    saved = plugin._state_store.put.call_args[0][1]
+    state2 = make_state(saved["messages"], last_token_usage=5200)  # still >50%, still = 1
+    ctx2 = PluginContext(session_id="test-session", interaction_round=6, turn=5)
+    ctx2._pending_events = []
+    ctx2.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx2, state2))
+
+    # No additional state save (since L1 was skipped)
+    assert plugin._state_store.put.call_count == first_call_count
+    assert plugin._level["test-session"] == 1  # still 1
+
+
+def test_state_machine_l2_from_l1(plugin, ctx_with_emit, tmp_data_dir):
+    """After L1, >70% triggers L2 and level goes to 2."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    # L1 trigger
+    state = make_state(msgs, last_token_usage=5500)
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+    assert plugin._level["test-session"] == 1
+
+    # L2 trigger (simulating token growth after L1)
+    saved = plugin._state_store.put.call_args[0][1]
+    state2 = make_state(saved["messages"], last_token_usage=7500)  # 75% > 70%
+    ctx2 = PluginContext(session_id="test-session", interaction_round=7, turn=6)
+    ctx2._pending_events = []
+    ctx2.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx2, state2))
+
+    assert plugin._level["test-session"] == 2
+    saved2 = plugin._state_store.put.call_args[0][1]
+    # Now only keep_count (3) rounds kept (was 6 after L1)
+    # 8 rounds total, keeping 3 → 5 tool msgs truncated
+    # Verify the 5th round's tool was truncated
+    assert "[Tool output truncated" in saved2["messages"][15]["content"]  # round 4 tool
+
+
+def test_state_machine_l3_resets_level(plugin, ctx_with_emit, tmp_data_dir):
+    """L3 LLM compaction fires at >75% from any level and resets to 0."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg(f"result {i}", f"tc{i}", "read"))
+
+    # Setup: L3 is triggered
+    state = make_state(msgs, last_token_usage=8000)  # 80% > 75%
+    plugin._call_model.return_value = {"content": "compact summary text"}
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    # Level resets to 0 after L3
+    assert plugin._level["test-session"] == 0
+    # Cooldown is set
+    assert plugin._cooldown["test-session"] == 2
+
+    # Verify compacted state has boundary + summary markers
+    saved = plugin._state_store.put.call_args[0][1]
+    assert any(m.get("subtype") == "compact_boundary" for m in saved["messages"])
+    assert any(m.get("isCompactSummary") for m in saved["messages"])
+
+
+def test_state_machine_skip_level(plugin, ctx_with_emit, tmp_data_dir):
+    """If usage jumps from <50% to >70% directly, L2 fires (skip L1)."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg("x" * 2000, f"tc{i}", "search"))
+
+    state = make_state(msgs, last_token_usage=7200)  # 72% > 70%, jumped past 50%
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    # Should have done L2 truncation (keep_count rounds) directly
+    assert plugin._level["test-session"] == 2
+
+
+def test_state_machine_ema_update(plugin, ctx_with_emit):
+    """EMA is updated at each round_end from _raw_tool_results count."""
+    msgs = [make_msg("user", "Q"), make_msg("assistant", "A")]
+    state = make_state(msgs, last_token_usage=100)  # below all thresholds
+    ctx_with_emit.hook_data["_raw_tool_results"] = {"t1": {}, "t2": {}, "t3": {}}  # 3 tools
+
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+
+    # Initial EMA: 0.7 * 1.0 + 0.3 * 3 = 0.7 + 0.9 = 1.6
+    assert plugin._avg_tools_per_round["test-session"] == pytest.approx(1.6)
+
+    # Second round with 5 tools
+    ctx2 = PluginContext(session_id="test-session", interaction_round=2)
+    ctx2._pending_events = []
+    ctx2.hook_data["_raw_tool_results"] = {"t1": {}, "t2": {}, "t3": {}, "t4": {}, "t5": {}}
+    state2 = make_state(msgs, last_token_usage=100)
+    asyncio.run(_run_round_end(plugin, ctx2, state2))
+
+    # EMA: 0.7 * 1.6 + 0.3 * 5 = 1.12 + 1.5 = 2.62
+    assert plugin._avg_tools_per_round["test-session"] == pytest.approx(2.62)
+
+
+def test_cooldown_blocks_l3(plugin, ctx_with_emit):
+    """After L3, cooldown prevents re-compaction for 2 rounds."""
+    msgs = [make_msg("system", "sys")]
+    for i in range(8):
+        msgs.append(make_msg("user", f"Q{i}"))
+        msgs.append(make_msg("assistant", f"A{i}"))
+        msgs.append(make_tool_msg(f"result {i}", f"tc{i}", "read"))
+
+    # Fire L3
+    state = make_state(msgs, last_token_usage=8000)
+    plugin._call_model.return_value = {"content": "summary"}
+    ctx_with_emit.hook_data["_raw_tool_results"] = {}
+    asyncio.run(_run_round_end(plugin, ctx_with_emit, state))
+    assert plugin._cooldown["test-session"] == 2
+
+    # Next round — cooldown decrements, L3 skipped
+    first_call_count = plugin._state_store.put.call_count
+    ctx2 = PluginContext(session_id="test-session", interaction_round=8)
+    ctx2._pending_events = []
+    ctx2.hook_data["_raw_tool_results"] = {}
+    saved = plugin._state_store.put.call_args[0][1]
+    state2 = make_state(saved["messages"], last_token_usage=8000)
+    asyncio.run(_run_round_end(plugin, ctx2, state2))
+
+    # Cooldown decremented, no additional compaction
+    assert plugin._cooldown["test-session"] == 1
+    assert plugin._state_store.put.call_count == first_call_count
