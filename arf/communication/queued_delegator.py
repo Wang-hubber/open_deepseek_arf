@@ -113,12 +113,27 @@ class QueuedTaskDelegator:
             )
 
     async def get_pending(self, session_id: str) -> list[dict]:
+        """Return and clear all completed results for *session_id*. Consuming read."""
         session = self._sessions.get(session_id)
         if session is None:
             return []
         pending = list(session.completed)
         session.completed.clear()
         return pending
+
+    async def get_task_result(self, session_id: str, task_id: str) -> dict | None:
+        """Return a specific task result WITHOUT consuming it.
+
+        Used by await_task for targeted polling — does not interfere with
+        pre_action's get_pending() which consumes all results at once.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        for entry in session.completed:
+            if entry.get("task_id") == task_id:
+                return dict(entry)
+        return None
 
     async def queue_status(self, session_id: str) -> dict:
         session = self._sessions.get(session_id)

@@ -24,17 +24,15 @@ class TestDelegateTask:
         """Reset registry before each test."""
         a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
         a2a_registry.max_task_timeout = 600.0
-        a2a_registry.engine = _StubEngine()
         yield
         a2a_registry.delegator = None
-        a2a_registry.engine = None
 
     @pytest.mark.anyio
     async def test_delegate_dispatches_when_slot_available(self):
         """dispatch returns {dispatched: true} when under max_concurrent."""
         from arf.plugins.a2a.tools.delegate_task.function import execute
 
-        result = await execute(agent="", task="test task")
+        result = await execute(agent="", task="test task", _engine=_StubEngine())
 
         assert result["ok"] is True
         assert result["dispatched"] is True
@@ -181,10 +179,8 @@ class TestA2APluginHooks:
     def setup_registry(self):
         a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
         a2a_registry.max_task_timeout = 600.0
-        a2a_registry.engine = None
         yield
         a2a_registry.delegator = None
-        a2a_registry.engine = None
 
     @pytest.mark.anyio
     async def test_round_end_completes_and_emits_event(self):
@@ -341,10 +337,8 @@ class TestA2AIntegration:
     def setup_registry(self):
         a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
         a2a_registry.max_task_timeout = 600.0
-        a2a_registry.engine = None
         yield
         a2a_registry.delegator = None
-        a2a_registry.engine = None
 
     @pytest.mark.anyio
     async def test_plugin_name_and_hooks(self):
@@ -364,14 +358,14 @@ class TestA2AIntegration:
         """delegate_task with a mock engine dispatches correctly."""
         from arf.plugins.a2a.tools.delegate_task.function import execute
 
-        # Set up a stub engine with async generator astream
         class _StubEngine:
             async def astream(self, state, stop_on_text=False):
                 yield
 
-        a2a_registry.engine = _StubEngine()
-
-        result = await execute(task="test task", agent="", session_id="int_s1")
+        result = await execute(
+            task="test task", agent="", session_id="int_s1",
+            _engine=_StubEngine(),
+        )
         assert result["ok"] is True
         assert result["dispatched"] is True
         assert "task_id" in result
