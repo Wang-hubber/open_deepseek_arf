@@ -25,10 +25,18 @@ from arf.resources.providers.plugin_provider import PluginProvider
 logger = logging.getLogger("arf.mcp")
 
 
-def _filter_serializable(params: dict) -> dict:
-    """Keep only JSON-serializable values; strip DI objects like _engine, _state_store."""
+def _filter_serializable(params: dict, *, keep_di: bool = False) -> dict:
+    """Keep only JSON-serializable values.
+
+    When *keep_di* is True, params starting with ``_`` (DI-injected objects
+    like ``_engine``, ``_state_store``) are preserved for in-process execution.
+    Remote (subprocess) callers must set keep_di=False.
+    """
     clean: dict = {}
     for k, v in params.items():
+        if keep_di and k.startswith("_"):
+            clean[k] = v
+            continue
         try:
             json.dumps(v)
             clean[k] = v
@@ -261,20 +269,21 @@ class McpClientManager:
             return ToolResult(
                 tool_name=tool_name, success=False,
                 error=f"Tool '{tool_name}' missing namespace prefix")
-        clean_params = _filter_serializable(params)
 
-        # ---- local: user__ ----
+        # ---- local: user__ (keep DI params for in-process execution) ----
         if source == "user":
-            return await self._tool_provider.execute(local_name, clean_params)
+            return await self._tool_provider.execute(
+                local_name, _filter_serializable(params, keep_di=True))
 
-        # ---- local: {plugin}__ ----
+        # ---- local: {plugin}__ (keep DI params for in-process execution) ----
         if self._plugin_provider:
             result = await self._plugin_provider.execute_plugin_tool(
-                source, local_name, clean_params)
+                source, local_name, _filter_serializable(params, keep_di=True))
             if result is not None:
                 return result
 
-        # ---- remote: {server}__ ----
+        # ---- remote: {server}__ (strip DI objects — not serializable) ----
+        clean_params = _filter_serializable(params, keep_di=False)
         if self._remote_started:
             try:
                 remote_result = await self._remote_send("tools/call", {
