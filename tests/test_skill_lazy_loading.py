@@ -79,3 +79,128 @@ class TestSkillIndex:
 
             entry = index.resolve("my-skill")
             assert entry.description == "plugin version"
+
+
+class TestUseSkillTool:
+    @pytest.mark.anyio
+    async def test_use_skill_returns_body(self, tmp_path):
+        from arf.skills.skill_index import SkillIndex
+        import arf.skills.use_skill_tool as use_skill_mod
+
+        # Set up a skill
+        skill_dir = tmp_path / "skills" / "react-component"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            "name: react-component\ndescription: 创建 React 组件\n"
+        )
+        body = "# React Guidelines\nUse Zustand."
+        (skill_dir / "skill.md").write_text(body)
+
+        index = SkillIndex(project_root=str(tmp_path))
+        index.scan()
+        use_skill_mod._index = index
+
+        result = await use_skill_mod.execute(name="react-component")
+        assert result["ok"] is True
+        assert result["skill"]["name"] == "react-component"
+        assert result["skill"]["body"] == body
+
+    @pytest.mark.anyio
+    async def test_use_skill_unknown_returns_error(self):
+        import arf.skills.use_skill_tool as use_skill_mod
+        from arf.skills.skill_index import SkillIndex
+
+        index = SkillIndex(project_root="/nonexistent")
+        index.scan()
+        use_skill_mod._index = index
+
+        result = await use_skill_mod.execute(name="nonexistent")
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    @pytest.mark.anyio
+    async def test_use_skill_no_index_returns_error(self):
+        import arf.skills.use_skill_tool as use_skill_mod
+        use_skill_mod._index = None
+
+        result = await use_skill_mod.execute(name="anything")
+        assert result["ok"] is False
+        assert "not initialized" in result["error"]
+
+    @pytest.mark.anyio
+    async def test_use_skill_missing_body_returns_error(self, tmp_path):
+        from arf.skills.skill_index import SkillIndex
+        import arf.skills.use_skill_tool as use_skill_mod
+
+        skill_dir = tmp_path / "skills" / "no-body"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            "name: no-body\ndescription: Has no markdown\n"
+        )
+        # No skill.md!
+
+        index = SkillIndex(project_root=str(tmp_path))
+        index.scan()
+        use_skill_mod._index = index
+
+        result = await use_skill_mod.execute(name="no-body")
+        assert result["ok"] is False
+        assert "skill.md missing" in result["error"]
+
+
+class TestMessageBuilder:
+    def test_build_initial_messages_with_reminder(self):
+        from arf.core.message_builder import MessageBuilder
+
+        msgs = MessageBuilder.build_initial_messages(
+            system_prompt="You are TestAgent.",
+            system_reminder_parts=["## Skills\n- **a**: desc", "## Tools\n- tool1"],
+        )
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == "You are TestAgent."
+        assert msgs[1]["role"] == "system"
+        assert "## Skills" in msgs[1]["content"]
+        assert "## Tools" in msgs[1]["content"]
+
+    def test_build_initial_messages_empty_reminder(self):
+        from arf.core.message_builder import MessageBuilder
+
+        msgs = MessageBuilder.build_initial_messages(
+            system_prompt="You are TestAgent.",
+            system_reminder_parts=[],
+        )
+        assert len(msgs) == 1  # no reminder message if empty
+
+    def test_update_reminder(self):
+        from arf.core.message_builder import MessageBuilder
+
+        msgs = [
+            {"role": "system", "content": "You are Agent."},
+            {"role": "system", "content": "## Old Skills\n- old"},
+            {"role": "user", "content": "hi"},
+        ]
+        MessageBuilder.update_reminder(msgs, "## New Skills\n- new")
+        assert msgs[1]["content"] == "## New Skills\n- new"
+
+    def test_update_reminder_removes_when_empty(self):
+        from arf.core.message_builder import MessageBuilder
+
+        msgs = [
+            {"role": "system", "content": "You are Agent."},
+            {"role": "system", "content": "## Skills\n- skill1"},
+        ]
+        MessageBuilder.update_reminder(msgs, "")
+        assert len(msgs) == 1  # reminder removed
+        assert msgs[0]["content"] == "You are Agent."
+
+    def test_update_reminder_inserts_when_missing(self):
+        from arf.core.message_builder import MessageBuilder
+
+        msgs = [
+            {"role": "system", "content": "You are Agent."},
+            {"role": "user", "content": "hi"},
+        ]
+        MessageBuilder.update_reminder(msgs, "## Skills\n- new")
+        assert len(msgs) == 3
+        assert msgs[1]["content"] == "## Skills\n- new"
