@@ -59,3 +59,35 @@ class TestDelegateTask:
         assert r3["position"] == 1
 
         barrier.set()
+
+
+class TestQueueStatus:
+    @pytest.fixture(autouse=True)
+    def setup_registry(self):
+        a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
+        a2a_registry.max_task_timeout = 600.0
+        yield
+        a2a_registry.delegator = None
+
+    @pytest.mark.anyio
+    async def test_queue_status_returns_state(self):
+        from arf.plugins.a2a.tools.queue_status.function import execute
+
+        barrier = asyncio.Event()
+        async def runner(task):
+            await barrier.wait()
+            return {"ok": True}
+
+        delegator = a2a_registry.delegator
+        await delegator.dispatch("s1", {"n": 1}, runner)
+        await delegator.dispatch("s1", {"n": 2}, runner)
+        await delegator.dispatch("s1", {"n": 3}, runner)
+
+        result = await execute(session_id="s1")
+
+        assert result["ok"] is True
+        assert len(result["running"]) == 2
+        assert len(result["queued"]) == 1
+        assert result["queued"][0]["position"] == 1
+
+        barrier.set()
