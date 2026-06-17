@@ -306,23 +306,26 @@ async def _dispatch_external(
                 except asyncio.TimeoutError:
                     running_sub_agents[rid]["status"] = "error"
                     running_sub_agents[rid]["error"] = "任务执行超时"
-                    await event_queue.put({
-                        "type": "error", "data": {"detail": "任务执行超时，已取消"},
-                    })
+                    await event_queue.put({"type": "error", "data": {"detail": "任务执行超时，已取消"}})
                     await event_queue.put(None)
                     task_id = _runtime_task_ids.get(rid, "")
                     if task_id:
-                        await _registry.delegator.complete(parent_sid, task_id, {
-                            "ok": False, "error": "timeout", "agent_name": agent_name,
-                        })
+                        await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "timeout", "agent_name": agent_name})
                     return {"ok": False, "error": "timeout"}
+
+                if message == "__stop__":
+                    running_sub_agents[rid]["status"] = "error"
+                    running_sub_agents[rid]["error"] = "用户停止了会话"
+                    await event_queue.put({"type": "error", "data": {"detail": "用户停止了会话"}})
+                    await event_queue.put(None)
+                    task_id = _runtime_task_ids.get(rid, "")
+                    if task_id:
+                        await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "stopped_by_user", "agent_name": agent_name})
+                    return {"ok": False, "error": "stopped_by_user"}
 
                 _deadline = _time.time() + hard_timeout
                 running_sub_agents[rid]["status"] = "running"
-                await event_queue.put({
-                    "type": "human_decision_resumed",
-                    "data": {"runtime_id": rid},
-                })
+                await event_queue.put({"type": "human_decision_resumed", "data": {"runtime_id": rid}})
 
             task_id = _runtime_task_ids.get(rid, "")
             running_sub_agents[rid]["status"] = final_status
