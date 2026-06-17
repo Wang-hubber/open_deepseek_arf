@@ -95,15 +95,21 @@ class A2APlugin:
     # ==================================================================
 
     async def _on_round_end(self, ctx: PluginContext) -> None:
-        """Child agent round_end: complete delegation + emit task_completed.
-
-        Does NOT inject into parent messages -- that's pre_action's job.
-        """
+        """Child agent round_end: handle HITL or normal completion."""
         child_sid = ctx.session_id
         parent_sid, task_id = self._parse_child_session(child_sid)
         if parent_sid is None:
-            return  # not a sub-agent session
+            return
 
+        # Check for pending human decision (HITL -- don't complete)
+        pending_decision = ctx.state.get("_pending_human_decision")
+        if pending_decision:
+            self._emit_human_decision_required(
+                ctx, parent_sid, child_sid, task_id, pending_decision
+            )
+            return
+
+        # Normal completion
         result = self._collect_result(ctx.state)
         await _registry.delegator.complete(parent_sid, task_id, result)
         self._emit_completed(ctx, parent_sid, child_sid, task_id, result)
@@ -193,4 +199,34 @@ class A2APlugin:
         logger.info(
             "task_completed: parent=%s child=%s task_id=%s",
             parent_sid, child_sid, task_id,
+        )
+
+    def _emit_human_decision_required(
+        self, ctx: PluginContext,
+        parent_sid: str, child_sid: str, task_id: str,
+        decision: dict,
+    ) -> None:
+        """Emit human_decision_required event. Child session stays active."""
+        from arf.core.events import AgentEvent
+
+        partial = self._collect_result(ctx.state)
+
+        event = AgentEvent(
+            type="human_decision_required",
+            data={
+                "parent_session_id": parent_sid,
+                "child_session_id": child_sid,
+                "task_id": task_id,
+                "agent_name": ctx.state.get("agent_name", ""),
+                "question": decision.get("question", ""),
+                "options": decision.get("options", []),
+                "partial_result": partial,
+            },
+            session_id=child_sid,
+        )
+        if ctx.event_bus:
+            ctx.event_bus.emit(event)
+        logger.info(
+            "human_decision_required: child=%s task_id=%s question=%s",
+            child_sid, task_id, decision.get("question", "")[:80],
         )
