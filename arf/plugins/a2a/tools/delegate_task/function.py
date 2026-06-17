@@ -201,6 +201,7 @@ async def _dispatch_external(
 
         event_queue: asyncio.Queue = asyncio.Queue()
         answer_queue: asyncio.Queue = asyncio.Queue()
+        consumer_ready: asyncio.Event = asyncio.Event()
 
         running_sub_agents[rid] = {
             "agent": sub_agent,
@@ -213,6 +214,7 @@ async def _dispatch_external(
             "error": "",
             "_event_queue": event_queue,
             "_answer_queue": answer_queue,
+            "_consumer_ready": consumer_ready,
         }
 
         final_result = ""
@@ -221,6 +223,14 @@ async def _dispatch_external(
 
         try:
             await sub_agent.start()
+            # Wait for SSE consumer to connect before starting execution.
+            # Prevents events from being queued before the frontend is ready.
+            try:
+                await asyncio.wait_for(consumer_ready.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                running_sub_agents[rid]["status"] = "error"
+                running_sub_agents[rid]["error"] = "前端连接超时"
+                return {"ok": False, "error": "consumer_connect_timeout"}
             running_sub_agents[rid]["status"] = "running"
 
             message = task
