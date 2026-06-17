@@ -6,7 +6,7 @@ async def execute(steps: int = 1, session_id: str = "default",
     """Call the engine's undo mechanism and return status."""
     try:
         if _engine is None:
-            return {"ok": False, "error": "Engine not available"}
+            return {"ok": False, "error": "DI failure: _engine not injected. undo must be called through the engine's tool executor."}
 
         available = _engine.checkpoint_count()
         if available < steps:

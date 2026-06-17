@@ -4,7 +4,7 @@
 async def execute(_engine=None, _plugin_provider=None, **kwargs) -> dict:
     """Manually invoke compaction via the compaction plugin."""
     if _plugin_provider is None:
-        return {"ok": False, "error": "Plugin provider not available"}
+        return {"ok": False, "error": "DI failure: _plugin_provider not injected. compact must be called through the engine's tool executor."}
 
     # Find the compaction plugin
     for plugin in _plugin_provider.list_plugins():
