@@ -66,6 +66,7 @@ def _resolve_agent_config(agent_name: str) -> Path | None:
 async def execute(
     task: str,
     agent: str = "",
+    target_agent: str = "",  # backward compat alias for agent
     timeout: int = 0,
     context: dict | None = None,
     _engine=None,
@@ -77,6 +78,9 @@ async def execute(
     BaseAgent with its own config/tools/model. Otherwise runs inline on
     the parent's engine.
     """
+    if target_agent and not agent:
+        agent = target_agent
+
     registry = _registry
     if registry.delegator is None:
         return {"ok": False, "error": "A2A plugin not initialized — delegator is None"}
@@ -95,6 +99,13 @@ async def execute(
 
     # Resolve agent config for external mode
     config_path = _resolve_agent_config(agent) if agent else None
+
+    # If agent name given but no config found, fail clearly
+    if agent and config_path is None:
+        return {
+            "ok": False,
+            "error": f"Agent '{agent}' not found. Check builtin/{agent}.yaml or agents/{agent}/agent.yaml exists.",
+        }
 
     task_obj = {
         "agent": agent,
