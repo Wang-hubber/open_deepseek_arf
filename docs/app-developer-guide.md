@@ -11,14 +11,15 @@
 3. [Plugin 系统](#3-plugin-系统)
 4. [Tool 系统](#4-tool-系统)
 5. [Skill 系统](#5-skill-系统)
-6. [Hook 生命周期](#6-hook-生命周期)
-7. [EventBus 事件](#7-eventbus-事件)
-8. [BaseAgent API](#8-baseagent-api)
-9. [内置 Tool 一览](#9-内置-tool-一览)
-10. [A2A Plugin](#10-a2a-plugin)
-11. [HITL 中断](#11-hitl-中断)
-12. [目录约定](#12-目录约定)
-13. [迁移 v0.1 → v0.2](#13-迁移-v01--v02)
+6. [Memory 系统](#6-memory-系统-v02)
+7. [Hook 生命周期](#7-hook-生命周期)
+8. [EventBus 事件](#8-eventbus-事件)
+9. [BaseAgent API](#9-baseagent-api)
+10. [内置 Tool 一览](#10-内置-tool-一览)
+11. [A2A Plugin](#11-a2a-plugin)
+12. [HITL 中断](#12-hitl-中断)
+13. [目录约定](#13-目录约定)
+14. [迁移 v0.1 → v0.2](#14-迁移-v01--v02)
 
 ---
 
@@ -72,10 +73,23 @@ plugins_config:                   # 每个插件的配置
     ask: []
     allow: ["read_file", "search_content"]
     deny: []
-  memory:
-    workspace: "./data/memory"
+  memory:                          # 三层记忆系统（v0.2）
+    project:
+      enabled: true                # 项目记忆：AI 自动生成
+      auto_generate: true          #   首次扫描代码库自动生成 project.md
+      rolling_update: true         #   session 中滚动更新
+      compaction_interval: 30      #   全量压缩间隔（天）
+      max_size_kb: 100
+    user:
+      enabled: true                # 个人记忆：从 session 提取用户偏好
+      extract_interval: 5          #   提取间隔（轮数）
+      max_size_kb: 50
+    secrets:
+      enabled: true                # 敏感记忆：XOR 加密存储
+      master_key_env: ARF_MASTER_KEY  # 密钥来源（环境变量名）
+    # 向后兼容：旧 resident memory（memory.md）
     resident_file: "memory.md"
-    max_size_kb: 300
+    resident_max_size_kb: 300
 
 # --- 高级配置 ---
 advanced:
@@ -366,7 +380,100 @@ skills:
 
 ---
 
-## 6. Hook 生命周期
+## 6. Memory 系统 (v0.2)
+
+三层记忆，各司其职：
+
+| 层 | 文件 | 生成方式 | 注入位置 |
+|---|---|---|---|
+| **项目记忆** | `data/memory/project.md` | 首次 AI 扫描代码库 + session 滚动更新 | messages[3] |
+| **个人记忆** | `data/memory/user.md` | session 中提取用户偏好 | messages[4] |
+| **敏感记忆** | `data/memory/secrets.enc` | XOR 加密，tool 按需访问 | messages[5] (仅 key 索引) |
+
+### 6.1 项目记忆
+
+首次启动时自动扫描代码库结构、README、依赖 → LLM 生成 `project.md`。之后从 session 对话中滚动更新。
+
+```markdown
+# Project Memory
+
+# 项目概览
+ARF — AI Resources & Runtime Framework
+
+# 架构
+- arf/agent/ → BaseAgent
+- arf/engine/ → ControlPlane
+...
+
+# 关键约定
+- Python 3.11+，TDD 严格
+- 提交: type(scope): description
+```
+
+Agent 在 system 消息中看到这份记忆，知道项目结构、约定、依赖。
+
+### 6.2 个人记忆
+
+从 session 中自动提取用户偏好，格式同项目记忆：
+
+```markdown
+# User Memory
+
+# 用户偏好
+- 使用中文沟通，代码和术语用 English
+
+# 工作习惯
+- 大量小 commit，不 bundle
+- 从不清理 runtime 数据
+```
+
+### 6.3 敏感记忆
+
+XOR 加密存储，不在 system 消息中暴露值。Agent 通过 tool 按需访问：
+
+| Tool | 说明 |
+|------|------|
+| `list_secrets` | 列出所有 key 名称（不暴露值） |
+| `read_secret(name)` | 解密读取指定 secret |
+| `write_secret(name, value)` | 加密写入/更新 secret |
+
+密钥来自环境变量 `ARF_MASTER_KEY`（或 agent.yaml 中配置）。
+
+### 6.4 配置
+
+```yaml
+# agent.yaml — 完整 memory 配置
+plugins_config:
+  memory:
+    # 项目记忆（AI 生成）
+    project:
+      enabled: true                # false = 关闭，不生成不注入
+      auto_generate: true          # 首次自动扫描代码库
+      rolling_update: true         # session 中增量更新
+      compaction_interval: 30      # 全量压缩间隔（天）
+      max_size_kb: 100
+
+    # 个人记忆（偏好提取）
+    user:
+      enabled: true
+      extract_interval: 5          # 每 N 轮提取一次
+      max_size_kb: 50
+
+    # 敏感记忆（加密存储）
+    secrets:
+      enabled: true
+      master_key_env: ARF_MASTER_KEY  # 密钥环境变量
+
+    # 旧 resident memory（向后兼容）
+    resident_file: memory.md
+    resident_max_size_kb: 300
+```
+
+三个维度独立 `enabled: true/false`，关闭则不生成、不加载、不注入。
+
+---
+
+## 7. Hook 生命周期
 
 ### 6.1 事件时序
 
@@ -400,7 +507,7 @@ def hooks(self) -> dict[str, str]:
 
 ---
 
-## 7. EventBus 事件
+## 8. EventBus 事件
 
 ### 7.1 所有事件类型
 
@@ -439,7 +546,7 @@ async def on_event(event: AgentEvent):
 
 ---
 
-## 8. BaseAgent API
+## 9. BaseAgent API
 
 ### 8.1 初始化
 
@@ -488,16 +595,21 @@ await agent.set_session_mode("ask")    # 切换会话模式
 
 ---
 
-## 9. 内置 Tool 一览
+## 10. 内置 Tool 一览
 
-### 9.1 内核工具（框架自动注册，无前缀）
+### 10.1 内核工具（框架自动注册，无前缀）
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
 | `use_skill` | `name` (str) | `{skill: {name, description, body, tools_sequence}}` | 加载 Skill 领域知识 |
-| `ask_user` | `question` (str), `options` (list[str]?) | `{pending: true}` | 请求人类决策，子 agent round 结束 |
+| `ask_user` | `question` (str), `options` (list[str]?) | `{pending: true}` | 请求人类决策 |
+| `read_secret` | `name` (str) | `{value}` | 解密读取敏感信息 |
+| `write_secret` | `name` (str), `value` (str) | `{ok: true}` | 加密存储敏感信息 |
+| `list_secrets` | 无 | `{names}` | 列出所有 secret 名称 |
 
-### 9.2 A2A Plugin 工具（`plugins: [a2a]`启用）
+### 10.2 A2A Plugin 工具（`plugins: [a2a]`启用）
+
+### 10.2 A2A Plugin 工具（`plugins: [a2a]`启用）
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
@@ -510,7 +622,7 @@ await agent.set_session_mode("ask")    # 切换会话模式
 
 ---
 
-## 10. A2A Plugin
+## 11. A2A Plugin
 
 ### 10.1 架构
 
@@ -550,7 +662,7 @@ await agent.set_session_mode("ask")    # 切换会话模式
 
 ---
 
-## 11. HITL 中断
+## 12. HITL 中断
 
 ### 11.1 Flow
 
@@ -594,7 +706,7 @@ async def handle_human_decision(event: AgentEvent):
 
 ---
 
-## 12. 目录约定
+## 13. 目录约定
 
 ```
 项目根目录/
@@ -627,7 +739,7 @@ async def handle_human_decision(event: AgentEvent):
 
 ---
 
-## 13. 迁移 v0.1 → v0.2
+## 14. 迁移 v0.1 → v0.2
 
 ### 变更
 
