@@ -57,6 +57,7 @@ class ControlPlane:
         self._injected_system_msgs: list[dict] = []  # built at session start
         self._inventory_text = ""   # tool inventory, set by BaseAgent
         self._resident_memory = ""  # resident memory, set by BaseAgent
+        self._memory_index = None  # set by set_memory_index()
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
         self._data_dir = data_dir
@@ -96,6 +97,10 @@ class ControlPlane:
         """Set tool inventory and resident memory for injected system messages."""
         self._inventory_text = inventory
         self._resident_memory = memory
+
+    def set_memory_index(self, memory_index) -> None:
+        """Inject the MemoryIndex for memory layers + secrets tools."""
+        self._memory_index = memory_index
 
     def set_undo_plugin(self, undo_plugin) -> None:
         """Inject undo plugin for round-level checkpoint + rollback."""
@@ -185,6 +190,11 @@ class ControlPlane:
             if self._resident_memory:
                 self._injected_system_msgs.append(
                     {"role": "system", "content": self._resident_memory})
+
+            # Inject memory layers (project, user, secrets)
+            if self._memory_index is not None:
+                mem_msgs = self._memory_index.build_injected_messages()
+                self._injected_system_msgs.extend(mem_msgs)
 
         # --- user_input (once per astream call) ---
         messages = state.get("messages", [])
@@ -497,6 +507,55 @@ class ControlPlane:
                 "required": ["question"],
             },
         })
+
+        # Secrets tools — available if memory index has a secrets store
+        if self._memory_index is not None:
+            try:
+                secrets_enabled = getattr(
+                    getattr(self._memory_index, '_cfg', None),
+                    'secrets', None)
+                if secrets_enabled is not None and secrets_enabled.enabled:
+                    tools.extend([
+                        {
+                            "name": "read_secret",
+                            "description": "Read an encrypted secret value by name. Use when you need an API key, password, or token.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "description": "The secret name to read.",
+                                    },
+                                },
+                                "required": ["name"],
+                            },
+                        },
+                        {
+                            "name": "write_secret",
+                            "description": "Store a new encrypted secret or update an existing one.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "description": "The secret name.",
+                                    },
+                                    "value": {
+                                        "type": "string",
+                                        "description": "The secret value to encrypt and store.",
+                                    },
+                                },
+                                "required": ["name", "value"],
+                            },
+                        },
+                        {
+                            "name": "list_secrets",
+                            "description": "List all available secret names (values are NOT shown).",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    ])
+            except Exception:
+                pass
 
         # Apply tool blacklist from state (depth limit enforcement)
         blacklist = state.get("_tool_blacklist", [])
