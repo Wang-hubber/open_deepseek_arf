@@ -1,10 +1,33 @@
 """delegate_task — spawn a sub-agent via QueuedTaskDelegator."""
 import asyncio
+import hashlib
 import logging
+from pathlib import Path
 
 from arf.plugins.a2a.tools import _registry
 
 logger = logging.getLogger("arf.plugins.a2a.delegate_task")
+
+_IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "data", ".claude"}
+
+
+def _snapshot_workspace(workspace_dir: str) -> dict[str, str]:
+    """Scan workspace -> {relative_path: sha256_hex}."""
+    snapshot = {}
+    ws = Path(workspace_dir)
+    if not ws.exists():
+        return snapshot
+    for f in ws.rglob("*"):
+        if not f.is_file():
+            continue
+        if any(part in _IGNORED_DIRS for part in f.parts):
+            continue
+        try:
+            rel = str(f.relative_to(ws))
+            snapshot[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+        except (OSError, PermissionError):
+            pass
+    return snapshot
 
 
 async def execute(
@@ -59,6 +82,13 @@ async def execute(
             parent_state={},
         )
         sub_state["session_id"] = f"{parent_sid}--{t.get('task_id', 'unknown')}"
+
+        # Depth limit: sub-agents cannot spawn further sub-agents
+        sub_state["_tool_blacklist"] = ["delegate_task"]
+
+        # Workspace snapshot for conflict detection
+        ws_dir = getattr(engine, '_workspace_dir', '') or '.'
+        sub_state["_workspace_snapshot"] = _snapshot_workspace(ws_dir)
 
         await asyncio.wait_for(
             _drain_stream(engine, sub_state),
