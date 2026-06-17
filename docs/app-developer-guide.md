@@ -171,7 +171,7 @@ system_prompt:
 |------|------|------|
 | `prefix.role` | Agent 身份描述，prompt 第一段 | 否 |
 | `prefix.critical_rules` | 硬约束规则，prompt 第二段 | 否 |
-| `suffix` | 附加提示，紧接 prefix 之后 | 否 |
+| `suffix` | 纯静态附加提示，框架不做任何占位符替换 | 否 |
 
 三个字段拼接即得 messages[0] 的完整 system prompt。Skills/Tools/Memory 不需要放在 suffix 里——框架自动以独立 system 消息注入（见 2.1）。
 
