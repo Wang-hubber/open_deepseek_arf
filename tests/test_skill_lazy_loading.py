@@ -60,7 +60,8 @@ class TestSkillIndex:
             assert "api-endpoint" in md
             assert "创建 REST API 端点" in md
 
-    def test_plugin_skills_override_project_skills(self):
+    def test_plugin_skills_are_namespaced(self):
+        """Plugin skills get {plugin}__ prefix — same MCP convention as tools."""
         with tempfile.TemporaryDirectory() as tmp:
             proj_skill = Path(tmp) / "skills" / "my-skill"
             proj_skill.mkdir(parents=True)
@@ -77,8 +78,16 @@ class TestSkillIndex:
             index = SkillIndex(project_root=tmp)
             index.scan()
 
-            entry = index.resolve("my-skill")
-            assert entry.description == "plugin version"
+            # Both coexist — project with bare name, plugin with namespace prefix
+            proj_entry = index.resolve("my-skill")
+            assert proj_entry is not None
+            assert proj_entry.description == "project version"
+
+            plugin_entry = index.resolve("test-plugin__my-skill")
+            assert plugin_entry is not None
+            assert plugin_entry.description == "plugin version"
+
+            assert len(index.list_index()) == 2
 
 
 class TestUseSkillTool:

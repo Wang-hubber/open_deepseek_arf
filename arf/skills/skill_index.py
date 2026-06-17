@@ -28,10 +28,10 @@ class SkillIndex:
     """Scan skill directories and serve skill content on demand.
 
     Directories scanned (in order):
-      1. <project_root>/skills/
-      2. <project_root>/arf/plugins/*/skills/
+      1. <project_root>/skills/                  → bare name (e.g. "react-component")
+      2. <project_root>/arf/plugins/*/skills/    → namespaced: {plugin}__{name}
 
-    Later scans override earlier entries with the same name.
+    Plugin skills use MCP-style namespacing (same as tools). No name conflicts.
     """
 
     def __init__(self, project_root: str | Path = ".") -> None:
@@ -47,17 +47,17 @@ class SkillIndex:
         """(Re)build the skill index from all source directories."""
         self._index.clear()
 
-        # Layer 1: project-level skills/
+        # Layer 1: project-level skills (bare names)
         self._scan_dir(self._root / "skills")
 
-        # Layer 2: plugin skills (overrides layer 1 on name conflict)
+        # Layer 2: plugin skills (namespaced: {plugin}__{name})
         plugins_dir = self._root / "arf" / "plugins"
         if plugins_dir.exists():
             for plugin_dir in sorted(plugins_dir.iterdir()):
                 if plugin_dir.is_dir():
                     self._scan_dir(
                         plugin_dir / "skills",
-                        plugin_name=plugin_dir.name,
+                        namespace=plugin_dir.name,
                     )
 
         self._scanned = True
@@ -102,8 +102,12 @@ class SkillIndex:
     # Internal
     # ------------------------------------------------------------------
 
-    def _scan_dir(self, skills_dir: Path, plugin_name: str = "") -> None:
-        """Scan a single skills directory for skill subdirectories."""
+    def _scan_dir(self, skills_dir: Path, namespace: str = "") -> None:
+        """Scan a single skills directory for skill subdirectories.
+
+        If *namespace* is provided (plugin name), skill names are prefixed:
+        ``{namespace}__{skill_name}`` — matching MCP tool naming convention.
+        """
         if not skills_dir.exists() or not skills_dir.is_dir():
             return
 
@@ -121,15 +125,18 @@ class SkillIndex:
                 raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
                 if not raw or "name" not in raw:
                     continue
+                skill_name = raw["name"]
+                if namespace:
+                    skill_name = f"{namespace}__{skill_name}"
                 entry = SkillEntry(
-                    name=raw["name"],
+                    name=skill_name,
                     description=raw.get("description", ""),
                     source_dir=str(skill_dir),
                     tools_sequence=raw.get("tools_sequence", []),
                 )
-                self._index[entry.name] = entry
+                self._index[skill_name] = entry
                 logger.debug(
-                    "Indexed skill '%s' from %s", entry.name, skill_dir)
+                    "Indexed skill '%s' from %s", skill_name, skill_dir)
             except Exception as exc:
                 logger.warning(
                     "Failed to parse %s: %s", yaml_path, exc)

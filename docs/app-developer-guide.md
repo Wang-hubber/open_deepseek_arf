@@ -111,38 +111,45 @@ plugins:
 
 ## 2. 消息结构
 
-### 2.1 双层 System Message (v0.2)
+### 2.1 多层 System Message (v0.2)
+
+框架按顺序注入 system 消息——每类上下文独立一条：
 
 ```
 messages = [
-  {role: "system", content: "<System Prompt>"},      # [0]: Agent 身份 + 硬规则（固定模板）
-  {role: "system", content: "<system-reminder>"},     # [1]: Skills + Tools + Memory（动态上下文）
+  {role: "system", content: "<System Prompt>"},     # [0]: agent.yaml 定义的身份+规则
+  {role: "system", content: "## Available Skills\n..."}, # [1]: Skills 索引
+  {role: "system", content: "## Available Tools\n..."},  # [2]: Tool 清单
+  {role: "system", content: "## Memory\n..."},            # [3]: 常驻记忆
   {role: "user", content: "..."},
   ...
 ]
 ```
 
-| 层 | 位置 | 内容 | 变动频率 |
+| 层 | 来源 | 内容 | 变动频率 |
 |---|---|---|---|
-| **System Prompt** | messages[0] | Agent 身份、核心规则 | 固定（跨 session 不变） |
-| **system-reminder** | messages[1] | Skills 索引、Tool 清单、Memory | 每 session 构建 |
+| **System Prompt** | `agent.yaml` (DefaultSystemPromptProvider) | Agent 身份、核心规则 | 固定 |
+| **Skills** | `skills/` + `plugins/*/skills/` 索引 | Skill name + description | 每 session |
+| **Tools** | MCP inventory | Tool 清单 | 每 session |
+| **Memory** | `data/memory/memory.md` | 常驻记忆 | 每 session |
 
-### 2.2 System Prompt 模板
+### 2.2 System Prompt
 
+System Prompt 来自 `agent.yaml`，由 `DefaultSystemPromptProvider` 构建：
+
+```yaml
+# agent.yaml
+system_prompt:
+  prefix:
+    role: "你是资深软件工程师"
+    critical_rules: "始终先理解需求再动手"
+  suffix: |
+    ## 注意事项
+    $INVENTORY
+    $MEMORY
 ```
-You are {name}, an AI assistant. {role}
 
-## Role
-{description}
-
-## Core Rules
-- Complete tasks accurately and report results concisely.
-- Use tools when you need to interact with the environment.
-- If you need a specific skill, call use_skill with its name.
-- If you encounter a decision you cannot make, ask the user via ask_user.
-```
-
-**迁移**：v0.1 的 `system_prompt.prefix` / `system_prompt.suffix` 已废弃。System prompt 现在是固定模板，不再从 YAML 拼装。`$INVENTORY` 和 `$MEMORY` 占位符仍由框架填充（内容移到 system-reminder）。
+`$INVENTORY` 和 `$MEMORY` 占位符保留向后兼容——如果 suffix 中包含则框架填充。建议不再使用这两个占位符，让框架以独立 system 消息注入 skills/tools/memory（更清晰的分层）。
 
 ---
 
@@ -289,13 +296,13 @@ async def execute(
 ### 5.1 Skill 目录结构
 
 ```
-skills/                          # 项目级（App 开发者创建）
+skills/                          # 项目级（裸名，如 "react-component"）
 └── {skill_name}/
     ├── skill.yaml               # 元数据：name, description, tools_sequence?
     └── skill.md                 # 领域知识正文（Markdown，自由格式）
 
-arf/plugins/{name}/skills/       # 插件级（同名时覆盖项目级）
-└── ...
+arf/plugins/{name}/skills/       # 插件级（namespaced: {plugin}__{skill_name}）
+└── ...                          # 遵循 MCP 命名约定，与 Tool 一致
 ```
 
 ### 5.2 skill.yaml
@@ -610,13 +617,13 @@ async def handle_human_decision(event: AgentEvent):
 
 ## 13. 迁移 v0.1 → v0.2
 
-### 破坏性变更
+### 变更
 
-1. **`system_prompt.prefix` / `system_prompt.suffix` → 废弃**
-   System Prompt 改为固定模板。`$INVENTORY`/`$MEMORY` 占位符保留，内容移到 system-reminder (messages[1])。
+1. **消息结构变更**
+   messages 从 `[system_prompt, ...]` 变为 `[system_prompt, skills, tools, memory, ...]`。框架按顺序注入独立 system 消息。
 
-2. **消息结构变更**
-   messages 从 `[system_prompt, ...]` 变为 `[system_prompt, system_reminder, ...]`。两层的 system role 消息。
+2. **Skill 命名空间**
+   插件 skills 加 `{plugin}__` 前缀，不再覆盖同名项目 skill。
 
 ### 新增
 
