@@ -113,6 +113,12 @@ class BaseAgent:
         )
         self._mcp_manager = mcp_manager
 
+        # Register kernel tools — built-in, no file-based provider
+        import arf.skills.use_skill_tool as _use_skill_mod
+        import arf.skills.ask_user_tool as _ask_user_mod
+        mcp_manager.register_kernel_tool("use_skill", _use_skill_mod.execute)
+        mcp_manager.register_kernel_tool("ask_user", _ask_user_mod.execute)
+
         # MCP tool resolver wrapper for ControlPlane
         async def _mcp_tool_resolver(state):
             """Resolve tool definitions from MCP for ControlPlane dispatch.
@@ -259,19 +265,24 @@ class BaseAgent:
         if ap_ask:
             perm_cfg.setdefault("ask", []).extend(ap_ask)
 
-        # Auto-allow tools provided by enabled plugins.
+        # Auto-allow tools provided by enabled plugins and kernel.
         # Enabling a plugin implies trust in its tools — the user shouldn't
-        # need to manually list them in tool_guard.allow.  Explicit deny
+        # need to manually list them in tool_guard.allow.  Kernel tools
+        # (use_skill, ask_user) are always available.  Explicit deny
         # still takes precedence.
+        deny_set = set(perm_cfg.get("deny", []))
+        ask_set = set(perm_cfg.get("ask", []))
+        allow_set = set(perm_cfg.get("allow", []))
         if self._plugin_provider:
-            deny_set = set(perm_cfg.get("deny", []))
-            ask_set = set(perm_cfg.get("ask", []))
-            allow_set = set(perm_cfg.get("allow", []))
             for _pname, _t in self._plugin_provider.list_tools_with_plugin():
                 if _t.name not in deny_set and _t.name not in ask_set:
                     allow_set.add(_t.name)
-            if allow_set:
-                perm_cfg["allow"] = sorted(allow_set)
+        # Kernel tools
+        for _kn in ("use_skill", "ask_user"):
+            if _kn not in deny_set and _kn not in ask_set:
+                allow_set.add(_kn)
+        if allow_set:
+            perm_cfg["allow"] = sorted(allow_set)
 
         main_permission_lists = PermissionLists.from_config(perm_cfg)
 

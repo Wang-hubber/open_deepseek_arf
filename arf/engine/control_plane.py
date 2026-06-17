@@ -459,7 +459,7 @@ class ControlPlane:
         # Kernel tools — always available
         if self._skill_index is not None:
             tools.append({
-                "name": "use_skill",
+                "name": "kernel__use_skill",
                 "description": (
                     "Load a Skill's full domain knowledge. "
                     "Call with the skill name to get detailed instructions, "
@@ -480,7 +480,7 @@ class ControlPlane:
 
         # ask_user kernel tool — always available for HITL
         tools.append({
-            "name": "ask_user",
+            "name": "kernel__ask_user",
             "description": (
                 "Request a human decision. Use when you cannot proceed "
                 "without human input. Your round will end, and the human's "
@@ -767,7 +767,8 @@ class ControlPlane:
 
         # Detect ask_user pending — mark state for round_end hook
         for tc in tool_calls:
-            if tc.get("name") == "ask_user":
+            tc_name = tc.get("name", "")
+            if tc_name in ("ask_user", "kernel__ask_user"):
                 r = results.get(tc.get("id", ""))
                 if r and r.success:
                     import json as _json

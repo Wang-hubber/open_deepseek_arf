@@ -82,6 +82,9 @@ class McpClientManager:
         self._plugin_names = plugin_names
         self._plugin_configs = plugin_configs or {}
 
+        # ---- kernel tools (built-in, no file-based provider) ----
+        self._kernel_tools: dict[str, object] = {}
+
         # ---- local providers (in-process, always available) ----
         self._tool_provider = ToolProvider(tools_dir)
         self._skill_provider = SkillProvider(skills_dir)
@@ -99,6 +102,10 @@ class McpClientManager:
         self._remote_lock: asyncio.Lock = asyncio.Lock()
 
         self._started = False
+
+    def register_kernel_tool(self, name: str, execute_fn) -> None:
+        """Register a built-in kernel tool (namespace: kernel__)."""
+        self._kernel_tools[name] = execute_fn
 
     # ==================================================================
     # Lifecycle
@@ -269,6 +276,25 @@ class McpClientManager:
             return ToolResult(
                 tool_name=tool_name, success=False,
                 error=f"Tool '{tool_name}' missing namespace prefix")
+
+        # ---- kernel: kernel__ (built-in, no file-based provider) ----
+        if source == "kernel":
+            fn = self._kernel_tools.get(local_name)
+            if fn is not None:
+                try:
+                    result = await fn(**_filter_serializable(params, keep_di=True))
+                    if isinstance(result, dict) and "ok" in result:
+                        return ToolResult(
+                            tool_name=tool_name, success=result["ok"],
+                            data=result, error=result.get("error"))
+                    return ToolResult(
+                        tool_name=tool_name, success=True, data=result)
+                except Exception as e:
+                    return ToolResult(
+                        tool_name=tool_name, success=False, error=str(e))
+            return ToolResult(
+                tool_name=tool_name, success=False,
+                error=f"Kernel tool '{local_name}' not registered")
 
         # ---- local: user__ (keep DI params for in-process execution) ----
         if source == "user":
