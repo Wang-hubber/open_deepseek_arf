@@ -1,4 +1,5 @@
 """delegate_task — spawn a sub-agent via QueuedTaskDelegator."""
+import asyncio
 import logging
 
 from arf.plugins.a2a.tools import _registry
@@ -14,7 +15,10 @@ async def execute(
     _engine=None,
     session_id: str = "",
 ) -> dict:
-    """Spawn a sub-agent to handle *task*. Uses QueuedTaskDelegator for slot scheduling."""
+    """Spawn a sub-agent to handle *task*. Uses QueuedTaskDelegator for slot scheduling.
+
+    *_engine* is injected by ConcurrentToolExecutor — always set in production.
+    """
     registry = _registry
     if registry.delegator is None:
         return {"ok": False, "error": "A2A plugin not initialized — delegator is None"}
@@ -23,13 +27,13 @@ async def execute(
     if not parent_sid and _engine is not None:
         parent_sid = getattr(_engine, "_current_session_id", "default")
 
-    engine = _engine or registry.engine
-    if engine is None:
+    if _engine is None:
         return {"ok": False, "error": "No engine available for sub-agent execution"}
 
-    # Cap timeout
-    effective_timeout = min(timeout, registry.max_task_timeout) if timeout else registry.max_task_timeout
-    _ = effective_timeout  # used by runner timeout wrapper
+    effective_timeout = (
+        min(timeout, registry.max_task_timeout) if timeout
+        else registry.max_task_timeout
+    )
 
     task_obj = {
         "agent": agent,
@@ -38,29 +42,35 @@ async def execute(
     }
 
     async def runner(t: dict) -> dict:
-        """Runner callback — executed by QueuedTaskDelegator when slot is available."""
+        """Runner callback — executed by QueuedTaskDelegator when slot is available.
+
+        Does NOT catch exceptions — they propagate to _run_wrapped which
+        calls complete() on failure. Successful completion is handled by
+        the round_end hook.
+        """
         from arf.plugins.a2a.state import build_sub_state
 
         sub_state = build_sub_state(
             parent_session_id=parent_sid,
-            task_id="",  # filled by delegator
+            task_id="",
             task=t.get("task", task),
             system_prompt="",
             model="",
             parent_state={},
         )
-        # delegator passes the dispatch task dict; we use task_id from registration
         sub_state["session_id"] = f"{parent_sid}--{t.get('task_id', 'unknown')}"
 
-        try:
-            async for event in engine.astream(sub_state, stop_on_text=True):
-                # Drain events — results are collected by round_end hook
-                pass
-            # Return final state for the round_end hook to read
-            return {"ok": True, "final_state": sub_state}
-        except Exception as exc:
-            logger.exception("Sub-agent runner failed")
-            return {"ok": False, "error": str(exc)}
+        await asyncio.wait_for(
+            _drain_stream(engine, sub_state),
+            timeout=effective_timeout,
+        )
+        return {"ok": True, "final_state": sub_state}
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
     return result
+
+
+async def _drain_stream(engine, sub_state: dict) -> None:
+    """Drain astream events — results collected by round_end hook."""
+    async for _event in engine.astream(sub_state, stop_on_text=True):
+        pass

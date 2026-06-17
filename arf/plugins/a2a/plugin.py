@@ -29,11 +29,12 @@ class A2APlugin:
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = A2APluginConfig(**(config or {}))
-        self._delegator = QueuedTaskDelegator(max_concurrent=cfg.max_concurrent_tasks)
         self._max_task_timeout = cfg.max_task_timeout
 
-        # Populate module-level registry so tool functions can access the delegator
-        _registry.delegator = self._delegator
+        # Populate module-level registry — BOTH hooks and tool functions
+        # read from _registry, ensuring they always share the same delegator.
+        # Only one A2APlugin instance per process (singleton pattern).
+        _registry.delegator = QueuedTaskDelegator(max_concurrent=cfg.max_concurrent_tasks)
         _registry.max_task_timeout = self._max_task_timeout
 
     @property
@@ -71,7 +72,7 @@ class A2APlugin:
             return  # only inject before model sees messages
 
         parent_sid = ctx.session_id
-        pending = await self._delegator.get_pending(parent_sid)
+        pending = await _registry.delegator.get_pending(parent_sid)
         if not pending:
             return
 
@@ -104,7 +105,7 @@ class A2APlugin:
             return  # not a sub-agent session
 
         result = self._collect_result(ctx.state)
-        await self._delegator.complete(parent_sid, task_id, result)
+        await _registry.delegator.complete(parent_sid, task_id, result)
         self._emit_completed(ctx, parent_sid, child_sid, task_id, result)
 
     # ==================================================================
@@ -118,10 +119,10 @@ class A2APlugin:
         if parent_sid is None:
             return
 
-        status = await self._delegator.queue_status(parent_sid)
+        status = await _registry.delegator.queue_status(parent_sid)
         still_running = any(e["task_id"] == task_id for e in status["running"])
         if still_running:
-            await self._delegator.complete(
+            await _registry.delegator.complete(
                 parent_sid, task_id,
                 {"ok": False, "error": "child_session_aborted"},
             )
@@ -149,7 +150,7 @@ class A2APlugin:
             if m.get("role") == "assistant" and m.get("content", "").strip():
                 content = m["content"].strip()
                 break
-        is_gate = state.get("_aborted") or ("gate_exceeded" in state.get("_error", ""))
+        is_gate = state.get("_aborted") or ("gate_exceeded" in (state.get("_error") or ""))
         return {
             "content": content,
             "turn_count": state.get("current_turn", 0),
