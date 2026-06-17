@@ -1,0 +1,19 @@
+name: await_task
+description: >
+  Block until a previously dispatched task completes.
+  Does NOT inject into message list (pre_action hook is the sole writer).
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id returned by delegate_task."
+    timeout:
+      type: integer
+      description: "Max seconds to wait (default: framework max_task_timeout)."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 600s
+activation: kernel
