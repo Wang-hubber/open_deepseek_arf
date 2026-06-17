@@ -1,0 +1,27 @@
+name: delegate_task
+description: >
+  Dispatch a task to a sub-agent. If 'agent' is specified, the named
+  pre-configured agent handles the task. Otherwise a temporary agent
+  inherits the parent's model and tools. The sub-agent runs asynchronously;
+  use queue_status or await_task to get results.
+parameters:
+  type: object
+  properties:
+    agent:
+      type: string
+      description: "Name of a pre-configured agent (optional). Empty = temporary agent inheriting parent capabilities."
+    task:
+      type: string
+      description: "Task description for the sub-agent."
+    timeout:
+      type: integer
+      description: "Expected completion time in seconds (capped by framework max_task_timeout)."
+    context:
+      type: object
+      description: "Optional context data to pass to the sub-agent."
+  required:
+    - task
+execution:
+  sandbox: none
+  timeout: 30s
+activation: kernel
