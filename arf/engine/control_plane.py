@@ -458,6 +458,31 @@ class ControlPlane:
                 },
             })
 
+        # ask_user kernel tool — always available for HITL
+        tools.append({
+            "name": "ask_user",
+            "description": (
+                "Request a human decision. Use when you cannot proceed "
+                "without human input. Your round will end, and the human's "
+                "answer will be available in your next round as a new message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question for the human.",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of choices. Empty = free-text answer.",
+                    },
+                },
+                "required": ["question"],
+            },
+        })
+
         # Build messages — convert internal tool_calls format to API format
         msgs = self._to_api_messages(
             self._system_prompt, state.get("messages", []),
@@ -665,6 +690,22 @@ class ControlPlane:
             engine=self, state_store=self.state_store,
             workspace_dir=self._workspace_dir,
         )
+
+        # Detect ask_user pending — mark state for round_end hook
+        for tc in tool_calls:
+            if tc.get("name") == "ask_user":
+                r = results.get(tc.get("id", ""))
+                if r and r.success:
+                    import json as _json
+                    try:
+                        data = _json.loads(str(r.data)) if isinstance(r.data, str) else r.data
+                    except Exception:
+                        data = {}
+                    if isinstance(data, dict) and data.get("pending"):
+                        state["_pending_human_decision"] = {
+                            "question": data.get("question", ""),
+                            "options": data.get("options", []),
+                        }
 
         # -- Store raw results in hook_data for tool_output hooks --
         raw_results: dict[str, dict] = {}
