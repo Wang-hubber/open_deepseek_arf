@@ -34,8 +34,6 @@ session_mode: ask                 # auto | ask | plan
 # --- Agent 身份 ---
 name: my-agent                    # 必填，唯一标识
 description: 我的 AI 助手
-role: 软件工程师
-task: 帮助用户编写高质量代码
 
 # --- 数据路径 ---
 data_path: "./data"               # state/trace/memory/conflicts 根目录
