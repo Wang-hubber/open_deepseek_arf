@@ -24,7 +24,7 @@ class ProjectMemoryGenerator:
         prompt = self._build_prompt(context)
         resp = await call_model(
             [{"role": "user", "content": prompt}],
-            model="",
+            model_name="",
         )
         content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
         self._index.save_project(content)
