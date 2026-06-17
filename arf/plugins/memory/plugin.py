@@ -21,6 +21,11 @@ class MemoryPlugin:
         self._interval: int = cfg.get("interval", 5)
         self._max_memory_size: int = cfg.get("max_memory_size", 300)
         self._extract_on_session_end: bool = cfg.get("extract_on_session_end", False)
+        self._mem_index = None  # set by BaseAgent after construction
+
+    def set_memory_index(self, mem_index) -> None:
+        """Inject MemoryIndex for rolling project/user memory updates."""
+        self._mem_index = mem_index
 
     @property
     def name(self) -> str:
@@ -89,3 +94,17 @@ class MemoryPlugin:
                     data={"session_id": session_id, "ok": True, "size": size},
                     session_id=session_id,
                 ))
+
+        # === Rolling update for project + user memory (v0.2) ===
+        if self._mem_index is not None:
+            import asyncio
+            asyncio.create_task(self._rolling_update(ctx, messages))
+
+    async def _rolling_update(self, ctx, messages: list[dict]) -> None:
+        """Extract new facts from this round for project and user memory.
+
+        Full LLM extraction pipeline — deferred to follow-up.
+        Infrastructure wired, extraction stub for now.
+        """
+        # TODO: LLM extraction pipeline
+        pass
