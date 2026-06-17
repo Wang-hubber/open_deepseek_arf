@@ -1,9 +1,12 @@
 """Tests for A2A Plugin — task delegation, slot scheduling, and hook lifecycle."""
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
 from arf.communication.queued_delegator import QueuedTaskDelegator
+from arf.core.events import AgentEvent
+from arf.core.plugin_context import PluginContext
 from arf.plugins.a2a.tools import _registry as a2a_registry
 
 
@@ -169,4 +172,164 @@ class TestCancelTask:
         result = await execute(task_id=r1["task_id"], session_id="s1")
         assert result["ok"] is True
         assert result["cancelled"] is False
+
+
+class TestA2APluginHooks:
+    """Hook lifecycle tests: pre_action, round_end, session_end."""
+
+    @pytest.fixture(autouse=True)
+    def setup_registry(self):
+        a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
+        a2a_registry.max_task_timeout = 600.0
+        a2a_registry.engine = None
+        yield
+        a2a_registry.delegator = None
+        a2a_registry.engine = None
+
+    @pytest.mark.anyio
+    async def test_round_end_completes_and_emits_event(self):
+        """round_end on child session: complete() + emit task_completed."""
+        from arf.plugins.a2a.plugin import A2APlugin
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        delegator = a2a_registry.delegator
+
+        parent_sid = "parent_s1"
+        async def runner(task):
+            return {"ok": True}
+        r = await delegator.dispatch(parent_sid, {"task": "test"}, runner)
+        await asyncio.sleep(0)
+        task_id = r["task_id"]
+        child_sid = f"{parent_sid}--{task_id}"
+
+        child_ctx = PluginContext(
+            session_id=child_sid,
+            state={
+                "session_id": child_sid,
+                "messages": [
+                    {"role": "user", "content": "analyze file"},
+                    {"role": "assistant", "content": "Analysis complete: found 3 issues"},
+                ],
+                "current_turn": 2,
+            },
+            event_bus=MagicMock(),
+        )
+
+        await plugin.on_hook("round_end", child_ctx)
+
+        child_ctx.event_bus.emit.assert_called_once()
+        call_args = child_ctx.event_bus.emit.call_args[0][0]
+        assert call_args.type == "task_completed"
+        assert call_args.data["parent_session_id"] == parent_sid
+        assert call_args.data["task_id"] == task_id
+
+    @pytest.mark.anyio
+    async def test_round_end_ignores_non_child_session(self):
+        """round_end on a normal session (no -- pattern) is a no-op."""
+        from arf.plugins.a2a.plugin import A2APlugin
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        event_bus = MagicMock()
+        ctx = PluginContext(
+            session_id="normal_session",
+            state={"session_id": "normal_session", "messages": []},
+            event_bus=event_bus,
+        )
+
+        await plugin.on_hook("round_end", ctx)
+        event_bus.emit.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_pre_action_injects_pending_results(self):
+        """pre_action on parent: inject completed task results into messages."""
+        from arf.plugins.a2a.plugin import A2APlugin
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        delegator = a2a_registry.delegator
+
+        parent_sid = "parent_s3"
+        async def runner(task):
+            return {"ok": True}
+        r = await delegator.dispatch(parent_sid, {"task": "x"}, runner)
+        await asyncio.sleep(0)
+        await delegator.complete(parent_sid, r["task_id"], {
+            "content": "Task result: 5 items found",
+            "turn_count": 3,
+            "gate_exceeded": False,
+        })
+
+        parent_ctx = PluginContext(
+            session_id=parent_sid,
+            current_step="call_model",
+            state={
+                "session_id": parent_sid,
+                "messages": [{"role": "user", "content": "do the thing"}],
+            },
+        )
+
+        await plugin.on_hook("pre_action", parent_ctx)
+
+        msgs = parent_ctx.state["messages"]
+        injected = [m for m in msgs if m.get("role") == "tool"
+                    and isinstance(m.get("content"), str)
+                    and m["content"].startswith("[A2A]")]
+        assert len(injected) == 1
+        assert "5 items found" in injected[0]["content"]
+        assert r["task_id"] in injected[0]["tool_call_id"]
+
+    @pytest.mark.anyio
+    async def test_pre_action_skips_on_execute_tools(self):
+        """pre_action only injects during call_model, not execute_tools."""
+        from arf.plugins.a2a.plugin import A2APlugin
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        delegator = a2a_registry.delegator
+
+        parent_sid = "parent_s4"
+        async def runner(task):
+            return {"ok": True}
+        r = await delegator.dispatch(parent_sid, {"task": "x"}, runner)
+        await asyncio.sleep(0)
+        await delegator.complete(parent_sid, r["task_id"],
+                                 {"content": "done", "turn_count": 1, "gate_exceeded": False})
+
+        ctx = PluginContext(
+            session_id=parent_sid,
+            current_step="execute_tools",
+            state={"session_id": parent_sid, "messages": []},
+        )
+
+        await plugin.on_hook("pre_action", ctx)
+        assert len(ctx.state["messages"]) == 0
+
+    @pytest.mark.anyio
+    async def test_session_end_force_completes_aborted_tasks(self):
+        """session_end on child: force-complete if still running."""
+        from arf.plugins.a2a.plugin import A2APlugin
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        delegator = a2a_registry.delegator
+
+        parent_sid = "parent_s5"
+        barrier = asyncio.Event()
+        async def runner(task):
+            await barrier.wait()
+            return {"ok": True}
+        r = await delegator.dispatch(parent_sid, {"task": "x"}, runner)
+        await asyncio.sleep(0)
+        task_id = r["task_id"]
+
+        child_ctx = PluginContext(
+            session_id=f"{parent_sid}--{task_id}",
+            state={"session_id": f"{parent_sid}--{task_id}", "messages": []},
+        )
+
+        await plugin.on_hook("session_end", child_ctx)
+
+        pending = await delegator.get_pending(parent_sid)
+        aborted = [p for p in pending if p.get("task_id") == task_id]
+        assert len(aborted) == 1
+        assert aborted[0].get("error") == "child_session_aborted"
+
+        barrier.set()
 
