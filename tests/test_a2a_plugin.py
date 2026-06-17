@@ -333,3 +333,110 @@ class TestA2APluginHooks:
 
         barrier.set()
 
+
+class TestA2AIntegration:
+    """End-to-end: delegate_task -> sub-agent runs -> round_end -> result injected."""
+
+    @pytest.fixture(autouse=True)
+    def setup_registry(self):
+        a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
+        a2a_registry.max_task_timeout = 600.0
+        a2a_registry.engine = None
+        yield
+        a2a_registry.delegator = None
+        a2a_registry.engine = None
+
+    @pytest.mark.anyio
+    async def test_plugin_name_and_hooks(self):
+        """A2APlugin exposes correct name and hook subscriptions."""
+        from arf.plugins.a2a.plugin import A2APlugin
+        plugin = A2APlugin({"max_concurrent_tasks": 2})
+        assert plugin.name == "a2a"
+        assert "pre_action" in plugin.hooks
+        assert plugin.hooks["pre_action"] == "blocking"
+        assert "round_end" in plugin.hooks
+        assert plugin.hooks["round_end"] == "blocking"
+        assert "session_end" in plugin.hooks
+        assert plugin.hooks["session_end"] == "side"
+
+    @pytest.mark.anyio
+    async def test_delegate_task_dispatches_with_engine(self):
+        """delegate_task with a mock engine dispatches correctly."""
+        from arf.plugins.a2a.tools.delegate_task.function import execute
+
+        # Set up a stub engine with async generator astream
+        class _StubEngine:
+            async def astream(self, state, stop_on_text=False):
+                yield
+
+        a2a_registry.engine = _StubEngine()
+
+        result = await execute(task="test task", agent="", session_id="int_s1")
+        assert result["ok"] is True
+        assert result["dispatched"] is True
+        assert "task_id" in result
+
+    @pytest.mark.anyio
+    async def test_full_pre_action_roundtrip(self):
+        """pre_action hook injects results that round_end completed."""
+        from arf.plugins.a2a.plugin import A2APlugin
+        from unittest.mock import MagicMock  # noqa: F811
+
+        plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
+        delegator = a2a_registry.delegator
+
+        parent_sid = "int_parent"
+
+        # 1. Dispatch a task (simulating delegate_task tool)
+        async def runner(task):
+            return {"ok": True}
+        r = await delegator.dispatch(parent_sid, {"task": "analyze"}, runner)
+        await asyncio.sleep(0)  # runner completes
+        task_id = r["task_id"]
+
+        # 2. Simulate child agent's round_end hook
+        child_ctx = PluginContext(
+            session_id=f"{parent_sid}--{task_id}",
+            state={
+                "session_id": f"{parent_sid}--{task_id}",
+                "messages": [
+                    {"role": "user", "content": "analyze"},
+                    {"role": "assistant", "content": "Found 42 issues in the codebase."},
+                ],
+                "current_turn": 3,
+            },
+            event_bus=MagicMock(),
+        )
+        await plugin.on_hook("round_end", child_ctx)
+
+        # 3. Verify round_end emitted task_completed
+        child_ctx.event_bus.emit.assert_called_once()
+        event = child_ctx.event_bus.emit.call_args[0][0]
+        assert event.type == "task_completed"
+        assert event.data["task_id"] == task_id
+        assert event.data["result"]["content"] == "Found 42 issues in the codebase."
+        assert event.data["result"]["turn_count"] == 3
+
+        # 4. Simulate parent agent's pre_action (next turn)
+        parent_ctx = PluginContext(
+            session_id=parent_sid,
+            current_step="call_model",
+            state={
+                "session_id": parent_sid,
+                "messages": [{"role": "user", "content": "do things"}],
+            },
+        )
+        await plugin.on_hook("pre_action", parent_ctx)
+
+        # 5. Result should be in parent messages
+        msgs = parent_ctx.state["messages"]
+        injected = [m for m in msgs if m.get("role") == "tool"
+                    and "[A2A]" in m.get("content", "")]
+        assert len(injected) == 1
+        assert "42 issues" in injected[0]["content"]
+        assert task_id in injected[0]["tool_call_id"]
+
+        # 6. get_pending should be empty (consumed by pre_action)
+        pending = await delegator.get_pending(parent_sid)
+        assert len(pending) == 0
+
