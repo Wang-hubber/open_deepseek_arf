@@ -131,23 +131,49 @@ messages = [
 | **Tools** | MCP inventory | Tool 清单 | 每 session |
 | **Memory** | `data/memory/memory.md` | 常驻记忆 | 每 session |
 
-### 2.2 System Prompt
+### 2.2 System Prompt 组装规则
 
-System Prompt 来自 `agent.yaml`，由 `DefaultSystemPromptProvider` 构建：
+```
+agent.yaml                    DefaultSystemPromptProvider         messages[0]
+─────────────                 ───────────────────────────         ───────────
+system_prompt:
+  prefix:
+    role: "你是软件工程师"  →  prefix = "你是软件工程师\n\n     →  "你是软件工程师\n\n
+    critical_rules: "..."         始终先理解再动手"                   始终先理解再动手
+  suffix: "## 工作区\n..."    →  suffix  = "## 工作区\n..."     →   ## 工作区\n..."
+```
+
+**最终结果**（`full_text = prefix + suffix`，不做任何连接符）：
+
+```
+你是资深软件工程师
+
+始终先理解需求再动手
+## 工作区: /workspace
+## 注意事项
+- 代码必须通过测试
+```
+
+**配置示例**：
 
 ```yaml
 # agent.yaml
 system_prompt:
   prefix:
-    role: "你是资深软件工程师"
-    critical_rules: "始终先理解需求再动手"
-  suffix: |
-    ## 注意事项
-    $INVENTORY
-    $MEMORY
+    role: "你是资深软件工程师"                  # 角色身份（第一段）
+    critical_rules: "始终先理解需求再动手\n代码必须通过测试"  # 硬规则（第二段，与 role 空行分隔）
+  suffix: |                                      # 附加内容（紧接 prefix，不含分隔符）
+    ## 工作区: $WORKSPACE
+    ## 可用工具见下方系统消息
 ```
 
-`$INVENTORY` 和 `$MEMORY` 占位符保留向后兼容——如果 suffix 中包含则框架填充。建议不再使用这两个占位符，让框架以独立 system 消息注入 skills/tools/memory（更清晰的分层）。
+| 字段 | 说明 | 必填 |
+|------|------|------|
+| `prefix.role` | Agent 身份描述，prompt 第一段 | 否 |
+| `prefix.critical_rules` | 硬约束规则，prompt 第二段 | 否 |
+| `suffix` | 附加提示，紧接 prefix 之后 | 否 |
+
+三个字段拼接即得 messages[0] 的完整 system prompt。Skills/Tools/Memory 不需要放在 suffix 里——框架自动以独立 system 消息注入（见 2.1）。
 
 ---
 
