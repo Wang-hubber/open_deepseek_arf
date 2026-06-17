@@ -163,48 +163,18 @@ async def _dispatch_external(
         from arf.agent.config import AgentConfig
         from arf.agent.app_context import AppContext
 
-        ws_root = Path(os.environ.get("A4A_WORKSPACE", Path(__file__).parent.parent.parent.parent))
-
-        with open(config_path, encoding="utf-8") as f:
-            data = _yaml.safe_load(f)
-
-        prompt_dir = config_path.parent / "system_prompt" / agent_name
-        shared_dir = config_path.parent / "system_prompt" / "_shared"
-
-        data.setdefault("system_prompt", {}).setdefault("prefix", {})
-        data["system_prompt"]["prefix"]["role"] = (
-            prompt_dir / "role.md"
-        ).read_text(encoding="utf-8")
-
-        rules = ""
-        if shared_dir.exists():
-            shared_files = sorted(
-                f for f in shared_dir.iterdir()
-                if f.suffix == ".md" and not f.name.endswith("_en.md")
-            )
-            parts = []
-            for sf in shared_files:
-                content = sf.read_text(encoding="utf-8").strip()
-                if content:
-                    parts.append(content)
-            if parts:
-                rules = "\n\n".join(parts) + "\n\n"
-        rules += (prompt_dir / "critical_rules.md").read_text(encoding="utf-8")
-        data["system_prompt"]["prefix"]["critical_rules"] = rules
-
-        config = AgentConfig(**data)
-        ctx = AppContext(root=ws_root)
-        sub_agent = BaseAgent(config, app_context=ctx)
-
         rid = t.get("runtime_id", runtime_id)
         sid = resume_session or f"a2a_{agent_name}_{uuid.uuid4().hex[:8]}"
 
+        # Create queues and register entry BEFORE any file I/O or agent init.
+        # If runner crashes during init, the entry still exists so the
+        # frontend can connect and see the error instead of a "not found" flash.
         event_queue: asyncio.Queue = asyncio.Queue()
         answer_queue: asyncio.Queue = asyncio.Queue()
         consumer_ready: asyncio.Event = asyncio.Event()
 
         running_sub_agents[rid] = {
-            "agent": sub_agent,
+            "agent": None,
             "agent_name": agent_name,
             "session_id": sid,
             "parent_session_id": parent_sid,
@@ -216,6 +186,62 @@ async def _dispatch_external(
             "_answer_queue": answer_queue,
             "_consumer_ready": consumer_ready,
         }
+
+        ws_root = Path(os.environ.get("A4A_WORKSPACE", Path(__file__).parent.parent.parent.parent))
+
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = _yaml.safe_load(f)
+        except Exception as exc:
+            running_sub_agents[rid]["status"] = "error"
+            running_sub_agents[rid]["error"] = f"Config read failed: {exc}"
+            await event_queue.put({
+                "type": "error",
+                "data": {"detail": f"加载 {agent_name} 配置失败: {exc}"},
+            })
+            await event_queue.put(None)
+            return {"ok": False, "error": f"config_read: {exc}"}
+
+        try:
+            prompt_dir = config_path.parent / "system_prompt" / agent_name
+            shared_dir = config_path.parent / "system_prompt" / "_shared"
+
+            data.setdefault("system_prompt", {}).setdefault("prefix", {})
+            data["system_prompt"]["prefix"]["role"] = (
+                prompt_dir / "role.md"
+            ).read_text(encoding="utf-8")
+
+            rules = ""
+            if shared_dir.exists():
+                shared_files = sorted(
+                    f for f in shared_dir.iterdir()
+                    if f.suffix == ".md" and not f.name.endswith("_en.md")
+                )
+                parts = []
+                for sf in shared_files:
+                    content = sf.read_text(encoding="utf-8").strip()
+                    if content:
+                        parts.append(content)
+                if parts:
+                    rules = "\n\n".join(parts) + "\n\n"
+            rules += (prompt_dir / "critical_rules.md").read_text(encoding="utf-8")
+            data["system_prompt"]["prefix"]["critical_rules"] = rules
+
+            config = AgentConfig(**data)
+            ctx = AppContext(root=ws_root)
+            sub_agent = BaseAgent(config, app_context=ctx)
+            running_sub_agents[rid]["agent"] = sub_agent
+        except Exception as exc:
+            running_sub_agents[rid]["status"] = "error"
+            running_sub_agents[rid]["error"] = f"Agent init failed: {exc}"
+            await event_queue.put({
+                "type": "error",
+                "data": {"detail": f"初始化 {agent_name} 失败: {exc}"},
+            })
+            await event_queue.put(None)
+            return {"ok": False, "error": f"agent_init: {exc}"}
+
+        sub_agent = running_sub_agents[rid]["agent"]
 
         final_result = ""
         final_status = "completed"
