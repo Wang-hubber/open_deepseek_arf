@@ -52,6 +52,9 @@ class ControlPlane:
         self._stream_model = stream_model
         self._cancel_event = cancel_event
         self._system_prompt = system_prompt
+        # Skill system
+        self._skill_index = None  # set by set_skill_index()
+        self._system_reminder_content = ""  # built at session start
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
         self._data_dir = data_dir
@@ -80,6 +83,12 @@ class ControlPlane:
 
     def set_cancel_event(self, event: asyncio.Event) -> None:
         self._cancel_event = event
+
+    def set_skill_index(self, skill_index) -> None:
+        """Inject the SkillIndex for use_skill tool and system-reminder."""
+        self._skill_index = skill_index
+        import arf.skills.use_skill_tool as use_skill_mod
+        use_skill_mod._index = skill_index
 
     def set_undo_plugin(self, undo_plugin) -> None:
         """Inject undo plugin for round-level checkpoint + rollback."""
@@ -155,6 +164,12 @@ class ControlPlane:
             except Exception as e:
                 await self._dispatch_error(e, state, ctx)
             state["_session_opened"] = True
+
+            # Build skill index for system-reminder
+            if self._skill_index is not None:
+                skill_md = self._skill_index.format_index_markdown()
+                if skill_md:
+                    self._system_reminder_content = skill_md
 
         # --- user_input (once per astream call) ---
         messages = state.get("messages", [])
@@ -421,8 +436,33 @@ class ControlPlane:
                 logger.exception("MCP tool resolution failed")
                 self._emit_mcp_error_event(session_id, e)
 
+        # Kernel tools — always available
+        if self._skill_index is not None:
+            tools.append({
+                "name": "use_skill",
+                "description": (
+                    "Load a Skill's full domain knowledge. "
+                    "Call with the skill name to get detailed instructions, "
+                    "conventions, and best practices for a specific task type. "
+                    "Available skills are listed in the system reminder."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The name of the skill to load.",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            })
+
         # Build messages — convert internal tool_calls format to API format
-        msgs = self._to_api_messages(self._system_prompt, state.get("messages", []))
+        msgs = self._to_api_messages(
+            self._system_prompt, state.get("messages", []),
+            system_reminder=self._system_reminder_content,
+        )
 
         # Validate message contract (check-only, throw on invalid)
         self._validate_messages(state)
@@ -740,17 +780,29 @@ class ControlPlane:
         )
 
     @staticmethod
-    def _to_api_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
+    def _to_api_messages(system_prompt: str, messages: list[dict],
+                         system_reminder: str = "") -> list[dict]:
         """Convert internal message format to OpenAI API format.
+
+        Two-layer system messages:
+          [0] system_prompt (identity + hard rules)
+          [1] system_reminder (skills, tools, memory — dynamic)
 
         Internal tool_calls use {id, name, params} for convenience.
         API expects {id, type: "function", function: {name, arguments}}.
-        Strips internal metadata fields (subtype, compactMetadata, isCompactSummary)
-        from messages before sending to the API.
+        Strips internal metadata fields from messages before sending.
         """
         _STRIP_FIELDS = {"subtype", "compactMetadata", "isCompactSummary"}
-        msgs = [{"role": "system", "content": system_prompt}]
+        msgs: list[dict] = []
+        # Layer 0: system prompt
+        msgs.append({"role": "system", "content": system_prompt})
+        # Layer 1: system-reminder (if present)
+        if system_reminder:
+            msgs.append({"role": "system", "content": system_reminder})
+        # User/assistant/tool messages (skip any system messages from state)
         for m in messages:
+            if m.get("role") == "system":
+                continue
             cleaned = {k: v for k, v in m.items() if k not in _STRIP_FIELDS}
             if m.get("role") == "assistant" and "tool_calls" in m:
                 api_tcs = []
