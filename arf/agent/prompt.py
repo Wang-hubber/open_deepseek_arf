@@ -1,17 +1,12 @@
-"""SystemPrompt value object and DefaultSystemPromptProvider."""
+"""SystemPrompt value object."""
 from dataclasses import dataclass
 
 
 @dataclass
 class SystemPrompt:
-    """Assembled system prompt with prefix/suffix separation.
+    """Assembled system prompt — just the prefix (role + critical_rules).
 
-    prefix — role + critical_rules (stable, target API cache)
-    suffix — inventory + per-turn placeholders
+    Skills, tools, and memory are injected by the framework as
+    separate system messages. No placeholders or suffix needed.
     """
     prefix: str
-    suffix: str
-
-    @property
-    def full_text(self) -> str:
-        return self.prefix + self.suffix

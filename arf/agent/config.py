@@ -67,15 +67,15 @@ class PrefixConfig(BaseModel):
 
 
 class SystemPromptConfig(BaseModel):
-    """System prompt configuration with prefix/suffix separation.
+    """System prompt configuration — prefix only.
 
-    prefix — role + critical_rules (stable, cache target)
-    suffix — template string with $INVENTORY, $MEMORY, $WORKSPACE etc.
+    prefix.role — agent identity (first paragraph)
+    prefix.critical_rules — hard constraints (second paragraph)
 
-    Placeholders use $VAR syntax (Python string.Template).
+    Skills, tools, and memory are injected by the framework as
+    separate system messages. No suffix or placeholders needed.
     """
     prefix: PrefixConfig = Field(default_factory=PrefixConfig)
-    suffix: str = ""
 
 
 class AgentConfig(BaseModel):
