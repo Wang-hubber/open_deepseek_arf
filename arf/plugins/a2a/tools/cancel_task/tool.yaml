@@ -1,0 +1,16 @@
+name: cancel_task
+description: >
+  Cancel a queued task. Only works on tasks still in the queue
+  (not yet running). Running tasks cannot be cancelled.
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id to cancel."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 10s
+activation: kernel
