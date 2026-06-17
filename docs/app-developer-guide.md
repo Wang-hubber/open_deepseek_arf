@@ -43,16 +43,20 @@ allow_paths: []                   # 额外允许文件操作的路径（空=同 
 
 # --- 模型 ---
 model_defs:                       # 模型定义（框架统一管理）
-  - model: deepseek-v4
-    api_base: https://api.deepseek.com
+  - model: deepseek-chat          # DeepSeek-V4 系列
+    api_base: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
-  - model: deepseek-v4-fast
-    api_base: https://api.deepseek.com
+  - model: deepseek-chat-pro      # 高能力，适合复杂推理
+    api_base: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+  - model: deepseek-chat-flash    # 低延迟，适合简单任务
+    api_base: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
 
-agent_models:                     # 本 agent 可用的模型列表
-  - model: deepseek-v4
-  - model: deepseek-v4-fast
+agent_models:                     # 本 agent 可用的模型列表（可引用 model_defs 中任意模型）
+  - model: deepseek-chat
+  - model: deepseek-chat-pro
+  - model: deepseek-chat-flash
 
 # --- 插件 ---
 plugins:                          # 启用的插件名称列表
@@ -98,7 +102,7 @@ advanced:
 # agents/code-reviewer/agent.yaml
 name: code-reviewer
 description: 代码审查专家
-model: deepseek-v4          # 继承主 agent 的模型定义
+model: deepseek-chat-pro    # 可引用主 agent model_defs 中任意模型
 plugins:
   - tool_guard              # 子 agent 不需要 a2a plugin
 ```
