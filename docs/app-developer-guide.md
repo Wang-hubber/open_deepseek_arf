@@ -139,20 +139,10 @@ agent.yaml                    DefaultSystemPromptProvider         messages[0]
 system_prompt:
   prefix:
     role: "你是软件工程师"  →  prefix = "你是软件工程师\n\n     →  "你是软件工程师\n\n
-    critical_rules: "..."         始终先理解再动手"                   始终先理解再动手
-  suffix: "## 工作区\n..."    →  suffix  = "## 工作区\n..."     →   ## 工作区\n..."
+    critical_rules: "..."         始终先理解再动手"                   始终先理解再动手"
 ```
 
-**最终结果**（`full_text = prefix + suffix`，不做任何连接符）：
-
-```
-你是资深软件工程师
-
-始终先理解需求再动手
-## 工作区: /workspace
-## 注意事项
-- 代码必须通过测试
-```
+`prefix.role` 和 `prefix.critical_rules` 之间自动加空行分隔。拼接结果即为 messages[0]。
 
 **配置示例**：
 
@@ -160,20 +150,18 @@ system_prompt:
 # agent.yaml
 system_prompt:
   prefix:
-    role: "你是资深软件工程师"                  # 角色身份（第一段）
-    critical_rules: "始终先理解需求再动手\n代码必须通过测试"  # 硬规则（第二段，与 role 空行分隔）
-  suffix: |                                      # 附加内容（紧接 prefix，不含分隔符）
-    ## 工作区: $WORKSPACE
-    ## 可用工具见下方系统消息
+    role: "你是资深软件工程师"
+    critical_rules: |
+      始终先理解需求再动手
+      代码必须通过测试
 ```
 
 | 字段 | 说明 | 必填 |
 |------|------|------|
 | `prefix.role` | Agent 身份描述，prompt 第一段 | 否 |
 | `prefix.critical_rules` | 硬约束规则，prompt 第二段 | 否 |
-| `suffix` | 纯静态附加提示，框架不做任何占位符替换 | 否 |
 
-三个字段拼接即得 messages[0] 的完整 system prompt。Skills/Tools/Memory 不需要放在 suffix 里——框架自动以独立 system 消息注入（见 2.1）。
+Skills/Tools/Memory 由框架以独立 system 消息注入（见 2.1），无需在 system_prompt 中占位。
 
 ---
 

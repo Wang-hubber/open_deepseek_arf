@@ -330,7 +330,7 @@ class BaseAgent:
             DefaultSystemPromptProvider(config=config),
         )
         system_prompt_obj = prompt_provider.build()
-        system_prompt = system_prompt_obj.full_text
+        system_prompt = system_prompt_obj.prefix
 
         # === Context texts — injected as separate system messages by ControlPlane ===
         # (no longer $INVENTORY / $MEMORY placeholders in system prompt)
