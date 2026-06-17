@@ -56,7 +56,6 @@ class ControlPlane:
         self._skill_index = None  # set by set_skill_index()
         self._injected_system_msgs: list[dict] = []  # built at session start
         self._inventory_text = ""   # tool inventory, set by BaseAgent
-        self._resident_memory = ""  # resident memory, set by BaseAgent
         self._memory_index = None  # set by set_memory_index()
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
@@ -93,10 +92,9 @@ class ControlPlane:
         import arf.skills.use_skill_tool as use_skill_mod
         use_skill_mod._index = skill_index
 
-    def set_context_texts(self, inventory: str = "", memory: str = "") -> None:
-        """Set tool inventory and resident memory for injected system messages."""
+    def set_context_texts(self, inventory: str = "") -> None:
+        """Set tool inventory for injected system messages."""
         self._inventory_text = inventory
-        self._resident_memory = memory
 
     def set_memory_index(self, memory_index) -> None:
         """Inject the MemoryIndex for memory layers + secrets tools."""
@@ -187,9 +185,6 @@ class ControlPlane:
             if self._inventory_text:
                 self._injected_system_msgs.append(
                     {"role": "system", "content": self._inventory_text})
-            if self._resident_memory:
-                self._injected_system_msgs.append(
-                    {"role": "system", "content": self._resident_memory})
 
             # Inject memory layers (project, user, secrets)
             if self._memory_index is not None:

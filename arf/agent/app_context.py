@@ -16,7 +16,7 @@ class AppContext:
         data/
         ├── state/    # session state (checkpoints)
         ├── traces/   # trace events
-        ├── memory/   # LLM memory extraction output (memory.md)
+        ├── memory/   # project.md, user.md, secrets.enc
         └── files/    # tool output / user workspace files
     """
 

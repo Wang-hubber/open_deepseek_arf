@@ -1,31 +1,30 @@
-"""MemoryPlugin — periodic long-term memory extraction on round_end."""
-import json
+"""MemoryPlugin — user memory extraction on round_end via LLM."""
 import logging
-from pathlib import Path
 
 from arf.core.plugin_context import PluginContext
-from arf.core.events import AgentEvent
 
 logger = logging.getLogger("arf.plugins.memory")
 
 
 class MemoryPlugin:
-    """Extracts long-term memory from session messages every N rounds.
+    """Extracts user-specific memory from conversation messages every N rounds.
 
-    Writes messages to a temp file and dispatches the memory_extract tool
-    to generate memory entries (stored in memory.md).
+    On each triggered round_end, builds an extraction prompt from recent
+    messages, calls the LLM, and writes the result to user.md via MemoryIndex.
     """
 
     def __init__(self, config: dict | None = None):
         cfg = config or {}
         self._interval: int = cfg.get("interval", 5)
-        self._max_memory_size: int = cfg.get("max_memory_size", 300)
         self._extract_on_session_end: bool = cfg.get("extract_on_session_end", False)
         self._mem_index = None  # set by BaseAgent after construction
+        self._call_model = None  # set by BaseAgent after construction
 
     def set_memory_index(self, mem_index) -> None:
-        """Inject MemoryIndex for rolling project/user memory updates."""
         self._mem_index = mem_index
+
+    def set_call_model(self, call_model) -> None:
+        self._call_model = call_model
 
     @property
     def name(self) -> str:
@@ -52,59 +51,86 @@ class MemoryPlugin:
         if not messages:
             return
 
-        memory_dir = Path(ctx.memory_dir)
-        state_dir = Path(ctx.state_dir)
-        session_id = ctx.session_id
-        import sys
-
-        # Write messages to temp file for extractor
-        tmp_dir = memory_dir / "state"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_file = tmp_dir / f"extract_{session_id}.json"
-        tmp_file.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
-
-        # Dispatch extractor
-        extractor = (
-            Path(__file__).parent
-            / "tools" / "memory_extract" / "extractor.py"
-        )
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, str(extractor),
-             "--session-file", str(tmp_file),
-             "--memory-dir", str(memory_dir),
-             "--session-id", session_id],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            logger.warning("Memory extractor failed: %s", result.stderr)
-            if ctx.event_bus:
-                ctx.event_bus.emit(AgentEvent(
-                    type="memory_extracted",
-                    data={"session_id": session_id, "ok": False,
-                          "error": result.stderr.strip()},
-                    session_id=session_id,
-                ))
-        else:
-            memory_file = memory_dir / "memory.md"
-            size = memory_file.stat().st_size if memory_file.exists() else 0
-            if ctx.event_bus:
-                ctx.event_bus.emit(AgentEvent(
-                    type="memory_extracted",
-                    data={"session_id": session_id, "ok": True, "size": size},
-                    session_id=session_id,
-                ))
-
-        # === Rolling update for project + user memory (v0.2) ===
         if self._mem_index is not None:
             import asyncio
             asyncio.create_task(self._rolling_update(ctx, messages))
 
     async def _rolling_update(self, ctx, messages: list[dict]) -> None:
-        """Extract new facts from this round for project and user memory.
+        """Extract user-specific facts from this round into user.md."""
+        if self._call_model is None or self._mem_index is None:
+            return
 
-        Full LLM extraction pipeline — deferred to follow-up.
-        Infrastructure wired, extraction stub for now.
-        """
-        # TODO: LLM extraction pipeline
-        pass
+        existing = self._mem_index.load_user()
+        recent = messages[-20:]
+        msgs_text = "\n".join(
+            f"[{m.get('role', '?')}] {str(m.get('content', ''))[:800]}"
+            for m in recent
+        )
+
+        prompt = _USER_EXTRACTION_PROMPT.format(
+            existing=existing or "(no existing user memory)",
+            messages=msgs_text,
+        )
+
+        try:
+            resp = await self._call_model(
+                [{"role": "user", "content": prompt}],
+                model_name="",
+            )
+            content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+        except Exception:
+            logger.warning("User memory extraction failed", exc_info=True)
+            return
+
+        output = content.strip()
+        if not output or output == "NO_NEW_MEMORY":
+            return
+
+        self._mem_index.save_user(output)
+        logger.info("User memory updated (%d chars)", len(output))
+
+
+_USER_EXTRACTION_PROMPT = """Extract user-specific facts from the conversation below. Output raw Markdown — only categories with facts.
+
+## Existing User Memory
+
+{existing}
+
+## Extraction Rules
+
+Extract ONLY facts about the USER (not the project, not the AI, not task progress):
+
+**Extract:**
+- Who the user is (role, skills, background, responsibilities)
+- How they like to work (language, style, tools, workflows, communication preferences)
+- What they decided and WHY (architecture choices, naming, tech stack, rejected alternatives)
+- What they know / believe that persists across sessions (domain knowledge, constraints, contacts)
+
+**Skip:**
+- Task progress or to-do items
+- Code or tool outputs
+- Debug traces or error stacks
+- Casual chat or one-off questions
+- Project structure (that's project.md's job)
+
+## Output Format
+
+```
+## <Category>
+
+- Fact (one sentence, include WHY when known)
+```
+
+Use these categories (pick applicable ones, create new ones if needed):
+- ## User Identity
+- ## Preferences
+- ## Decisions
+- ## Knowledge
+
+Keep each bullet to one sentence. Be specific. If a new fact updates or contradicts old memory, reflect the change directly. Preserve existing memories that are still accurate — only modify what changed.
+
+If nothing worth extracting: output "NO_NEW_MEMORY" and stop.
+
+## Recent Conversation
+
+{messages}"""

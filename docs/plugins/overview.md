@@ -14,7 +14,7 @@
 | `approval` | blocking | `pre_action` | 人机审批。ask_list 中的工具需人工确认，60s 超时，支持内联 chat |
 | `error_handler` | blocking | `error` | 五动作恢复路由：fallback(compact/repair)、retry(指数退避)、skip、abort |
 | `compaction` | blocking | `round_end` | Token 感知上下文压缩。达阈值时 LLM 摘要旧轮次，带冷却机制 |
-| `memory` | side | `round_end`, `session_end` | 长期记忆提取。子进程调用模型，原子写入 memory.md |
+| `memory` | side | `round_end`, `session_end` | 用户记忆提取。进程内 LLM 调用，写入 `user.md`。MemoryIndex 三层体系（project/user/secrets） |
 | `trace` | side | 全部 9 个 hook | 跨切面 JSONL 事件记录。内容寻址配置快照 |
 | `undo` | blocking | `round_start`, `round_end` | Round 级 checkpoint + 回滚。状态深拷贝 + 工作区文件快照 |
 | `plan_solve` | blocking | `pre_action`, `round_start` | DAG 依赖校验 + 断点检测。提供 plan_create/dispatch/summarize/status 工具族 |

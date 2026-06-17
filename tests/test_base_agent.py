@@ -20,10 +20,11 @@ def temp_agent_dir(tmp_path):
 
 @pytest.fixture
 def minimal_config(temp_agent_dir):
-    """Minimal AgentConfig for testing defaults."""
+    """Minimal AgentConfig for testing — secrets disabled by default."""
     return AgentConfig(
         name="test_agent",
         description="Test agent",
+        plugins_config={"memory": {"secrets": {"enabled": False}}},
     )
 
 

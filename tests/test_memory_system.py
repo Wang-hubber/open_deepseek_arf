@@ -81,7 +81,7 @@ class TestSecretsStore:
 class TestMemoryIndex:
     def test_build_injected_messages(self):
         with tempfile.TemporaryDirectory() as d:
-            cfg = MemoryConfig()
+            cfg = MemoryConfig(secrets={"enabled": False})
             idx = MemoryIndex(d, cfg)
             idx.save_project("# Project\n\nTest project memory")
             idx.save_user("# User\n\nPrefers pytest")
@@ -121,7 +121,7 @@ class TestMemoryIndex:
 
     def test_has_project_file(self):
         with tempfile.TemporaryDirectory() as d:
-            cfg = MemoryConfig()
+            cfg = MemoryConfig(secrets={"enabled": False})
             idx = MemoryIndex(d, cfg)
             assert idx.has_project_file() is False
             idx.save_project("# P")
@@ -129,7 +129,7 @@ class TestMemoryIndex:
 
     def test_load_empty_returns_empty_string(self):
         with tempfile.TemporaryDirectory() as d:
-            cfg = MemoryConfig()
+            cfg = MemoryConfig(secrets={"enabled": False})
             idx = MemoryIndex(d, cfg)
             assert idx.load_project() == ""
             assert idx.load_user() == ""
@@ -138,7 +138,7 @@ class TestMemoryIndex:
 class TestProjectMemoryGenerator:
     def test_needs_generation(self, tmp_path):
         from arf.memory.project_generator import ProjectMemoryGenerator
-        cfg = MemoryConfig()
+        cfg = MemoryConfig(secrets={"enabled": False})
         idx = MemoryIndex(str(tmp_path), cfg)
         gen = ProjectMemoryGenerator(str(tmp_path), idx)
         assert gen.needs_generation() is True
@@ -153,7 +153,7 @@ class TestProjectMemoryGenerator:
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "main.py").write_text("print('hi')")
 
-        cfg = MemoryConfig()
+        cfg = MemoryConfig(secrets={"enabled": False})
         idx = MemoryIndex(str(tmp_path), cfg)
         gen = ProjectMemoryGenerator(str(tmp_path), idx)
         ctx = gen._scan()

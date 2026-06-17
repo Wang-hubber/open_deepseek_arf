@@ -215,6 +215,7 @@ class TestSessionHooks:
                 api_base="https://api.example.com",
                 api_key_env="TEST_KEY", context_window=128000,
             )],
+            plugins_config={"memory": {"secrets": {"enabled": False}}},
         )
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
@@ -521,6 +522,7 @@ class TestBaseAgentStop:
                 api_base="https://api.example.com",
                 api_key_env="TEST_KEY", context_window=128000,
             )],
+            plugins_config={"memory": {"secrets": {"enabled": False}}},
         )
 
         overrides = {}
@@ -673,6 +675,7 @@ class TestRoundStartHook:
                 api_base="https://api.example.com",
                 api_key_env="TEST_KEY", context_window=128000,
             )],
+            plugins_config={"memory": {"secrets": {"enabled": False}}},
         )
 
         with patch.dict("os.environ", {"TEST_KEY": "sk-test"}):
@@ -791,6 +794,7 @@ class TestSessionLifecycleEdgeCases:
                 api_base="https://api.example.com",
                 api_key_env="TEST_KEY", context_window=128000,
             )],
+            plugins_config={"memory": {"secrets": {"enabled": False}}},
         )
 
         overrides = {}

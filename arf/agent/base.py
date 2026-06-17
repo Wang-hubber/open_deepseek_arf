@@ -21,31 +21,6 @@ from arf.guardrails.path_check import PathCheckToolGuard
 
 
 
-def _load_resident_memory(memory_dir: str, resident_file: str = "memory.md",
-                          max_size_bytes: int = 300 * 1024) -> str:
-    """Load resident memory from a single Markdown file.
-
-    Called once per session startup. Returns empty string if file absent.
-    Truncates content exceeding max_size_bytes, keeping complete lines.
-    """
-    memory_path = Path(memory_dir) / resident_file
-    if not memory_path.exists():
-        return ""
-
-    content_bytes = memory_path.read_bytes()
-    if len(content_bytes) <= max_size_bytes:
-        return content_bytes.decode("utf-8")
-
-    truncated = content_bytes[:max_size_bytes]
-    text = truncated.decode("utf-8", errors="replace")
-    last_newline = text.rfind("\n")
-    if last_newline > 0:
-        text = text[:last_newline]
-    text += "\n\n<!-- WARNING: resident memory truncated at "
-    text += f"{max_size_bytes // 1024}KB -->\n"
-    return text
-
-
 def _resolve_window_size(config: AgentConfig) -> int:
     """Extract context window size from model config. Falls back to 131072."""
     if config.model_defs:
@@ -81,7 +56,7 @@ class BaseAgent:
             _data_dir = str(_Path(".").resolve() / "data")
         # Auto-create data directory + subdirs if they don't exist.
         # state + traces are session-scoped (created lazily by FileStateStore / TracePlugin).
-        # memory/ is used by MemoryPlugin for memory.md.
+        # memory/ holds project.md, user.md, secrets.enc (managed by MemoryIndex).
         for _sub in ("memory",):
             (_Path(_data_dir) / _sub).mkdir(parents=True, exist_ok=True)
 
@@ -338,15 +313,6 @@ class BaseAgent:
         # Tool inventory (once at startup via MCP)
         inventory_text = self._build_inventory_from_mcp()
 
-        # Resident memory (once at session start)
-        from arf.core.config_base import MemoryConfig
-        _mem_cfg = (adv.memory or MemoryConfig()) if adv else MemoryConfig()
-        resident_memory = _load_resident_memory(
-            _mem_cfg.workspace,
-            resident_file=_mem_cfg.resident_file,
-            max_size_bytes=_mem_cfg.max_size_kb * 1024,
-        )
-
         # Model routing — deprecated TwoTierRouter removed.
         # Use model_defs + agent_models degradation instead.
 
@@ -435,8 +401,7 @@ class BaseAgent:
         skill_index = SkillIndex(project_root=str(_Path(".").resolve()))
         skill_index.scan()
         self._engine.set_skill_index(skill_index)
-        self._engine.set_context_texts(
-            inventory=inventory_text, memory=resident_memory)
+        self._engine.set_context_texts(inventory=inventory_text)
 
         # Initialize MemoryIndex for project + user + secrets memory
         from arf.memory.config import MemoryConfig
@@ -525,6 +490,15 @@ class BaseAgent:
         for sp in side_plugins:
             if sp.name == "trace" and hasattr(sp, "set_data_dir"):
                 sp.set_data_dir(str(_data_dir))
+                break
+
+        # Wire memory_index + call_model into MemoryPlugin for user.md extraction
+        for sp in side_plugins:
+            if sp.name == "memory":
+                if hasattr(sp, "set_memory_index"):
+                    sp.set_memory_index(memory_index)
+                if hasattr(sp, "set_call_model"):
+                    sp.set_call_model(self._engine._call_model)
                 break
 
         # ---- Active session tracking ----

@@ -25,5 +25,3 @@ class MemoryConfig(BaseModel):
     project: ProjectMemoryConfig = Field(default_factory=ProjectMemoryConfig)
     user: UserMemoryConfig = Field(default_factory=UserMemoryConfig)
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
-    resident_file: str = "memory.md"
-    resident_max_size_kb: int = 300

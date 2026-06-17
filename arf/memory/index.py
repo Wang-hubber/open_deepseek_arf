@@ -19,6 +19,12 @@ class MemoryIndex:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._cfg = config
         self._secrets = secrets_store
+        if self._cfg.secrets.enabled and self._secrets is None:
+            raise RuntimeError(
+                f"Secrets memory is enabled but no SecretsStore provided. "
+                f"Set {self._cfg.secrets.master_key_env} or disable secrets "
+                f"via config: MemoryConfig(secrets={{'enabled': False}})."
+            )
 
     # ------------------------------------------------------------------
     # Public — read

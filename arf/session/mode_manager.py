@@ -70,7 +70,7 @@ def has_side_effect(tool_name: str) -> bool:
     """
     READ_ONLY = {
         "file_reader", "glob", "grep", "web_search", "web_fetch",
-        "memory_store", "memory_extract", "resource_loader",
+        "memory_store", "resource_loader",
         "planner", "todo", "model_switch", "undo",
     }
     if tool_name in READ_ONLY:

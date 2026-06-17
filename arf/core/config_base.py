@@ -59,8 +59,6 @@ class MemoryConfig(BaseModel):
     writer: Literal["rule", "llm"] = "llm"
     max_tokens: int = 2000
     top_k: int = 5
-    resident_file: str = "memory.md"
-    max_size_kb: int = 300
 
 
 class ApprovalConfig(BaseModel):
