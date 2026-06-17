@@ -99,9 +99,11 @@ class QueuedTaskDelegator:
             return
 
         removed = session.running.pop(task_id, None)
+        if removed is None:
+            return  # already completed — idempotent, skip duplicate
         session.completed.append({**result, "task_id": task_id})
 
-        if removed is not None and session.queue:
+        if session.queue:
             next_entry = session.queue.pop(0)
             session.running[next_entry.task_id] = _RunningEntry(
                 task_id=next_entry.task_id, task=next_entry.task
