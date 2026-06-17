@@ -438,6 +438,56 @@ class BaseAgent:
         self._engine.set_context_texts(
             inventory=inventory_text, memory=resident_memory)
 
+        # Initialize MemoryIndex for project + user + secrets memory
+        from arf.memory.config import MemoryConfig
+        from arf.memory.index import MemoryIndex
+        from arf.memory.secrets_store import SecretsStore
+
+        _mem_cfg_raw = config.plugins_config.get("memory", {})
+        mem_cfg = MemoryConfig(**_mem_cfg_raw) if _mem_cfg_raw else MemoryConfig()
+
+        secrets_store = None
+        if mem_cfg.secrets.enabled:
+            import os
+            master_key = os.environ.get(mem_cfg.secrets.master_key_env, "")
+            if master_key:
+                secrets_store = SecretsStore(
+                    data_dir=str(_data_dir), master_key=master_key)
+
+        memory_index = MemoryIndex(
+            data_dir=str(_data_dir), config=mem_cfg,
+            secrets_store=secrets_store)
+
+        # Wire secrets tools
+        if secrets_store is not None:
+            import arf.memory.tools.read_secret as rs
+            import arf.memory.tools.write_secret as ws
+            import arf.memory.tools.list_secrets as ls
+            rs._store = secrets_store
+            ws._store = secrets_store
+            ls._store = secrets_store
+
+        self._engine.set_memory_index(memory_index)
+
+        # First-time project memory generation (background)
+        if mem_cfg.project.enabled and mem_cfg.project.auto_generate:
+            from arf.memory.project_generator import ProjectMemoryGenerator
+            gen = ProjectMemoryGenerator(
+                project_root=str(_Path(".").resolve()),
+                memory_index=memory_index,
+            )
+            if gen.needs_generation():
+                import asyncio
+                # Fire-and-forget — don't block startup
+                async def _gen():
+                    try:
+                        await gen.generate(self._engine._call_model)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("arf.memory").warning(
+                            "Project memory generation failed: %s", e)
+                asyncio.create_task(_gen())
+
         # Wire undo plugin into ControlPlane for round-level checkpoint + rollback
         for bp in blocking_plugins:
             if bp.name == "undo":
