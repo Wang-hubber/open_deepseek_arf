@@ -1,0 +1,14 @@
+name: resolve_conflict
+description: Apply held changes from a conflicting sub-agent task to the workspace.
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id of the held changes to apply."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 30s
+activation: kernel

@@ -11,6 +11,7 @@ The sub-agent itself is unaware of A2A -- it just runs its ReAct loop.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.core.plugin_context import PluginContext
@@ -62,32 +63,43 @@ class A2APlugin:
     # ==================================================================
 
     async def _on_pre_action(self, ctx: PluginContext) -> None:
-        """Inject completed task results into parent agent's message list.
-
-        Only fires during call_model phase. The parent agent sees injected
-        results on its next turn, whether it's mid-round or starting a new
-        round after human input.
-        """
+        """Inject completed results. Detect file conflicts across tasks."""
         if ctx.current_step != "call_model":
-            return  # only inject before model sees messages
+            return
 
         parent_sid = ctx.session_id
         pending = await _registry.delegator.get_pending(parent_sid)
         if not pending:
             return
 
+        applied_paths: set[str] = set()
+
         for task_result in pending:
             task_id = task_result.get("task_id", "")
             result = {k: v for k, v in task_result.items() if k != "task_id"}
-            content = self._format_result(task_id, result)
+            changes = result.get("file_changes")
+            changed = (
+                set(changes["added"] + changes["modified"] + changes["deleted"])
+                if changes else set()
+            )
+
+            conflicts = applied_paths & changed if changed else set()
+            if conflicts:
+                self._hold_changes(ctx, parent_sid, task_id, result, conflicts)
+                content = self._format_conflict_warning(task_id, result, conflicts)
+            else:
+                if changed:
+                    applied_paths |= changed
+                content = self._format_result(task_id, result)
+
             ctx.state.setdefault("messages", []).append({
                 "role": "tool",
                 "tool_call_id": task_id,
                 "content": content,
             })
             logger.info(
-                "Injected A2A result for %s into parent session %s (round=%s)",
-                task_id, parent_sid, ctx.interaction_round,
+                "Injected A2A result for %s into parent session %s",
+                task_id, parent_sid,
             )
 
     # ==================================================================
@@ -111,6 +123,21 @@ class A2APlugin:
 
         # Normal completion
         result = self._collect_result(ctx.state)
+        # Compute file changes for conflict detection
+        ws_dir = ctx.workspace_dir or "."
+        from arf.plugins.a2a.tools.delegate_task.function import _snapshot_workspace
+        old_snapshot = ctx.state.get("_workspace_snapshot")
+        if old_snapshot is not None:
+            current = _snapshot_workspace(ws_dir)
+            added = [p for p in current if p not in old_snapshot]
+            modified = [p for p in current if p in old_snapshot and current[p] != old_snapshot[p]]
+            deleted = [p for p in old_snapshot if p not in current]
+            if added or modified or deleted:
+                result["file_changes"] = {
+                    "added": sorted(added),
+                    "modified": sorted(modified),
+                    "deleted": sorted(deleted),
+                }
         await _registry.delegator.complete(parent_sid, task_id, result)
         self._emit_completed(ctx, parent_sid, child_sid, task_id, result)
 
@@ -176,6 +203,54 @@ class A2APlugin:
         if result.get("error"):
             return f"[A2A] Task {task_id} failed: {result['error']}"
         return f"[A2A] Task {task_id} completed ({turns} turns):\n{content}"
+
+    def _hold_changes(
+        self, ctx: PluginContext, parent_sid: str,
+        task_id: str, result: dict, conflict_paths: set,
+    ) -> None:
+        """Store conflicting task changes to disk."""
+        import json
+        import shutil
+        import time
+
+        ws = Path(ctx.workspace_dir or ".")
+        data_dir = ctx.data_dir or "./data"
+        conflict_dir = Path(data_dir) / parent_sid / "conflicts" / task_id
+        conflict_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy conflicting files
+        files_dir = conflict_dir / "files"
+        for path in conflict_paths:
+            src = ws / path
+            if src.exists():
+                dst = files_dir / path
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+
+        # Write manifest
+        file_changes = result.get("file_changes", {})
+        manifest = {
+            "task_id": task_id,
+            "conflict_paths": sorted(conflict_paths),
+            "file_changes": {k: sorted(v) for k, v in file_changes.items()},
+            "held_at": time.time(),
+        }
+        (conflict_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _format_conflict_warning(task_id: str, result: dict, conflicts: set) -> str:
+        paths = ", ".join(sorted(conflicts))
+        content = result.get("content", "(no output)")
+        return (
+            f"[A2A] Task {task_id} completed. CONFLICT: changes to {paths} "
+            f"are HELD -- already modified by another task.\n"
+            f"Use resolve_conflict('{task_id}') to apply or "
+            f"cancel_held('{task_id}') to discard.\n\n"
+            f"Result:\n{content}"
+        )
 
     def _emit_completed(
         self, ctx: PluginContext,

@@ -483,6 +483,11 @@ class ControlPlane:
             },
         })
 
+        # Apply tool blacklist from state (depth limit enforcement)
+        blacklist = state.get("_tool_blacklist", [])
+        if blacklist:
+            tools = [t for t in tools if t.get("name") not in blacklist]
+
         # Build messages — convert internal tool_calls format to API format
         msgs = self._to_api_messages(
             self._system_prompt, state.get("messages", []),
