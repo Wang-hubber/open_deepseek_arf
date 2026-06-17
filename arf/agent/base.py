@@ -431,6 +431,12 @@ class BaseAgent:
             session_timeout=(adv.session_timeout if adv else None),
             session_mode_manager=session_mode_manager,
         )
+        # Initialize SkillIndex for lazy-loading domain knowledge
+        from arf.skills.skill_index import SkillIndex
+        skill_index = SkillIndex(project_root=str(_Path(".").resolve()))
+        skill_index.scan()
+        self._engine.set_skill_index(skill_index)
+
         # Wire undo plugin into ControlPlane for round-level checkpoint + rollback
         for bp in blocking_plugins:
             if bp.name == "undo":
