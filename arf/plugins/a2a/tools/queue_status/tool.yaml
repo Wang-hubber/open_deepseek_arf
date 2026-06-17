@@ -1,0 +1,11 @@
+name: queue_status
+description: >
+  Query the status of all delegated tasks in this session.
+  Returns lists of running, queued, and (unconsumed) completed tasks.
+parameters:
+  type: object
+  properties: {}
+execution:
+  sandbox: none
+  timeout: 10s
+activation: kernel
