@@ -35,7 +35,10 @@ class A2APlugin:
         # Populate module-level registry — BOTH hooks and tool functions
         # read from _registry, ensuring they always share the same delegator.
         # Only one A2APlugin instance per process (singleton pattern).
-        _registry.delegator = QueuedTaskDelegator(max_concurrent=cfg.max_concurrent_tasks)
+        # DO NOT overwrite if already set — sub-agents also load this plugin,
+        # and overwriting would orphan tasks dispatched by the parent agent.
+        if _registry.delegator is None:
+            _registry.delegator = QueuedTaskDelegator(max_concurrent=cfg.max_concurrent_tasks)
         _registry.max_task_timeout = self._max_task_timeout
 
     @property

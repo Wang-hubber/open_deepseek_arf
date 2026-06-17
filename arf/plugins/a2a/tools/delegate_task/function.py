@@ -20,14 +20,10 @@ logger = logging.getLogger("arf.plugins.a2a.delegate_task")
 
 _IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "data", ".claude"}
 
-# Module-level registry for external sub-agents (populated by runner, read by app SSE endpoint).
-# Maps runtime_id -> {"agent": BaseAgent, "agent_name": str, "session_id": str,
-#                      "parent_session_id": str, "status": str, "task": str, "result": str,
-#                      "_event_queue": Queue, "_answer_queue": Queue}
-running_sub_agents: dict[str, dict] = {}
-
-# Maps runtime_id -> delegator task_id for complete() calls
-_runtime_task_ids: dict[str, str] = {}
+# Sub-agent registry and task-id mapping are stored on _registry (module-level
+# singleton in tools/__init__.py) so that api/chat.py and function.py always
+# share the same dicts, even if the editable-install finder creates separate
+# module instances.
 
 
 def _snapshot_workspace(workspace_dir: str) -> dict[str, str]:
@@ -173,7 +169,7 @@ async def _dispatch_external(
         answer_queue: asyncio.Queue = asyncio.Queue()
         consumer_ready: asyncio.Event = asyncio.Event()
 
-        running_sub_agents[rid] = {
+        _registry.running_sub_agents[rid] = {
             "agent": None,
             "agent_name": agent_name,
             "session_id": sid,
@@ -193,8 +189,8 @@ async def _dispatch_external(
             with open(config_path, encoding="utf-8") as f:
                 data = _yaml.safe_load(f)
         except Exception as exc:
-            running_sub_agents[rid]["status"] = "error"
-            running_sub_agents[rid]["error"] = f"Config read failed: {exc}"
+            _registry.running_sub_agents[rid]["status"] = "error"
+            _registry.running_sub_agents[rid]["error"] = f"Config read failed: {exc}"
             await event_queue.put({
                 "type": "error",
                 "data": {"detail": f"加载 {agent_name} 配置失败: {exc}"},
@@ -230,10 +226,10 @@ async def _dispatch_external(
             config = AgentConfig(**data)
             ctx = AppContext(root=ws_root)
             sub_agent = BaseAgent(config, app_context=ctx)
-            running_sub_agents[rid]["agent"] = sub_agent
+            _registry.running_sub_agents[rid]["agent"] = sub_agent
         except Exception as exc:
-            running_sub_agents[rid]["status"] = "error"
-            running_sub_agents[rid]["error"] = f"Agent init failed: {exc}"
+            _registry.running_sub_agents[rid]["status"] = "error"
+            _registry.running_sub_agents[rid]["error"] = f"Agent init failed: {exc}"
             await event_queue.put({
                 "type": "error",
                 "data": {"detail": f"初始化 {agent_name} 失败: {exc}"},
@@ -241,7 +237,7 @@ async def _dispatch_external(
             await event_queue.put(None)
             return {"ok": False, "error": f"agent_init: {exc}"}
 
-        sub_agent = running_sub_agents[rid]["agent"]
+        sub_agent = _registry.running_sub_agents[rid]["agent"]
 
         final_result = ""
         final_status = "completed"
@@ -254,17 +250,17 @@ async def _dispatch_external(
             try:
                 await asyncio.wait_for(consumer_ready.wait(), timeout=30)
             except asyncio.TimeoutError:
-                running_sub_agents[rid]["status"] = "error"
-                running_sub_agents[rid]["error"] = "前端连接超时"
+                _registry.running_sub_agents[rid]["status"] = "error"
+                _registry.running_sub_agents[rid]["error"] = "前端连接超时"
                 return {"ok": False, "error": "consumer_connect_timeout"}
-            running_sub_agents[rid]["status"] = "running"
+            _registry.running_sub_agents[rid]["status"] = "running"
 
             message = task
             while True:
                 _remaining = _deadline - _time.time()
                 if _remaining <= 0:
                     final_status = "error"
-                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    _registry.running_sub_agents[rid]["error"] = "任务执行超时"
                     await event_queue.put({
                         "type": "error",
                         "data": {"detail": "任务执行超时，已取消"},
@@ -282,7 +278,7 @@ async def _dispatch_external(
                                 final_result = content
                 except Exception as exc:
                     final_status = "error"
-                    running_sub_agents[rid]["error"] = str(exc)
+                    _registry.running_sub_agents[rid]["error"] = str(exc)
                     await event_queue.put({
                         "type": "error",
                         "data": {"detail": str(exc)},
@@ -299,8 +295,8 @@ async def _dispatch_external(
                     break
 
                 # HITL
-                running_sub_agents[rid]["status"] = "waiting_human"
-                running_sub_agents[rid]["_pending_decision"] = pending_decision
+                _registry.running_sub_agents[rid]["status"] = "waiting_human"
+                _registry.running_sub_agents[rid]["_pending_decision"] = pending_decision
                 await event_queue.put({
                     "type": "human_decision_required",
                     "data": {
@@ -314,13 +310,13 @@ async def _dispatch_external(
 
                 _remaining = _deadline - _time.time()
                 if _remaining <= 0:
-                    running_sub_agents[rid]["status"] = "error"
-                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    _registry.running_sub_agents[rid]["status"] = "error"
+                    _registry.running_sub_agents[rid]["error"] = "任务执行超时"
                     await event_queue.put({
                         "type": "error", "data": {"detail": "任务执行超时，已取消"},
                     })
                     await event_queue.put(None)
-                    task_id = _runtime_task_ids.get(rid, "")
+                    task_id = _registry.runtime_task_ids.get(rid, "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {
                             "ok": False, "error": "timeout", "agent_name": agent_name,
@@ -330,32 +326,32 @@ async def _dispatch_external(
                 try:
                     message = await asyncio.wait_for(answer_queue.get(), timeout=_remaining)
                 except asyncio.TimeoutError:
-                    running_sub_agents[rid]["status"] = "error"
-                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    _registry.running_sub_agents[rid]["status"] = "error"
+                    _registry.running_sub_agents[rid]["error"] = "任务执行超时"
                     await event_queue.put({"type": "error", "data": {"detail": "任务执行超时，已取消"}})
                     await event_queue.put(None)
-                    task_id = _runtime_task_ids.get(rid, "")
+                    task_id = _registry.runtime_task_ids.get(rid, "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "timeout", "agent_name": agent_name})
                     return {"ok": False, "error": "timeout"}
 
                 if message == "__stop__":
-                    running_sub_agents[rid]["status"] = "error"
-                    running_sub_agents[rid]["error"] = "用户停止了会话"
+                    _registry.running_sub_agents[rid]["status"] = "error"
+                    _registry.running_sub_agents[rid]["error"] = "用户停止了会话"
                     await event_queue.put({"type": "error", "data": {"detail": "用户停止了会话"}})
                     await event_queue.put(None)
-                    task_id = _runtime_task_ids.get(rid, "")
+                    task_id = _registry.runtime_task_ids.get(rid, "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "stopped_by_user", "agent_name": agent_name})
                     return {"ok": False, "error": "stopped_by_user"}
 
                 _deadline = _time.time() + hard_timeout
-                running_sub_agents[rid]["status"] = "running"
+                _registry.running_sub_agents[rid]["status"] = "running"
                 await event_queue.put({"type": "human_decision_resumed", "data": {"runtime_id": rid}})
 
-            task_id = _runtime_task_ids.get(rid, "")
-            running_sub_agents[rid]["status"] = final_status
-            running_sub_agents[rid]["result"] = final_result
+            task_id = _registry.runtime_task_ids.get(rid, "")
+            _registry.running_sub_agents[rid]["status"] = final_status
+            _registry.running_sub_agents[rid]["result"] = final_result
 
             if task_id:
                 await _registry.delegator.complete(parent_sid, task_id, {
@@ -363,25 +359,25 @@ async def _dispatch_external(
                     "result": final_result,
                     "content": final_result,
                     "agent_name": agent_name,
-                    "error": running_sub_agents[rid].get("error", ""),
+                    "error": _registry.running_sub_agents[rid].get("error", ""),
                 })
 
             await event_queue.put(None)
 
             if final_status == "error":
-                return {"ok": False, "error": running_sub_agents[rid].get("error", "")}
+                return {"ok": False, "error": _registry.running_sub_agents[rid].get("error", "")}
             return {"ok": True, "result": final_result, "session_id": sid, "agent_name": agent_name}
         finally:
             await sub_agent.stop()
             async def _delayed_cleanup():
                 await asyncio.sleep(30)
-                running_sub_agents.pop(rid, None)
-                _runtime_task_ids.pop(rid, None)
+                _registry.running_sub_agents.pop(rid, None)
+                _registry.runtime_task_ids.pop(rid, None)
             asyncio.ensure_future(_delayed_cleanup())
 
     result = await _registry.delegator.dispatch(parent_sid, task_obj, runner)
     if result.get("task_id"):
-        _runtime_task_ids[runtime_id] = result["task_id"]
+        _registry.runtime_task_ids[runtime_id] = result["task_id"]
     return {
         "ok": True,
         **result,
