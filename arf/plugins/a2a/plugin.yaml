@@ -1,0 +1,6 @@
+name: a2a
+enabled: true
+description: "Agent-to-Agent communication — Task Delegation via QueuedTaskDelegator"
+config:
+  max_concurrent_tasks: 3
+  max_task_timeout: 600
