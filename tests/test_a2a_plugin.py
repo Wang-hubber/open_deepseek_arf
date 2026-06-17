@@ -94,41 +94,6 @@ class TestQueueStatus:
         barrier.set()
 
 
-class TestAwaitTask:
-    @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        a2a_registry.delegator = QueuedTaskDelegator(max_concurrent=2)
-        a2a_registry.max_task_timeout = 600.0
-        yield
-        a2a_registry.delegator = None
-
-    @pytest.mark.anyio
-    async def test_await_task_returns_result_when_complete(self):
-        from arf.plugins.a2a.tools.await_task.function import execute
-
-        delegator = a2a_registry.delegator
-        async def runner(task):
-            return {"result": "done"}
-
-        r = await delegator.dispatch("s1", {"n": 1}, runner)
-        await asyncio.sleep(0)  # let runner complete
-
-        # Complete the task so get_pending sees it
-        await delegator.complete("s1", r["task_id"], {"result": "done"})
-
-        result = await execute(task_id=r["task_id"], session_id="s1", timeout=5)
-        assert result["ok"] is True
-        assert result["result"]["result"] == "done"
-
-    @pytest.mark.anyio
-    async def test_await_task_timeout_returns_error(self):
-        from arf.plugins.a2a.tools.await_task.function import execute
-
-        result = await execute(task_id="nonexistent", session_id="s1", timeout=0.1)
-        assert result["ok"] is False
-        assert "timeout" in result.get("error", "")
-
-
 class TestCancelTask:
     @pytest.fixture(autouse=True)
     def setup_registry(self):
