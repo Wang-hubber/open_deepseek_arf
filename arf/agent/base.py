@@ -332,12 +332,13 @@ class BaseAgent:
         system_prompt_obj = prompt_provider.build()
         system_prompt = system_prompt_obj.full_text
 
-        # Fill $INVENTORY once at startup via MCP, cached for subsequent turns
-        inventory_text = self._build_inventory_from_mcp()
-        if inventory_text:
-            system_prompt = system_prompt.replace("$INVENTORY", inventory_text)
+        # === Context texts — injected as separate system messages by ControlPlane ===
+        # (no longer $INVENTORY / $MEMORY placeholders in system prompt)
 
-        # Load resident memory — injected into $MEMORY once at session start
+        # Tool inventory (once at startup via MCP)
+        inventory_text = self._build_inventory_from_mcp()
+
+        # Resident memory (once at session start)
         from arf.core.config_base import MemoryConfig
         _mem_cfg = (adv.memory or MemoryConfig()) if adv else MemoryConfig()
         resident_memory = _load_resident_memory(
@@ -345,8 +346,6 @@ class BaseAgent:
             resident_file=_mem_cfg.resident_file,
             max_size_bytes=_mem_cfg.max_size_kb * 1024,
         )
-        if resident_memory:
-            system_prompt = system_prompt.replace("$MEMORY", resident_memory)
 
         # Model routing — deprecated TwoTierRouter removed.
         # Use model_defs + agent_models degradation instead.
@@ -436,6 +435,8 @@ class BaseAgent:
         skill_index = SkillIndex(project_root=str(_Path(".").resolve()))
         skill_index.scan()
         self._engine.set_skill_index(skill_index)
+        self._engine.set_context_texts(
+            inventory=inventory_text, memory=resident_memory)
 
         # Wire undo plugin into ControlPlane for round-level checkpoint + rollback
         for bp in blocking_plugins:

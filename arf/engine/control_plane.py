@@ -54,7 +54,9 @@ class ControlPlane:
         self._system_prompt = system_prompt
         # Skill system
         self._skill_index = None  # set by set_skill_index()
-        self._system_reminder_content = ""  # built at session start
+        self._injected_system_msgs: list[dict] = []  # built at session start
+        self._inventory_text = ""   # tool inventory, set by BaseAgent
+        self._resident_memory = ""  # resident memory, set by BaseAgent
         self._max_turns = max_turns
         self._workspace_dir = workspace_dir
         self._data_dir = data_dir
@@ -89,6 +91,11 @@ class ControlPlane:
         self._skill_index = skill_index
         import arf.skills.use_skill_tool as use_skill_mod
         use_skill_mod._index = skill_index
+
+    def set_context_texts(self, inventory: str = "", memory: str = "") -> None:
+        """Set tool inventory and resident memory for injected system messages."""
+        self._inventory_text = inventory
+        self._resident_memory = memory
 
     def set_undo_plugin(self, undo_plugin) -> None:
         """Inject undo plugin for round-level checkpoint + rollback."""
@@ -165,11 +172,19 @@ class ControlPlane:
                 await self._dispatch_error(e, state, ctx)
             state["_session_opened"] = True
 
-            # Build skill index for system-reminder
+            # Build injected system messages: skills → tools → memory
+            self._injected_system_msgs = []
             if self._skill_index is not None:
                 skill_md = self._skill_index.format_index_markdown()
                 if skill_md:
-                    self._system_reminder_content = skill_md
+                    self._injected_system_msgs.append(
+                        {"role": "system", "content": skill_md})
+            if self._inventory_text:
+                self._injected_system_msgs.append(
+                    {"role": "system", "content": self._inventory_text})
+            if self._resident_memory:
+                self._injected_system_msgs.append(
+                    {"role": "system", "content": self._resident_memory})
 
         # --- user_input (once per astream call) ---
         messages = state.get("messages", [])
@@ -491,7 +506,7 @@ class ControlPlane:
         # Build messages — convert internal tool_calls format to API format
         msgs = self._to_api_messages(
             self._system_prompt, state.get("messages", []),
-            system_reminder=self._system_reminder_content,
+            injected_msgs=self._injected_system_msgs,
         )
 
         # Validate message contract (check-only, throw on invalid)
@@ -827,12 +842,12 @@ class ControlPlane:
 
     @staticmethod
     def _to_api_messages(system_prompt: str, messages: list[dict],
-                         system_reminder: str = "") -> list[dict]:
+                         injected_msgs: list[dict] | None = None) -> list[dict]:
         """Convert internal message format to OpenAI API format.
 
-        Two-layer system messages:
-          [0] system_prompt (identity + hard rules)
-          [1] system_reminder (skills, tools, memory — dynamic)
+        System messages structure:
+          [0] system_prompt (from agent.yaml, identity + hard rules)
+          [1..N] injected_msgs (skills → tools → memory, each a system msg)
 
         Internal tool_calls use {id, name, params} for convenience.
         API expects {id, type: "function", function: {name, arguments}}.
@@ -842,9 +857,10 @@ class ControlPlane:
         msgs: list[dict] = []
         # Layer 0: system prompt
         msgs.append({"role": "system", "content": system_prompt})
-        # Layer 1: system-reminder (if present)
-        if system_reminder:
-            msgs.append({"role": "system", "content": system_reminder})
+        # Injected system messages: skills, tools, memory (each section independently)
+        for im in (injected_msgs or []):
+            if im.get("content"):
+                msgs.append({"role": "system", "content": im["content"]})
         # User/assistant/tool messages (skip any system messages from state)
         for m in messages:
             if m.get("role") == "system":
