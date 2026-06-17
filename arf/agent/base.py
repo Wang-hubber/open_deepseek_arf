@@ -258,6 +258,21 @@ class BaseAgent:
         ap_ask = ap_cfg.get("ask_list", [])
         if ap_ask:
             perm_cfg.setdefault("ask", []).extend(ap_ask)
+
+        # Auto-allow tools provided by enabled plugins.
+        # Enabling a plugin implies trust in its tools — the user shouldn't
+        # need to manually list them in tool_guard.allow.  Explicit deny
+        # still takes precedence.
+        if self._plugin_provider:
+            deny_set = set(perm_cfg.get("deny", []))
+            ask_set = set(perm_cfg.get("ask", []))
+            allow_set = set(perm_cfg.get("allow", []))
+            for _pname, _t in self._plugin_provider.list_tools_with_plugin():
+                if _t.name not in deny_set and _t.name not in ask_set:
+                    allow_set.add(_t.name)
+            if allow_set:
+                perm_cfg["allow"] = sorted(allow_set)
+
         main_permission_lists = PermissionLists.from_config(perm_cfg)
 
         self._main_permission_lists = main_permission_lists
