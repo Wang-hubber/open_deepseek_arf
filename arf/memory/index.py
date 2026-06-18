@@ -253,12 +253,24 @@ class MemoryIndex:
         return f"## User Memory\n\n{text}" if text else ""
 
     def _format_secrets(self) -> str:
-        names = self.list_secrets()
-        if not names:
+        if self._secrets is None:
             return ""
-        lines = "## Available Secrets\n"
-        lines += "\n".join(f"- {n}" for n in names)
-        return lines
+        all_secrets = self._secrets.load()
+        if not all_secrets:
+            return ""
+        import json as _json
+        lines = ["## Available Secrets", ""]
+        for name, raw in sorted(all_secrets.items()):
+            try:
+                data = _json.loads(raw)
+                note = data.get("n", "")
+            except (_json.JSONDecodeError, TypeError):
+                note = ""
+            if note:
+                lines.append(f"- **{name}**: {note}")
+            else:
+                lines.append(f"- **{name}**")
+        return "\n".join(lines)
 
     def _format_task_memory(self) -> str:
         return self.build_task_summary()
