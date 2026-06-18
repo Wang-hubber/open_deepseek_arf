@@ -236,3 +236,74 @@ class TestTaskMemoryExtraction:
         )
         await plugin.on_hook("task_completed", ctx)
         call_model.assert_not_called()
+
+
+class TestSearchTaskMemory:
+    @pytest.fixture
+    def tasks_content(self):
+        return """<!-- TASK refactoring | agent: agent_1 -->
+
+### 重构 auth 模块
+
+**方案：**
+- 新增 TokenStorage adapter
+
+**教训：**
+- 不要假设 SessionStore 子类无隐式依赖 (×3)
+
+<!-- /TASK -->
+<!-- TASK bugfix | agent: agent_2 -->
+
+### 修复 login 超时
+
+**方案：**
+- 增加连接池超时
+
+**教训：**
+- redis 连接池不是线程安全的 (×2)
+
+<!-- /TASK -->
+"""
+
+    @pytest.mark.anyio
+    async def test_search_returns_ok_and_results(self, tasks_content):
+        import arf.memory.tools.search_task_memory as stm
+        import tempfile
+        from pathlib import Path
+        from arf.memory.config import MemoryConfig
+        from arf.memory.index import MemoryIndex
+
+        d = tempfile.mkdtemp()
+        data_dir = Path(d) / "data"
+        cfg = MemoryConfig(secrets={"enabled": False})
+        mi = MemoryIndex(data_dir=str(data_dir), config=cfg)
+        mi.save_tasks(tasks_content)
+        stm._index = mi
+
+        call_model = AsyncMock(return_value={
+            "content": json.dumps({
+                "matches": [
+                    {"category": "refactoring", "description": "重构 auth 模块",
+                     "approach": ["新增 TokenStorage adapter"],
+                     "lessons": ["不要假设 SessionStore 子类无隐式依赖"]}
+                ]
+            })
+        })
+        stm._call_model = call_model
+
+        result = await stm.execute(query="session token 存储")
+        assert result["ok"] is True
+        assert len(result["matches"]) == 1
+        assert result["matches"][0]["category"] == "refactoring"
+
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+    @pytest.mark.anyio
+    async def test_search_no_memory_index_returns_error(self):
+        import arf.memory.tools.search_task_memory as stm
+        stm._index = None
+        stm._call_model = None
+        result = await stm.execute(query="anything")
+        assert result["ok"] is False
+        assert "error" in result
