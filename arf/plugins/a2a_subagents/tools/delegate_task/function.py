@@ -191,11 +191,40 @@ async def execute(
         # Write child_tasks entry BEFORE async work — prevents race with round_end
         await _add_child_task(_engine, parent_sid, t.get("task_id", ""), child_sid, agent or "inline")
 
-        tool_calls = await asyncio.wait_for(
-            _drain_stream(_engine, sub_state),
-            timeout=effective_timeout,
+        # Inject A2ATaskLifecycle so inline sub-agent results are recorded
+        _original_lifecycle = _engine._task_lifecycle
+        from arf.plugins.a2a_subagents.task_lifecycle import A2ATaskLifecycle
+        _engine._task_lifecycle = A2ATaskLifecycle(
+            _engine._task_lifecycle._event_bus, registry.delegator,
+            parent_sid=parent_sid, child_sid=child_sid, task_id=t.get("task_id", ""),
         )
+        try:
+            tool_calls = await asyncio.wait_for(
+                _drain_stream(_engine, sub_state),
+                timeout=effective_timeout,
+            )
+        finally:
+            _engine._task_lifecycle = _original_lifecycle
+
         sub_state["_tool_calls_summary"] = tool_calls
+
+        # Fallback: ensure delegator task is completed even without kernel__task_complete
+        task_id_inline = t.get("_delegator_task_id", "")
+        if task_id_inline:
+            try:
+                await registry.delegator.complete(
+                    parent_sid, task_id_inline,
+                    {
+                        "ok": True,
+                        "content": sub_state.get("messages", [])[-1].get("content", "")
+                        if sub_state.get("messages") else "",
+                        "turn_count": sub_state.get("current_turn", 0),
+                        "gate_exceeded": False,
+                    },
+                )
+            except Exception:
+                pass  # delegator.complete is idempotent — ignore race
+
         return {"ok": True, "final_state": sub_state}
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
@@ -295,12 +324,12 @@ async def _dispatch_external(
             from arf.plugins.a2a_subagents.hitl import A2AHITL
             from arf.plugins.a2a_subagents.task_lifecycle import A2ATaskLifecycle
 
-            task_id = _registry.runtime_task_ids.get(rid, "")
+            _delegator_task_id = t.get("_delegator_task_id", "")
             sub_agent._engine._hitl = A2AHITL(
                 sub_agent._engine.event_bus, sub_agent.state_store)
             sub_agent._engine._task_lifecycle = A2ATaskLifecycle(
                 sub_agent._engine.event_bus, _registry.delegator,
-                parent_sid=parent_sid, child_sid=sid, task_id=task_id,
+                parent_sid=parent_sid, child_sid=sid, task_id=_delegator_task_id,
             )
             # Inject cancel_event for cascade cancel
             import asyncio as _asyncio
@@ -426,7 +455,7 @@ async def _dispatch_external(
                         "type": "error", "data": {"detail": "任务执行超时，已取消"},
                     })
                     await event_queue.put(None)
-                    task_id = _registry.runtime_task_ids.get(rid, "")
+                    task_id = t.get("_delegator_task_id", "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {
                             "ok": False, "error": "timeout", "agent_name": agent_name,
@@ -440,7 +469,7 @@ async def _dispatch_external(
                     _registry.running_sub_agents[rid]["error"] = "任务执行超时"
                     await event_queue.put({"type": "error", "data": {"detail": "任务执行超时，已取消"}})
                     await event_queue.put(None)
-                    task_id = _registry.runtime_task_ids.get(rid, "")
+                    task_id = t.get("_delegator_task_id", "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "timeout", "agent_name": agent_name})
                     return {"ok": False, "error": "timeout"}
@@ -450,7 +479,7 @@ async def _dispatch_external(
                     _registry.running_sub_agents[rid]["error"] = "用户停止了会话"
                     await event_queue.put({"type": "error", "data": {"detail": "用户停止了会话"}})
                     await event_queue.put(None)
-                    task_id = _registry.runtime_task_ids.get(rid, "")
+                    task_id = t.get("_delegator_task_id", "")
                     if task_id:
                         await _registry.delegator.complete(parent_sid, task_id, {"ok": False, "error": "stopped_by_user", "agent_name": agent_name})
                     return {"ok": False, "error": "stopped_by_user"}
@@ -472,7 +501,7 @@ async def _dispatch_external(
                     "deleted": sorted(deleted),
                 }
 
-            task_id = _registry.runtime_task_ids.get(rid, "")
+            task_id = t.get("_delegator_task_id", "")
             _registry.running_sub_agents[rid]["status"] = final_status
             _registry.running_sub_agents[rid]["result"] = final_result
 
@@ -508,8 +537,6 @@ async def _dispatch_external(
             asyncio.ensure_future(_delayed_cleanup())
 
     result = await _registry.delegator.dispatch(parent_sid, task_obj, runner)
-    if result.get("task_id"):
-        _registry.runtime_task_ids[runtime_id] = result["task_id"]
     return {
         "ok": True,
         **result,

@@ -82,6 +82,7 @@ class QueuedTaskDelegator:
         task: dict,
         runner: Callable[[dict], Awaitable[dict]],
     ) -> None:
+        task["_delegator_task_id"] = task_id  # make task_id available to runner
         try:
             await runner(task)
         except Exception:

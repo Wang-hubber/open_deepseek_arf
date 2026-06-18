@@ -179,6 +179,10 @@ class A2APlugin:
         if parent_sid is None:
             return
 
+        # Don't mark as completed if waiting for human input
+        if ctx.state.get("_pending_human_decision"):
+            return
+
         # Update child_tasks status for normal completions
         await self._update_child_status(ctx, parent_sid, child_sid, "completed")
 

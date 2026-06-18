@@ -182,6 +182,7 @@ class ControlPlane:
             except Exception as e:
                 await self._dispatch_error(e, state, ctx)
             state["_session_opened"] = True
+            state.setdefault("_task_start_round", 0)
 
             # Build injected system messages: skills → tools → memory
             self._injected_system_msgs = []
