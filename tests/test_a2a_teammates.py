@@ -7,7 +7,7 @@ def test_agent_message_default_priority():
     msg = AgentMessage(
         sender="PM",
         receiver="Dev",
-        type="task_request",
+        type="info",
         payload={"task": "build API"},
     )
     assert msg.priority == "normal"
@@ -18,7 +18,7 @@ def test_agent_message_urgent_priority():
     msg = AgentMessage(
         sender="PM",
         receiver="Dev",
-        type="task_request",
+        type="info",
         payload={"task": "fix critical bug"},
         priority="urgent",
     )
@@ -30,7 +30,7 @@ def test_agent_message_fields_roundtrip():
     msg = AgentMessage(
         sender="PM",
         receiver="Dev",
-        type="task_request",
+        type="info",
         payload={"task": "build"},
         priority="normal",
         reply_to="msg_001",
@@ -38,7 +38,7 @@ def test_agent_message_fields_roundtrip():
     )
     assert msg.sender == "PM"
     assert msg.receiver == "Dev"
-    assert msg.type == "task_request"
+    assert msg.type == "info"
     assert msg.priority == "normal"
     assert msg.reply_to == "msg_001"
     assert msg.correlation_id == "corr_001"
