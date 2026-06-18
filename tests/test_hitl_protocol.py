@@ -63,3 +63,13 @@ class TestDefaultHITL:
         )
         assert await hitl.cancel_request(result["request_id"]) is True
         assert await hitl.cancel_request(result["request_id"]) is False
+
+
+class TestEventTypes:
+    def test_new_event_types_in_registry(self):
+        import typing
+        from arf.core.events import EventType
+        event_types = set(typing.get_args(EventType))
+        assert "need_human_input" in event_types
+        assert "human_input_provided" in event_types
+        assert "task_completed" in event_types

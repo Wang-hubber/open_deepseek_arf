@@ -29,6 +29,10 @@ EventType = Literal[
     "circuit_closed",       # CircuitBreaker → CLOSED (recovered)
     "breaker_blocked",      # CircuitBreaker OPEN blocked a request
     "user_annotation",
+    # Task lifecycle & HITL primitives
+    "need_human_input",
+    "human_input_provided",
+    "task_completed",
 ]
 
 @dataclass
