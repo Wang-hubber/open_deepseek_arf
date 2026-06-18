@@ -1231,6 +1231,64 @@ class ControlPlane:
             )
             raise
 
+    async def resume(self, state: AgentState):
+        """Resume execution from saved state. No new user message appended.
+
+        Differs from astream(): does not require a user_message arg.
+        Restores turn/interaction_round counters from *state*, then enters
+        the execute loop directly. session_start preamble is skipped because
+        _session_opened is already True in the saved state.
+
+        Yields AgentEvent like astream().
+        """
+        session_id = state.get("session_id", "default")
+        self._current_session_id = session_id
+        self._interaction_round = state.get("interaction_round", 0)
+        state["interaction_round"] = self._interaction_round
+
+        try:
+            try:
+                async for event in self._execute(state):
+                    yield event
+            except SessionAbortedError:
+                state["_session_ended"] = True
+                state["session_active"] = False
+                state["_aborted"] = True
+                state["_error"] = "Session aborted via error_handler decision"
+                if self.state_store:
+                    await self.state_store.put(session_id, state)
+                yield self._make_event(
+                    "session_end",
+                    {"session_id": session_id, "reason": "aborted"},
+                    session_id=session_id,
+                )
+            else:
+                if not state.get("_session_ended"):
+                    state["_session_ended"] = True
+                    state["session_active"] = False
+                    if self.state_store:
+                        await self.state_store.put(session_id, state)
+                    yield self._make_event(
+                        "session_end",
+                        {"session_id": session_id, "reason": "completed"},
+                        session_id=session_id,
+                    )
+        except Exception as exc:
+            state["_session_ended"] = True
+            state["session_active"] = False
+            state["_aborted"] = True
+            state["_error"] = str(exc)
+            logging.getLogger("arf").exception(
+                "resume() session %s failed with unhandled error", session_id)
+            if self.state_store:
+                await self.state_store.put(session_id, state)
+            yield self._make_event(
+                "session_end",
+                {"session_id": session_id, "reason": "error", "error": str(exc)},
+                session_id=session_id,
+            )
+            raise
+
     async def close(self, state: AgentState):
         """Emit session_end + fire hooks + save state. Idempotent.
 
