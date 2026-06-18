@@ -15,6 +15,7 @@ class AgentState(TypedDict, total=False):
     tool_results: dict[str, dict]
     plan: dict | None
     metadata: dict
+    child_tasks: list[dict]  # [{task_id, child_session_id, agent_name, status, created_at}]
 
 
 @dataclass
