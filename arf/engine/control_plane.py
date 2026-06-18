@@ -660,20 +660,24 @@ class ControlPlane:
                         },
                         {
                             "name": "write_secret",
-                            "description": "Store a new encrypted secret or update an existing one.",
+                            "description": "Store a new encrypted secret or update an existing one. Only call when the user explicitly asks you to store a secret.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
                                     "name": {
                                         "type": "string",
-                                        "description": "The secret name.",
+                                        "description": "Variable name for the secret (e.g. DB_PASSWORD).",
                                     },
-                                    "value": {
+                                    "note": {
                                         "type": "string",
-                                        "description": "The secret value to encrypt and store.",
+                                        "description": "What this secret is used for.",
+                                    },
+                                    "content": {
+                                        "type": "string",
+                                        "description": "The secret value to encrypt and store (password, token, key, etc.).",
                                     },
                                 },
-                                "required": ["name", "value"],
+                                "required": ["name", "content"],
                             },
                         },
                         {

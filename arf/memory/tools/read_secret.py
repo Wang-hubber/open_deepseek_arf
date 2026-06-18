@@ -1,4 +1,5 @@
 """read_secret — decrypt and return a secret value."""
+import json
 from arf.memory.secrets_store import SecretsStore
 
 _store: SecretsStore | None = None  # set by BaseAgent at init
@@ -8,7 +9,12 @@ async def execute(name: str, **kwargs) -> dict:
     global _store
     if _store is None:
         return {"ok": False, "error": "DI failure: SecretsStore not wired. Set ARF_MASTER_KEY and ensure secrets.enabled=true in memory config."}
-    val = _store.get(name)
-    if val is None:
+    raw = _store.get(name)
+    if raw is None:
         return {"ok": False, "error": f"secret '{name}' not found"}
-    return {"ok": True, "value": val}
+    try:
+        data = json.loads(raw)
+        return {"ok": True, "value": data.get("v", raw), "note": data.get("n", "")}
+    except (json.JSONDecodeError, TypeError):
+        # Backward compat: plain string secrets from before the {v, n} format
+        return {"ok": True, "value": raw, "note": ""}
