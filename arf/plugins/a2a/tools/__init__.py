@@ -1,4 +1,6 @@
 """A2A plugin tools — registry singleton bridges plugin instance to tool functions."""
+import asyncio
+
 from arf.communication.queued_delegator import QueuedTaskDelegator
 
 
@@ -18,6 +20,7 @@ class _A2ARegistry:
         self.engine: object | None = None  # ControlPlane ref for sub-agent astream
         self.running_sub_agents: dict[str, dict] = {}
         self.runtime_task_ids: dict[str, str] = {}
+        self.cancel_events: dict[str, asyncio.Event] = {}
 
 
 _registry = _A2ARegistry()

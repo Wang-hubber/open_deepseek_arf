@@ -59,6 +59,27 @@ def _resolve_agent_config(agent_name: str) -> Path | None:
     return None
 
 
+async def _add_child_task(engine, parent_sid: str, task_id: str,
+                           child_sid: str, agent_name: str) -> None:
+    """Add a child_tasks entry to the parent's state store."""
+    import time
+    try:
+        parent_state = await engine.state_store.get(parent_sid)
+        if parent_state is None:
+            parent_state = {"session_id": parent_sid, "messages": []}
+        parent_state.setdefault("child_tasks", []).append({
+            "task_id": task_id,
+            "child_session_id": child_sid,
+            "agent_name": agent_name,
+            "status": "running",
+            "created_at": time.time(),
+        })
+        await engine.state_store.put(parent_sid, parent_state)
+        logger.debug("Added child_tasks entry: %s -> %s", task_id, child_sid)
+    except Exception:
+        logger.exception("Failed to add child_tasks entry for %s", task_id)
+
+
 async def execute(
     task: str,
     agent: str = "",
@@ -109,8 +130,23 @@ async def execute(
         # === External mode: separate BaseAgent ===
         runtime_id = f"sub_{agent}_{uuid.uuid4().hex[:8]}"
         task_obj["runtime_id"] = runtime_id
-        return await _dispatch_external(
+        # Pre-generate child session id so we can record it in child_tasks
+        resume_session = task_obj.get("resume_session", "") or (context or {}).get("resume_session", "")
+        child_sid = resume_session or f"a2a_{agent}_{uuid.uuid4().hex[:8]}"
+        task_obj["_child_sid"] = child_sid
+        result = await _dispatch_external(
             task_obj, agent, config_path, parent_sid, effective_timeout, runtime_id)
+        # Write child_tasks entry to parent state
+        if result.get("task_id"):
+            await _add_child_task(_engine, parent_sid, result["task_id"], child_sid, agent)
+        return {
+            "ok": True,
+            **result,
+            "runtime_id": runtime_id,
+            "agent_name": agent,
+            "task": task,
+            "session_id": parent_sid,
+        }
 
     # === Inline mode: sub-state on parent engine ===
     async def runner(t: dict) -> dict:
@@ -136,6 +172,9 @@ async def execute(
         return {"ok": True, "final_state": sub_state}
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
+    if result.get("task_id"):
+        child_sid = f"{parent_sid}--{result['task_id']}"
+        await _add_child_task(_engine, parent_sid, result["task_id"], child_sid, agent or "inline")
     return result
 
 
@@ -160,7 +199,7 @@ async def _dispatch_external(
         from arf.agent.app_context import AppContext
 
         rid = t.get("runtime_id", runtime_id)
-        sid = resume_session or f"a2a_{agent_name}_{uuid.uuid4().hex[:8]}"
+        sid = t.get("_child_sid") or resume_session or f"a2a_{agent_name}_{uuid.uuid4().hex[:8]}"
 
         # Create queues and register entry BEFORE any file I/O or agent init.
         # If runner crashes during init, the entry still exists so the
@@ -227,6 +266,11 @@ async def _dispatch_external(
             ctx = AppContext(root=ws_root)
             sub_agent = BaseAgent(config, app_context=ctx)
             _registry.running_sub_agents[rid]["agent"] = sub_agent
+            # Inject cancel_event for cascade cancel
+            import asyncio as _asyncio
+            cancel_evt = _asyncio.Event()
+            _registry.cancel_events[sid] = cancel_evt
+            sub_agent._engine.set_cancel_event(cancel_evt)
         except Exception as exc:
             _registry.running_sub_agents[rid]["status"] = "error"
             _registry.running_sub_agents[rid]["error"] = f"Agent init failed: {exc}"
