@@ -81,7 +81,7 @@ class PeerTeamPlugin:
         # Register all members on the AgentBus
         for m in members:
             await _registry.agent_bus.register(AgentInfo(
-                name=m["role"],
+                name=m["role"].lower(),  # normalize to lowercase
                 description=f"Agent: {m['agent_name']}",
                 capabilities=[],  # filled by App or dynamic discovery
             ))
@@ -106,16 +106,9 @@ class PeerTeamPlugin:
         _group_id, role = parsed
 
         # Drain inbox for this peer
-        # Find exact registered name (handles case variance between
-        # role names and bus-registered agent names)
-        agents = await bus.discover()
-        target_role = role
-        for a in agents:
-            if a.name.lower() == role.lower():
-                target_role = a.name
-                break
-
-        messages = [m async for m in bus.receive(target_role)]
+        # Names are normalized to lowercase at registration, so we can
+        # receive directly without a discover() scan.
+        messages = [m async for m in bus.receive(role.lower())]
         if not messages:
             return
 
@@ -169,10 +162,10 @@ class PeerTeamPlugin:
         return parsed[0] if parsed else None
 
     async def resume_group(self, session_id: str, data_dir: str) -> dict | None:
-        """Resume all group members from a SessionIndex.
+        """Re-register group members on the AgentBus for recovery.
 
-        Called when any peer session is resumed. Loads the index,
-        recovers all members' state, and auto-resumes their child tasks.
+        Returns the group index dict. Callers should use the returned index
+        to resume individual member sessions and their child tasks.
         """
         group_id = self.find_group_id(session_id)
         if group_id is None:
@@ -186,7 +179,7 @@ class PeerTeamPlugin:
         # Re-register all members on the bus
         for m in index["members"]:
             await _registry.agent_bus.register(AgentInfo(
-                name=m["role"],
+                name=m["role"].lower(),  # normalize to lowercase
                 description=f"Agent: {m['agent_name']}",
                 capabilities=[],
             ))

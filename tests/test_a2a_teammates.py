@@ -374,8 +374,8 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
     from arf.core.protocols.communication import AgentInfo, AgentMessage
 
     bus = InMemoryAgentBus()
-    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
-    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
     teammates_registry.agent_bus = bus
 
     plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
@@ -383,9 +383,9 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
         {"role": "dev", "agent_name": "dev_agent"},
     ]})
 
-    # Send a message to Dev
+    # Send a message to dev
     await bus.send(AgentMessage(
-        sender="PM", receiver="Dev", type="task_request",
+        sender="pm", receiver="dev", type="task_request",
         payload={"message": "build API"},
         correlation_id="corr_001",
     ))
@@ -401,8 +401,82 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
 
     msgs = ctx.state.get("messages", [])
     assert len(msgs) == 1
-    assert "PM" in msgs[0]["content"]
-    assert "Dev" in msgs[0]["content"]
+    assert "pm" in msgs[0]["content"]
+    assert "dev" in msgs[0]["content"]
     assert "build API" in msgs[0]["content"]
     assert msgs[0]["role"] == "tool"
     assert msgs[0]["tool_call_id"] == "corr_001"
+
+
+@pytest.mark.anyio
+async def test_peer_team_plugin_session_end_updates_status(temp_data_dir):
+    """session_end should update member status to 'ended'."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Create group first
+    ctx = PluginContext(
+        session_id="proj_abc__pm",
+        state={"session_id": "proj_abc__pm", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_session_start(ctx)
+
+    # End dev's session
+    ctx_dev = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_session_end(ctx_dev)
+
+    idx = SessionIndex(temp_data_dir)
+    loaded = await idx.load("proj_abc")
+    dev = next(m for m in loaded["members"] if m["role"] == "dev")
+    assert dev["status"] == "ended"
+    pm = next(m for m in loaded["members"] if m["role"] == "pm")
+    assert pm["status"] == "active"  # unchanged
+
+
+@pytest.mark.anyio
+async def test_peer_team_plugin_resume_group(temp_data_dir):
+    """resume_group should re-register members and return the index."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+
+    bus = InMemoryAgentBus()
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Create group
+    ctx = PluginContext(
+        session_id="proj_abc__pm",
+        state={"session_id": "proj_abc__pm", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_session_start(ctx)
+
+    # Reset bus — simulate process restart
+    new_bus = InMemoryAgentBus()
+    teammates_registry.agent_bus = new_bus
+
+    idx = await plugin.resume_group("proj_abc__pm", temp_data_dir)
+    assert idx is not None
+    assert idx["group_id"] == "proj_abc"
+
+    # Members should be re-registered on new bus
+    agents = await new_bus.discover()
+    assert len(agents) >= 2
