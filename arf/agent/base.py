@@ -428,7 +428,8 @@ class BaseAgent:
         )
         # Initialize SkillIndex for lazy-loading domain knowledge
         from arf.skills.skill_index import SkillIndex
-        skill_index = SkillIndex(project_root=str(_Path(".").resolve()))
+        skill_index = SkillIndex(
+            project_root=str(ctx.root.resolve()) if ctx else str(_Path(".").resolve()))
         skill_index.scan()
         self._engine.set_skill_index(skill_index)
         self._engine.set_context_texts(inventory=inventory_text)
@@ -451,7 +452,8 @@ class BaseAgent:
 
         memory_index = MemoryIndex(
             data_dir=str(_data_dir), config=mem_cfg,
-            secrets_store=secrets_store)
+            secrets_store=secrets_store,
+            group_memory_dir=mem_cfg.group_memory_dir)
 
         # Wire secrets tools
         if secrets_store is not None:
