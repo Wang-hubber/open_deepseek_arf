@@ -370,3 +370,112 @@ class TestTaskMemoryIntegration:
 
         import shutil
         shutil.rmtree(d, ignore_errors=True)
+
+
+class TestTaskMemoryEngineIntegration:
+    """Verify engine fires task_completed hook and plugin handles it."""
+
+    @pytest.mark.anyio
+    async def test_engine_fires_task_completed_hook(self):
+        """Full flow: kernel__task_complete -> engine detects -> hook fires."""
+        import json as _json
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        import shutil
+        from arf.engine.control_plane import ControlPlane
+        from arf.engine.checkpoint import InMemoryStateStore
+        from arf.plugins.memory.plugin import MemoryPlugin
+        from arf.core.results import ToolResult
+        from arf.memory.config import MemoryConfig
+        from arf.memory.index import MemoryIndex
+
+        d = tempfile.mkdtemp()
+        data_dir = Path(d) / "data"
+        cfg = MemoryConfig(secrets={"enabled": False})
+        mi = MemoryIndex(data_dir=str(data_dir), config=cfg)
+
+        # Recording call model that produces:
+        #   1 -> task_complete tool call (engine's turn)
+        #   2 -> extraction JSON      (plugin's _extract_task_experience)
+        #   3 -> merged markdown      (plugin's _merge_and_save, fire-and-forget)
+        class RecordingCallModel:
+            def __init__(self):
+                self.calls = []
+                self.call_count = 0
+
+            async def __call__(self, msgs, model=None, tools=None, **kwargs):
+                self.calls.append({"msgs": msgs, "model": model, "tools": tools, "kwargs": kwargs})
+                self.call_count += 1
+                if self.call_count == 1:
+                    return {"content": "", "tool_calls": [{
+                        "id": "tc1", "type": "function", "function": {
+                            "name": "kernel__task_complete",
+                            "arguments": _json.dumps({
+                                "result": "fixed bug", "confidence": 0.9,
+                                "notes": "redis connection pool issue",
+                            }),
+                        }
+                    }]}
+                elif self.call_count == 2:
+                    return {"content": _json.dumps({
+                        "category": "bugfix",
+                        "description": "fix redis connection pool",
+                        "approach": ["增加超时配置"],
+                        "lessons": ["不要假设连接池线程安全"],
+                        "should_write": True,
+                    })}
+                else:
+                    return {"content": "<!-- TASK bugfix | agent: test -->\n\n### fix redis connection pool\n\n**方案：**\n- 增加超时配置\n\n**教训：**\n- 不要假设连接池线程安全\n\n<!-- /TASK -->\n"}
+
+        call_model = RecordingCallModel()
+
+        class FakeToolExecutor:
+            async def execute(self, tool_calls, **kwargs):
+                return {tc["id"]: ToolResult(
+                    success=True,
+                    data=_json.dumps({
+                        "task_complete": True, "result": "fixed bug",
+                        "confidence": 0.9, "files_changed": {},
+                        "notes": "redis connection pool issue",
+                    }),
+                    tool_name=tc.get("function", {}).get("name", "unknown")
+                    if isinstance(tc.get("function"), dict) else tc.get("name", "unknown"),
+                ) for tc in tool_calls}
+
+        plugin = MemoryPlugin()
+        plugin.set_memory_index(mi)
+        plugin.set_call_model(call_model)
+
+        cp = ControlPlane(
+            max_turns=5,
+            state_store=InMemoryStateStore(),
+            tool_executor=FakeToolExecutor(),
+            call_model=call_model,
+            side_plugins=[plugin],
+        )
+
+        state = {
+            "session_id": "test-engine",
+            "agent_name": "test",
+            "current_model": "test-model",
+            "current_turn": 0,
+            "interaction_round": 0,
+            "messages": [{"role": "user", "content": "修复 redis 连接池问题"}],
+            "_task_start_round": 0,
+        }
+
+        final = await cp.invoke(state)
+
+        # Let the async merge task complete (fire-and-forget in _on_task_completed)
+        await asyncio.sleep(0.1)
+
+        # Verify task_complete was processed (engine call + extraction call)
+        assert len(call_model.calls) >= 2
+        assert call_model.calls[0]["model"] == "test-model"
+
+        # Verify tasks.md was written by the merge task
+        tasks_content = mi.load_tasks()
+        assert "redis" in tasks_content or "connection pool" in tasks_content
+
+        shutil.rmtree(d, ignore_errors=True)
