@@ -504,6 +504,48 @@ class ControlPlane:
             },
         })
 
+        # Memory write tools — always available when memory index is present
+        if self._memory_index is not None:
+            tools.extend([
+                {
+                    "name": "kernel__write_project_memory",
+                    "description": (
+                        "Persist project-level memory that agents share across sessions. "
+                        "Write architecture decisions, conventions, bug fixes, "
+                        "design patterns, or important project context that all "
+                        "team members should know. Content is Markdown."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "Markdown content to persist as project memory.",
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                },
+                {
+                    "name": "kernel__write_user_memory",
+                    "description": (
+                        "Persist user-level memory that agents share about the user. "
+                        "Write user preferences, decisions, knowledge, working style, "
+                        "or constraints discovered during conversation. Content is Markdown."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "Markdown content to persist as user memory.",
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                },
+            ])
+
         # Secrets tools — available if memory index has a secrets store
         if self._memory_index is not None:
             try:

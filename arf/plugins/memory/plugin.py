@@ -86,7 +86,11 @@ class MemoryPlugin:
         if not output or output == "NO_NEW_MEMORY":
             return
 
-        self._mem_index.save_user(output)
+        # Write to group when shared memory dir is configured, else individual
+        if self._mem_index._group_dir:
+            self._mem_index.save_group_user(output)
+        else:
+            self._mem_index.save_user(output)
         logger.info("User memory updated (%d chars)", len(output))
 
 

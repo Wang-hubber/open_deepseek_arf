@@ -14,9 +14,11 @@ class MemoryIndex:
     """
 
     def __init__(self, data_dir: str, config,  # MemoryConfig
-                 secrets_store=None) -> None:  # SecretsStore | None
+                 secrets_store=None,  # SecretsStore | None
+                 group_memory_dir: str = "") -> None:
         self._dir = Path(data_dir) / "memory"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._group_dir = Path(group_memory_dir) if group_memory_dir else None
         self._cfg = config
         self._secrets = secrets_store
         if self._cfg.secrets.enabled and self._secrets is None:
@@ -31,18 +33,39 @@ class MemoryIndex:
     # ------------------------------------------------------------------
 
     def load_project(self) -> str:
-        """Read project.md. Returns '' if disabled or absent."""
+        """Read project.md. Returns '' if disabled or absent.
+
+        When group project.md exists it is the single source of truth
+        (shared across team). Individual project.md only loads as a
+        fallback when no group file exists.
+        """
         if not self._cfg.project.enabled:
             return ""
+        if self._group_dir:
+            gf = self._group_dir / "project.md"
+            if gf.exists():
+                return f"<!-- shared project memory -->\n{gf.read_text(encoding='utf-8')}"
         f = self._dir / "project.md"
-        return f.read_text(encoding="utf-8") if f.exists() else ""
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+        return ""
 
     def load_user(self) -> str:
-        """Read user.md. Returns '' if disabled or absent."""
+        """Read user.md. Returns '' if disabled or absent.
+
+        When group user.md exists it is the single source of truth.
+        Individual user.md only loads as a fallback.
+        """
         if not self._cfg.user.enabled:
             return ""
+        if self._group_dir:
+            gf = self._group_dir / "user.md"
+            if gf.exists():
+                return f"<!-- shared user memory -->\n{gf.read_text(encoding='utf-8')}"
         f = self._dir / "user.md"
-        return f.read_text(encoding="utf-8") if f.exists() else ""
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+        return ""
 
     def list_secrets(self) -> list[str]:
         """List secret names. Returns [] if disabled or no store."""
@@ -63,6 +86,24 @@ class MemoryIndex:
         """Overwrite user.md."""
         self._truncate_check("user.md", content, self._cfg.user.max_size_kb)
         (self._dir / "user.md").write_text(content, encoding="utf-8")
+
+    def save_group_project(self, content: str) -> None:
+        """Overwrite group-level project.md (shared across team). No-op if group dir not configured."""
+        if not self._group_dir:
+            return
+        self._group_dir.mkdir(parents=True, exist_ok=True)
+        self._truncate_check("group project.md", content, self._cfg.project.max_size_kb)
+        (self._group_dir / "project.md").write_text(content, encoding="utf-8")
+        logger.info("Group project memory updated (%d chars)", len(content))
+
+    def save_group_user(self, content: str) -> None:
+        """Overwrite group-level user.md (shared across team). No-op if group dir not configured."""
+        if not self._group_dir:
+            return
+        self._group_dir.mkdir(parents=True, exist_ok=True)
+        self._truncate_check("group user.md", content, self._cfg.user.max_size_kb)
+        (self._group_dir / "user.md").write_text(content, encoding="utf-8")
+        logger.info("Group user memory updated (%d chars)", len(content))
 
     # ------------------------------------------------------------------
     # Public — injection

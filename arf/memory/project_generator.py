@@ -16,6 +16,9 @@ class ProjectMemoryGenerator:
         self._index = memory_index
 
     def needs_generation(self) -> bool:
+        """Check whether any project memory exists (group first, then individual)."""
+        if self._index._group_dir:
+            return not (self._index._group_dir / "project.md").exists()
         return not self._index.has_project_file()
 
     async def generate(self, call_model) -> str:
@@ -27,7 +30,11 @@ class ProjectMemoryGenerator:
             model_name="",
         )
         content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
-        self._index.save_project(content)
+        # Write to group when shared memory dir is configured, else individual
+        if self._index._group_dir:
+            self._index.save_group_project(content)
+        else:
+            self._index.save_project(content)
         return content
 
     def _scan(self) -> dict:
