@@ -31,6 +31,7 @@ class A2APlugin:
     def __init__(self, config: dict | None = None) -> None:
         cfg = A2APluginConfig(**(config or {}))
         self._max_task_timeout = cfg.max_task_timeout
+        self._child_resume = cfg.child_resume  # "auto" or "notify"
 
         # Populate module-level registry — BOTH hooks and tool functions
         # read from _registry, ensuring they always share the same delegator.
@@ -40,6 +41,45 @@ class A2APlugin:
         if _registry.delegator is None:
             _registry.delegator = QueuedTaskDelegator(max_concurrent=cfg.max_concurrent_tasks)
         _registry.max_task_timeout = self._max_task_timeout
+
+        # Store child_resume on registry so delegate_task can access it
+        _registry.child_resume = self._child_resume
+
+        # Cascade cancel tracking on registry — shared with delegate_task
+        if not hasattr(_registry, "cancel_events"):
+            _registry.cancel_events = {}
+
+    def child_cancel_event(self, child_session_id: str) -> "asyncio.Event":
+        """Create and register a cancel_event for a child sub-agent."""
+        import asyncio as _asyncio
+        event = _asyncio.Event()
+        _registry.cancel_events[child_session_id] = event
+        return event
+
+    async def cascade_cancel(self, ctx: PluginContext) -> None:
+        """Set all registered child cancel_events and update child_tasks."""
+        for child_sid, event in list(_registry.cancel_events.items()):
+            if not event.is_set():
+                event.set()
+                await self._update_child_status(ctx, ctx.session_id, child_sid, "cancelled")
+        _registry.cancel_events.clear()
+
+    async def _update_child_status(self, ctx: PluginContext, parent_sid: str,
+                                    child_session_id: str, status: str) -> None:
+        """Update a child_tasks entry's status in the parent state store."""
+        from arf.engine.checkpoint import FileStateStore
+        try:
+            parent_store = FileStateStore(Path(ctx.data_dir or "./data"))
+            parent_state = await parent_store.get(parent_sid)
+            if parent_state is None:
+                return
+            for ct in parent_state.get("child_tasks", []):
+                if ct.get("child_session_id") == child_session_id:
+                    ct["status"] = status
+                    break
+            await parent_store.put(parent_sid, parent_state)
+        except Exception:
+            logger.exception("Failed to update child_tasks status for %s", child_session_id)
 
     @property
     def name(self) -> str:
@@ -144,24 +184,35 @@ class A2APlugin:
         await _registry.delegator.complete(parent_sid, task_id, result)
         self._emit_completed(ctx, parent_sid, child_sid, task_id, result)
 
+        # Update child_tasks status in parent state
+        await self._update_child_status(ctx, parent_sid, child_sid, "completed")
+
+        # Clean up cancel_event from registry
+        _registry.cancel_events.pop(child_sid, None)
+
     # ==================================================================
     # session_end -- force-complete aborted children
     # ==================================================================
 
     async def _on_session_end(self, ctx: PluginContext) -> None:
-        """Force-complete child task if it aborted without calling round_end."""
+        """Handle child session end or cascade cancel from parent."""
         child_sid = ctx.session_id
         parent_sid, task_id = self._parse_child_session(child_sid)
-        if parent_sid is None:
-            return
 
-        status = await _registry.delegator.queue_status(parent_sid)
-        still_running = any(e["task_id"] == task_id for e in status["running"])
-        if still_running:
-            await _registry.delegator.complete(
-                parent_sid, task_id,
-                {"ok": False, "error": "child_session_aborted"},
-            )
+        if parent_sid is not None:
+            # This is a CHILD session ending — force-complete in delegator
+            status = await _registry.delegator.queue_status(parent_sid)
+            still_running = any(e["task_id"] == task_id for e in status["running"])
+            if still_running:
+                await _registry.delegator.complete(
+                    parent_sid, task_id,
+                    {"ok": False, "error": "child_session_aborted"},
+                )
+                await self._update_child_status(ctx, parent_sid, child_sid, "error")
+            _registry.cancel_events.pop(child_sid, None)
+        else:
+            # This is the PARENT session ending — cascade cancel to all children
+            await self.cascade_cancel(ctx)
 
     # ==================================================================
     # Helpers
@@ -254,6 +305,106 @@ class A2APlugin:
             f"cancel_held('{task_id}') to discard.\n\n"
             f"Result:\n{content}"
         )
+
+    async def resume_child_agents(self, parent_state: dict, data_dir: str) -> dict:
+        """Auto-resume all unfinished child agents. Returns updated parent_state."""
+        from arf.agent.base import BaseAgent
+        from arf.agent.config import AgentConfig
+        from arf.agent.app_context import AppContext
+        from arf.plugins.a2a.tools.delegate_task.function import _resolve_agent_config
+        from arf.engine.checkpoint import FileStateStore
+
+        child_tasks = parent_state.get("child_tasks", [])
+        unfinished = [ct for ct in child_tasks if ct["status"] in ("running", "pending")]
+
+        if not unfinished:
+            return parent_state
+
+        child_store = FileStateStore(data_dir)
+
+        for ct in unfinished:
+            child_sid = ct["child_session_id"]
+            agent_name = ct["agent_name"]
+            task_id = ct["task_id"]
+
+            # Load child state
+            child_state = await child_store.get(child_sid)
+            if child_state is None:
+                ct["status"] = "error"
+                parent_state.setdefault("messages", []).append({
+                    "role": "user",
+                    "content": f"[系统] 子任务 {task_id} (agent={agent_name}) 的会话状态丢失，无法恢复。",
+                })
+                continue
+
+            if child_state.get("_session_ended"):
+                ct["status"] = "completed"
+                continue
+
+            # Rebuild sub-agent
+            config_path = _resolve_agent_config(agent_name)
+            if config_path is None:
+                ct["status"] = "error"
+                parent_state.setdefault("messages", []).append({
+                    "role": "user",
+                    "content": f"[系统] 子任务 {task_id} 的 agent 配置 ({agent_name}) 已删除，无法恢复。",
+                })
+                continue
+
+            try:
+                import yaml as _yaml
+                import os as _os
+                from pathlib import Path as _Path
+
+                with open(config_path, encoding="utf-8") as f:
+                    data = _yaml.safe_load(f)
+
+                ws_root = _Path(_os.environ.get("A4A_WORKSPACE", _Path(__file__).parent.parent.parent.parent))
+                config = AgentConfig(**data)
+                app_ctx = AppContext(root=ws_root)
+                sub_agent = BaseAgent(config, app_context=app_ctx)
+
+                # Inject cancel_event for cascade support
+                cancel_evt = self.child_cancel_event(child_sid)
+                sub_agent._engine.set_cancel_event(cancel_evt)
+
+                await sub_agent.start()
+
+                # Resume from saved state
+                async for _event in sub_agent._engine.resume(child_state):
+                    pass  # Drain events — results collected by round_end hook
+
+                await sub_agent.stop()
+
+                ct["status"] = "completed"
+                logger.info("Resumed child agent %s (%s) — completed", child_sid, agent_name)
+            except Exception as exc:
+                ct["status"] = "error"
+                parent_state.setdefault("messages", []).append({
+                    "role": "user",
+                    "content": f"[系统] 恢复子任务 {task_id} (agent={agent_name}) 失败: {exc}",
+                })
+                logger.exception("Failed to resume child agent %s", child_sid)
+
+            _registry.cancel_events.pop(child_sid, None)
+
+        return parent_state
+
+    @staticmethod
+    def build_child_resume_notification(unfinished: list[dict]) -> str:
+        """Build notification message listing unfinished child tasks."""
+        lines = [
+            "[系统] 检测到以下子任务在中断前未完成：",
+        ]
+        for ct in unfinished:
+            lines.append(
+                f"  - {ct['task_id']} (agent={ct['agent_name']}, "
+                f"session={ct['child_session_id']}, status={ct['status']})"
+            )
+        lines.append(
+            "如需恢复，使用 delegate_task(resume_session=\"<child_session_id>\") 逐个恢复。"
+        )
+        return "\n".join(lines)
 
     def _emit_completed(
         self, ctx: PluginContext,

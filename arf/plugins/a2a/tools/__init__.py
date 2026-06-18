@@ -21,6 +21,7 @@ class _A2ARegistry:
         self.running_sub_agents: dict[str, dict] = {}
         self.runtime_task_ids: dict[str, str] = {}
         self.cancel_events: dict[str, asyncio.Event] = {}
+        self.child_resume: str = "auto"
 
 
 _registry = _A2ARegistry()
