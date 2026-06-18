@@ -480,3 +480,169 @@ async def test_peer_team_plugin_resume_group(temp_data_dir):
     # Members should be re-registered on new bus
     agents = await new_bus.discover()
     assert len(agents) >= 2
+
+
+@pytest.mark.anyio
+async def test_full_peer_create_and_resume(temp_data_dir):
+    """Full lifecycle: create group, send messages, resume from index."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    # Setup: create group
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+        {"role": "data", "agent_name": "data_agent"},
+    ]})
+
+    # PM's session starts → creates index
+    ctx_pm = PluginContext(
+        session_id="proj_abc__pm",
+        state={"session_id": "proj_abc__pm", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_session_start(ctx_pm)
+
+    # Verify index created
+    idx = SessionIndex(temp_data_dir)
+    index = await idx.load("proj_abc")
+    assert index is not None
+    assert len(index["members"]) == 3
+
+    # Send peer messages (lowercase to match plugin's AgentBus registration)
+    bus = teammates_registry.agent_bus
+    await bus.send(AgentMessage(sender="pm", receiver="dev", type="task_request",
+                                 payload={"message": "build the dashboard"},
+                                 correlation_id="corr_001", priority="normal"))
+    await bus.send(AgentMessage(sender="pm", receiver="data", type="query",
+                                 payload={"message": "what tables have user data?"},
+                                 correlation_id="corr_002", priority="normal"))
+
+    # Dev's pre_action → injects messages
+    ctx_dev = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        current_step="call_model",
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_pre_action(ctx_dev)
+    assert len(ctx_dev.state["messages"]) == 1
+    assert "build the dashboard" in ctx_dev.state["messages"][0]["content"]
+
+    # Data's pre_action → injects messages
+    ctx_data = PluginContext(
+        session_id="proj_abc__data",
+        state={"session_id": "proj_abc__data", "messages": []},
+        current_step="call_model",
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_pre_action(ctx_data)
+    assert len(ctx_data.state["messages"]) == 1
+    assert "user data" in ctx_data.state["messages"][0]["content"]
+
+    # Session end → update status
+    await plugin._on_session_end(ctx_dev)
+    loaded = await idx.load("proj_abc")
+    dev = next(m for m in loaded["members"] if m["role"] == "dev")
+    assert dev["status"] == "ended"
+
+    # Resume group
+    bus2 = InMemoryAgentBus()
+    teammates_registry.agent_bus = bus2
+    index2 = await plugin.resume_group("proj_abc__pm", temp_data_dir)
+    assert index2 is not None
+    assert index2["group_id"] == "proj_abc"
+
+
+@pytest.mark.anyio
+async def test_send_peer_message_broadcast(temp_data_dir):
+    """receiver=None should broadcast to all peers except sender."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    await bus.register(AgentInfo(name="Data", description="Data", capabilities=[]))
+
+    msg = AgentMessage(
+        sender="PM", receiver=None, type="info",
+        payload={"message": "team meeting at 3pm"},
+        correlation_id="corr_003",
+    )
+    await bus.send(msg)
+
+    # PM should NOT receive own broadcast
+    pm_msgs = [m async for m in bus.receive("PM")]
+    assert len(pm_msgs) == 0
+
+    # Others should
+    dev_msgs = [m async for m in bus.receive("Dev")]
+    assert len(dev_msgs) == 1
+    data_msgs = [m async for m in bus.receive("Data")]
+    assert len(data_msgs) == 1
+
+
+@pytest.mark.anyio
+async def test_parse_session_id_rejects_sub_agents(temp_data_dir):
+    """SessionIndex.parse_session_id should reject sub-agent session IDs."""
+    assert SessionIndex.parse_session_id("proj_abc__dev--task_1") is None
+    assert SessionIndex.parse_session_id("parent--task_1") is None
+    assert SessionIndex.parse_session_id("plain") is None
+
+
+@pytest.mark.anyio
+async def test_message_format_includes_priority(temp_data_dir):
+    """Formatted peer message should include priority prefix for urgent."""
+    from arf.core.protocols.communication import AgentMessage
+
+    normal_msg = AgentMessage(
+        sender="PM", receiver="Dev", type="task_request",
+        payload={"message": "normal task"},
+        correlation_id="c1", priority="normal",
+    )
+    formatted = PeerTeamPlugin._format_peer_message(normal_msg)
+    assert not formatted.startswith("[URGENT]")
+    assert "normal task" in formatted
+
+    urgent_msg = AgentMessage(
+        sender="PM", receiver="Dev", type="task_request",
+        payload={"message": "fix critical bug"},
+        correlation_id="c2", priority="urgent",
+    )
+    formatted = PeerTeamPlugin._format_peer_message(urgent_msg)
+    assert formatted.startswith("[URGENT]")
+    assert "fix critical bug" in formatted
+
+
+@pytest.mark.anyio
+async def test_pre_action_skips_non_call_model_step(temp_data_dir):
+    """pre_action should only inject on call_model step, not execute_tools."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent"},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Send a message
+    await bus.send(AgentMessage(
+        sender="PM", receiver="Dev", type="task_request",
+        payload={"message": "hello"}, correlation_id="c1",
+    ))
+
+    # pre_action on execute_tools step — should NOT inject
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        current_step="execute_tools",
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_pre_action(ctx)
+    assert len(ctx.state.get("messages", [])) == 0
