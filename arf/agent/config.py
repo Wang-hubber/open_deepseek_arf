@@ -30,6 +30,7 @@ class AdvancedConfig(BaseModel):
     max_undo_depth: int = 3           # max undo steps (RoundManager rolling window)
     call_timeout: float = 120.0       # per-call timeout, None = no limit
     session_timeout: float | None = None  # overall invoke timeout, None = no limit
+    hitl_timeout: float = 300.0       # human-in-the-loop decision deadline (seconds)
     compaction: CompactionConfig | None = None
     memory: MemoryConfig | None = None
     guardrails: GuardrailsConfig | None = None

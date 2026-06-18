@@ -70,6 +70,57 @@ async def test_task_complete_ends_round_and_updates_pointer():
     assert final["_task_start_round"] == 2  # finish_round(1) + 1
 
 
+class _RecordingHookPlugin:
+    """Records hook calls for verification."""
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    @property
+    def name(self):
+        return "recording_hook"
+
+    @property
+    def hooks(self):
+        return {"task_completed": "side"}
+
+    async def on_hook(self, hook_name, ctx):
+        self.calls.append({"hook": hook_name, "data": dict(ctx.hook_data)})
+
+
+@pytest.mark.anyio
+async def test_task_completed_hook_fires_with_correct_data():
+    """task_completed side hook fires after kernel__task_complete with proper context."""
+    hook_plugin = _RecordingHookPlugin()
+    model = _RecordingCallModel([
+        {"content": "", "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {
+                "name": "kernel__task_complete",
+                "arguments": '{"result":"done","confidence":0.95,"notes":"all good"}',
+            }}
+        ]},
+    ])
+    cp = ControlPlane(
+        max_turns=5, state_store=InMemoryStateStore(),
+        tool_executor=_FakeToolExecutor({
+            "task_complete": True, "result": "done",
+            "confidence": 0.95, "files_changed": {}, "notes": "all good",
+        }),
+        call_model=model,
+        side_plugins=[hook_plugin],
+    )
+    final = await cp.invoke(_basic_state())
+
+    assert len(hook_plugin.calls) == 1
+    assert hook_plugin.calls[0]["hook"] == "task_completed"
+    data = hook_plugin.calls[0]["data"]
+    assert data["session_id"] == "test-primitive"
+    assert data["start_round"] == 0
+    assert data["finish_round"] == 1
+    assert data["task_result"] == "done"
+    assert data["confidence"] == 0.95
+    assert data["notes"] == "all good"
+
+
 @pytest.mark.anyio
 async def test_pending_human_ends_round_and_sets_state():
     """kernel__ask_user tool -> round ends, _pending_human_decision set."""

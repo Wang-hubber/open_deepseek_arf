@@ -186,7 +186,13 @@ async def execute(
         sub_state["session_id"] = child_sid
         sub_state["_tool_blacklist"] = ["delegate_task"]
         ws_dir = getattr(_engine, '_workspace_dir', '') or '.'
-        sub_state["_workspace_snapshot"] = _snapshot_workspace(ws_dir)
+        pre_snapshot = _snapshot_workspace(ws_dir)
+        t["_pre_snapshot"] = pre_snapshot
+        sub_state["_workspace_snapshot"] = t["_pre_snapshot"]
+
+        # Create shared tool_calls ref for A2ATaskLifecycle
+        tool_calls_ref: list[dict] = []
+        t["_tool_calls_ref"] = tool_calls_ref
 
         # Write child_tasks entry BEFORE async work — prevents race with round_end
         await _add_child_task(_engine, parent_sid, t.get("task_id", ""), child_sid, agent or "inline")
@@ -197,10 +203,12 @@ async def execute(
         _engine._task_lifecycle = A2ATaskLifecycle(
             _engine._task_lifecycle._event_bus, registry.delegator,
             parent_sid=parent_sid, child_sid=child_sid, task_id=t.get("task_id", ""),
+            pre_snapshot=t.get("_pre_snapshot"),
+            tool_calls_ref=t.get("_tool_calls_ref"),
         )
         try:
             tool_calls = await asyncio.wait_for(
-                _drain_stream(_engine, sub_state),
+                _drain_stream(_engine, sub_state, tool_calls_ref=tool_calls_ref),
                 timeout=effective_timeout,
             )
         finally:
@@ -330,6 +338,8 @@ async def _dispatch_external(
             sub_agent._engine._task_lifecycle = A2ATaskLifecycle(
                 sub_agent._engine.event_bus, _registry.delegator,
                 parent_sid=parent_sid, child_sid=sid, task_id=_delegator_task_id,
+                pre_snapshot=t.get("_pre_snapshot"),
+                tool_calls_ref=t.get("_tool_calls_ref"),
             )
             # Inject cancel_event for cascade cancel
             import asyncio as _asyncio
@@ -352,6 +362,8 @@ async def _dispatch_external(
         ws_dir = getattr(sub_agent._engine, '_workspace_dir', '') or '.'
         pre_snapshot = _snapshot_workspace(ws_dir) if ws_dir != '.' else {}
         tool_calls: list[dict] = []
+        t["_pre_snapshot"] = pre_snapshot
+        t["_tool_calls_ref"] = tool_calls
 
         final_result = ""
         final_status = "completed"
@@ -547,13 +559,17 @@ async def _dispatch_external(
     }
 
 
-async def _drain_stream(engine, sub_state: dict) -> list[dict]:
+async def _drain_stream(engine, sub_state: dict,
+                         tool_calls_ref: list | None = None) -> list[dict]:
     """Drain astream events, collect tool_call_end events, return tool_calls_summary.
 
     The round_end hook (in plugin.py) handles completion via _collect_result.
     This function supplements that result with tool_call metadata.
+
+    If *tool_calls_ref* is provided, it is used as the collector instead of
+    creating a new list, allowing A2ATaskLifecycle to share the same reference.
     """
-    tool_calls: list[dict] = []
+    tool_calls = tool_calls_ref if tool_calls_ref is not None else []
     async for event in engine.astream(sub_state, stop_on_text=True):
         if event.type == "tool_call_end":
             tool_calls.append({

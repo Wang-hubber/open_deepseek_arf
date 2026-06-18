@@ -40,6 +40,7 @@ class ControlPlane:
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
+        hitl_timeout: float = 300.0,
         session_mode_manager: SessionModeManager | None = None,
         hitl: "HITLProtocol | None" = None,
         task_lifecycle: "TaskLifecycleProtocol | None" = None,
@@ -66,6 +67,7 @@ class ControlPlane:
         self._mcp_tool_resolver = mcp_tool_resolver
         self._call_timeout = call_timeout
         self._session_timeout = session_timeout
+        self._hitl_timeout = hitl_timeout
         self._session_mode_manager = session_mode_manager or SessionModeManager(global_mode=SessionMode.ASK)
 
         if hitl is None:
@@ -1003,7 +1005,7 @@ class ControlPlane:
 
     def _compute_hitl_deadline(self) -> float:
         import time as _time
-        return _time.time() + 300.0
+        return _time.time() + self._hitl_timeout
 
     async def _fire_task_completed_hook(
         self, ctx: PluginContext, state: dict

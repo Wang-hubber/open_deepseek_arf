@@ -434,6 +434,7 @@ class BaseAgent:
             mcp_tool_resolver=_mcp_tool_resolver,
             call_timeout=(adv.call_timeout if adv else 120.0),
             session_timeout=(adv.session_timeout if adv else None),
+            hitl_timeout=(adv.hitl_timeout if adv else 300.0),
             session_mode_manager=session_mode_manager,
             hitl=_hitl,
             task_lifecycle=_task_lifecycle,
