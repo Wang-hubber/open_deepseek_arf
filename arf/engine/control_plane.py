@@ -83,9 +83,6 @@ class ControlPlane:
     def set_stream_model(self, stream_model) -> None:
         self._stream_model = stream_model
 
-    def set_cancel_event(self, event: asyncio.Event) -> None:
-        self._cancel_event = event
-
     def set_skill_index(self, skill_index) -> None:
         """Inject the SkillIndex for use_skill tool and system-reminder."""
         self._skill_index = skill_index
@@ -1123,6 +1120,14 @@ class ControlPlane:
 
     def _cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()
+
+    def set_cancel_event(self, event: asyncio.Event) -> None:
+        """Wire an external cancel_event for cascade interrupt.
+
+        When set, _cancelled() returns True and the engine exits at the
+        next round boundary.
+        """
+        self._cancel_event = event
 
     def _parse_tool_calls(self, response) -> list[dict]:
         if isinstance(response, dict):

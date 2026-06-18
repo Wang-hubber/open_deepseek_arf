@@ -1,4 +1,6 @@
 """Tests for A2A interrupt/resume feature — child_tasks field."""
+import asyncio
+
 import pytest
 from arf.core.state import AgentState
 
@@ -44,3 +46,24 @@ def test_a2a_config_child_resume_invalid():
 
     with pytest.raises(Exception):
         A2APluginConfig(child_resume="invalid")
+
+
+def test_control_plane_set_cancel_event():
+    """ControlPlane.set_cancel_event() should wire cancel_event into _cancelled()."""
+    from arf.engine.control_plane import ControlPlane
+    from arf.engine.checkpoint import InMemoryStateStore
+    from arf.testing import InMemoryToolExecutor
+
+    store = InMemoryStateStore()
+    executor = InMemoryToolExecutor()
+    cp = ControlPlane(state_store=store, tool_executor=executor)
+
+    # Initially not cancelled
+    cancel_evt = asyncio.Event()
+    cp.set_cancel_event(cancel_evt)
+    assert cp._cancel_event is cancel_evt
+    assert cp._cancelled() is False
+
+    # After setting the event
+    cancel_evt.set()
+    assert cp._cancelled() is True
