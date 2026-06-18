@@ -3,14 +3,10 @@ import asyncio
 
 import pytest
 from arf.core.state import AgentState
-from pathlib import Path
-
 from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 from arf.plugins.a2a.plugin import A2APlugin
-from arf.plugins.a2a.config import A2APluginConfig
 from arf.plugins.a2a.tools import _registry
-from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.core.plugin_context import PluginContext
 from arf.testing import InMemoryToolExecutor
 
@@ -225,9 +221,9 @@ async def test_cascade_cancel_updates_child_tasks_and_sets_event(temp_data_dir):
 
     # Parent state child_tasks should be updated
     restored = await parent_store.get(parent_sid)
-    ct = restored["child_tasks"][0] if restored and restored.get("child_tasks") else None
-    if ct:
-        assert ct["status"] == "cancelled"
+    assert restored is not None
+    assert restored.get("child_tasks")
+    assert restored["child_tasks"][0]["status"] == "cancelled"
 
 
 @pytest.mark.anyio
