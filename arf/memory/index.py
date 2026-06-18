@@ -106,6 +106,113 @@ class MemoryIndex:
         logger.info("Group user memory updated (%d chars)", len(content))
 
     # ------------------------------------------------------------------
+    # Task memory — read/write
+    # ------------------------------------------------------------------
+
+    def load_tasks(self) -> str:
+        """Read tasks.md. Returns '' if disabled or absent.
+        Group file is supplementary — personal file is primary for reading.
+        """
+        if not self._cfg.task_memory.enabled:
+            return ""
+        f = self._dir / "tasks.md"
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+        return ""
+
+    def save_tasks(self, content: str) -> None:
+        """Overwrite tasks.md."""
+        self._truncate_check("tasks.md", content, self._cfg.task_memory.max_size_kb)
+        (self._dir / "tasks.md").write_text(content, encoding="utf-8")
+
+    def save_group_tasks(self, content: str) -> None:
+        """Overwrite group-level tasks.md. No-op if group dir not configured."""
+        if not self._group_dir:
+            return
+        self._group_dir.mkdir(parents=True, exist_ok=True)
+        self._truncate_check("group tasks.md", content, self._cfg.task_memory.max_size_kb)
+        (self._group_dir / "tasks.md").write_text(content, encoding="utf-8")
+        logger.info("Group task memory updated (%d chars)", len(content))
+
+    def build_task_summary(self) -> str:
+        """Build a compact summary from tasks.md for system prompt injection.
+
+        Parses <!-- TASK {category} | agent: {agent} --> comments and
+        extracts the highest-frequency lesson per category. Pure code
+        parsing — no LLM call.
+        """
+        content = self.load_tasks()
+        if not content.strip():
+            return ""
+
+        import re
+        # Match: <!-- TASK category | agent: name -->
+        task_header_re = re.compile(r'<!-- TASK (\S+) \| agent: (\S+) -->')
+        # Match: ### description line
+        desc_re = re.compile(r'### (.+)')
+        # Match: - lesson text (optionally with count suffix (×N))
+        lesson_re = re.compile(r'- (.+?)(?: \(×(\d+)\))?\s*$')
+
+        categories: dict[str, dict] = {}  # category -> {description, top_lesson, count}
+
+        lines = content.split('\n')
+        current_category = None
+        current_description = ""
+        current_lessons: list[tuple[str, int]] = []
+
+        def flush_category():
+            if current_category and current_lessons:
+                best = max(current_lessons, key=lambda x: x[1])
+                categories[current_category] = {
+                    "description": current_description,
+                    "lesson": best[0],
+                    "count": best[1],
+                }
+
+        for line in lines:
+            m = task_header_re.match(line.strip())
+            if m:
+                flush_category()
+                current_category = m.group(1)
+                current_description = ""
+                current_lessons = []
+                continue
+
+            if current_category and not current_description:
+                dm = desc_re.match(line.strip())
+                if dm:
+                    current_description = dm.group(1)
+
+            if current_category:
+                lm = lesson_re.match(line.strip())
+                if lm:
+                    lesson_text = lm.group(1).strip()
+                    cnt_str = lm.group(2)
+                    cnt = int(cnt_str) if cnt_str else 1
+                    current_lessons.append((lesson_text, cnt))
+
+        flush_category()
+
+        if not categories:
+            return ""
+
+        limit = self._cfg.task_memory.summary_limit
+        lines_out = ["## Task Memory (recent)", ""]
+        for i, (cat, info) in enumerate(categories.items()):
+            if i >= limit:
+                break
+            desc = info["description"][:60]
+            lesson = info["lesson"][:80]
+            cnt = info["count"]
+            lines_out.append(
+                f"- **{cat}**: {desc} — 避坑: {lesson} (×{cnt})"
+            )
+
+        lines_out.append("")
+        lines_out.append("Use `kernel__search_task_memory` to search full archive.")
+        return "\n".join(lines_out)
+
+    # ------------------------------------------------------------------
     # Public — injection
     # ------------------------------------------------------------------
 
@@ -122,6 +229,10 @@ class MemoryIndex:
                 msgs.append({"role": "system", "content": content})
         if self._cfg.secrets.enabled and self._secrets is not None:
             content = self._format_secrets()
+            if content:
+                msgs.append({"role": "system", "content": content})
+        if self._cfg.task_memory.enabled:
+            content = self._format_task_memory()
             if content:
                 msgs.append({"role": "system", "content": content})
         return msgs
@@ -148,6 +259,9 @@ class MemoryIndex:
         lines = "## Available Secrets\n"
         lines += "\n".join(f"- {n}" for n in names)
         return lines
+
+    def _format_task_memory(self) -> str:
+        return self.build_task_summary()
 
     def _truncate_check(self, filename: str, content: str, max_kb: int) -> None:
         size_kb = len(content.encode("utf-8")) / 1024
