@@ -61,7 +61,10 @@ class PeerTeamPlugin:
             return
         group_id, role = parsed
 
-        idx = SessionIndex(Path(ctx.data_dir or "./data"))
+        # SessionIndex stored in dedicated team_sessions/ directory
+        _base_data = Path(ctx.data_dir or "./data")
+        _session_index_dir = _base_data.parent / "team_sessions" if _base_data.name != "team_sessions" else _base_data
+        idx = SessionIndex(str(_session_index_dir))
         existing = await idx.load(group_id)
         if existing is not None:
             return  # Group already created
@@ -92,33 +95,40 @@ class PeerTeamPlugin:
 
     async def _on_pre_action(self, ctx: PluginContext) -> None:
         """Inject pending peer messages into the agent's message list."""
+        logger.warning("DEBUG a2a_teammates _on_pre_action ENTER sid=%s current_step=%s", ctx.session_id, ctx.current_step)
         if ctx.current_step != "call_model":
+            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (step=%s)", ctx.current_step)
             return
 
         bus = _registry.agent_bus
         if bus is None:
+            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (no bus)")
             return
 
         sid = ctx.session_id
         parsed = SessionIndex.parse_session_id(sid)
         if parsed is None:
+            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (no parse)")
             return
         _group_id, role = parsed
+        logger.warning("DEBUG a2a_teammates _on_pre_action receiving for role=%s", role)
 
         # Drain inbox for this peer
-        # Names are normalized to lowercase at registration, so we can
-        # receive directly without a discover() scan.
         messages = [m async for m in bus.receive(role.lower())]
+        logger.warning("DEBUG a2a_teammates _on_pre_action received %d messages for role=%s", len(messages), role)
         if not messages:
             return
 
         for msg in messages:
             formatted = self._format_peer_message(msg)
+            # Peer messages are external input — inject as "user" role,
+            # not "tool" role (which requires a preceding assistant message
+            # with matching tool_call_id, violating the chat API contract).
             ctx.state.setdefault("messages", []).append({
-                "role": "tool",
-                "tool_call_id": msg.correlation_id,
+                "role": "user",
                 "content": formatted,
             })
+        logger.warning("DEBUG a2a_teammates _on_pre_action EXIT injected %d msgs", len(messages))
 
     @staticmethod
     def _format_peer_message(msg) -> str:
@@ -150,7 +160,9 @@ class PeerTeamPlugin:
             return
         group_id, role = parsed
 
-        idx = SessionIndex(Path(ctx.data_dir or "./data"))
+        _base_data = Path(ctx.data_dir or "./data")
+        _session_index_dir = _base_data.parent / "team_sessions" if _base_data.name != "team_sessions" else _base_data
+        idx = SessionIndex(str(_session_index_dir))
         await idx.update_member(group_id, role, {"status": "ended"})
 
     # ---- recovery: resume entire group ----
