@@ -22,9 +22,13 @@ class TestTaskMemoryConfig:
         assert cfg.task_memory.max_size_kb == 30
 
 
+import json
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock
 from arf.memory.index import MemoryIndex
+from arf.plugins.memory.plugin import MemoryPlugin
+from arf.core.plugin_context import PluginContext
 
 
 class TestTaskMemoryIO:
@@ -106,3 +110,129 @@ class TestTaskMemorySummary:
         summary = mem_index.build_task_summary()
         lines = [l for l in summary.strip().split("\n") if l.startswith("- **")]
         assert len(lines) <= 1
+
+
+class TestTaskMemoryExtraction:
+    """Test the task memory extraction flow from task_completed hook."""
+
+    @pytest.fixture
+    def mem_index(self):
+        d = tempfile.mkdtemp()
+        data_dir = Path(d) / "data"
+        cfg = MemoryConfig(secrets={"enabled": False})
+        mi = MemoryIndex(data_dir=str(data_dir), config=cfg)
+        yield mi
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+    @pytest.fixture
+    def plugin(self, mem_index):
+        plugin = MemoryPlugin(config={"interval": 5, "extract_on_session_end": False})
+        plugin.set_memory_index(mem_index)
+        return plugin
+
+    @pytest.mark.anyio
+    async def test_task_completed_hook_registered(self, plugin):
+        hooks = plugin.hooks
+        assert "task_completed" in hooks
+        assert hooks["task_completed"] == "side"
+
+    @pytest.mark.anyio
+    async def test_on_hook_task_completed_calls_extraction(self, plugin):
+        call_model = AsyncMock(return_value={
+            "content": json.dumps({
+                "category": "bugfix",
+                "description": "修复 login 超时",
+                "approach": ["增加超时配置", "添加重试逻辑"],
+                "lessons": ["redis 连接池不是线程安全的"],
+                "should_write": True,
+            })
+        })
+        plugin.set_call_model(call_model)
+
+        messages = [
+            {"role": "user", "content": "修复 login 超时问题"},
+            {"role": "assistant", "content": "我来看看"},
+            {"role": "tool", "content": "redis connection timeout"},
+            {"role": "assistant", "content": "找到问题了，连接池配置不对"},
+        ]
+        state = {
+            "session_id": "s1",
+            "messages": messages,
+        }
+        ctx = PluginContext(
+            session_id="s1",
+            interaction_round=5,
+            state=state,
+            messages=messages,
+        )
+        ctx.hook_data = {
+            "session_id": "s1",
+            "start_round": 1,
+            "finish_round": 5,
+            "task_result": "修复完成",
+            "notes": "增加了 timeout 配置",
+            "confidence": 0.9,
+        }
+
+        await plugin.on_hook("task_completed", ctx)
+
+        # Verify extraction was called
+        call_model.assert_called()
+        call_args = call_model.call_args_list[0]
+        call_messages = call_args[0][0]  # list of message dicts
+        combined = " ".join(m.get("content", "") for m in call_messages)
+        assert "修复 login 超时" in combined
+        assert "redis connection timeout" in combined
+
+    @pytest.mark.anyio
+    async def test_on_hook_skips_when_should_write_false(self, plugin):
+        call_model = AsyncMock(return_value={
+            "content": json.dumps({
+                "category": "trivial",
+                "description": "无意义的任务",
+                "approach": [],
+                "lessons": [],
+                "should_write": False,
+            })
+        })
+        plugin.set_call_model(call_model)
+
+        messages = [{"role": "user", "content": "hi"}]
+        state = {"session_id": "s1", "messages": messages}
+        ctx = PluginContext(
+            session_id="s1", interaction_round=1,
+            state=state, messages=messages,
+        )
+        ctx.hook_data = {
+            "session_id": "s1", "start_round": 0, "finish_round": 1,
+            "task_result": "", "notes": "", "confidence": 1.0,
+        }
+
+        await plugin.on_hook("task_completed", ctx)
+
+        # Should NOT call the merge model call (only extraction)
+        assert call_model.call_count == 1  # extraction only, no merge
+
+    @pytest.mark.anyio
+    async def test_on_hook_skips_when_call_model_not_set(self, plugin):
+        messages = [{"role": "user", "content": "hi"}]
+        state = {"session_id": "s1", "messages": messages}
+        ctx = PluginContext(
+            session_id="s1", interaction_round=1,
+            state=state, messages=messages,
+        )
+        # Should not raise
+        await plugin.on_hook("task_completed", ctx)
+
+    @pytest.mark.anyio
+    async def test_on_hook_skips_when_no_messages(self, plugin):
+        call_model = AsyncMock()
+        plugin.set_call_model(call_model)
+        state = {"session_id": "s1", "messages": []}
+        ctx = PluginContext(
+            session_id="s1", interaction_round=1,
+            state=state, messages=[],
+        )
+        await plugin.on_hook("task_completed", ctx)
+        call_model.assert_not_called()

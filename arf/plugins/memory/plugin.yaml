@@ -1,6 +1,7 @@
 name: memory
 hooks:
   - round_end
+  - task_completed
 enabled: true
 config:
   interval: 5
