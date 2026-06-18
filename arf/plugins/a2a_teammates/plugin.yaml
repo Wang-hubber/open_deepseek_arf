@@ -1,0 +1,6 @@
+name: a2a_teammates
+enabled: true
+description: "Peer team collaboration — multi-agent group with shared session index and peer messaging"
+config:
+  group_id: ""
+  members: []

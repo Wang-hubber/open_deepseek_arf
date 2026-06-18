@@ -247,3 +247,37 @@ async def test_session_index_load_nonexistent(temp_data_dir):
     idx = SessionIndex(temp_data_dir)
     result = await idx.load("nonexistent")
     assert result is None
+
+
+# ── PeerTeamConfig tests ───────────────────────────────────────────────────────
+from arf.plugins.a2a_teammates.config import PeerTeamConfig, MemberConfig
+
+
+def test_peer_team_config_default_group_id():
+    """group_id should be optional with a sensible default."""
+    cfg = PeerTeamConfig(members=[
+        MemberConfig(role="pm", agent_name="pm_agent", entry_point=True),
+    ])
+    assert cfg.group_id == "default" or cfg.group_id
+
+
+def test_peer_team_config_explicit_group_id():
+    """Explicit group_id should be preserved."""
+    cfg = PeerTeamConfig(
+        group_id="proj_abc",
+        members=[
+            MemberConfig(role="pm", agent_name="pm_agent", entry_point=True),
+            MemberConfig(role="dev", agent_name="dev_agent"),
+            MemberConfig(role="data", agent_name="data_agent"),
+        ],
+    )
+    assert cfg.group_id == "proj_abc"
+    assert len(cfg.members) == 3
+    assert cfg.members[0].entry_point is True
+    assert cfg.members[1].entry_point is False  # default
+
+
+def test_peer_team_config_member_default_entry_point():
+    """entry_point should default to False."""
+    m = MemberConfig(role="dev", agent_name="dev_agent")
+    assert m.entry_point is False
