@@ -6,6 +6,47 @@ from arf.core.plugin_context import PluginContext
 logger = logging.getLogger("arf.plugins.error_handler")
 
 
+def _repair_tool_role_messages(state: dict) -> bool:
+    """Fix orphaned 'tool' role messages that lack a preceding assistant
+    message with matching tool_calls.  Converts them to 'user' role.
+
+    Returns True if any messages were repaired.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return False
+
+    repaired = False
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool":
+            continue
+        tc_id = m.get("tool_call_id", "")
+        # Check if any preceding assistant message has this tool_call_id
+        has_preceding = False
+        for j in range(i - 1, -1, -1):
+            prev = messages[j]
+            if prev.get("role") == "assistant":
+                for tc in prev.get("tool_calls", []):
+                    if tc.get("id") == tc_id:
+                        has_preceding = True
+                        break
+                if has_preceding:
+                    break
+        if not has_preceding:
+            # Orphaned tool message — convert to user
+            content = m.get("content", "")
+            messages[i] = {
+                "role": "user",
+                "content": f"[系统通知] {content}" if content else "[系统通知]",
+            }
+            repaired = True
+            logger.warning(
+                "Repaired orphaned tool message at index %d (tool_call_id=%s)",
+                i, tc_id)
+
+    return repaired
+
+
 class ErrorHandlerPlugin:
     def __init__(self, config: dict | None = None, **kwargs):
         cfg = dict(config or {})
@@ -73,12 +114,18 @@ class ErrorHandlerPlugin:
             # Transport retries exhausted — leave _recovery_decision unset
             return
 
-        # 3. Message contract violation -> persist_state with repair
-        if "MessageContract" in exc_name or "contract" in error_text:
+        # 3. Message contract violation -> repair and retry
+        is_tool_role_error = (
+            "role 'tool'" in error_text
+            and "must be a response" in error_text
+            and "tool_calls" in error_text
+        )
+        if "MessageContract" in exc_name or "contract" in error_text or is_tool_role_error:
+            repaired = _repair_tool_role_messages(ctx.state)
             ctx.hook_data["_recovery_decision"] = {
-                "recovery": "persist_state",
-                "reason": "message contract violation",
-                "params": {"repair_messages": True},
+                "recovery": "retry_turn",
+                "reason": f"message contract violation ({'repaired' if repaired else 'unrepairable'})",
+                "params": {"repaired": repaired},
             }
             return
 
