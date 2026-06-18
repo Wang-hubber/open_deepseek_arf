@@ -1,0 +1,28 @@
+name: send_peer_message
+description: >
+  Send a message to another peer agent in the team. Messages are delivered
+  to the receiver's inbox and injected before their next model call.
+parameters:
+  type: object
+  properties:
+    receiver:
+      type: string
+      description: "Target peer role (e.g., 'Dev', 'Data')."
+    message:
+      type: string
+      description: "Message content."
+    type:
+      type: string
+      description: "Message type: task_request, task_result, info, query, answer."
+      default: info
+    priority:
+      type: string
+      description: "Delivery priority: normal (next turn) or urgent (interrupt)."
+      default: normal
+  required:
+    - receiver
+    - message
+execution:
+  sandbox: none
+  timeout: 20s
+activation: kernel

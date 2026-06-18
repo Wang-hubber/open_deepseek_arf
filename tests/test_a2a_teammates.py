@@ -281,3 +281,38 @@ def test_peer_team_config_member_default_entry_point():
     """entry_point should default to False."""
     m = MemberConfig(role="dev", agent_name="dev_agent")
     assert m.entry_point is False
+
+
+# ── send_peer_message tool tests ─────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_send_peer_message_routes_to_receiver():
+    """send_peer_message should deliver a message to the target's inbox."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo
+    from arf.plugins.a2a_teammates.tools.send_peer_message.function import execute
+    from arf.plugins.a2a_teammates.tools import _registry as teammates_registry
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    result = await execute(
+        receiver="dev",
+        message="Please build the login page",
+        type="task_request",
+        priority="normal",
+        session_id="proj_abc__pm",
+    )
+    assert result["ok"] is True
+    assert result["correlation_id"]
+
+    # Verify message landed in dev's inbox
+    received = [m async for m in bus.receive("dev")]
+    assert len(received) == 1
+    assert received[0].sender == "pm"
+    assert received[0].payload["message"] == "Please build the login page"
+    assert received[0].type == "task_request"
+    assert received[0].priority == "normal"
