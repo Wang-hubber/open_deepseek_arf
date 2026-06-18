@@ -60,7 +60,8 @@ def _resolve_agent_config(agent_name: str) -> Path | None:
 
 
 async def _add_child_task(engine, parent_sid: str, task_id: str,
-                           child_sid: str, agent_name: str) -> None:
+                           child_sid: str, agent_name: str,
+                           status: str = "running") -> None:
     """Add a child_tasks entry to the parent's state store."""
     import time
     try:
@@ -71,7 +72,7 @@ async def _add_child_task(engine, parent_sid: str, task_id: str,
             "task_id": task_id,
             "child_session_id": child_sid,
             "agent_name": agent_name,
-            "status": "running",
+            "status": status,
             "created_at": time.time(),
         })
         await engine.state_store.put(parent_sid, parent_state)
@@ -134,11 +135,32 @@ async def execute(
         resume_session = task_obj.get("resume_session", "") or (context or {}).get("resume_session", "")
         child_sid = resume_session or f"a2a_{agent}_{uuid.uuid4().hex[:8]}"
         task_obj["_child_sid"] = child_sid
+
+        # Write child_tasks entry BEFORE dispatch to prevent race with round_end
+        import time as _time
+        _parent_state = await _engine.state_store.get(parent_sid)
+        if _parent_state is None:
+            _parent_state = {"session_id": parent_sid, "messages": []}
+        _parent_state.setdefault("child_tasks", []).append({
+            "task_id": "",  # filled after dispatch returns
+            "child_session_id": child_sid,
+            "agent_name": agent,
+            "status": "pending",
+            "created_at": _time.time(),
+        })
+        await _engine.state_store.put(parent_sid, _parent_state)
+
         result = await _dispatch_external(
             task_obj, agent, config_path, parent_sid, effective_timeout, runtime_id)
-        # Write child_tasks entry to parent state
+        # Update task_id after dispatch
         if result.get("task_id"):
-            await _add_child_task(_engine, parent_sid, result["task_id"], child_sid, agent)
+            _updated = await _engine.state_store.get(parent_sid)
+            if _updated:
+                for ct in _updated.get("child_tasks", []):
+                    if ct.get("child_session_id") == child_sid:
+                        ct["task_id"] = result["task_id"]
+                        break
+                await _engine.state_store.put(parent_sid, _updated)
         return {
             "ok": True,
             **result,
@@ -160,10 +182,14 @@ async def execute(
             model="",
             parent_state={},
         )
-        sub_state["session_id"] = f"{parent_sid}--{t.get('task_id', 'unknown')}"
+        child_sid = f"{parent_sid}--{t.get('task_id', 'unknown')}"
+        sub_state["session_id"] = child_sid
         sub_state["_tool_blacklist"] = ["delegate_task"]
         ws_dir = getattr(_engine, '_workspace_dir', '') or '.'
         sub_state["_workspace_snapshot"] = _snapshot_workspace(ws_dir)
+
+        # Write child_tasks entry BEFORE async work — prevents race with round_end
+        await _add_child_task(_engine, parent_sid, t.get("task_id", ""), child_sid, agent or "inline")
 
         await asyncio.wait_for(
             _drain_stream(_engine, sub_state),
@@ -172,9 +198,6 @@ async def execute(
         return {"ok": True, "final_state": sub_state}
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
-    if result.get("task_id"):
-        child_sid = f"{parent_sid}--{result['task_id']}"
-        await _add_child_task(_engine, parent_sid, result["task_id"], child_sid, agent or "inline")
     return result
 
 
@@ -298,6 +321,17 @@ async def _dispatch_external(
                 _registry.running_sub_agents[rid]["error"] = "前端连接超时"
                 return {"ok": False, "error": "consumer_connect_timeout"}
             _registry.running_sub_agents[rid]["status"] = "running"
+            # Update child_tasks from pending to running
+            try:
+                _ps = await sub_agent.state_store.get(parent_sid)
+                if _ps:
+                    for _ct in _ps.get("child_tasks", []):
+                        if _ct.get("child_session_id") == sid:
+                            _ct["status"] = "running"
+                            break
+                    await sub_agent.state_store.put(parent_sid, _ps)
+            except Exception:
+                logger.exception("Failed to update child_tasks status to running")
 
             message = task
             while True:

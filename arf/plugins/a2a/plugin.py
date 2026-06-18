@@ -57,12 +57,26 @@ class A2APlugin:
         return event
 
     async def cascade_cancel(self, ctx: PluginContext) -> None:
-        """Set all registered child cancel_events and update child_tasks."""
+        """Set all registered child cancel_events and update child_tasks.
+
+        Only cancels children that belong to this parent session, to prevent
+        cross-parent interference from the global cancel_events dict.
+        """
+        parent_sid = ctx.session_id
+        from arf.engine.checkpoint import FileStateStore
+        from pathlib import Path
+        parent_state = await FileStateStore(Path(ctx.data_dir or "./data")).get(parent_sid)
+        child_sids: set[str] = set()
+        if parent_state:
+            child_sids = {ct["child_session_id"] for ct in parent_state.get("child_tasks", [])}
+
         for child_sid, event in list(_registry.cancel_events.items()):
+            if child_sid not in child_sids:
+                continue  # Not this parent's child
             if not event.is_set():
                 event.set()
-                await self._update_child_status(ctx, ctx.session_id, child_sid, "cancelled")
-        _registry.cancel_events.clear()
+                await self._update_child_status(ctx, parent_sid, child_sid, "cancelled")
+            _registry.cancel_events.pop(child_sid, None)
 
     async def _update_child_status(self, ctx: PluginContext, parent_sid: str,
                                     child_session_id: str, status: str) -> None:
@@ -212,7 +226,10 @@ class A2APlugin:
             _registry.cancel_events.pop(child_sid, None)
         else:
             # This is the PARENT session ending — cascade cancel to all children
-            await self.cascade_cancel(ctx)
+            # Only cascade if this session actually has children
+            child_tasks = ctx.state.get("child_tasks", [])
+            if child_tasks:
+                await self.cascade_cancel(ctx)
 
     # ==================================================================
     # Helpers
@@ -369,12 +386,12 @@ class A2APlugin:
                 sub_agent._engine.set_cancel_event(cancel_evt)
 
                 await sub_agent.start()
-
-                # Resume from saved state
-                async for _event in sub_agent._engine.resume(child_state):
-                    pass  # Drain events — results collected by round_end hook
-
-                await sub_agent.stop()
+                try:
+                    # Resume from saved state
+                    async for _event in sub_agent._engine.resume(child_state):
+                        pass  # Drain events — results collected by round_end hook
+                finally:
+                    await sub_agent.stop()
 
                 ct["status"] = "completed"
                 logger.info("Resumed child agent %s (%s) — completed", child_sid, agent_name)

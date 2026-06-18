@@ -390,6 +390,8 @@ class BaseAgent:
                     blocking_plugins.append(p)
                 if has_side and not has_blocking:
                     side_plugins.append(p)
+                elif has_side:  # has_side AND has_blocking — mixed mode
+                    side_plugins.append(p)
                 if hasattr(p, "set_state_store"):
                     p.set_state_store(state_store)
                 # Inject name resolver so plugins can resolve bare → namespaced tool names
