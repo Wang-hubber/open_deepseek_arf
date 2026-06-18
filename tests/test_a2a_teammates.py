@@ -150,3 +150,100 @@ async def test_agent_bus_receive_is_consuming():
 
     second = [m async for m in bus.receive("Dev")]
     assert len(second) == 0
+
+
+@pytest.fixture
+def temp_data_dir(tmp_path):
+    """Temporary data directory for SessionIndex."""
+    return str(tmp_path / "data")
+
+
+# ── SessionIndex tests ──────────────────────────────────────────────────────
+
+
+def test_session_index_parse_session_id():
+    """parse_session_id extracts group_id and role from member session IDs."""
+    from arf.session.session_index import SessionIndex
+
+    assert SessionIndex.parse_session_id("proj_abc__pm") == ("proj_abc", "pm")
+    assert SessionIndex.parse_session_id("proj_abc__dev") == ("proj_abc", "dev")
+    assert SessionIndex.parse_session_id("plain_session") is None
+    assert SessionIndex.parse_session_id("proj_abc__pm--task_1") is None  # sub-agent
+
+
+@pytest.mark.anyio
+async def test_session_index_create_and_load(temp_data_dir):
+    """create() writes the index file, load() reads it back."""
+    from arf.session.session_index import SessionIndex
+
+    idx = SessionIndex(temp_data_dir)
+    members = [
+        {"role": "pm", "agent_name": "pm_agent", "session_id": "proj_abc__pm", "status": "active"},
+        {"role": "dev", "agent_name": "dev_agent", "session_id": "proj_abc__dev", "status": "active"},
+    ]
+    created = await idx.create("proj_abc", members)
+    assert created["group_id"] == "proj_abc"
+    assert "created_at" in created
+    assert len(created["members"]) == 2
+
+    loaded = await idx.load("proj_abc")
+    assert loaded["group_id"] == "proj_abc"
+    assert loaded["members"][0]["role"] == "pm"
+
+
+@pytest.mark.anyio
+async def test_session_index_update_member(temp_data_dir):
+    """update_member changes a member's fields."""
+    from arf.session.session_index import SessionIndex
+
+    idx = SessionIndex(temp_data_dir)
+    members = [
+        {"role": "pm", "agent_name": "pm_agent", "session_id": "proj_abc__pm", "status": "active"},
+        {"role": "dev", "agent_name": "dev_agent", "session_id": "proj_abc__dev", "status": "active"},
+    ]
+    await idx.create("proj_abc", members)
+
+    await idx.update_member("proj_abc", "dev", {"status": "idle"})
+
+    loaded = await idx.load("proj_abc")
+    dev = next(m for m in loaded["members"] if m["role"] == "dev")
+    assert dev["status"] == "idle"
+    # pm unchanged
+    pm = next(m for m in loaded["members"] if m["role"] == "pm")
+    assert pm["status"] == "active"
+
+
+@pytest.mark.anyio
+async def test_session_index_child_tasks(temp_data_dir):
+    """add_child_task and update_child_status manage sub-agent tasks."""
+    from arf.session.session_index import SessionIndex
+
+    idx = SessionIndex(temp_data_dir)
+    members = [
+        {"role": "dev", "agent_name": "dev_agent", "session_id": "proj_abc__dev", "status": "active"},
+    ]
+    await idx.create("proj_abc", members)
+
+    task = {"task_id": "task_1", "child_session_id": "proj_abc__dev--task_1", "status": "running"}
+    await idx.add_child_task("proj_abc", "dev", task)
+
+    loaded = await idx.load("proj_abc")
+    dev = next(m for m in loaded["members"] if m["role"] == "dev")
+    assert len(dev.get("child_tasks", [])) == 1
+    assert dev["child_tasks"][0]["status"] == "running"
+
+    # Update status
+    await idx.update_child_status("proj_abc", "dev", "proj_abc__dev--task_1", "completed")
+    loaded = await idx.load("proj_abc")
+    dev = next(m for m in loaded["members"] if m["role"] == "dev")
+    assert dev["child_tasks"][0]["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_session_index_load_nonexistent(temp_data_dir):
+    """load() returns None for nonexistent group."""
+    from arf.session.session_index import SessionIndex
+
+    idx = SessionIndex(temp_data_dir)
+    result = await idx.load("nonexistent")
+    assert result is None
