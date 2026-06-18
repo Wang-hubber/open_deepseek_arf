@@ -21,8 +21,15 @@ class SecretsConfig(BaseModel):
     master_key_env: str = "ARF_MASTER_KEY"
 
 
+class TaskMemoryConfig(BaseModel):
+    enabled: bool = True
+    max_size_kb: int = Field(default=50, ge=1)
+    summary_limit: int = Field(default=50, ge=1)
+
+
 class MemoryConfig(BaseModel):
     project: ProjectMemoryConfig = Field(default_factory=ProjectMemoryConfig)
     user: UserMemoryConfig = Field(default_factory=UserMemoryConfig)
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
+    task_memory: TaskMemoryConfig = Field(default_factory=TaskMemoryConfig)
     group_memory_dir: str = Field(default="", description="Optional shared group memory directory")
