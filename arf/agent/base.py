@@ -18,7 +18,9 @@ from arf.guardrails.none_guard import NoneInputGuard
 from arf.guardrails.regex_clean import RegexOutputGuard
 from arf.guardrails.path_check import PathCheckToolGuard
 
+import logging
 
+logger = logging.getLogger(__name__)
 
 
 def _resolve_window_size(config: AgentConfig) -> int:
@@ -561,6 +563,44 @@ class BaseAgent:
 
         return session_id, existing, is_new_session
 
+    async def _handle_child_resume(self, existing: dict | None, data_dir: str) -> dict | None:
+        """Handle child agent resume on parent session resume.
+
+        Returns modified existing state or None if no action needed.
+        """
+        if existing is None:
+            return None
+
+        child_tasks = existing.get("child_tasks", [])
+        if not child_tasks:
+            return None
+
+        unfinished = [ct for ct in child_tasks if ct["status"] in ("running", "pending")]
+        if not unfinished:
+            return None
+
+        # Find A2APlugin
+        a2a_plugin = (
+            self._engine._blocking.get_plugin("a2a")
+            or self._engine._side.get_plugin("a2a")
+        )
+        if a2a_plugin is None:
+            return None
+
+        child_resume = getattr(a2a_plugin, "_child_resume", "auto")
+
+        if child_resume == "auto":
+            logger.info("Auto-resuming %d unfinished child agents...", len(unfinished))
+            existing = await a2a_plugin.resume_child_agents(existing, data_dir)
+        else:
+            # notify mode: prepend notification to messages
+            notification = a2a_plugin.build_child_resume_notification(unfinished)
+            msgs = existing.get("messages", [])
+            msgs.append({"role": "user", "content": notification})
+            existing["messages"] = msgs
+
+        return existing
+
     @staticmethod
     def _matches_perm(tool_name: str, perm_set: set[str]) -> bool:
         """Check if a namespaced tool name matches any entry in *perm_set*."""
@@ -816,6 +856,10 @@ class BaseAgent:
         from arf.core.state import AgentState
         session_id, existing, is_new_session = await self._resolve_session(session_id)
 
+        # Handle child agent resume if needed
+        if is_new_session:
+            existing = await self._handle_child_resume(existing, str(self._engine._data_dir))
+
         turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:
             messages = existing["messages"] + [{"role": "user", "content": user_message}]
@@ -896,6 +940,10 @@ class BaseAgent:
                       stop_on_text: bool = False):
         from arf.core.state import AgentState
         session_id, existing, is_new_session = await self._resolve_session(session_id)
+
+        # Handle child agent resume if needed
+        if is_new_session:
+            existing = await self._handle_child_resume(existing, str(self._engine._data_dir))
 
         turn = 0  # reset per round; max_turns is a per-round circuit breaker
         if existing:
