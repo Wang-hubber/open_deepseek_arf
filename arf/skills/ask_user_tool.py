@@ -1,10 +1,9 @@
-"""ask_user — kernel tool for sub-agent human-in-the-loop.
+"""ask_user — kernel tool for human-in-the-loop input requests.
 
-Returns a structured result with pending=True. ControlPlane detects
-this in _action_execute_tools and sets state["_pending_human_decision"].
-The sub-agent then ends its round naturally; A2APlugin.round_end emits
-human_decision_required event. Human answer is injected as a new user
-message for the next round.
+Returns a structured result with pending=True. Engine detects this
+in _detect_primitives, calls HITLProtocol.request_input() which emits
+need_human_input event. The round ends. Human answer is injected as
+a new user message for the next round.
 """
 import logging
 
