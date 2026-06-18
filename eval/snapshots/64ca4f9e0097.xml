@@ -1,0 +1,2421 @@
+<snapshot created_at="1781677328.7741144" hash="64ca4f9e0097"><agent /><plugins root="arf/plugins"><plugin name="a2a"><config src="arf/plugins/a2a/plugin.yaml">name: a2a
+enabled: true
+description: "Agent-to-Agent communication — Task Delegation via QueuedTaskDelegator"
+config:
+  max_concurrent_tasks: 3
+  max_task_timeout: 600
+</config><tools><tool name="__pycache__" /><tool name="await_task"><definition src="arf/plugins/a2a/tools/await_task/tool.yaml">name: await_task
+description: &gt;
+  Block until a previously dispatched task completes.
+  Does NOT inject into message list (pre_action hook is the sole writer).
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id returned by delegate_task."
+    timeout:
+      type: integer
+      description: "Max seconds to wait (default: framework max_task_timeout)."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 600s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/await_task/function.py">"""await_task — block until a delegated task completes."""
+import asyncio
+import time
+import logging
+from arf.plugins.a2a.tools import _registry
+
+logger = logging.getLogger("arf.plugins.a2a.await_task")
+
+
+async def execute(task_id: str, session_id: str = "", timeout: int = 0) -&gt; dict:
+    registry = _registry
+    if registry.delegator is None:
+        return {"ok": False, "error": "A2A plugin not initialized"}
+
+    max_wait = min(timeout, registry.max_task_timeout) if timeout else registry.max_task_timeout
+    poll_interval = 0.1
+    deadline = time.monotonic() + max_wait
+
+    while time.monotonic() &lt; deadline:
+        # Non-consuming read — does not interfere with pre_action's get_pending()
+        result = await registry.delegator.get_task_result(session_id, task_id)
+        if result is not None:
+            return {"ok": True, "result": result}
+        await asyncio.sleep(poll_interval)
+
+    return {"ok": False, "error": f"timeout: task {task_id} did not complete within {max_wait:.0f}s"}
+</implementation></tool><tool name="cancel_held"><definition src="arf/plugins/a2a/tools/cancel_held/tool.yaml">name: cancel_held
+description: Discard held changes from a conflicting sub-agent task.
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id of the held changes to discard."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 10s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/cancel_held/function.py">"""cancel_held -- discard held changes from conflict storage."""
+import shutil
+from pathlib import Path
+
+
+async def execute(task_id: str, session_id: str = "", _engine=None) -&gt; dict:
+    data_dir = getattr(_engine, '_data_dir', './data') if _engine else './data'
+    conflict_dir = Path(data_dir) / session_id / "conflicts" / task_id
+
+    if not conflict_dir.exists():
+        return {"ok": False, "error": f"no held changes for task '{task_id}'"}
+
+    shutil.rmtree(conflict_dir, ignore_errors=True)
+    return {"ok": True, "discarded": True, "message": f"Discarded held changes from {task_id}"}
+</implementation></tool><tool name="cancel_task"><definition src="arf/plugins/a2a/tools/cancel_task/tool.yaml">name: cancel_task
+description: &gt;
+  Cancel a queued task. Only works on tasks still in the queue
+  (not yet running). Running tasks cannot be cancelled.
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id to cancel."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 10s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/cancel_task/function.py">"""cancel_task — remove a queued task from the delegation queue."""
+from arf.plugins.a2a.tools import _registry
+
+
+async def execute(task_id: str, session_id: str = "") -&gt; dict:
+    registry = _registry
+    if registry.delegator is None:
+        return {"ok": False, "error": "A2A plugin not initialized"}
+    cancelled = await registry.delegator.cancel(session_id, task_id)
+    return {"ok": True, "cancelled": cancelled}
+</implementation></tool><tool name="delegate_task"><definition src="arf/plugins/a2a/tools/delegate_task/tool.yaml">name: delegate_task
+description: &gt;
+  Dispatch a task to a sub-agent. If 'agent' is specified, the named
+  pre-configured agent handles the task. Otherwise a temporary agent
+  inherits the parent's model and tools. The sub-agent runs asynchronously;
+  use queue_status or await_task to get results.
+parameters:
+  type: object
+  properties:
+    agent:
+      type: string
+      description: "Name of a pre-configured agent (optional). Empty = temporary agent inheriting parent capabilities."
+    task:
+      type: string
+      description: "Task description for the sub-agent."
+    timeout:
+      type: integer
+      description: "Expected completion time in seconds (capped by framework max_task_timeout)."
+    context:
+      type: object
+      description: "Optional context data to pass to the sub-agent."
+  required:
+    - task
+execution:
+  sandbox: none
+  timeout: 30s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/delegate_task/function.py">"""delegate_task — spawn a sub-agent via QueuedTaskDelegator.
+
+Two modes:
+- Inline (agent=""): sub-state on parent's engine, homogeneous (same tools/model)
+- External (agent="name"): separate BaseAgent from YAML, heterogeneous (own config)
+
+External mode supports: event queue for frontend SSE, HITL via ask_user,
+deadline-based timeout (refreshed per human interaction).
+"""
+import asyncio
+import hashlib
+import logging
+import os
+import uuid
+from pathlib import Path
+
+from arf.plugins.a2a.tools import _registry
+
+logger = logging.getLogger("arf.plugins.a2a.delegate_task")
+
+_IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "data", ".claude"}
+
+# Module-level registry for external sub-agents (populated by runner, read by app SSE endpoint).
+# Maps runtime_id -&gt; {"agent": BaseAgent, "agent_name": str, "session_id": str,
+#                      "parent_session_id": str, "status": str, "task": str, "result": str,
+#                      "_event_queue": Queue, "_answer_queue": Queue}
+running_sub_agents: dict[str, dict] = {}
+
+# Maps runtime_id -&gt; delegator task_id for complete() calls
+_runtime_task_ids: dict[str, str] = {}
+
+
+def _snapshot_workspace(workspace_dir: str) -&gt; dict[str, str]:
+    """Scan workspace -&gt; {relative_path: sha256_hex}."""
+    snapshot = {}
+    ws = Path(workspace_dir)
+    if not ws.exists():
+        return snapshot
+    for f in ws.rglob("*"):
+        if not f.is_file():
+            continue
+        if any(part in _IGNORED_DIRS for part in f.parts):
+            continue
+        try:
+            rel = str(f.relative_to(ws))
+            snapshot[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+        except (OSError, PermissionError):
+            pass
+    return snapshot
+
+
+def _resolve_agent_config(agent_name: str) -&gt; Path | None:
+    """Look up an agent YAML config by name. Returns Path or None."""
+    import yaml
+    ws_root = Path(os.environ.get("A4A_WORKSPACE", "."))
+    candidates = [
+        ws_root / "builtin" / f"{agent_name}.yaml",
+        ws_root / "agents" / agent_name / "agent.yaml",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+async def execute(
+    task: str,
+    agent: str = "",
+    timeout: int = 0,
+    context: dict | None = None,
+    _engine=None,
+    session_id: str = "",
+) -&gt; dict:
+    """Spawn a sub-agent to handle *task*.
+
+    If *agent* names a configured agent (YAML found), creates a separate
+    BaseAgent with its own config/tools/model. Otherwise runs inline on
+    the parent's engine.
+    """
+    registry = _registry
+    if registry.delegator is None:
+        return {"ok": False, "error": "A2A plugin not initialized — delegator is None"}
+
+    parent_sid = session_id
+    if not parent_sid and _engine is not None:
+        parent_sid = getattr(_engine, "_current_session_id", "default")
+
+    if _engine is None:
+        return {"ok": False, "error": "delegate_task: _engine not injected by tool executor. Ensure the a2a plugin is enabled and ConcurrentToolExecutor is passing DI params correctly."}
+
+    effective_timeout = (
+        min(timeout, registry.max_task_timeout) if timeout
+        else registry.max_task_timeout
+    )
+
+    # Resolve agent config for external mode
+    config_path = _resolve_agent_config(agent) if agent else None
+
+    # If agent name given but no config found, fail clearly
+    if agent and config_path is None:
+        return {
+            "ok": False,
+            "error": f"Agent '{agent}' not found. Check builtin/{agent}.yaml or agents/{agent}/agent.yaml exists.",
+        }
+
+    task_obj = {
+        "agent": agent,
+        "task": task,
+        "context": context or {},
+    }
+
+    if config_path is not None:
+        # === External mode: separate BaseAgent ===
+        runtime_id = f"sub_{agent}_{uuid.uuid4().hex[:8]}"
+        task_obj["runtime_id"] = runtime_id
+        return await _dispatch_external(
+            task_obj, agent, config_path, parent_sid, effective_timeout, runtime_id)
+
+    # === Inline mode: sub-state on parent engine ===
+    async def runner(t: dict) -&gt; dict:
+        from arf.plugins.a2a.state import build_sub_state
+
+        sub_state = build_sub_state(
+            parent_session_id=parent_sid,
+            task_id="",
+            task=t.get("task", task),
+            system_prompt="",
+            model="",
+            parent_state={},
+        )
+        sub_state["session_id"] = f"{parent_sid}--{t.get('task_id', 'unknown')}"
+        sub_state["_tool_blacklist"] = ["delegate_task"]
+        ws_dir = getattr(_engine, '_workspace_dir', '') or '.'
+        sub_state["_workspace_snapshot"] = _snapshot_workspace(ws_dir)
+
+        await asyncio.wait_for(
+            _drain_stream(_engine, sub_state),
+            timeout=effective_timeout,
+        )
+        return {"ok": True, "final_state": sub_state}
+
+    result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
+    return result
+
+
+async def _dispatch_external(
+    task_obj: dict,
+    agent_name: str,
+    config_path: Path,
+    parent_sid: str,
+    hard_timeout: float,
+    runtime_id: str,
+) -&gt; dict:
+    """Dispatch to a separate BaseAgent with its own config."""
+    import time as _time
+    import yaml as _yaml
+
+    task = task_obj["task"]
+    resume_session = task_obj.get("resume_session", "") or (task_obj.get("context") or {}).get("resume_session", "")
+
+    async def runner(t: dict) -&gt; dict:
+        from arf.agent.base import BaseAgent
+        from arf.agent.config import AgentConfig
+        from arf.agent.app_context import AppContext
+
+        ws_root = Path(os.environ.get("A4A_WORKSPACE", Path(__file__).parent.parent.parent.parent))
+
+        with open(config_path, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+
+        prompt_dir = config_path.parent / "system_prompt" / agent_name
+        shared_dir = config_path.parent / "system_prompt" / "_shared"
+
+        data.setdefault("system_prompt", {}).setdefault("prefix", {})
+        data["system_prompt"]["prefix"]["role"] = (
+            prompt_dir / "role.md"
+        ).read_text(encoding="utf-8")
+
+        rules = ""
+        if shared_dir.exists():
+            shared_files = sorted(
+                f for f in shared_dir.iterdir()
+                if f.suffix == ".md" and not f.name.endswith("_en.md")
+            )
+            parts = []
+            for sf in shared_files:
+                content = sf.read_text(encoding="utf-8").strip()
+                if content:
+                    parts.append(content)
+            if parts:
+                rules = "\n\n".join(parts) + "\n\n"
+        rules += (prompt_dir / "critical_rules.md").read_text(encoding="utf-8")
+        data["system_prompt"]["prefix"]["critical_rules"] = rules
+
+        config = AgentConfig(**data)
+        ctx = AppContext(root=ws_root)
+        sub_agent = BaseAgent(config, app_context=ctx)
+
+        rid = t.get("runtime_id", runtime_id)
+        sid = resume_session or f"a2a_{agent_name}_{uuid.uuid4().hex[:8]}"
+
+        event_queue: asyncio.Queue = asyncio.Queue()
+        answer_queue: asyncio.Queue = asyncio.Queue()
+
+        running_sub_agents[rid] = {
+            "agent": sub_agent,
+            "agent_name": agent_name,
+            "session_id": sid,
+            "parent_session_id": parent_sid,
+            "status": "idle",
+            "task": task,
+            "result": "",
+            "error": "",
+            "_event_queue": event_queue,
+            "_answer_queue": answer_queue,
+        }
+
+        final_result = ""
+        final_status = "completed"
+        _deadline = _time.time() + hard_timeout
+
+        try:
+            await sub_agent.start()
+            running_sub_agents[rid]["status"] = "running"
+
+            message = task
+            while True:
+                _remaining = _deadline - _time.time()
+                if _remaining &lt;= 0:
+                    final_status = "error"
+                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    await event_queue.put({
+                        "type": "error",
+                        "data": {"detail": "任务执行超时，已取消"},
+                    })
+                    break
+
+                round_content = ""
+                try:
+                    async for event in sub_agent.astream(message, session_id=sid, stop_on_text=True):
+                        await event_queue.put(event)
+                        if event.type == "model_call_end":
+                            content = (getattr(event, "data", None) or {}).get("content", "")
+                            if content:
+                                round_content = content
+                                final_result = content
+                except Exception as exc:
+                    final_status = "error"
+                    running_sub_agents[rid]["error"] = str(exc)
+                    await event_queue.put({
+                        "type": "error",
+                        "data": {"detail": str(exc)},
+                    })
+                    break
+
+                try:
+                    state = await sub_agent.state_store.get(sid)
+                except Exception:
+                    state = None
+
+                pending_decision = state.get("_pending_human_decision") if state else None
+                if not pending_decision:
+                    break
+
+                # HITL
+                running_sub_agents[rid]["status"] = "waiting_human"
+                running_sub_agents[rid]["_pending_decision"] = pending_decision
+                await event_queue.put({
+                    "type": "human_decision_required",
+                    "data": {
+                        "runtime_id": rid,
+                        "agent_name": agent_name,
+                        "session_id": sid,
+                        "question": pending_decision.get("question", ""),
+                        "options": pending_decision.get("options", []),
+                    },
+                })
+
+                _remaining = _deadline - _time.time()
+                if _remaining &lt;= 0:
+                    running_sub_agents[rid]["status"] = "error"
+                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    await event_queue.put({
+                        "type": "error", "data": {"detail": "任务执行超时，已取消"},
+                    })
+                    await event_queue.put(None)
+                    task_id = _runtime_task_ids.get(rid, "")
+                    if task_id:
+                        await _registry.delegator.complete(parent_sid, task_id, {
+                            "ok": False, "error": "timeout", "agent_name": agent_name,
+                        })
+                    return {"ok": False, "error": "timeout"}
+
+                try:
+                    message = await asyncio.wait_for(answer_queue.get(), timeout=_remaining)
+                except asyncio.TimeoutError:
+                    running_sub_agents[rid]["status"] = "error"
+                    running_sub_agents[rid]["error"] = "任务执行超时"
+                    await event_queue.put({
+                        "type": "error", "data": {"detail": "任务执行超时，已取消"},
+                    })
+                    await event_queue.put(None)
+                    task_id = _runtime_task_ids.get(rid, "")
+                    if task_id:
+                        await _registry.delegator.complete(parent_sid, task_id, {
+                            "ok": False, "error": "timeout", "agent_name": agent_name,
+                        })
+                    return {"ok": False, "error": "timeout"}
+
+                _deadline = _time.time() + hard_timeout
+                running_sub_agents[rid]["status"] = "running"
+                await event_queue.put({
+                    "type": "human_decision_resumed",
+                    "data": {"runtime_id": rid},
+                })
+
+            task_id = _runtime_task_ids.get(rid, "")
+            running_sub_agents[rid]["status"] = final_status
+            running_sub_agents[rid]["result"] = final_result
+
+            if task_id:
+                await _registry.delegator.complete(parent_sid, task_id, {
+                    "ok": final_status == "completed",
+                    "result": final_result,
+                    "content": final_result,
+                    "agent_name": agent_name,
+                    "error": running_sub_agents[rid].get("error", ""),
+                })
+
+            await event_queue.put(None)
+
+            if final_status == "error":
+                return {"ok": False, "error": running_sub_agents[rid].get("error", "")}
+            return {"ok": True, "result": final_result, "session_id": sid, "agent_name": agent_name}
+        finally:
+            await sub_agent.stop()
+            async def _delayed_cleanup():
+                await asyncio.sleep(30)
+                running_sub_agents.pop(rid, None)
+                _runtime_task_ids.pop(rid, None)
+            asyncio.ensure_future(_delayed_cleanup())
+
+    result = await _registry.delegator.dispatch(parent_sid, task_obj, runner)
+    if result.get("task_id"):
+        _runtime_task_ids[runtime_id] = result["task_id"]
+    return {
+        "ok": True,
+        **result,
+        "runtime_id": runtime_id,
+        "agent_name": agent_name,
+        "task": task,
+        "session_id": parent_sid,
+    }
+
+
+async def _drain_stream(engine, sub_state: dict) -&gt; None:
+    """Drain astream events — results collected by round_end hook."""
+    async for _event in engine.astream(sub_state, stop_on_text=True):
+        pass
+</implementation></tool><tool name="queue_status"><definition src="arf/plugins/a2a/tools/queue_status/tool.yaml">name: queue_status
+description: &gt;
+  Query the status of all delegated tasks in this session.
+  Returns lists of running, queued, and (unconsumed) completed tasks.
+parameters:
+  type: object
+  properties: {}
+execution:
+  sandbox: none
+  timeout: 10s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/queue_status/function.py">"""queue_status — query running, queued, and completed tasks."""
+from arf.plugins.a2a.tools import _registry
+
+
+async def execute(session_id: str = "") -&gt; dict:
+    registry = _registry
+    if registry.delegator is None:
+        return {"ok": False, "error": "A2A plugin not initialized"}
+    status = await registry.delegator.queue_status(session_id)
+    return {"ok": True, **status}
+</implementation></tool><tool name="resolve_conflict"><definition src="arf/plugins/a2a/tools/resolve_conflict/tool.yaml">name: resolve_conflict
+description: Apply held changes from a conflicting sub-agent task to the workspace.
+parameters:
+  type: object
+  properties:
+    task_id:
+      type: string
+      description: "The task_id of the held changes to apply."
+  required:
+    - task_id
+execution:
+  sandbox: none
+  timeout: 30s
+activation: kernel
+</definition><implementation src="arf/plugins/a2a/tools/resolve_conflict/function.py">"""resolve_conflict -- apply held changes to workspace."""
+import json
+import shutil
+from pathlib import Path
+
+
+async def execute(task_id: str, session_id: str = "", _engine=None) -&gt; dict:
+    ws = Path(getattr(_engine, '_workspace_dir', '.') if _engine else '.')
+    data_dir = getattr(_engine, '_data_dir', './data') if _engine else './data'
+    conflict_dir = Path(data_dir) / session_id / "conflicts" / task_id
+    manifest_path = conflict_dir / "manifest.json"
+
+    if not manifest_path.exists():
+        return {"ok": False, "error": f"no held changes for task '{task_id}'"}
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files_dir = conflict_dir / "files"
+
+    applied = []
+    for path in manifest["conflict_paths"]:
+        src = files_dir / path
+        if src.exists():
+            dst = ws / path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(dst))
+            applied.append(path)
+
+    shutil.rmtree(conflict_dir, ignore_errors=True)
+
+    return {
+        "ok": True,
+        "applied": applied,
+        "message": f"Applied held changes from {task_id}: {', '.join(applied)}",
+    }
+</implementation></tool></tools></plugin><plugin name="approval"><config src="arf/plugins/approval/plugin.yaml">name: approval
+enabled: true
+description: "Human-in-the-loop tool approval"
+config:
+  timeout: 60.0
+  ask_list: []
+</config></plugin><plugin name="compaction"><config src="arf/plugins/compaction/plugin.yaml">name: compaction
+hooks:
+  - round_end
+  - tool_output
+enabled: true
+config:
+  threshold: 0.75
+  window_size: 131072     # fallback — overridden by ModelConfig.context_window
+  keep_count: 8
+  truncation:
+    l1_threshold: 0.50
+    l2_threshold: 0.70
+    preview_chars: 100
+    window_ratio: 0.15   # safeguard threshold = window * ratio / avg_tools_per_round
+</config><tools><tool name="compact"><definition src="arf/plugins/compaction/tools/compact/tool.yaml">name: compact
+description: Manually trigger context compaction. Summarizes old messages and inserts a compact boundary marker, keeping recent messages intact. Use when the conversation is getting long and you want to free context space.
+parameters:
+  type: object
+  properties: {}
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
+</definition><implementation src="arf/plugins/compaction/tools/compact/function.py">"""compact tool — manually trigger context compaction."""
+
+
+async def execute(_engine=None, _plugin_provider=None, **kwargs) -&gt; dict:
+    """Manually invoke compaction via the compaction plugin."""
+    if _plugin_provider is None:
+        return {"ok": False, "error": "DI failure: _plugin_provider not injected. compact must be called through the engine's tool executor."}
+
+    # Find the compaction plugin
+    for plugin in _plugin_provider.list_plugins():
+        if plugin.name == "compaction":
+            from arf.core.plugin_context import PluginContext
+            ctx = PluginContext(
+                session_id=kwargs.get("session_id", "default"),
+                interaction_round=0,
+            )
+            result = await plugin.compact_now(ctx, trigger="manual")
+            return result
+
+    return {"ok": False, "error": "Compaction plugin not found"}
+</implementation></tool></tools><skills><skill src="arf/plugins/compaction/skills/compact.yaml" name="compact">name: compact
+description: Manual context compaction trigger
+prompt: |
+  # Context Compaction
+
+  When the conversation history gets long, use `compact` to summarize old messages
+  and free context window space. After compaction, the conversation continues
+  with a summary of earlier context.
+
+  Compaction is also triggered automatically when token usage exceeds the threshold.
+  Prefer manual compaction before reaching the automatic trigger point for a
+  smoother experience.
+tools:
+  - compact
+activation: kernel
+</skill></skills></plugin><plugin name="error_handler"><config src="arf/plugins/error_handler/plugin.yaml">name: error_handler
+enabled: true
+description: "5-action recovery: abort, fallback, retry, skip, rollback"
+config:
+  max_continuation: 3
+  max_compaction: 2
+  max_transport_retry: 3
+  backoff_base: 1.0
+  backoff_max: 30.0
+</config></plugin><plugin name="eval"><config src="arf/plugins/eval/plugin.yaml">name: eval
+hooks: []  # offline, not hook-mounted
+enabled: true
+config:
+  trace_dir: ./data/traces
+  eval_dir: ./eval
+  judge:
+    system_prompt: &gt;
+      You are an expert evaluator for AI agent behavior. Your role is to
+      compare an agent's actual output against a reference (golden) standard.
+      You are impartial, precise, and consistent. Ground every judgment in the
+      specific content provided — never speculate about missing information,
+      and clearly state when a comparison cannot be reliably made.
+      Every evaluation must be reproducible: another evaluator reading your
+      reasoning should arrive at the same conclusion.
+      Always respond with valid JSON only, no markdown fences or extra text.
+  prompts:
+    tool_call_result_llm: |
+      You are comparing the output of a tool call against the expected reference output.
+
+      User's original request: {user_input}
+
+      Tool: {tool_name}
+      Expected output:
+      &lt;&lt;&lt;EXPECTED&gt;&gt;&gt;
+      {expected}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Actual output:
+      &lt;&lt;&lt;ACTUAL&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Determine whether the actual output is **semantically equivalent** to the expected output. Semantic equivalence means: both outputs convey the same functional information — they would lead the agent to the same next decision or action, even if wording, formatting, or verbosity differ.
+
+      Judgment criteria:
+      - true : Core information is preserved. Minor formatting differences, extra details that do not change meaning, or different phrasing of the same facts are all acceptable.
+      - false: Critical information is missing, contradictory facts are present, or the actual output is an error/failure while the expected was successful.
+
+      Edge cases:
+      - If either output appears truncated, judge based on the available content.
+      - If the actual output is an error/failure but the expected was successful, this is unequivocally false.
+      - If both are errors/failures of the same type, they are equivalent (true).
+      - Numeric values: treat ±5% deviation as equivalent unless precision is clearly critical to the user's request.
+      - If the actual output contains the expected output verbatim plus extra surrounding context, it is still equivalent.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"match": &lt;bool&gt;, "reason": "&lt;2-3 sentences explaining the key similarities or differences that determined your judgment&gt;"}}
+    output_quality: |
+      You are evaluating the quality of an AI agent's final answer against a golden reference answer.
+
+      User's original request: {user_input}
+
+      Golden reference answer:
+      &lt;&lt;&lt;GOLDEN&gt;&gt;&gt;
+      {golden}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Actual answer:
+      &lt;&lt;&lt;ACTUAL&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Rate the actual answer on a 1–5 scale. The goal is NOT verbatim matching — a differently worded answer that serves the user equally well should score high. Conversely, a verbatim copy that misses the user's intent should score low.
+
+      Scoring rubric (anchor on the behavioral description, not the label):
+      5 — Excellent: Effectively addresses the user's request. Factually correct, complete, clear, and well-structured. A user would be fully satisfied.
+      4 — Good: Addresses the request but has minor flaws — slightly incomplete, mildly verbose, or missing a secondary detail. Still clearly useful.
+      3 — Adequate: Partially addresses the request. Contains some correct information but has notable omissions, unclear phrasing, or minor factual issues. A user would need to ask follow-up questions.
+      2 — Poor: Mostly incorrect, irrelevant, or so incomplete that the core request is not meaningfully answered. A user would reject this answer.
+      1 — Wrong/Harmful: Completely incorrect, contradicts the golden answer on key facts, or provides dangerously misleading information.
+
+      Important distinctions:
+      - Factual errors are worse than stylistic issues (verbose but correct should not drop below 4).
+      - An answer that is correct but less detailed than the golden answer may still score 4 if the essentials are there.
+      - An answer that adds genuinely useful context beyond the golden answer should NOT be penalized — it can still score 5.
+      - If both answers are functionally identical but phrased differently, score 5.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": &lt;int 1-5&gt;, "reason": "&lt;2-3 sentences justifying the score with specific reference to what the actual answer did well or poorly&gt;"}}
+    trajectory_similarity: |
+      You are evaluating whether an AI agent followed a correct procedure to fulfill the user's request.
+
+      User's original request: {user_input}
+
+      Golden trajectory (reference procedure):
+      &lt;&lt;&lt;GOLDEN&gt;&gt;&gt;
+      {golden}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Actual trajectory (what the agent did):
+      &lt;&lt;&lt;ACTUAL&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      The golden trajectory is ONE correct way to solve the problem, not the ONLY correct way. The agent may take a different but equally valid path.
+
+      Trajectory format: each entry represents a turn with [turn N] prefixes. Entries show tool calls (call &lt;name&gt;), tool results (result: ok/fail), and model outputs (output: &lt;text&gt;).
+
+      Rate the actual trajectory on a 1–5 scale:
+      5 — Excellent match: Uses the same key tools/steps in a logical order to achieve the goal. Minor variations (extra benign calls, slightly different order for independent steps) are acceptable.
+      4 — Good match: Core approach is correct. Differs in some tool choices or order, but still reaches the goal competently.
+      3 — Partial match: Some correct steps but missing critical tool calls, wrong order for dependent steps, or includes clearly unnecessary detours.
+      2 — Poor match: The approach is largely wrong. Key tools are missing or misused. The agent seems to be guessing or going in circles.
+      1 — No match: Completely wrong approach, irrelevant tool calls, or the trajectory fails to address the user's request at all.
+
+      Weighting guidelines:
+      - Using the right tools matters more than using them in the exact same order (unless the order reflects a hard dependency).
+      - Extra benign tool calls that don't affect the outcome should not significantly lower the score.
+      - Missing a critical tool that is essential to the solution should drop the score by at least 2 points.
+      - If the actual trajectory achieves the same result through a genuinely different but equally sound approach, score 5.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": &lt;int 1-5&gt;, "reason": "&lt;2-3 sentences justifying the score with specific reference to which steps matched or diverged&gt;"}}
+    output_quality_free: |
+      You are evaluating the quality of an AI agent's final answer.
+      You do NOT have a golden reference — evaluate the answer on its own merits.
+
+      Agent system prompt: {system_prompt}
+      Available tools and descriptions: {tools}
+
+      User's original request: {user_input}
+
+      Agent's final answer:
+      &lt;&lt;&lt;ANSWER&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Rate the answer on a 1–5 scale. The answer should be judged against what a reasonable agent with these instructions and tools SHOULD produce.
+
+      Scoring rubric:
+      5 — Excellent: Fully addresses the user's request. Correct, complete, well-structured, and aligned with the system prompt's constraints. If the system prompt limits behavior (e.g., brevity), compliance with that constraint IS quality.
+      4 — Good: Addresses the core request but has minor flaws — slightly incomplete, mildly verbose, or missing a secondary detail.
+      3 — Adequate: Partially addresses the request. Notable omissions or unclear phrasing. A user would need follow-up questions.
+      2 — Poor: Mostly does not address the request. Key information missing or wrong. A user would reject this answer.
+      1 — Wrong/Harmful: Completely irrelevant, contradicts the user's request, or violates explicit system prompt prohibitions.
+
+      Critical rules:
+      - If the system prompt explicitly restricts behavior (format, length, content), compliance with those restrictions is REQUIRED for a high score. A brief answer that follows instructions is NOT a flaw — the constraint IS the expected behavior.
+      - If system prompt or tools fields are empty, you are missing key context — note this in your reason and judge conservatively.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": &lt;int 1-5&gt;, "reason": "&lt;2-3 sentences&gt;"}}
+    trajectory_similarity_free: |
+      You are evaluating whether an AI agent followed a reasonable procedure to fulfill the user's request. You do NOT have a golden trajectory — evaluate the actual steps on their own merits.
+
+      Agent system prompt: {system_prompt}
+      Available tools and descriptions: {tools}
+
+      User's original request: {user_input}
+
+      Agent's actual trajectory:
+      &lt;&lt;&lt;TRAJECTORY&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Trajectory format: each entry shows [turn N] with tool calls (call &lt;name&gt;), results (result: ok/fail), and outputs (output: &lt;text&gt;).
+
+      Rate the trajectory on a 1–5 scale:
+      5 — Excellent: Efficient, logical sequence. Uses the most appropriate tools from the available set. No unnecessary steps. If the system prompt constrains behavior, follows it precisely.
+      4 — Good: Reasonable approach. Minor inefficiency or a slightly suboptimal tool choice, but still achieves the goal well.
+      3 — Adequate: Gets the job done but with unnecessary detours, repeated calls, or clearly suboptimal tools given the available set.
+      2 — Poor: Significant issues — wrong tools, confused backtracking, or failing to make meaningful progress toward the goal.
+      1 — Wrong: Inappropriate approach. Tool choices are irrelevant to the request. The agent seems to be guessing or ignoring the user.
+
+      Weighting guidelines:
+      - Tool choice should be evaluated against the AVAILABLE tools listed above, not against an ideal unlimited tool set. If the right tool doesn't exist, judge whether the agent made the best of what it had.
+      - System prompt constraints are EXPECTED behavior. If told to never use a certain tool, using it is a flaw regardless of effectiveness.
+      - Extra benign steps that show exploration but don't derail the task should not significantly lower the score.
+      - If system prompt or tools fields are empty, you are missing key context — note this in your reason and judge conservatively.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": &lt;int 1-5&gt;, "reason": "&lt;2-3 sentences&gt;"}}
+    reasoning_similarity: |
+      You are evaluating whether an AI agent's reasoning process matches the expected reasoning steps for a user request.
+
+      User's original request: {user_input}
+
+      Expected reasoning steps:
+      &lt;&lt;&lt;EXPECTED&gt;&gt;&gt;
+      {expected}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Actual reasoning trace:
+      &lt;&lt;&lt;ACTUAL&gt;&gt;&gt;
+      {actual}
+      &lt;&lt;&lt;END&gt;&gt;&gt;
+
+      Rate the actual reasoning against the expected on a 1-5 scale:
+      5 — Excellent: All expected reasoning steps covered, same logical flow, key insights present. Minor wording differences acceptable.
+      4 — Good: Core reasoning present but one or two steps missing or slightly out of order.
+      3 — Adequate: Some expected steps present, but notable gaps in logic.
+      2 — Poor: Reasoning mostly misaligned. Key insights missing.
+      1 — Wrong: Completely different reasoning that misses the point.
+
+      Respond with ONLY a JSON object (no markdown fences, no extra text):
+      {{"score": &lt;int 1-5&gt;, "reason": "&lt;2-3 sentences&gt;"}}
+</config></plugin><plugin name="filesystem"><tools><tool name="create_directory"><definition src="arf/plugins/filesystem/tools/create_directory/tool.yaml">name: create_directory
+description: Create a new directory or ensure a directory exists. Can create multiple
+  nested directories in one operation. If the directory already exists, this operation
+  will succeed silently.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Directory path to create
+      format: path
+  required:
+  - path
+annotations:
+  readOnlyHint: false
+  idempotentHint: true
+  destructiveHint: false
+</definition><implementation src="arf/plugins/filesystem/tools/create_directory/function.py">"""create_directory tool — recursive directory creation."""
+
+import os
+
+
+async def execute(path: str, **kwargs) -&gt; dict:
+    existed = os.path.isdir(path)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "path": path, "created": not existed}
+</implementation></tool><tool name="delete_file"><definition src="arf/plugins/filesystem/tools/delete_file/tool.yaml">name: delete_file
+description: Delete a file or directory. Use recursive=true to delete non-empty directories.
+  Exercise caution — deletions are permanent.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to delete
+      format: path
+    recursive:
+      type: boolean
+      description: Delete directories recursively
+      default: false
+  required:
+  - path
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/delete_file/function.py">"""delete_file tool — delete files and directories."""
+
+import os
+import shutil
+
+
+async def execute(path: str, recursive: bool = False, **kwargs) -&gt; dict:
+    if not os.path.exists(path):
+        return {"ok": False, "error": f"Path does not exist: {path}"}
+
+    try:
+        if os.path.isfile(path) or os.path.islink(path):
+            os.unlink(path)
+        elif os.path.isdir(path):
+            if recursive:
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)  # fails if not empty
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "path": path, "recursive": recursive}
+</implementation></tool><tool name="directory_tree"><definition src="arf/plugins/filesystem/tools/directory_tree/tool.yaml">name: directory_tree
+description: Recursive tree view of a SPECIFIC directory. Use as FALLBACK only — prefer
+  search_files with keyword patterns first (e.g. search for "*config*" or "*trace*"
+  instead of tree-listing the whole project). Always target a specific subdirectory (never
+  "." or project root). Each entry includes name, type (file/directory), and children.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Starting directory path
+      format: path
+    excludePatterns:
+      type: array
+      items:
+        type: string
+      description: Glob patterns to exclude
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/directory_tree/function.py">"""directory_tree tool — recursive JSON tree of directory contents."""
+
+import fnmatch
+import os
+
+
+def _build_tree(current_path: str, root_path: str, exclude_patterns: list[str]) -&gt; list[dict]:
+    entries = []
+    try:
+        with os.scandir(current_path) as it:
+            for entry in it:
+                relpath = os.path.relpath(os.path.join(current_path, entry.name), root_path)
+
+                if _should_exclude(relpath, entry.is_dir(), exclude_patterns):
+                    continue
+
+                node: dict = {
+                    "name": entry.name,
+                    "type": "directory" if entry.is_dir() else "file",
+                }
+
+                if entry.is_dir():
+                    node["children"] = _build_tree(
+                        os.path.join(current_path, entry.name), root_path, exclude_patterns
+                    )
+
+                entries.append(node)
+    except PermissionError:
+        pass
+
+    entries.sort(key=lambda x: (x["type"] != "directory", x["name"]))
+    return entries
+
+
+def _should_exclude(relpath: str, is_dir: bool, patterns: list[str]) -&gt; bool:
+    for pat in patterns:
+        if fnmatch.fnmatch(relpath, pat):
+            return True
+        if fnmatch.fnmatch(relpath, f"**/{pat}"):
+            return True
+        if is_dir and fnmatch.fnmatch(relpath, f"**/{pat}/**"):
+            return True
+    return False
+
+
+DEFAULT_EXCLUDES = [".git", ".venv", "venv", "__pycache__", "*.pyc", "node_modules"]
+
+
+async def execute(path: str, excludePatterns: list[str] | None = None, **kwargs) -&gt; dict:
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"Not a directory: {path}"}
+
+    exclude = list(DEFAULT_EXCLUDES) + (excludePatterns or [])
+    tree = _build_tree(path, path, exclude)
+
+    return {"ok": True, "tree": tree}
+</implementation></tool><tool name="edit_file"><definition src="arf/plugins/filesystem/tools/edit_file/tool.yaml">name: edit_file
+description: Make selective line-based edits to a text file. Each edit replaces exact
+  text sequences with new content. Returns a git-style diff showing the changes made.
+  Use dryRun=true to preview changes without applying them.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: File to edit
+      format: path
+    edits:
+      type: array
+      items:
+        type: object
+        properties:
+          oldText:
+            type: string
+            description: Text to search for — can be exact or whitespace-flexible
+              match
+          newText:
+            type: string
+            description: Replacement text
+        required:
+        - oldText
+        - newText
+      description: List of edit operations
+    dryRun:
+      type: boolean
+      description: Preview changes using git-style diff without applying
+      default: false
+    encoding:
+      type: string
+      description: Text encoding for reading and writing the file (default utf-8).
+        Use gbk for older Chinese files from Notepad.
+      default: utf-8
+  required:
+  - path
+  - edits
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/edit_file/function.py">"""edit_file tool — pattern-based file editing with unified diff output."""
+
+import difflib
+import os
+import tempfile
+
+
+def _normalize_line_endings(text: str) -&gt; str:
+    """Replace Windows CRLF with Unix LF."""
+    return text.replace("\r\n", "\n")
+
+
+def _create_unified_diff(original: str, modified: str, filepath: str) -&gt; str:
+    """Generate unified diff between original and modified content."""
+    diff_lines = list(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            modified.splitlines(keepends=True),
+            fromfile=filepath,
+            tofile=filepath,
+        )
+    )
+    return "".join(diff_lines)
+
+
+def _wrap_in_fence(diff_text: str) -&gt; str:
+    """Wrap diff text in a variable-sized backtick fence.
+
+    Chooses a fence size at least 3 that does not conflict with
+    any run of consecutive backticks inside the diff content.
+    """
+    max_run = 0
+    current_run = 0
+    for ch in diff_text:
+        if ch == "`":
+            current_run += 1
+            max_run = max(max_run, current_run)
+        else:
+            current_run = 0
+
+    fence_size = max(max_run + 1, 3)
+    fence = "`" * fence_size
+    return f"{fence}\n{diff_text}\n{fence}"
+
+
+def _try_whitespace_flexible_match(
+    content: str, old_text: str, new_text: str
+) -&gt; str | None:
+    """Try to match *old_text* via line-level whitespace-flexible comparison.
+
+    Each line is compared by ``.strip()``.  When all lines match, the
+    indentation of the first matched line is carried over to the replacement.
+
+    Returns the updated content on success, or ``None`` when no match is found.
+    """
+    old_lines = old_text.split("\n")
+    content_lines = content.split("\n")
+    new_text_lines = new_text.split("\n")
+
+    # Determine the indentation of the first replacement line so we can
+    # compute per-line relative indent adjustments.
+    if new_text_lines:
+        new_first_line = new_text_lines[0]
+        new_first_indent_len = len(new_first_line) - len(new_first_line.lstrip())
+    else:
+        new_first_indent_len = 0
+
+    for i in range(len(content_lines) - len(old_lines) + 1):
+        # Check whether all lines match (whitespace-insensitive)
+        match = True
+        for j in range(len(old_lines)):
+            if old_lines[j].strip() != content_lines[i + j].strip():
+                match = False
+                break
+
+        if not match:
+            continue
+
+        # Capture original indentation of the first matched line
+        first_content_line = content_lines[i]
+        base_indent = first_content_line[
+            : len(first_content_line) - len(first_content_line.lstrip())
+        ]
+
+        # Build replacement lines with preserved indentation
+        replacement: list[str] = []
+        for nl in new_text_lines:
+            stripped = nl.lstrip()
+            current_indent_len = len(nl) - len(stripped)
+            relative_indent = " " * max(0, current_indent_len - new_first_indent_len)
+            replacement.append(base_indent + relative_indent + stripped)
+
+        content_lines[i : i + len(old_lines)] = replacement
+        return "\n".join(content_lines)
+
+    return None
+
+
+async def execute(
+    path: str, edits: list[dict], dryRun: bool = False,
+    encoding: str = "utf-8", **kwargs
+) -&gt; dict:
+    """Apply one or more text edits to a file and return a unified diff.
+
+    Parameters
+    ----------
+    path :
+        File to edit.
+    edits :
+        Sequence of ``{"oldText": …, "newText": …}`` edit operations.
+    dryRun :
+        When ``True`` the diff is returned but the file is not written.
+
+    Returns
+    -------
+    dict
+        ``{"ok": True, "diff": …, "dry_run": …, "applied": …}`` on success,
+        or ``{"ok": False, "error": "…"}`` on failure.
+    """
+    if not os.path.isfile(path):
+        return {"ok": False, "error": f"Not a file: {path}"}
+
+    try:
+        with open(path, "r", encoding=encoding) as f:
+            original_content = f.read()
+    except (UnicodeDecodeError, LookupError) as e:
+        return {
+            "ok": False,
+            "error": f"Cannot read {path} as {encoding} text — {e}",
+        }
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    # Reject files that contain null bytes (strong indicator of binary content)
+    if "\x00" in original_content:
+        return {
+            "ok": False,
+            "error": f"Cannot edit {path} — file appears to be binary",
+        }
+
+    # Normalise line endings (CRLF -&gt; LF) for consistent matching
+    original_content = _normalize_line_endings(original_content)
+    modified_content = original_content
+
+    for edit in edits:
+        old_text = _normalize_line_endings(edit["oldText"])
+        new_text = _normalize_line_endings(edit["newText"])
+
+        if not old_text:
+            continue
+
+        # 1) Exact substring match
+        if old_text in modified_content:
+            modified_content = modified_content.replace(old_text, new_text, 1)
+            continue
+
+        # 2) Whitespace-flexible line-level match
+        result = _try_whitespace_flexible_match(modified_content, old_text, new_text)
+        if result is not None:
+            modified_content = result
+        else:
+            return {"ok": False, "error": f"No match found for text: {old_text!r}"}
+
+    # Build the unified diff
+    diff_text = _create_unified_diff(original_content, modified_content, path)
+    diff_text = _wrap_in_fence(diff_text)
+
+    # Persist (unless dry-run)
+    if not dryRun:
+        try:
+            tmpdir = os.path.dirname(path) or "."
+            fd, tmpname = tempfile.mkstemp(dir=tmpdir, prefix=".edit_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding=encoding) as f:
+                    f.write(modified_content)
+                os.replace(tmpname, path)
+            except Exception:
+                try:
+                    os.unlink(tmpname)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "diff": diff_text,
+        "dry_run": dryRun,
+        "applied": not dryRun,
+    }
+</implementation></tool><tool name="get_file_info"><definition src="arf/plugins/filesystem/tools/get_file_info/tool.yaml">name: get_file_info
+description: Retrieve detailed metadata about a file or directory. Returns size, creation
+  time, last modified time, last accessed time, type, and permissions.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to the file or directory
+      format: path
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/get_file_info/function.py">"""get_file_info tool — file/directory metadata."""
+
+import os
+import time
+
+
+async def execute(path: str, **kwargs) -&gt; dict:
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "size": st.st_size,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_ctime)),
+        "modified": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_mtime)),
+        "accessed": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_atime)),
+        "isDirectory": os.path.isdir(path),
+        "isFile": os.path.isfile(path),
+        "permissions": oct(st.st_mode)[-3:],
+    }
+</implementation></tool><tool name="list_allowed_directories"><definition src="arf/plugins/filesystem/tools/list_allowed_directories/tool.yaml">name: list_allowed_directories
+description: Returns the list of directories that this server is allowed to access. Use this to understand which directories are available before trying to access files.
+parameters:
+  type: object
+  properties: {}
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/list_allowed_directories/function.py">"""list_allowed_directories tool — transparency disclosure of accessible paths."""
+
+import os
+
+
+async def execute(_workspace: str = "", **kwargs) -&gt; dict:
+    directories = []
+    if _workspace:
+        directories.append(_workspace)
+    directories.append(os.getcwd())
+
+    return {"ok": True, "directories": directories}
+</implementation></tool><tool name="list_directory"><definition src="arf/plugins/filesystem/tools/list_directory/tool.yaml">name: list_directory
+description: Get a listing of all files and directories in a specified path. Results
+  distinguish between files and directories with [FILE] and [DIR] prefixes.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Directory path to list
+      format: path
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/list_directory/function.py">"""list_directory tool — list directory contents."""
+
+import os
+
+
+async def execute(path: str, **kwargs) -&gt; dict:
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"Not a directory: {path}"}
+
+    try:
+        entries = []
+        with os.scandir(path) as it:
+            for entry in it:
+                prefix = "[DIR]" if entry.is_dir() else "[FILE]"
+                entries.append(f"{prefix} {entry.name}")
+        entries.sort()
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "entries": entries, "count": len(entries)}
+</implementation></tool><tool name="list_directory_with_sizes"><definition src="arf/plugins/filesystem/tools/list_directory_with_sizes/tool.yaml">name: list_directory_with_sizes
+description: Get a detailed listing including file sizes. Results distinguish between
+  files and directories with [FILE] and [DIR] prefixes. Includes summary with total
+  files, directories, and combined size.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Directory path to list
+      format: path
+    sortBy:
+      type: string
+      enum:
+      - name
+      - size
+      description: Sort entries by name or size
+      default: name
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/list_directory_with_sizes/function.py">"""list_directory_with_sizes tool — directory listing with file sizes."""
+
+import os
+
+
+def _format_size(size: int) -&gt; str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    if size == 0:
+        return "0 B"
+    i = 0
+    fsize = float(size)
+    while fsize &gt;= 1024 and i &lt; len(units) - 1:
+        fsize /= 1024
+        i += 1
+    return f"{fsize:.2f} {units[i]}"
+
+
+async def execute(path: str, sortBy: str = "name", **kwargs) -&gt; dict:
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"Not a directory: {path}"}
+
+    try:
+        detailed = []
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    st = entry.stat()
+                    detailed.append({
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size": st.st_size if not entry.is_dir() else 0,
+                    })
+                except OSError:
+                    detailed.append({
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size": 0,
+                    })
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    if sortBy == "size":
+        detailed.sort(key=lambda x: x["size"], reverse=True)
+    else:
+        detailed.sort(key=lambda x: x["name"])
+
+    entries = []
+    for d in detailed:
+        prefix = "[DIR]" if d["is_dir"] else "[FILE]"
+        size_str = "" if d["is_dir"] else _format_size(d["size"]).rjust(10)
+        entries.append(f"{prefix} {d['name']:&lt;30} {size_str}")
+
+    total_files = sum(1 for d in detailed if not d["is_dir"])
+    total_dirs = sum(1 for d in detailed if d["is_dir"])
+    total_size = sum(d["size"] for d in detailed)
+
+    entries.append("")
+    entries.append(f"Total: {total_files} files, {total_dirs} directories")
+    entries.append(f"Combined size: {_format_size(total_size)}")
+
+    return {
+        "ok": True,
+        "entries": entries,
+        "total_files": total_files,
+        "total_dirs": total_dirs,
+        "combined_size": total_size,
+        "combined_size_human": _format_size(total_size),
+    }
+</implementation></tool><tool name="move_file"><definition src="arf/plugins/filesystem/tools/move_file/tool.yaml">name: move_file
+description: Move or rename files and directories. Can move files between directories
+  and rename them in a single operation. Fails if the destination exists.
+parameters:
+  type: object
+  properties:
+    source:
+      type: string
+      description: Source path
+      format: path
+    destination:
+      type: string
+      description: Destination path
+      format: path
+  required:
+  - source
+  - destination
+annotations:
+  readOnlyHint: false
+  idempotentHint: false
+  destructiveHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/move_file/function.py">"""move_file tool — move/rename files and directories."""
+import os
+import shutil
+
+
+async def execute(source: str, destination: str, **kwargs) -&gt; dict:
+    if not os.path.exists(source):
+        return {"ok": False, "error": f"Source does not exist: {source}"}
+
+    if os.path.exists(destination):
+        return {"ok": False, "error": f"Destination already exists: {destination}"}
+
+    dest_parent = os.path.dirname(destination)
+    if dest_parent and not os.path.isdir(dest_parent):
+        os.makedirs(dest_parent, exist_ok=True)
+
+    try:
+        shutil.move(source, destination)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "source": source, "destination": destination}
+</implementation></tool><tool name="read_media_file"><definition src="arf/plugins/filesystem/tools/read_media_file/tool.yaml">name: read_media_file
+description: Read an image or audio file. Returns the base64 encoded data and MIME
+  type. Supports PNG, JPG, GIF, WebP, BMP, SVG (images) and MP3, WAV, OGG, FLAC (audio).
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to the media file
+      format: path
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/read_media_file/function.py">"""read_media_file tool — read image/audio as base64."""
+
+import base64
+import os
+
+MIME_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+}
+
+MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+async def execute(path: str, **kwargs) -&gt; dict:
+    if not os.path.isfile(path):
+        return {"ok": False, "error": f"Not a file: {path}"}
+
+    ext = os.path.splitext(path)[1].lower()
+    mime_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+    try:
+        size = os.path.getsize(path)
+        if size &gt; MAX_SIZE_BYTES:
+            return {"ok": False, "error": f"File too large: {size} bytes (max {MAX_SIZE_BYTES})"}
+
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    encoded = base64.b64encode(data).decode("ascii")
+
+    if mime_type.startswith("image/"):
+        media_type = "image"
+    elif mime_type.startswith("audio/"):
+        media_type = "audio"
+    else:
+        media_type = "blob"
+
+    return {
+        "ok": True,
+        "type": media_type,
+        "data": encoded,
+        "mimeType": mime_type,
+        "size_bytes": size,
+    }
+</implementation></tool><tool name="read_multiple_files"><definition src="arf/plugins/filesystem/tools/read_multiple_files/tool.yaml">name: read_multiple_files
+description: Read the contents of multiple files simultaneously. Each file's content
+  is returned with its path as reference. Failed reads for individual files won't
+  stop the entire operation.
+parameters:
+  type: object
+  properties:
+    paths:
+      type: array
+      items:
+        type: string
+      description: Array of file paths to read
+      minItems: 1
+      format: path
+    encoding:
+      type: string
+      description: Text encoding (default utf-8). Use gbk for older Chinese files
+        from Notepad, gb2312 for simplified Chinese, shift_jis for Japanese, etc.
+      default: utf-8
+  required:
+  - paths
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/read_multiple_files/function.py">"""read_multiple_files tool — batch read files with per-file error tolerance."""
+import asyncio
+import os
+
+
+async def _read_one(path: str, encoding: str = "utf-8") -&gt; dict:
+    try:
+        if not os.path.isfile(path):
+            return {"path": path, "ok": False, "error": f"Not a file: {path}"}
+        with open(path, "r", encoding=encoding) as f:
+            content = f.read()
+        return {"path": path, "ok": True, "content": content}
+    except (UnicodeDecodeError, LookupError) as e:
+        return {"path": path, "ok": False, "error": f"Cannot read as {encoding} text — {e}"}
+    except OSError as e:
+        return {"path": path, "ok": False, "error": str(e)}
+
+
+async def execute(paths: list[str], encoding: str = "utf-8", **kwargs) -&gt; dict:
+    if not paths:
+        return {"ok": False, "error": "At least one path is required"}
+
+    results = await asyncio.gather(*(_read_one(p, encoding) for p in paths))
+
+    return {
+        "ok": True,
+        "results": results,
+        "total": len(results),
+        "succeeded": sum(1 for r in results if r["ok"]),
+        "failed": sum(1 for r in results if not r["ok"]),
+    }
+</implementation></tool><tool name="read_text_file"><definition src="arf/plugins/filesystem/tools/read_text_file/tool.yaml">name: read_text_file
+description: Read the complete contents of a file as text. Use the head parameter
+  to read only the first N lines, or the tail parameter to read only the last N lines.
+  Cannot specify both head and tail simultaneously.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: File path to read
+      format: path
+    head:
+      type: integer
+      description: Return only the first N lines
+    tail:
+      type: integer
+      description: Return only the last N lines
+    encoding:
+      type: string
+      description: Text encoding (default utf-8). Use gbk for older Chinese files
+        from Notepad, gb2312 for simplified Chinese, shift_jis for Japanese, etc.
+      default: utf-8
+  required:
+  - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/read_text_file/function.py">"""read_text_file tool — read file content as text."""
+import os
+
+
+async def execute(path: str, head: int | None = None, tail: int | None = None,
+                  encoding: str = "utf-8", **kwargs) -&gt; dict:
+    if head is not None and tail is not None:
+        return {"ok": False, "error": "Cannot specify both head and tail parameters simultaneously"}
+
+    if not os.path.isfile(path):
+        return {"ok": False, "error": f"Not a file: {path}"}
+
+    try:
+        with open(path, "r", encoding=encoding) as f:
+            lines = f.readlines()
+    except (UnicodeDecodeError, LookupError) as e:
+        return {"ok": False, "error": f"Cannot read {path} as {encoding} text — {e}"}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    total_lines = len(lines)
+
+    if tail is not None:
+        lines = lines[-tail:]
+    elif head is not None:
+        lines = lines[:head]
+
+    numbered = []
+    for i, line in enumerate(lines):
+        line_num = 1 + i
+        if tail is not None:
+            line_num = total_lines - len(lines) + 1 + i
+        elif head is not None:
+            line_num = 1 + i
+        else:
+            line_num = 1 + i
+        numbered.append(f"{line_num}\t{line.rstrip()}")
+
+    return {
+        "ok": True,
+        "content": "\n".join(numbered),
+        "lines_read": len(lines),
+        "total_lines": total_lines,
+    }
+</implementation></tool><tool name="search_content"><definition src="arf/plugins/filesystem/tools/search_content/tool.yaml">name: search_content
+description: PREFERRED content-discovery tool. Search file CONTENTS for text or regex
+  patterns. Use keywords from the task (agent name, function names, config keys) to
+  find relevant files fast. Supports literal text and regex modes. Respects include/
+  exclude glob patterns to narrow scope.
+parameters:
+  type: object
+  properties:
+    pattern:
+      type: string
+      description: Text or regex pattern to search for
+    path:
+      type: string
+      format: path
+      description: Directory path to search in
+    regex:
+      type: boolean
+      description: "Treat pattern as regex (default: false — literal text search)"
+      default: false
+    include:
+      type: string
+      description: Comma-separated glob patterns to filter files (e.g. "*.py,*.md")
+    excludePatterns:
+      type: array
+      items:
+        type: string
+      description: Glob patterns to exclude from search
+    maxResults:
+      type: integer
+      description: Maximum results to return
+      default: 100
+  required:
+    - pattern
+    - path
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/search_content/function.py">"""search_content tool — recursive file content search (grep)."""
+
+import fnmatch
+import os
+import re
+
+DEFAULT_EXCLUDES = [".git", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".pytest_cache", "*.pyc", "*.pyo"]
+
+# File extensions likely to be text — everything else skipped
+TEXT_EXTENSIONS: set[str] | None = None  # None = search all files
+
+
+def _is_text_file(filepath: str) -&gt; bool:
+    """Heuristic: skip known binary extensions."""
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+               ".ico", ".svg", ".mp3", ".wav", ".ogg", ".flac",
+               ".mp4", ".mov", ".avi", ".mkv", ".webm",
+               ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
+               ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+               ".ttf", ".otf", ".woff", ".woff2", ".eot",
+               ".pyc", ".pyo", ".so", ".dll", ".dylib", ".exe",
+               ".db", ".sqlite", ".sqlite3", ".class", ".jar"}:
+        return False
+    return True
+
+
+def _matches_any(name: str, patterns: list[str]) -&gt; bool:
+    for pat in patterns:
+        if fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
+
+async def execute(
+    pattern: str,
+    path: str,
+    regex: bool = False,
+    include: str | None = None,
+    excludePatterns: list[str] | None = None,
+    maxResults: int = 100,
+    **kwargs,
+) -&gt; dict:
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"Not a directory: {path}"}
+
+    # Compile search pattern
+    if regex:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as e:
+            return {"ok": False, "error": f"Invalid regex: {e}"}
+    else:
+        compiled = re.compile(re.escape(pattern))
+
+    # Build include/exclude filter lists
+    include_globs: list[str] = []
+    if include:
+        include_globs = [g.strip() for g in include.split(",") if g.strip()]
+
+    excludes = (excludePatterns or []) + DEFAULT_EXCLUDES
+
+    matches: list[dict] = []
+    truncated = False
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(path):
+            # Filter directories in-place
+            dirnames[:] = [d for d in dirnames if not _matches_any(d, excludes)]
+
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                relpath = os.path.relpath(filepath, path)
+
+                # Exclude check
+                if _matches_any(relpath, excludes):
+                    continue
+
+                # Include filter
+                if include_globs and not any(
+                    fnmatch.fnmatch(relpath, g) for g in include_globs
+                ):
+                    continue
+
+                # Binary skip
+                if not _is_text_file(filepath):
+                    continue
+
+                # Search file content
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="surrogateescape") as f:
+                        for line_num, line in enumerate(f, 1):
+                            if compiled.search(line):
+                                matches.append({
+                                    "file": relpath,
+                                    "line": line.rstrip("\n\r"),
+                                    "line_number": line_num,
+                                })
+                                if len(matches) &gt;= maxResults:
+                                    truncated = True
+                                    break
+                except (UnicodeDecodeError, PermissionError, OSError):
+                    continue
+
+                if truncated:
+                    break
+
+            if truncated:
+                break
+    except PermissionError:
+        pass
+
+    return {
+        "ok": True,
+        "pattern": pattern,
+        "regex": regex,
+        "matches": matches,
+        "count": len(matches),
+        "truncated": truncated,
+    }
+</implementation></tool><tool name="search_files"><definition src="arf/plugins/filesystem/tools/search_files/tool.yaml">name: search_files
+description: PREFERRED exploration tool. Search for files/directories by name with glob
+  patterns. Use keywords from the task ("*agent_name*", "*trace*", "*.yaml") to find
+  relevant files. Much faster and lighter than directory_tree. Use '**/*.ext' to
+  search all subdirectories. Returns full paths to all matching items.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Starting directory for search
+      format: path
+    pattern:
+      type: string
+      description: Glob-style search pattern
+    excludePatterns:
+      type: array
+      items:
+        type: string
+      description: Glob patterns to exclude from results
+  required:
+  - path
+  - pattern
+annotations:
+  readOnlyHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/search_files/function.py">"""search_files tool — recursive glob search."""
+
+import fnmatch
+import glob
+import os
+
+DEFAULT_EXCLUDES = [".git", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".pytest_cache", "*.pyc"]
+MAX_RESULTS = 500
+
+
+async def execute(
+    path: str, pattern: str, excludePatterns: list[str] | None = None, **kwargs
+) -&gt; dict:
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"Not a directory: {path}"}
+
+    excludes = (excludePatterns or []) + DEFAULT_EXCLUDES
+    matches = []
+    truncated = False
+
+    try:
+        if not pattern.startswith("**"):
+            pattern = f"**/{pattern}"
+        for rel in glob.glob(pattern, root_dir=path, recursive=True):
+            if _matches_any(rel, excludes):
+                continue
+            matches.append(rel)
+            if len(matches) &gt;= MAX_RESULTS:
+                truncated = True
+                break
+    except PermissionError:
+        pass
+
+    return {
+        "ok": True,
+        "matches": matches,
+        "count": len(matches),
+        "truncated": truncated,
+    }
+
+
+def _matches_any(name: str, patterns: list[str]) -&gt; bool:
+    for pat in patterns:
+        if fnmatch.fnmatch(name, pat):
+            return True
+    return False
+</implementation></tool><tool name="write_file"><definition src="arf/plugins/filesystem/tools/write_file/tool.yaml">name: write_file
+description: Create a new file or completely overwrite an existing file with new content. Handles text content with proper UTF-8 encoding.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      format: path
+      description: File path to write
+    content:
+      type: string
+      description: Content to write to the file
+  required:
+    - path
+    - content
+annotations:
+  readOnlyHint: false
+  idempotentHint: true
+  destructiveHint: true
+</definition><implementation src="arf/plugins/filesystem/tools/write_file/function.py">"""write_file tool — atomic file write."""
+
+import os
+import tempfile
+
+
+async def execute(path: str, content: str, **kwargs) -&gt; dict:
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+
+    try:
+        # Try exclusive creation first
+        with open(path, "x", encoding="utf-8") as f:
+            f.write(content)
+    except FileExistsError:
+        # Atomic overwrite: write to temp then rename
+        tmpdir = os.path.dirname(path) or "."
+        try:
+            fd, tmpname = tempfile.mkstemp(dir=tmpdir, prefix=".write_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                os.replace(tmpname, path)
+            except Exception:
+                try:
+                    os.unlink(tmpname)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "path": path, "bytes_written": len(content.encode("utf-8"))}
+</implementation></tool></tools><skills><skill src="arf/plugins/filesystem/skills/filesystem.yaml" name="filesystem">name: filesystem
+description: Cross-platform filesystem operations — read, write, edit, search, list directories
+prompt: |
+  # Filesystem Tools
+
+  Use these tools for all file operations. Prefer them over shell commands.
+
+  Read operations: `read_text_file` (text), `read_media_file` (images/audio), `read_multiple_files` (batch read)
+  List operations: `list_directory`, `list_directory_with_sizes`, `directory_tree`
+  Search: `search_files` to find files by glob pattern, `search_content` to grep file contents
+  Write operations: `write_file` (create/overwrite), `edit_file` (selective edit with diff preview), `create_directory`
+  File management: `move_file` (move/rename), `delete_file` (delete files/dirs)
+  Info: `get_file_info` (metadata), `list_allowed_directories` (accessible paths)
+tools:
+  - read_text_file
+  - read_media_file
+  - read_multiple_files
+  - list_directory
+  - list_directory_with_sizes
+  - directory_tree
+  - search_files
+  - get_file_info
+  - list_allowed_directories
+  - write_file
+  - create_directory
+  - move_file
+  - delete_file
+  - edit_file
+  - search_content
+activation: kernel
+</skill></skills></plugin><plugin name="memory"><config src="arf/plugins/memory/plugin.yaml">name: memory
+hooks:
+  - round_end
+enabled: true
+config:
+  interval: 5
+  max_memory_size: 300
+  extract_on_session_end: false
+</config></plugin><plugin name="plan_solve"><config src="arf/plugins/plan_solve/plugin.yaml">name: plan_solve
+enabled: true
+description: "Task planning and execution with dependency tracking and contract enforcement"
+config:
+  workspace_dir: ""
+</config><tools><tool name="plan_create"><definition src="arf/plugins/plan_solve/tools/plan_create/tool.yaml">name: plan_create
+description: Decompose a task into ordered steps with dependency tracking. Steps form a DAG where depends_on and blocks define execution order.
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: The task to decompose
+    steps:
+      type: array
+      description: Ordered steps with dependencies
+  required:
+    - task
+    - steps
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel
+</definition><implementation src="arf/plugins/plan_solve/tools/plan_create/function.py">"""plan_create — validate dependency graph and persist plan.json."""
+import json
+import time
+from pathlib import Path
+
+from arf.plugins.plan_solve.validation import validate_steps
+
+
+async def execute(
+    task: str,
+    steps: list[dict],
+    _engine=None,
+    _workspace: str = "",
+) -&gt; dict:
+    """Validate steps DAG and write plan.json to workspace."""
+    if not task or not task.strip():
+        return {"ok": False, "error": "task must be a non-empty string"}
+
+    if not steps:
+        return {"ok": False, "error": "steps list is empty", "suggestion": "Provide at least one step"}
+
+    # Validate the dependency graph
+    validation = validate_steps(steps)
+    if not validation["ok"]:
+        return validation
+
+    # Initialize step metadata
+    plan_id = f"plan-{int(time.time())}"
+    now = time.time()
+    initialized_steps = []
+    for s in steps:
+        initialized_steps.append({
+            "index": s["index"],
+            "description": s.get("description", ""),
+            "tool_hint": s.get("tool_hint", ""),
+            "status": "pending",
+            "depends_on": s.get("depends_on", []),
+            "blocks": s.get("blocks", []),
+            "sub_session_id": None,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        })
+
+    plan = {
+        "plan_id": plan_id,
+        "task": task.strip(),
+        "status": "executing",
+        "created_at": now,
+        "updated_at": now,
+        "steps": initialized_steps,
+    }
+
+    # Persist to workspace
+    workspace = Path(_workspace) if _workspace else Path("workspace/default")
+    workspace.mkdir(parents=True, exist_ok=True)
+    plan_file = workspace / "plan.json"
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "task": task.strip(),
+        "steps": initialized_steps,
+        "count": len(initialized_steps),
+    }
+</implementation></tool><tool name="plan_dispatch"><definition src="arf/plugins/plan_solve/tools/plan_dispatch/tool.yaml">name: plan_dispatch
+description: Execute a single plan step in an isolated sub-agent. The step must have all dependencies satisfied before dispatch.
+parameters:
+  type: object
+  properties:
+    step_index:
+      type: integer
+      description: The index of the plan step to execute
+    prompt_override:
+      type: string
+      description: Optional override for the step's prompt
+  required:
+    - step_index
+execution:
+  sandbox: inherit
+  timeout: 120s
+activation: kernel
+</definition><implementation src="arf/plugins/plan_solve/tools/plan_dispatch/function.py">"""plan_dispatch — execute a single plan step in an isolated sub-agent."""
+import json
+import time
+from pathlib import Path
+
+from arf.engine.control_plane import ControlPlane
+from arf.engine.checkpoint import InMemoryStateStore
+from arf.event_bus import InMemoryEventBus
+
+
+async def execute(
+    step_index: int,
+    prompt_override: str = "",
+    _engine=None,
+    _workspace: str = "",
+) -&gt; dict:
+    """Execute a plan step after validating its dependencies are met."""
+    workspace = Path(_workspace) if _workspace else Path("workspace/default")
+    plan_file = workspace / "plan.json"
+
+    if not plan_file.exists():
+        return {"ok": False, "error": f"no plan found at {workspace}"}
+
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    step = _find_step(plan, step_index)
+    if step is None:
+        return {"ok": False, "error": f"step {step_index} not found in plan"}
+
+    # Precondition: dependencies must be done
+    blocked = [d for d in step.get("depends_on", []) if _step_status(plan, d) != "done"]
+    if blocked:
+        return {
+            "ok": False,
+            "error": f"step {step_index} is blocked: depends on steps {blocked} which are not done",
+            "blocked_by": blocked,
+        }
+
+    if step["status"] != "pending":
+        return {"ok": False, "error": f"step {step_index} is already {step['status']}"}
+
+    # Mark running
+    step["status"] = "running"
+    step["started_at"] = time.time()
+    plan["updated_at"] = time.time()
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Emit started event (if engine has event_bus)
+    if _engine and hasattr(_engine, "event_bus") and _engine.event_bus:
+        from arf.core.events import AgentEvent
+        _engine.event_bus.emit(AgentEvent(
+            type="plan_step_started",
+            data={"plan_id": plan["plan_id"], "step_index": step_index, "description": step["description"]},
+        ))
+
+    # Build and run sub-engine
+    prompt = prompt_override.strip() or step["description"]
+    session_id = f"plan_step_{plan['plan_id']}_{step_index}_{int(time.time() * 1000)}"
+    sub_state_store = InMemoryStateStore()
+    sub_event_bus = InMemoryEventBus()
+    sub_engine = ControlPlane(
+        max_turns=10,
+        state_store=sub_state_store,
+        tool_executor=_engine.tool_executor if _engine else None,
+        event_bus=sub_event_bus,
+        call_model=_engine._call_model if _engine else None,
+        workspace_dir=str(workspace),
+    )
+
+    state = {
+        "session_id": session_id,
+        "agent_name": "plan_step",
+        "messages": [{"role": "user", "content": prompt}],
+        "current_model": "",
+        "current_turn": 0,
+        "interaction_round": 0,
+        "context_summary": "",
+        "tool_results": {},
+        "plan": None,
+        "metadata": {},
+        "session_active": True,
+    }
+
+    try:
+        result_state = await sub_engine.invoke(state)
+    except Exception as exc:
+        step["status"] = "failed"
+        step["error"] = str(exc)
+        step["finished_at"] = time.time()
+        plan["updated_at"] = time.time()
+        plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"ok": False, "error": f"sub-agent crashed: {exc}", "step_index": step_index}
+
+    # Extract result from last assistant message
+    content = ""
+    for m in reversed(result_state.get("messages", [])):
+        if m.get("role") == "assistant" and m.get("content", "").strip():
+            content = m["content"].strip()
+            break
+
+    step["status"] = "done"
+    step["result"] = {"content": content}
+    step["sub_session_id"] = session_id
+    step["finished_at"] = time.time()
+    plan["updated_at"] = time.time()
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Emit finished event
+    if _engine and hasattr(_engine, "event_bus") and _engine.event_bus:
+        from arf.core.events import AgentEvent
+        _engine.event_bus.emit(AgentEvent(
+            type="plan_step_finished",
+            data={"plan_id": plan["plan_id"], "step_index": step_index, "status": "done", "content": content},
+        ))
+
+    return {"ok": True, "content": content, "step_index": step_index, "session_id": session_id}
+
+
+def _find_step(plan: dict, step_index: int) -&gt; dict | None:
+    for s in plan.get("steps", []):
+        if s["index"] == step_index:
+            return s
+    return None
+
+
+def _step_status(plan: dict, step_index: int) -&gt; str:
+    s = _find_step(plan, step_index)
+    return s["status"] if s else "unknown"
+</implementation></tool><tool name="plan_status"><definition src="arf/plugins/plan_solve/tools/plan_status/tool.yaml">name: plan_status
+description: Read the current plan progress — which steps are done, pending, running, failed.
+parameters:
+  type: object
+  properties: {}
+required: []
+execution:
+  sandbox: inherit
+  timeout: 10s
+activation: kernel
+</definition><implementation src="arf/plugins/plan_solve/tools/plan_status/function.py">"""plan_status — read-only plan progress snapshot."""
+import json
+from pathlib import Path
+
+
+async def execute(
+    _engine=None,
+    _workspace: str = "",
+) -&gt; dict:
+    """Return current plan progress."""
+    workspace = Path(_workspace) if _workspace else Path("workspace/default")
+    plan_file = workspace / "plan.json"
+
+    if not plan_file.exists():
+        return {"ok": False, "error": f"no plan found at {workspace}"}
+
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    return {
+        "ok": True,
+        "plan_id": plan["plan_id"],
+        "task": plan["task"],
+        "status": plan["status"],
+        "created_at": plan.get("created_at"),
+        "updated_at": plan.get("updated_at"),
+        "steps": plan.get("steps", []),
+        "count": len(plan.get("steps", [])),
+    }
+</implementation></tool><tool name="plan_summarize"><definition src="arf/plugins/plan_solve/tools/plan_summarize/tool.yaml">name: plan_summarize
+description: Summarize all completed plan steps into a final result. All steps must be done or failed before calling this.
+parameters:
+  type: object
+  properties: {}
+required: []
+execution:
+  sandbox: inherit
+  timeout: 120s
+activation: kernel
+</definition><implementation src="arf/plugins/plan_solve/tools/plan_summarize/function.py">"""plan_summarize — validate all steps done/failed, then call model to summarize."""
+import json
+import time
+from pathlib import Path
+
+
+async def execute(
+    _engine=None,
+    _workspace: str = "",
+) -&gt; dict:
+    """Summarize plan results after all steps complete."""
+    workspace = Path(_workspace) if _workspace else Path("workspace/default")
+    plan_file = workspace / "plan.json"
+
+    if not plan_file.exists():
+        return {"ok": False, "error": f"no plan found at {workspace}"}
+
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    steps = plan.get("steps", [])
+
+    pending_steps = [s["index"] for s in steps if s["status"] in ("pending", "running")]
+    if pending_steps:
+        return {
+            "ok": False,
+            "error": f"cannot summarize: steps {pending_steps} are still pending or running",
+            "pending_steps": pending_steps,
+        }
+
+    # Build context from step results
+    results_text = ""
+    for s in steps:
+        content = ""
+        if s.get("result") and isinstance(s["result"], dict):
+            content = s["result"].get("content", "")
+        results_text += f"\n## Step {s['index']}: {s['description']} ({s['status']})\n{content}\n"
+
+    prompt = (
+        f"## Task: {plan['task']}\n\n"
+        f"Below are the results of each step. Synthesize a clear, concise summary:\n"
+        f"{results_text}\n\n"
+        f"Provide the final result as a single coherent response."
+    )
+
+    if _engine is not None and hasattr(_engine, '_call_model'):
+        response = await _engine._call_model(
+            [{"role": "user", "content": prompt}],
+            model_name="",
+        )
+        summary = response.get("content", "") if isinstance(response, dict) else str(response)
+    else:
+        summary = results_text
+
+    plan["status"] = "done"
+    plan["updated_at"] = time.time()
+    plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"ok": True, "summary": summary.strip(), "plan_id": plan["plan_id"]}
+</implementation></tool></tools><skills><skill src="arf/plugins/plan_solve/skills/plan_solve.yaml" name="plan_solve">name: plan_solve
+description: Task planning and execution with dependency tracking — decompose, dispatch, and summarize
+prompt: |
+  # Plan &amp; Solve
+
+  When facing a multi-step task, use the plan_solve tools to decompose, dispatch, and summarize.
+
+  ## When to Use
+  - Task requires 3+ distinct steps with dependencies
+  - Steps can be isolated and executed independently
+  - You need progress tracking and resumability
+
+  ## Workflow
+  1. Call `plan_create(task="...", steps=[...])` to decompose
+     - Each step: {index, description, tool_hint, depends_on, blocks}
+     - depends_on: steps that must finish before this one
+     - blocks: steps this one will unlock when done
+  2. Call `plan_dispatch(step_index=N)` for each ready step
+     - Framework enforces dependency order
+     - If blocked, you'll get the reason — adjust or wait
+  3. Call `plan_status()` anytime to check progress
+  4. After all steps done/failed, call `plan_summarize()` for final output
+
+  ## Tips
+  - Steps without mutual dependencies can be dispatched in parallel
+  - If dispatch fails with an error, read it and decide: retry, skip, or replan
+tools:
+  - plan_create
+  - plan_dispatch
+  - plan_summarize
+  - plan_status
+activation: kernel
+</skill></skills></plugin><plugin name="tool_guard"><config src="arf/plugins/tool_guard/plugin.yaml">name: tool_guard
+enabled: true
+description: "Unified tool permission + security check"
+config:
+  deny: []
+  ask: []
+  allow: []
+  deny_patterns: []
+  sandbox_check: true
+</config></plugin><plugin name="trace"><config src="arf/plugins/trace/plugin.yaml">name: trace
+hooks:
+  - session_start
+  - session_end
+  - round_start
+  - round_end
+  - turn_start
+  - turn_end
+  - pre_action
+  - post_action
+  - error
+enabled: true
+config:
+  trace_dir: ./data/traces
+  plugins_root: ./arf/plugins
+  config_files:
+    - ./agent.yaml
+    - ./pyproject.toml
+  extra_roots:
+    - .
+</config></plugin><plugin name="undo"><config src="arf/plugins/undo/plugin.yaml">name: undo
+hooks:
+  - round_start
+  - round_end
+enabled: true
+config:
+  max_undo_depth: 3
+</config><tools><tool name="undo"><definition src="arf/plugins/undo/tools/undo/tool.yaml">name: undo
+description: 撤销最近的对话轮次（状态 + 文件双回滚）
+parameters:
+  type: object
+  properties:
+    steps:
+      type: integer
+      description: "回退步数（默认 1）"
+      default: 1
+execution:
+  sandbox: inherit
+  timeout: 30s
+activation: kernel
+</definition><implementation src="arf/plugins/undo/tools/undo/function.py">"""undo -- roll back N interaction rounds (state + files)."""
+
+
+async def execute(steps: int = 1, session_id: str = "default",
+                  _engine=None, _state_store=None) -&gt; dict:
+    """Call the engine's undo mechanism and return status."""
+    try:
+        if _engine is None:
+            return {"ok": False, "error": "DI failure: _engine not injected. undo must be called through the engine's tool executor."}
+
+        available = _engine.checkpoint_count()
+        if available &lt; steps:
+            return {
+                "ok": False,
+                "error": f"Only {available} checkpoints available, requested {steps}",
+                "available": available,
+            }
+
+        restored = _engine.undo(steps, session_id=session_id)
+        if restored is None:
+            return {"ok": False, "error": "No checkpoints available"}
+
+        if _state_store:
+            await _state_store.put(session_id, restored)
+        msg_count = len(restored.get("messages", []))
+        remaining = _engine.checkpoint_count()
+
+        return {
+            "ok": True,
+            "steps": steps,
+            "session_id": session_id,
+            "messages_restored": msg_count,
+            "remaining_checkpoints": remaining,
+            "note": "Conversation and files have been rolled back. Continue from here."
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+</implementation></tool></tools><skills><skill src="arf/plugins/undo/skills/undo.yaml" name="undo">name: undo
+description: Roll back the conversation and files to a previous state
+prompt: |
+  # Undo
+
+  When the user asks to undo, redo, or go back:
+  1. Call `undo` with the appropriate number of steps
+  2. Report the result (messages restored, remaining checkpoints)
+  3. Continue the conversation from the restored state
+
+  ## Limitations
+  - Undo is irreversible — the rolled-back turns are lost
+  - Max undo depth is configured by `max_undo_depth` (default: 3)
+tools:
+  - undo
+activation: discoverable
+</skill></skills></plugin></plugins></snapshot>

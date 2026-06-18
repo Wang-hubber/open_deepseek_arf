@@ -5,8 +5,8 @@ import pytest
 from arf.core.state import AgentState
 from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
-from arf.plugins.a2a.plugin import A2APlugin
-from arf.plugins.a2a.tools import _registry
+from arf.plugins.a2a_subagents.plugin import A2APlugin
+from arf.plugins.a2a_subagents.tools import _registry
 from arf.core.plugin_context import PluginContext
 from arf.testing import InMemoryToolExecutor
 
@@ -53,7 +53,7 @@ def test_agent_state_accepts_child_tasks():
 
 def test_a2a_config_child_resume_default():
     """child_resume defaults to 'auto'."""
-    from arf.plugins.a2a.config import A2APluginConfig
+    from arf.plugins.a2a_subagents.config import A2APluginConfig
 
     cfg = A2APluginConfig()
     assert cfg.child_resume == "auto"
@@ -61,7 +61,7 @@ def test_a2a_config_child_resume_default():
 
 def test_a2a_config_child_resume_notify():
     """child_resume can be set to 'notify'."""
-    from arf.plugins.a2a.config import A2APluginConfig
+    from arf.plugins.a2a_subagents.config import A2APluginConfig
 
     cfg = A2APluginConfig(child_resume="notify")
     assert cfg.child_resume == "notify"
@@ -69,7 +69,7 @@ def test_a2a_config_child_resume_notify():
 
 def test_a2a_config_child_resume_invalid():
     """child_resume rejects invalid values."""
-    from arf.plugins.a2a.config import A2APluginConfig
+    from arf.plugins.a2a_subagents.config import A2APluginConfig
 
     with pytest.raises(Exception):
         A2APluginConfig(child_resume="invalid")

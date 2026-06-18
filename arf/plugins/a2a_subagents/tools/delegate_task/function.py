@@ -14,9 +14,9 @@ import os
 import uuid
 from pathlib import Path
 
-from arf.plugins.a2a.tools import _registry
+from arf.plugins.a2a_subagents.tools import _registry
 
-logger = logging.getLogger("arf.plugins.a2a.delegate_task")
+logger = logging.getLogger("arf.plugins.a2a_subagents.delegate_task")
 
 _IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "data", ".claude"}
 
@@ -172,7 +172,7 @@ async def execute(
 
     # === Inline mode: sub-state on parent engine ===
     async def runner(t: dict) -> dict:
-        from arf.plugins.a2a.state import build_sub_state
+        from arf.plugins.a2a_subagents.state import build_sub_state
 
         sub_state = build_sub_state(
             parent_session_id=parent_sid,

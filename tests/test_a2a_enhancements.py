@@ -6,7 +6,7 @@ import pytest
 
 from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.core.plugin_context import PluginContext
-from arf.plugins.a2a.tools import _registry as a2a_registry
+from arf.plugins.a2a_subagents.tools import _registry as a2a_registry
 from arf.skills import ask_user_tool
 
 
@@ -39,7 +39,7 @@ class TestHITLRoundEnd:
     @pytest.mark.anyio
     async def test_round_end_detects_human_decision(self):
         """round_end with _pending_human_decision emits human_decision_required."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -82,7 +82,7 @@ class TestHITLRoundEnd:
     @pytest.mark.anyio
     async def test_round_end_normal_when_no_decision(self):
         """round_end without _pending_human_decision completes normally."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -118,7 +118,7 @@ class TestHITLRoundEnd:
 class TestDepthLimit:
     def test_delegate_task_injects_blacklist(self):
         """Sub-agent state gets _tool_blacklist with delegate_task."""
-        from arf.plugins.a2a.state import build_sub_state
+        from arf.plugins.a2a_subagents.state import build_sub_state
 
         state = build_sub_state(
             parent_session_id="parent",
@@ -147,7 +147,7 @@ class TestDepthLimit:
 class TestSnapshot:
     def test_snapshot_workspace_captures_files(self, tmp_path):
         """_snapshot_workspace returns file hashes."""
-        from arf.plugins.a2a.tools.delegate_task.function import _snapshot_workspace
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import _snapshot_workspace
 
         (tmp_path / "test.txt").write_text("hello")
         (tmp_path / "subdir").mkdir()
@@ -160,7 +160,7 @@ class TestSnapshot:
 
     def test_snapshot_ignores_dirs_in_ignore_list(self, tmp_path):
         """_snapshot_workspace skips .git, __pycache__, etc."""
-        from arf.plugins.a2a.tools.delegate_task.function import _snapshot_workspace
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import _snapshot_workspace
 
         (tmp_path / "src.py").write_text("code")
         (tmp_path / ".git").mkdir()
@@ -174,7 +174,7 @@ class TestSnapshot:
         assert "__pycache__/cache.pyc" not in snap
 
     def test_snapshot_nonexistent_dir_returns_empty(self):
-        from arf.plugins.a2a.tools.delegate_task.function import _snapshot_workspace
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import _snapshot_workspace
         snap = _snapshot_workspace("/nonexistent/path/12345")
         assert snap == {}
 
@@ -190,7 +190,7 @@ class TestConflictDetection:
     @pytest.mark.anyio
     async def test_pre_action_detects_overlap(self, tmp_path):
         """pre_action holds conflicting file changes."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator  # plugin's delegator (overrides fixture)
@@ -246,7 +246,7 @@ class TestConflictDetection:
     @pytest.mark.anyio
     async def test_pre_action_no_conflict(self):
         """pre_action with non-overlapping file changes works normally."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator  # plugin's delegator (overrides fixture)

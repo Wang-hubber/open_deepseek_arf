@@ -583,8 +583,8 @@ class BaseAgent:
 
         # Find A2APlugin
         a2a_plugin = (
-            self._engine._blocking.get_plugin("a2a")
-            or self._engine._side.get_plugin("a2a")
+            self._engine._blocking.get_plugin("a2a_subagents")
+            or self._engine._side.get_plugin("a2a_subagents")
         )
         if a2a_plugin is None:
             return None

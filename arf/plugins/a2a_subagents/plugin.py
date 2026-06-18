@@ -15,10 +15,10 @@ from pathlib import Path
 
 from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.core.plugin_context import PluginContext
-from arf.plugins.a2a.config import A2APluginConfig
-from arf.plugins.a2a.tools import _registry
+from arf.plugins.a2a_subagents.config import A2APluginConfig
+from arf.plugins.a2a_subagents.tools import _registry
 
-logger = logging.getLogger("arf.plugins.a2a")
+logger = logging.getLogger("arf.plugins.a2a_subagents")
 
 
 class A2APlugin:
@@ -97,7 +97,7 @@ class A2APlugin:
 
     @property
     def name(self) -> str:
-        return "a2a"
+        return "a2a_subagents"
 
     @property
     def hooks(self) -> dict[str, str]:
@@ -182,7 +182,7 @@ class A2APlugin:
         result = self._collect_result(ctx.state)
         # Compute file changes for conflict detection
         ws_dir = ctx.workspace_dir or "."
-        from arf.plugins.a2a.tools.delegate_task.function import _snapshot_workspace
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import _snapshot_workspace
         old_snapshot = ctx.state.get("_workspace_snapshot")
         if old_snapshot is not None:
             current = _snapshot_workspace(ws_dir)
@@ -328,7 +328,7 @@ class A2APlugin:
         from arf.agent.base import BaseAgent
         from arf.agent.config import AgentConfig
         from arf.agent.app_context import AppContext
-        from arf.plugins.a2a.tools.delegate_task.function import _resolve_agent_config
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import _resolve_agent_config
         from arf.engine.checkpoint import FileStateStore
 
         child_tasks = parent_state.get("child_tasks", [])

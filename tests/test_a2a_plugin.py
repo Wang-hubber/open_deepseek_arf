@@ -7,7 +7,7 @@ import pytest
 from arf.communication.queued_delegator import QueuedTaskDelegator
 from arf.core.events import AgentEvent
 from arf.core.plugin_context import PluginContext
-from arf.plugins.a2a.tools import _registry as a2a_registry
+from arf.plugins.a2a_subagents.tools import _registry as a2a_registry
 
 
 class _StubEngine:
@@ -30,7 +30,7 @@ class TestDelegateTask:
     @pytest.mark.anyio
     async def test_delegate_dispatches_when_slot_available(self):
         """dispatch returns {dispatched: true} when under max_concurrent."""
-        from arf.plugins.a2a.tools.delegate_task.function import execute
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import execute
 
         result = await execute(agent="", task="test task", _engine=_StubEngine())
 
@@ -41,7 +41,7 @@ class TestDelegateTask:
     @pytest.mark.anyio
     async def test_delegate_queues_when_slots_full(self):
         """dispatch returns {queued: true} when slots are all occupied."""
-        from arf.plugins.a2a.tools.delegate_task.function import execute  # noqa: F811
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import execute  # noqa: F811
 
         barrier = asyncio.Event()
 
@@ -72,7 +72,7 @@ class TestQueueStatus:
 
     @pytest.mark.anyio
     async def test_queue_status_returns_state(self):
-        from arf.plugins.a2a.tools.queue_status.function import execute
+        from arf.plugins.a2a_subagents.tools.queue_status.function import execute
 
         barrier = asyncio.Event()
         async def runner(task):
@@ -104,7 +104,7 @@ class TestCancelTask:
 
     @pytest.mark.anyio
     async def test_cancel_removes_queued_task(self):
-        from arf.plugins.a2a.tools.cancel_task.function import execute
+        from arf.plugins.a2a_subagents.tools.cancel_task.function import execute
 
         barrier = asyncio.Event()
         async def runner(task):
@@ -123,7 +123,7 @@ class TestCancelTask:
 
     @pytest.mark.anyio
     async def test_cancel_running_task_returns_false(self):
-        from arf.plugins.a2a.tools.cancel_task.function import execute
+        from arf.plugins.a2a_subagents.tools.cancel_task.function import execute
 
         async def runner(task):
             return {"ok": True}
@@ -150,7 +150,7 @@ class TestA2APluginHooks:
     @pytest.mark.anyio
     async def test_round_end_completes_and_emits_event(self):
         """round_end on child session: complete() + emit task_completed."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -187,7 +187,7 @@ class TestA2APluginHooks:
     @pytest.mark.anyio
     async def test_round_end_ignores_non_child_session(self):
         """round_end on a normal session (no -- pattern) is a no-op."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         event_bus = MagicMock()
@@ -203,7 +203,7 @@ class TestA2APluginHooks:
     @pytest.mark.anyio
     async def test_pre_action_injects_pending_results(self):
         """pre_action on parent: inject completed task results into messages."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -241,7 +241,7 @@ class TestA2APluginHooks:
     @pytest.mark.anyio
     async def test_pre_action_skips_on_execute_tools(self):
         """pre_action only injects during call_model, not execute_tools."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -266,7 +266,7 @@ class TestA2APluginHooks:
     @pytest.mark.anyio
     async def test_session_end_force_completes_aborted_tasks(self):
         """session_end on child: force-complete if still running."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
         delegator = a2a_registry.delegator
@@ -308,9 +308,9 @@ class TestA2AIntegration:
     @pytest.mark.anyio
     async def test_plugin_name_and_hooks(self):
         """A2APlugin exposes correct name and hook subscriptions."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
         plugin = A2APlugin({"max_concurrent_tasks": 2})
-        assert plugin.name == "a2a"
+        assert plugin.name == "a2a_subagents"
         assert "pre_action" in plugin.hooks
         assert plugin.hooks["pre_action"] == "blocking"
         assert "round_end" in plugin.hooks
@@ -321,7 +321,7 @@ class TestA2AIntegration:
     @pytest.mark.anyio
     async def test_delegate_task_dispatches_with_engine(self):
         """delegate_task with a mock engine dispatches correctly."""
-        from arf.plugins.a2a.tools.delegate_task.function import execute
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import execute
 
         class _StubEngine:
             async def astream(self, state, stop_on_text=False):
@@ -338,7 +338,7 @@ class TestA2AIntegration:
     @pytest.mark.anyio
     async def test_full_pre_action_roundtrip(self):
         """pre_action hook injects results that round_end completed."""
-        from arf.plugins.a2a.plugin import A2APlugin
+        from arf.plugins.a2a_subagents.plugin import A2APlugin
         from unittest.mock import MagicMock  # noqa: F811
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})

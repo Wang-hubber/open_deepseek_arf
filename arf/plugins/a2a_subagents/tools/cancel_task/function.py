@@ -1,5 +1,5 @@
 """cancel_task — remove a queued task from the delegation queue."""
-from arf.plugins.a2a.tools import _registry
+from arf.plugins.a2a_subagents.tools import _registry
 
 
 async def execute(task_id: str, session_id: str = "") -> dict:

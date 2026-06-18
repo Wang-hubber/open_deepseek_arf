@@ -1,5 +1,5 @@
 """queue_status — query running, queued, and completed tasks."""
-from arf.plugins.a2a.tools import _registry
+from arf.plugins.a2a_subagents.tools import _registry
 
 
 async def execute(session_id: str = "") -> dict:
