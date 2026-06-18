@@ -164,45 +164,22 @@ class A2APlugin:
             )
 
     # ==================================================================
-    # round_end -- complete slot + emit event
+    # round_end -- clean up registry state
     # ==================================================================
 
     async def _on_round_end(self, ctx: PluginContext) -> None:
-        """Child agent round_end: handle HITL or normal completion."""
+        """Child agent round_end: clean up registry state.
+
+        Primitive handling (HITL request / task completion) is now done
+        by the engine via A2AHITL / A2ATaskLifecycle protocols injected
+        into the child agent's engine.
+        """
         child_sid = ctx.session_id
         parent_sid, task_id = self._parse_child_session(child_sid)
         if parent_sid is None:
             return
 
-        # Check for pending human decision (HITL -- don't complete)
-        pending_decision = ctx.state.get("_pending_human_decision")
-        if pending_decision:
-            self._emit_human_decision_required(
-                ctx, parent_sid, child_sid, task_id, pending_decision
-            )
-            return
-
-        # Normal completion
-        result = self._collect_result(ctx.state)
-        # Compute file changes for conflict detection
-        ws_dir = ctx.workspace_dir or "."
-        from arf.plugins.a2a_subagents.tools.delegate_task.function import _snapshot_workspace
-        old_snapshot = ctx.state.get("_workspace_snapshot")
-        if old_snapshot is not None:
-            current = _snapshot_workspace(ws_dir)
-            added = [p for p in current if p not in old_snapshot]
-            modified = [p for p in current if p in old_snapshot and current[p] != old_snapshot[p]]
-            deleted = [p for p in old_snapshot if p not in current]
-            if added or modified or deleted:
-                result["file_changes"] = {
-                    "added": sorted(added),
-                    "modified": sorted(modified),
-                    "deleted": sorted(deleted),
-                }
-        await _registry.delegator.complete(parent_sid, task_id, result)
-        self._emit_completed(ctx, parent_sid, child_sid, task_id, result)
-
-        # Update child_tasks status in parent state
+        # Update child_tasks status for normal completions
         await self._update_child_status(ctx, parent_sid, child_sid, "completed")
 
         # Clean up cancel_event from registry
@@ -454,56 +431,3 @@ class A2APlugin:
         )
         return "\n".join(lines)
 
-    def _emit_completed(
-        self, ctx: PluginContext,
-        parent_sid: str, child_sid: str, task_id: str, result: dict,
-    ) -> None:
-        """Emit task_completed event to EventBus -> trace JSONL + app notification."""
-        from arf.core.events import AgentEvent
-
-        event = AgentEvent(
-            type="task_completed",
-            data={
-                "parent_session_id": parent_sid,
-                "child_session_id": child_sid,
-                "task_id": task_id,
-                "result": result,
-            },
-            session_id=child_sid,
-        )
-        if ctx.event_bus:
-            ctx.event_bus.emit(event)
-        logger.info(
-            "task_completed: parent=%s child=%s task_id=%s",
-            parent_sid, child_sid, task_id,
-        )
-
-    def _emit_human_decision_required(
-        self, ctx: PluginContext,
-        parent_sid: str, child_sid: str, task_id: str,
-        decision: dict,
-    ) -> None:
-        """Emit human_decision_required event. Child session stays active."""
-        from arf.core.events import AgentEvent
-
-        partial = self._collect_result(ctx.state)
-
-        event = AgentEvent(
-            type="human_decision_required",
-            data={
-                "parent_session_id": parent_sid,
-                "child_session_id": child_sid,
-                "task_id": task_id,
-                "agent_name": ctx.state.get("agent_name", ""),
-                "question": decision.get("question", ""),
-                "options": decision.get("options", []),
-                "partial_result": partial,
-            },
-            session_id=child_sid,
-        )
-        if ctx.event_bus:
-            ctx.event_bus.emit(event)
-        logger.info(
-            "human_decision_required: child=%s task_id=%s question=%s",
-            child_sid, task_id, decision.get("question", "")[:80],
-        )

@@ -148,8 +148,8 @@ class TestA2APluginHooks:
         a2a_registry.delegator = None
 
     @pytest.mark.anyio
-    async def test_round_end_completes_and_emits_event(self):
-        """round_end on child session: complete() + emit task_completed."""
+    async def test_round_end_cleans_up_registry(self):
+        """round_end on child session: cleans up registry, no longer emits events."""
         from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
@@ -178,11 +178,8 @@ class TestA2APluginHooks:
 
         await plugin.on_hook("round_end", child_ctx)
 
-        child_ctx.event_bus.emit.assert_called_once()
-        call_args = child_ctx.event_bus.emit.call_args[0][0]
-        assert call_args.type == "task_completed"
-        assert call_args.data["parent_session_id"] == parent_sid
-        assert call_args.data["task_id"] == task_id
+        # round_end no longer emits events — engine handles it
+        child_ctx.event_bus.emit.assert_not_called()
 
     @pytest.mark.anyio
     async def test_round_end_ignores_non_child_session(self):
@@ -231,12 +228,11 @@ class TestA2APluginHooks:
         await plugin.on_hook("pre_action", parent_ctx)
 
         msgs = parent_ctx.state["messages"]
-        injected = [m for m in msgs if m.get("role") == "tool"
+        injected = [m for m in msgs if m.get("role") == "user"
                     and isinstance(m.get("content"), str)
-                    and m["content"].startswith("[A2A]")]
+                    and "[A2A]" in m["content"]]
         assert len(injected) == 1
         assert "5 items found" in injected[0]["content"]
-        assert r["task_id"] in injected[0]["tool_call_id"]
 
     @pytest.mark.anyio
     async def test_pre_action_skips_on_execute_tools(self):
@@ -353,7 +349,14 @@ class TestA2AIntegration:
         await asyncio.sleep(0)  # runner completes
         task_id = r["task_id"]
 
-        # 2. Simulate child agent's round_end hook
+        # 2. Complete the task in delegator (simulating A2ATaskLifecycle)
+        await delegator.complete(parent_sid, task_id, {
+            "content": "Found 42 issues in the codebase.",
+            "turn_count": 3,
+            "gate_exceeded": False,
+        })
+
+        # 3. Simulate child agent's round_end hook — no longer emits events
         child_ctx = PluginContext(
             session_id=f"{parent_sid}--{task_id}",
             state={
@@ -368,15 +371,10 @@ class TestA2AIntegration:
         )
         await plugin.on_hook("round_end", child_ctx)
 
-        # 3. Verify round_end emitted task_completed
-        child_ctx.event_bus.emit.assert_called_once()
-        event = child_ctx.event_bus.emit.call_args[0][0]
-        assert event.type == "task_completed"
-        assert event.data["task_id"] == task_id
-        assert event.data["result"]["content"] == "Found 42 issues in the codebase."
-        assert event.data["result"]["turn_count"] == 3
+        # 4. Verify round_end no longer emits events
+        child_ctx.event_bus.emit.assert_not_called()
 
-        # 4. Simulate parent agent's pre_action (next turn)
+        # 5. Simulate parent agent's pre_action (next turn)
         parent_ctx = PluginContext(
             session_id=parent_sid,
             current_step="call_model",
@@ -387,13 +385,12 @@ class TestA2AIntegration:
         )
         await plugin.on_hook("pre_action", parent_ctx)
 
-        # 5. Result should be in parent messages
+        # 6. Result should be in parent messages
         msgs = parent_ctx.state["messages"]
-        injected = [m for m in msgs if m.get("role") == "tool"
+        injected = [m for m in msgs if m.get("role") == "user"
                     and "[A2A]" in m.get("content", "")]
         assert len(injected) == 1
         assert "42 issues" in injected[0]["content"]
-        assert task_id in injected[0]["tool_call_id"]
 
         # 6. get_pending should be empty (consumed by pre_action)
         pending = await delegator.get_pending(parent_sid)

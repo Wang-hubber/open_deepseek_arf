@@ -290,6 +290,18 @@ async def _dispatch_external(
             ctx = AppContext(root=ws_root)
             sub_agent = BaseAgent(config, app_context=ctx)
             _registry.running_sub_agents[rid]["agent"] = sub_agent
+
+            # Inject A2A-specific HITL and TaskLifecycle protocols
+            from arf.plugins.a2a_subagents.hitl import A2AHITL
+            from arf.plugins.a2a_subagents.task_lifecycle import A2ATaskLifecycle
+
+            task_id = _registry.runtime_task_ids.get(rid, "")
+            sub_agent._engine._hitl = A2AHITL(
+                sub_agent._engine.event_bus, sub_agent.state_store)
+            sub_agent._engine._task_lifecycle = A2ATaskLifecycle(
+                sub_agent._engine.event_bus, _registry.delegator,
+                parent_sid=parent_sid, child_sid=sid, task_id=task_id,
+            )
             # Inject cancel_event for cascade cancel
             import asyncio as _asyncio
             cancel_evt = _asyncio.Event()
@@ -394,13 +406,15 @@ async def _dispatch_external(
                 _registry.running_sub_agents[rid]["status"] = "waiting_human"
                 _registry.running_sub_agents[rid]["_pending_decision"] = pending_decision
                 await event_queue.put({
-                    "type": "human_decision_required",
+                    "type": "need_human_input",
                     "data": {
                         "runtime_id": rid,
                         "agent_name": agent_name,
                         "session_id": sid,
                         "question": pending_decision.get("question", ""),
                         "options": pending_decision.get("options", []),
+                        "context": pending_decision.get("context", ""),
+                        "task_id": pending_decision.get("task_id", ""),
                     },
                 })
 
@@ -443,7 +457,7 @@ async def _dispatch_external(
 
                 _deadline = _time.time() + hard_timeout
                 _registry.running_sub_agents[rid]["status"] = "running"
-                await event_queue.put({"type": "human_decision_resumed", "data": {"runtime_id": rid}})
+                await event_queue.put({"type": "human_input_provided", "data": {"runtime_id": rid}})
 
             # Post-execution file change detection
             post_snapshot = _snapshot_workspace(ws_dir) if ws_dir != '.' else {}

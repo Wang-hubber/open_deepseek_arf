@@ -47,8 +47,12 @@ class TestHITLRoundEnd:
         a2a_registry.delegator = None
 
     @pytest.mark.anyio
-    async def test_round_end_detects_human_decision(self):
-        """round_end with _pending_human_decision emits human_decision_required."""
+    async def test_round_end_hitl_no_longer_emits_event(self):
+        """round_end with _pending_human_decision no longer emits events.
+
+        Engine handles HITL via A2AHITL protocol injected into the child
+        agent's engine. Plugin only cleans up registry state.
+        """
         from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
@@ -81,17 +85,16 @@ class TestHITLRoundEnd:
 
         await plugin.on_hook("round_end", child_ctx)
 
-        # Verify human_decision_required event was emitted
-        child_ctx.event_bus.emit.assert_called_once()
-        event = child_ctx.event_bus.emit.call_args[0][0]
-        assert event.type == "human_decision_required"
-        assert event.data["question"] == "选方案A还是B?"
-        assert event.data["options"] == ["A", "B"]
-        assert event.data["child_session_id"] == child_sid
+        # round_end no longer emits events — engine handles via A2AHITL
+        child_ctx.event_bus.emit.assert_not_called()
 
     @pytest.mark.anyio
-    async def test_round_end_normal_when_no_decision(self):
-        """round_end without _pending_human_decision completes normally."""
+    async def test_round_end_normal_no_longer_emits_event(self):
+        """round_end without _pending_human_decision no longer emits events.
+
+        Engine handles task completion via A2ATaskLifecycle protocol.
+        Plugin only cleans up registry state.
+        """
         from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
@@ -119,10 +122,8 @@ class TestHITLRoundEnd:
 
         await plugin.on_hook("round_end", child_ctx)
 
-        # Normal completion — task_completed event
-        child_ctx.event_bus.emit.assert_called_once()
-        event = child_ctx.event_bus.emit.call_args[0][0]
-        assert event.type == "task_completed"
+        # round_end no longer emits events — engine handles via A2ATaskLifecycle
+        child_ctx.event_bus.emit.assert_not_called()
 
 
 class TestDepthLimit:
@@ -203,24 +204,30 @@ class TestConflictDetection:
         from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
-        delegator = a2a_registry.delegator  # plugin's delegator (overrides fixture)
+        delegator = a2a_registry.delegator
         parent_sid = "parent_conflict"
 
-        # Create session by dispatching a dummy task, then complete it
         async def dummy_runner(task):
             return {"ok": True}
-        await delegator.dispatch(parent_sid, {"n": 0}, dummy_runner)
+
+        # Dispatch two tasks and use their real task IDs
+        r1 = await delegator.dispatch(parent_sid, {"task": "t1"}, dummy_runner)
+        await asyncio.sleep(0)
+        r2 = await delegator.dispatch(parent_sid, {"task": "t2"}, dummy_runner)
         await asyncio.sleep(0)
 
-        # Now complete task_1 — modifies config.ts
-        await delegator.complete(parent_sid, "task_1", {
+        task_id_1 = r1["task_id"]
+        task_id_2 = r2["task_id"]
+
+        # Complete task 1 — modifies config.ts
+        await delegator.complete(parent_sid, task_id_1, {
             "content": "Done task 1",
             "turn_count": 2,
             "gate_exceeded": False,
             "file_changes": {"added": [], "modified": ["config.ts"], "deleted": []},
         })
-        # Complete task_2 — also modifies config.ts (conflict!)
-        await delegator.complete(parent_sid, "task_2", {
+        # Complete task 2 — also modifies config.ts (conflict!)
+        await delegator.complete(parent_sid, task_id_2, {
             "content": "Done task 2",
             "turn_count": 3,
             "gate_exceeded": False,
@@ -238,18 +245,18 @@ class TestConflictDetection:
         await plugin.on_hook("pre_action", parent_ctx)
 
         msgs = parent_ctx.state["messages"]
-        # task_1 should be normal (first writer)
-        task1_msg = [m for m in msgs if "task_1" in m.get("tool_call_id", "")]
-        assert len(task1_msg) == 1
-        assert "CONFLICT" not in task1_msg[0]["content"]
+        # task_1 should be normal (first writer) — match by content
+        task1_msgs = [m for m in msgs if task_id_1 in m.get("content", "")]
+        assert len(task1_msgs) >= 1
+        assert "HELD" not in task1_msgs[0]["content"]
 
         # task_2 should be conflict warning (overlap on config.ts)
-        task2_msg = [m for m in msgs if "task_2" in m.get("tool_call_id", "")]
-        assert len(task2_msg) == 1
-        assert "HELD" in task2_msg[0]["content"]
+        task2_msgs = [m for m in msgs if task_id_2 in m.get("content", "")]
+        assert len(task2_msgs) >= 1
+        assert "HELD" in task2_msgs[0]["content"]
 
         # Check manifest was written
-        manifest = tmp_path / "data" / parent_sid / "conflicts" / "task_2" / "manifest.json"
+        manifest = tmp_path / "data" / parent_sid / "conflicts" / task_id_2 / "manifest.json"
         # manifest only written if files exist on disk — in test, config.ts doesn't exist
         # but _hold_changes still writes manifest (just no files/)
 
@@ -259,22 +266,28 @@ class TestConflictDetection:
         from arf.plugins.a2a_subagents.plugin import A2APlugin
 
         plugin = A2APlugin({"max_concurrent_tasks": 2, "max_task_timeout": 600})
-        delegator = a2a_registry.delegator  # plugin's delegator (overrides fixture)
+        delegator = a2a_registry.delegator
         parent_sid = "parent_noconflict"
 
-        # Create session by dispatching a dummy task
         async def dummy_runner(task):
             return {"ok": True}
-        await delegator.dispatch(parent_sid, {"n": 0}, dummy_runner)
+
+        # Dispatch two tasks and use their real task IDs
+        r1 = await delegator.dispatch(parent_sid, {"task": "tA"}, dummy_runner)
+        await asyncio.sleep(0)
+        r2 = await delegator.dispatch(parent_sid, {"task": "tB"}, dummy_runner)
         await asyncio.sleep(0)
 
-        await delegator.complete(parent_sid, "task_a", {
+        task_id_a = r1["task_id"]
+        task_id_b = r2["task_id"]
+
+        await delegator.complete(parent_sid, task_id_a, {
             "content": "Done A",
             "turn_count": 1,
             "gate_exceeded": False,
             "file_changes": {"added": [], "modified": ["frontend.ts"], "deleted": []},
         })
-        await delegator.complete(parent_sid, "task_b", {
+        await delegator.complete(parent_sid, task_id_b, {
             "content": "Done B",
             "turn_count": 1,
             "gate_exceeded": False,
