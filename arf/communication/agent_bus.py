@@ -45,11 +45,11 @@ class InMemoryAgentBus:
         # Yield control so caller sees an empty iterator if no messages
         # (avoids blocking — caller's async for loops cleanly with 0 iterations)
 
-    def register(self, agent: AgentInfo) -> None:
+    async def register(self, agent: AgentInfo) -> None:
         """Register an agent with the bus."""
         self._agents[agent.name] = agent
 
-    def discover(self, capability: str | None = None) -> list[AgentInfo]:
+    async def discover(self, capability: str | None = None) -> list[AgentInfo]:
         """Return registered agents, optionally filtered by capability."""
         agents = list(self._agents.values())
         if capability is None:

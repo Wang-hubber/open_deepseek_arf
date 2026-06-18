@@ -46,22 +46,23 @@ def test_agent_message_fields_roundtrip():
     assert msg.correlation_id == "corr_001"
 
 
-def test_agent_bus_register_and_discover():
+@pytest.mark.anyio
+async def test_agent_bus_register_and_discover():
     """register() adds agent, discover() finds by capability."""
     from arf.communication.agent_bus import InMemoryAgentBus
     from arf.core.protocols.communication import AgentInfo
 
     bus = InMemoryAgentBus()
-    bus.register(AgentInfo(name="Dev", description="Developer", capabilities=["coding", "tool_building"]))
-    bus.register(AgentInfo(name="Data", description="Data expert", capabilities=["data_query", "coding"]))
+    await bus.register(AgentInfo(name="Dev", description="Developer", capabilities=["coding", "tool_building"]))
+    await bus.register(AgentInfo(name="Data", description="Data expert", capabilities=["data_query", "coding"]))
 
-    all_agents = bus.discover()
+    all_agents = await bus.discover()
     assert len(all_agents) == 2
 
-    coders = bus.discover("coding")
+    coders = await bus.discover("coding")
     assert len(coders) == 2
 
-    data_only = bus.discover("data_query")
+    data_only = await bus.discover("data_query")
     assert len(data_only) == 1
     assert data_only[0].name == "Data"
 
@@ -73,8 +74,8 @@ async def test_agent_bus_send_and_receive():
     from arf.core.protocols.communication import AgentInfo
 
     bus = InMemoryAgentBus()
-    bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
-    bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
 
     msg = AgentMessage(
         sender="PM",
@@ -102,9 +103,9 @@ async def test_agent_bus_broadcast():
     from arf.core.protocols.communication import AgentInfo
 
     bus = InMemoryAgentBus()
-    bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
-    bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
-    bus.register(AgentInfo(name="Data", description="Data", capabilities=[]))
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    await bus.register(AgentInfo(name="Data", description="Data", capabilities=[]))
 
     msg = AgentMessage(
         sender="PM",
@@ -139,8 +140,8 @@ async def test_agent_bus_receive_is_consuming():
     from arf.core.protocols.communication import AgentInfo
 
     bus = InMemoryAgentBus()
-    bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
-    bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
 
     await bus.send(AgentMessage(sender="PM", receiver="Dev", type="info", payload={}))
 
