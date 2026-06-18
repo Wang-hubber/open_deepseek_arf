@@ -149,9 +149,13 @@ class A2APlugin:
                     applied_paths |= changed
                 content = self._format_result(task_id, result)
 
+            # Inject as user-role, not tool-role.  Sub-agent results are
+            # external input — the task_id is a delegator-internal ID that
+            # does NOT match any tool_calls[].id in the parent's messages.
+            # Using role:"tool" with a mismatched tool_call_id violates the
+            # chat API contract (same issue as peer message injection).
             ctx.state.setdefault("messages", []).append({
-                "role": "tool",
-                "tool_call_id": task_id,
+                "role": "user",
                 "content": content,
             })
             logger.info(
