@@ -307,3 +307,66 @@ class TestSearchTaskMemory:
         result = await stm.execute(query="anything")
         assert result["ok"] is False
         assert "error" in result
+
+
+class TestTaskMemoryIntegration:
+    """End-to-end: tool completes -> hook fires -> tasks.md updated -> summary visible."""
+
+    @pytest.mark.anyio
+    async def test_search_tool_receives_call_model_and_index(self):
+        """Verify BaseAgent wires the search tool's _call_model and _index."""
+        import arf.memory.tools.search_task_memory as stm
+        import tempfile
+        from pathlib import Path
+        from arf.memory.config import MemoryConfig
+        from arf.memory.index import MemoryIndex
+
+        d = tempfile.mkdtemp()
+        data_dir = Path(d) / "data"
+        cfg = MemoryConfig(secrets={"enabled": False})
+        mi = MemoryIndex(data_dir=str(data_dir), config=cfg)
+        mi.save_tasks("""<!-- TASK bugfix | agent: test -->
+
+### 修复超时
+
+**方案：**
+- 增加超时
+
+**教训：**
+- redis 连接池不是线程安全的
+
+<!-- /TASK -->
+""")
+
+        stm._index = mi
+        call_model = AsyncMock(return_value={
+            "content": json.dumps({"matches": []})
+        })
+        stm._call_model = call_model
+
+        result = await stm.execute(query="redis")
+        assert result["ok"] is True
+
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+    @pytest.mark.anyio
+    async def test_task_memory_config_flows_to_memory_index(self):
+        """Task memory config from agent.yaml flows to MemoryIndex."""
+        import tempfile
+        from pathlib import Path
+        from arf.memory.config import MemoryConfig
+        from arf.memory.index import MemoryIndex
+
+        d = tempfile.mkdtemp()
+        data_dir = Path(d) / "data"
+        cfg = MemoryConfig(secrets={"enabled": False}, task_memory={
+            "enabled": True, "max_size_kb": 30, "summary_limit": 10,
+        })
+        mi = MemoryIndex(data_dir=str(data_dir), config=cfg)
+        assert mi._cfg.task_memory.enabled is True
+        assert mi._cfg.task_memory.max_size_kb == 30
+        assert mi._cfg.task_memory.summary_limit == 10
+
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)

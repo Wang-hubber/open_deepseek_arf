@@ -572,6 +572,28 @@ class ControlPlane:
             },
         })
 
+        # kernel__search_task_memory — search past task experience
+        if self._memory_index is not None:
+            tools.append({
+                "name": "kernel__search_task_memory",
+                "description": (
+                    "Search past task experience for relevant approaches "
+                    "and pitfalls. Use this to learn from previous similar "
+                    "tasks before starting new work. Provide a query "
+                    "describing what you want to learn about."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "What kind of past experience to search for (e.g. 'auth module refactoring', 'redis connection timeout').",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            })
+
         # Memory write tools — always available when memory index is present
         if self._memory_index is not None:
             tools.extend([

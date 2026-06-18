@@ -130,6 +130,8 @@ class BaseAgent:
         import arf.memory.tools.write_user_memory as _wum
         mcp_manager.register_kernel_tool("write_project_memory", _wpm.execute)
         mcp_manager.register_kernel_tool("write_user_memory", _wum.execute)
+        import arf.memory.tools.search_task_memory as _stsm
+        mcp_manager.register_kernel_tool("search_task_memory", _stsm.execute)
 
         # MCP tool resolver wrapper for ControlPlane
         async def _mcp_tool_resolver(state):
@@ -481,6 +483,9 @@ class BaseAgent:
         _wpm._index = memory_index
         _wum._index = memory_index
 
+        # Wire task memory search tool
+        _stsm._index = memory_index
+
         self._engine.set_memory_index(memory_index)
 
         # First-time project memory generation (background)
@@ -549,6 +554,9 @@ class BaseAgent:
                 if hasattr(sp, "set_call_model"):
                     sp.set_call_model(self._engine._call_model)
                 break
+
+        # Wire search_task_memory._call_model for LLM-driven search
+        _stsm._call_model = self._engine._call_model
 
         # ---- Active session tracking ----
         self._active_sessions: set[str] = set()
