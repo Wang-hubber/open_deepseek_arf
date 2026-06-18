@@ -25,3 +25,4 @@ class MemoryConfig(BaseModel):
     project: ProjectMemoryConfig = Field(default_factory=ProjectMemoryConfig)
     user: UserMemoryConfig = Field(default_factory=UserMemoryConfig)
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
+    group_memory_dir: str = Field(default="", description="Optional shared group memory directory")
