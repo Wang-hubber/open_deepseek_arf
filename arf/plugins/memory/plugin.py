@@ -59,25 +59,29 @@ class MemoryPlugin:
             asyncio.create_task(self._rolling_update(ctx, messages))
 
     async def _rolling_update(self, ctx, messages: list[dict]) -> None:
-        """Extract user-specific facts from this round into user.md."""
+        """Extract user-specific facts from this round into user.md.
+
+        Reuses ctx.state["messages"] directly as prefix — appending only
+        the extraction instruction as a new user message for max cache hit.
+        """
         if self._call_model is None or self._mem_index is None:
             return
 
         existing = self._mem_index.load_user()
         recent = messages[-20:]
-        msgs_text = "\n".join(
-            f"[{m.get('role', '?')}] {str(m.get('content', ''))[:800]}"
-            for m in recent
+
+        instruction = _USER_EXTRACTION_PROMPT.format(
+            existing=existing or "(no existing user memory)",
         )
 
-        prompt = _USER_EXTRACTION_PROMPT.format(
-            existing=existing or "(no existing user memory)",
-            messages=msgs_text,
-        )
+        # Reuse session messages as prefix for cache friendliness
+        call_messages = list(recent) + [
+            {"role": "user", "content": instruction},
+        ]
 
         try:
             resp = await self._call_model(
-                [{"role": "user", "content": prompt}],
+                call_messages,
                 model_name="",
             )
             content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
@@ -114,6 +118,9 @@ class MemoryPlugin:
             ctx, messages, task_result, notes, confidence)
         if entry is None:
             return  # should_write was False
+
+        # Inject agent name (not part of LLM extraction — sourced from state)
+        entry["agent_name"] = ctx.state.get("agent_name", "unknown")
 
         # Step 2: Merge into existing tasks.md (independent async call)
         import asyncio
@@ -195,7 +202,7 @@ class MemoryPlugin:
         logger.info("Task memory updated (%d chars)", len(merged))
 
 
-_USER_EXTRACTION_PROMPT = """Extract user-specific facts from the conversation below. Output raw Markdown — only categories with facts.
+_USER_EXTRACTION_PROMPT = """Based on the conversation above, extract user-specific facts. Output raw Markdown — only categories with facts.
 
 ## Existing User Memory
 
@@ -234,11 +241,7 @@ Use these categories (pick applicable ones, create new ones if needed):
 
 Keep each bullet to one sentence. Be specific. If a new fact updates or contradicts old memory, reflect the change directly. Preserve existing memories that are still accurate — only modify what changed.
 
-If nothing worth extracting: output "NO_NEW_MEMORY" and stop.
-
-## Recent Conversation
-
-{messages}"""
+If nothing worth extracting: output "NO_NEW_MEMORY" and stop."""
 
 
 import json as _json_mod

@@ -125,21 +125,24 @@ class TestRollingUpdate:
         assert memory_index.load_user() == ""
 
     async def test_passes_existing_memory_in_prompt(self, tmp_dirs, memory_index, ctx):
-        """Existing user.md content is included in the extraction prompt."""
+        """Existing user.md content is included in the extraction instruction."""
         plugin = MemoryPlugin()
         plugin.set_memory_index(memory_index)
         memory_index.save_user("## User Identity\n- Senior Go engineer")
 
-        captured_prompt = []
+        captured_messages = []
 
         async def fake_call_model(messages, model_name="", tools=None):
-            captured_prompt.append(messages[0]["content"])
+            captured_messages.extend(messages)
             return {"content": "NO_NEW_MEMORY"}
 
         plugin.set_call_model(fake_call_model)
 
         await plugin._rolling_update(ctx, MESSAGES)
 
-        assert len(captured_prompt) == 1
-        assert "Senior Go engineer" in captured_prompt[0]
-        assert "PostgreSQL" in captured_prompt[0]
+        # Instruction is the last message appended after conversation prefix
+        instruction = captured_messages[-1]["content"]
+        assert "Senior Go engineer" in instruction
+        # Conversation content is in the prefix messages
+        all_content = " ".join(m.get("content", "") for m in captured_messages)
+        assert "PostgreSQL" in all_content
