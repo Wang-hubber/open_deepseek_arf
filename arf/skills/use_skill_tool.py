@@ -8,7 +8,7 @@ logger = logging.getLogger("arf.skills.use_skill")
 _index: SkillIndex | None = None
 
 
-async def execute(name: str, **kwargs) -> dict:
+async def execute(name: str, **kwargs) -> str | dict:
     """Load and return the full content of skill *name*.
 
     Called by the model via tool invocation. The returned body
@@ -27,12 +27,7 @@ async def execute(name: str, **kwargs) -> dict:
     if body is None:
         return {"ok": False, "error": f"skill '{name}' has no body (skill.md missing)"}
 
-    return {
-        "ok": True,
-        "skill": {
-            "name": entry.name,
-            "description": entry.description,
-            "body": body,
-            "tools_sequence": entry.tools_sequence,
-        },
-    }
+    header = f"[Skill loaded: {entry.name}] — {entry.description}"
+    if entry.tools_sequence:
+        header += f"\nTools available: {', '.join(entry.tools_sequence)}"
+    return f"{header}\n\n---\n\n{body}"
