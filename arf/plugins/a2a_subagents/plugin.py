@@ -255,25 +255,52 @@ class A2APlugin:
                 content = m["content"].strip()
                 break
         is_gate = state.get("_aborted") or ("gate_exceeded" in (state.get("_error") or ""))
-        return {
+        result = {
             "content": content,
             "turn_count": state.get("current_turn", 0),
             "gate_exceeded": is_gate,
         }
+        tool_calls = state.get("_tool_calls_summary")
+        if tool_calls:
+            result["tool_calls_summary"] = tool_calls
+        return result
 
     @staticmethod
     def _format_result(task_id: str, result: dict) -> str:
         """Format a completed task result as a message string."""
         content = result.get("content", "(no output)")
         turns = result.get("turn_count", "?")
+        tc_summary = result.get("tool_calls_summary", [])
+        fchanges = result.get("file_changes", {})
+
         if result.get("gate_exceeded"):
-            return (
+            main = (
                 f"[A2A] Task {task_id} completed with gate exceeded ({turns} turns). "
                 f"Partial result:\n{content}"
             )
-        if result.get("error"):
-            return f"[A2A] Task {task_id} failed: {result['error']}"
-        return f"[A2A] Task {task_id} completed ({turns} turns):\n{content}"
+        elif result.get("error"):
+            main = f"[A2A] Task {task_id} failed: {result['error']}"
+        else:
+            main = f"[A2A] Task {task_id} completed ({turns} turns):\n{content}"
+
+        parts = []
+        if tc_summary:
+            success_count = sum(1 for tc in tc_summary if tc.get("success"))
+            parts.append(f"[Tool calls: {len(tc_summary)} total, {success_count} ok]")
+        if fchanges:
+            change_parts = []
+            if fchanges.get("added"):
+                change_parts.append(f"+{len(fchanges['added'])} added")
+            if fchanges.get("modified"):
+                change_parts.append(f"~{len(fchanges['modified'])} modified")
+            if fchanges.get("deleted"):
+                change_parts.append(f"-{len(fchanges['deleted'])} deleted")
+            if change_parts:
+                parts.append(f"[Files: {', '.join(change_parts)}]")
+
+        if parts:
+            return main + "\n" + "\n".join(parts)
+        return main
 
     def _hold_changes(
         self, ctx: PluginContext, parent_sid: str,

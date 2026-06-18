@@ -191,10 +191,11 @@ async def execute(
         # Write child_tasks entry BEFORE async work — prevents race with round_end
         await _add_child_task(_engine, parent_sid, t.get("task_id", ""), child_sid, agent or "inline")
 
-        await asyncio.wait_for(
+        tool_calls = await asyncio.wait_for(
             _drain_stream(_engine, sub_state),
             timeout=effective_timeout,
         )
+        sub_state["_tool_calls_summary"] = tool_calls
         return {"ok": True, "final_state": sub_state}
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
@@ -306,20 +307,30 @@ async def _dispatch_external(
 
         sub_agent = _registry.running_sub_agents[rid]["agent"]
 
+        # Pre-execution workspace snapshot for file change detection
+        ws_dir = getattr(sub_agent._engine, '_workspace_dir', '') or '.'
+        pre_snapshot = _snapshot_workspace(ws_dir) if ws_dir != '.' else {}
+        tool_calls: list[dict] = []
+
         final_result = ""
         final_status = "completed"
         _deadline = _time.time() + hard_timeout
 
         try:
             await sub_agent.start()
-            # Wait for SSE consumer to connect before starting execution.
-            # Prevents events from being queued before the frontend is ready.
-            try:
-                await asyncio.wait_for(consumer_ready.wait(), timeout=30)
-            except asyncio.TimeoutError:
-                _registry.running_sub_agents[rid]["status"] = "error"
-                _registry.running_sub_agents[rid]["error"] = "前端连接超时"
-                return {"ok": False, "error": "consumer_connect_timeout"}
+
+            # For auto-mode agents, skip consumer wait — they run autonomously.
+            # For ask-mode agents, wait for frontend SSE consumer to connect.
+            _session_mode = data.get("session_mode", "auto")
+            if _session_mode == "auto":
+                consumer_ready.set()  # auto-proceed, no frontend needed
+            else:
+                try:
+                    await asyncio.wait_for(consumer_ready.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    _registry.running_sub_agents[rid]["status"] = "error"
+                    _registry.running_sub_agents[rid]["error"] = "前端连接超时"
+                    return {"ok": False, "error": "consumer_connect_timeout"}
             _registry.running_sub_agents[rid]["status"] = "running"
             # Update child_tasks from pending to running
             try:
@@ -349,6 +360,13 @@ async def _dispatch_external(
                 try:
                     async for event in sub_agent.astream(message, session_id=sid, stop_on_text=True):
                         await event_queue.put(event)
+                        if event.type == "tool_call_end":
+                            tool_calls.append({
+                                "tool_name": event.data.get("tool_name", ""),
+                                "success": event.data.get("success", False),
+                                "duration_ms": event.data.get("duration_ms", 0),
+                                "error": event.data.get("error", ""),
+                            })
                         if event.type == "model_call_end":
                             content = (getattr(event, "data", None) or {}).get("content", "")
                             if content:
@@ -427,24 +445,46 @@ async def _dispatch_external(
                 _registry.running_sub_agents[rid]["status"] = "running"
                 await event_queue.put({"type": "human_decision_resumed", "data": {"runtime_id": rid}})
 
+            # Post-execution file change detection
+            post_snapshot = _snapshot_workspace(ws_dir) if ws_dir != '.' else {}
+            added = [p for p in post_snapshot if p not in pre_snapshot]
+            modified = [p for p in post_snapshot if p in pre_snapshot and post_snapshot[p] != pre_snapshot[p]]
+            deleted = [p for p in pre_snapshot if p not in post_snapshot]
+            file_changes = {}
+            if added or modified or deleted:
+                file_changes = {
+                    "added": sorted(added),
+                    "modified": sorted(modified),
+                    "deleted": sorted(deleted),
+                }
+
             task_id = _registry.runtime_task_ids.get(rid, "")
             _registry.running_sub_agents[rid]["status"] = final_status
             _registry.running_sub_agents[rid]["result"] = final_result
 
             if task_id:
-                await _registry.delegator.complete(parent_sid, task_id, {
+                complete_result = {
                     "ok": final_status == "completed",
                     "result": final_result,
                     "content": final_result,
                     "agent_name": agent_name,
                     "error": _registry.running_sub_agents[rid].get("error", ""),
-                })
+                }
+                if tool_calls:
+                    complete_result["tool_calls_summary"] = tool_calls
+                if file_changes:
+                    complete_result["file_changes"] = file_changes
+                await _registry.delegator.complete(parent_sid, task_id, complete_result)
 
             await event_queue.put(None)
 
             if final_status == "error":
                 return {"ok": False, "error": _registry.running_sub_agents[rid].get("error", "")}
-            return {"ok": True, "result": final_result, "session_id": sid, "agent_name": agent_name}
+            return {
+                "ok": True, "result": final_result, "session_id": sid, "agent_name": agent_name,
+                "tool_calls_summary": tool_calls,
+                "file_changes": file_changes,
+            }
         finally:
             await sub_agent.stop()
             async def _delayed_cleanup():
@@ -466,7 +506,19 @@ async def _dispatch_external(
     }
 
 
-async def _drain_stream(engine, sub_state: dict) -> None:
-    """Drain astream events — results collected by round_end hook."""
-    async for _event in engine.astream(sub_state, stop_on_text=True):
-        pass
+async def _drain_stream(engine, sub_state: dict) -> list[dict]:
+    """Drain astream events, collect tool_call_end events, return tool_calls_summary.
+
+    The round_end hook (in plugin.py) handles completion via _collect_result.
+    This function supplements that result with tool_call metadata.
+    """
+    tool_calls: list[dict] = []
+    async for event in engine.astream(sub_state, stop_on_text=True):
+        if event.type == "tool_call_end":
+            tool_calls.append({
+                "tool_name": event.data.get("tool_name", ""),
+                "success": event.data.get("success", False),
+                "duration_ms": event.data.get("duration_ms", 0),
+                "error": event.data.get("error", ""),
+            })
+    return tool_calls
