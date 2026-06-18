@@ -38,16 +38,17 @@ class DefaultTaskLifecycle:
     ) -> dict:
         task_id = f"{ctx.session_id}_{ctx.interaction_round}"
         start_round = ctx.state.get("_task_start_round", 0)
-        self._event_bus.emit(AgentEvent(
-            type="task_completed",
-            data={
-                "task_id": task_id, "session_id": ctx.session_id,
-                "start_round": start_round,
-                "finish_round": ctx.interaction_round,
-                "result": result, "confidence": confidence, "notes": notes,
-            },
-            session_id=ctx.session_id,
-        ))
+        if self._event_bus:
+            self._event_bus.emit(AgentEvent(
+                type="task_completed",
+                data={
+                    "task_id": task_id, "session_id": ctx.session_id,
+                    "start_round": start_round,
+                    "finish_round": ctx.interaction_round,
+                    "result": result, "confidence": confidence, "notes": notes,
+                },
+                session_id=ctx.session_id,
+            ))
         logger.info("task_completed: sid=%s task_id=%s rounds=%d-%d",
                      ctx.session_id, task_id, start_round, ctx.interaction_round)
         return {"task_id": task_id, "status": "completed"}

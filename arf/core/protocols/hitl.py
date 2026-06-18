@@ -55,15 +55,16 @@ class DefaultHITL:
             "task_id": task_id, "deadline": deadline,
         }
         self._answers[request_id] = ""
-        self._event_bus.emit(AgentEvent(
-            type="need_human_input",
-            data={
-                "request_id": request_id, "session_id": ctx.session_id,
-                "question": question, "options": options,
-                "context": context, "task_id": task_id, "deadline": deadline,
-            },
-            session_id=ctx.session_id,
-        ))
+        if self._event_bus:
+            self._event_bus.emit(AgentEvent(
+                type="need_human_input",
+                data={
+                    "request_id": request_id, "session_id": ctx.session_id,
+                    "question": question, "options": options,
+                    "context": context, "task_id": task_id, "deadline": deadline,
+                },
+                session_id=ctx.session_id,
+            ))
         logger.info("need_human_input: sid=%s round=%s q=%s",
                      ctx.session_id, ctx.interaction_round, question[:80])
         return {"request_id": request_id, "status": "pending"}
@@ -72,10 +73,11 @@ class DefaultHITL:
         if request_id not in self._answers:
             return False
         self._answers[request_id] = response
-        self._event_bus.emit(AgentEvent(
-            type="human_input_provided",
-            data={"request_id": request_id, "response": response},
-        ))
+        if self._event_bus:
+            self._event_bus.emit(AgentEvent(
+                type="human_input_provided",
+                data={"request_id": request_id, "response": response},
+            ))
         return True
 
     async def cancel_request(self, request_id: str) -> bool:

@@ -41,6 +41,8 @@ class ControlPlane:
         call_timeout: float | None = 120.0,
         session_timeout: float | None = None,
         session_mode_manager: SessionModeManager | None = None,
+        hitl: "HITLProtocol | None" = None,
+        task_lifecycle: "TaskLifecycleProtocol | None" = None,
     ):
         self.loop_strategy = None  # removed — kept for compat during migration
         self.gate = GateChecker(max_turns=max_turns, max_tokens=max_tokens)
@@ -65,6 +67,15 @@ class ControlPlane:
         self._call_timeout = call_timeout
         self._session_timeout = session_timeout
         self._session_mode_manager = session_mode_manager or SessionModeManager(global_mode=SessionMode.ASK)
+
+        if hitl is None:
+            from arf.core.protocols.hitl import DefaultHITL
+            hitl = DefaultHITL(event_bus, state_store)
+        if task_lifecycle is None:
+            from arf.core.protocols.task_lifecycle import DefaultTaskLifecycle
+            task_lifecycle = DefaultTaskLifecycle(event_bus)
+        self._hitl = hitl
+        self._task_lifecycle = task_lifecycle
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -234,6 +245,7 @@ class ControlPlane:
                 continue
 
             # --- turn loop ---
+            primitive = None
             while True:
                 turn = state.get("current_turn", 0) + 1
                 state["current_turn"] = turn
@@ -363,6 +375,11 @@ class ControlPlane:
                         completed = True
                     break
 
+                # Check for primitive signal — exit turn loop
+                primitive = state.pop("_primitive_result", None)
+                if primitive:
+                    break
+
                 # Gate check — terminate if budget exceeded
                 if self.gate.is_exceeded(
                     current_turn=turn,
@@ -397,6 +414,11 @@ class ControlPlane:
                 })
                 round_end_error_recovered = True
                 # Fall through to gate/exit checks below
+
+            # -- task_completed hook (after round_end, if triggered) --
+            if primitive == "task_completed":
+                await self._fire_task_completed_hook(ctx, state)
+                state["_task_start_round"] = ctx.interaction_round + 1
 
             # Gate check at round level too
             if self.gate.is_exceeded(
@@ -499,8 +521,51 @@ class ControlPlane:
                         "items": {"type": "string"},
                         "description": "Optional list of choices. Empty = free-text answer.",
                     },
+                    "context": {
+                        "type": "string",
+                        "description": "Why human input is needed (background context).",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID of the task this question belongs to.",
+                    },
                 },
                 "required": ["question"],
+            },
+        })
+
+        # kernel__task_complete — always available for task completion
+        tools.append({
+            "name": "kernel__task_complete",
+            "description": (
+                "Signal that the current task is complete. Call this when "
+                "you have finished the user's request. Provide a result "
+                "summary, confidence (0.0-1.0), and optional notes. "
+                "After calling, your round ends and a task_completed hook "
+                "fires for memory extraction and task archiving."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "string",
+                        "description": "Summary of what was accomplished.",
+                    },
+                    "files_changed": {
+                        "type": "object",
+                        "description": ("Files added/modified/deleted: "
+                                        '{"added":[],"modified":[],"deleted":[]}.'),
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence in task completion, 0.0-1.0. Default 1.0.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Additional notes for auditing.",
+                    },
+                },
+                "required": [],
             },
         })
 
@@ -808,23 +873,6 @@ class ControlPlane:
             workspace_dir=self._workspace_dir,
         )
 
-        # Detect ask_user pending — mark state for round_end hook
-        for tc in tool_calls:
-            tc_name = tc.get("name", "")
-            if tc_name in ("ask_user", "kernel__ask_user"):
-                r = results.get(tc.get("id", ""))
-                if r and r.success:
-                    import json as _json
-                    try:
-                        data = _json.loads(str(r.data)) if isinstance(r.data, str) else r.data
-                    except Exception:
-                        data = {}
-                    if isinstance(data, dict) and data.get("pending"):
-                        state["_pending_human_decision"] = {
-                            "question": data.get("question", ""),
-                            "options": data.get("options", []),
-                        }
-
         # -- Store raw results in hook_data for tool_output hooks --
         raw_results: dict[str, dict] = {}
         for tc in tool_calls:
@@ -882,6 +930,96 @@ class ControlPlane:
                 "error": r.get("error", ""),
                 "duration_ms": r.get("duration_ms", 0),
             })
+
+        # -- Primitive detection --
+        primitive = await self._detect_primitives(state, ctx, raw_results)
+        if primitive:
+            state["_primitive_result"] = primitive
+
+    # ==================================================================
+    # Primitive detection: task_complete + HITL
+    # ==================================================================
+
+    async def _detect_primitives(
+        self, state: dict, ctx: PluginContext, raw_results: dict
+    ) -> str | None:
+        """Check tool results for pending or task_complete primitives."""
+        import json as _json
+
+        for r in raw_results.values():
+            data = r.get("data", "{}")
+            if isinstance(data, str):
+                try:
+                    data = _json.loads(data)
+                except (_json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(data, dict):
+                continue
+
+            if data.get("pending"):
+                request_result = await self._hitl.request_input(
+                    question=data.get("question", ""),
+                    options=data.get("options", []),
+                    context=data.get("context", ""),
+                    task_id=data.get("task_id", ""),
+                    deadline=self._compute_hitl_deadline(),
+                    ctx=ctx,
+                )
+                ctx.inject_engine_event("need_human_input", {
+                    "request_id": request_result["request_id"],
+                    "question": data.get("question", ""),
+                    "options": data.get("options", []),
+                    "context": data.get("context", ""),
+                    "task_id": data.get("task_id", ""),
+                    "deadline": self._compute_hitl_deadline(),
+                })
+                return "pending_human"
+
+            if data.get("task_complete"):
+                await self._task_lifecycle.complete(
+                    result=data.get("result", ""),
+                    files_changed=data.get("files_changed", {}),
+                    confidence=data.get("confidence", 1.0),
+                    notes=data.get("notes", ""),
+                    ctx=ctx,
+                )
+                ctx.inject_engine_event("task_completed", {
+                    "session_id": ctx.session_id,
+                    "start_round": state.get("_task_start_round", 0),
+                    "finish_round": ctx.interaction_round,
+                    "result": data.get("result", ""),
+                    "confidence": data.get("confidence", 1.0),
+                    "notes": data.get("notes", ""),
+                })
+                state["_task_completion_data"] = {
+                    "result": data.get("result", ""),
+                    "confidence": data.get("confidence", 1.0),
+                    "notes": data.get("notes", ""),
+                }
+                return "task_completed"
+
+        return None
+
+    def _compute_hitl_deadline(self) -> float:
+        import time as _time
+        return _time.time() + 300.0
+
+    async def _fire_task_completed_hook(
+        self, ctx: PluginContext, state: dict
+    ) -> None:
+        completion_data = state.pop("_task_completion_data", {})
+        hook_ctx = self._make_ctx(
+            state, ctx.session_id, state.get("current_turn", 0), "",
+        )
+        hook_ctx.hook_data.update({
+            "session_id": ctx.session_id,
+            "start_round": state.get("_task_start_round", 0),
+            "finish_round": ctx.interaction_round,
+            "task_result": completion_data.get("result", ""),
+            "notes": completion_data.get("notes", ""),
+            "confidence": completion_data.get("confidence", 1.0),
+        })
+        await self._fire_side("task_completed", hook_ctx)
 
     # ==================================================================
     # Helpers
