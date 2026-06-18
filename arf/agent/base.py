@@ -74,6 +74,10 @@ class BaseAgent:
         event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
         state_store = override_protocols.pop("state_store", FileStateStore(_data_dir))
 
+        # HITL + TaskLifecycle — DI via override_protocols
+        _hitl = override_protocols.pop("hitl", None)
+        _task_lifecycle = override_protocols.pop("task_lifecycle", None)
+
         # 2. Resources — MCP-based unified management
         # McpClientManager replaces ToolProvider + SkillProvider +
         # PluginProvider + MCP manager — tools/skills via MCP, hooks via plugins.
@@ -431,6 +435,8 @@ class BaseAgent:
             call_timeout=(adv.call_timeout if adv else 120.0),
             session_timeout=(adv.session_timeout if adv else None),
             session_mode_manager=session_mode_manager,
+            hitl=_hitl,
+            task_lifecycle=_task_lifecycle,
         )
         # Initialize SkillIndex for lazy-loading domain knowledge
         from arf.skills.skill_index import SkillIndex
