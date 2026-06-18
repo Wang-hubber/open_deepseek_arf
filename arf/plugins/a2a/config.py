@@ -5,3 +5,4 @@ from pydantic import BaseModel, Field
 class A2APluginConfig(BaseModel):
     max_concurrent_tasks: int = Field(default=3, ge=1, description="Max concurrent sub-agents per session")
     max_task_timeout: float = Field(default=600.0, gt=0, description="Hard cap for sub-agent execution time (seconds)")
+    child_resume: str = Field(default="auto", pattern="^(auto|notify)$", description="Child agent resume strategy: auto=automatic, notify=inject prompt message")

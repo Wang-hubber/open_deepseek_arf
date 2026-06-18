@@ -20,3 +20,27 @@ def test_agent_state_accepts_child_tasks():
     }
     assert state["child_tasks"][0]["task_id"] == "task_1"
     assert state["child_tasks"][0]["status"] == "running"
+
+
+def test_a2a_config_child_resume_default():
+    """child_resume defaults to 'auto'."""
+    from arf.plugins.a2a.config import A2APluginConfig
+
+    cfg = A2APluginConfig()
+    assert cfg.child_resume == "auto"
+
+
+def test_a2a_config_child_resume_notify():
+    """child_resume can be set to 'notify'."""
+    from arf.plugins.a2a.config import A2APluginConfig
+
+    cfg = A2APluginConfig(child_resume="notify")
+    assert cfg.child_resume == "notify"
+
+
+def test_a2a_config_child_resume_invalid():
+    """child_resume rejects invalid values."""
+    from arf.plugins.a2a.config import A2APluginConfig
+
+    with pytest.raises(Exception):
+        A2APluginConfig(child_resume="invalid")
