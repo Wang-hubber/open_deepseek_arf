@@ -316,3 +316,93 @@ async def test_send_peer_message_routes_to_receiver():
     assert received[0].payload["message"] == "Please build the login page"
     assert received[0].type == "task_request"
     assert received[0].priority == "normal"
+
+
+# ── PeerTeamPlugin tests ────────────────────────────────────────────────────
+from arf.plugins.a2a_teammates.plugin import PeerTeamPlugin
+from arf.plugins.a2a_teammates.tools import _registry as teammates_registry
+from arf.session.session_index import SessionIndex
+from arf.core.plugin_context import PluginContext
+
+
+@pytest.fixture(autouse=True)
+def reset_teammates_registry():
+    """Reset teammates registry before each test."""
+    teammates_registry.agent_bus = None
+    yield
+    teammates_registry.agent_bus = None
+
+
+def test_peer_team_plugin_name_and_hooks():
+    """Plugin should have correct name and hooks."""
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+    ]})
+    assert plugin.name == "a2a_teammates"
+    hooks = plugin.hooks
+    assert "session_start" in hooks
+    assert "pre_action" in hooks
+    assert "session_end" in hooks
+
+
+@pytest.mark.anyio
+async def test_peer_team_plugin_creates_session_index(temp_data_dir):
+    """session_start hook should create SessionIndex for the group."""
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    ctx = PluginContext(
+        session_id="proj_abc__pm",
+        state={"session_id": "proj_abc__pm", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_session_start(ctx)
+
+    idx = SessionIndex(temp_data_dir)
+    loaded = await idx.load("proj_abc")
+    assert loaded is not None
+    assert len(loaded["members"]) == 2
+    assert loaded["members"][0]["session_id"] == "proj_abc__pm"
+
+
+@pytest.mark.anyio
+async def test_peer_team_plugin_injects_messages(temp_data_dir):
+    """pre_action hook should inject pending peer messages into message list."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="PM", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="Dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Send a message to Dev
+    await bus.send(AgentMessage(
+        sender="PM", receiver="Dev", type="task_request",
+        payload={"message": "build API"},
+        correlation_id="corr_001",
+    ))
+
+    # pre_action on Dev's session
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        current_step="call_model",
+        data_dir=temp_data_dir,
+    )
+    await plugin._on_pre_action(ctx)
+
+    msgs = ctx.state.get("messages", [])
+    assert len(msgs) == 1
+    assert "PM" in msgs[0]["content"]
+    assert "Dev" in msgs[0]["content"]
+    assert "build API" in msgs[0]["content"]
+    assert msgs[0]["role"] == "tool"
+    assert msgs[0]["tool_call_id"] == "corr_001"
