@@ -14,6 +14,8 @@ logger = logging.getLogger("arf.skills.ask_user")
 async def execute(
     question: str,
     options: list[str] | None = None,
+    context: str = "",
+    task_id: str = "",
     **kwargs,
 ) -> dict:
     return {
@@ -21,4 +23,6 @@ async def execute(
         "pending": True,
         "question": question,
         "options": options or [],
+        "context": context,
+        "task_id": task_id,
     }

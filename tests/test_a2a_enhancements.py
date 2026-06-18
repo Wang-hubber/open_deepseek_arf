@@ -27,6 +27,16 @@ class TestAskUser:
         assert result["ok"] is True
         assert result["options"] == []
 
+    @pytest.mark.anyio
+    async def test_ask_user_with_context_and_task_id(self):
+        from arf.skills import ask_user_tool
+        result = await ask_user_tool.execute(
+            question="选哪个?", options=["X", "Y"],
+            context="配置文件歧义", task_id="task_42",
+        )
+        assert result["context"] == "配置文件歧义"
+        assert result["task_id"] == "task_42"
+
 
 class TestHITLRoundEnd:
     @pytest.fixture(autouse=True)
