@@ -1,6 +1,15 @@
 name: a2a_teammates
 enabled: true
 description: "Peer team collaboration — multi-agent group with shared session index and peer messaging"
+tools:
+  - send_peer_message
+hooks:
+  session_start: side
+  pre_action: blocking
+  session_park: blocking
+  round_end: side
+  task_completed: side
+  session_end: side
 config:
   group_id: ""
   members: []

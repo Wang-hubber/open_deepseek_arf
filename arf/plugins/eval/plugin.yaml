@@ -1,6 +1,7 @@
 name: eval
-hooks: []  # offline, not hook-mounted
 enabled: true
+description: "Benchmark-driven agent evaluation — runner, comparator, LLM metrics"
+hooks: []
 config:
   trace_dir: ./data/traces
   eval_dir: ./eval

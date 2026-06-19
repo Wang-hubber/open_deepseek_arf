@@ -1,7 +1,13 @@
 name: undo
-hooks:
-  - round_start
-  - round_end
 enabled: true
+description: "Round-level checkpoint and rollback — workspace + state snapshot per round"
+tools:
+  - undo
+  - checkpoint_count
+skills:
+  - round_manager
+hooks:
+  round_start: blocking
+  round_end: blocking
 config:
   max_undo_depth: 3

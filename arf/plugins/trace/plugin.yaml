@@ -1,15 +1,16 @@
 name: trace
-hooks:
-  - session_start
-  - session_end
-  - round_start
-  - round_end
-  - turn_start
-  - turn_end
-  - pre_action
-  - post_action
-  - error
 enabled: true
+description: "Per-session JSONL trace writer — captures all lifecycle events"
+hooks:
+  session_start: side
+  session_end: side
+  round_start: side
+  round_end: side
+  turn_start: side
+  turn_end: side
+  pre_action: side
+  post_action: side
+  error: side
 config:
   trace_dir: ./data/traces
   plugins_root: ./arf/plugins

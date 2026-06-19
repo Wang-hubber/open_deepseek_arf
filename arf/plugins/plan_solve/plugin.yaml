@@ -1,5 +1,13 @@
 name: plan_solve
 enabled: true
 description: "Task planning and execution with dependency tracking and contract enforcement"
+tools:
+  - plan_dispatch
+  - plan_summarize
+skills:
+  - planning
+hooks:
+  pre_action: blocking
+  round_start: side
 config:
   workspace_dir: ""

@@ -1,6 +1,8 @@
 name: tool_guard
 enabled: true
 description: "Unified tool permission + security check"
+hooks:
+  pre_action: blocking
 config:
   deny: []
   ask: []

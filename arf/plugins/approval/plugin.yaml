@@ -1,6 +1,8 @@
 name: approval
 enabled: true
 description: "Human-in-the-loop tool approval"
+hooks:
+  pre_action: blocking
 config:
   timeout: 60.0
   ask_list: []

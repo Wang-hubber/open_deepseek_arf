@@ -1,6 +1,13 @@
 name: a2a_subagents
 enabled: true
 description: "Agent-to-Agent sub-agent communication — Task Delegation via QueuedTaskDelegator"
+tools:
+  - delegate_task
+hooks:
+  session_start: side
+  pre_action: blocking
+  round_end: blocking
+  session_end: side
 config:
   max_concurrent_tasks: 3
   max_task_timeout: 600
