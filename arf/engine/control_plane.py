@@ -41,6 +41,7 @@ class ControlPlane:
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
         hitl_timeout: float = 300.0,
+        session_timeout: float | None = None,  # deprecated, kept for BaseAgent compat
         session_mode_manager: SessionModeManager | None = None,
         hitl: "HITLProtocol | None" = None,
         task_lifecycle: "TaskLifecycleProtocol | None" = None,

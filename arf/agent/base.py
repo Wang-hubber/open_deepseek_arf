@@ -479,6 +479,8 @@ class BaseAgent:
             if master_key:
                 secrets_store = SecretsStore(
                     data_dir=str(_data_dir), master_key=master_key)
+            else:
+                mem_cfg.secrets.enabled = False  # no key → disable secrets
 
         memory_index = MemoryIndex(
             data_dir=str(_data_dir), config=mem_cfg,
