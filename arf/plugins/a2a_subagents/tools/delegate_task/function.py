@@ -223,6 +223,25 @@ async def execute(
                 timeout=effective_timeout,
             )
         finally:
+            # Complete park condition before lifecycle restoration
+            # so sub_state is still valid on exception paths
+            _park_wait_id = t.get("_park_wait_id")
+            if _park_wait_id and _park_coordinator is not None:
+                from arf.plugins.a2a_subagents.plugin import A2APlugin
+                _park_content = sub_state.get("messages", [])[-1].get("content", "") \
+                    if sub_state.get("messages") else ""
+                _formatted = A2APlugin._format_result(
+                    t.get("_delegator_task_id", ""),
+                    {
+                        "content": _park_content,
+                        "turn_count": sub_state.get("current_turn", 0),
+                        "gate_exceeded": False,
+                    },
+                )
+                await _park_coordinator.complete(
+                    sub_state, _park_wait_id,
+                    {"content": _formatted, "task_id": t.get("task_id", "")},
+                )
             _engine._task_lifecycle = _original_lifecycle
 
         sub_state["_tool_calls_summary"] = tool_calls
@@ -243,25 +262,6 @@ async def execute(
                 )
             except Exception:
                 pass  # delegator.complete is idempotent — ignore race
-
-            # Complete park condition
-            _park_wait_id = t.get("_park_wait_id")
-            if _park_wait_id and _park_coordinator is not None:
-                from arf.plugins.a2a_subagents.plugin import A2APlugin
-                _content = sub_state.get("messages", [])[-1].get("content", "") \
-                    if sub_state.get("messages") else ""
-                _formatted = A2APlugin._format_result(
-                    t.get("_delegator_task_id", ""),
-                    {
-                        "content": _content,
-                        "turn_count": sub_state.get("current_turn", 0),
-                        "gate_exceeded": False,
-                    },
-                )
-                await _park_coordinator.complete(
-                    sub_state, _park_wait_id,
-                    {"content": _formatted, "task_id": t.get("task_id", "")},
-                )
 
         return {"ok": True, "final_state": sub_state}
 
@@ -597,6 +597,7 @@ async def _dispatch_external(
                             {"content": _formatted, "task_id": t.get("_delegator_task_id", "")},
                         )
                         await sub_agent.state_store.put(t["_parent_sid"], parent_state)
+                    t["_park_wait_id"] = ""  # mark completed — guard in finally
 
             await event_queue.put(None)
 
@@ -608,6 +609,29 @@ async def _dispatch_external(
                 "file_changes": file_changes,
             }
         finally:
+            # Complete park condition on early-return paths (timeout, stop,
+            # exception) that bypass the normal park completion above
+            _park_wait_id = t.get("_park_wait_id")
+            if _park_wait_id and _registry.park_coordinator is not None:
+                _park_pc = _registry.park_coordinator
+                _park_parent_state = await sub_agent.state_store.get(
+                    t.get("_parent_sid", parent_sid))
+                if _park_parent_state:
+                    from arf.plugins.a2a_subagents.plugin import A2APlugin
+                    _park_formatted = A2APlugin._format_result(
+                        t.get("_delegator_task_id", ""),
+                        {
+                            "content": _registry.running_sub_agents.get(rid, {}).get("result", ""),
+                            "turn_count": 0,
+                            "gate_exceeded": True,
+                        },
+                    )
+                    await _park_pc.complete(
+                        _park_parent_state, _park_wait_id,
+                        {"content": _park_formatted, "task_id": t.get("_delegator_task_id", "")},
+                    )
+                    await sub_agent.state_store.put(t.get("_parent_sid", parent_sid), _park_parent_state)
+
             await sub_agent.stop()
             async def _delayed_cleanup():
                 await asyncio.sleep(30)

@@ -22,7 +22,7 @@ class _A2ARegistry:
         self.runtime_task_ids: dict[str, str] = {}
         self.cancel_events: dict[str, asyncio.Event] = {}
         self.child_resume: str = "auto"
+        self.park_coordinator: object | None = None
 
 
 _registry = _A2ARegistry()
-park_coordinator = None  # injected by A2APlugin from ctx.hook_data
