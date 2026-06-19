@@ -812,3 +812,16 @@ async def test_multiple_senders_reply_to_all(temp_data_dir):
     data_replies = [m async for m in bus.receive("data")]
     assert len(data_replies) == 1
     assert "report" in data_replies[0].payload["message"]
+
+
+def test_peer_team_plugin_hooks_include_reply_capture():
+    """Plugin hooks should include round_end and task_completed."""
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+    ]})
+    hooks = plugin.hooks
+    assert hooks["pre_action"] == "blocking"
+    assert hooks["round_end"] == "side"
+    assert hooks["task_completed"] == "side"
+    assert hooks["session_start"] == "side"
+    assert hooks["session_end"] == "side"
