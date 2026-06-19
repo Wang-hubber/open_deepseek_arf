@@ -185,7 +185,7 @@ class PeerTeamPlugin:
             return
 
         state = ctx.state
-        pending = state.pop("_pending_peer_reply", None)
+        pending = state.get("_pending_peer_reply")
         if not pending:
             return
 
@@ -202,7 +202,11 @@ class PeerTeamPlugin:
                 break
 
         if not last_reply:
+            # No reply ready yet — keep pending for the next round_end
             return
+
+        # Only pop AFTER confirming we have a reply to forward
+        state.pop("_pending_peer_reply", None)
 
         import uuid
         group_id, role = parsed
