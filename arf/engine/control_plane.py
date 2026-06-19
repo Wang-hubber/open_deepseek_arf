@@ -1130,7 +1130,13 @@ class ControlPlane:
         for im in (injected_msgs or []):
             if im.get("content"):
                 msgs.append({"role": "system", "content": im["content"]})
-        # User/assistant/tool messages (skip any system messages from state)
+        # Collect system messages from state — plugins may inject
+        # system messages dynamically (e.g. a2a_teammates team context).
+        # These are converted to API system messages so the model sees them.
+        for m in messages:
+            if m.get("role") == "system" and m.get("content"):
+                msgs.append({"role": "system", "content": m["content"]})
+        # User/assistant/tool messages
         for m in messages:
             if m.get("role") == "system":
                 continue
@@ -1160,7 +1166,7 @@ class ControlPlane:
             if not isinstance(m, dict):
                 raise MessageContractError(f"Message {i} is not a dict: {type(m)}")
             role = m.get("role", "")
-            if role not in ("user", "assistant", "tool"):
+            if role not in ("user", "assistant", "tool", "system"):
                 raise MessageContractError(f"Message {i} has invalid role: {role}")
 
         # First message must be user
@@ -1170,16 +1176,21 @@ class ControlPlane:
     async def _handle_error(self, exc: Exception, ctx: PluginContext) -> dict:
         """Fire error hook. Returns recovery decision or raises.
 
-        Trace-captures every decision. Raises SessionAbortedError when
-        no recovery strategy exists. Flushes trace before re-raising so
-        error evidence persists to JSONL.
+        Injects error_dispatch events via ctx.inject_engine_event on ALL
+        paths so TracePlugin captures them in the JSONL trace — even when
+        the error_handler decides retry and the turn loop recreates ctx.
         """
         ctx.hook_data["exception"] = exc
         try:
             await self._fire_blocking("error", ctx)
         except Exception as hook_err:
-            self._emit_error_event(ctx, exc, f"error_hook_failed: {hook_err}")
-            self._emit_decision_event(ctx, exc, "abort", "error_hook_failed")
+            ctx.inject_engine_event("error_dispatch", {
+                "exception": type(exc).__name__,
+                "message": str(exc)[:300],
+                "decision": "fatal",
+                "reason": f"error_hook_failed: {hook_err}",
+            })
+            await self._fire_side("error", ctx)
             await self._flush_trace(ctx)
             raise SessionAbortedError(
                 f"Error handler hook failed: {hook_err}"
@@ -1187,14 +1198,26 @@ class ControlPlane:
 
         decision = ctx.hook_data.get("_recovery_decision")
         if not decision:
-            self._emit_error_event(ctx, exc, "no_recovery_decision")
+            ctx.inject_engine_event("error_dispatch", {
+                "exception": type(exc).__name__,
+                "message": str(exc)[:300],
+                "decision": "fatal",
+                "reason": "no_recovery_decision",
+            })
+            await self._fire_side("error", ctx)
             await self._flush_trace(ctx)
             raise SessionAbortedError(
                 f"No recovery strategy: {exc}"
             ) from exc
 
         reason = decision.get("reason", "")
-        self._emit_decision_event(ctx, exc, decision.get("recovery", "unknown"), reason)
+        ctx.inject_engine_event("error_dispatch", {
+            "exception": type(exc).__name__,
+            "message": str(exc)[:300],
+            "decision": decision.get("recovery", "unknown"),
+            "reason": reason,
+        })
+        await self._fire_side("error", ctx)
         return decision
 
     async def _dispatch_error(self, exc: Exception, state: dict, ctx: PluginContext) -> bool:
@@ -1202,12 +1225,8 @@ class ControlPlane:
         try:
             decision = await self._handle_error(exc, ctx)
         except Exception:
-            ctx.inject_engine_event("error_dispatch", {
-                "exception": type(exc).__name__,
-                "message": str(exc)[:300],
-                "decision": "fatal",
-                "reason": "error_handler raised exception",
-            })
+            # _handle_error already injected error_dispatch and fired side
+            # hooks before raising — this catch is a safety net only.
             return True
 
         recovery = decision.get("recovery", "")
@@ -1226,6 +1245,7 @@ class ControlPlane:
                         "decision": "fatal",
                         "reason": f"recovery handler '{recovery}' failed: {handler_exc}",
                     })
+                    await self._fire_side("error", ctx)
                     return True  # handler failure → break, don't mask original error
             else:
                 logger.warning("No recovery handler registered for '%s'", recovery)
@@ -1264,24 +1284,6 @@ class ControlPlane:
         """Fire side hooks for post_action to drain pending trace events."""
         await self._fire_side("post_action", ctx)
 
-    def _emit_decision_event(self, ctx: PluginContext, exc: Exception,
-                             action: str, reason: str) -> None:
-        """Emit an error event capturing the error_handler decision for trace."""
-        event = AgentEvent(
-            type="error",
-            data={
-                "phase": ctx.current_step or "action",
-                "detail": f"error_handler: {action} ({reason})",
-                "exception": type(exc).__name__,
-                "message": str(exc)[:300],
-                "action": action,
-                "reason": reason,
-            },
-            session_id=ctx.session_id,
-        )
-        if self.event_bus:
-            self.event_bus.emit(event)
-
     def _emit_mcp_error_event(self, session_id: str, exc: Exception) -> None:
         """Emit MCP error to trace — MCP failures should be visible."""
         event = AgentEvent(
@@ -1293,21 +1295,6 @@ class ControlPlane:
                 "message": str(exc)[:300],
             },
             session_id=session_id,
-        )
-        if self.event_bus:
-            self.event_bus.emit(event)
-
-    def _emit_error_event(self, ctx: PluginContext, exc: Exception, detail: str) -> None:
-        """Emit an error event to the trace — does not affect control flow."""
-        event = AgentEvent(
-            type="error",
-            data={
-                "phase": ctx.current_step,
-                "exception": type(exc).__name__,
-                "detail": detail,
-                "message": str(exc)[:300],
-            },
-            session_id=ctx.session_id,
         )
         if self.event_bus:
             self.event_bus.emit(event)
@@ -1326,8 +1313,8 @@ class ControlPlane:
         """Fire post_action hooks to flush pending trace events to JSONL.
 
         Called before raising SessionAbortedError so error decision events
-        injected by _emit_decision_event are persisted. Failure to flush
-        is itself swallowed — we're already in an error path.
+        are persisted. Failure to flush is itself swallowed — we're already
+        in an error path.
         """
         try:
             await self._fire_blocking("post_action", ctx)

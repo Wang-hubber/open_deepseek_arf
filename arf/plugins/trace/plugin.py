@@ -69,6 +69,7 @@ class TracePlugin:
             "turn_end": "side",
             "pre_action": "side",
             "post_action": "side",
+            "error": "side",
         }
 
     async def on_hook(self, hook_name: str, context: PluginContext) -> None:
