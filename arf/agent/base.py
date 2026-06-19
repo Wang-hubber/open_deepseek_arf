@@ -124,6 +124,8 @@ class BaseAgent:
         import arf.skills.ask_user_tool as _ask_user_mod
         mcp_manager.register_kernel_tool("use_skill", _use_skill_mod.execute)
         mcp_manager.register_kernel_tool("ask_user", _ask_user_mod.execute)
+        import arf.skills.task_complete_tool as _task_complete_mod
+        mcp_manager.register_kernel_tool("task_complete", _task_complete_mod.execute)
 
         # Memory write kernel tools — wired later after MemoryIndex init
         import arf.memory.tools.write_project_memory as _wpm
