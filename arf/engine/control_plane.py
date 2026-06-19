@@ -791,7 +791,7 @@ class ControlPlane:
             raw_results[tc["id"]] = {
                 "tool_name": tc.get("name", ""),
                 "success": r.success if r else False,
-                "data": str(r.data) if r and r.success and r.data else "",
+                "data": json.dumps(r.data, ensure_ascii=False) if r and r.success and r.data else "",
                 "error": str(r.error) if r and r.error else "",
                 "duration_ms": r.duration_ms if r else 0,
                 "turn": turn,
