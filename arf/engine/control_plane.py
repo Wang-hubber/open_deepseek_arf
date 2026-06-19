@@ -44,6 +44,7 @@ class ControlPlane:
         session_mode_manager: SessionModeManager | None = None,
         hitl: "HITLProtocol | None" = None,
         task_lifecycle: "TaskLifecycleProtocol | None" = None,
+        park_coordinator: "ParkCoordinator | None" = None,
     ):
         self.loop_strategy = None  # removed — kept for compat during migration
         self.gate = GateChecker(max_turns=max_turns, max_tokens=max_tokens)
@@ -78,6 +79,7 @@ class ControlPlane:
             task_lifecycle = DefaultTaskLifecycle(event_bus)
         self._hitl = hitl
         self._task_lifecycle = task_lifecycle
+        self._park_coordinator = park_coordinator
 
         self._blocking = InProcessHookRunner(blocking_plugins or [])
         self._side = SubprocessHookRunner(side_plugins or [])
@@ -444,10 +446,26 @@ class ControlPlane:
                 )
                 break
 
-            # No new user/system input after round — give plugins a chance
-            # to inject continuation input (e.g. peer messages from AgentBus).
+            # No new user/system input after round — park and wait for
+            # conditions registered by plugins (HITL / subagent / peer).
             msgs = state.get("messages", [])
             if msgs and msgs[-1].get("role") not in ("user", "system"):
+                if self._park_coordinator is not None:
+                    parked = await self._park_coordinator.park_round(
+                        state, self._cancel_event,
+                    )
+                    if parked is None:
+                        ctx.inject_engine_event("round_exit", {
+                            "reason": "no_pending_conditions",
+                        })
+                        break
+                    ctx.inject_engine_event("park_resolved", {
+                        "wait_id": parked,
+                    })
+                    continue  # back to round loop → new round_start
+
+                # Fallback: legacy fire_blocking for plugins that still
+                # register session_park hooks directly.
                 park_ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
                 park_ctx.hook_data["_park_timeout"] = state.get("_park_timeout", None)
                 park_ctx.hook_data["_hitl"] = self._hitl
@@ -455,14 +473,14 @@ class ControlPlane:
                 park_ctx.hook_data["_data_dir"] = str(self._data_dir)
                 await self._fire_blocking("session_park", park_ctx)
 
-                # Re-check — plugins may have injected new messages
+                # Re-check — legacy plugins may have injected new messages
                 msgs = state.get("messages", [])
                 if msgs and msgs[-1].get("role") in ("user", "system"):
                     ctx.inject_engine_event("round_continued", {
                         "reason": "session_park_injected",
                         "last_role": msgs[-1].get("role"),
                     })
-                    continue  # back to while loop top → new round_start
+                    continue
 
                 ctx.inject_engine_event("round_exit", {
                     "reason": "no_user_input",
