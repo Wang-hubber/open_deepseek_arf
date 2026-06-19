@@ -46,3 +46,5 @@ class AgentEvent:
     session_id: str = ""
     agent_name: str = ""
     turn: int = 0
+    primitive: str = ""   # "input" | "action" | "output" | "wait"
+    level: str = ""       # "session" | "round" | "turn"

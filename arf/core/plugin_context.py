@@ -25,6 +25,10 @@ class PluginContext:
     turn: int = 0
     current_step: str = ""              # "call_model" | "execute_tools"
 
+    # Primitive phase tracking
+    primitive: str = ""                 # current Primitive (input/action/output/wait)
+    level: str = ""                     # current Level (session/round/turn)
+
     # Core data — full visibility
     state: AgentState = field(default_factory=dict)
     messages: list[dict] = field(default_factory=list)  # shortcut to state["messages"]
