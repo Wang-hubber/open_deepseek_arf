@@ -8,6 +8,7 @@ from arf.core.state import AgentState
 from arf.core.events import AgentEvent
 from arf.core.protocols import StateStore, ToolExecutor, EventBus
 from arf.core.plugin_context import PluginContext
+from arf.core.primitives import Primitive, Level
 from arf.engine.gate import GateChecker
 from arf.hooks.in_process_runner import InProcessHookRunner
 from arf.hooks.runner import SubprocessHookRunner
@@ -39,7 +40,6 @@ class ControlPlane:
         memory_dir: str = "./data/memory",
         mcp_tool_resolver: Callable | None = None,
         call_timeout: float | None = 120.0,
-        session_timeout: float | None = None,
         hitl_timeout: float = 300.0,
         session_mode_manager: SessionModeManager | None = None,
         hitl: "HITLProtocol | None" = None,
@@ -67,7 +67,6 @@ class ControlPlane:
         self._memory_dir = memory_dir
         self._mcp_tool_resolver = mcp_tool_resolver
         self._call_timeout = call_timeout
-        self._session_timeout = session_timeout
         self._hitl_timeout = hitl_timeout
         self._session_mode_manager = session_mode_manager or SessionModeManager(global_mode=SessionMode.ASK)
 
@@ -130,6 +129,20 @@ class ControlPlane:
             return 0
         return self._undo_plugin.checkpoint_count()
 
+    def _set_primitive_ctx(self, ctx: PluginContext, primitive: Primitive, level: Level) -> None:
+        """Annotate PluginContext with current primitive/level."""
+        ctx.primitive = primitive.value
+        ctx.level = level.value
+
+    def _yield_event(self, event: AgentEvent, primitive: Primitive | None = None,
+                     level: Level | None = None) -> AgentEvent:
+        """Yield an AgentEvent with primitive/level annotation."""
+        if primitive is not None:
+            event.primitive = primitive.value
+        if level is not None:
+            event.level = level.value
+        return event
+
     # ==================================================================
     # Session policy (was SessionModePlugin — absorbed into ControlPlane)
     # ==================================================================
@@ -165,6 +178,142 @@ class ControlPlane:
         return self._session_mode_manager.resolve(agent_policy)
 
     # ==================================================================
+    # Phase methods — input / action / output / wait
+    # ==================================================================
+
+    async def _phase_input(
+        self, state: AgentState, ctx: PluginContext, level: Level,
+    ):
+        """Yield events for the INPUT primitive at the given level."""
+        self._set_primitive_ctx(ctx, Primitive.INPUT, level)
+        session_id = state.get("session_id", "default")
+
+        if level == Level.SESSION:
+            event = self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
+            yield self._yield_event(event, Primitive.INPUT, Level.SESSION)
+            ctx.hook_data["_error_phase"] = "session_start"
+            await self._fire_blocking("session_start", ctx)
+            await self._fire_side("session_start", ctx)
+            state["_session_opened"] = True
+            state.setdefault("_task_start_round", 0)
+            self._injected_system_msgs = []
+            if self._skill_index is not None:
+                skill_md = self._skill_index.format_index_markdown()
+                if skill_md:
+                    self._injected_system_msgs.append(
+                        {"role": "system", "content": skill_md})
+            if self._inventory_text:
+                self._injected_system_msgs.append(
+                    {"role": "system", "content": self._inventory_text})
+            if self._memory_index is not None:
+                mem_msgs = self._memory_index.build_injected_messages()
+                self._injected_system_msgs.extend(mem_msgs)
+            return
+
+        if level == Level.ROUND:
+            self._interaction_round += 1
+            state["interaction_round"] = self._interaction_round
+            messages = state.get("messages", [])
+            user_count = sum(1 for m in messages if m.get("role") == "user")
+            if user_count > state.get("_last_injected_user_count", 0):
+                state["_last_injected_user_count"] = user_count
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        yield self._yield_event(
+                            self._make_event("user_input", {
+                                "content": m.get("content", ""),
+                            }, session_id=session_id),
+                            Primitive.INPUT, Level.ROUND,
+                        )
+                        break
+            ctx.hook_data["_error_phase"] = "round_start"
+            await self._fire_blocking("round_start", ctx)
+            await self._fire_side("round_start", ctx)
+            return
+
+        if level == Level.TURN:
+            turn = state.get("current_turn", 0) + 1
+            state["current_turn"] = turn
+            ctx.hook_data["_error_phase"] = "turn_start"
+            await self._fire_blocking("turn_start", ctx)
+            await self._fire_side("turn_start", ctx)
+            return
+
+    async def _phase_action_model(self, state: AgentState, ctx: PluginContext):
+        """Yield events for model_call ACTION (pre_action hook + model call)."""
+        self._set_primitive_ctx(ctx, Primitive.ACTION, Level.TURN)
+
+        ctx.current_step = "call_model"
+        ctx.hook_data["_error_phase"] = "pre_action"
+        async for event in self._fire_and_drain("pre_action", ctx):
+            yield self._yield_event(event, Primitive.ACTION, Level.TURN)
+
+        ctx.hook_data["_error_phase"] = "model_call"
+        async for event in self._action_call_model(state, ctx):
+            yield self._yield_event(event, Primitive.ACTION, Level.TURN)
+
+    async def _phase_action_tools(self, state: AgentState, ctx: PluginContext,
+                                  pending_tool_calls: list):
+        """Yield events for tool_execution ACTION (pre_action hook + execute tools)."""
+        self._set_primitive_ctx(ctx, Primitive.ACTION, Level.TURN)
+
+        ctx.current_step = "execute_tools"
+        ctx.hook_data["effective_mode"] = self._session_mode_manager.resolve(None)
+        ctx.hook_data["_pending_tool_calls"] = pending_tool_calls
+        ctx.hook_data["_error_phase"] = "pre_action"
+        async for event in self._fire_and_drain("pre_action", ctx):
+            yield self._yield_event(event, Primitive.ACTION, Level.TURN)
+
+        ctx.hook_data["_error_phase"] = "execute_tools"
+        async for event in self._action_execute_tools(state, ctx):
+            yield self._yield_event(event, Primitive.ACTION, Level.TURN)
+
+    async def _phase_output(self, state: AgentState, ctx: PluginContext, level: Level) -> None:
+        """Fire output hooks at the given level."""
+        self._set_primitive_ctx(ctx, Primitive.OUTPUT, level)
+
+        if level == Level.TURN:
+            ctx.hook_data["_error_phase"] = "post_action"
+            await self._fire_blocking("post_action", ctx)
+            await self._fire_side("post_action", ctx)
+            ctx.hook_data["_error_phase"] = "turn_end"
+            await self._fire_blocking("turn_end", ctx)
+            await self._fire_side("turn_end", ctx)
+            return
+
+        if level == Level.ROUND:
+            ctx.hook_data["_error_phase"] = "round_end"
+            await self._fire_blocking("round_end", ctx)
+            await self._fire_side("round_end", ctx)
+            return
+
+        # Level.SESSION output is handled by close()
+
+    async def _phase_wait(self, state: AgentState, ctx: PluginContext) -> str | None:
+        """Park until external condition resolves. Returns resolved wait_id or None."""
+        self._set_primitive_ctx(ctx, Primitive.WAIT, Level.ROUND)
+        session_id = state.get("session_id", "default")
+
+        if self._park_coordinator is not None:
+            parked = await self._park_coordinator.park_round(
+                state, self._cancel_event,
+            )
+            if parked is not None:
+                ctx.inject_engine_event("park_resolved", {"wait_id": parked})
+                return parked
+            ctx.inject_engine_event("round_exit", {"reason": "no_pending_conditions"})
+            return None
+
+        # Fallback: legacy session_park hooks
+        park_ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
+        park_ctx.hook_data["_park_timeout"] = state.get("_park_timeout", None)
+        park_ctx.hook_data["_hitl"] = self._hitl
+        park_ctx.hook_data["_cancel_event"] = self._cancel_event
+        park_ctx.hook_data["_data_dir"] = str(self._data_dir)
+        await self._fire_blocking("session_park", park_ctx)
+        return None
+
+    # ==================================================================
     # Core execution loop
     # ==================================================================
 
@@ -176,44 +325,15 @@ class ControlPlane:
 
         ctx = self._make_ctx(state, session_id, 0, "")
 
-        # --- session_start (only on first call) ---
+        # --- SESSION INPUT ---
         if not state.get("_session_opened"):
-            yield self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
-            ctx.hook_data["_error_phase"] = "session_start"
             try:
-                await self._fire_blocking("session_start", ctx)
-                await self._fire_side("session_start", ctx)
+                async for event in self._phase_input(state, ctx, Level.SESSION):
+                    yield event
             except Exception as e:
                 await self._dispatch_error(e, state, ctx)
             state["_session_opened"] = True
-            state.setdefault("_task_start_round", 0)
 
-            # Build injected system messages: skills → tools → memory
-            self._injected_system_msgs = []
-            if self._skill_index is not None:
-                skill_md = self._skill_index.format_index_markdown()
-                if skill_md:
-                    self._injected_system_msgs.append(
-                        {"role": "system", "content": skill_md})
-            if self._inventory_text:
-                self._injected_system_msgs.append(
-                    {"role": "system", "content": self._inventory_text})
-
-            # Inject memory layers (project, user, secrets)
-            if self._memory_index is not None:
-                mem_msgs = self._memory_index.build_injected_messages()
-                self._injected_system_msgs.extend(mem_msgs)
-
-        # --- user_input (once per astream call) ---
-        messages = state.get("messages", [])
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                yield self._make_event("user_input", {
-                    "content": m.get("content", ""),
-                }, session_id=session_id)
-                break
-
-        # --- round loop ---
         aborted = False
         completed = False
         while not aborted and not completed:
@@ -224,39 +344,24 @@ class ControlPlane:
                     yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
                 break
 
-            # --- round_start ---
-            self._interaction_round += 1
-            state["interaction_round"] = self._interaction_round
+            # --- ROUND INPUT ---
             ctx = self._make_ctx(state, session_id, 0, "")
-
-            # Inject user_input for this round (dedup by message count)
-            messages = state.get("messages", [])
-            user_count = sum(1 for m in messages if m.get("role") == "user")
-            if user_count > state.get("_last_injected_user_count", 0):
-                state["_last_injected_user_count"] = user_count
-                for m in reversed(messages):
-                    if m.get("role") == "user":
-                        ctx.inject_engine_event("user_input", {
-                            "content": m.get("content", ""),
-                        })
-                        break
-
-            ctx.hook_data["_error_phase"] = "round_start"
+            ctx.inject_engine_event("user_input", {
+                "content": next((m.get("content", "") for m in reversed(state.get("messages", []))
+                                 if m.get("role") == "user"), ""),
+            })
             try:
-                await self._fire_blocking("round_start", ctx)
-                await self._fire_side("round_start", ctx)
+                async for event in self._phase_input(state, ctx, Level.ROUND):
+                    yield event
             except Exception as e:
                 if await self._dispatch_error(e, state, ctx):
                     break
                 continue
 
-            # --- turn loop ---
+            # --- TURN LOOP ---
             primitive = None
             while True:
                 turn = state.get("current_turn", 0) + 1
-                state["current_turn"] = turn
-
-                # Gate check at top — bounds every iteration including retry/skip
                 if self.gate.is_exceeded(
                     current_turn=turn,
                     total_tokens=state.get("_total_tokens", 0),
@@ -278,37 +383,9 @@ class ControlPlane:
 
                 ctx = self._make_ctx(state, session_id, turn, "")
 
-                # --- turn_start ---
-                ctx.hook_data["_error_phase"] = "turn_start"
+                # --- TURN INPUT ---
                 try:
-                    await self._fire_blocking("turn_start", ctx)
-                    await self._fire_side("turn_start", ctx)
-                except Exception as e:
-                    if await self._dispatch_error(e, state, ctx):
-                        aborted = True
-                        break
-                    continue
-
-                # --- pre_action: call_model ---
-                ctx.current_step = "call_model"
-                ctx.hook_data["_error_phase"] = "pre_action"
-                logger.debug("cp pre_action ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
-                try:
-                    async for event in self._fire_and_drain("pre_action", ctx):
-                        yield event
-                except Exception as e:
-                    logger.exception("DEBUG cp pre_action ERROR sid=%s: %s", session_id, e)
-                    if await self._dispatch_error(e, state, ctx):
-                        aborted = True
-                        break
-                    continue
-                logger.debug("cp pre_action EXIT sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
-
-                # --- dispatch: model_call ---
-                ctx.hook_data["_error_phase"] = "model_call"
-                logger.debug("cp model_call ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
-                try:
-                    async for event in self._action_call_model(state, ctx):
+                    async for event in self._phase_input(state, ctx, Level.TURN):
                         yield event
                 except Exception as e:
                     if await self._dispatch_error(e, state, ctx):
@@ -316,7 +393,17 @@ class ControlPlane:
                         break
                     continue
 
-                # Snapshot pending_tool_calls BEFORE execute_tools pops them
+                # --- TURN ACTION: model_call ---
+                try:
+                    async for event in self._phase_action_model(state, ctx):
+                        yield event
+                except Exception as e:
+                    if await self._dispatch_error(e, state, ctx):
+                        aborted = True
+                        break
+                    continue
+
+                # Snapshot tool calls BEFORE execute_tools pops them
                 pending_tool_calls = list(state.get("_pending_tool_calls", []))
                 has_tool_calls = bool(pending_tool_calls)
                 ctx.inject_engine_event("turn_decision", {
@@ -324,15 +411,12 @@ class ControlPlane:
                     "pending_tools": [t.get("name", "") for t in pending_tool_calls],
                 })
 
-                # --- pre_action + dispatch: execute_tools (if model returned tool_calls) ---
+                # --- TURN ACTION: execute_tools ---
                 if has_tool_calls:
-                    ctx.current_step = "execute_tools"
-                    # Inject effective session mode into hook_data (absorbed from SessionModePlugin)
-                    ctx.hook_data["effective_mode"] = self._session_mode_manager.resolve(None)
-                    ctx.hook_data["_pending_tool_calls"] = pending_tool_calls
-                    ctx.hook_data["_error_phase"] = "pre_action"
                     try:
-                        async for event in self._fire_and_drain("pre_action", ctx):
+                        async for event in self._phase_action_tools(
+                            state, ctx, pending_tool_calls,
+                        ):
                             yield event
                     except Exception as e:
                         if await self._dispatch_error(e, state, ctx):
@@ -340,32 +424,9 @@ class ControlPlane:
                             break
                         continue
 
-                    ctx.hook_data["_error_phase"] = "execute_tools"
-                    try:
-                        async for event in self._action_execute_tools(state, ctx):
-                            yield event
-                    except Exception as e:
-                        if await self._dispatch_error(e, state, ctx):
-                            aborted = True
-                            break
-                        continue
-
-                # --- post_dispatch ---
-                ctx.hook_data["_error_phase"] = "post_action"
+                # --- TURN OUTPUT ---
                 try:
-                    await self._fire_blocking("post_action", ctx)
-                    await self._fire_side("post_action", ctx)
-                except Exception as e:
-                    if await self._dispatch_error(e, state, ctx):
-                        aborted = True
-                        break
-                    continue
-
-                # --- turn_end ---
-                ctx.hook_data["_error_phase"] = "turn_end"
-                try:
-                    await self._fire_blocking("turn_end", ctx)
-                    await self._fire_side("turn_end", ctx)
+                    await self._phase_output(state, ctx, Level.TURN)
                 except Exception as e:
                     if await self._dispatch_error(e, state, ctx):
                         aborted = True
@@ -374,19 +435,16 @@ class ControlPlane:
 
                 await self.state_store.put(session_id, state)
 
-                # Text-only response (no tool_calls) → round complete
                 if not has_tool_calls:
                     ctx.inject_engine_event("turn_exit", {"reason": "no_tool_calls"})
                     if stop_on_text:
                         completed = True
                     break
 
-                # Check for primitive signal — exit turn loop
                 primitive = state.pop("_primitive_result", None)
                 if primitive:
                     break
 
-                # Gate check — terminate if budget exceeded
                 if self.gate.is_exceeded(
                     current_turn=turn,
                     total_tokens=state.get("_total_tokens", 0),
@@ -406,27 +464,20 @@ class ControlPlane:
                     )
                     break
 
-            # --- round_end ---
-            ctx.hook_data["_error_phase"] = "round_end"
-            round_end_error_recovered = False
+            # --- ROUND OUTPUT ---
             try:
-                await self._fire_blocking("round_end", ctx)
-                await self._fire_side("round_end", ctx)
+                await self._phase_output(state, ctx, Level.ROUND)
             except Exception as e:
                 if await self._dispatch_error(e, state, ctx):
                     break
                 ctx.inject_engine_event("round_end_warning", {
                     "detail": f"round_end hook error recovered: {e}",
                 })
-                round_end_error_recovered = True
-                # Fall through to gate/exit checks below
 
-            # -- task_completed hook (after round_end, if triggered) --
             if primitive == "task_completed":
                 await self._fire_task_completed_hook(ctx, state)
                 state["_task_start_round"] = ctx.interaction_round + 1
 
-            # Gate check at round level too
             if self.gate.is_exceeded(
                 current_turn=state.get("current_turn", 0),
                 total_tokens=state.get("_total_tokens", 0),
@@ -446,49 +497,31 @@ class ControlPlane:
                 )
                 break
 
-            # No new user/system input after round — park and wait for
-            # conditions registered by plugins (HITL / subagent / peer).
+            # --- ROUND WAIT ---
             msgs = state.get("messages", [])
             if msgs and msgs[-1].get("role") not in ("user", "system"):
-                if self._park_coordinator is not None:
-                    parked = await self._park_coordinator.park_round(
-                        state, self._cancel_event,
-                    )
-                    if parked is None:
-                        ctx.inject_engine_event("round_exit", {
-                            "reason": "no_pending_conditions",
+                parked = await self._phase_wait(state, ctx)
+                if parked is None:
+                    # Legacy session_park re-check
+                    msgs = state.get("messages", [])
+                    if msgs and msgs[-1].get("role") in ("user", "system"):
+                        ctx.inject_engine_event("round_continued", {
+                            "reason": "session_park_injected",
+                            "last_role": msgs[-1].get("role"),
                         })
-                        break
-                    ctx.inject_engine_event("park_resolved", {
-                        "wait_id": parked,
+                        continue
+                    ctx.inject_engine_event("round_exit", {
+                        "reason": "no_pending_conditions",
                     })
-                    continue  # back to round loop → new round_start
+                    break
+                continue  # park resolved → next round
 
-                # Fallback: legacy fire_blocking for plugins that still
-                # register session_park hooks directly.
-                park_ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
-                park_ctx.hook_data["_park_timeout"] = state.get("_park_timeout", None)
-                park_ctx.hook_data["_hitl"] = self._hitl
-                park_ctx.hook_data["_cancel_event"] = self._cancel_event
-                park_ctx.hook_data["_data_dir"] = str(self._data_dir)
-                await self._fire_blocking("session_park", park_ctx)
+            ctx.inject_engine_event("round_exit", {
+                "reason": "no_user_input",
+                "last_message_role": msgs[-1].get("role") if msgs else "N/A",
+            })
+            break
 
-                # Re-check — legacy plugins may have injected new messages
-                msgs = state.get("messages", [])
-                if msgs and msgs[-1].get("role") in ("user", "system"):
-                    ctx.inject_engine_event("round_continued", {
-                        "reason": "session_park_injected",
-                        "last_role": msgs[-1].get("role"),
-                    })
-                    continue
-
-                ctx.inject_engine_event("round_exit", {
-                    "reason": "no_user_input",
-                    "last_message_role": msgs[-1].get("role") if msgs else "N/A",
-                })
-                break
-
-        # Save state for continuation (session_end emitted by close())
         await self.state_store.put(session_id, state)
 
     # ==================================================================
@@ -1394,49 +1427,6 @@ class ControlPlane:
     # Public API
     # ==================================================================
 
-    async def invoke(self, state: AgentState) -> AgentState:
-        session_id = state.get("session_id", "default")
-        try:
-            try:
-                if self._session_timeout:
-                    await asyncio.wait_for(
-                        self._consume_execute(state), timeout=self._session_timeout
-                    )
-                else:
-                    async for _ in self._execute(state):
-                        pass
-            except (SessionAbortedError, asyncio.TimeoutError):
-                state["session_active"] = False
-                state["_aborted"] = True
-                state["_error"] = "Session aborted via error_handler decision or timeout"
-                if self.state_store:
-                    await self.state_store.put(session_id, state)
-            else:
-                # invoke() is a one-shot session — auto-close
-                await self._consume_close(state)
-        except Exception as exc:
-            # Unknown error — no recovery strategy, save state and re-raise
-            # so the caller (chat/astream consumer) can see the real exception.
-            state["session_active"] = False
-            state["_aborted"] = True
-            state["_error"] = str(exc)
-            logging.getLogger("arf").exception(
-                "invoke() session %s failed with unhandled error", session_id)
-            if self.state_store:
-                await self.state_store.put(session_id, state)
-            raise
-
-        if self.state_store:
-            saved = await self.state_store.get(session_id)
-            if saved:
-                return saved
-        return state
-
-    async def _consume_execute(self, state: AgentState):
-        """Coroutine wrapper — consumes _execute events for asyncio.wait_for."""
-        async for _ in self._execute(state):
-            pass
-
     async def astream(self, state: AgentState, stop_on_text: bool = False):
         session_id = state.get("session_id", "default")
         try:
@@ -1496,77 +1486,6 @@ class ControlPlane:
             )
             raise
 
-    async def resume(self, state: AgentState):
-        """Resume execution from saved state. No new user message appended.
-
-        Differs from astream(): does not require a user_message arg.
-        Restores turn/interaction_round counters from *state*, then enters
-        the execute loop directly. session_start preamble is skipped because
-        _session_opened is already True in the saved state.
-
-        Yields AgentEvent like astream().
-        """
-        session_id = state.get("session_id", "default")
-        self._current_session_id = session_id
-        self._interaction_round = state.get("interaction_round", 0)
-        state["interaction_round"] = self._interaction_round
-
-        try:
-            try:
-                async for event in self._execute(state):
-                    yield event
-            except SessionAbortedError:
-                state["_session_ended"] = True
-                state["session_active"] = False
-                state["_aborted"] = True
-                state["_error"] = "Session aborted via error_handler decision"
-                if self.state_store:
-                    await self.state_store.put(session_id, state)
-                yield self._make_event(
-                    "session_end",
-                    {"session_id": session_id, "reason": "aborted"},
-                    session_id=session_id,
-                )
-            except GeneratorExit:
-                # Client disconnected — persist state for recovery.
-                # Must NOT yield; GeneratorExit forbids it.
-                state["_session_ended"] = True
-                state["session_active"] = False
-                state["_aborted"] = True
-                state["_error"] = "Client disconnected"
-                if self.state_store:
-                    try:
-                        await self.state_store.put(session_id, state)
-                    except Exception:
-                        pass
-                return
-            else:
-                if not state.get("_session_ended"):
-                    state["_session_ended"] = True
-                    state["session_active"] = False
-                    if self.state_store:
-                        await self.state_store.put(session_id, state)
-                    yield self._make_event(
-                        "session_end",
-                        {"session_id": session_id, "reason": "completed"},
-                        session_id=session_id,
-                    )
-        except Exception as exc:
-            state["_session_ended"] = True
-            state["session_active"] = False
-            state["_aborted"] = True
-            state["_error"] = str(exc)
-            logging.getLogger("arf").exception(
-                "resume() session %s failed with unhandled error", session_id)
-            if self.state_store:
-                await self.state_store.put(session_id, state)
-            yield self._make_event(
-                "session_end",
-                {"session_id": session_id, "reason": "error", "error": str(exc)},
-                session_id=session_id,
-            )
-            raise
-
     async def close(self, state: AgentState):
         """Emit session_end + fire hooks + save state. Idempotent.
 
@@ -1594,14 +1513,10 @@ class ControlPlane:
 
         yield self._make_event("session_end", {"session_id": session_id}, session_id=session_id)
 
-    async def _consume_close(self, state: AgentState):
-        """Coroutine wrapper — consumes close() events for invoke()."""
-        async for _ in self.close(state):
-            pass
 
 
 class SessionAbortedError(Exception):
-    """Fatal — error_handler decided abort. Propagated to invoke() for cleanup."""
+    """Fatal — error_handler decided abort."""
 
 
 class MessageContractError(Exception):
