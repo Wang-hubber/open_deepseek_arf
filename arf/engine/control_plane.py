@@ -1439,6 +1439,10 @@ class ControlPlane:
                 return
             else:
                 if not state.get("_session_ended"):
+                    state["_session_ended"] = True
+                    state["session_active"] = False
+                    if self.state_store:
+                        await self.state_store.put(session_id, state)
                     yield self._make_event(
                         "session_end",
                         {"session_id": session_id, "reason": "completed"},
