@@ -517,11 +517,19 @@ class ControlPlane:
                         "reason": "no_pending_conditions",
                     })
                     break
-                # Park resolved — reload state to pick up injected results
-                # (complete() updates a fresh copy, not the parked instance)
-                fresh = await self.state_store.get(session_id)
-                if fresh:
-                    state.clear(); state.update(fresh)
+                # Park resolved — sync state with store.
+                # Peer: background task modified state in-place (same dict),
+                # so persist it before continuing. The reload would otherwise
+                # fetch a stale copy without the injected peer message.
+                # HITL/subagent: external handler or runner already saved a
+                # fresh copy via state_store.put — reload to pick it up.
+                cond_type = parked.split("_")[0] if parked else ""
+                if cond_type == "peer":
+                    await self.state_store.put(session_id, state)
+                else:
+                    fresh = await self.state_store.get(session_id)
+                    if fresh:
+                        state.clear(); state.update(fresh)
                 continue  # park resolved → next round
 
             ctx.inject_engine_event("round_exit", {
