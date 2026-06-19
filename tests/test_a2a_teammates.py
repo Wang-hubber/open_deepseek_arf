@@ -644,3 +644,163 @@ async def test_pre_action_skips_non_call_model_step(temp_data_dir):
     )
     await plugin._on_pre_action(ctx)
     assert len(ctx.state.get("messages", [])) == 0
+
+
+# ── Reply capture via hook tests ──────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_round_end_forwards_reply(temp_data_dir):
+    """round_end hook should forward last assistant message to pending senders."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Simulate: dev received a message from pm, processed it, produced reply
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "system", "content": "[Team Communication] ..."},
+                {"role": "user", "content": "[Peer message from pm]\nType: task_request\n\nbuild API"},
+                {"role": "assistant", "content": "API built successfully with 3 endpoints."},
+            ],
+            "_pending_peer_reply": [{"sender": "pm", "correlation_id": "corr_001"}],
+        },
+        data_dir=temp_data_dir,
+    )
+    await plugin.on_hook("round_end", ctx)
+
+    # Reply should be in pm's inbox
+    replies = [m async for m in bus.receive("pm")]
+    assert len(replies) == 1
+    assert replies[0].sender == "dev"
+    assert replies[0].receiver == "pm"
+    assert replies[0].type == "answer"
+    assert "API built successfully" in replies[0].payload["message"]
+
+    # Flag should be cleared
+    assert "_pending_peer_reply" not in ctx.state
+
+
+@pytest.mark.anyio
+async def test_task_completed_forwards_reply(temp_data_dir):
+    """task_completed hook should forward reply same as round_end."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "Task done."},
+            ],
+            "_pending_peer_reply": [{"sender": "pm", "correlation_id": "corr_001"}],
+        },
+        data_dir=temp_data_dir,
+    )
+    await plugin.on_hook("task_completed", ctx)
+
+    replies = [m async for m in bus.receive("pm")]
+    assert len(replies) == 1
+    assert "Task done" in replies[0].payload["message"]
+    assert "_pending_peer_reply" not in ctx.state
+
+
+@pytest.mark.anyio
+async def test_round_end_skips_without_pending_reply(temp_data_dir):
+    """round_end should be a no-op when there's no _pending_peer_reply."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "user", "content": "standalone task"},
+                {"role": "assistant", "content": "done"},
+            ],
+        },
+        data_dir=temp_data_dir,
+    )
+    # Should not raise, should not send anything
+    await plugin.on_hook("round_end", ctx)
+
+    replies = [m async for m in bus.receive("pm")]
+    assert len(replies) == 0
+
+
+@pytest.mark.anyio
+async def test_multiple_senders_reply_to_all(temp_data_dir):
+    """Reply should be forwarded to all pending senders."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="data", description="Data", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent"},
+        {"role": "dev", "agent_name": "dev_agent"},
+        {"role": "data", "agent_name": "data_agent"},
+    ]})
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "assistant", "content": "Here is the report for both of you."},
+            ],
+            "_pending_peer_reply": [
+                {"sender": "pm", "correlation_id": "c1"},
+                {"sender": "data", "correlation_id": "c2"},
+            ],
+        },
+        data_dir=temp_data_dir,
+    )
+    await plugin.on_hook("round_end", ctx)
+
+    pm_replies = [m async for m in bus.receive("pm")]
+    assert len(pm_replies) == 1
+    assert "report" in pm_replies[0].payload["message"]
+
+    data_replies = [m async for m in bus.receive("data")]
+    assert len(data_replies) == 1
+    assert "report" in data_replies[0].payload["message"]
