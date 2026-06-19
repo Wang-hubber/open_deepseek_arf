@@ -274,6 +274,12 @@ class PeerTeamPlugin:
             "peer_wait_loop: no reply after %d retries for %s",
             max_retries, role_key,
         )
+        # Complete with timeout so engine doesn't hang
+        await pc.complete(state, wait_id, {
+            "content": f"[Peer] No reply from {role_key} after {max_retries} retries",
+            "role": role_key,
+            "timeout": True,
+        })
 
     async def _try_wake_peers_from_park(
         self, group_id: str, role_key: str, data_dir: str,

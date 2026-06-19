@@ -10,6 +10,7 @@ class _TeammatesRegistry:
     def __init__(self) -> None:
         self.agent_bus: object | None = None
         self.agents: dict[str, object] = {}  # role_name → agent instance
+        self.park_coordinator = None
 
 
 _registry = _TeammatesRegistry()

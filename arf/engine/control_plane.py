@@ -192,6 +192,8 @@ class ControlPlane:
             event = self._make_event("session_start", {"session_id": session_id}, session_id=session_id)
             yield self._yield_event(event, Primitive.INPUT, Level.SESSION)
             ctx.hook_data["_error_phase"] = "session_start"
+            ctx.hook_data["_park_coordinator"] = self._park_coordinator
+            ctx.hook_data["_cancel_event"] = self._cancel_event
             await self._fire_blocking("session_start", ctx)
             await self._fire_side("session_start", ctx)
             state["_session_opened"] = True
