@@ -400,12 +400,16 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
     await plugin._on_pre_action(ctx)
 
     msgs = ctx.state.get("messages", [])
-    assert len(msgs) == 1
-    assert "pm" in msgs[0]["content"]
-    assert "dev" in msgs[0]["content"]
-    assert "build API" in msgs[0]["content"]
-    assert msgs[0]["role"] == "tool"
-    assert msgs[0]["tool_call_id"] == "corr_001"
+    assert len(msgs) == 2  # system + user
+    # First message is system context
+    assert msgs[0]["role"] == "system"
+    assert "Team Communication" in msgs[0]["content"]
+    assert "send_peer_message" in msgs[0]["content"]
+    # Second message is the peer message
+    assert msgs[1]["role"] == "user"
+    assert "[Peer message from pm]" in msgs[1]["content"]
+    assert "Type: task_request" in msgs[1]["content"]
+    assert "build API" in msgs[1]["content"]
 
 
 @pytest.mark.anyio
@@ -592,27 +596,21 @@ async def test_parse_session_id_rejects_sub_agents(temp_data_dir):
 
 
 @pytest.mark.anyio
-async def test_message_format_includes_priority(temp_data_dir):
-    """Formatted peer message should include priority prefix for urgent."""
+async def test_message_format_drops_priority_in_header():
+    """Peer message header should include sender and type, not priority."""
     from arf.core.protocols.communication import AgentMessage
 
-    normal_msg = AgentMessage(
+    msg = AgentMessage(
         sender="PM", receiver="Dev", type="task_request",
         payload={"message": "normal task"},
         correlation_id="c1", priority="normal",
     )
-    formatted = PeerTeamPlugin._format_peer_message(normal_msg)
-    assert not formatted.startswith("[URGENT]")
+    formatted = PeerTeamPlugin._format_peer_message(msg)
+    assert "[Peer message from PM]" in formatted
+    assert "Type: task_request" in formatted
     assert "normal task" in formatted
-
-    urgent_msg = AgentMessage(
-        sender="PM", receiver="Dev", type="task_request",
-        payload={"message": "fix critical bug"},
-        correlation_id="c2", priority="urgent",
-    )
-    formatted = PeerTeamPlugin._format_peer_message(urgent_msg)
-    assert formatted.startswith("[URGENT]")
-    assert "fix critical bug" in formatted
+    # Priority is not mentioned in the message format
+    assert "priority" not in formatted.lower()
 
 
 @pytest.mark.anyio
