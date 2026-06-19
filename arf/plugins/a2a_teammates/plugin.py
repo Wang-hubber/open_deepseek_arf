@@ -302,12 +302,7 @@ class PeerTeamPlugin:
         register park condition if waiting for more peer messages."""
         await self._forward_peer_reply(ctx)
 
-        # If pending peer reply still exists, the reply wasn't ready yet —
-        # keep it pending and don't park.
         state = ctx.state
-        if state.get("_pending_peer_reply"):
-            return
-
         pc = self._get_park_coordinator(ctx)
         if pc is None:
             return
