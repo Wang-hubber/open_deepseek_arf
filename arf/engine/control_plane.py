@@ -289,7 +289,7 @@ class ControlPlane:
                 # --- pre_action: call_model ---
                 ctx.current_step = "call_model"
                 ctx.hook_data["_error_phase"] = "pre_action"
-                logger.warning("DEBUG cp pre_action ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
+                logger.debug("cp pre_action ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
                 try:
                     async for event in self._fire_and_drain("pre_action", ctx):
                         yield event
@@ -299,11 +299,11 @@ class ControlPlane:
                         aborted = True
                         break
                     continue
-                logger.warning("DEBUG cp pre_action EXIT sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
+                logger.debug("cp pre_action EXIT sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
 
                 # --- dispatch: model_call ---
                 ctx.hook_data["_error_phase"] = "model_call"
-                logger.warning("DEBUG cp model_call ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
+                logger.debug("cp model_call ENTER sid=%s round=%s turn=%s", session_id, self._interaction_round, turn)
                 try:
                     async for event in self._action_call_model(state, ctx):
                         yield event
@@ -1062,10 +1062,10 @@ class ControlPlane:
         events are emitted to both stream (yield) and trace (event_bus).
         """
         import asyncio
-        logger.warning("DEBUG _fire_and_drain ENTER step=%s sid=%s current_step=%s", step, ctx.session_id, ctx.current_step)
+        logger.debug("_fire_and_drain ENTER step=%s sid=%s current_step=%s", step, ctx.session_id, ctx.current_step)
         ctx._event_ready = asyncio.Event()
         hook_task = asyncio.ensure_future(self._blocking.fire(step, ctx))
-        logger.warning("DEBUG _fire_and_drain hook_task created step=%s", step)
+        logger.debug("_fire_and_drain hook_task created step=%s", step)
 
         while not hook_task.done():
             evt_wait = asyncio.ensure_future(ctx._event_ready.wait())
@@ -1079,7 +1079,7 @@ class ControlPlane:
                 yield evt
             ctx._event_ready.clear()
 
-        logger.warning("DEBUG _fire_and_drain hook_task DONE step=%s exception=%s", step, hook_task.exception())
+        logger.debug("_fire_and_drain hook_task DONE step=%s exception=%s", step, hook_task.exception())
         while ctx._pending_events:
             evt = ctx._pending_events.pop(0)
             if self.event_bus:
@@ -1090,7 +1090,7 @@ class ControlPlane:
             raise hook_task.exception()
 
         await self._fire_side(step, ctx)
-        logger.warning("DEBUG _fire_and_drain EXIT step=%s sid=%s", step, ctx.session_id)
+        logger.debug("_fire_and_drain EXIT step=%s sid=%s", step, ctx.session_id)
 
     def _make_ctx(self, state, session_id, turn, step) -> PluginContext:
         return PluginContext(
