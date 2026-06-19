@@ -963,6 +963,14 @@ class ControlPlane:
         # -- Primitive detection --
         primitive = await self._detect_primitives(state, ctx, raw_results)
         if primitive:
+            if primitive == "pending_human":
+                decision = state.get("_pending_human_decision", {})
+                yield self._make_event("need_human_input", {
+                    "question": decision.get("question", ""),
+                    "options": decision.get("options", []),
+                    "context": decision.get("context", ""),
+                    "task_id": decision.get("task_id", ""),
+                }, session_id=ctx.session_id)
             state["_primitive_result"] = primitive
 
     # ==================================================================
