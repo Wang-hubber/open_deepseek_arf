@@ -517,6 +517,11 @@ class ControlPlane:
                         "reason": "no_pending_conditions",
                     })
                     break
+                # Park resolved — reload state to pick up injected results
+                # (complete() updates a fresh copy, not the parked instance)
+                fresh = await self.state_store.get(session_id)
+                if fresh:
+                    state.clear(); state.update(fresh)
                 continue  # park resolved → next round
 
             ctx.inject_engine_event("round_exit", {
