@@ -412,7 +412,7 @@ class A2APlugin:
                 await sub_agent.start()
                 try:
                     # Resume from saved state
-                    async for _event in sub_agent._engine.resume(child_state):
+                    async for _event in sub_agent._engine.astream(child_state):
                         pass  # Drain events — results collected by round_end hook
                 finally:
                     await sub_agent.stop()

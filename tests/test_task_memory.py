@@ -1,6 +1,7 @@
 """Tests for task memory extraction, merging, summary injection, and search."""
 import pytest
 from arf.memory.config import MemoryConfig, TaskMemoryConfig
+from arf.engine.compat import drain_astream
 
 
 class TestTaskMemoryConfig:
@@ -465,7 +466,7 @@ class TestTaskMemoryEngineIntegration:
             "_task_start_round": 0,
         }
 
-        final = await cp.invoke(state)
+        final = await drain_astream(cp, state)
 
         # Let the async merge task complete (fire-and-forget in _on_task_completed)
         await asyncio.sleep(0.1)

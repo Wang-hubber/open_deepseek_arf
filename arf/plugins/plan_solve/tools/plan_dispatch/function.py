@@ -81,7 +81,9 @@ async def execute(
     }
 
     try:
-        result_state = await sub_engine.invoke(state)
+        async for _ in sub_engine.astream(state):
+            pass
+        result_state = await sub_engine.state_store.get(session_id) or state
     except Exception as exc:
         step["status"] = "failed"
         step["error"] = str(exc)

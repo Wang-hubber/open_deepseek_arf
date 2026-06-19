@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fixtures.fake_model_adapter import FakeModelAdapter, FakeResponse
+from arf.engine.compat import drain_astream
 
 
 class _HookRunnerPlugin:
@@ -169,7 +170,7 @@ class TestRoundHooks:
         hook_runner.fire = AsyncMock(return_value=[])
 
         engine = self._make_engine(hook_runner)
-        asyncio.run(engine.invoke(self._state()))
+        asyncio.run(drain_astream(engine, self._state()))
 
         round_end_calls = [
             c for c in hook_runner.fire.call_args_list
@@ -188,7 +189,7 @@ class TestRoundHooks:
         hook_runner.fire = track_fire
 
         engine = self._make_engine(hook_runner)
-        asyncio.run(engine.invoke(self._state()))
+        asyncio.run(drain_astream(engine, self._state()))
 
         assert "round_end" in call_order, f"Expected round_end in call_order: {call_order}"
         assert "session_end" in call_order, (
@@ -247,7 +248,7 @@ class TestSessionHooks:
             agent._state_store.get = AsyncMock(return_value=None)
             agent._state_store.put = AsyncMock()
 
-            await agent.chat("hi")
+            await agent.run("hi")
 
             session_start_calls = [
                 c for c in hook_runner.fire.call_args_list
@@ -277,7 +278,7 @@ class TestSessionHooks:
                 "session_active": True,
             })
 
-            await agent.chat("hi again")
+            await agent.run("hi again")
 
             session_start_calls = [
                 c for c in hook_runner.fire.call_args_list
@@ -313,7 +314,7 @@ class TestSessionHooks:
                 "session_active": True,
             })
 
-            await agent.chat("hi after crash")
+            await agent.run("hi after crash")
 
             session_end_idx = -1
             session_start_idx = -1
@@ -350,7 +351,7 @@ class TestSessionHooks:
                 "session_active": True,
             })
 
-            await agent.chat("hi")
+            await agent.run("hi")
 
             session_start_calls = [
                 c for c in hook_runner.fire.call_args_list
@@ -388,7 +389,7 @@ class TestTurnReset:
             "metadata": {},
         }
 
-        result = asyncio.run(engine.invoke(state))
+        result = asyncio.run(drain_astream(engine, state))
         assert result["current_turn"] == 1, (
             f"Turn should start from 0 each round, got {result['current_turn']}"
         )
@@ -424,7 +425,7 @@ class TestTurnReset:
             "metadata": {},
         }
 
-        asyncio.run(engine.invoke(state))
+        asyncio.run(drain_astream(engine, state))
         assert call_count == 3, f"max_turns=3 should allow 3 calls, got {call_count}"
 
     def test_round_2_continues_after_max_turns_in_round_1(self):
@@ -439,7 +440,7 @@ class TestTurnReset:
         )
         engine_r1._call_model = call_model
 
-        r1 = asyncio.run(engine_r1.invoke({
+        r1 = asyncio.run(drain_astream(engine_r1, {
             "session_id": "test", "agent_name": "test",
             "messages": [{"role": "user", "content": "round1"}],
             "current_model": "test", "current_turn": 0,
@@ -454,7 +455,7 @@ class TestTurnReset:
         )
         engine_r2._call_model = call_model
 
-        r2 = asyncio.run(engine_r2.invoke({
+        r2 = asyncio.run(drain_astream(engine_r2, {
             "session_id": "test", "agent_name": "test",
             "messages": [
                 {"role": "user", "content": "round1"},
@@ -493,7 +494,7 @@ class TestTurnReset:
             "tool_results": {}, "plan": None, "metadata": {},
         }
 
-        asyncio.run(engine.invoke(state))
+        asyncio.run(drain_astream(engine, state))
 
         round_end_calls = [
             c for c in hook_runner.fire.call_args_list
@@ -565,7 +566,7 @@ class TestBaseAgentStop:
                 "session_active": True,
             })
             agent._state_store.put = AsyncMock()
-            await agent.chat("hi", session_id="s1")
+            await agent.run("hi", session_id="s1")
 
             # chat()'s invoke() auto-closes, so re-add to simulate active session
             agent._active_sessions.add("s1")
@@ -699,7 +700,7 @@ class TestRoundStartHook:
             agent._state_store.get = AsyncMock(return_value=None)
             agent._state_store.put = AsyncMock()
 
-            await agent.chat("hello")
+            await agent.run("hello")
 
             round_start_calls = [
                 c for c in hook_runner.fire.call_args_list
@@ -730,7 +731,7 @@ class TestRoundStartHook:
             agent._state_store.get = AsyncMock(return_value=None)
             agent._state_store.put = AsyncMock()
 
-            await agent.chat("hello", session_id="my-session")
+            await agent.run("hello", session_id="my-session")
 
             assert round_start_ctx["session_id"] == "my-session"
             assert round_start_ctx["round"] == 0  # First round
@@ -738,7 +739,7 @@ class TestRoundStartHook:
         asyncio.run(_test())
 
     def test_round_start_fires_before_engine_invoke(self):
-        """round_start fires in BaseAgent before engine.invoke() is called."""
+        """round_start fires in BaseAgent before drain_astream(engine, ) is called."""
         async def _test():
             call_order = []
 
@@ -764,7 +765,7 @@ class TestRoundStartHook:
                 }
             agent._engine.invoke = fake_invoke
 
-            await agent.chat("hello")
+            await agent.run("hello")
 
             assert "round_start" in call_order, f"round_start missing from {call_order}"
             assert "session_start" in call_order, f"session_start missing from {call_order}"
@@ -828,7 +829,7 @@ class TestSessionLifecycleEdgeCases:
                 "session_active": True,
             })
 
-            await agent.chat("hi", session_id="s1")
+            await agent.run("hi", session_id="s1")
             # chat() cleans _active_sessions on return — session is no longer active
 
             # Simulate stop — marks inactive in store
@@ -836,7 +837,7 @@ class TestSessionLifecycleEdgeCases:
 
             # Next chat: state_store has session_active=False → treated as NEW session
             hook_runner.fire.reset_mock()
-            await agent.chat("hi again", session_id="s1")
+            await agent.run("hi again", session_id="s1")
 
             session_start_calls = [
                 c for c in hook_runner.fire.call_args_list
@@ -868,8 +869,8 @@ class TestSessionLifecycleEdgeCases:
                 }
             agent._engine.invoke = record_invoke
 
-            await agent.chat("hi", session_id="s1")
-            await agent.chat("hi", session_id="s2")
+            await agent.run("hi", session_id="s1")
+            await agent.run("hi", session_id="s2")
 
             assert invoke_states == ["s1", "s2"]
 
@@ -887,7 +888,7 @@ class TestSessionLifecycleEdgeCases:
             agent._state_store.get = AsyncMock(return_value=None)
             agent._state_store.put = AsyncMock()
 
-            await agent.chat("hello")
+            await agent.run("hello")
             # chat() cleans _active_sessions on return — verify via invoke call instead
             agent._engine.invoke.assert_called_once()
 
@@ -923,7 +924,7 @@ class TestEngineCheckpointBehavior:
             "tool_results": {}, "plan": None, "metadata": {},
         }
 
-        asyncio.run(engine.invoke(state))
+        asyncio.run(drain_astream(engine, state))
         assert store.put_call_count >= 1, (
             "state_store.put() must be called even for text-only responses"
         )
@@ -961,7 +962,7 @@ class TestEngineCheckpointBehavior:
             "tool_results": {}, "plan": None, "metadata": {},
         }
 
-        asyncio.run(engine.invoke(state))
+        asyncio.run(drain_astream(engine, state))
         # 3 turns × 1 put (turn_end) + 1 put (_execute end) + 1 put (close) = 5
         assert store.put_call_count == 5, (
             f"Expected 5 checkpoints for 3-turn scenario with close(), "
@@ -998,7 +999,7 @@ class TestEngineCheckpointBehavior:
             "tool_results": {}, "plan": None, "metadata": {},
         }
 
-        asyncio.run(engine.invoke(state))
+        asyncio.run(drain_astream(engine, state))
         assert len(store.put_states) >= 1
 
         # In simplified loop, checkpoint happens after turn_end (model_call → tool_exec completed).

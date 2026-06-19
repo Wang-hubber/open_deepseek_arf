@@ -4,6 +4,7 @@ import asyncio
 import pytest
 from arf.engine.control_plane import ControlPlane, MessageContractError
 from arf.engine.checkpoint import InMemoryStateStore
+from arf.engine.compat import drain_astream
 
 
 class _NoopToolExecutor:
@@ -47,7 +48,7 @@ async def test_skeleton_runs_without_plugins():
         call_model=_FakeCallModel([{"content": "Hi there!"}]),
     )
 
-    final = await cp.invoke(state)
+    final = await drain_astream(cp, state)
 
     msgs = final.get("messages", [])
     assert msgs[-1]["role"] == "assistant"
@@ -101,7 +102,7 @@ async def test_round_with_tool_calls():
         call_model=model,
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert len(model.calls) == 2
 
@@ -124,7 +125,7 @@ async def test_streaming_fallback_to_non_streaming():
         stream_model=_failing_stream,
     )
 
-    final = await cp.invoke(state)
+    final = await drain_astream(cp, state)
     assert final["messages"][-1]["content"] == "Fallback response"
 
 
@@ -151,7 +152,7 @@ async def test_mcp_resolution_failure_emits_error_event():
         mcp_tool_resolver=_failing_mcp_resolver,
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
     assert final["messages"][-1]["content"] == "Hi!"
 
     errors = event_bus.collected("error")
@@ -178,7 +179,7 @@ async def test_mcp_resolution_success_no_error_event():
         mcp_tool_resolver=_ok_mcp_resolver,
     )
 
-    await cp.invoke(_basic_state())
+    await drain_astream(cp, _basic_state())
     errors = event_bus.collected("error")
     mcp_errors = [e for e in errors if "MCP" in e.data.get("detail", "")]
     assert len(mcp_errors) == 0
@@ -214,7 +215,7 @@ async def test_error_handler_abort_emits_trace_event():
         blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     errors = event_bus.collected("error")
     assert len(errors) >= 1
@@ -241,7 +242,7 @@ async def test_error_handler_skip_emits_trace_event():
         blocking_plugins=[ErrorHandlerPlugin()],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     errors = event_bus.collected("error")
     assert len(errors) >= 1
@@ -269,7 +270,7 @@ async def test_abort_cleans_session_active_flag():
         blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
-    final = await cp.invoke(state)
+    final = await drain_astream(cp, state)
     assert not final.get("session_active", True)
 
 
@@ -289,7 +290,7 @@ async def test_abort_returns_partial_state():
         blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
-    final = await cp.invoke(state)
+    final = await drain_astream(cp, state)
     # Partial state: session_id and message history preserved
     assert final.get("session_id") == "test"
     assert len(final.get("messages", [])) >= 1
@@ -320,7 +321,7 @@ async def test_call_timeout_triggers_error_handler_abort():
         blocking_plugins=[ErrorHandlerPlugin(max_transport_retry=0)],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert not final.get("session_active", True)
     errors = event_bus.collected("error")

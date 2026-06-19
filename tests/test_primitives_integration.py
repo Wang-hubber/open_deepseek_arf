@@ -6,6 +6,7 @@ from arf.engine.control_plane import ControlPlane
 from arf.engine.checkpoint import InMemoryStateStore
 from arf.core.results import ToolResult
 from arf.core.plugin_context import PluginContext
+from arf.engine.compat import drain_astream
 
 
 class _FakeToolExecutor:
@@ -63,7 +64,7 @@ async def test_task_complete_ends_round_and_updates_pointer():
         }),
         call_model=model,
     )
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert len(model.calls) == 1  # round ended after task_complete
     assert "_primitive_result" not in final
@@ -108,7 +109,7 @@ async def test_task_completed_hook_fires_with_correct_data():
         call_model=model,
         side_plugins=[hook_plugin],
     )
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert len(hook_plugin.calls) == 1
     assert hook_plugin.calls[0]["hook"] == "task_completed"
@@ -140,7 +141,7 @@ async def test_pending_human_ends_round_and_sets_state():
         }),
         call_model=model,
     )
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert len(model.calls) == 1
     assert final["_pending_human_decision"] is not None

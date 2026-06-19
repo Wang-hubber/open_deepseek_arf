@@ -1,6 +1,6 @@
-{"type": "user_input", "turn": 1, "round": 1, "data": {"content": "read x"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "c689dea40686"}
-{"type": "model_call_end", "turn": 1, "data": {"content": "", "tool_calls": [{"name": "read", "params": {"path": "x"}}]}, "timestamp": 1.1, "session_id": "s1", "config_hash": "c689dea40686"}
-{"type": "tool_call_end", "turn": 1, "data": {"tool_name": "read", "result": "not found", "success": false}, "timestamp": 1.2, "session_id": "s1", "config_hash": "c689dea40686"}
-{"type": "model_call_end", "turn": 2, "data": {"content": "", "tool_calls": [{"name": "glob", "params": {"pattern": "*.txt"}}]}, "timestamp": 2.1, "session_id": "s1", "config_hash": "c689dea40686"}
-{"type": "tool_call_end", "turn": 2, "data": {"tool_name": "glob", "result": "x.txt", "success": true}, "timestamp": 2.2, "session_id": "s1", "config_hash": "c689dea40686"}
-{"type": "model_call_end", "turn": 2, "data": {"content": "Found x.txt via glob"}, "timestamp": 2.3, "session_id": "s1", "config_hash": "c689dea40686"}
+{"type": "user_input", "turn": 1, "round": 1, "data": {"content": "read x"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "11daae9a3c18"}
+{"type": "model_call_end", "turn": 1, "data": {"content": "", "tool_calls": [{"name": "read", "params": {"path": "x"}}]}, "timestamp": 1.1, "session_id": "s1", "config_hash": "11daae9a3c18"}
+{"type": "tool_call_end", "turn": 1, "data": {"tool_name": "read", "result": "not found", "success": false}, "timestamp": 1.2, "session_id": "s1", "config_hash": "11daae9a3c18"}
+{"type": "model_call_end", "turn": 2, "data": {"content": "", "tool_calls": [{"name": "glob", "params": {"pattern": "*.txt"}}]}, "timestamp": 2.1, "session_id": "s1", "config_hash": "11daae9a3c18"}
+{"type": "tool_call_end", "turn": 2, "data": {"tool_name": "glob", "result": "x.txt", "success": true}, "timestamp": 2.2, "session_id": "s1", "config_hash": "11daae9a3c18"}
+{"type": "model_call_end", "turn": 2, "data": {"content": "Found x.txt via glob"}, "timestamp": 2.3, "session_id": "s1", "config_hash": "11daae9a3c18"}

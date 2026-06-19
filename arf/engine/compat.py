@@ -36,6 +36,22 @@ async def collect_response(
     return final_text
 
 
+async def drain_astream(engine, state: dict) -> dict:
+    """Drain astream events and return the final state from the state store.
+
+    Replaces engine.invoke(state) — consumes all events and retrieves
+    the persisted final state.
+
+    Usage:
+        final = await drain_astream(engine, state)
+    """
+    async for _ in engine.astream(state):
+        pass
+    session_id = state.get("session_id", "default")
+    saved = await engine.state_store.get(session_id)
+    return saved or state
+
+
 async def collect_events(
     astream: AsyncGenerator[AgentEvent, None],
 ) -> list[AgentEvent]:

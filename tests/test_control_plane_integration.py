@@ -5,6 +5,7 @@ from arf.engine.checkpoint import InMemoryStateStore
 from arf.plugins.error_handler.plugin import ErrorHandlerPlugin
 from arf.plugins.tool_guard.plugin import ToolGuardPlugin
 from arf.plugins.trace.plugin import TracePlugin
+from arf.engine.compat import drain_astream
 
 
 pytestmark = pytest.mark.anyio
@@ -63,7 +64,7 @@ async def test_full_round_text_only():
         side_plugins=plugins["side"],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     msgs = final.get("messages", [])
     assert msgs[-1]["role"] == "assistant"
@@ -88,7 +89,7 @@ async def test_round_with_tool_calls():
         side_plugins=plugins["side"],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
 
     assert len(model.calls) == 2  # call_model → execute_tools → call_model
 
@@ -110,7 +111,7 @@ async def test_blocked_tool_aborts_round():
         side_plugins=plugins["side"],
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
     # After blocking, ErrorHandler aborts — we should not see tool messages for rm
     tool_msgs = [m for m in final.get("messages", []) if m.get("role") == "tool"]
     # The tool should have been blocked by ToolGuard → ErrorHandler aborted
@@ -126,7 +127,7 @@ async def test_skeleton_runs_without_any_plugins():
         call_model=_RecordingCallModel([{"content": "Hi!"}]),
     )
 
-    final = await cp.invoke(_basic_state())
+    final = await drain_astream(cp, _basic_state())
     assert final.get("messages")[-1]["role"] == "assistant"
 
 
@@ -144,11 +145,11 @@ async def test_multiple_rounds():
 
     state = _basic_state()
     # First round
-    final1 = await cp.invoke(state)
+    final1 = await drain_astream(cp, state)
     assert final1["messages"][-1]["content"] == "Round 1 response"
 
     # Second round — add new user message
     final1["messages"].append({"role": "user", "content": "question 2"})
     final1["current_turn"] = 0  # reset turn counter for new round
-    final2 = await cp.invoke(final1)
+    final2 = await drain_astream(cp, final1)
     assert "Round 2 response" in final2["messages"][-1]["content"]
