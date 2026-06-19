@@ -6,7 +6,7 @@ from pathlib import Path
 
 from arf.communication.agent_bus import InMemoryAgentBus
 from arf.core.plugin_context import PluginContext
-from arf.core.protocols.communication import AgentInfo
+from arf.core.protocols.communication import AgentInfo, AgentMessage
 from arf.plugins.a2a_teammates.config import PeerTeamConfig
 from arf.plugins.a2a_teammates.tools import _registry
 from arf.session.session_index import SessionIndex
@@ -40,6 +40,8 @@ class PeerTeamPlugin:
         return {
             "session_start": "side",
             "pre_action": "blocking",
+            "round_end": "side",
+            "task_completed": "side",
             "session_end": "side",
         }
 
@@ -48,6 +50,10 @@ class PeerTeamPlugin:
             await self._on_session_start(ctx)
         elif hook_name == "pre_action":
             await self._on_pre_action(ctx)
+        elif hook_name == "round_end":
+            await self._on_round_end(ctx)
+        elif hook_name == "task_completed":
+            await self._on_task_completed(ctx)
         elif hook_name == "session_end":
             await self._on_session_end(ctx)
 
@@ -94,61 +100,127 @@ class PeerTeamPlugin:
     # ---- pre_action: inject pending peer messages ----
 
     async def _on_pre_action(self, ctx: PluginContext) -> None:
-        """Inject pending peer messages into the agent's message list."""
-        logger.warning("DEBUG a2a_teammates _on_pre_action ENTER sid=%s current_step=%s", ctx.session_id, ctx.current_step)
+        """Inject pending peer messages: system context (once) + user message each."""
         if ctx.current_step != "call_model":
-            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (step=%s)", ctx.current_step)
             return
 
         bus = _registry.agent_bus
         if bus is None:
-            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (no bus)")
             return
 
         sid = ctx.session_id
         parsed = SessionIndex.parse_session_id(sid)
         if parsed is None:
-            logger.warning("DEBUG a2a_teammates _on_pre_action SKIP (no parse)")
             return
         _group_id, role = parsed
-        logger.warning("DEBUG a2a_teammates _on_pre_action receiving for role=%s", role)
 
         # Drain inbox for this peer
         messages = [m async for m in bus.receive(role.lower())]
-        logger.warning("DEBUG a2a_teammates _on_pre_action received %d messages for role=%s", len(messages), role)
         if not messages:
             return
 
+        # Inject team communication system message once per session
+        state = ctx.state
+        if not state.get("_peer_context_injected"):
+            state["_peer_context_injected"] = True
+            teammates = [m.role for m in self._members]
+            system_msg = (
+                "[Team Communication]\n"
+                "You are part of an agent team. Messages from teammates are "
+                "delivered as user messages prefixed with [Peer]. To respond "
+                "to a teammate, use the send_peer_message tool — your reply "
+                "will be automatically forwarded when you complete your "
+                "response (via task_complete or when the round ends).\n\n"
+                f"Available teammates: {', '.join(teammates)}"
+            )
+            state.setdefault("messages", []).append({
+                "role": "system",
+                "content": system_msg,
+            })
+
+        # Inject one user message per peer message, build pending list
+        pending = []
         for msg in messages:
             formatted = self._format_peer_message(msg)
-            # Peer messages are external input — inject as "user" role,
-            # not "tool" role (which requires a preceding assistant message
-            # with matching tool_call_id, violating the chat API contract).
-            ctx.state.setdefault("messages", []).append({
+            state.setdefault("messages", []).append({
                 "role": "user",
                 "content": formatted,
             })
-        logger.warning("DEBUG a2a_teammates _on_pre_action EXIT injected %d msgs", len(messages))
+            pending.append({
+                "sender": msg.sender,
+                "correlation_id": msg.correlation_id,
+            })
+
+        # Set pending list — merge with existing (unlikely but safe)
+        existing = state.get("_pending_peer_reply", [])
+        state["_pending_peer_reply"] = existing + pending
 
     @staticmethod
     def _format_peer_message(msg) -> str:
-        """Format a peer message for display and LLM consumption.
-
-        Returns a structured string the frontend can parse as a peer bubble.
-        """
+        """Format a peer message for injection as a user message."""
         sender = msg.sender
-        receiver = msg.receiver or "all"
         msg_type = msg.type
         body = msg.payload.get("message", str(msg.payload))
-        priority = msg.priority
-
-        prefix = ""
-        if priority == "urgent":
-            prefix = "[URGENT] "
 
         return (
-            f"{prefix}[Peer] {sender} → {receiver} ({msg_type}):\n{body}"
+            f"[Peer message from {sender}]\n"
+            f"Type: {msg_type}\n\n"
+            f"{body}"
         )
+
+    # ---- round_end / task_completed: forward reply to pending senders ----
+
+    async def _on_round_end(self, ctx: PluginContext) -> None:
+        """Forward last assistant reply to all pending peer senders."""
+        await self._forward_peer_reply(ctx)
+
+    async def _on_task_completed(self, ctx: PluginContext) -> None:
+        """Forward last assistant reply to all pending peer senders."""
+        await self._forward_peer_reply(ctx)
+
+    async def _forward_peer_reply(self, ctx: PluginContext) -> None:
+        """Read last assistant message and forward to pending senders via AgentBus."""
+        parsed = SessionIndex.parse_session_id(ctx.session_id)
+        if parsed is None:
+            return
+
+        state = ctx.state
+        pending = state.pop("_pending_peer_reply", None)
+        if not pending:
+            return
+
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        # Find last assistant message with content
+        messages = state.get("messages", [])
+        last_reply = ""
+        for m in reversed(messages):
+            if m.get("role") == "assistant" and m.get("content"):
+                last_reply = str(m["content"])
+                break
+
+        if not last_reply:
+            return
+
+        import uuid
+        group_id, role = parsed
+
+        for entry in pending:
+            reply = AgentMessage(
+                sender=role,
+                receiver=entry["sender"],
+                type="answer",
+                payload={"message": last_reply[:2000]},
+                priority="normal",
+                correlation_id=f"peer_rpl_{uuid.uuid4().hex[:8]}",
+            )
+            await bus.send(reply)
+            logger.info(
+                "Peer '%s' reply (%d chars) forwarded to '%s'",
+                role, len(last_reply), entry["sender"],
+            )
 
     # ---- session_end: save group state ----
 

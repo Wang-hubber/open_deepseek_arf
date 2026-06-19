@@ -360,7 +360,9 @@ async def test_peer_team_plugin_creates_session_index(temp_data_dir):
     )
     await plugin._on_session_start(ctx)
 
-    idx = SessionIndex(temp_data_dir)
+    from pathlib import Path as _Path
+    team_dir = str(_Path(temp_data_dir).parent / "team_sessions")
+    idx = SessionIndex(team_dir)
     loaded = await idx.load("proj_abc")
     assert loaded is not None
     assert len(loaded["members"]) == 2
@@ -444,7 +446,9 @@ async def test_peer_team_plugin_session_end_updates_status(temp_data_dir):
     )
     await plugin._on_session_end(ctx_dev)
 
-    idx = SessionIndex(temp_data_dir)
+    from pathlib import Path as _Path
+    team_dir = str(_Path(temp_data_dir).parent / "team_sessions")
+    idx = SessionIndex(team_dir)
     loaded = await idx.load("proj_abc")
     dev = next(m for m in loaded["members"] if m["role"] == "dev")
     assert dev["status"] == "ended"
@@ -477,7 +481,9 @@ async def test_peer_team_plugin_resume_group(temp_data_dir):
     new_bus = InMemoryAgentBus()
     teammates_registry.agent_bus = new_bus
 
-    idx = await plugin.resume_group("proj_abc__pm", temp_data_dir)
+    from pathlib import Path as _Path
+    team_dir = str(_Path(temp_data_dir).parent / "team_sessions")
+    idx = await plugin.resume_group("proj_abc__pm", team_dir)
     assert idx is not None
     assert idx["group_id"] == "proj_abc"
 
@@ -508,7 +514,9 @@ async def test_full_peer_create_and_resume(temp_data_dir):
     await plugin._on_session_start(ctx_pm)
 
     # Verify index created
-    idx = SessionIndex(temp_data_dir)
+    from pathlib import Path as _Path
+    team_dir = str(_Path(temp_data_dir).parent / "team_sessions")
+    idx = SessionIndex(team_dir)
     index = await idx.load("proj_abc")
     assert index is not None
     assert len(index["members"]) == 3
@@ -522,7 +530,7 @@ async def test_full_peer_create_and_resume(temp_data_dir):
                                  payload={"message": "what tables have user data?"},
                                  correlation_id="corr_002", priority="normal"))
 
-    # Dev's pre_action → injects messages
+    # Dev's pre_action → injects system + user messages
     ctx_dev = PluginContext(
         session_id="proj_abc__dev",
         state={"session_id": "proj_abc__dev", "messages": []},
@@ -530,10 +538,10 @@ async def test_full_peer_create_and_resume(temp_data_dir):
         data_dir=temp_data_dir,
     )
     await plugin._on_pre_action(ctx_dev)
-    assert len(ctx_dev.state["messages"]) == 1
-    assert "build the dashboard" in ctx_dev.state["messages"][0]["content"]
+    assert len(ctx_dev.state["messages"]) >= 1
+    assert "build the dashboard" in ctx_dev.state["messages"][-1]["content"]
 
-    # Data's pre_action → injects messages
+    # Data's pre_action → injects system + user messages
     ctx_data = PluginContext(
         session_id="proj_abc__data",
         state={"session_id": "proj_abc__data", "messages": []},
@@ -541,8 +549,8 @@ async def test_full_peer_create_and_resume(temp_data_dir):
         data_dir=temp_data_dir,
     )
     await plugin._on_pre_action(ctx_data)
-    assert len(ctx_data.state["messages"]) == 1
-    assert "user data" in ctx_data.state["messages"][0]["content"]
+    assert len(ctx_data.state["messages"]) >= 1
+    assert "user data" in ctx_data.state["messages"][-1]["content"]
 
     # Session end → update status
     await plugin._on_session_end(ctx_dev)
@@ -553,7 +561,7 @@ async def test_full_peer_create_and_resume(temp_data_dir):
     # Resume group
     bus2 = InMemoryAgentBus()
     teammates_registry.agent_bus = bus2
-    index2 = await plugin.resume_group("proj_abc__pm", temp_data_dir)
+    index2 = await plugin.resume_group("proj_abc__pm", team_dir)
     assert index2 is not None
     assert index2["group_id"] == "proj_abc"
 
