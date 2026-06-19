@@ -1,6 +1,7 @@
 """PeerTeamPlugin — hook-driven peer team lifecycle management."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -43,7 +44,6 @@ class PeerTeamPlugin:
             "round_end": "side",
             "task_completed": "side",
             "session_end": "side",
-            "session_park": "blocking",
         }
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
@@ -51,8 +51,6 @@ class PeerTeamPlugin:
             await self._on_session_start(ctx)
         elif hook_name == "pre_action":
             await self._on_pre_action(ctx)
-        elif hook_name == "session_park":
-            await self._on_session_park(ctx)
         elif hook_name == "round_end":
             await self._on_round_end(ctx)
         elif hook_name == "task_completed":
@@ -139,129 +137,6 @@ class PeerTeamPlugin:
         if messages:
             await self._inject_peer_messages(ctx, role_key, messages)
 
-    # ---- session_park: wait for peer messages at round end ----
-
-    async def _on_session_park(self, ctx: PluginContext) -> None:
-        """Block waiting for input when the round loop is idle.
-
-        Two cases:
-        - HITL pending: wait for human response, inject as user message.
-        - Normal: wait for peer messages with retry + backoff + alive check.
-        """
-        import asyncio
-        import random
-        import time
-
-        state = ctx.state
-
-        # --- HITL pending: wait for human input ---
-        decision = state.get("_pending_human_decision")
-        if decision:
-            hitl = ctx.hook_data.get("_hitl")
-            if hitl is None:
-                return
-
-            event = hitl.get_response_event(decision["request_id"])
-            if event is None:
-                return
-
-            cancel = ctx.hook_data.get("_cancel_event")
-            park_timeout = ctx.hook_data.get("_park_timeout")
-
-            wait_tasks = [asyncio.create_task(event.wait())]
-            if cancel is not None:
-                wait_tasks.append(asyncio.create_task(cancel.wait()))
-
-            try:
-                done, _ = await asyncio.wait(wait_tasks, timeout=park_timeout,
-                                             return_when=asyncio.FIRST_COMPLETED)
-                if cancel is not None and cancel.is_set():
-                    return  # session closing
-                if event.is_set():
-                    answer = hitl.get_response(decision["request_id"])
-                    state.setdefault("messages", []).append({
-                        "role": "user",
-                        "content": answer,
-                    })
-                    state.pop("_pending_human_decision", None)
-                    state["_primitive_result"] = None
-                    logger.info("HITL resolved via session_park: sid=%s", ctx.session_id)
-                    return
-                # timeout → engine breaks, session saved for resume
-                return
-            finally:
-                for t in wait_tasks:
-                    if not t.done():
-                        t.cancel()
-                        try:
-                            await t
-                        except asyncio.CancelledError:
-                            pass
-            return
-
-        # --- Normal: wait for peer messages with retry + backoff ---
-        bus = _registry.agent_bus
-        if bus is None:
-            return
-
-        parsed = SessionIndex.parse_session_id(ctx.session_id)
-        if parsed is None:
-            return
-        group_id, role = parsed
-        role_key = role.lower()
-
-        # Fast path: messages already queued
-        messages = [m async for m in bus.receive(role_key)]
-        if messages:
-            await self._inject_peer_messages(ctx, role_key, messages)
-            return
-
-        # Slow path: retry with jitter + backoff + alive check
-        cancel = ctx.hook_data.get("_cancel_event")
-        base_timeout = ctx.hook_data.get("_park_timeout") or 30.0
-        max_retries = 3
-        backoff_factor = 2.0
-
-        for attempt in range(max_retries):
-            # Jitter: ±20% around the current timeout
-            current = base_timeout * (backoff_factor ** attempt)
-            jitter = current * 0.2 * (2 * random.random() - 1)
-            current += jitter
-
-            logger.debug("session_park wait attempt %d/%d timeout=%.1fs sid=%s",
-                         attempt + 1, max_retries, current, ctx.session_id)
-
-            has_message = await bus.wait_for_message(
-                role_key, timeout=current, cancel_event=cancel,
-            )
-
-            if has_message:
-                messages = [m async for m in bus.receive(role_key)]
-                if messages:
-                    await self._inject_peer_messages(ctx, role_key, messages)
-                return
-
-            # Cancelled during wait
-            if cancel is not None and cancel.is_set():
-                return
-
-            # Alive check: are there any peers still running?
-            alive = await self._check_peers_alive(group_id, role, str(ctx.data_dir))
-            if not alive and attempt < max_retries - 1:
-                logger.warning(
-                    "session_park: all peers ended for group=%s, attempting resume",
-                    group_id,
-                )
-                await self._try_wake_peers(ctx, group_id, role)
-                # Continue to next retry with longer timeout
-                continue
-
-        # Max retries exhausted — report and let engine break
-        logger.error(
-            "session_park: no reply after %d retries, group=%s role=%s",
-            max_retries, group_id, role,
-        )
-
     # ---- alive check + peer wake ----
 
     async def _check_peers_alive(self, group_id: str, my_role: str, data_dir: str) -> bool:
@@ -328,11 +203,125 @@ class PeerTeamPlugin:
             f"{body}"
         )
 
+    # ---- park coordinator helpers ----
+
+    @staticmethod
+    def _get_park_coordinator(ctx: PluginContext):
+        """Get ParkCoordinator from registry or hook_data."""
+        pc = ctx.hook_data.get("_park_coordinator")
+        if pc is not None:
+            return pc
+        return getattr(_registry, "park_coordinator", None)
+
+    async def _inject_peer_messages_from_park(
+        self, pc, state: dict, wait_id: str,
+        role_key: str, messages: list,
+    ) -> None:
+        """Inject peer messages and complete park condition."""
+        parts = []
+        for msg in messages:
+            formatted = self._format_peer_message(msg)
+            parts.append(formatted)
+        content = "\n\n".join(parts)
+
+        await pc.complete(state, wait_id, {
+            "content": content,
+            "role": role_key,
+        })
+
+    async def _peer_wait_loop(
+        self, pc, state: dict, wait_id: str, role_key: str,
+        group_id: str, cancel_event, data_dir: str,
+    ) -> None:
+        """Background retry loop: wait for peer message with backoff + alive check."""
+        import random
+
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        base_timeout = 30.0
+        max_retries = 3
+        backoff_factor = 2.0
+
+        for attempt in range(max_retries):
+            current = base_timeout * (backoff_factor ** attempt)
+            jitter = current * 0.2 * (2 * random.random() - 1)
+            current += jitter
+
+            has_message = await bus.wait_for_message(
+                role_key, timeout=current, cancel_event=cancel_event,
+            )
+
+            if has_message:
+                messages = [m async for m in bus.receive(role_key)]
+                if messages:
+                    await self._inject_peer_messages_from_park(
+                        pc, state, wait_id, role_key, messages,
+                    )
+                return
+
+            if cancel_event is not None and cancel_event.is_set():
+                return
+
+            alive = await self._check_peers_alive(
+                group_id, role_key, data_dir)
+            if not alive and attempt < max_retries - 1:
+                await self._try_wake_peers_from_park(
+                    group_id, role_key, data_dir)
+
+        logger.error(
+            "peer_wait_loop: no reply after %d retries for %s",
+            max_retries, role_key,
+        )
+
+    async def _try_wake_peers_from_park(
+        self, group_id: str, role_key: str, data_dir: str,
+    ) -> None:
+        """Attempt to resume peers from within the background wait loop."""
+        try:
+            await self.resume_group(f"{group_id}__{role_key}", data_dir)
+            logger.info(
+                "peer_wait_loop: group %s resumed for wake attempt", group_id)
+        except Exception as e:
+            logger.warning(
+                "peer_wait_loop: failed to wake peers for group %s: %s",
+                group_id, e,
+            )
+
     # ---- round_end / task_completed: forward reply to pending senders ----
 
     async def _on_round_end(self, ctx: PluginContext) -> None:
-        """Forward last assistant reply to all pending peer senders."""
+        """Forward last assistant reply to pending peer senders, then
+        register park condition if waiting for more peer messages."""
         await self._forward_peer_reply(ctx)
+
+        # If pending peer reply still exists, the reply wasn't ready yet —
+        # keep it pending and don't park.
+        state = ctx.state
+        if state.get("_pending_peer_reply"):
+            return
+
+        pc = self._get_park_coordinator(ctx)
+        if pc is None:
+            return
+
+        parsed = SessionIndex.parse_session_id(ctx.session_id)
+        if parsed is None:
+            return
+        _group_id, role = parsed
+
+        wait_id = await pc.register(
+            state, "peer",
+            metadata={"role": role.lower(), "group_id": _group_id},
+        )
+
+        # Spawn background wait loop
+        asyncio.create_task(self._peer_wait_loop(
+            pc, state, wait_id, role.lower(), _group_id,
+            ctx.hook_data.get("_cancel_event"),
+            str(ctx.data_dir),
+        ))
 
     async def _on_task_completed(self, ctx: PluginContext) -> None:
         """Forward last assistant reply to all pending peer senders."""

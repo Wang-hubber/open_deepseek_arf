@@ -828,7 +828,6 @@ def test_peer_team_plugin_hooks_include_reply_capture():
     assert hooks["task_completed"] == "side"
     assert hooks["session_start"] == "side"
     assert hooks["session_end"] == "side"
-    assert hooks["session_park"] == "blocking"
 
 
 # ---- wait_for_message tests ----
@@ -939,14 +938,203 @@ async def test_wait_for_message_broadcast_notifies_all():
     await asyncio.gather(send_broadcast(), wait_dev(), wait_pm())
 
 
-# ---- session_park HITL guard ----
+# ---- park coordinator integration ----
+
+from unittest.mock import AsyncMock, MagicMock
+
 
 @pytest.mark.anyio
-async def test_session_park_waits_for_hitl_response(temp_data_dir):
-    """session_park should wait for human input when HITL pending, then inject it."""
+async def test_get_park_coordinator_from_hook_data(temp_data_dir):
+    """_get_park_coordinator should return coordinator from hook_data."""
+    from arf.plugins.a2a_teammates.plugin import PeerTeamPlugin
+
+    pc = MagicMock()
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        hook_data={"_park_coordinator": pc},
+        data_dir=temp_data_dir,
+    )
+    result = PeerTeamPlugin._get_park_coordinator(ctx)
+    assert result is pc
+
+
+@pytest.mark.anyio
+async def test_get_park_coordinator_returns_none_when_missing(temp_data_dir):
+    """_get_park_coordinator should return None when no coordinator available."""
+    from arf.plugins.a2a_teammates.plugin import PeerTeamPlugin
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={"session_id": "proj_abc__dev", "messages": []},
+        data_dir=temp_data_dir,
+    )
+    result = PeerTeamPlugin._get_park_coordinator(ctx)
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_inject_peer_messages_from_park(temp_data_dir):
+    """_inject_peer_messages_from_park should format and complete park condition."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent"},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    pc = MagicMock()
+    pc.complete = AsyncMock(return_value=True)
+    state = {"session_id": "proj_abc__dev", "messages": []}
+    messages = [
+        AgentMessage(
+            sender="pm", receiver="dev", type="task_request",
+            payload={"message": "build the dashboard"},
+            correlation_id="corr_001",
+        ),
+    ]
+
+    await plugin._inject_peer_messages_from_park(
+        pc, state, "peer_abcd1234", "dev", messages,
+    )
+
+    # Verify pc.complete was called with formatted content
+    pc.complete.assert_called_once()
+    call_args = pc.complete.call_args
+    assert call_args[0][0] is state
+    assert call_args[0][1] == "peer_abcd1234"
+    assert call_args[0][2]["role"] == "dev"
+    assert "[Peer message from pm]" in call_args[0][2]["content"]
+    assert "build the dashboard" in call_args[0][2]["content"]
+
+
+@pytest.mark.anyio
+async def test_round_end_registers_park_condition(temp_data_dir):
+    """_on_round_end should register park condition when no pending reply."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo
+    from arf.engine.park_coordinator import ParkCoordinator
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    pc = ParkCoordinator()
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [{"role": "assistant", "content": "done"}],
+        },
+        hook_data={"_park_coordinator": pc},
+        data_dir=temp_data_dir,
+    )
+
+    await plugin._on_round_end(ctx)
+
+    # Verify park condition was registered
+    conditions = ctx.state.get("_park_conditions", {})
+    assert len(conditions) == 1
+    wid = next(iter(conditions))
+    assert conditions[wid]["type"] == "peer"
+    assert conditions[wid]["status"] == "pending"
+    assert conditions[wid]["metadata"]["role"] == "dev"
+    assert conditions[wid]["metadata"]["group_id"] == "proj_abc"
+
+
+@pytest.mark.anyio
+async def test_round_end_skips_park_when_pending_reply(temp_data_dir):
+    """_on_round_end should not register park when pending reply exists."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [{"role": "assistant", "content": "done"}],
+            "_pending_peer_reply": [{"sender": "pm", "correlation_id": "corr_001"}],
+        },
+        data_dir=temp_data_dir,
+    )
+
+    await plugin._on_round_end(ctx)
+
+    # No park conditions should be registered
+    assert ctx.state.get("_park_conditions", {}) == {}
+
+
+@pytest.mark.anyio
+async def test_peer_wait_loop_injects_immediate_message(temp_data_dir):
+    """_peer_wait_loop should inject messages when already queued."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+    from arf.engine.park_coordinator import ParkCoordinator
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent"},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    pc = ParkCoordinator()
+    state = {"session_id": "proj_abc__dev", "messages": []}
+    wait_id = await pc.register(state, "peer", {"role": "dev", "group_id": "proj_abc"})
+
+    # Queue a message before spawning loop
+    await bus.send(AgentMessage(
+        sender="pm", receiver="dev", type="task_request",
+        payload={"message": "immediate task"},
+        correlation_id="corr_001",
+    ))
+
+    await plugin._peer_wait_loop(
+        pc, state, wait_id, "dev", "proj_abc",
+        cancel_event=None, data_dir=temp_data_dir,
+    )
+
+    # Park condition should be completed
+    assert state["_park_conditions"][wait_id]["status"] == "completed"
+    # Messages should be injected
+    msgs = state.get("messages", [])
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "system"
+    assert "immediate task" in msgs[0]["content"]
+
+
+@pytest.mark.anyio
+async def test_peer_wait_loop_cancel_event(temp_data_dir):
+    """_peer_wait_loop should exit when cancel_event is set."""
     import asyncio
     from arf.communication.agent_bus import InMemoryAgentBus
-    from arf.core.protocols.communication import AgentInfo, AgentMessage
+    from arf.core.protocols.communication import AgentInfo
+    from arf.engine.park_coordinator import ParkCoordinator
 
     bus = InMemoryAgentBus()
     await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
@@ -954,74 +1142,45 @@ async def test_session_park_waits_for_hitl_response(temp_data_dir):
     teammates_registry.agent_bus = bus
 
     plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
-        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "pm", "agent_name": "pm_agent"},
         {"role": "dev", "agent_name": "dev_agent"},
     ]})
 
-    # Queue a peer message for dev (should NOT be injected while HITL pending)
-    await bus.send(AgentMessage(
-        sender="pm", receiver="dev", type="task_request",
-        payload={"message": "build API"},
-        correlation_id="corr_001",
-    ))
+    pc = ParkCoordinator()
+    state = {"session_id": "proj_abc__dev", "messages": []}
+    wait_id = await pc.register(state, "peer", {"role": "dev", "group_id": "proj_abc"})
+    cancel_event = asyncio.Event()
 
-    # Mock HITL with event
-    hitl_event = asyncio.Event()
+    # Set cancel event immediately — loop should exit without waiting
+    cancel_event.set()
 
-    class MockHITL:
-        def get_response_event(self, request_id):
-            return hitl_event
-        def get_response(self, request_id):
-            return "approved!"
-
-    hitl = MockHITL()
-
-    ctx = PluginContext(
-        session_id="proj_abc__dev",
-        state={
-            "session_id": "proj_abc__dev",
-            "messages": [
-                {"role": "user", "content": "original task"},
-                {"role": "assistant", "content": None, "tool_calls": [
-                    {"function": {"name": "kernel__ask_user"}, "id": "t1"}
-                ]},
-                {"role": "tool", "tool_call_id": "t1",
-                 "content": '{"pending": true, "question": "approve?"}'},
-            ],
-            "_pending_human_decision": {
-                "request_id": "req_1", "question": "approve?",
-            },
-            "_pending_peer_reply": [
-                {"sender": "pm", "correlation_id": "corr_001"},
-            ],
-        },
-        hook_data={"_hitl": hitl, "_park_timeout": 0.5},
-        data_dir=temp_data_dir,
+    await plugin._peer_wait_loop(
+        pc, state, wait_id, "dev", "proj_abc",
+        cancel_event=cancel_event, data_dir=temp_data_dir,
     )
 
-    # Fire session_park; it should block waiting for HITL event
-    async def set_hitl():
-        await asyncio.sleep(0.05)
-        hitl_event.set()
-
-    await asyncio.gather(set_hitl(), plugin._on_session_park(ctx))
-
-    # Human answer should be injected as user message
-    msgs = ctx.state.get("messages", [])
-    assert len(msgs) == 4  # original 3 + human answer
-    assert msgs[-1]["role"] == "user"
-    assert msgs[-1]["content"] == "approved!"
-    # HITL flag should be cleared
-    assert "_pending_human_decision" not in ctx.state
-    # Peer messages should NOT be injected (still in inbox for next round)
-    assert len(msgs) == 4  # no peer message injected
+    # Park condition should still be pending (no message was injected)
+    assert state["_park_conditions"][wait_id]["status"] == "pending"
 
 
 @pytest.mark.anyio
-async def test_session_park_injects_when_no_hitl(temp_data_dir):
-    """session_park SHOULD inject peer messages when no HITL is pending."""
+async def test_try_wake_peers_from_park_handles_no_bus(temp_data_dir):
+    """_try_wake_peers_from_park should not raise when bus is missing."""
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent"},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # With no SessionIndex, resume_group will return None gracefully
+    await plugin._try_wake_peers_from_park("proj_abc", "dev", temp_data_dir)
+
+
+@pytest.mark.anyio
+async def test_round_end_forwards_then_parks(temp_data_dir):
+    """_on_round_end should forward reply AND register park condition."""
     from arf.communication.agent_bus import InMemoryAgentBus
     from arf.core.protocols.communication import AgentInfo, AgentMessage
+    from arf.engine.park_coordinator import ParkCoordinator
 
     bus = InMemoryAgentBus()
     await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
@@ -1033,30 +1192,30 @@ async def test_session_park_injects_when_no_hitl(temp_data_dir):
         {"role": "dev", "agent_name": "dev_agent"},
     ]})
 
-    # Queue a peer message for dev
-    await bus.send(AgentMessage(
-        sender="pm", receiver="dev", type="task_request",
-        payload={"message": "review this"},
-        correlation_id="corr_001",
-    ))
-
-    # Dev finished a normal round, no HITL pending
+    pc = ParkCoordinator()
     ctx = PluginContext(
         session_id="proj_abc__dev",
         state={
             "session_id": "proj_abc__dev",
             "messages": [
-                {"role": "user", "content": "original task"},
-                {"role": "assistant", "content": "Done."},
+                {"role": "assistant", "content": "Here is my reply."},
             ],
+            "_pending_peer_reply": [{"sender": "pm", "correlation_id": "corr_001"}],
         },
+        hook_data={"_park_coordinator": pc},
         data_dir=temp_data_dir,
     )
 
-    await plugin._on_session_park(ctx)
+    await plugin._on_round_end(ctx)
 
-    # Peer message should have been injected (fast path drain)
-    msgs = ctx.state.get("messages", [])
-    assert len(msgs) == 3  # original 2 + peer message
-    assert msgs[-1]["role"] == "system"
-    assert "[Peer message from pm]" in msgs[-1]["content"]
+    # Reply should have been forwarded
+    replies = [m async for m in bus.receive("pm")]
+    assert len(replies) == 1
+    assert "Here is my reply" in replies[0].payload["message"]
+
+    # After _forward_peer_reply pops _pending_peer_reply, the park check
+    # finds it empty and registers a condition. This is correct: after
+    # replying, park and wait for more peer messages.
+    conditions = ctx.state.get("_park_conditions", {})
+    assert len(conditions) == 1
+    assert conditions[next(iter(conditions))]["type"] == "peer"
