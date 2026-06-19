@@ -206,6 +206,17 @@ async def execute(
             pre_snapshot=t.get("_pre_snapshot"),
             tool_calls_ref=t.get("_tool_calls_ref"),
         )
+
+        # Register park condition for subagent wake
+        _park_coordinator = getattr(_engine, '_park_coordinator', None) \
+                            or _registry.park_coordinator
+        if _park_coordinator is not None:
+            _park_wait_id = await _park_coordinator.register(
+                sub_state, "subagent",
+                metadata={"task_id": t.get("task_id", ""), "child_sid": child_sid},
+            )
+            t["_park_wait_id"] = _park_wait_id
+
         try:
             tool_calls = await asyncio.wait_for(
                 _drain_stream(_engine, sub_state, tool_calls_ref=tool_calls_ref),
@@ -232,6 +243,25 @@ async def execute(
                 )
             except Exception:
                 pass  # delegator.complete is idempotent — ignore race
+
+            # Complete park condition
+            _park_wait_id = t.get("_park_wait_id")
+            if _park_wait_id and _park_coordinator is not None:
+                from arf.plugins.a2a_subagents.plugin import A2APlugin
+                _content = sub_state.get("messages", [])[-1].get("content", "") \
+                    if sub_state.get("messages") else ""
+                _formatted = A2APlugin._format_result(
+                    t.get("_delegator_task_id", ""),
+                    {
+                        "content": _content,
+                        "turn_count": sub_state.get("current_turn", 0),
+                        "gate_exceeded": False,
+                    },
+                )
+                await _park_coordinator.complete(
+                    sub_state, _park_wait_id,
+                    {"content": _formatted, "task_id": t.get("task_id", "")},
+                )
 
         return {"ok": True, "final_state": sub_state}
 
@@ -371,6 +401,20 @@ async def _dispatch_external(
 
         try:
             await sub_agent.start()
+
+            # Register park condition for parent wake
+            pc = _registry.park_coordinator
+            if pc is not None and parent_sid:
+                parent_state = await sub_agent.state_store.get(parent_sid)
+                if parent_state:
+                    tid = t.get("_delegator_task_id", "")
+                    _park_wait_id = await pc.register(
+                        parent_state, "subagent",
+                        metadata={"task_id": tid, "child_sid": sid},
+                    )
+                    t["_park_wait_id"] = _park_wait_id
+                    t["_parent_sid"] = parent_sid
+                    await sub_agent.state_store.put(parent_sid, parent_state)
 
             # For auto-mode agents, skip consumer wait — they run autonomously.
             # For ask-mode agents, wait for frontend SSE consumer to connect.
@@ -530,6 +574,29 @@ async def _dispatch_external(
                 if file_changes:
                     complete_result["file_changes"] = file_changes
                 await _registry.delegator.complete(parent_sid, task_id, complete_result)
+
+                # Complete park condition for parent wake
+                pc = _registry.park_coordinator
+                _park_wait_id = t.get("_park_wait_id")
+                if pc is not None and _park_wait_id:
+                    parent_state = await sub_agent.state_store.get(
+                        t.get("_parent_sid", parent_sid))
+                    if parent_state:
+                        from arf.plugins.a2a_subagents.plugin import A2APlugin
+                        _formatted = A2APlugin._format_result(
+                            t.get("_delegator_task_id", ""),
+                            {
+                                "content": final_result,
+                                "turn_count": len(tool_calls),
+                                "gate_exceeded": False,
+                                "file_changes": file_changes if file_changes else None,
+                            },
+                        )
+                        await pc.complete(
+                            parent_state, _park_wait_id,
+                            {"content": _formatted, "task_id": t.get("_delegator_task_id", "")},
+                        )
+                        await sub_agent.state_store.put(t["_parent_sid"], parent_state)
 
             await event_queue.put(None)
 

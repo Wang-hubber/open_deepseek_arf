@@ -25,3 +25,4 @@ class _A2ARegistry:
 
 
 _registry = _A2ARegistry()
+park_coordinator = None  # injected by A2APlugin from ctx.hook_data

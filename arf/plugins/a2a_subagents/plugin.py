@@ -102,18 +102,30 @@ class A2APlugin:
     @property
     def hooks(self) -> dict[str, str]:
         return {
+            "session_start": "side",
             "pre_action": "blocking",
             "round_end": "blocking",
             "session_end": "side",
         }
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
-        if hook_name == "pre_action":
+        if hook_name == "session_start":
+            await self._on_session_start(ctx)
+        elif hook_name == "pre_action":
             await self._on_pre_action(ctx)
         elif hook_name == "round_end":
             await self._on_round_end(ctx)
         elif hook_name == "session_end":
             await self._on_session_end(ctx)
+
+    # ==================================================================
+    # session_start -- capture park_coordinator
+    # ==================================================================
+
+    async def _on_session_start(self, ctx: PluginContext) -> None:
+        """Capture park_coordinator from hook_data into shared registry."""
+        if "park_coordinator" in ctx.hook_data and _registry.park_coordinator is None:
+            _registry.park_coordinator = ctx.hook_data["park_coordinator"]
 
     # ==================================================================
     # pre_action -- inject completed results into parent messages
