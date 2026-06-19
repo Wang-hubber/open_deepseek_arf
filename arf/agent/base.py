@@ -78,6 +78,18 @@ class BaseAgent:
         _hitl = override_protocols.pop("hitl", None)
         _task_lifecycle = override_protocols.pop("task_lifecycle", None)
 
+        # ParkCoordinator — shared across ControlPlane, DefaultHITL, and plugins
+        from arf.engine.park_coordinator import ParkCoordinator
+        _park_coordinator = ParkCoordinator()
+
+        # Resolve HITL with park_coordinator injection
+        if _hitl is None:
+            from arf.core.protocols.hitl import DefaultHITL
+            _hitl = DefaultHITL(event_bus, state_store,
+                                park_coordinator=_park_coordinator)
+        elif hasattr(_hitl, '_park_coordinator') and _hitl._park_coordinator is None:
+            _hitl._park_coordinator = _park_coordinator
+
         # 2. Resources — MCP-based unified management
         # McpClientManager replaces ToolProvider + SkillProvider +
         # PluginProvider + MCP manager — tools/skills via MCP, hooks via plugins.
@@ -442,6 +454,7 @@ class BaseAgent:
             session_mode_manager=session_mode_manager,
             hitl=_hitl,
             task_lifecycle=_task_lifecycle,
+            park_coordinator=_park_coordinator,
         )
         # Initialize SkillIndex for lazy-loading domain knowledge
         from arf.skills.skill_index import SkillIndex
@@ -882,91 +895,13 @@ class BaseAgent:
             return False
         return plugin.approve(decision_id, approved)
 
-    async def chat(self, user_message: str, session_id: str = "default",
-                   on_approval: Callable | None = None) -> str:
-        from arf.core.state import AgentState
-        session_id, existing, is_new_session = await self._resolve_session(session_id)
+    async def run(self, user_message: str, session_id: str = "default") -> str:
+        """Convenience: run a single round and collect the final text.
 
-        # Handle child agent resume if needed
-        if is_new_session:
-            existing = await self._handle_child_resume(existing, str(self._engine._data_dir))
-
-        turn = 0  # reset per round; max_turns is a per-round circuit breaker
-        if existing:
-            messages = existing["messages"] + [{"role": "user", "content": user_message}]
-            summary = existing.get("context_summary", "")
-            interaction = existing.get("interaction_round", 0)
-        else:
-            messages = [{"role": "user", "content": user_message}]
-            summary = ""
-            interaction = 0
-
-        agent_name = self.config.name
-
-        state: AgentState = {
-            "session_id": session_id,
-            "agent_name": agent_name,
-            "messages": messages,
-            "current_model": self.config.models[0].type if self.config.models else "default",
-            "current_turn": turn,
-            "interaction_round": interaction,
-            "context_summary": summary,
-            "tool_results": {},
-            "plan": None,
-            "metadata": {},
-            "session_active": True,
-            "session_title": existing.get("session_title", "") if existing else "",
-            "_session_opened": existing.get("_session_opened", False) if existing else False,
-            "_session_ended": existing.get("_session_ended", False) if existing else False,
-            "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
-            "_park_timeout": 0,  # synchronous chat() should not park waiting for peer input
-        }
-
-        self._active_sessions.add(session_id)
-
-        # Wire approval handler for chat() path (non-streaming, no event consumer)
-        approval_plugin = self._engine._blocking.get_plugin("approval")
-        if approval_plugin is not None:
-            approval_plugin._chat_handler = on_approval
-            approval_plugin._chat_mode = True
-
-        try:
-            if self._hook_runner:
-                self._hook_runner.update_runtime(session_id=session_id, interaction_round=interaction)
-
-            if is_new_session and self._hook_runner:
-                await self._hook_runner.fire("session_start", {
-                    "session_id": session_id,
-                })
-
-            if self._hook_runner:
-                await self._hook_runner.fire("round_start", {
-                    "session_id": session_id,
-                    "round": interaction,
-                })
-
-            try:
-                result = await self._engine.invoke(state)
-            except Exception:
-                # Unknown/unhandled error from engine — save state and re-raise
-                # so the caller can distinguish "model silent" from "call failed".
-                if self._engine and self._state_store:
-                    state["session_active"] = False
-                raise
-
-            if result.get("_aborted"):
-                error_msg = result.get("_error", "session aborted")
-                raise RuntimeError(f"Agent session aborted: {error_msg}")
-
-            for m in reversed(result.get("messages", [])):
-                if m.get("role") == "assistant":
-                    return m.get("content", "")
-            return ""
-        finally:
-            if approval_plugin is not None:
-                approval_plugin._chat_handler = None
-                approval_plugin._chat_mode = False
-            self._active_sessions.discard(session_id)
+        Thin wrapper over astream(). For CLI/testing/script use.
+        """
+        from arf.engine.compat import collect_response
+        return await collect_response(self.astream(user_message, session_id))
 
     async def astream(self, user_message: str, session_id: str = "default",
                       stop_on_text: bool = False):
