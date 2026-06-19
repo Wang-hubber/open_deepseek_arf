@@ -1,7 +1,6 @@
 """send_peer_message — send a message to another peer agent."""
 from __future__ import annotations
 
-import asyncio
 import uuid
 
 from arf.core.protocols.communication import AgentMessage
@@ -20,15 +19,14 @@ async def execute(
 
     The sender is inferred from *session_id* (the caller's session).
     Message lands in the receiver's inbox and is injected at the next
-    pre_action hook (normal) or immediately (urgent).
-
-    If the receiver is a registered peer agent, also wakes it up to
-    process the message (background task, non-blocking for sender).
+    pre_action hook together with a team communication context.
+    The reply is captured by round_end / task_completed hooks and
+    forwarded back to the sender automatically.
     """
     if _registry.agent_bus is None:
         return {"ok": False, "error": "AgentBus not initialized — is the a2a_teammates plugin enabled?"}
 
-    # Normalize receiver to lowercase — models often capitalize role names
+    # Normalize receiver to lowercase
     receiver = receiver.lower().strip()
 
     # Infer sender role from session_id: {group_id}__{role}
@@ -50,12 +48,9 @@ async def execute(
 
     await _registry.agent_bus.send(msg)
 
-    # Wake up the receiver agent to process the message (background task)
-    if receiver in _registry.agents:
-        from arf.plugins.a2a_teammates.tools import _wake_receiver
-        loop = asyncio.get_event_loop()
-        loop.create_task(
-            _wake_receiver(receiver, message, sender, group_id)
-        )
+    import logging
+    logger = logging.getLogger("arf.plugins.a2a_teammates.tools")
+    logger.info("Peer message from '%s' to '%s' sent via bus (corr=%s)",
+                sender, receiver, correlation_id)
 
     return {"ok": True, "correlation_id": correlation_id}
