@@ -835,6 +835,7 @@ class ControlPlane:
             if primitive == "pending_human":
                 decision = state.get("_pending_human_decision", {})
                 yield self._make_event("need_human_input", {
+                    "request_id": decision.get("request_id", ""),
                     "question": decision.get("question", ""),
                     "options": decision.get("options", []),
                     "context": decision.get("context", ""),
