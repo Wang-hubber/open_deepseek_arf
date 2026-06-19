@@ -1,0 +1,13 @@
+name: kernel__write_user_memory
+description: >
+  Persist user-level memory that agents share about the user. Write user
+  preferences, decisions, knowledge, working style, or constraints
+  discovered during conversation. Content is Markdown.
+parameters:
+  type: object
+  properties:
+    content:
+      type: string
+      description: Markdown content to persist as user memory.
+  required: [content]
+activation: kernel

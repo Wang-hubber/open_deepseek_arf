@@ -107,6 +107,32 @@ class McpClientManager:
         """Register a built-in kernel tool (namespace: kernel__)."""
         self._kernel_tools[name] = execute_fn
 
+    def _load_kernel_tool_definitions(self) -> list[dict]:
+        """Load kernel tool definitions from arf/kernel_tools/*/tool.yaml."""
+        import yaml
+        import arf as arf_pkg
+        kernel_dir = Path(arf_pkg.__file__).parent / "kernel_tools"
+        if not kernel_dir.is_dir():
+            return []
+        defs: list[dict] = []
+        for tool_dir in sorted(kernel_dir.iterdir()):
+            if not tool_dir.is_dir():
+                continue
+            yaml_path = tool_dir / "tool.yaml"
+            if not yaml_path.is_file():
+                continue
+            try:
+                cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict) and "name" in cfg:
+                    defs.append({
+                        "name": cfg["name"],
+                        "description": cfg.get("description", ""),
+                        "parameters": cfg.get("parameters", {}),
+                    })
+            except Exception:
+                logger.warning("Failed to load kernel tool def from %s", yaml_path, exc_info=True)
+        return defs
+
     # ==================================================================
     # Lifecycle
     # ==================================================================
@@ -244,6 +270,7 @@ class McpClientManager:
         params (e.g. session_id, _workspace).
         """
         tools_data: list[dict] = list(self._list_local_tools())
+        tools_data.extend(self._load_kernel_tool_definitions())
 
         if self._remote_started:
             try:
@@ -333,8 +360,10 @@ class McpClientManager:
     # ---- Sync wrapper for startup ----
 
     def get_tool_definitions_sync(self) -> list[dict]:
-        """Synchronous tool listing — local providers only (no subprocess)."""
-        return self._list_local_tools()
+        """Synchronous tool listing — local + kernel tools (no subprocess)."""
+        tools = list(self._list_local_tools())
+        tools.extend(self._load_kernel_tool_definitions())
+        return tools
 
     # ==================================================================
     # Remote subprocess communication (only when mcp_servers configured)

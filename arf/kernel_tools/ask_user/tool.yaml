@@ -1,0 +1,24 @@
+name: kernel__ask_user
+description: >
+  Request a human decision. Use when you cannot proceed without human
+  input. Your round will end, and the human's answer will be available
+  in your next round as a new message.
+parameters:
+  type: object
+  properties:
+    question:
+      type: string
+      description: The question for the human.
+    options:
+      type: array
+      items:
+        type: string
+      description: Optional list of choices. Empty = free-text answer.
+    context:
+      type: string
+      description: Why human input is needed (background context).
+    task_id:
+      type: string
+      description: ID of the task this question belongs to.
+  required: [question]
+activation: kernel

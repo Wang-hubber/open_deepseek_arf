@@ -1,0 +1,14 @@
+name: kernel__write_project_memory
+description: >
+  Persist project-level memory that agents share across sessions. Write
+  architecture decisions, conventions, bug fixes, design patterns, or
+  important project context that all team members should know. Content
+  is Markdown.
+parameters:
+  type: object
+  properties:
+    content:
+      type: string
+      description: Markdown content to persist as project memory.
+  required: [content]
+activation: kernel

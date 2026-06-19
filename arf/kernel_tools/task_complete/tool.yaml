@@ -1,0 +1,23 @@
+name: kernel__task_complete
+description: >
+  Signal that the current task is complete. Call this when you have
+  finished the user's request. Provide a result summary, confidence
+  (0.0-1.0), and optional notes. After calling, your round ends and a
+  task_completed hook fires for memory extraction and task archiving.
+parameters:
+  type: object
+  properties:
+    result:
+      type: string
+      description: Summary of what was accomplished.
+    files_changed:
+      type: object
+      description: 'Files added/modified/deleted: {"added":[],"modified":[],"deleted":[]}.'
+    confidence:
+      type: number
+      description: Confidence in task completion, 0.0-1.0. Default 1.0.
+    notes:
+      type: string
+      description: Additional notes for auditing.
+  required: []
+activation: kernel

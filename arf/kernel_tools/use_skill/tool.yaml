@@ -1,0 +1,13 @@
+name: kernel__use_skill
+description: >
+  Load a Skill's full domain knowledge. Call with the skill name to get
+  detailed instructions, conventions, and best practices for a specific
+  task type. Available skills are listed in the system reminder.
+parameters:
+  type: object
+  properties:
+    name:
+      type: string
+      description: The name of the skill to load.
+  required: [name]
+activation: kernel
