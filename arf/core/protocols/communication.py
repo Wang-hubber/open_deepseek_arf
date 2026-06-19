@@ -1,4 +1,7 @@
 """Protocols for multi-agent communication."""
+from __future__ import annotations
+
+import asyncio
 from typing import Protocol, AsyncIterator, Callable, Awaitable
 from dataclasses import dataclass
 from typing import Literal
@@ -26,6 +29,11 @@ class AgentBus(Protocol):
     async def receive(self, agent_name: str) -> AsyncIterator[AgentMessage]: ...
     async def register(self, agent: AgentInfo) -> None: ...
     async def discover(self, capability: str | None = None) -> list[AgentInfo]: ...
+    async def wait_for_message(
+        self, agent_name: str,
+        timeout: float | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> bool: ...
 
 
 class PeerAgent(Protocol):

@@ -216,9 +216,10 @@ class ControlPlane:
         completed = False
         while not aborted and not completed:
             if self._cancelled():
-                state["_session_ended"] = True
-                ctx.inject_engine_event("session_cancelled", {"reason": "cancelled"})
-                yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
+                if not state.get("_session_ended"):
+                    state["_session_ended"] = True
+                    ctx.inject_engine_event("session_cancelled", {"reason": "cancelled"})
+                    yield self._make_event("session_end", {"reason": "cancelled"}, session_id=session_id)
                 break
 
             # --- round_start ---
@@ -443,9 +444,23 @@ class ControlPlane:
                 )
                 break
 
-            # No new user input after round — exit round loop
+            # No new user/system input after round — give plugins a chance
+            # to inject continuation input (e.g. peer messages from AgentBus).
             msgs = state.get("messages", [])
-            if msgs and msgs[-1].get("role") != "user":
+            if msgs and msgs[-1].get("role") not in ("user", "system"):
+                park_ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
+                park_ctx.hook_data["_park_timeout"] = state.get("_park_timeout", None)
+                await self._fire_blocking("session_park", park_ctx)
+
+                # Re-check — plugins may have injected new messages
+                msgs = state.get("messages", [])
+                if msgs and msgs[-1].get("role") in ("user", "system"):
+                    ctx.inject_engine_event("round_continued", {
+                        "reason": "session_park_injected",
+                        "last_role": msgs[-1].get("role"),
+                    })
+                    continue  # back to while loop top → new round_start
+
                 ctx.inject_engine_event("round_exit", {
                     "reason": "no_user_input",
                     "last_message_role": msgs[-1].get("role") if msgs else "N/A",
@@ -1542,6 +1557,10 @@ class ControlPlane:
             return
         state["_session_ended"] = True
         state["session_active"] = False
+
+        # Signal cancel_event to interrupt any in-progress session_park wait
+        if self._cancel_event is not None and not self._cancel_event.is_set():
+            self._cancel_event.set()
 
         session_id = state.get("session_id", "default")
         ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")

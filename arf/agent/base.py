@@ -919,6 +919,7 @@ class BaseAgent:
             "_session_opened": existing.get("_session_opened", False) if existing else False,
             "_session_ended": existing.get("_session_ended", False) if existing else False,
             "_last_injected_user_count": existing.get("_last_injected_user_count", 0) if existing else 0,
+            "_park_timeout": 0,  # synchronous chat() should not park waiting for peer input
         }
 
         self._active_sessions.add(session_id)

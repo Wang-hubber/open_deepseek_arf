@@ -43,6 +43,7 @@ class PeerTeamPlugin:
             "round_end": "side",
             "task_completed": "side",
             "session_end": "side",
+            "session_park": "blocking",
         }
 
     async def on_hook(self, hook_name: str, ctx: PluginContext) -> None:
@@ -50,6 +51,8 @@ class PeerTeamPlugin:
             await self._on_session_start(ctx)
         elif hook_name == "pre_action":
             await self._on_pre_action(ctx)
+        elif hook_name == "session_park":
+            await self._on_session_park(ctx)
         elif hook_name == "round_end":
             await self._on_round_end(ctx)
         elif hook_name == "task_completed":
@@ -100,7 +103,7 @@ class PeerTeamPlugin:
     # ---- pre_action: inject pending peer messages ----
 
     async def _on_pre_action(self, ctx: PluginContext) -> None:
-        """Inject pending peer messages: system context (once) + user message each."""
+        """Inject pending peer messages during call_model step."""
         if ctx.current_step != "call_model":
             return
 
@@ -114,20 +117,56 @@ class PeerTeamPlugin:
             return
         _group_id, role = parsed
 
-        # Drain inbox for this peer
-        messages = [m async for m in bus.receive(role.lower())]
-        if not messages:
+        role_key = role.lower()
+        messages = [m async for m in bus.receive(role_key)]
+        if messages:
+            await self._inject_peer_messages(ctx, role_key, messages)
+
+    # ---- session_park: wait for peer messages at round end ----
+
+    async def _on_session_park(self, ctx: PluginContext) -> None:
+        """Block waiting for new peer messages when the round loop is idle."""
+        bus = _registry.agent_bus
+        if bus is None:
             return
 
-        # Inject team communication system message once per session
+        parsed = SessionIndex.parse_session_id(ctx.session_id)
+        if parsed is None:
+            return
+        _group_id, role = parsed
+
+        role_key = role.lower()
+
+        # Fast path: messages already queued
+        messages = [m async for m in bus.receive(role_key)]
+        if messages:
+            await self._inject_peer_messages(ctx, role_key, messages)
+            return
+
+        # Slow path: wait for notification
+        park_timeout = ctx.hook_data.get("_park_timeout")
+        has_message = await bus.wait_for_message(role_key, timeout=park_timeout)
+        if has_message:
+            messages = [m async for m in bus.receive(role_key)]
+            if messages:
+                await self._inject_peer_messages(ctx, role_key, messages)
+
+    # ---- shared message injection ----
+
+    async def _inject_peer_messages(
+        self, ctx: PluginContext, role_key: str, messages: list
+    ) -> None:
+        """Inject drained peer messages as system messages into state."""
         state = ctx.state
+
+        # Inject team communication system message once per session
         if not state.get("_peer_context_injected"):
             state["_peer_context_injected"] = True
             teammates = [m.role for m in self._members]
             system_msg = (
                 "[Team Communication]\n"
                 "You are part of an agent team. Messages from teammates are "
-                "delivered as user messages prefixed with [Peer]. To respond "
+                "delivered as system messages prefixed with [Peer]. To respond "
                 "to a teammate, use the send_peer_message tool — your reply "
                 "will be automatically forwarded when you complete your "
                 "response (via task_complete or when the round ends).\n\n"
@@ -138,12 +177,12 @@ class PeerTeamPlugin:
                 "content": system_msg,
             })
 
-        # Inject one user message per peer message, build pending list
+        # Inject one system message per peer message, build pending list
         pending = []
         for msg in messages:
             formatted = self._format_peer_message(msg)
             state.setdefault("messages", []).append({
-                "role": "user",
+                "role": "system",
                 "content": formatted,
             })
             pending.append({
@@ -157,7 +196,7 @@ class PeerTeamPlugin:
 
     @staticmethod
     def _format_peer_message(msg) -> str:
-        """Format a peer message for injection as a user message."""
+        """Format a peer message for injection as a system message."""
         sender = msg.sender
         msg_type = msg.type
         body = msg.payload.get("message", str(msg.payload))

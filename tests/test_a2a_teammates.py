@@ -402,13 +402,13 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
     await plugin._on_pre_action(ctx)
 
     msgs = ctx.state.get("messages", [])
-    assert len(msgs) == 2  # system + user
+    assert len(msgs) == 2  # system context + system peer message
     # First message is system context
     assert msgs[0]["role"] == "system"
     assert "Team Communication" in msgs[0]["content"]
     assert "send_peer_message" in msgs[0]["content"]
-    # Second message is the peer message
-    assert msgs[1]["role"] == "user"
+    # Second message is the peer message (injected as system)
+    assert msgs[1]["role"] == "system"
     assert "[Peer message from pm]" in msgs[1]["content"]
     assert "Type: task_request" in msgs[1]["content"]
     assert "build API" in msgs[1]["content"]
@@ -530,7 +530,7 @@ async def test_full_peer_create_and_resume(temp_data_dir):
                                  payload={"message": "what tables have user data?"},
                                  correlation_id="corr_002", priority="normal"))
 
-    # Dev's pre_action → injects system + user messages
+    # Dev's pre_action → injects system context + peer message as system
     ctx_dev = PluginContext(
         session_id="proj_abc__dev",
         state={"session_id": "proj_abc__dev", "messages": []},
@@ -541,7 +541,7 @@ async def test_full_peer_create_and_resume(temp_data_dir):
     assert len(ctx_dev.state["messages"]) >= 1
     assert "build the dashboard" in ctx_dev.state["messages"][-1]["content"]
 
-    # Data's pre_action → injects system + user messages
+    # Data's pre_action → injects system context + peer message as system
     ctx_data = PluginContext(
         session_id="proj_abc__data",
         state={"session_id": "proj_abc__data", "messages": []},
@@ -680,7 +680,7 @@ async def test_round_end_forwards_reply(temp_data_dir):
             "session_id": "proj_abc__dev",
             "messages": [
                 {"role": "system", "content": "[Team Communication] ..."},
-                {"role": "user", "content": "[Peer message from pm]\nType: task_request\n\nbuild API"},
+                {"role": "system", "content": "[Peer message from pm]\nType: task_request\n\nbuild API"},
                 {"role": "assistant", "content": "API built successfully with 3 endpoints."},
             ],
             "_pending_peer_reply": [{"sender": "pm", "correlation_id": "corr_001"}],
@@ -825,3 +825,112 @@ def test_peer_team_plugin_hooks_include_reply_capture():
     assert hooks["task_completed"] == "side"
     assert hooks["session_start"] == "side"
     assert hooks["session_end"] == "side"
+    assert hooks["session_park"] == "blocking"
+
+
+# ---- wait_for_message tests ----
+
+@pytest.mark.anyio
+async def test_wait_for_message_immediate_when_queued():
+    """wait_for_message returns True immediately if messages already in inbox."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.send(AgentMessage(
+        sender="pm", receiver="dev", type="info",
+        payload={"message": "hello"},
+    ))
+
+    result = await bus.wait_for_message("dev", timeout=0)
+    assert result is True
+
+
+@pytest.mark.anyio
+async def test_wait_for_message_blocks_until_message():
+    """wait_for_message blocks until a message is sent."""
+    import asyncio
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentMessage
+
+    bus = InMemoryAgentBus()
+
+    async def send_after_delay():
+        await asyncio.sleep(0.05)
+        await bus.send(AgentMessage(
+            sender="pm", receiver="dev", type="info",
+            payload={"message": "hello"},
+        ))
+
+    async def wait_and_check():
+        result = await bus.wait_for_message("dev", timeout=1.0)
+        assert result is True
+        # Message should be in inbox now
+        messages = [m async for m in bus.receive("dev")]
+        assert len(messages) == 1
+
+    await asyncio.gather(send_after_delay(), wait_and_check())
+
+
+@pytest.mark.anyio
+async def test_wait_for_message_timeout():
+    """wait_for_message returns False on timeout."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+
+    bus = InMemoryAgentBus()
+    result = await bus.wait_for_message("dev", timeout=0.01)
+    assert result is False
+
+
+@pytest.mark.anyio
+async def test_wait_for_message_cancel_event():
+    """wait_for_message returns False when cancel_event is set."""
+    import asyncio
+    from arf.communication.agent_bus import InMemoryAgentBus
+
+    bus = InMemoryAgentBus()
+    cancel = asyncio.Event()
+
+    async def cancel_after_delay():
+        await asyncio.sleep(0.05)
+        cancel.set()
+
+    async def wait_and_check():
+        result = await bus.wait_for_message("dev", timeout=10.0, cancel_event=cancel)
+        assert result is False
+
+    await asyncio.gather(cancel_after_delay(), wait_and_check())
+
+
+@pytest.mark.anyio
+async def test_wait_for_message_broadcast_notifies_all():
+    """Broadcast messages should notify all registered agents."""
+    import asyncio
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="dev", description="Developer", capabilities=[]))
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+
+    async def send_broadcast():
+        await asyncio.sleep(0.05)
+        await bus.send(AgentMessage(
+            sender="pm", receiver=None, type="info",
+            payload={"message": "broadcast"},
+        ))
+
+    async def wait_dev():
+        result = await bus.wait_for_message("dev", timeout=1.0)
+        assert result is True
+        messages = [m async for m in bus.receive("dev")]
+        assert len(messages) == 1
+
+    async def wait_pm():
+        # PM (sender) should NOT receive own broadcast
+        result = await bus.wait_for_message("pm", timeout=0.1)
+        # PM might get notified but receive is empty for own broadcast
+        messages = [m async for m in bus.receive("pm")]
+        assert len(messages) == 0
+
+    await asyncio.gather(send_broadcast(), wait_dev(), wait_pm())
