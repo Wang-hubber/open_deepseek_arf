@@ -237,7 +237,7 @@ class TestSessionHooks:
             hook_runner.fire = AsyncMock(return_value=[])
 
             agent = self._make_agent(hook_runner)
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [
                     {"role": "user", "content": "hi"},
@@ -272,7 +272,7 @@ class TestSessionHooks:
                 "session_active": True,
             })
             agent._state_store.put = AsyncMock()
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [],
                 "session_active": True,
@@ -308,7 +308,7 @@ class TestSessionHooks:
                 "session_active": True,
             })
             agent._state_store.put = AsyncMock()
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [],
                 "session_active": True,
@@ -345,7 +345,7 @@ class TestSessionHooks:
                 "messages": [{"role": "user", "content": "old format"}],
             })
             agent._state_store.put = AsyncMock()
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [],
                 "session_active": True,
@@ -554,7 +554,7 @@ class TestBaseAgentStop:
                 yield {"type": "session_end", "data": {"session_id": state.get("session_id")}}
 
             agent = self._make_agent(hook_runner=hook_runner)
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "s1",
                 "messages": [{"role": "assistant", "content": "ok"}],
                 "session_active": True,
@@ -692,7 +692,7 @@ class TestRoundStartHook:
             hook_runner.fire = AsyncMock(return_value=[])
 
             agent = self._make_agent(hook_runner)
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [{"role": "assistant", "content": "hi"}],
                 "session_active": True,
@@ -723,7 +723,7 @@ class TestRoundStartHook:
             hook_runner.fire = capture
 
             agent = self._make_agent(hook_runner)
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "my-session",
                 "messages": [{"role": "assistant", "content": "hi"}],
                 "session_active": True,
@@ -823,7 +823,7 @@ class TestSessionLifecycleEdgeCases:
                 "session_active": False,  # cleanly shut down
             })
             agent._state_store.put = AsyncMock()
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "s1",
                 "messages": [{"role": "assistant", "content": "ok"}],
                 "session_active": True,
@@ -880,7 +880,7 @@ class TestSessionLifecycleEdgeCases:
         """When session_id is not provided, 'default' is used."""
         async def _test():
             agent = self._make_agent()
-            agent._engine.invoke = AsyncMock(return_value={
+            agent._engine.astream = MagicMock(return_value={
                 "session_id": "default",
                 "messages": [{"role": "assistant", "content": "ok"}],
                 "session_active": True,
