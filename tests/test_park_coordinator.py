@@ -204,3 +204,55 @@ async def test_rebuild_then_park_works(state, coordinator):
     asyncio.create_task(complete_later())
     result = await coordinator2.park_round(state2)
     assert result == wid
+
+
+# ── integration: three-way parallel wait ──
+
+@pytest.mark.anyio
+async def test_three_way_parallel_wait(state, coordinator):
+    """HITL, subagent, and peer conditions — first to complete wins."""
+    hitl_wid = await coordinator.register(state, "hitl", {"n": 1})
+    subagent_wid = await coordinator.register(state, "subagent", {"n": 2})
+    peer_wid = await coordinator.register(state, "peer", {"n": 3})
+
+    # Peer completes first
+    async def peer_completes():
+        await asyncio.sleep(0.02)
+        await coordinator.complete(state, peer_wid,
+            {"content": "[Peer message from architect]\n\nDone"})
+
+    asyncio.create_task(peer_completes())
+    result = await coordinator.park_round(state)
+
+    assert result == peer_wid
+    assert state["_park_conditions"][hitl_wid]["status"] == "pending"
+    assert state["_park_conditions"][subagent_wid]["status"] == "pending"
+    assert state["_park_conditions"][peer_wid]["status"] == "completed"
+    # Message injected
+    assert state["messages"][-1]["role"] == "system"
+
+
+# ── integration: resume cycle ──
+
+@pytest.mark.anyio
+async def test_resume_complete_cycle():
+    """Full cycle: register -> serialize -> rebuild -> complete -> verify message."""
+    coordinator1 = ParkCoordinator()
+    state = {"session_id": "test", "messages": []}
+
+    wid = await coordinator1.register(state, "hitl", {"q": "confirm?"})
+
+    # Serialize state (as if persisted to disk)
+    import json
+    serialized = json.dumps(state["_park_conditions"])
+
+    # Simulate resume with new coordinator
+    coordinator2 = ParkCoordinator()
+    state2 = {"session_id": "test", "messages": [],
+              "_park_conditions": json.loads(serialized)}
+    coordinator2.rebuild_events(state2)
+
+    # Complete via coordinator2 after rebuild
+    ok = await coordinator2.complete(state2, wid, {"answer": "yes"})
+    assert ok is True
+    assert state2["messages"][-1]["role"] == "user"
