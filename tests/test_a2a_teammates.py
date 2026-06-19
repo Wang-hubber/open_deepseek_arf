@@ -392,22 +392,25 @@ async def test_peer_team_plugin_injects_messages(temp_data_dir):
         correlation_id="corr_001",
     ))
 
-    # pre_action on Dev's session
+    # session_start injects [Team Communication]
     ctx = PluginContext(
         session_id="proj_abc__dev",
         state={"session_id": "proj_abc__dev", "messages": []},
-        current_step="call_model",
         data_dir=temp_data_dir,
     )
-    await plugin._on_pre_action(ctx)
-
+    await plugin._on_session_start(ctx)
     msgs = ctx.state.get("messages", [])
-    assert len(msgs) == 2  # system context + system peer message
-    # First message is system context
+    assert len(msgs) == 1  # team context only
     assert msgs[0]["role"] == "system"
     assert "Team Communication" in msgs[0]["content"]
     assert "send_peer_message" in msgs[0]["content"]
-    # Second message is the peer message (injected as system)
+
+    # pre_action drains inbox and injects peer message
+    ctx.current_step = "call_model"
+    await plugin._on_pre_action(ctx)
+
+    msgs = ctx.state.get("messages", [])
+    assert len(msgs) == 2  # team context + peer message
     assert msgs[1]["role"] == "system"
     assert "[Peer message from pm]" in msgs[1]["content"]
     assert "Type: task_request" in msgs[1]["content"]
@@ -934,3 +937,126 @@ async def test_wait_for_message_broadcast_notifies_all():
         assert len(messages) == 0
 
     await asyncio.gather(send_broadcast(), wait_dev(), wait_pm())
+
+
+# ---- session_park HITL guard ----
+
+@pytest.mark.anyio
+async def test_session_park_waits_for_hitl_response(temp_data_dir):
+    """session_park should wait for human input when HITL pending, then inject it."""
+    import asyncio
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Queue a peer message for dev (should NOT be injected while HITL pending)
+    await bus.send(AgentMessage(
+        sender="pm", receiver="dev", type="task_request",
+        payload={"message": "build API"},
+        correlation_id="corr_001",
+    ))
+
+    # Mock HITL with event
+    hitl_event = asyncio.Event()
+
+    class MockHITL:
+        def get_response_event(self, request_id):
+            return hitl_event
+        def get_response(self, request_id):
+            return "approved!"
+
+    hitl = MockHITL()
+
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "user", "content": "original task"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"function": {"name": "kernel__ask_user"}, "id": "t1"}
+                ]},
+                {"role": "tool", "tool_call_id": "t1",
+                 "content": '{"pending": true, "question": "approve?"}'},
+            ],
+            "_pending_human_decision": {
+                "request_id": "req_1", "question": "approve?",
+            },
+            "_pending_peer_reply": [
+                {"sender": "pm", "correlation_id": "corr_001"},
+            ],
+        },
+        hook_data={"_hitl": hitl, "_park_timeout": 0.5},
+        data_dir=temp_data_dir,
+    )
+
+    # Fire session_park; it should block waiting for HITL event
+    async def set_hitl():
+        await asyncio.sleep(0.05)
+        hitl_event.set()
+
+    await asyncio.gather(set_hitl(), plugin._on_session_park(ctx))
+
+    # Human answer should be injected as user message
+    msgs = ctx.state.get("messages", [])
+    assert len(msgs) == 4  # original 3 + human answer
+    assert msgs[-1]["role"] == "user"
+    assert msgs[-1]["content"] == "approved!"
+    # HITL flag should be cleared
+    assert "_pending_human_decision" not in ctx.state
+    # Peer messages should NOT be injected (still in inbox for next round)
+    assert len(msgs) == 4  # no peer message injected
+
+
+@pytest.mark.anyio
+async def test_session_park_injects_when_no_hitl(temp_data_dir):
+    """session_park SHOULD inject peer messages when no HITL is pending."""
+    from arf.communication.agent_bus import InMemoryAgentBus
+    from arf.core.protocols.communication import AgentInfo, AgentMessage
+
+    bus = InMemoryAgentBus()
+    await bus.register(AgentInfo(name="pm", description="PM", capabilities=[]))
+    await bus.register(AgentInfo(name="dev", description="Dev", capabilities=[]))
+    teammates_registry.agent_bus = bus
+
+    plugin = PeerTeamPlugin({"group_id": "proj_abc", "members": [
+        {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+        {"role": "dev", "agent_name": "dev_agent"},
+    ]})
+
+    # Queue a peer message for dev
+    await bus.send(AgentMessage(
+        sender="pm", receiver="dev", type="task_request",
+        payload={"message": "review this"},
+        correlation_id="corr_001",
+    ))
+
+    # Dev finished a normal round, no HITL pending
+    ctx = PluginContext(
+        session_id="proj_abc__dev",
+        state={
+            "session_id": "proj_abc__dev",
+            "messages": [
+                {"role": "user", "content": "original task"},
+                {"role": "assistant", "content": "Done."},
+            ],
+        },
+        data_dir=temp_data_dir,
+    )
+
+    await plugin._on_session_park(ctx)
+
+    # Peer message should have been injected (fast path drain)
+    msgs = ctx.state.get("messages", [])
+    assert len(msgs) == 3  # original 2 + peer message
+    assert msgs[-1]["role"] == "system"
+    assert "[Peer message from pm]" in msgs[-1]["content"]

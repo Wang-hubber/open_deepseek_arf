@@ -1,6 +1,7 @@
 """HITLProtocol — engine interface for human-in-the-loop input requests."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
@@ -34,15 +35,27 @@ class HITLProtocol(Protocol):
         """Cancel a pending request."""
         ...
 
+    def get_response_event(self, request_id: str) -> asyncio.Event | None:
+        """Return the Event that is set when a response is provided."""
+        ...
+
+    def get_response(self, request_id: str) -> str:
+        """Return the stored response for *request_id*, or empty string."""
+        ...
+
 
 class DefaultHITL:
-    """EventBus-driven HITL. App layer calls provide_response() then
-    injects the answer as a new user message for the next round."""
+    """EventBus-driven HITL with async notification for session parking.
+
+    provide_response() sets an asyncio.Event so parked sessions can
+    wake up and continue without session_end.
+    """
 
     def __init__(self, event_bus, state_store=None) -> None:
         self._event_bus = event_bus
         self._state_store = state_store
         self._answers: dict[str, str] = {}
+        self._events: dict[str, asyncio.Event] = {}
 
     async def request_input(
         self, question: str, options: list[str], context: str,
@@ -55,6 +68,7 @@ class DefaultHITL:
             "task_id": task_id, "deadline": deadline,
         }
         self._answers[request_id] = ""
+        self._events[request_id] = asyncio.Event()
         if self._event_bus:
             self._event_bus.emit(AgentEvent(
                 type="need_human_input",
@@ -73,6 +87,9 @@ class DefaultHITL:
         if request_id not in self._answers:
             return False
         self._answers[request_id] = response
+        event = self._events.get(request_id)
+        if event:
+            event.set()
         if self._event_bus:
             self._event_bus.emit(AgentEvent(
                 type="human_input_provided",
@@ -80,5 +97,12 @@ class DefaultHITL:
             ))
         return True
 
+    def get_response_event(self, request_id: str) -> asyncio.Event | None:
+        return self._events.get(request_id)
+
+    def get_response(self, request_id: str) -> str:
+        return self._answers.get(request_id, "")
+
     async def cancel_request(self, request_id: str) -> bool:
+        self._events.pop(request_id, None)
         return self._answers.pop(request_id, None) is not None

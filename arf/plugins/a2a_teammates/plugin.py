@@ -63,7 +63,7 @@ class PeerTeamPlugin:
     # ---- session_start: create group index if first member ----
 
     async def _on_session_start(self, ctx: PluginContext) -> None:
-        """Create SessionIndex on first member's session_start."""
+        """Create SessionIndex on first member's session_start + inject team context."""
         sid = ctx.session_id
         parsed = SessionIndex.parse_session_id(sid)
         if parsed is None:
@@ -75,30 +75,47 @@ class PeerTeamPlugin:
         _session_index_dir = _base_data.parent / "team_sessions" if _base_data.name != "team_sessions" else _base_data
         idx = SessionIndex(str(_session_index_dir))
         existing = await idx.load(group_id)
-        if existing is not None:
-            return  # Group already created
 
-        # Build member entries
-        members = []
-        for m in self._members:
-            members.append({
-                "role": m.role,
-                "agent_name": m.agent_name,
-                "session_id": f"{group_id}__{m.role}",
-                "status": "active" if m.role == role else "idle",
+        if existing is None:
+            # Build member entries
+            members = []
+            for m in self._members:
+                members.append({
+                    "role": m.role,
+                    "agent_name": m.agent_name,
+                    "session_id": f"{group_id}__{m.role}",
+                    "status": "active" if m.role == role else "idle",
+                })
+
+            await idx.create(group_id, members)
+
+            # Register all members on the AgentBus
+            for m in members:
+                await _registry.agent_bus.register(AgentInfo(
+                    name=m["role"].lower(),  # normalize to lowercase
+                    description=f"Agent: {m['agent_name']}",
+                    capabilities=[],  # filled by App or dynamic discovery
+                ))
+
+            logger.info("Peer team group %s created with %d members", group_id, len(members))
+
+        # Inject team communication system message once per session
+        if not ctx.state.get("_peer_context_injected"):
+            ctx.state["_peer_context_injected"] = True
+            teammates = [m.role for m in self._members]
+            system_msg = (
+                "[Team Communication]\n"
+                "You are part of an agent team. Messages from teammates are "
+                "delivered as system messages prefixed with [Peer]. To respond "
+                "to a teammate, use the send_peer_message tool — your reply "
+                "will be automatically forwarded when you complete your "
+                "response (via task_complete or when the round ends).\n\n"
+                f"Available teammates: {', '.join(teammates)}"
+            )
+            ctx.state.setdefault("messages", []).append({
+                "role": "system",
+                "content": system_msg,
             })
-
-        await idx.create(group_id, members)
-
-        # Register all members on the AgentBus
-        for m in members:
-            await _registry.agent_bus.register(AgentInfo(
-                name=m["role"].lower(),  # normalize to lowercase
-                description=f"Agent: {m['agent_name']}",
-                capabilities=[],  # filled by App or dynamic discovery
-            ))
-
-        logger.info("Peer team group %s created with %d members", group_id, len(members))
 
     # ---- pre_action: inject pending peer messages ----
 
@@ -125,7 +142,64 @@ class PeerTeamPlugin:
     # ---- session_park: wait for peer messages at round end ----
 
     async def _on_session_park(self, ctx: PluginContext) -> None:
-        """Block waiting for new peer messages when the round loop is idle."""
+        """Block waiting for input when the round loop is idle.
+
+        Two cases:
+        - HITL pending: wait for human response, inject as user message.
+        - Normal: wait for peer messages with retry + backoff + alive check.
+        """
+        import asyncio
+        import random
+        import time
+
+        state = ctx.state
+
+        # --- HITL pending: wait for human input ---
+        decision = state.get("_pending_human_decision")
+        if decision:
+            hitl = ctx.hook_data.get("_hitl")
+            if hitl is None:
+                return
+
+            event = hitl.get_response_event(decision["request_id"])
+            if event is None:
+                return
+
+            cancel = ctx.hook_data.get("_cancel_event")
+            park_timeout = ctx.hook_data.get("_park_timeout")
+
+            wait_tasks = [asyncio.create_task(event.wait())]
+            if cancel is not None:
+                wait_tasks.append(asyncio.create_task(cancel.wait()))
+
+            try:
+                done, _ = await asyncio.wait(wait_tasks, timeout=park_timeout,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if cancel is not None and cancel.is_set():
+                    return  # session closing
+                if event.is_set():
+                    answer = hitl.get_response(decision["request_id"])
+                    state.setdefault("messages", []).append({
+                        "role": "user",
+                        "content": answer,
+                    })
+                    state.pop("_pending_human_decision", None)
+                    state["_primitive_result"] = None
+                    logger.info("HITL resolved via session_park: sid=%s", ctx.session_id)
+                    return
+                # timeout → engine breaks, session saved for resume
+                return
+            finally:
+                for t in wait_tasks:
+                    if not t.done():
+                        t.cancel()
+                        try:
+                            await t
+                        except asyncio.CancelledError:
+                            pass
+            return
+
+        # --- Normal: wait for peer messages with retry + backoff ---
         bus = _registry.agent_bus
         if bus is None:
             return
@@ -133,8 +207,7 @@ class PeerTeamPlugin:
         parsed = SessionIndex.parse_session_id(ctx.session_id)
         if parsed is None:
             return
-        _group_id, role = parsed
-
+        group_id, role = parsed
         role_key = role.lower()
 
         # Fast path: messages already queued
@@ -143,13 +216,79 @@ class PeerTeamPlugin:
             await self._inject_peer_messages(ctx, role_key, messages)
             return
 
-        # Slow path: wait for notification
-        park_timeout = ctx.hook_data.get("_park_timeout")
-        has_message = await bus.wait_for_message(role_key, timeout=park_timeout)
-        if has_message:
-            messages = [m async for m in bus.receive(role_key)]
-            if messages:
-                await self._inject_peer_messages(ctx, role_key, messages)
+        # Slow path: retry with jitter + backoff + alive check
+        cancel = ctx.hook_data.get("_cancel_event")
+        base_timeout = ctx.hook_data.get("_park_timeout") or 30.0
+        max_retries = 3
+        backoff_factor = 2.0
+
+        for attempt in range(max_retries):
+            # Jitter: ±20% around the current timeout
+            current = base_timeout * (backoff_factor ** attempt)
+            jitter = current * 0.2 * (2 * random.random() - 1)
+            current += jitter
+
+            logger.debug("session_park wait attempt %d/%d timeout=%.1fs sid=%s",
+                         attempt + 1, max_retries, current, ctx.session_id)
+
+            has_message = await bus.wait_for_message(
+                role_key, timeout=current, cancel_event=cancel,
+            )
+
+            if has_message:
+                messages = [m async for m in bus.receive(role_key)]
+                if messages:
+                    await self._inject_peer_messages(ctx, role_key, messages)
+                return
+
+            # Cancelled during wait
+            if cancel is not None and cancel.is_set():
+                return
+
+            # Alive check: are there any peers still running?
+            alive = await self._check_peers_alive(group_id, role, str(ctx.data_dir))
+            if not alive and attempt < max_retries - 1:
+                logger.warning(
+                    "session_park: all peers ended for group=%s, attempting resume",
+                    group_id,
+                )
+                await self._try_wake_peers(ctx, group_id, role)
+                # Continue to next retry with longer timeout
+                continue
+
+        # Max retries exhausted — report and let engine break
+        logger.error(
+            "session_park: no reply after %d retries, group=%s role=%s",
+            max_retries, group_id, role,
+        )
+
+    # ---- alive check + peer wake ----
+
+    async def _check_peers_alive(self, group_id: str, my_role: str, data_dir: str) -> bool:
+        """Check if any peer in the group is still active/idle/waiting."""
+        try:
+            _base = Path(data_dir)
+            _idx_dir = _base.parent / "team_sessions" if _base.name != "team_sessions" else _base
+            idx = SessionIndex(str(_idx_dir))
+            index = await idx.load(group_id)
+            if index is None:
+                return False
+            for m in index.get("members", []):
+                if m["role"] == my_role:
+                    continue
+                if m.get("status") in ("active", "idle", "waiting_human"):
+                    return True
+            return False
+        except Exception:
+            return True  # Don't break on alive-check failure
+
+    async def _try_wake_peers(self, ctx: PluginContext, group_id: str, my_role: str) -> None:
+        """Attempt to resume the group — re-register peers on AgentBus."""
+        try:
+            await self.resume_group(f"{group_id}__{my_role}", str(ctx.data_dir))
+            logger.info("session_park: group %s resumed for wake attempt", group_id)
+        except Exception as e:
+            logger.warning("session_park: failed to wake peers for group %s: %s", group_id, e)
 
     # ---- shared message injection ----
 
@@ -158,24 +297,6 @@ class PeerTeamPlugin:
     ) -> None:
         """Inject drained peer messages as system messages into state."""
         state = ctx.state
-
-        # Inject team communication system message once per session
-        if not state.get("_peer_context_injected"):
-            state["_peer_context_injected"] = True
-            teammates = [m.role for m in self._members]
-            system_msg = (
-                "[Team Communication]\n"
-                "You are part of an agent team. Messages from teammates are "
-                "delivered as system messages prefixed with [Peer]. To respond "
-                "to a teammate, use the send_peer_message tool — your reply "
-                "will be automatically forwarded when you complete your "
-                "response (via task_complete or when the round ends).\n\n"
-                f"Available teammates: {', '.join(teammates)}"
-            )
-            state.setdefault("messages", []).append({
-                "role": "system",
-                "content": system_msg,
-            })
 
         # Inject one system message per peer message, build pending list
         pending = []

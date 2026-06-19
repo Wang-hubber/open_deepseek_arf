@@ -450,6 +450,9 @@ class ControlPlane:
             if msgs and msgs[-1].get("role") not in ("user", "system"):
                 park_ctx = self._make_ctx(state, session_id, state.get("current_turn", 0), "")
                 park_ctx.hook_data["_park_timeout"] = state.get("_park_timeout", None)
+                park_ctx.hook_data["_hitl"] = self._hitl
+                park_ctx.hook_data["_cancel_event"] = self._cancel_event
+                park_ctx.hook_data["_data_dir"] = str(self._data_dir)
                 await self._fire_blocking("session_park", park_ctx)
 
                 # Re-check — plugins may have injected new messages
