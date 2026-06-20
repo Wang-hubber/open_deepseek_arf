@@ -113,11 +113,15 @@ class PrimitiveAgent:
 
     # ── model_call ─────────────────────────────────────
 
-    async def model_call(self, stream: bool = True):
+    async def model_call(self, stream: bool = True, tools=None):
         """Single LLM API call consuming state.messages.
 
         stream=True (default)  → ModelStream (yielded chunks + .result).
         stream=False           → ModelResult (aggregated).
+
+        Args:
+            tools: OpenAI-format tool definitions (list[dict] | None).
+                   When provided, passed to the API for function calling.
         """
         if not self._active:
             raise RuntimeError("Agent has been stopped")
@@ -126,9 +130,9 @@ class PrimitiveAgent:
             for m in self.state.messages
         ]
         if stream and self._stream_model:
-            gen = self._stream_model(messages, None)
+            gen = self._stream_model(messages, tools)
             return ModelStream(gen)
-        return await self._call_model(messages, None)
+        return await self._call_model(messages, tools)
 
     # ── wait ───────────────────────────────────────────
 
