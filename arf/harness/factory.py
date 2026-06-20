@@ -15,14 +15,18 @@ from arf.agent.state import ModelResult
 from arf.harness.engine import AgentHarness
 from arf.harness.config import HarnessConfig
 from arf.harness.loader import discover_plugins, instantiate_plugins
-from arf.tooling.registry import ToolRegistry
-from arf.tooling.executor import ToolExecutor
+from arf.mcp.client_manager import McpClientManager
+from arf.core.tool_convert import to_openai_tools
+from arf.skills.use_skill_tool import execute as use_skill_execute
+from arf.skills.ask_user_tool import execute as ask_user_execute
+from arf.skills.task_complete_tool import execute as task_complete_execute
+from arf.skills.skill_index import SkillIndex
 
 logger = logging.getLogger("arf.harness.factory")
 
 
 def _build_call_model(model_defs: list[dict], models: list) -> Any:
-    """Build a call_model function from model definitions using ModelAdapter."""
+    """Build call_model and stream_model functions from model definitions."""
     from arf.core.model_adapter import ModelAdapter
     from arf.core.model_degrader import ModelDegrader
 
@@ -56,7 +60,7 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
     degrader = ModelDegrader(adapters)
 
     async def call_model(messages: list[dict], tools=None) -> ModelResult:
-        msg = await degrader.chat_complete(messages, tools=_to_openai_tools(tools))
+        msg = await degrader.chat_complete(messages, tools=to_openai_tools(tools))
         tool_calls = []
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
@@ -76,51 +80,9 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
         )
 
     def stream_model(messages: list[dict], tools=None):
-        return degrader.chat_stream_full(messages, tools=_to_openai_tools(tools))
+        return degrader.chat_stream_full(messages, tools=to_openai_tools(tools))
 
     return call_model, stream_model
-
-
-def _to_openai_tools(tools):
-    """Convert framework ToolDefinition list to OpenAI tool format."""
-    if not tools:
-        return None
-    result = []
-    for t in tools:
-        if isinstance(t, dict):
-            params = t.get("parameters", {})
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": t.get("name", ""),
-                    "description": t.get("description", ""),
-                    "parameters": params if params else {"type": "object", "properties": {}},
-                },
-            })
-        else:
-            params = getattr(t, "parameters", {})
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": getattr(t, "name", ""),
-                    "description": getattr(t, "description", ""),
-                    "parameters": params if params else {"type": "object", "properties": {}},
-                },
-            })
-    return result
-
-
-def _build_tool_registry(kernel_tools: dict[str, Any] | None = None) -> ToolRegistry:
-    """Build ToolRegistry with kernel tools (use_skill, ask_user, etc.)."""
-    registry = ToolRegistry()
-    default_kernel = {
-        "use_skill": None,
-        "ask_user": None,
-        "task_complete": None,
-    }
-    for name in (kernel_tools or default_kernel):
-        registry.register(name, {"name": name, "description": f"Built-in: {name}"}, None)
-    return registry
 
 
 async def create_harness(
@@ -196,9 +158,31 @@ async def create_harness(
     plugin_configs = discover_plugins(plugin_dir, harness_cfg.plugins)
     plugins = instantiate_plugins(plugin_configs)
 
-    # 7. Build tool registry and executor
-    registry = _build_tool_registry()
-    tool_executor = ToolExecutor(registry, timeout=harness_cfg.tool_timeout)
+    # 7. Build McpClientManager — unified tool gateway
+    agent_dir = Path(agent_config_path).parent
+    tools_dir = agent_dir / agent_cfg.tools_dir
+    skills_dir = agent_dir / agent_cfg.skills_dir
+
+    tool_manager = McpClientManager(
+        tools_dir=tools_dir,
+        skills_dir=skills_dir,
+        models_dir=agent_dir / "models",
+        plugins_dir=Path(plugin_dir) if plugin_dir else Path(agent_dir / "plugins"),
+        mcp_servers=agent_cfg.mcp_servers,
+        plugin_names=agent_cfg.plugins if agent_cfg.plugins else [],
+        plugin_configs=agent_cfg.plugins_config,
+    )
+    tool_manager.register_kernel_tool("use_skill", use_skill_execute)
+    tool_manager.register_kernel_tool("ask_user", ask_user_execute)
+    tool_manager.register_kernel_tool("task_complete", task_complete_execute)
+
+    await tool_manager.start()
+
+    # Initialize skill index for use_skill
+    skill_index = SkillIndex(skills_dir)
+    skill_index.scan()
+    import arf.skills.use_skill_tool as _use_skill_mod
+    _use_skill_mod._index = skill_index
 
     # 8. Create event bus if not provided
     if event_bus is None:
@@ -209,7 +193,8 @@ async def create_harness(
     harness = AgentHarness(
         agent=agent,
         plugins=plugins,
-        tool_executor=tool_executor,
+        tool_manager=tool_manager,
+        agent_config=agent_cfg,
         event_bus=event_bus,
         max_turns=harness_cfg.max_turns,
         data_dir=data_dir,
