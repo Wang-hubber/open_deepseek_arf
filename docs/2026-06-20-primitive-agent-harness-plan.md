@@ -69,13 +69,13 @@ from arf.agent.state import AgentState, Message, WaitItem, ModelResult
 def test_create_empty_agent_state():
     state = AgentState(
         agent_id="test-agent",
-        session_id="s1",
+        session_id="",
         messages=[],
         waiting={},
         model_config={"api_base": "https://x.com/v1", "api_key_env": "KEY", "model_name": "m1", "context_window": 128000},
     )
     assert state.agent_id == "test-agent"
-    assert state.session_id == "s1"
+    assert state.session_id == ""
     assert state.messages == []
     assert state.waiting == {}
 
@@ -185,7 +185,8 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 **Interfaces:**
 - Consumes: `AgentState`, `Message`, `WaitItem`, `ModelResult` from `arf/agent/state.py`
 - Produces: `PrimitiveAgent` class with methods:
-  - `__init__(self, agent_id: str, session_id: str, model_config: dict, call_model: Callable)`
+  - `__init__(self, agent_id: str, model_config: dict, call_model: Callable)` — session_id starts as ""
+  - `input(self, role: str, content: Any, position: str = "end") -> Message`
   - `input(self, role: str, content: Any, position: str = "end") -> Message`
   - `async model_call(self) -> ModelResult`
   - `wait(self, hook_name: str, reason: str) -> WaitItem`
@@ -210,7 +211,7 @@ def fake_call_model(messages, tools=None):
 def agent():
     return PrimitiveAgent(
         agent_id="a1",
-        session_id="s1",
+        session_id="",
         model_config={"api_base": "https://x.com/v1", "api_key_env": "K", "model_name": "m", "context_window": 128000},
         call_model=fake_call_model,
     )
@@ -258,7 +259,7 @@ class TestModelCall:
             captured.append(messages)
             return ModelResult(content="ok", tool_calls=[], usage={}, finish_reason="stop")
 
-        ag = PrimitiveAgent("a1", "s1",
+        ag = PrimitiveAgent("a1",
             model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
             call_model=capture_call)
         ag.input("user", "test message")
@@ -313,7 +314,7 @@ class TestResume:
     @pytest.mark.asyncio
     async def test_resume_restores_full_state(self):
         # Create agent, add messages + waits, stop, resume, verify
-        ag1 = PrimitiveAgent("a1", "s1",
+        ag1 = PrimitiveAgent("a1",
             model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
             call_model=fake_call_model)
         ag1.input("user", "msg1")
@@ -354,13 +355,12 @@ class PrimitiveAgent:
     def __init__(
         self,
         agent_id: str,
-        session_id: str,
         model_config: dict,
         call_model: Callable[[list[dict], list[dict] | None], Awaitable[ModelResult]],
     ) -> None:
         self.state = AgentState(
             agent_id=agent_id,
-            session_id=session_id,
+            session_id="",           # assigned by harness when session starts
             messages=[],
             waiting={},
             model_config=model_config,
@@ -436,14 +436,13 @@ class PrimitiveAgent:
         cls, state: AgentState,
         call_model: Callable[[list[dict], list[dict] | None], Awaitable[ModelResult]],
     ) -> PrimitiveAgent:
-        """Reconstruct agent from state, including model connection."""
+        """Reconstruct agent from state, including model connection and session_id."""
         agent = cls(
             agent_id=state.agent_id,
-            session_id=state.session_id,
             model_config=state.model_config,
             call_model=call_model,
         )
-        agent.state = state
+        agent.state = state      # restore full state including session_id + messages + waiting
         agent._active = True
         return agent
 ```
@@ -595,7 +594,7 @@ class TestPlugin:
             from arf.agent.state import ModelResult
             return ModelResult(content="ok")
 
-        agent = PrimitiveAgent("a1", "s1",
+        agent = PrimitiveAgent("a1",
             model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
             call_model=fake_call)
         ctx = PluginContext(agent=agent, session_id="s1")
@@ -611,7 +610,7 @@ class TestPlugin:
             from arf.agent.state import ModelResult
             return ModelResult(content="ok")
 
-        agent = PrimitiveAgent("a1", "s1",
+        agent = PrimitiveAgent("a1",
             model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
             call_model=fake_call)
         bus = InMemoryEventBus()
@@ -744,9 +743,14 @@ class AgentHarness:
 
     # ── Execution Loop ──────────────────────────────────
 
-    async def run(self, user_message: str) -> AsyncIterator[AgentEvent]:
+    async def run(self, user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]:
         """Main execution loop. Yields AgentEvent for SSE streaming."""
         agent = self.agent
+
+        # Assign session_id if this is a new session
+        if not agent.state.session_id:
+            agent.state.session_id = session_id or str(uuid.uuid4())
+
         ctx = self._make_ctx()
 
         # Inject user message
@@ -897,10 +901,9 @@ class FakeToolExecutor:
         return {tc["id"]: FakeToolResult() for tc in tool_calls}
 
 
-def make_agent(call_model, agent_id="a1", session_id="s1"):
+def make_agent(call_model, agent_id="a1"):
     return PrimitiveAgent(
         agent_id=agent_id,
-        session_id=session_id,
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=call_model,
     )
@@ -1381,7 +1384,7 @@ class TestPluginAdapter:
         def fake_call(messages, tools=None):
             return ModelResult(content="ok")
 
-        agent = PrimitiveAgent("a1", "s1",
+        agent = PrimitiveAgent("a1",
             model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
             call_model=fake_call)
         ctx = PluginContext(agent=agent, session_id="s1")
@@ -1647,7 +1650,7 @@ async def test_full_pipeline_text_only():
             self.events_received.append(event_name)
 
     plugin = TestPlugin()
-    agent = PrimitiveAgent("a1", "s1",
+    agent = PrimitiveAgent("a1",
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
     bus = InMemoryEventBus()
@@ -1691,7 +1694,7 @@ async def test_full_pipeline_with_tools():
         return {"greeting": f"Hello, {name}!"}
     registry.register("greet", {"name": "greet", "description": "Send greeting"}, greet)
 
-    agent = PrimitiveAgent("a1", "s1",
+    agent = PrimitiveAgent("a1",
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
     harness = AgentHarness(agent, plugins=[], tool_executor=ToolExecutor(registry))

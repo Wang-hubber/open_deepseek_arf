@@ -36,9 +36,17 @@ class AgentState:
 - `WaitItem` = `{wait_id, hook_name, reason, created_at}`
 - `model_config` = `{api_base, api_key_env, model_name, context_window}` — minimal for resume
 - `ModelResult` = `{content: str, tool_calls: list[{id, name, params}], usage: dict, finish_reason: str}` — tool_calls use internal format `{id, name, params}`, conversion to OpenAI format happens inside agent
+- `session_id` — empty string `""` when agent is first created; assigned by harness when a session begins. On `resume()`, restored from the persisted state
 
 AgentState contains only what is needed to restore the agent from zero. No turn counts,
 tool_results, plans, interaction_round — those belong to harness.
+
+#### Constructor
+
+```
+PrimitiveAgent(agent_id, model_config, call_model) → PrimitiveAgent
+    Create agent without a session. session_id is "" until harness assigns one.
+```
 
 #### Six Primitives
 
@@ -61,8 +69,8 @@ finish_wait(wait_id, reason="") → dict[str, list[WaitItem]]
 stop() → AgentState
     Return current full state for persistence. Tears down model connection.
 
-resume(state: AgentState) → PrimitiveAgent
-    classmethod. Reconstruct agent from state, including model connection.
+resume(state: AgentState, call_model) → PrimitiveAgent
+    classmethod. Reconstruct agent from state, including model connection and session_id.
 ```
 
 Key decisions:
