@@ -18,6 +18,7 @@ class ModelStream:
         self._gen = generator
         self._result: ModelResult | None = None
         self._content_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
         self._tool_calls: dict[str, dict] = {}
         self._usage: dict[str, int] = {}
 
@@ -35,6 +36,8 @@ class ModelStream:
         t = chunk.get("type", "")
         if t == "chunk":
             self._content_parts.append(chunk.get("content", ""))
+            if chunk.get("reasoning"):
+                self._reasoning_parts.append(chunk["reasoning"])
         elif t == "tool_call":
             try:
                 params = json.loads(chunk.get("arguments", "{}"))
@@ -59,6 +62,7 @@ class ModelStream:
             tool_calls=tool_calls,
             usage=self._usage,
             finish_reason="tool_calls" if tool_calls else "stop",
+            reasoning_content="".join(self._reasoning_parts),
         )
 
     @property

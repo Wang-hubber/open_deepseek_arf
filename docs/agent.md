@@ -68,6 +68,7 @@ model_defs:
     api_base: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     context_window: 131072
+    message_format: deepseek        # "openai"（默认）| "deepseek"
     temperature: 0.7
     kwargs:
       thinking_enabled: true
@@ -284,15 +285,29 @@ App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流
 def format_messages(self, messages: list[dict]) -> list[dict]
 ```
 
-`state.messages` 的内部格式和 OpenAI API 格式不同：
+**两种格式**，通过 `model_defs[].message_format` 切换：
 
-| role | 内部 content | API content |
-|------|-------------|-------------|
-| `assistant` (tool_calls) | `{content, tool_calls: [{id, name, params}]}` | `content: null` + `tool_calls: [{id, type, function: {name, arguments}}]` |
-| `tool` | `{tool_call_id, name, result, error}` | `content: result` + `tool_call_id: ...` |
-| 其他 | `str` | `str`（透传） |
+| 格式 | 配置值 | 行为 |
+|------|------|------|
+| OpenAI（默认） | `"openai"` | 标准 OpenAI 消息格式 |
+| DeepSeek | `"deepseek"` | 在 OpenAI 基础上，将思考模式中积累的 `reasoning_content` 回写到 assistant 消息，保持多轮对话中模型思维链连贯 |
 
-转换在 `chat_complete()` / `chat_stream_full()` / `chat()` 内部自动调用——harness 和 agent 不感知。加新 provider 只需扩展此方法（或子类覆盖），不影响上下游。
+```yaml
+model_defs:
+  - model: deepseek-chat
+    message_format: deepseek   # "openai" | "deepseek"
+```
+
+**内部格式 → API 格式转换规则：**
+
+| role | 内部 content | OpenAI API | DeepSeek API |
+|------|-------------|-------------|-------------|
+| `assistant` (tool_calls) | `{content, tool_calls: [{id, name, params}]}` | `content: null` + `tool_calls: [...]` | 同 OpenAI |
+| `assistant` (reasoning) | `{..., reasoning_content: str}` | 忽略 | `content: null` + `reasoning_content: str` |
+| `tool` | `{tool_call_id, result, error}` | `content: result` + `tool_call_id` | 同 OpenAI |
+| 其他 | `str` | `str`（透传） | 同 OpenAI |
+
+转换在 `chat_complete()` / `chat_stream_full()` / `chat()` 内部自动调用——harness 和 agent 不感知。
 
 ---
 

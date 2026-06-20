@@ -57,6 +57,7 @@ class ModelAdapter:
         self._init_client()
         self.model_name = config.get("model_name", "")
         self.context_window = self._context_window
+        self.message_format = config.get("message_format", "openai")
         self.default_params = {}
         for k, v in config.items():
             if k not in self._META_KEYS:
@@ -165,6 +166,9 @@ class ModelAdapter:
                         }
                         for t in tc
                     ]
+                # DeepSeek format: passthrough reasoning_content for thinking mode continuity
+                if self.message_format == "deepseek" and content.get("reasoning_content"):
+                    api_msg["reasoning_content"] = content["reasoning_content"]
                 result.append(api_msg)
             elif role == "tool" and isinstance(content, dict):
                 r = content.get("result")

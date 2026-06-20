@@ -24,6 +24,7 @@ class ModelResult:
     tool_calls: list[dict] = field(default_factory=list)  # [{id, name, params}]
     usage: dict = field(default_factory=dict)
     finish_reason: str = "stop"
+    reasoning_content: str = ""  # DeepSeek thinking mode reasoning
 
 
 @dataclass

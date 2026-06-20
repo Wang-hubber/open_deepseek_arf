@@ -192,12 +192,13 @@ class AgentHarness:
 
             # Record the assistant response in agent state
             assistant_content = result.content if result.content else ""
-            if result.tool_calls:
-                # Store tool_calls as structured content so agent state reflects full response
-                agent.input("assistant", {
-                    "content": assistant_content,
-                    "tool_calls": result.tool_calls,
-                })
+            if result.tool_calls or result.reasoning_content:
+                msg_content: dict = {"content": assistant_content}
+                if result.tool_calls:
+                    msg_content["tool_calls"] = result.tool_calls
+                if result.reasoning_content:
+                    msg_content["reasoning_content"] = result.reasoning_content
+                agent.input("assistant", msg_content)
             else:
                 agent.input("assistant", assistant_content)
 
