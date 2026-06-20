@@ -295,7 +295,7 @@ config: AgentConfig = AgentConfig.from_yaml("agent.yaml")
 
 #### `create_harness(agent_config_path, ...)`
 
-从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、McpClientManager 组装。
+从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、`McpClientManager` 组装（含 kernel 工具注册 + SkillIndex 初始化 + `await tool_manager.start()`）。
 
 ```python
 from arf.harness.factory import create_harness
@@ -483,6 +483,59 @@ tools: [read_file, grep]    # 启用的 user__ 工具（空/缺省 = 全部）
 - `user__` — 按 `tools` 列表过滤，空列表 = 全部
 - `{plugin}__` — 按 `plugins` 列表过滤
 - `{server}__` — 远程 MCP 工具，配置了 `mcp_servers` 就全部可用
+
+---
+
+### 工具执行
+
+工具执行收口到 `McpClientManager`——单一入口，namespace 路由：
+
+```
+AgentHarness.run()
+  └─ tool_manager.execute_batch(tool_calls)    # asyncio.gather 并行
+       └─ tool_manager.execute(name, params)   # 单次调用，按 namespace 路由
+            ├─ kernel__     → 进程内 handler (use_skill, ask_user, task_complete)
+            ├─ user__       → ToolProvider — 本地 tools/ 目录 function.py
+            ├─ {plugin}__   → PluginProvider — 插件自带 function.py
+            └─ {server}__   → 远程 MCP subprocess (local_server.py)
+```
+
+**并行优先**：`AgentHarness` 优先调用 `execute_batch()`（`asyncio.gather` 并行执行全部 tool call）。仅当 `tool_manager` 不提供 `execute_batch` 时才 fallback 顺序执行。
+
+**容错**：`get_tool_definitions()` 失败时打日志继续无工具运行，不会崩溃整个 run loop。
+
+#### `McpClientManager.execute_batch(tool_calls)`
+
+```python
+async def execute_batch(self, tool_calls: list[dict]) -> dict[str, ToolResult]
+```
+
+并行执行多个工具调用。每个 tool call 独立——一个失败不影响其他。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `tool_calls` | `list[dict]` | `[{id, name, params}]` — 模型返回的工具调用列表 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| results | `dict[str, ToolResult]` | `{call_id: ToolResult}` — 每个调用的结果 |
+
+#### `McpClientManager.execute(name, params)`
+
+```python
+async def execute(self, tool_name: str, params: dict) -> ToolResult
+```
+
+执行单个工具。按 namespace 前缀路由到对应 provider。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `tool_name` | `str` | 带 namespace 前缀的工具名（如 `user__read_file`） |
+| `params` | `dict` | 工具参数 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| result | `ToolResult` | `success`、`data`、`error`、`blocked` |
 
 ---
 
