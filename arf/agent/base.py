@@ -186,7 +186,7 @@ class BaseAgent:
         self._harness = AgentHarness(
             agent=self._primitive_agent,
             plugins=plugins,
-            tool_executor=ToolExecutor(registry) if plugins else None,
+            tool_executor=ToolExecutor(registry),
             event_bus=self._event_bus,
             max_turns=adv.max_turns if adv else 50,
             data_dir=data_dir,

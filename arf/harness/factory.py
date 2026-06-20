@@ -198,7 +198,7 @@ async def create_harness(
 
     # 7. Build tool registry and executor
     registry = _build_tool_registry()
-    tool_executor = ToolExecutor(registry, timeout=harness_cfg.tool_timeout) if harness_cfg.plugins else None
+    tool_executor = ToolExecutor(registry, timeout=harness_cfg.tool_timeout)
 
     # 8. Create event bus if not provided
     if event_bus is None:
