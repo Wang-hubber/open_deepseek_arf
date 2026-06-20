@@ -1,13 +1,7 @@
 name: compaction
-enabled: true
-description: "Progressive context compaction — truncation, summarization, tool output externalization"
-tools:
-  - compact_now
-skills:
-  - summarizer
-hooks:
-  round_end: blocking
-  tool_output: blocking
+events:
+  - {hook_name: "before_model", event_name: "compact", mode: "blocking"}
+  - {hook_name: "after_tools", event_name: "tool_output", mode: "blocking"}
 config:
   threshold: 0.75
   window_size: 131072
