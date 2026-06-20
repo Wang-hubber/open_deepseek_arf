@@ -108,6 +108,10 @@ class AgentConfig(BaseModel):
     model_defs: list[dict] = Field(default_factory=list)
     agent_models: list[dict] = Field(default_factory=list)
 
+    # ── Tool / skill directories ──────────────────────
+    tools_dir: str = "tools"
+    skills_dir: str = "skills"
+
     # ── DEPRECATED: will move to harness.yaml ──────
     session_mode: Literal["auto", "ask", "plan"] = "ask"
     data_path: str = "."
