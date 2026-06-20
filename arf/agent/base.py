@@ -34,6 +34,7 @@ def _build_call_model(config: AgentConfig):
     """Build call_model and stream_model functions from agent config."""
     from arf.core.model_adapter import ModelAdapter
     from arf.core.model_degrader import ModelDegrader
+    from arf.core.tool_convert import to_openai_tools
 
     adapters = []
     if config.model_defs:
@@ -64,7 +65,7 @@ def _build_call_model(config: AgentConfig):
     degrader = ModelDegrader(adapters)
 
     async def call_model(messages: list[dict], tools=None) -> ModelResult:
-        msg = await degrader.chat_complete(messages, tools=_to_openai_tools(tools))
+        msg = await degrader.chat_complete(messages, tools=to_openai_tools(tools))
         tool_calls = []
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
@@ -84,24 +85,9 @@ def _build_call_model(config: AgentConfig):
         )
 
     def stream_model(messages: list[dict], tools=None):
-        return degrader.chat_stream_full(messages, tools=_to_openai_tools(tools))
+        return degrader.chat_stream_full(messages, tools=to_openai_tools(tools))
 
     return call_model, stream_model
-
-
-def _to_openai_tools(tools):
-    if not tools:
-        return None
-    result = []
-    for t in tools:
-        if isinstance(t, dict):
-            params = t.get("parameters", {})
-            result.append({
-                "type": "function",
-                "function": {"name": t.get("name", ""), "description": t.get("description", ""),
-                             "parameters": params if params else {"type": "object", "properties": {}}},
-            })
-    return result if result else None
 
 
 def _resolve_data_dir(config: AgentConfig, ctx: AppContext | None) -> str:
