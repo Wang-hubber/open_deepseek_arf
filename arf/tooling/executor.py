@@ -1,4 +1,7 @@
-"""ToolExecutor — execute tool calls. Minimal, no validation."""
+"""ToolExecutor — DEPRECATED. Use McpClientManager from arf.mcp.client_manager instead.
+
+Execute tool calls. Minimal, no validation.
+"""
 from __future__ import annotations
 import asyncio
 import time

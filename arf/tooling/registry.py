@@ -1,4 +1,7 @@
-"""ToolRegistry — aggregate tool definitions from directory, MCP, and kernel sources."""
+"""ToolRegistry — DEPRECATED. Use McpClientManager from arf.mcp.client_manager instead.
+
+Aggregate tool definitions from directory, MCP, and kernel sources.
+"""
 from __future__ import annotations
 from typing import Any
 
