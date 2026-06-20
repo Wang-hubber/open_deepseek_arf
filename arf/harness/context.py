@@ -37,3 +37,10 @@ class PluginContext:
         if self._event_bus:
             self._event_bus.emit(event)
         return event
+
+    def inject_engine_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Record an engine-internal event for trace visibility."""
+        self.hook_data.setdefault("_engine_events", []).append({
+            "type": event_type,
+            "data": data,
+        })
