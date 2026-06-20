@@ -162,6 +162,7 @@ class AgentHarness:
             yield ctx.emit("model_call_end", {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
+                "usage": result.usage,
                 "finish_reason": result.finish_reason,
             })
 
