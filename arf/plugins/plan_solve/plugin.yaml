@@ -1,13 +1,6 @@
 name: plan_solve
-enabled: true
-description: "Task planning and execution with dependency tracking and contract enforcement"
-tools:
-  - plan_dispatch
-  - plan_summarize
-skills:
-  - planning
-hooks:
-  pre_action: blocking
-  round_start: side
+events:
+  - {hook_name: "before_model", event_name: "pre_action", mode: "blocking"}
+  - {hook_name: "before_round", event_name: "round_start", mode: "side"}
 config:
   workspace_dir: ""

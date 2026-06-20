@@ -1,8 +1,6 @@
 name: tool_guard
-enabled: true
-description: "Unified tool permission + security check"
-hooks:
-  pre_action: blocking
+events:
+  - {hook_name: "before_tools", event_name: "pre_action", mode: "blocking"}
 config:
   deny: []
   ask: []

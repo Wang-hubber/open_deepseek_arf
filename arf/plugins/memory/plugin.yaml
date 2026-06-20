@@ -1,13 +1,7 @@
 name: memory
-enabled: true
-description: "LLM-driven memory extraction, merging, and task experience archiving"
-tools:
-  - write_project_memory
-  - write_user_memory
-  - search_task_memory
-hooks:
-  round_end: side
-  task_completed: side
+events:
+  - {hook_name: "after_round", event_name: "round_end", mode: "side"}
+  - {hook_name: "after_round", event_name: "task_completed", mode: "side"}
 config:
   interval: 5
   max_memory_size: 300
