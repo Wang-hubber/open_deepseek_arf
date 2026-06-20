@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_call_model(config: AgentConfig):
-    """Build a call_model function from agent config."""
+    """Build call_model and stream_model functions from agent config."""
     from arf.core.model_adapter import ModelAdapter
     from arf.core.model_degrader import ModelDegrader
 
@@ -83,7 +83,10 @@ def _build_call_model(config: AgentConfig):
             finish_reason=getattr(msg, "finish_reason", "stop"),
         )
 
-    return call_model
+    async def stream_model(messages: list[dict], tools=None):
+        return degrader.chat_stream_full(messages, tools=_to_openai_tools(tools))
+
+    return call_model, stream_model
 
 
 def _to_openai_tools(tools):
@@ -136,14 +139,18 @@ class BaseAgent:
         self._event_bus = override_protocols.pop("event_bus", InMemoryEventBus())
         self._state_store = override_protocols.pop("state_store", FileStateStore(data_dir))
 
-        # Build call_model
+        # Build call_model and stream_model
         try:
-            call_model = _build_call_model(config)
+            call_model, stream_model = _build_call_model(config)
         except ValueError:
             # No model config — create a placeholder (tests use override_protocols)
             async def _noop(messages, tools=None):
                 return ModelResult(content="")
-            call_model = _noop
+
+            async def _noop_stream(messages, tools=None):
+                if False:
+                    yield
+            call_model, stream_model = _noop, _noop_stream
 
         # Create PrimitiveAgent
         model_cfg = {"api_base": "", "api_key_env": "", "model_name": "", "context_window": 131072}
@@ -160,6 +167,7 @@ class BaseAgent:
             agent_id=config.name,
             model_config=model_cfg,
             call_model=call_model,
+            stream_model=stream_model,
         )
 
         # Resolve plugin directory

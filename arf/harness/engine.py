@@ -134,7 +134,13 @@ class AgentHarness:
 
             # --- model_call ---
             try:
-                result = await agent.model_call()
+                if agent._stream_model:
+                    stream = await agent.model_call(stream=True)
+                    async for chunk in stream:
+                        yield ctx.emit("model_chunk", chunk)
+                    result = stream.result
+                else:
+                    result = await agent.model_call()
             except Exception as exc:
                 ctx.hook_data["exception"] = exc
                 await self._checkpoint("on_error", ctx)
@@ -152,6 +158,7 @@ class AgentHarness:
             else:
                 agent.input("assistant", assistant_content)
 
+            # Emit model_call_end for downstream consumers (collect_response, tests)
             yield ctx.emit("model_call_end", {
                 "content": result.content,
                 "tool_calls": result.tool_calls,

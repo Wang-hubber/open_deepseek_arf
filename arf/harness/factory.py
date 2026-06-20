@@ -75,7 +75,10 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
             finish_reason=getattr(msg, "finish_reason", "stop"),
         )
 
-    return call_model
+    async def stream_model(messages: list[dict], tools=None):
+        return degrader.chat_stream_full(messages, tools=_to_openai_tools(tools))
+
+    return call_model, stream_model
 
 
 def _to_openai_tools(tools):
@@ -142,8 +145,8 @@ async def create_harness(
     # 1. Load agent config
     agent_cfg = AgentConfig.from_yaml(agent_config_path)
 
-    # 2. Build call_model
-    call_model = _build_call_model(agent_cfg.model_defs, agent_cfg.models)
+    # 2. Build call_model and stream_model
+    call_model, stream_model = _build_call_model(agent_cfg.model_defs, agent_cfg.models)
 
     # 3. Create PrimitiveAgent
     # Extract model config for agent state persistence
@@ -169,6 +172,7 @@ async def create_harness(
         agent_id=agent_cfg.name,
         model_config=model_config,
         call_model=call_model,
+        stream_model=stream_model,
     )
 
     # 4. Load harness config
