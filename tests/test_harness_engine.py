@@ -1,8 +1,10 @@
 """Integration tests for AgentHarness — execution loop + plugins + park/resume."""
 import asyncio
 import pytest
+from arf.agent.config import AgentConfig
 from arf.agent.state import ModelResult
 from arf.agent.primitive import PrimitiveAgent
+from arf.core.config_base import ToolConfig
 from arf.harness.engine import AgentHarness
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
@@ -311,3 +313,50 @@ class TestHarnessEventBus:
         model_events = bus.collected("model_call_end")
         assert len(model_events) == 1
         assert model_events[0].session_id == agent.state.session_id
+
+
+class TestToolFilter:
+    """Tests for _filter_tools — especially ToolConfig vs string comparison."""
+
+    @pytest.mark.anyio
+    async def test_filter_tools_with_toolconfig_list(self):
+        """_filter_tools must extract names from ToolConfig objects, not compare strings to objects."""
+        async def fake_call(messages, tools=None):
+            return ModelResult(content="Hello", tool_calls=[], usage={}, finish_reason="stop")
+
+        agent = make_agent(fake_call)
+
+        # tools: [ToolConfig(name="read_file")] — only read_file from user should pass
+        agent_config = AgentConfig(
+            name="test-agent",
+            tools=[ToolConfig(name="read_file")],
+        )
+
+        class FilterAwareExecutor:
+            async def get_tool_definitions(self):
+                return [
+                    {"name": "kernel__builtin_echo", "params": {}},    # kernel — always included
+                    {"name": "user__read_file", "params": {}},          # user + in tools list → included
+                    {"name": "user__write_file", "params": {}},         # user + NOT in tools list → excluded
+                    {"name": "filesystem__read", "params": {}},         # plugin — not in plugin_names → excluded
+                ]
+
+            async def execute(self, name, params):
+                from tests.test_harness_engine import FakeToolResult
+                return FakeToolResult()
+
+        executor = FilterAwareExecutor()
+        harness = AgentHarness(agent, plugins=[], tool_manager=executor, agent_config=agent_config)
+        events = [e async for e in harness.run("test")]
+
+        # Check model_call_end events contain tool_definitions
+        model_ends = [e for e in events if e.type == "model_call_end"]
+        assert len(model_ends) >= 1
+
+        # The first model_call_end should have the filtered tool definitions
+        tool_defs = model_ends[0].data.get("tool_definitions")
+        assert tool_defs is not None, "model_call_end must include tool_definitions"
+        names = {t["name"] for t in tool_defs}
+        assert "kernel__builtin_echo" in names, "kernel tools must be included"
+        assert "user__read_file" in names, "user__read_file must be included (in tools list)"
+        assert "user__write_file" not in names, "user__write_file must be excluded (not in tools list)"

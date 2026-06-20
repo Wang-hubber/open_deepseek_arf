@@ -59,7 +59,9 @@ class AgentHarness:
             return all_tools
 
         plugin_names: set[str] = set(self._agent_config.plugins) if self._agent_config.plugins else set()
-        user_tools: list[str] | None = self._agent_config.tools if self._agent_config.tools else None
+        user_tool_names: set[str] | None = None
+        if self._agent_config.tools:
+            user_tool_names = {t.name if hasattr(t, 'name') else str(t) for t in self._agent_config.tools}
 
         result = []
         for t in all_tools:
@@ -67,7 +69,7 @@ class AgentHarness:
             if source == "kernel":
                 result.append(t)
             elif source == "user":
-                if user_tools is None or local_name in user_tools:
+                if user_tool_names is None or local_name in user_tool_names:
                     result.append(t)
             elif source in plugin_names:
                 result.append(t)
@@ -163,10 +165,12 @@ class AgentHarness:
 
             # Fetch tool definitions and inject into model call
             openai_tools = None
+            active_tool_definitions: list[dict] | None = None
             if self._tool_manager:
                 from arf.core.tool_convert import to_openai_tools
                 all_tools = await self._tool_manager.get_tool_definitions()
                 filtered = self._filter_tools(all_tools)
+                active_tool_definitions = filtered
                 openai_tools = to_openai_tools(filtered)
 
             # --- model_call ---
@@ -201,6 +205,7 @@ class AgentHarness:
                 "tool_calls": result.tool_calls,
                 "usage": result.usage,
                 "finish_reason": result.finish_reason,
+                "tool_definitions": active_tool_definitions,
             })
 
             # --- after_model ---
