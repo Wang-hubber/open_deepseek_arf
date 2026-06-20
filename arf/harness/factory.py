@@ -75,7 +75,7 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
             finish_reason=getattr(msg, "finish_reason", "stop"),
         )
 
-    async def stream_model(messages: list[dict], tools=None):
+    def stream_model(messages: list[dict], tools=None):
         return degrader.chat_stream_full(messages, tools=_to_openai_tools(tools))
 
     return call_model, stream_model
