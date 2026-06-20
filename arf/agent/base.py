@@ -244,11 +244,14 @@ class BaseAgent:
         if not session_id or session_id.strip() == "":
             session_id = str(uuid.uuid4())
 
-        # If session has state, load it into the agent
+        # Reset agent state for the target session
+        self._primitive_agent.state.session_id = session_id
+        self._primitive_agent.state.messages.clear()
+        self._primitive_agent.state.waiting.clear()
+
+        # Restore messages if we have saved state for this session
         existing = await self._state_store.get(session_id)
         if existing and existing.get("messages"):
-            self._primitive_agent.state.session_id = session_id
-            # Restore messages from saved state
             from arf.agent.state import Message as _M
             for m in existing["messages"]:
                 if isinstance(m, dict):
