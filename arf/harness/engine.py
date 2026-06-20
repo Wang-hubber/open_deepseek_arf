@@ -24,14 +24,17 @@ class AgentHarness:
         self,
         agent: PrimitiveAgent,
         plugins: list[Plugin],
+        tool_manager: Any = None,
         tool_executor: Any = None,
+        agent_config: Any = None,
         event_bus: Any = None,
         max_turns: int = 50,
         data_dir: str = "./data",
     ) -> None:
         self.agent = agent
         self._plugins = plugins
-        self._tool_executor = tool_executor
+        self._tool_executor = tool_manager if tool_manager is not None else tool_executor
+        self._agent_config = agent_config
         self._event_bus = event_bus
         self._max_turns = max_turns
         self._data_dir = data_dir

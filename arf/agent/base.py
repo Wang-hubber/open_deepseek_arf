@@ -21,8 +21,11 @@ from arf.harness.engine import AgentHarness
 from arf.harness.context import PluginContext
 from arf.harness.plugin_base import Plugin
 from arf.harness.loader import discover_plugins, instantiate_plugins
-from arf.tooling.registry import ToolRegistry
-from arf.tooling.executor import ToolExecutor
+from arf.mcp.client_manager import McpClientManager
+from arf.skills.use_skill_tool import execute as use_skill_execute
+from arf.skills.ask_user_tool import execute as ask_user_execute
+from arf.skills.task_complete_tool import execute as task_complete_execute
+from arf.skills.skill_index import SkillIndex
 from arf.event_bus import InMemoryEventBus
 from arf.core.events import AgentEvent
 from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
@@ -164,15 +167,49 @@ class BaseAgent:
         plugin_configs = discover_plugins(plugins_dir, plugin_names)
         plugins = instantiate_plugins(plugin_configs)
 
-        # Tool registry (minimal — full integration via MCP handled separately)
-        registry = ToolRegistry()
+        # Build McpClientManager — unified tool gateway
+        tools_dir = Path(config.tools_dir)
+        skills_dir = Path(config.skills_dir)
+        if not tools_dir.is_absolute():
+            tools_dir = Path.cwd() / tools_dir
+        if not skills_dir.is_absolute():
+            skills_dir = Path.cwd() / skills_dir
+
+        tool_manager = McpClientManager(
+            tools_dir=tools_dir,
+            skills_dir=skills_dir,
+            models_dir=Path("models"),
+            plugins_dir=Path(plugins_dir),
+            mcp_servers=config.mcp_servers,
+            plugin_names=config.plugins if config.plugins else [],
+            plugin_configs=config.plugins_config,
+        )
+        # Register kernel tool executors
+        tool_manager.register_kernel_tool("use_skill", use_skill_execute)
+        tool_manager.register_kernel_tool("ask_user", ask_user_execute)
+        tool_manager.register_kernel_tool("task_complete", task_complete_execute)
+
+        # Initialize skill index for use_skill
+        skill_index = SkillIndex(skills_dir)
+        skill_index.scan()
+        import arf.skills.use_skill_tool as _use_skill_mod
+        if hasattr(_use_skill_mod, '_index'):
+            import inspect
+            if not inspect.ismodule(_use_skill_mod):
+                pass
+            else:
+                _use_skill_mod._index = skill_index
+
+        self._skill_index = skill_index
+        self._tool_manager = tool_manager
 
         # Build AgentHarness
         adv = config.effective_advanced()
         self._harness = AgentHarness(
             agent=self._primitive_agent,
             plugins=plugins,
-            tool_executor=ToolExecutor(registry),
+            tool_manager=tool_manager,
+            agent_config=config,
             event_bus=self._event_bus,
             max_turns=adv.max_turns if adv else 50,
             data_dir=data_dir,
@@ -197,14 +234,15 @@ class BaseAgent:
         return self._harness
 
     async def start(self) -> None:
-        pass  # MCP/file watcher start handled externally
+        await self._tool_manager.start()
 
     async def stop(self) -> None:
+        await self._tool_manager.stop()
         for sid in list(self._active_sessions):
             try:
                 state = await self._state_store.get(sid)
                 if state:
-                    pass  # Session close handled by caller
+                    pass
             except Exception:
                 pass
         self._active_sessions.clear()
