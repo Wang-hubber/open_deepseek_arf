@@ -34,7 +34,7 @@ class ModelAdapter:
     """Wraps OpenAI-compatible chat/completions API."""
 
     # Keys used for client init or internal metadata -- NOT forwarded to the API
-    _META_KEYS = frozenset({"base_url", "api_key", "model_name", "context_window"})
+    _META_KEYS = frozenset({"base_url", "api_key", "model_name", "context_window", "message_format"})
 
     # Keys that belong to the API call but are handled explicitly in
     # _create_completion / _call_with_retry -- must NOT appear in **params
