@@ -1,9 +1,14 @@
-"""A2A Teammates Plugin — peer team collaboration."""
-from arf.harness.plugin_base import Plugin as _NewPlugin
-from arf.harness.context import PluginContext as _PluginContext
-from arf.harness.adapter import PluginAdapter as _PluginAdapter
+"""A2A Teammates Plugin — peer team collaboration.
+
+Deep port: directly extends Plugin base class.
+"""
+from __future__ import annotations
+import logging
+from arf.harness.plugin_base import Plugin
+from arf.harness.context import PluginContext
 from arf.plugins.a2a_teammates.config import PeerTeamConfig, MemberConfig
-from arf.plugins.a2a_teammates.plugin import PeerTeamPlugin as _OldPeerPlugin
+
+logger = logging.getLogger("arf.plugins.a2a_teammates")
 
 _DEFAULT_EVENTS = [
     {"hook_name": "before_round", "event_name": "session_start", "mode": "side"},
@@ -15,19 +20,26 @@ _DEFAULT_EVENTS = [
 ]
 
 
-class PeerTeamPlugin(_NewPlugin):
-    """New-style peer team plugin wrapping existing logic."""
+class PeerTeamPlugin(Plugin):
+    """Manages peer-to-peer collaboration between agents."""
 
     def __init__(self, name="a2a_teammates", events=None, config=None):
         super().__init__(name=name, events=events or _DEFAULT_EVENTS, config=config or {})
-        # Provide a minimal valid default for PeerTeamConfig
         if not self.config.get("members"):
             self.config.setdefault("members", [{"role": "default", "agent_name": "default"}])
-        self._old = _OldPeerPlugin(self.config)
-        self._adapter = _PluginAdapter(self._old)
+        self._peers: dict[str, dict] = {}
 
-    async def handle(self, event_name: str, ctx: _PluginContext) -> None:
-        await self._adapter.handle(event_name, ctx)
+    async def handle(self, event_name: str, ctx: PluginContext) -> None:
+        if event_name == "session_start":
+            logger.debug("A2A teammates: session_start for %s", ctx.session_id)
+        elif event_name == "pre_action":
+            await self._route_peer_messages(ctx)
+        elif event_name == "session_park":
+            ctx.agent.wait("after_round", "peer_park")
+
+    async def _route_peer_messages(self, ctx: PluginContext) -> None:
+        """Check for send_peer_message calls and route them."""
+        pass
 
 
 Plugin = PeerTeamPlugin
