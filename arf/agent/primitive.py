@@ -121,7 +121,6 @@ class PrimitiveAgent:
 
         Args:
             tools: OpenAI-format tool definitions (list[dict] | None).
-                   When provided, passed to the API for function calling.
         """
         if not self._active:
             raise RuntimeError("Agent has been stopped")

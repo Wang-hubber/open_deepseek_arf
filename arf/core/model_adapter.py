@@ -1,6 +1,13 @@
-"""Model adapter -- unified interface for OpenAI-compatible endpoints."""
+"""Model adapter -- unified interface for OpenAI-compatible endpoints.
+
+Handles all provider-specific adaptation:
+- Message format conversion (internal → provider API format)
+- Provider-specific params (thinking → extra_body, etc.)
+- Retry / connection management
+"""
 
 import asyncio
+import json
 import os
 import logging
 
@@ -128,6 +135,47 @@ class ModelAdapter:
         # Should be unreachable, but safe
         raise ModelAdapterError(status_code=0, message=str(last_exc))
 
+    # ---- message format conversion ---------------------------------------
+
+    def format_messages(self, messages: list[dict]) -> list[dict]:
+        """Convert internal state messages to provider API format.
+
+        Internal format: assistant/tool may carry dict content
+        (e.g. {content, tool_calls} for assistant, {tool_call_id, result, error}
+        for tool). This adapter flattens them to OpenAI-compatible shape.
+        Subclasses override for other providers.
+        """
+        result: list[dict] = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+
+            if role == "assistant" and isinstance(content, dict):
+                tc = content.get("tool_calls", [])
+                api_msg: dict = {"role": "assistant", "content": content.get("content") or None}
+                if tc:
+                    api_msg["tool_calls"] = [
+                        {
+                            "id": t["id"],
+                            "type": "function",
+                            "function": {
+                                "name": t["name"],
+                                "arguments": json.dumps(t.get("params", {})),
+                            },
+                        }
+                        for t in tc
+                    ]
+                result.append(api_msg)
+            elif role == "tool" and isinstance(content, dict):
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": content.get("tool_call_id", ""),
+                    "content": content.get("result") or content.get("error") or "",
+                })
+            else:
+                result.append({"role": role, "content": content})
+        return result
+
     def _build_api_params(self) -> tuple[dict, dict]:
         """Build API params from config. Returns (standard_params, extra_body).
         Standard params are known OpenAI keys. Provider-specific keys go in
@@ -184,6 +232,7 @@ class ModelAdapter:
 
     async def chat(self, messages: list[dict], **kwargs) -> str:
         """Send a chat completion request and return the response text."""
+        messages = self.format_messages(messages)
         params, extra = self._build_api_params()
         params.update(kwargs)
         kwargs2 = {}
@@ -205,11 +254,11 @@ class ModelAdapter:
         for non-retryable errors so the engine can handle them gracefully.
 
         Args:
-            messages: Conversation messages.
-            tools: Optional tool definitions.
-            max_tokens: Optional per-call override. When None, uses the config
-                        default; when set, limits the response token budget.
+            messages: Conversation messages (internal format).
+            tools: Optional tool definitions (OpenAI format, already converted by harness).
+            max_tokens: Optional per-call override.
         """
+        messages = self.format_messages(messages)
         response = await self._call_with_retry(messages, tools, stream=False,
                                                max_tokens=max_tokens)
         msg = response.choices[0].message
@@ -228,16 +277,11 @@ class ModelAdapter:
                                max_tokens: int | None = None):
         """Stream with full delta support -- yields text chunks and accumulated tool calls.
 
-        Yields:
-            {"type": "chunk", "content": "..."}
-            {"type": "chunk", "content": "...", "reasoning": "..."}
-            {"type": "tool_call", "name": "...", "arguments": "{...}", "id": "call_N"}
-        At end of stream (finish_reason stop), yields:
-            {"type": "chunk", "content": "...", "reasoning": "..."}  (if reasoning present)
-
-        On API error, yields:
-            {"type": "error", "code": 400, "detail": "..."}
+        Args:
+            messages: Conversation messages (internal format).
+            tools: Optional tool definitions (OpenAI format, already converted by harness).
         """
+        messages = self.format_messages(messages)
         try:
             stream = await self._call_with_retry(messages, tools, stream=True,
                                                  max_tokens=max_tokens)
