@@ -255,3 +255,315 @@ App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流
 
 - 当 `_stream_model` 为 None 时（旧构造、无模型配置），默认流式会 fallback 到非流式
 - `_noop` 占位（测试场景）提供空 generator
+
+---
+
+## API 参考
+
+### 配置加载
+
+#### `AgentConfig.from_yaml(path)`
+
+从 `agent.yaml` 文件加载 Agent 配置。
+
+```python
+from arf.agent.config import AgentConfig
+
+config: AgentConfig = AgentConfig.from_yaml("agent.yaml")
+# config.name          → "my-agent"
+# config.model_defs    → [{model, api_base, api_key_env, ...}]
+# config.system_prompt → SystemPromptConfig
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `path` | `str \| Path` | agent.yaml 文件路径 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| config | `AgentConfig` | 验证后的 Pydantic 配置模型 |
+
+---
+
+### 工厂入口
+
+#### `create_harness(agent_config_path, ...)`
+
+从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、ToolExecutor 组装。
+
+```python
+from arf.harness.factory import create_harness
+
+harness = await create_harness(
+    agent_config_path="agent.yaml",
+    harness_config_path="harness.yaml",   # 可选，默认在 agent.yaml 同级
+    plugin_dir="path/to/plugins",         # 可选，默认 arf/plugins/
+    event_bus=None,                       # 可选，默认 InMemoryEventBus
+    data_dir="./data",                    # 可选，默认 ./data
+)
+
+async for event in harness.run("hello"):
+    ...
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `agent_config_path` | `str` | (必需) | agent.yaml 路径 |
+| `harness_config_path` | `str \| None` | `None` | harness.yaml 路径，默认在 agent.yaml 同级查找 |
+| `plugin_dir` | `str \| None` | `None` | 插件目录，默认 `arf/plugins/` |
+| `event_bus` | `Any` | `None` | 事件总线，默认创建 `InMemoryEventBus` |
+| `data_dir` | `str` | `"./data"` | 数据根目录（traces/state/memory 放在此下） |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| harness | `AgentHarness` | 组装完成的执行器，调用 `run()` 启动 |
+
+---
+
+### Agent 生命周期
+
+#### `agent.start()`
+
+空操作，占位用于未来资源初始化（MCP 连接、文件监听等）。
+
+```python
+await agent.start()
+```
+
+#### `agent.stop()`
+
+清理活跃会话，释放资源。不会删除持久化的 session state。
+
+```python
+await agent.stop()
+```
+
+---
+
+### 对话执行
+
+#### `agent.astream(user_message, session_id)`
+
+流式执行一个对话轮次，逐 `AgentEvent` yield。
+
+```python
+async for event in agent.astream("你好", session_id="my-session"):
+    if event.type == "model_chunk":
+        chunk = event.data
+        if chunk["type"] == "chunk":
+            ui_stream(chunk["content"])
+        elif chunk["type"] == "reasoning" in chunk:
+            ui_reasoning(chunk["reasoning"])
+
+    elif event.type == "model_call_end":
+        data = event.data
+        # data = {content, tool_calls, usage, finish_reason}
+
+    elif event.type == "error":
+        handle_error(event.data["detail"])
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `user_message` | `str` | (必需) | 用户输入文本 |
+| `session_id` | `str` | `"default"` | 会话标识。空串或空白 → 自动生成 UUID |
+| `stop_on_text` | `bool` | `False` | 保留参数，当前未使用 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| events | `AsyncIterator[AgentEvent]` | 流式 AgentEvent 序列 |
+
+**Session 切换行为**：每次调用 `astream()` 会先 reset agent 内部状态（`messages`、`waiting`），然后检查 `session_id` 是否有存档——有则恢复 messages，无则新鲜启动。旧会话的 messages 不会泄漏到新会话。
+
+#### `agent.run(user_message, session_id)`
+
+便捷方法：内部调用 `astream()`，收集所有事件后返回最终文本。适用于不需要流式展示的场景（如标题生成）。
+
+```python
+title = await agent.run("为对话生成标题", session_id="title-gen")
+# title → "关于天气的讨论"
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `user_message` | `str` | (必需) | 用户输入文本 |
+| `session_id` | `str` | `"default"` | 会话标识 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| text | `str` | 最终模型输出文本（通过 `collect_response` 收集） |
+
+---
+
+### 会话状态管理
+
+通过 `agent.state_store` 访问，实现为 `FileStateStore`（文件持久化）或 `InMemoryStateStore`（测试用）。
+
+#### `state_store.put(session_id, state)`
+
+写入会话状态。
+
+```python
+await agent.state_store.put("my-session", {
+    "session_id": "my-session",
+    "messages": [{"role": "user", "content": "你好"}, ...],
+    "session_active": True,
+})
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `session_id` | `str` | 会话标识 |
+| `state` | `dict` | 任意可 JSON 序列化的 dict |
+
+`FileStateStore` 写入路径为 `{data_dir}/{session_id}/state/{session_id}.json`。
+
+#### `state_store.get(session_id)`
+
+读取会话状态。不存在时返回 `None`。
+
+```python
+state = await agent.state_store.get("my-session")
+# state → {"session_id": "my-session", "messages": [...], ...}
+# 或 None
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `session_id` | `str` | 会话标识 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| state | `dict \| None` | 会话状态，无存档时为 `None` |
+
+#### `state_store.delete(session_id)`
+
+删除会话存档。
+
+```python
+await agent.state_store.delete("my-session")
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `session_id` | `str` | 要删除的会话标识 |
+
+#### `state_store.list_sessions()`
+
+列出所有有存档的会话 ID。
+
+```python
+sessions = await agent.state_store.list_sessions()
+# sessions → ["abc123", "def456", ...]
+```
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| sessions | `list[str]` | 会话 ID 列表（`FileStateStore` 返回排序后的列表） |
+
+---
+
+### AgentEvent
+
+Harness 执行循环产出的事件流。App 通过 `async for event in harness.run()` 或 `agent.astream()` 消费。
+
+```python
+from arf.core.events import AgentEvent
+
+@dataclass
+class AgentEvent:
+    type: str          # 事件类型（见下方）
+    data: dict         # 事件负载
+    timestamp: float   # 事件时间戳
+    trace_id: str      # trace 标识
+    session_id: str    # 当前会话 ID
+    agent_name: str    # agent 名称
+    turn: int          # 当前 turn 编号
+    primitive: str     # "input" | "action" | "output" | "wait"
+    level: str         # "session" | "round" | "turn"
+```
+
+#### 常用事件类型
+
+| `event.type` | `event.data` 内容 | 触发时机 |
+|------|------|------|
+| `model_chunk` | `{type, content, reasoning?, ...}` | 流式模型输出的每个 chunk |
+| `model_call_end` | `{content, tool_calls, usage, finish_reason}` | 模型调用完成（聚合结果） |
+| `tool_call_start` | `{name, id}` | 工具执行开始 |
+| `tool_call_end` | `{name, id, success}` | 工具执行完成 |
+| `error` | `{detail}` | 发生错误 |
+| `parked` | `{hook_name, waiting}` | 执行暂停，等待人工输入 |
+| `approval_required` | `{decision_id, ...}` | 需要人工审批 |
+| `task_completed` | — | 任务完成 |
+
+#### 获取 session_id
+
+`astream()` 传入的 `session_id` 可能为空（自动生成 UUID），从事件中获取实际使用的 ID：
+
+```python
+async for event in agent.astream("hello"):
+    sid = event.session_id  # 框架实际使用的 session_id
+    ...
+```
+
+---
+
+### 兼容工具
+
+位于 `arf.engine.compat`，用于简化事件流消费。
+
+#### `collect_response(astream)`
+
+遍历事件流，收集最终文本。等价于 `agent.run()` 的内部实现。
+
+```python
+from arf.engine.compat import collect_response
+
+text = await collect_response(agent.astream("hello", session_id="s1"))
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `astream` | `AsyncGenerator[AgentEvent, None]` | 事件流 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| text | `str` | 最后一个 `model_call_end` 事件的 `content` |
+
+#### `collect_events(astream)`
+
+收集所有事件到列表，用于测试断言。
+
+```python
+from arf.engine.compat import collect_events
+
+events = await collect_events(agent.astream("hello"))
+assert any(e.type == "model_call_end" for e in events)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `astream` | `AsyncGenerator[AgentEvent, None]` | 事件流 |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| events | `list[AgentEvent]` | 所有事件 |
+
+#### `drain_astream(engine, state)`
+
+消费引擎的事件流，返回最终持久化状态。用于旧式 `engine.invoke()` 的替代。
+
+```python
+from arf.engine.compat import drain_astream
+
+final_state = await drain_astream(engine, initial_state)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `engine` | — | 引擎实例（有 `astream()` 方法） |
+| `state` | `dict` | 初始状态 dict |
+
+| 返回 | 类型 | 说明 |
+|------|------|------|
+| state | `dict` | `state_store.get()` 返回的最终持久化状态 |
