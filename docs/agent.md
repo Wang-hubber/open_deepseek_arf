@@ -118,7 +118,7 @@ class AgentState:
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `input` | `(role, content, position="end") → Message` | 向 `state.messages` 注入一条消息，role 可以是 `"system"` `"user"` `"assistant"` `"tool"` |
-| `model_call` | `async (stream=True) → ModelResult \| ModelStream` | 发起 LLM 调用，默认流式，详见下文 |
+| `model_call` | `async (stream=True, tools=None) → ModelResult \| ModelStream` | 发起 LLM 调用，默认流式，详见下文 |
 | `wait` | `(hook_name, reason) → WaitItem` | 向 `state.waiting[hook_name]` 追加等待项，同步方法不阻塞 |
 | `finish_wait` | `(wait_id, reason="") → dict` | 移除等待项，返回更新后的 `state.waiting` |
 | `stop` | `() → AgentState` | 停用 agent 并返回完整状态用于持久化 |
@@ -131,15 +131,21 @@ class AgentState:
 ### 签名
 
 ```python
-async def model_call(self, stream: bool = True) -> ModelResult | ModelStream
+async def model_call(self, stream: bool = True, tools: list[dict] | None = None) -> ModelResult | ModelStream
 ```
 
 ### 行为
 
 读取 `state.messages` 全部消息，构造 `[{role, content}]` 列表，传给 `call_model` 或 `stream_model` 发起 API 调用。
 
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `stream` | `bool` | `True` 返回 `ModelStream`（流式），`False` 返回 `ModelResult` |
+| `tools` | `list[dict] \| None` | OpenAI 格式工具定义列表。传参后 LLM 可获得工具调用能力。`None` 表示纯文本对话。 |
+
 ```
 state.messages ──► [{"role": ..., "content": ...}] ──► ModelAdapter ──► LLM API
+       tools ────────────────────────────────────────────┘
 ```
 
 **非流式** (`stream=False`)：
@@ -289,7 +295,7 @@ config: AgentConfig = AgentConfig.from_yaml("agent.yaml")
 
 #### `create_harness(agent_config_path, ...)`
 
-从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、ToolExecutor 组装。
+从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、McpClientManager 组装。
 
 ```python
 from arf.harness.factory import create_harness
@@ -460,6 +466,23 @@ sessions = await agent.state_store.list_sessions()
 | 返回 | 类型 | 说明 |
 |------|------|------|
 | sessions | `list[str]` | 会话 ID 列表（`FileStateStore` 返回排序后的列表） |
+
+---
+
+### 工具过滤
+
+`AgentConfig` 控制每个 Agent 哪些工具可用：
+
+```yaml
+plugins: [filesystem]       # 启用的插件（插件工具挂到 {plugin}__ namespace）
+tools: [read_file, grep]    # 启用的 user__ 工具（空/缺省 = 全部）
+```
+
+过滤规则：
+- `kernel__` — 始终可用（`ask_user`、`use_skill`、`task_complete`）
+- `user__` — 按 `tools` 列表过滤，空列表 = 全部
+- `{plugin}__` — 按 `plugins` 列表过滤
+- `{server}__` — 远程 MCP 工具，配置了 `mcp_servers` 就全部可用
 
 ---
 
