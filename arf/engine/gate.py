@@ -1,6 +1,4 @@
-"""GateChecker — DEPRECATED: gate logic is a plugin or harness built-in at after_round."""
-import warnings
-warnings.warn("GateChecker is deprecated. Use AgentHarness max_turns or a gate plugin.", DeprecationWarning, stacklevel=2)
+"""GateChecker — execution termination conditions."""
 
 
 class GateChecker:
