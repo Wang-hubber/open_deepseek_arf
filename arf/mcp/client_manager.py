@@ -357,6 +357,28 @@ class McpClientManager:
             tool_name=tool_name, success=False,
             error=f"Unknown source: {source}")
 
+    async def execute_batch(self, tool_calls: list[dict]) -> dict[str, ToolResult]:
+        """Execute multiple tool calls in parallel via asyncio.gather.
+
+        Each call is independent — failures in one don't affect others.
+        """
+        import asyncio
+
+        tasks = []
+        for tc in tool_calls:
+            tasks.append(self.execute(tc["name"], tc.get("params", {})))
+
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+        out: dict[str, ToolResult] = {}
+        for tc, r in zip(tool_calls, results_list):
+            if isinstance(r, BaseException):
+                out[tc["id"]] = ToolResult(
+                    tool_name=tc.get("name", ""), success=False, error=str(r))
+            else:
+                out[tc["id"]] = r
+        return out
+
     # ---- Sync wrapper for startup ----
 
     def get_tool_definitions_sync(self) -> list[dict]:

@@ -168,10 +168,13 @@ class AgentHarness:
             active_tool_definitions: list[dict] | None = None
             if self._tool_manager:
                 from arf.core.tool_convert import to_openai_tools
-                all_tools = await self._tool_manager.get_tool_definitions()
-                filtered = self._filter_tools(all_tools)
-                active_tool_definitions = filtered
-                openai_tools = to_openai_tools(filtered)
+                try:
+                    all_tools = await self._tool_manager.get_tool_definitions()
+                    filtered = self._filter_tools(all_tools)
+                    active_tool_definitions = filtered
+                    openai_tools = to_openai_tools(filtered)
+                except Exception:
+                    logger.exception("Failed to fetch tool definitions, proceeding without tools")
 
             # --- model_call ---
             try:
@@ -227,21 +230,25 @@ class AgentHarness:
                 for tc in result.tool_calls:
                     yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
 
+                # Parallel execution via McpClientManager.execute_batch()
+                if hasattr(self._tool_manager, 'execute_batch'):
+                    tool_results = await self._tool_manager.execute_batch(result.tool_calls)
+                else:
+                    # Fallback sequential for tool_managers without execute_batch
+                    tool_results = {}
+                    for tc in result.tool_calls:
+                        try:
+                            tool_results[tc["id"]] = await self._tool_manager.execute(
+                                tc["name"], tc.get("params", {}))
+                        except Exception as exc:
+                            tool_results[tc["id"]] = type('FakeToolResult', (), {
+                                'success': False, 'data': {}, 'error': str(exc)})()
+
                 for tc in result.tool_calls:
-                    try:
-                        r = await self._tool_manager.execute(tc["name"], tc.get("params", {}))
-                    except Exception as exc:
-                        agent.input("tool", {
-                            "tool_call_id": tc["id"],
-                            "name": tc["name"],
-                            "result": "",
-                            "error": str(exc),
-                        })
-                        yield ctx.emit("tool_call_end", {
-                            "name": tc["name"], "id": tc["id"],
-                            "success": False,
-                        })
-                        continue
+                    r = tool_results.get(tc["id"])
+                    if r is None:
+                        r = type('FakeToolResult', (), {
+                            'success': False, 'data': {}, 'error': 'Tool result missing'})()
 
                     agent.input("tool", {
                         "tool_call_id": tc["id"],

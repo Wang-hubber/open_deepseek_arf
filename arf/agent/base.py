@@ -193,12 +193,7 @@ class BaseAgent:
         skill_index = SkillIndex(skills_dir)
         skill_index.scan()
         import arf.skills.use_skill_tool as _use_skill_mod
-        if hasattr(_use_skill_mod, '_index'):
-            import inspect
-            if not inspect.ismodule(_use_skill_mod):
-                pass
-            else:
-                _use_skill_mod._index = skill_index
+        _use_skill_mod._index = skill_index
 
         self._skill_index = skill_index
         self._tool_manager = tool_manager
