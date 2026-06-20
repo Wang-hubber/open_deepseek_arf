@@ -136,17 +136,19 @@ async def model_call(self, stream: bool = True, tools: list[dict] | None = None)
 
 ### 行为
 
-读取 `state.messages` 全部消息，构造 `[{role, content}]` 列表，传给 `call_model` 或 `stream_model` 发起 API 调用。
+读取 `state.messages` 全部消息，构造 `[{role, content}]` 列表，传给 `call_model` 或 `stream_model` 发起 API 调用。消息格式转换由 `ModelAdapter.format_messages()` 在 API 边界完成——`PrimitiveAgent` 和 `AgentHarness` 都不处理消息格式。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `stream` | `bool` | `True` 返回 `ModelStream`（流式），`False` 返回 `ModelResult` |
-| `tools` | `list[dict] \| None` | OpenAI 格式工具定义列表。传参后 LLM 可获得工具调用能力。`None` 表示纯文本对话。 |
+| `tools` | `list[dict] \| None` | OpenAI 格式工具定义列表（harness 已转换）。传参后 LLM 可获得工具调用能力。`None` 表示纯文本对话。 |
 
 ```
-state.messages ──► [{"role": ..., "content": ...}] ──► ModelAdapter ──► LLM API
-       tools ────────────────────────────────────────────┘
+state.messages ──► [{role, content}] ──► ModelAdapter.format_messages() ──► LLM API
+       tools ──────────────────────────────────────────────────┘
 ```
+
+**消息格式**：`state.messages` 内部格式中 `assistant` 的 `content` 可能是 `{content, tool_calls}` dict，`tool` 的 `content` 可能是 `{tool_call_id, result, error}` dict。`ModelAdapter.format_messages()` 统一转换为 provider API 兼容格式，加新 provider 只需扩展此方法。
 
 **非流式** (`stream=False`)：
 ```
@@ -238,7 +240,18 @@ async for event in harness.run("用户输入"):
 ### Harness 内部流程
 
 ```
-agent.model_call(stream=True) → ModelStream
+┌─ before_model ─────────────────────────────────────────────┐
+│  tools = tool_manager.get_tool_definitions()               │
+│  filtered = _filter_tools(tools)                           │
+│  openai_tools = to_openai_tools(filtered)                  │
+└────────────────────────────────────────────────────────────┘
+        │
+        ▼
+agent.model_call(stream=True, tools=openai_tools) → ModelStream
+    │
+    ├─ state.messages → [{role, content}]  (内部格式，content 可为 dict)
+    │
+    ├─ ModelAdapter.format_messages() → provider API 格式
     │
     ├─ async for chunk in stream:
     │     yield AgentEvent("model_chunk", chunk)     # App 消费，实时 SSE
@@ -261,6 +274,25 @@ App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流
 
 - 当 `_stream_model` 为 None 时（旧构造、无模型配置），默认流式会 fallback 到非流式
 - `_noop` 占位（测试场景）提供空 generator
+
+### 消息格式适配
+
+`ModelAdapter.format_messages()` — 所有 provider 格式适配的**唯一入口**。
+
+```python
+# arf/core/model_adapter.py
+def format_messages(self, messages: list[dict]) -> list[dict]
+```
+
+`state.messages` 的内部格式和 OpenAI API 格式不同：
+
+| role | 内部 content | API content |
+|------|-------------|-------------|
+| `assistant` (tool_calls) | `{content, tool_calls: [{id, name, params}]}` | `content: null` + `tool_calls: [{id, type, function: {name, arguments}}]` |
+| `tool` | `{tool_call_id, name, result, error}` | `content: result` + `tool_call_id: ...` |
+| 其他 | `str` | `str`（透传） |
+
+转换在 `chat_complete()` / `chat_stream_full()` / `chat()` 内部自动调用——harness 和 agent 不感知。加新 provider 只需扩展此方法（或子类覆盖），不影响上下游。
 
 ---
 
