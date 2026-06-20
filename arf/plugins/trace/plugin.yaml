@@ -1,18 +1,16 @@
 name: trace
-enabled: true
-description: "Per-session JSONL trace writer — captures all lifecycle events"
-hooks:
-  session_start: side
-  session_end: side
-  round_start: side
-  round_end: side
-  turn_start: side
-  turn_end: side
-  pre_action: side
-  post_action: side
-  error: side
+events:
+  - {hook_name: "before_round", event_name: "session_start", mode: "side"}
+  - {hook_name: "before_round", event_name: "round_start", mode: "side"}
+  - {hook_name: "after_round", event_name: "round_end", mode: "side"}
+  - {hook_name: "after_round", event_name: "session_end", mode: "side"}
+  - {hook_name: "before_model", event_name: "turn_start", mode: "side"}
+  - {hook_name: "before_model", event_name: "pre_action", mode: "side"}
+  - {hook_name: "after_model", event_name: "post_action", mode: "side"}
+  - {hook_name: "after_model", event_name: "turn_end", mode: "side"}
+  - {hook_name: "on_error", event_name: "error", mode: "side"}
 config:
-  trace_dir: ./data/traces
+  data_dir: ./data
   plugins_root: ./arf/plugins
   config_files:
     - ./agent.yaml
