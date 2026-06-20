@@ -117,7 +117,7 @@ class AgentState:
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `input` | `(role, content, position="end") → Message` | 向 `state.messages` 注入一条消息，role 可以是 `"system"` `"user"` `"assistant"` `"tool"` |
-| `model_call` | `async (stream=False) → ModelResult \| ModelStream` | 发起 LLM 调用，详见下文 |
+| `model_call` | `async (stream=True) → ModelResult \| ModelStream` | 发起 LLM 调用，默认流式，详见下文 |
 | `wait` | `(hook_name, reason) → WaitItem` | 向 `state.waiting[hook_name]` 追加等待项，同步方法不阻塞 |
 | `finish_wait` | `(wait_id, reason="") → dict` | 移除等待项，返回更新后的 `state.waiting` |
 | `stop` | `() → AgentState` | 停用 agent 并返回完整状态用于持久化 |
@@ -130,7 +130,7 @@ class AgentState:
 ### 签名
 
 ```python
-async def model_call(self, stream: bool = False) -> ModelResult | ModelStream
+async def model_call(self, stream: bool = True) -> ModelResult | ModelStream
 ```
 
 ### 行为
@@ -141,7 +141,7 @@ async def model_call(self, stream: bool = False) -> ModelResult | ModelStream
 state.messages ──► [{"role": ..., "content": ...}] ──► ModelAdapter ──► LLM API
 ```
 
-**非流式** (`stream=False`，默认)：
+**非流式** (`stream=False`)：
 ```
 result: ModelResult = await agent.model_call()
 # result.content      → 完整文本
@@ -150,7 +150,7 @@ result: ModelResult = await agent.model_call()
 # result.finish_reason → "stop" | "tool_calls"
 ```
 
-**流式** (`stream=True`)：
+**流式** (`stream=True`，默认)：
 ```
 stream: ModelStream = await agent.model_call(stream=True)
 async for chunk in stream:
@@ -250,6 +250,5 @@ App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流
 
 ### 兼容性
 
-- `stream=True` 要求 `PrimitiveAgent._stream_model` 非 None（通过 `_build_call_model()` 注入时始终有值）
-- 当 `_stream_model` 为 None 时（旧构造、无模型配置），即使 `stream=True` 也会 fallback 到非流式
+- 当 `_stream_model` 为 None 时（旧构造、无模型配置），默认流式会 fallback 到非流式
 - `_noop` 占位（测试场景）提供空 generator

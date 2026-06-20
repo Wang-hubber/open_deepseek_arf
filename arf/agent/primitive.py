@@ -113,11 +113,11 @@ class PrimitiveAgent:
 
     # ── model_call ─────────────────────────────────────
 
-    async def model_call(self, stream: bool = False):
+    async def model_call(self, stream: bool = True):
         """Single LLM API call consuming state.messages.
 
-        stream=False (default) → ModelResult (aggregated).
-        stream=True            → ModelStream (yielded chunks + .result).
+        stream=True (default)  → ModelStream (yielded chunks + .result).
+        stream=False           → ModelResult (aggregated).
         """
         if not self._active:
             raise RuntimeError("Agent has been stopped")

@@ -135,12 +135,12 @@ class AgentHarness:
             # --- model_call ---
             try:
                 if agent._stream_model:
-                    stream = await agent.model_call(stream=True)
+                    stream = await agent.model_call()
                     async for chunk in stream:
                         yield ctx.emit("model_chunk", chunk)
                     result = stream.result
                 else:
-                    result = await agent.model_call()
+                    result = await agent.model_call(stream=False)
             except Exception as exc:
                 ctx.hook_data["exception"] = exc
                 await self._checkpoint("on_error", ctx)
