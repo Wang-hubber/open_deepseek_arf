@@ -16,7 +16,6 @@ from arf.harness.engine import AgentHarness
 from arf.harness.config import HarnessConfig
 from arf.harness.loader import discover_plugins, instantiate_plugins
 from arf.mcp.client_manager import McpClientManager
-from arf.core.tool_convert import to_openai_tools
 from arf.skills.use_skill_tool import execute as use_skill_execute
 from arf.skills.ask_user_tool import execute as ask_user_execute
 from arf.skills.task_complete_tool import execute as task_complete_execute
@@ -60,7 +59,7 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
     degrader = ModelDegrader(adapters)
 
     async def call_model(messages: list[dict], tools=None) -> ModelResult:
-        msg = await degrader.chat_complete(messages, tools=to_openai_tools(tools))
+        msg = await degrader.chat_complete(messages, tools=tools)
         tool_calls = []
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
@@ -80,7 +79,7 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
         )
 
     def stream_model(messages: list[dict], tools=None):
-        return degrader.chat_stream_full(messages, tools=to_openai_tools(tools))
+        return degrader.chat_stream_full(messages, tools=tools)
 
     return call_model, stream_model
 

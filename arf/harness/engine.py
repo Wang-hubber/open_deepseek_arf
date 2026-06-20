@@ -163,25 +163,27 @@ class AgentHarness:
                 if self._parked:
                     return
 
-            # Fetch tool definitions and inject into model call
-            # Pass raw framework-format tools — _build_call_model converts to OpenAI format
+            # Fetch tool definitions, filter, convert to OpenAI format
+            openai_tools = None
             active_tool_definitions: list[dict] | None = None
             if self._tool_manager:
+                from arf.core.tool_convert import to_openai_tools
                 try:
                     all_tools = await self._tool_manager.get_tool_definitions()
                     active_tool_definitions = self._filter_tools(all_tools)
+                    openai_tools = to_openai_tools(active_tool_definitions)
                 except Exception:
                     logger.exception("Failed to fetch tool definitions, proceeding without tools")
 
             # --- model_call ---
             try:
                 if agent._stream_model:
-                    stream = await agent.model_call(tools=active_tool_definitions)
+                    stream = await agent.model_call(tools=openai_tools)
                     async for chunk in stream:
                         yield ctx.emit("model_chunk", chunk)
                     result = stream.result
                 else:
-                    result = await agent.model_call(stream=False, tools=active_tool_definitions)
+                    result = await agent.model_call(stream=False, tools=openai_tools)
             except Exception as exc:
                 ctx.hook_data["exception"] = exc
                 await self._checkpoint("on_error", ctx)
