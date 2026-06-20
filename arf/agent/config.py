@@ -1,4 +1,13 @@
-"""AgentConfig and AdvancedConfig — user-facing configuration models."""
+"""AgentConfig and AdvancedConfig — user-facing configuration models.
+
+Configuration Separation (per 2026-06-20 redesign):
+  agent.yaml  — Agent-owned: name, system_prompt, models, model_defs
+  harness.yaml — Harness-owned: plugin list, tool sources, max_turns
+  plugins/<name>/plugin.yaml — Plugin-owned: events, config
+
+Fields marked DEPRECATED will move to harness.yaml or plugin config.
+They remain optional with defaults for backward compatibility.
+"""
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -80,24 +89,33 @@ class SystemPromptConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Agent = name + role + task + system_prompt + 4 core resources.
-    User-facing: model/skill/tool/hook. Framework auto-handles the rest."""
+    """Agent = name + system_prompt + models. Framework auto-handles the rest.
+
+    Agent-owned fields: name, system_prompt, models, model_defs, agent_models.
+    Harness/plugin fields (DEPRECATED): session_mode, data_path, allow_paths,
+    plugins, plugins_config, skills, tools, hooks, mcp_servers, advanced, supervisor.
+    These remain optional with defaults for backward compatibility.
+    """
     schema_version: str = Field(default="1.0", frozen=True)
-    session_mode: Literal["auto", "ask", "plan"] = "ask"
     name: str
     role: str = ""
     task: str = ""
     description: str = ""
-    data_path: str = "."                      # data directory (state/trace/memory)
-    allow_paths: list[str] = Field(default_factory=list)  # allowed file operation paths (empty = same as data_path)
+
+    # ── Agent-owned fields ──────────────────────────
     system_prompt: SystemPromptConfig = Field(default_factory=SystemPromptConfig)
-    models: list[ModelConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
-    model_defs: list[dict] = Field(default_factory=list)      # NEW: top-level model definitions {model, api_base, api_key_env, kwargs}
-    agent_models: list[dict] = Field(default_factory=list)    # NEW: agent model refs [{model: x}, {model: y, kwargs: {}}]
-    plugins_config: dict = Field(default_factory=dict)        # NEW: plugin configs with model refs
-    skills: list[SkillConfig] = Field(default_factory=list)  # optional — filesystem is source of truth
-    tools: list[ToolConfig] = Field(default_factory=list)    # optional — filesystem is source of truth
-    plugins: list[str] = Field(default_factory=list)  # plugin names to activate from arf/plugins/
+    models: list[ModelConfig] = Field(default_factory=list)
+    model_defs: list[dict] = Field(default_factory=list)
+    agent_models: list[dict] = Field(default_factory=list)
+
+    # ── DEPRECATED: will move to harness.yaml ──────
+    session_mode: Literal["auto", "ask", "plan"] = "ask"
+    data_path: str = "."
+    allow_paths: list[str] = Field(default_factory=list)
+    plugins: list[str] = Field(default_factory=list)
+    plugins_config: dict = Field(default_factory=dict)
+    skills: list[SkillConfig] = Field(default_factory=list)
+    tools: list[ToolConfig] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     hooks: list[HookDefinition] = Field(default_factory=list)
     advanced: AdvancedConfig | None = None
