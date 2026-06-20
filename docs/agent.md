@@ -38,7 +38,8 @@ async for event in harness.run("用户输入"):
     if event.type == "model_chunk":
         send_sse(event.data)       # 流式输出
     elif event.type == "model_call_end":
-        print(event.data.content)  # 完整文本
+        print(event.data["content"])  # 完整文本
+        print(event.data["usage"])    # token 用量
 ```
 
 ### 路径 B：`BaseAgent`（兼容封装）
@@ -167,9 +168,11 @@ result = stream.result   # 迭代结束后可用，聚合好的 ModelResult
 class ModelResult:
     content: str                          # 完整文本
     tool_calls: list[dict] = []           # [{id, name, params}]
-    usage: dict = {}                      # {prompt_tokens, completion_tokens, total_tokens}
+    usage: dict = {}                      # {prompt_tokens, completion_tokens, total_tokens}，模型不返回时为空 dict
     finish_reason: str = "stop"           # "stop" | "tool_calls"
 ```
+
+> **注意**：部分模型不在响应中返回 usage。此时 `usage` 为空 dict `{}`，不会缺 key 或报错。消费方通过 `data.get("usage", {}).get("total_tokens", 0)` 安全取值。
 
 #### `ModelStream`（流式）
 
@@ -222,8 +225,8 @@ async for event in harness.run("用户输入"):
 
     elif event.type == "model_call_end":
         # 聚合完成，state 已回写
-        result = event.data
-        print(f"本轮完成: {result['content'][:50]}...")
+        data = event.data
+        print(f"本轮完成: {data['content'][:50]}..., tokens={data.get('usage', {})}")
 ```
 
 ### Harness 内部流程
@@ -243,7 +246,7 @@ agent.model_call(stream=True) → ModelStream
     │        否则:
     │          content = str
     │
-    └─ yield AgentEvent("model_call_end", result)    # 完成信号
+    └─ yield AgentEvent("model_call_end", {content, tool_calls, usage, finish_reason})
 ```
 
 App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流式路径下 `model_call_end` 仍会 emit（`collect_response`、测试等需要它作为完成信号）。
