@@ -27,14 +27,17 @@ class AgentHarness:
         tool_executor: Any = None,
         event_bus: Any = None,
         max_turns: int = 50,
+        data_dir: str = "./data",
     ) -> None:
         self.agent = agent
         self._plugins = plugins
         self._tool_executor = tool_executor
         self._event_bus = event_bus
         self._max_turns = max_turns
+        self._data_dir = data_dir
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
+        self._interaction_round: int = 0
 
         # Index plugins by hook_name for fast lookup
         self._by_hook: dict[str, list[Plugin]] = {c: [] for c in CHECKPOINTS}
@@ -46,12 +49,18 @@ class AgentHarness:
 
     # ── Plugin scheduling ───────────────────────────────
 
-    def _make_ctx(self) -> PluginContext:
+    def _make_ctx(self, turn: int = 0) -> PluginContext:
         return PluginContext(
             agent=self.agent,
             session_id=self.agent.state.session_id,
             event_bus=self._event_bus,
+            data_dir=self._data_dir,
         )
+
+    def _sync_ctx(self, ctx: PluginContext, turn: int) -> None:
+        """Update context lifecycle counters at each checkpoint."""
+        ctx.turn = turn
+        ctx.interaction_round = self._interaction_round
 
     async def _run_blocking(self, hook_name: str, ctx: PluginContext) -> None:
         for p in self._by_hook.get(hook_name, []):
@@ -92,12 +101,14 @@ class AgentHarness:
     async def run(self, user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]:
         """Main execution loop. Yields AgentEvent for SSE streaming."""
         agent = self.agent
+        self._interaction_round += 1
 
         # Assign session_id if this is a new session
         if not agent.state.session_id:
             agent.state.session_id = session_id or str(uuid.uuid4())
 
         ctx = self._make_ctx()
+        self._sync_ctx(ctx, turn=0)
 
         # Inject user message
         agent.input("user", user_message)
@@ -112,6 +123,7 @@ class AgentHarness:
         turn = 0
         while turn < self._max_turns:
             turn += 1
+            self._sync_ctx(ctx, turn)
 
             # --- before_model ---
             if await self._checkpoint("before_model", ctx):

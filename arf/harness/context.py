@@ -14,11 +14,19 @@ class PluginContext:
         agent: PrimitiveAgent,
         session_id: str,
         event_bus: InMemoryEventBus | None = None,
+        data_dir: str = "./data",
     ) -> None:
         self.agent = agent
         self.session_id = session_id
         self.hook_data: dict[str, Any] = {}
         self._event_bus = event_bus
+
+        # Lifecycle counters (set by harness at each checkpoint)
+        self.turn: int = 0
+        self.interaction_round: int = 0
+
+        # Directories
+        self.data_dir: str = data_dir
 
     def emit(self, event_type: str, data: dict[str, Any] | None = None) -> AgentEvent:
         event = AgentEvent(
