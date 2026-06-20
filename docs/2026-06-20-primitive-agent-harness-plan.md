@@ -1,64 +1,64 @@
-# Primitive Agent + Harness Implementation Plan
+# Primitive Agent + Harness 实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向 agentic 工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 来逐任务实现本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** Replace BaseAgent (~980 lines) + ControlPlane (~1338 lines) with PrimitiveAgent (6 primitives) + AgentHarness (execution skeleton + plugin scheduler + park/resume). All existing functionality becomes plugins.
+**目标：** 用 PrimitiveAgent（6 个原语）+ AgentHarness（执行骨架 + 插件调度器 + park/resume）替换 BaseAgent（约 980 行）+ ControlPlane（约 1338 行）。所有现有功能均变为插件。
 
-**Architecture:** Build new files alongside old. Create foundation types first, then PrimitiveAgent, then AgentHarness with Plugin base. Provide a PluginAdapter shim so existing plugins run on the new harness during migration. Remove old code after critical plugins are ported.
+**架构：** 在旧文件旁构建新文件。先创建基础类型，然后是 PrimitiveAgent，再是带有 Plugin 基类的 AgentHarness。提供 PluginAdapter 垫片，以便迁移期间现有插件可在新 harness 上运行。待关键插件迁移完成后移除旧代码。
 
-**Tech Stack:** Python 3.11+, Pydantic v2, asyncio, pytest. Reuses ModelAdapter, ModelDegrader, InMemoryEventBus, FileStateStore, ConcurrentToolExecutor, AgentEvent.
+**技术栈：** Python 3.11+，Pydantic v2，asyncio，pytest。复用 ModelAdapter、ModelDegrader、InMemoryEventBus、FileStateStore、ConcurrentToolExecutor、AgentEvent。
 
-## Global Constraints
+## 全局约束
 
 - Python 3.11+
-- Pydantic v2 for configuration models
-- All public API methods must have type annotations
-- Protocol definitions in `arf/core/protocols/`
-- Test doubles in `arf/testing/`
-- Tests in `tests/`
-- Commit style: `type(scope): description` with `Co-Authored-By: Claude Code with DeepSeek V4`
-- Design spec: `docs/2026-06-20-primitive-agent-harness-design.md`
+- 使用 Pydantic v2 作为配置模型
+- 所有公共 API 方法必须带有类型注解
+- 协议定义位于 `arf/core/protocols/`
+- 测试替身位于 `arf/testing/`
+- 测试位于 `tests/`
+- 提交风格：`type(scope): description`，附带 `Co-Authored-By: Claude Code with DeepSeek V4`
+- 设计文档：`docs/2026-06-20-primitive-agent-harness-design.md`
 
 ---
 
-## File Map
+## 文件映射
 
-| New / Modify | Path | Responsibility |
-|-------------|------|----------------|
-| NEW | `arf/agent/state.py` | AgentState, Message, WaitItem, ModelResult dataclasses |
-| NEW | `arf/agent/primitive.py` | PrimitiveAgent — 6 primitives |
-| NEW | `arf/harness/__init__.py` | Public API |
-| NEW | `arf/harness/context.py` | PluginContext |
-| NEW | `arf/harness/plugin_base.py` | Plugin base class |
-| NEW | `arf/harness/engine.py` | AgentHarness — execution loop |
-| NEW | `arf/harness/config.py` | HarnessConfig from harness.yaml |
-| NEW | `arf/harness/loader.py` | Plugin YAML loader + event registration |
-| NEW | `arf/tooling/__init__.py` | Public API |
-| NEW | `arf/tooling/executor.py` | ToolExecutor — minimal, no validation |
-| NEW | `arf/tooling/registry.py` | ToolRegistry — aggregate tools from sources |
-| MODIFY | `arf/agent/config.py` | Simplify AgentConfig (remove plugin fields) |
-| MODIFY | `arf/agent/__init__.py` | Export PrimitiveAgent, AgentState |
-| NEW | `arf/harness/adapter.py` | PluginAdapter — old plugin → new Plugin shim |
-| NEW | `arf/plugins/base.py` | Re-export Plugin from harness |
-| NEW | `tests/test_agent_state.py` | Unit tests for state types |
-| NEW | `tests/test_primitive_agent.py` | Unit tests for PrimitiveAgent |
-| NEW | `tests/test_harness_engine.py` | Integration tests for AgentHarness |
-| NEW | `tests/test_plugin_loading.py` | Plugin loading + registration tests |
-| NEW | `tests/test_harness_park.py` | Park/resume tests |
-| NEW | `tests/test_plugin_adapter.py` | Adapter shim tests |
+| 新建 / 修改 | 路径 | 职责 |
+|-------------|------|------|
+| 新建 | `arf/agent/state.py` | AgentState、Message、WaitItem、ModelResult 数据类 |
+| 新建 | `arf/agent/primitive.py` | PrimitiveAgent —— 6 个原语 |
+| 新建 | `arf/harness/__init__.py` | 公共 API |
+| 新建 | `arf/harness/context.py` | PluginContext |
+| 新建 | `arf/harness/plugin_base.py` | Plugin 基类 |
+| 新建 | `arf/harness/engine.py` | AgentHarness —— 执行循环 |
+| 新建 | `arf/harness/config.py` | 来自 harness.yaml 的 HarnessConfig |
+| 新建 | `arf/harness/loader.py` | 插件 YAML 加载器 + 事件注册 |
+| 新建 | `arf/tooling/__init__.py` | 公共 API |
+| 新建 | `arf/tooling/executor.py` | ToolExecutor —— 最小化，无验证 |
+| 新建 | `arf/tooling/registry.py` | ToolRegistry —— 聚合来自各来源的工具 |
+| 修改 | `arf/agent/config.py` | 简化 AgentConfig（移除插件字段） |
+| 修改 | `arf/agent/__init__.py` | 导出 PrimitiveAgent、AgentState |
+| 新建 | `arf/harness/adapter.py` | PluginAdapter —— 旧插件 → 新 Plugin 垫片 |
+| 新建 | `arf/plugins/base.py` | 从 harness 重新导出 Plugin |
+| 新建 | `tests/test_agent_state.py` | 状态类型单元测试 |
+| 新建 | `tests/test_primitive_agent.py` | PrimitiveAgent 单元测试 |
+| 新建 | `tests/test_harness_engine.py` | AgentHarness 集成测试 |
+| 新建 | `tests/test_plugin_loading.py` | 插件加载 + 注册测试 |
+| 新建 | `tests/test_harness_park.py` | Park/resume 测试 |
+| 新建 | `tests/test_plugin_adapter.py` | Adapter 垫片测试 |
 
 ---
 
-### Task 1: Foundation Types — AgentState, Message, WaitItem, ModelResult
+### 任务 1：基础类型 —— AgentState、Message、WaitItem、ModelResult
 
-**Files:**
-- Create: `arf/agent/state.py`
-- Create: `tests/test_agent_state.py`
+**文件：**
+- 新建：`arf/agent/state.py`
+- 新建：`tests/test_agent_state.py`
 
-**Interfaces:**
-- Produces: `AgentState`, `Message`, `WaitItem`, `ModelResult` dataclasses
+**接口：**
+- 产出：`AgentState`、`Message`、`WaitItem`、`ModelResult` 数据类
 
-- [ ] **Step 1: Write failing test for state creation**
+- [ ] **步骤 1：编写状态创建的失败测试**
 
 ```python
 # tests/test_agent_state.py
@@ -114,12 +114,12 @@ def test_model_result_with_tool_calls():
     assert mr.tool_calls[0]["name"] == "read_file"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `pytest tests/test_agent_state.py -v`
-Expected: FAIL — module not found
+运行：`pytest tests/test_agent_state.py -v`
+预期：失败 —— 模块未找到
 
-- [ ] **Step 3: Write `arf/agent/state.py`**
+- [ ] **步骤 3：编写 `arf/agent/state.py`**
 
 ```python
 """Agent state types — message, wait, model result dataclasses."""
@@ -159,12 +159,12 @@ class AgentState:
     model_config: dict                   # {api_base, api_key_env, model_name, context_window}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `pytest tests/test_agent_state.py -v`
-Expected: PASS (6 tests)
+运行：`pytest tests/test_agent_state.py -v`
+预期：通过（6 个测试）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add arf/agent/state.py tests/test_agent_state.py
@@ -175,18 +175,17 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 2: PrimitiveAgent — 6 Primitives
+### 任务 2：PrimitiveAgent —— 6 个原语
 
-**Files:**
-- Create: `arf/agent/primitive.py`
-- Create: `tests/test_primitive_agent.py`
-- Create: `tests/fixtures/fake_model_adapter.py` (or reuse existing)
+**文件：**
+- 新建：`arf/agent/primitive.py`
+- 新建：`tests/test_primitive_agent.py`
+- 新建：`tests/fixtures/fake_model_adapter.py`（或复用现有的）
 
-**Interfaces:**
-- Consumes: `AgentState`, `Message`, `WaitItem`, `ModelResult` from `arf/agent/state.py`
-- Produces: `PrimitiveAgent` class with methods:
-  - `__init__(self, agent_id: str, model_config: dict, call_model: Callable)` — session_id starts as ""
-  - `input(self, role: str, content: Any, position: str = "end") -> Message`
+**接口：**
+- 消费：来自 `arf/agent/state.py` 的 `AgentState`、`Message`、`WaitItem`、`ModelResult`
+- 产出：`PrimitiveAgent` 类，包含方法：
+  - `__init__(self, agent_id: str, model_config: dict, call_model: Callable)` —— session_id 初始为 ""
   - `input(self, role: str, content: Any, position: str = "end") -> Message`
   - `async model_call(self) -> ModelResult`
   - `wait(self, hook_name: str, reason: str) -> WaitItem`
@@ -194,7 +193,7 @@ Co-Authored-By: Claude Code with DeepSeek V4"
   - `stop(self) -> AgentState`
   - `classmethod resume(cls, state: AgentState, call_model: Callable) -> PrimitiveAgent`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **步骤 1：编写失败测试**
 
 ```python
 # tests/test_primitive_agent.py
@@ -211,7 +210,6 @@ def fake_call_model(messages, tools=None):
 def agent():
     return PrimitiveAgent(
         agent_id="a1",
-        session_id="",
         model_config={"api_base": "https://x.com/v1", "api_key_env": "K", "model_name": "m", "context_window": 128000},
         call_model=fake_call_model,
     )
@@ -323,18 +321,18 @@ class TestResume:
 
         ag2 = PrimitiveAgent.resume(state, fake_call_model)
         assert ag2.state.agent_id == "a1"
-        assert ag2.state.session_id == "s1"
+        assert ag2.state.session_id == ""
         assert len(ag2.state.messages) == 1
         assert ag2.state.messages[0].content == "msg1"
         assert len(ag2.state.waiting["before_tools"]) == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `pytest tests/test_primitive_agent.py -v`
-Expected: FAIL — module not found
+运行：`pytest tests/test_primitive_agent.py -v`
+预期：失败 —— 模块未找到
 
-- [ ] **Step 3: Write `arf/agent/primitive.py`**
+- [ ] **步骤 3：编写 `arf/agent/primitive.py`**
 
 ```python
 """PrimitiveAgent — 6 primitives: input, model_call, wait, finish_wait, stop, resume."""
@@ -447,12 +445,12 @@ class PrimitiveAgent:
         return agent
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `pytest tests/test_primitive_agent.py -v`
-Expected: PASS (all tests)
+运行：`pytest tests/test_primitive_agent.py -v`
+预期：通过（所有测试）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add arf/agent/primitive.py tests/test_primitive_agent.py
@@ -463,21 +461,21 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 3: PluginContext + Plugin Base Class
+### 任务 3：PluginContext + Plugin 基类
 
-**Files:**
-- Create: `arf/harness/__init__.py`
-- Create: `arf/harness/context.py`
-- Create: `arf/harness/plugin_base.py`
-- Create: `tests/test_plugin_loading.py`
+**文件：**
+- 新建：`arf/harness/__init__.py`
+- 新建：`arf/harness/context.py`
+- 新建：`arf/harness/plugin_base.py`
+- 新建：`tests/test_plugin_loading.py`
 
-**Interfaces:**
-- Consumes: `PrimitiveAgent` from `arf/agent/primitive.py`, `AgentEvent` from `arf/core/events.py`
-- Produces:
-  - `PluginContext(agent, hook_data, session_id, event_bus)` — with `emit(event_type, data)` method
-  - `Plugin` base class with `name: str`, `events: list[dict]`, `async handle(event_name, ctx)`
+**接口：**
+- 消费：来自 `arf/agent/primitive.py` 的 `PrimitiveAgent`，来自 `arf/core/events.py` 的 `AgentEvent`
+- 产出：
+  - `PluginContext(agent, hook_data, session_id, event_bus)` —— 带有 `emit(event_type, data)` 方法
+  - `Plugin` 基类，包含 `name: str`、`events: list[dict]`、`async handle(event_name, ctx)`
 
-- [ ] **Step 1: Write PluginContext**
+- [ ] **步骤 1：编写 PluginContext**
 
 ```python
 # arf/harness/context.py
@@ -550,7 +548,7 @@ from arf.harness.plugin_base import Plugin
 __all__ = ["PluginContext", "Plugin"]
 ```
 
-- [ ] **Step 2: Write test for plugin registration**
+- [ ] **步骤 2：编写插件注册测试**
 
 ```python
 # tests/test_plugin_loading.py
@@ -620,12 +618,12 @@ class TestPlugin:
         assert bus.collected("test_event")[0].data["key"] == "value"
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3：运行测试**
 
-Run: `pytest tests/test_plugin_loading.py -v`
-Expected: PASS
+运行：`pytest tests/test_plugin_loading.py -v`
+预期：通过
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/harness/ tests/test_plugin_loading.py
@@ -636,26 +634,27 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 4: AgentHarness — Execution Loop + Checkpoint Scheduling
+### 任务 4：AgentHarness —— 执行循环 + 检查点调度
 
-**Files:**
-- Create: `arf/harness/engine.py`
-- Create: `tests/test_harness_engine.py`
+**文件：**
+- 新建：`arf/harness/engine.py`
+- 新建：`tests/test_harness_engine.py`
 
-**Interfaces:**
-- Consumes: `PrimitiveAgent`, `Plugin`, `PluginContext`, `AgentEvent`
-- Produces: `AgentHarness` class:
+**接口：**
+- 消费：`PrimitiveAgent`、`Plugin`、`PluginContext`、`AgentEvent`
+- 产出：`AgentHarness` 类：
   - `__init__(self, agent, plugins, tool_executor, event_bus, max_turns)`
-  - `async run(self, user_message: str) -> AsyncIterator[AgentEvent]`
+  - `async run(self, user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]`
   - `async resolve_wait(self, wait_id: str, inject_message: dict | None) -> bool`
 
-- [ ] **Step 1: Write AgentHarness**
+- [ ] **步骤 1：编写 AgentHarness**
 
 ```python
 # arf/harness/engine.py
 """AgentHarness — execution skeleton + plugin scheduler + park/resume."""
 from __future__ import annotations
 import asyncio
+import uuid
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -871,7 +870,7 @@ class AgentHarness:
         return False
 ```
 
-- [ ] **Step 2: Write integration test**
+- [ ] **步骤 2：编写集成测试**
 
 ```python
 # tests/test_harness_engine.py
@@ -1018,12 +1017,12 @@ class TestHarnessPark:
             pass
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3：运行测试**
 
-Run: `pytest tests/test_harness_engine.py -v`
-Expected: PASS
+运行：`pytest tests/test_harness_engine.py -v`
+预期：通过
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/harness/engine.py tests/test_harness_engine.py
@@ -1034,22 +1033,22 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 5: ToolExecutor — Minimal, No Validation
+### 任务 5：ToolExecutor —— 最小化，无验证
 
-**Files:**
-- Create: `arf/tooling/__init__.py`
-- Create: `arf/tooling/executor.py`
-- Create: `arf/tooling/registry.py`
+**文件：**
+- 新建：`arf/tooling/__init__.py`
+- 新建：`arf/tooling/executor.py`
+- 新建：`arf/tooling/registry.py`
 
-**Interfaces:**
-- Consumes: `MCP` tool definitions (reuse existing McpClientManager)
-- Produces:
-  - `ToolRegistry(name, sources)` — aggregate tool definitions from directory + MCP + kernel
-  - `ToolExecutor(registry)` — `async execute(tool_calls) -> dict[str, ToolResult]`
+**接口：**
+- 消费：MCP 工具定义（复用现有 McpClientManager）
+- 产出：
+  - `ToolRegistry(name, sources)` —— 聚合来自目录、MCP 和内核的工具定义
+  - `ToolExecutor(registry)` —— `async execute(tool_calls) -> dict[str, ToolResult]`
 
-ToolExecutor is **minimal**: resolve tool → execute → return results. No validation, no guardrails, no path resolution — those are plugins.
+ToolExecutor 是 **最小化** 的：解析工具 → 执行 → 返回结果。不包含验证、护栏、路径解析 —— 这些属于插件。
 
-- [ ] **Step 1: Write ToolRegistry + ToolExecutor**
+- [ ] **步骤 1：编写 ToolRegistry + ToolExecutor**
 
 ```python
 # arf/tooling/registry.py
@@ -1161,7 +1160,7 @@ from arf.tooling.executor import ToolExecutor, ToolResult
 __all__ = ["ToolRegistry", "ToolExecutor", "ToolResult"]
 ```
 
-- [ ] **Step 2: Write test**
+- [ ] **步骤 2：编写测试**
 
 ```python
 # tests/test_tooling.py
@@ -1223,12 +1222,12 @@ async def test_execute_multiple_tools():
     assert results["2"].data["result"] == 20
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3：运行测试**
 
-Run: `pytest tests/test_tooling.py -v`
-Expected: PASS
+运行：`pytest tests/test_tooling.py -v`
+预期：通过
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/tooling/ tests/test_tooling.py
@@ -1239,19 +1238,19 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 6: PluginAdapter — Old Plugins on New Harness
+### 任务 6：PluginAdapter —— 在 Harness 上运行旧插件
 
-**Files:**
-- Create: `arf/harness/adapter.py`
-- Create: `tests/test_plugin_adapter.py`
+**文件：**
+- 新建：`arf/harness/adapter.py`
+- 新建：`tests/test_plugin_adapter.py`
 
-**Interfaces:**
-- Consumes: Old-style plugin classes (objects with `name`, `hooks` dict, and hook handler methods)
-- Produces: `PluginAdapter` wrapping old plugin as new `Plugin` interface
+**接口：**
+- 消费：旧样式插件类（具有 `name`、`hooks` 字典和钩子处理方法的对象）
+- 产出：将旧插件包装为新 `Plugin` 接口的 `PluginAdapter`
 
-This is temporary scaffolding so we can run existing plugins (compaction, trace, approval) on the new harness while porting them.
+这是一个临时垫片，以便在迁移期间将现有插件（compaction、trace、approval）运行在新 harness 上。
 
-- [ ] **Step 1: Write PluginAdapter**
+- [ ] **步骤 1：编写 PluginAdapter**
 
 ```python
 # arf/harness/adapter.py
@@ -1335,7 +1334,7 @@ class PluginAdapter(Plugin):
                 await fire(event_name, ctx)
 ```
 
-- [ ] **Step 2: Test adapter with a mock old plugin**
+- [ ] **步骤 2：使用模拟旧插件测试适配器**
 
 ```python
 # tests/test_plugin_adapter.py
@@ -1396,12 +1395,12 @@ class TestPluginAdapter:
         assert "post_action" in old.calls
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3：运行测试**
 
-Run: `pytest tests/test_plugin_adapter.py -v`
-Expected: PASS
+运行：`pytest tests/test_plugin_adapter.py -v`
+预期：通过
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/harness/adapter.py tests/test_plugin_adapter.py
@@ -1412,18 +1411,18 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 7: HarnessConfig — Load harness.yaml
+### 任务 7：HarnessConfig —— 加载 harness.yaml
 
-**Files:**
-- Create: `arf/harness/config.py`
-- Create: `arf/harness/loader.py`
+**文件：**
+- 新建：`arf/harness/config.py`
+- 新建：`arf/harness/loader.py`
 
-**Interfaces:**
-- `HarnessConfig` — Pydantic model for harness.yaml
-- `PluginLoader` — find and parse plugin.yaml files, return `Plugin` instances
+**接口：**
+- `HarnessConfig` —— harness.yaml 的 Pydantic 模型
+- `PluginLoader` —— 查找并解析 plugin.yaml 文件，返回 `Plugin` 实例
 - `load_harness(config_path: str) -> tuple[HarnessConfig, list[Plugin]]`
 
-- [ ] **Step 1: Write config models + loader**
+- [ ] **步骤 1：编写配置模型 + 加载器**
 
 ```python
 # arf/harness/config.py
@@ -1513,7 +1512,7 @@ def instantiate_plugins(configs: list[dict], plugin_classes: dict[str, type] | N
     return plugins
 ```
 
-- [ ] **Step 2: Write test**
+- [ ] **步骤 2：编写测试**
 
 ```python
 # tests/test_harness_config.py
@@ -1562,12 +1561,12 @@ config:
         assert configs[0]["events"][0]["hook_name"] == "after_model"
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3：运行测试**
 
-Run: `pytest tests/test_harness_config.py -v`
-Expected: PASS
+运行：`pytest tests/test_harness_config.py -v`
+预期：通过
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/harness/config.py arf/harness/loader.py tests/test_harness_config.py
@@ -1578,28 +1577,28 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 8: Simplify AgentConfig
+### 任务 8：简化 AgentConfig
 
-**Files:**
-- Modify: `arf/agent/config.py`
+**文件：**
+- 修改：`arf/agent/config.py`
 
-Strip from AgentConfig all fields that belong to harness or plugins. Keep only: name, system_prompt, models, and model_defs.
+从 AgentConfig 中移除所有属于 harness 或插件的字段。仅保留：name、system_prompt、models 和 model_defs。
 
-- [ ] **Step 1: Identify fields to keep vs remove**
+- [ ] **步骤 1：确定保留 vs 移除的字段**
 
-Current `AgentConfig` has fields like: name, models, model_defs, tools, skills, plugins, plugins_config, hooks, advanced, data_path, allow_paths, session_mode, mcp_servers.
+当前的 `AgentConfig` 包含类似字段：name、models、model_defs、tools、skills、plugins、plugins_config、hooks、advanced、data_path、allow_paths、session_mode、mcp_servers。
 
-After simplification: name, system_prompt, models, model_defs. All other fields move to harness.yaml or plugin config.
+简化后：name、system_prompt、models、model_defs。所有其他字段移至 harness.yaml 或插件配置。
 
-- [ ] **Step 2: Write simplified AgentConfig**
+- [ ] **步骤 2：编写简化的 AgentConfig**
 
-Modify `arf/agent/config.py` — strip to minimal agent config. Keep backward compat by making removed fields optional with defaults (they're no-ops, not errors).
+修改 `arf/agent/config.py` —— 精简为仅 agent 配置。通过使移除的字段可选并带默认值（它们是空操作而非错误）来保持向后兼容。
 
-- [ ] **Step 3: Verify existing tests still pass**
+- [ ] **步骤 3：验证现有测试仍然通过**
 
-Run: `pytest tests/test_config.py -v`
+运行：`pytest tests/test_config.py -v`
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add arf/agent/config.py
@@ -1610,14 +1609,14 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 9: Integration — Full Pipeline Test
+### 任务 9：集成 —— 完整管道测试
 
-**Files:**
-- Create: `tests/test_harness_integration.py`
+**文件：**
+- 新建：`tests/test_harness_integration.py`
 
-End-to-end test: PrimitiveAgent + AgentHarness + ToolRegistry + ToolExecutor + plugins.
+端到端测试：PrimitiveAgent + AgentHarness + ToolRegistry + ToolExecutor + 插件。
 
-- [ ] **Step 1: Write integration test**
+- [ ] **步骤 1：编写集成测试**
 
 ```python
 # tests/test_harness_integration.py
@@ -1712,12 +1711,12 @@ async def test_full_pipeline_with_tools():
     assert len(tool_ends) == 1
 ```
 
-- [ ] **Step 2: Run integration tests**
+- [ ] **步骤 2：运行集成测试**
 
-Run: `pytest tests/test_harness_integration.py -v`
-Expected: PASS
+运行：`pytest tests/test_harness_integration.py -v`
+预期：通过
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3：提交**
 
 ```bash
 git add tests/test_harness_integration.py
@@ -1728,16 +1727,16 @@ Co-Authored-By: Claude Code with DeepSeek V4"
 
 ---
 
-### Task 10: Port CompactionPlugin to New Plugin Model
+### 任务 10：将 CompactionPlugin 迁移到新插件模型
 
-**Files:**
-- Create: `arf/plugins/compaction/plugin.yaml`
-- Create: `arf/plugins/compaction/__init__.py` (or modify existing)
-- Modify: `arf/compaction/sliding_window.py` (extract pure logic)
+**文件：**
+- 新建：`arf/plugins/compaction/plugin.yaml`
+- 新建：`arf/plugins/compaction/__init__.py`（或修改现有）
+- 修改：`arf/compaction/sliding_window.py`（提取纯逻辑）
 
-Port compaction from old hook model to new Plugin base class. Core compaction logic (SlidingWindowCompactor) is unchanged.
+将 compaction 从旧钩子模型迁移到新的 Plugin 基类。核心压缩逻辑（SlidingWindowCompactor）保持不变。
 
-- [ ] **Step 1: Create plugin.yaml**
+- [ ] **步骤 1：创建 plugin.yaml**
 
 ```yaml
 # arf/plugins/compaction/plugin.yaml
@@ -1749,10 +1748,10 @@ config:
   keep_recent: 10
 ```
 
-- [ ] **Step 2: Write new CompactionPlugin**
+- [ ] **步骤 2：编写新的 CompactionPlugin**
 
 ```python
-# arf/plugins/compaction/__init__.py (new plugin module)
+# arf/plugins/compaction/__init__.py (新插件模块)
 """CompactionPlugin — compact messages before model call."""
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
@@ -1774,54 +1773,54 @@ class CompactionPlugin(Plugin):
 
     async def _do_compact(self, ctx: PluginContext) -> None:
         messages = ctx.agent.state.messages
-        # ... apply compaction logic using self._compactor ...
+        # ... 使用 self._compactor 应用压缩逻辑 ...
         # compacted = self._compactor.compact(messages)
         # ctx.agent.state.messages = compacted
-        pass  # detailed implementation uses existing SlidingWindowCompactor logic
+        pass  # 详细实现使用现有的 SlidingWindowCompactor 逻辑
 ```
 
-- [ ] **Step 3: Test compaction on new harness**
+- [ ] **步骤 3：在新 harness 上测试压缩**
 
-- [ ] **Step 4: Commit**
-
----
-
-### Task 11: Port TracePlugin to New Plugin Model
-
-Similar to compaction — create `arf/plugins/trace/plugin.yaml` and new TracePlugin class.
+- [ ] **步骤 4：提交**
 
 ---
 
-### Task 12: Remove Old Code
+### 任务 11：将 TracePlugin 迁移到新插件模型
 
-After critical plugins are ported and verified:
-- Remove `arf/engine/control_plane.py`
-- Remove `arf/agent/base.py` (old BaseAgent)
-- Remove `arf/core/plugin_context.py` (old PluginContext)
-- Remove `arf/core/plugin_runtime.py`
-- Remove `arf/core/primitives.py` (old Primitive/Level/PrimitiveHandler)
-- Remove `arf/engine/park_coordinator.py`
-- Remove `arf/engine/gate.py`
-- Clean up `arf/agent/__init__.py` exports
-- Update `arf/__init__.py` exports
+与 compaction 类似 —— 创建 `arf/plugins/trace/plugin.yaml` 和新的 TracePlugin 类。
 
 ---
 
-## Self-Review Checklist (after writing plan)
+### 任务 12：移除旧代码
 
-1. **Spec coverage** — Check each section of the spec against tasks above:
-   - [x] AgentState + Message + WaitItem + ModelResult → Task 1
-   - [x] 6 Primitives (input/model_call/wait/finish_wait/stop/resume) → Task 2
-   - [x] 7 Checkpoints + execution loop → Task 4
-   - [x] Park/resume mechanism → Task 4
-   - [x] Plugin model (events list, handle, plugin.yaml) → Tasks 3, 7
-   - [x] PluginContext → Task 3
-   - [x] Configuration separation → Tasks 7, 8
-   - [x] ToolExecutor (minimal, no validation) → Task 5
-   - [x] ToolRegistry → Task 5
-   - [x] PluginAdapter (old→new shim) → Task 6
-   - [x] Integration test → Task 9
+在关键插件迁移并验证后：
+- 移除 `arf/engine/control_plane.py`
+- 移除 `arf/agent/base.py`（旧 BaseAgent）
+- 移除 `arf/core/plugin_context.py`（旧 PluginContext）
+- 移除 `arf/core/plugin_runtime.py`
+- 移除 `arf/core/primitives.py`（旧 Primitive/Level/PrimitiveHandler）
+- 移除 `arf/engine/park_coordinator.py`
+- 移除 `arf/engine/gate.py`
+- 清理 `arf/agent/__init__.py` 导出
+- 更新 `arf/__init__.py` 导出
 
-2. **Placeholder scan** — Tasks 10-12 are skeleton (actual migration depends on existing plugin code). This is intentional — they can't be fully specced without reading each plugin's internals.
+---
 
-3. **Type consistency** — `AgentState`, `Message`, `WaitItem`, `ModelResult` defined in Task 1, used throughout Tasks 2-9. `PluginContext` defined in Task 3, used in Tasks 4-11. `Plugin` base defined in Task 3, subclassed in Tasks 10-11. Signatures match.
+## 自我评审清单（编写计划后）
+
+1. **规范覆盖** —— 对照上述任务检查规范的每个部分：
+   - [x] AgentState + Message + WaitItem + ModelResult → 任务 1
+   - [x] 6 个原语（input/model_call/wait/finish_wait/stop/resume）→ 任务 2
+   - [x] 7 个检查点 + 执行循环 → 任务 4
+   - [x] Park/resume 机制 → 任务 4
+   - [x] 插件模型（events 列表、handle、plugin.yaml）→ 任务 3、7
+   - [x] PluginContext → 任务 3
+   - [x] 配置分离 → 任务 7、8
+   - [x] ToolExecutor（最小化，无验证）→ 任务 5
+   - [x] ToolRegistry → 任务 5
+   - [x] PluginAdapter（旧→新垫片）→ 任务 6
+   - [x] 集成测试 → 任务 9
+
+2. **占位符扫描** —— 任务 10–12 是骨架（实际迁移依赖于现有插件代码）。这是有意为之 —— 在不阅读每个插件的内部实现的情况下无法完全详细规划。
+
+3. **类型一致性** —— `AgentState`、`Message`、`WaitItem`、`ModelResult` 在任务 1 中定义，在任务 2–9 中使用。`PluginContext` 在任务 3 中定义，在任务 4–11 中使用。`Plugin` 基类在任务 3 中定义，在任务 10–11 中被继承。签名保持一致。
