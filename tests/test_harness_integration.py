@@ -5,9 +5,32 @@ from arf.agent.state import ModelResult
 from arf.harness.engine import AgentHarness
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
-from arf.tooling.registry import ToolRegistry
-from arf.tooling.executor import ToolExecutor
+from arf.core.results import ToolResult
 from arf.event_bus import InMemoryEventBus
+
+
+class FakeToolManager:
+    """Minimal McpClientManager-compatible fake for tests."""
+
+    def __init__(self):
+        self._tools: dict[str, dict] = {}
+
+    def register(self, name: str, definition: dict, fn) -> None:
+        self._tools[name] = {"defn": definition, "fn": fn}
+
+    async def get_tool_definitions(self) -> list[dict]:
+        return [v["defn"] for v in self._tools.values()]
+
+    async def execute(self, name: str, params: dict) -> ToolResult:
+        tool = self._tools.get(name)
+        if not tool:
+            return ToolResult(tool_name=name, success=False, error=f"Tool not found: {name}")
+        try:
+            result = await tool["fn"](**params)
+            data = result if isinstance(result, dict) else {"result": result}
+            return ToolResult(tool_name=name, success=True, data=data)
+        except Exception as e:
+            return ToolResult(tool_name=name, success=False, error=str(e))
 
 
 @pytest.mark.anyio
@@ -31,7 +54,7 @@ async def test_full_pipeline_text_only():
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
     bus = InMemoryEventBus()
-    harness = AgentHarness(agent, plugins=[plugin], tool_executor=None, event_bus=bus)
+    harness = AgentHarness(agent, plugins=[plugin], event_bus=bus)
 
     events = [e async for e in harness.run("hello")]
     import asyncio
@@ -68,17 +91,17 @@ async def test_full_pipeline_with_tools():
             )
         return ModelResult(content="Greeting sent!", tool_calls=[], usage={}, finish_reason="stop")
 
-    registry = ToolRegistry()
+    tool_mgr = FakeToolManager()
 
     async def greet(name="", **kw):
         return {"greeting": f"Hello, {name}!"}
 
-    registry.register("greet", {"name": "greet", "description": "Send greeting"}, greet)
+    tool_mgr.register("greet", {"name": "greet", "description": "Send greeting"}, greet)
 
     agent = PrimitiveAgent("a1",
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
-    harness = AgentHarness(agent, plugins=[], tool_executor=ToolExecutor(registry))
+    harness = AgentHarness(agent, plugins=[], tool_manager=tool_mgr)
 
     events = [e async for e in harness.run("greet World")]
 
@@ -117,7 +140,7 @@ async def test_full_pipeline_multiple_tool_calls():
             )
         return ModelResult(content="Results: 5 and 20", tool_calls=[], usage={}, finish_reason="stop")
 
-    registry = ToolRegistry()
+    tool_mgr = FakeToolManager()
 
     async def add(a=0, b=0, **kw):
         return {"result": a + b}
@@ -125,13 +148,13 @@ async def test_full_pipeline_multiple_tool_calls():
     async def mul(a=0, b=0, **kw):
         return {"result": a * b}
 
-    registry.register("add", {"name": "add"}, add)
-    registry.register("mul", {"name": "mul"}, mul)
+    tool_mgr.register("add", {"name": "add"}, add)
+    tool_mgr.register("mul", {"name": "mul"}, mul)
 
     agent = PrimitiveAgent("a1",
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
-    harness = AgentHarness(agent, plugins=[], tool_executor=ToolExecutor(registry))
+    harness = AgentHarness(agent, plugins=[], tool_manager=tool_mgr)
 
     events = [e async for e in harness.run("calculate")]
 
@@ -159,7 +182,7 @@ async def test_full_pipeline_with_blocking_plugin():
     agent = PrimitiveAgent("a1",
         model_config={"api_base": "", "api_key_env": "", "model_name": "", "context_window": 0},
         call_model=fake_call)
-    harness = AgentHarness(agent, plugins=[ContextPlugin()], tool_executor=None)
+    harness = AgentHarness(agent, plugins=[ContextPlugin()])
 
     _events = [e async for e in harness.run("hi")]
 

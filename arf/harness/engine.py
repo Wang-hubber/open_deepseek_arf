@@ -25,7 +25,6 @@ class AgentHarness:
         agent: PrimitiveAgent,
         plugins: list[Plugin],
         tool_manager: Any = None,
-        tool_executor: Any = None,
         agent_config: Any = None,
         event_bus: Any = None,
         max_turns: int = 50,
@@ -33,7 +32,7 @@ class AgentHarness:
     ) -> None:
         self.agent = agent
         self._plugins = plugins
-        self._tool_executor = tool_manager if tool_manager is not None else tool_executor
+        self._tool_manager = tool_manager
         self._agent_config = agent_config
         self._event_bus = event_bus
         self._max_turns = max_turns
@@ -49,6 +48,33 @@ class AgentHarness:
                 hook = e["hook_name"]
                 if hook in self._by_hook:
                     self._by_hook[hook].append(p)
+
+    # ── Tool filtering ──────────────────────────────────
+
+    def _filter_tools(self, all_tools: list[dict]) -> list[dict]:
+        """Filter tool definitions by agent config plugins/tools lists."""
+        from arf.core.tool_naming import split_name
+
+        if self._agent_config is None:
+            return all_tools
+
+        plugin_names: set[str] = set(self._agent_config.plugins) if self._agent_config.plugins else set()
+        user_tools: list[str] | None = self._agent_config.tools if self._agent_config.tools else None
+
+        result = []
+        for t in all_tools:
+            source, local_name = split_name(t["name"])
+            if source == "kernel":
+                result.append(t)
+            elif source == "user":
+                if user_tools is None or local_name in user_tools:
+                    result.append(t)
+            elif source in plugin_names:
+                result.append(t)
+            elif source not in ("kernel", "user", ""):
+                # server__ or other namespace: include if unknown (future-proof)
+                result.append(t)
+        return result
 
     # ── Plugin scheduling ───────────────────────────────
 
@@ -135,15 +161,23 @@ class AgentHarness:
                 if self._parked:
                     return
 
+            # Fetch tool definitions and inject into model call
+            openai_tools = None
+            if self._tool_manager:
+                from arf.core.tool_convert import to_openai_tools
+                all_tools = await self._tool_manager.get_tool_definitions()
+                filtered = self._filter_tools(all_tools)
+                openai_tools = to_openai_tools(filtered)
+
             # --- model_call ---
             try:
                 if agent._stream_model:
-                    stream = await agent.model_call()
+                    stream = await agent.model_call(tools=openai_tools)
                     async for chunk in stream:
                         yield ctx.emit("model_chunk", chunk)
                     result = stream.result
                 else:
-                    result = await agent.model_call(stream=False)
+                    result = await agent.model_call(stream=False, tools=openai_tools)
             except Exception as exc:
                 ctx.hook_data["exception"] = exc
                 await self._checkpoint("on_error", ctx)
@@ -177,7 +211,7 @@ class AgentHarness:
                     return
 
             # --- tool execution ---
-            if result.tool_calls and self._tool_executor:
+            if result.tool_calls and self._tool_manager:
                 # --- before_tools ---
                 if await self._checkpoint("before_tools", ctx):
                     yield ctx.emit("parked", {"hook_name": "before_tools", "waiting": agent.state.waiting})
@@ -185,29 +219,34 @@ class AgentHarness:
                     if self._parked:
                         return
 
-                # Execute tools
                 for tc in result.tool_calls:
                     yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
 
-                try:
-                    tool_results = await self._tool_executor.execute(result.tool_calls)
-                except Exception as exc:
-                    ctx.hook_data["exception"] = exc
-                    await self._checkpoint("on_error", ctx)
-                    yield ctx.emit("error", {"detail": str(exc)})
-                    break
-
                 for tc in result.tool_calls:
-                    r = tool_results.get(tc["id"])
+                    try:
+                        r = await self._tool_manager.execute(tc["name"], tc.get("params", {}))
+                    except Exception as exc:
+                        agent.input("tool", {
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "result": "",
+                            "error": str(exc),
+                        })
+                        yield ctx.emit("tool_call_end", {
+                            "name": tc["name"], "id": tc["id"],
+                            "success": False,
+                        })
+                        continue
+
                     agent.input("tool", {
                         "tool_call_id": tc["id"],
                         "name": tc["name"],
-                        "result": r.data if r and r.success else "",
-                        "error": str(r.error) if r and r.error else "",
+                        "result": r.data if r.success else "",
+                        "error": r.error or "",
                     })
                     yield ctx.emit("tool_call_end", {
                         "name": tc["name"], "id": tc["id"],
-                        "success": r.success if r else False,
+                        "success": r.success,
                     })
 
                 # --- after_tools ---

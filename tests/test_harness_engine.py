@@ -19,11 +19,14 @@ class FakeToolResult:
 
 class FakeToolExecutor:
     def __init__(self):
-        self.calls: list[list] = []
+        self.calls: list[tuple[str, dict]] = []
 
-    async def execute(self, tool_calls):
-        self.calls.append(tool_calls)
-        return {tc["id"]: FakeToolResult() for tc in tool_calls}
+    async def get_tool_definitions(self):
+        return []
+
+    async def execute(self, name, params):
+        self.calls.append((name, params))
+        return FakeToolResult()
 
 
 def make_agent(call_model, agent_id="a1"):
@@ -41,7 +44,7 @@ class TestHarnessBasicFlow:
             return ModelResult(content="Hello, user!", tool_calls=[], usage={}, finish_reason="stop")
 
         agent = make_agent(fake_call)
-        harness = AgentHarness(agent, plugins=[], tool_executor=None)
+        harness = AgentHarness(agent, plugins=[], tool_manager=None)
         events = [e async for e in harness.run("hi")]
 
         assert any(e.type == "model_call_end" for e in events)
@@ -70,12 +73,12 @@ class TestHarnessBasicFlow:
 
         agent = make_agent(fake_call)
         tool_exec = FakeToolExecutor()
-        harness = AgentHarness(agent, plugins=[], tool_executor=tool_exec)
+        harness = AgentHarness(agent, plugins=[], tool_manager=tool_exec)
 
         events = [e async for e in harness.run("read x.txt")]
 
         assert len(tool_exec.calls) == 1
-        assert tool_exec.calls[0][0]["name"] == "read_file"
+        assert tool_exec.calls[0][0] == "read_file"
         model_ends = [e for e in events if e.type == "model_call_end"]
         assert len(model_ends) == 2  # tool_calls turn + final response turn
         # Messages: user, assistant(tool_calls), tool_result, assistant(response)
@@ -97,7 +100,7 @@ class TestHarnessBasicFlow:
 
         agent = make_agent(infinite_tools)
         tool_exec = FakeToolExecutor()
-        harness = AgentHarness(agent, plugins=[], tool_executor=tool_exec, max_turns=3)
+        harness = AgentHarness(agent, plugins=[], tool_manager=tool_exec, max_turns=3)
 
         events = [e async for e in harness.run("loop")]
         model_ends = [e for e in events if e.type == "model_call_end"]
@@ -122,7 +125,7 @@ class TestHarnessPlugins:
 
         trace = TracePlugin()
         agent = make_agent(fake_call)
-        harness = AgentHarness(agent, plugins=[trace], tool_executor=None)
+        harness = AgentHarness(agent, plugins=[trace], tool_manager=None)
         _events = [e async for e in harness.run("hi")]
         # Give side plugin task time to complete
         await asyncio.sleep(0.05)
@@ -147,7 +150,7 @@ class TestHarnessPlugins:
 
         plugin = PreModelPlugin()
         agent = make_agent(fake_call)
-        harness = AgentHarness(agent, plugins=[plugin], tool_executor=None)
+        harness = AgentHarness(agent, plugins=[plugin], tool_manager=None)
         _events = [e async for e in harness.run("hi")]
 
         assert plugin.called
@@ -174,7 +177,7 @@ class TestHarnessPark:
                 ctx.agent.wait("before_model", "test wait")
 
         agent = make_agent(fake_call)
-        harness = AgentHarness(agent, plugins=[WaitingPlugin()], tool_executor=None)
+        harness = AgentHarness(agent, plugins=[WaitingPlugin()], tool_manager=None)
 
         events = []
         async def collect():
@@ -216,7 +219,7 @@ class TestHarnessPark:
                 ctx.agent.wait("before_tools", "needs approval")
 
         agent = make_agent(fake_call)
-        harness = AgentHarness(agent, plugins=[Waiter()], tool_executor=FakeToolExecutor())
+        harness = AgentHarness(agent, plugins=[Waiter()], tool_manager=FakeToolExecutor())
         # Override model to return tool calls first
         original_call = agent._call_model
         called = False
