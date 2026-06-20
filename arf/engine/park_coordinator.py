@@ -1,6 +1,5 @@
-"""ParkCoordinator -- unified wait-condition registry for session_park.
+"""ParkCoordinator — DEPRECATED: park/resume is built into AgentHarness (arf.harness.engine).
 
-Three primitives:
   register(state, type, metadata) -> wait_id
   complete(state, wait_id, result) -> bool
   park_round(state, cancel_event) -> str | None
@@ -9,6 +8,8 @@ Conditions are persisted in state._park_conditions so resume can
 rebuild asyncio.Event instances via rebuild_events().
 """
 from __future__ import annotations
+import warnings
+warnings.warn("ParkCoordinator is deprecated. Park/resume is built into AgentHarness.", DeprecationWarning, stacklevel=2)
 
 import asyncio
 import logging

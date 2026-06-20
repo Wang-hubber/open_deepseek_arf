@@ -1,9 +1,7 @@
-"""Primitive types for session/round/turn lifecycle management.
+"""Primitive types — DEPRECATED: use arf.agent.state (AgentState, WaitItem, ModelResult)."""
+import warnings
+warnings.warn("arf.core.primitives is deprecated. Use arf.agent.state.", DeprecationWarning, stacklevel=2)
 
-Four primitives (input/action/output/wait) govern all agent behavior
-at three levels (session/round/turn). The PrimitiveHandler protocol
-defines the plugin interface for primitive transitions.
-"""
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 

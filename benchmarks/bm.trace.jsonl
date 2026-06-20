@@ -1,1 +1,1 @@
-{"type": "tool_call_start", "turn": 1, "data": {"tool_name": "x"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "016a10ff4e0d"}
+{"type": "tool_call_start", "turn": 1, "data": {"tool_name": "x"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "fdcbbb53efd9"}

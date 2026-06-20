@@ -1,4 +1,7 @@
-"""BaseAgent — assembles all Protocol implementations into a running Agent."""
+"""BaseAgent — DEPRECATED: use PrimitiveAgent (arf.agent.primitive) + AgentHarness (arf.harness.engine)."""
+import warnings
+warnings.warn("BaseAgent is deprecated. Use PrimitiveAgent + AgentHarness instead.", DeprecationWarning, stacklevel=2)
+
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any

@@ -1,5 +1,8 @@
-"""PluginContext — full-visibility context passed to plugin hooks."""
+"""PluginContext — DEPRECATED: use arf.harness.context.PluginContext instead."""
 from __future__ import annotations
+import warnings
+warnings.warn("arf.core.plugin_context.PluginContext is deprecated. Use arf.harness.context.PluginContext.", DeprecationWarning, stacklevel=2)
+
 import asyncio
 import time
 from dataclasses import dataclass, field

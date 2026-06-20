@@ -1,2 +1,2 @@
-{"type": "user_input", "turn": 1, "round": 1, "data": {"content": "hello"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "016a10ff4e0d"}
-{"type": "model_call_end", "turn": 1, "data": {"content": "Hi there! How can I help?"}, "timestamp": 1.1, "session_id": "s1", "config_hash": "016a10ff4e0d"}
+{"type": "user_input", "turn": 1, "round": 1, "data": {"content": "hello"}, "timestamp": 1.0, "session_id": "s1", "config_hash": "fdcbbb53efd9"}
+{"type": "model_call_end", "turn": 1, "data": {"content": "Hi there! How can I help?"}, "timestamp": 1.1, "session_id": "s1", "config_hash": "fdcbbb53efd9"}

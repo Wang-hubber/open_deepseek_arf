@@ -1,4 +1,6 @@
-"""PluginProvider — scan arf/plugins/{name}/ for tools, skills, hooks, and plugin classes."""
+"""PluginProvider — DEPRECATED: plugins loaded from plugin.yaml by AgentHarness loader."""
+import warnings
+warnings.warn("PluginProvider is deprecated. Use arf.harness.loader (discover_plugins + instantiate_plugins).", DeprecationWarning, stacklevel=2)
 import importlib
 import json
 import logging

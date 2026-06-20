@@ -1,4 +1,7 @@
-"""ControlPlane — pure skeleton agent execution loop."""
+"""ControlPlane — DEPRECATED: use AgentHarness (arf.harness.engine) instead."""
+import warnings
+warnings.warn("ControlPlane is deprecated. Use AgentHarness from arf.harness.engine.", DeprecationWarning, stacklevel=2)
+
 import asyncio
 import json
 import logging

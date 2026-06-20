@@ -1,4 +1,7 @@
-"""PluginRuntime — unified runtime context injected into plugin hooks and tools."""
+"""PluginRuntime — DEPRECATED: plugin config now lives in plugin.yaml."""
+import warnings
+warnings.warn("PluginRuntime is deprecated. Use plugin.yaml + PluginContext.", DeprecationWarning, stacklevel=2)
+
 import os
 import sys
 from dataclasses import dataclass, field
