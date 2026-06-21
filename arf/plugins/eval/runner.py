@@ -83,11 +83,19 @@ class EvalRunner:
 
     async def _run(self, chat_fn=None, *,
                     system_prompt: str = "", tools: str = "") -> EvalReport:
-        import hashlib, json
-        config_key = json.dumps({"eval_dir": self._config.eval_dir}, sort_keys=True)
-        current_hash = hashlib.sha256(config_key.encode()).hexdigest()[:12]
-
         benchmark = self._benchmark
+
+        import hashlib, json
+        config_for_hash = {
+            "eval_dir": self._config.eval_dir,
+            "benchmark": getattr(benchmark, "name", ""),
+            "metrics": {k: v for k, v in self._config.metrics.items() if v},
+            "mode": self._config.mode,
+            "judge_model": (self._config.judge_model.model
+                            if self._config.judge_model else None),
+        }
+        config_key = json.dumps(config_for_hash, sort_keys=True)
+        current_hash = hashlib.sha256(config_key.encode()).hexdigest()[:12]
         mode = "offline" if chat_fn is None else "online"
 
         # Hash check: warn if unchanged (testing config change effects)

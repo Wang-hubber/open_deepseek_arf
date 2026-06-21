@@ -386,6 +386,9 @@ class AgentHarness:
                     "diff": diff,
                 })
                 logger.warning("Config mismatch for session %s: %s", agent.state.session_id, diff)
+        else:
+            # First-time snapshot for new session
+            yield ctx.emit("snapshot_created", {"hash": snapshot["hash"]})
         agent.state.snapshot = snapshot
 
         # Inject user message
