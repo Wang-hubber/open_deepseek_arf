@@ -40,6 +40,41 @@ class EvalPlugin:
         self._eval_dir = Path(eval_dir)
         self._eval_dir.mkdir(parents=True, exist_ok=True)
 
+    def annotate(
+        self,
+        session_id: str,
+        round: int,
+        rating: str,
+        comment: str = "",
+    ) -> None:
+        """Write a user_annotation event to the session trace JSONL.
+
+        Called by downstream apps to mark a round as good/bad during
+        conversation. Side effect only — does not interrupt the session.
+        """
+        import json
+        import time
+        from datetime import datetime, timezone
+
+        trace_dir = self._data_dir / session_id / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_file = trace_dir / f"{session_id}.jsonl"
+
+        event = {
+            "type": "user_annotation",
+            "session_id": session_id,
+            "round": round,
+            "turn": 0,
+            "timestamp": time.time(),
+            "data": {
+                "rating": rating,
+                "comment": comment,
+                "annotated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        with open(trace_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
     async def on_hook(self, hook_name: str, context) -> None:
         pass  # no-op for offline plugin
 
