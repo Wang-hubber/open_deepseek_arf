@@ -34,10 +34,7 @@ class TestRuleMetrics:
              "data": {"tool_name": "glob"}, "timestamp": 2.0},
         ]
         c = EvalCase(id="c0", input="hi",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {}},
-                         {"type": "tool", "name": "glob", "params": {}},
-                     ])
+                     expected_execution=["read", "glob"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 1.0
 
@@ -48,10 +45,7 @@ class TestRuleMetrics:
              "data": {"tool_name": "read"}, "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="hi",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {}},
-                         {"type": "tool", "name": "glob", "params": {}},
-                     ])
+                     expected_execution=["read", "glob"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.5
 
@@ -66,96 +60,49 @@ class TestRuleMetrics:
         m = ToolCallAccuracyMetric()
         trace = []
         c = EvalCase(id="c0", input="hi",
-                     expected_execution=[{"type": "tool", "name": "read", "params": {}}])
+                     expected_execution=["read"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.0
 
-    # --- ToolCallAccuracyMetric: params matching (new) ---
+    # --- ToolCallAccuracyMetric: name-only matching ---
 
-    def test_params_exact_match(self):
+    def test_name_only_match(self):
         m = ToolCallAccuracyMetric()
         trace = [
             {"type": "tool_call_start", "turn": 1,
-             "data": {"tool_name": "eat",
-                      "arguments": '{"name": "良子", "path": "良子的焖子"}'},
-             "timestamp": 1.0},
-        ]
-        c = EvalCase(id="c0", input="eat 良子",
-                     expected_execution=[
-                         {"type": "tool", "name": "eat",
-                          "params": {"name": "良子", "path": "良子的焖子"}},
-                     ])
-        result = m.compute_sync(trace, c)
-        assert result["tool_call_accuracy"] == 1.0
-
-    def test_params_subset_match(self):
-        """actual has extra params beyond expected — still matches."""
-        m = ToolCallAccuracyMetric()
-        trace = [
-            {"type": "tool_call_start", "turn": 1,
-             "data": {"tool_name": "read",
-                      "arguments": '{"path": "/tmp/x", "_workspace": "/ws"}'},
-             "timestamp": 1.0},
-        ]
-        c = EvalCase(id="c0", input="read file",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {"path": "/tmp/x"}},
-                     ])
-        result = m.compute_sync(trace, c)
-        assert result["tool_call_accuracy"] == 1.0
-
-    def test_params_mismatch_fails(self):
-        m = ToolCallAccuracyMetric()
-        trace = [
-            {"type": "tool_call_start", "turn": 1,
-             "data": {"tool_name": "eat",
-                      "arguments": '{"name": "良子"}'},
-             "timestamp": 1.0},
+             "data": {"tool_name": "eat"}, "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="eat",
-                     expected_execution=[
-                         {"type": "tool", "name": "eat",
-                          "params": {"name": "良子", "path": "良子的焖子"}},
-                     ])
+                     expected_execution=["eat"])
         result = m.compute_sync(trace, c)
-        assert result["tool_call_accuracy"] < 1.0
+        assert result["tool_call_accuracy"] == 1.0
 
-    def test_params_name_mismatch_fails(self):
+    def test_name_mismatch_fails(self):
         m = ToolCallAccuracyMetric()
         trace = [
             {"type": "tool_call_start", "turn": 1,
-             "data": {"tool_name": "read",
-                      "arguments": '{"path": "/tmp/x"}'},
-             "timestamp": 1.0},
+             "data": {"tool_name": "read"}, "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="read",
-                     expected_execution=[
-                         {"type": "tool", "name": "eat", "params": {"path": "/tmp/x"}},
-                     ])
+                     expected_execution=["eat"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.0
 
-    def test_params_extra_actual_calls_lowers_score(self):
+    def test_extra_actual_calls_lowers_score(self):
         m = ToolCallAccuracyMetric()
         trace = [
             {"type": "tool_call_start", "turn": 1,
-             "data": {"tool_name": "read",
-                      "arguments": '{"path": "/tmp/x"}'},
-             "timestamp": 1.0},
+             "data": {"tool_name": "read"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 2,
-             "data": {"tool_name": "write",
-                      "arguments": '{"path": "/tmp/y"}'},
-             "timestamp": 2.0},
+             "data": {"tool_name": "write"}, "timestamp": 2.0},
         ]
         c = EvalCase(id="c0", input="read",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {"path": "/tmp/x"}},
-                     ])
+                     expected_execution=["read"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 0.5
 
-    def test_params_subset_string_contains(self):
-        """string params use substring matching ('焖子' in '良子的焖子')."""
+    def test_name_subset_match(self):
+        """actual has extra calls beyond expected — score based on max."""
         m = ToolCallAccuracyMetric()
         trace = [
             {"type": "tool_call_start", "turn": 1,
@@ -164,10 +111,7 @@ class TestRuleMetrics:
              "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="eat",
-                     expected_execution=[
-                         {"type": "tool", "name": "eat",
-                          "params": {"name": "良子", "path": "焖子"}},
-                     ])
+                     expected_execution=["eat"])
         result = m.compute_sync(trace, c)
         assert result["tool_call_accuracy"] == 1.0
 
@@ -189,10 +133,7 @@ class TestRuleMetrics:
              "timestamp": 2.0},
         ]
         c = EvalCase(id="c0", input="plan something",
-                     expected_execution=[
-                         {"type": "tool", "name": "plan_create", "params": {}},
-                         {"type": "tool", "name": "plan_dispatch", "params": {}},
-                     ])
+                     expected_execution=["plan_create", "plan_dispatch"])
         result = m.compute_sync(trace, c)
         assert result["dependency_order_failures"] == 1
         # plan_dispatch matched by name, plan_create matched by name = 2/2
@@ -212,7 +153,7 @@ class TestRuleMetrics:
              "timestamp": 1.1},
         ]
         c = EvalCase(id="c0", input="read nonexistent",
-                     expected_execution=[{"type": "tool", "name": "read", "params": {}}])
+                     expected_execution=["read"])
         result = m.compute_sync(trace, c)
         assert "dependency_order_failures" not in result
 
@@ -294,9 +235,7 @@ class TestExecutionAccuracyMetric:
                       "arguments": '{"path": "/x"}'}, "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="hi",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {"path": "/x"}},
-                     ])
+                     expected_execution=["read"])
         result = m.compute_sync(trace, c)
         assert result["execution_accuracy"] == 1.0
 
@@ -308,10 +247,7 @@ class TestExecutionAccuracyMetric:
                       "arguments": '{"path": "/x"}'}, "timestamp": 1.0},
         ]
         c = EvalCase(id="c0", input="hi",
-                     expected_execution=[
-                         {"type": "tool", "name": "read", "params": {"path": "/x"}},
-                         {"type": "tool", "name": "write", "params": {"path": "/y"}},
-                     ])
+                     expected_execution=["read", "write"])
         result = m.compute_sync(trace, c)
         assert result["execution_accuracy"] == 0.5
 

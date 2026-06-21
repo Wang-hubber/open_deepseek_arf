@@ -54,7 +54,9 @@ class BenchmarkBuilder:
 
             source_round = i  # derive from user_input index, matching engine's 0-based interaction_round
 
-            golden_turns = self._build_golden_turns(case_events)
+            tool_names = self._collect_tool_names(case_events)
+            turns_with_events = {e.get("turn") or 0 for e in case_events
+                                 if (e.get("turn") or 0) > 0}
 
             # Feedback: latest user_annotation for this round
             feedback = None
@@ -70,10 +72,10 @@ class BenchmarkBuilder:
 
             if annotate_mode:
                 expected_output = ["[待标注] 该轮预期输出关键词..."]
-                expected_execution = [{"type": "[待标注]", "name": "[待标注] 该轮预期工具调用", "params": {}, "success": True}]
+                expected_execution = ["[待标注] 预期工具名"]
             else:
                 expected_output = []
-                expected_execution = self._build_expected_execution(golden_turns)
+                expected_execution = tool_names
 
             cases.append(EvalCase(
                 id=f"case_{i}",
@@ -82,7 +84,7 @@ class BenchmarkBuilder:
                 source_round=source_round,
                 expected_execution=expected_execution,
                 expected_output_contains=expected_output,
-                max_turns=len(golden_turns) if golden_turns else None,
+                max_turns=len(turns_with_events) if turns_with_events else None,
                 feedback=feedback,
             ))
 
@@ -95,91 +97,19 @@ class BenchmarkBuilder:
         )
 
     @staticmethod
-    def _build_golden_turns(events):
-        """Extract golden trajectory turns from a slice of events.
-
-        Groups events by turn number within the slice. Each turn produces
-        one entry with assistant content, tool_calls, tool_results, and
-        assistant_final.
-        """
-        turn_set = sorted({e.get("turn") or 0 for e in events if (e.get("turn") or 0) > 0})
-        turns = []
-        for t in turn_set:
-            turn_events = [e for e in events if e.get("turn") == t]
-            turn_data = BenchmarkBuilder._extract_turn_data(t, turn_events)
-            if turn_data:
-                turns.append(turn_data)
-        return turns
-
-    @staticmethod
-    def _extract_turn_data(turn_num, events):
-        """Extract assistant, tool_results, and assistant_final from turn events."""
-        assistant_content = ""
-        tool_calls = []
-        tool_results = []
-        assistant_final = {}
-
+    def _collect_tool_names(events):
+        """Extract ordered tool names from tool_call_start or model_call_end events."""
+        names: list[str] = []
         for e in events:
-            etype = e.get("type", "")
-            data = e.get("data", {})
-
-            if etype == "model_call_end":
-                if data.get("content") and not assistant_content:
-                    assistant_content = data["content"]
-                for tc in data.get("tool_calls", []):
-                    tool_calls.append({
-                        "name": tc.get("name", ""),
-                        "params": tc.get("params", {}),
-                    })
-            elif etype == "tool_call_end":
-                tool_results.append({
-                    "tool_name": data.get("tool_name", ""),
-                    "result": data.get("result", ""),
-                    "success": data.get("success", False),
-                })
-
-        if tool_results:
-            for e in reversed(events):
-                if e.get("type") == "model_call_end":
-                    content = e.get("data", {}).get("content", "")
-                    if content:
-                        assistant_final = {"content": content}
-                        break
-
-        if not assistant_content and not tool_results:
-            return None
-
-        return {
-            "turn": turn_num,
-            "assistant": {
-                "content": assistant_content,
-                "tool_calls": tool_calls,
-            },
-            "tool_results": tool_results,
-            "assistant_final": assistant_final,
-        }
-
-    @staticmethod
-    def _build_expected_execution(golden_turns):
-        """Build expected_execution list from golden trajectory turns."""
-        entries = []
-        for turn in golden_turns:
-            tool_calls = turn.get("assistant", {}).get("tool_calls", [])
-            tool_results = turn.get("tool_results", [])
-            for i, tc in enumerate(tool_calls):
-                info: dict = {
-                    "type": "tool",
-                    "name": tc.get("name", ""),
-                    "params": tc.get("params", {}),
-                }
-                if i < len(tool_results):
-                    tr = tool_results[i]
-                    result_text = tr.get("result", "")
-                    if isinstance(result_text, str) and len(result_text) > 200:
-                        info["result_preview"] = result_text[:200] + "..."
-                    elif result_text:
-                        info["result_preview"] = str(result_text)
-                    info["success"] = tr.get("success", False)
-                entries.append(info)
-        return entries
+            if e.get("type") == "tool_call_start":
+                data = e.get("data", {})
+                name = data.get("name") or data.get("tool_name", "")
+                if name and name not in names:
+                    names.append(name)
+            elif e.get("type") == "model_call_end":
+                for tc in e.get("data", {}).get("tool_calls", []):
+                    name = tc.get("name", "")
+                    if name and name not in names:
+                        names.append(name)
+        return names
 

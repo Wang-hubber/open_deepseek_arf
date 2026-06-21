@@ -8,8 +8,8 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
-    expected_execution: list[dict] = field(default_factory=list)
-    expected_output_contains: list[str] = field(default_factory=list)
+    expected_execution: list[str] = field(default_factory=list)  # 预期调用的工具名，按名称命中
+    expected_output_contains: list[str] = field(default_factory=list)  # 关键词匹配
     max_turns: int | None = None
     feedback: dict | None = None
     source_round: int | None = None

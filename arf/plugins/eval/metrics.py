@@ -68,7 +68,7 @@ class ToolCallAccuracyMetric:
             if e.get("type") == "tool_call_start":
                 data = e.get("data", {})
                 actual_calls.append({
-                    "tool_name": data.get("tool_name", ""),
+                    "tool_name": data.get("name") or data.get("tool_name", ""),
                     "arguments": self._parse_arguments(data.get("arguments", "{}")),
                     "blocked": False,
                     "success": True,
@@ -90,15 +90,17 @@ class ToolCallAccuracyMetric:
                     if self._is_dependency_error(data["error"]):
                         dep_order_failures += 1
 
-        # Extract tool entries from expected_execution
-        expected_tool_entries = [
-            e for e in golden_case.expected_execution
-            if e.get("type") == "tool"
-        ]
+        # expected_execution is list[str] — tool names to match by name
+        expected_names = golden_case.expected_execution
 
         result: dict = {"tool_call_accuracy": 1.0}
-        if expected_tool_entries:
-            result.update(self._compute_with_execution(expected_tool_entries, actual_calls))
+        if expected_names:
+            total = max(len(expected_names), len(actual_calls) or 1)
+            matches = 0
+            for exp_name in expected_names:
+                if any(act["tool_name"] == exp_name for act in actual_calls):
+                    matches += 1
+            result["tool_call_accuracy"] = matches / total
         if dep_order_failures > 0:
             result["dependency_order_failures"] = dep_order_failures
         return result
@@ -106,34 +108,6 @@ class ToolCallAccuracyMetric:
     def _is_dependency_error(self, error_msg: str) -> bool:
         lower = error_msg.lower()
         return any(p in lower for p in self._DEPENDENCY_PATTERNS)
-
-    def _compute_with_execution(self, expected_entries, actual_calls):
-        total = max(len(expected_entries), len(actual_calls) or 1)
-        matches = 0
-        for exp in expected_entries:
-            exp_name = exp.get("name", "")
-            exp_params = exp.get("params", {})
-            for act in actual_calls:
-                if act["tool_name"] != exp_name:
-                    continue
-                if not self._params_subset(exp_params, act["arguments"]):
-                    continue
-                matches += 1
-                break
-        return {"tool_call_accuracy": matches / total}
-
-    @staticmethod
-    def _params_subset(expected: dict, actual: dict) -> bool:
-        """True if actual contains all k-v pairs from expected (substring match for values)."""
-        for k, v in expected.items():
-            av = actual.get(k)
-            if av is None:
-                return False
-            if isinstance(v, str) and v not in str(av):
-                return False
-            if not isinstance(v, str) and av != v:
-                return False
-        return True
 
     @staticmethod
     def _parse_arguments(arguments):
@@ -201,9 +175,12 @@ class ToolCallResultLLMMetric:
         return True
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
+        exec_list = golden_case.expected_execution
+        if not exec_list or isinstance(exec_list[0], str):
+            return {"tool_call_result_llm": 1.0}
         expected_with_results = [
-            e for e in golden_case.expected_execution
-            if e.get("type") == "tool" and e.get("result")
+            e for e in exec_list
+            if isinstance(e, dict) and e.get("type") == "tool" and e.get("result")
         ]
         if not expected_with_results:
             return {"tool_call_result_llm": 1.0}
@@ -759,8 +736,8 @@ class OutputContainsMetric:
 
 
 class ExecutionAccuracyMetric:
-    """Rule-based: compares expected_execution tool entries against actual
-    tool calls by name + params subset matching. Returns 1.0 when empty."""
+    """Rule-based: compares expected_execution (list of tool names) against
+    actual tool calls by name. Returns 1.0 when empty."""
 
     @property
     def name(self) -> str:
@@ -771,35 +748,19 @@ class ExecutionAccuracyMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        expected = [
-            e for e in golden_case.expected_execution
-            if e.get("type") == "tool"
-        ]
+        expected: list[str] = golden_case.expected_execution
         if not expected:
             return {"execution_accuracy": 1.0}
 
-        actual_calls: list[dict] = []
+        actual_names: set[str] = set()
         for e in actual_trace:
             if e.get("type") == "tool_call_start":
                 data = e.get("data", {})
-                actual_calls.append({
-                    "tool_name": data.get("tool_name", ""),
-                    "arguments": ToolCallAccuracyMetric._parse_arguments(
-                        data.get("arguments", "{}")
-                    ),
-                })
+                name = data.get("name") or data.get("tool_name", "")
+                if name:
+                    actual_names.add(name)
 
-        matches = 0
-        for exp in expected:
-            exp_name = exp.get("name", "")
-            exp_params = exp.get("params", {})
-            for act in actual_calls:
-                if act["tool_name"] != exp_name:
-                    continue
-                if ToolCallAccuracyMetric._params_subset(exp_params, act["arguments"]):
-                    matches += 1
-                    break
-
+        matches = sum(1 for exp_name in expected if exp_name in actual_names)
         return {"execution_accuracy": matches / len(expected)}
 
     def compute_sync(self, actual_trace, golden_case, judge=None, judge_adapter=None):

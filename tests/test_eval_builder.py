@@ -86,16 +86,14 @@ class TestBenchmarkBuilder:
 
         # Case 0
         assert bm.cases[0].input == "create file"
-        assert bm.cases[0].expected_execution == [{"type": "tool", "name": "file_writer", "params": {},
-                                                     "result_preview": "created", "success": True}]
+        assert bm.cases[0].expected_execution == ["file_writer"]
         assert bm.cases[0].expected_output_contains == []
         assert bm.cases[0].max_turns == 1
         assert bm.cases[0].source_round == 0
 
         # Case 1
         assert bm.cases[1].input == "read it"
-        assert bm.cases[1].expected_execution == [{"type": "tool", "name": "file_reader", "params": {},
-                                                     "result_preview": "hello", "success": True}]
+        assert bm.cases[1].expected_execution == ["file_reader"]
 
         assert bm.created_at > 0
 
@@ -162,12 +160,8 @@ class TestBenchmarkBuilder:
         assert c.expected_output_contains == []
         assert c.max_turns == 2
         assert len(c.expected_execution) == 2
-        assert c.expected_execution[0]["name"] == "read"
-        assert c.expected_execution[0]["success"] is False
-        assert c.expected_execution[0]["result_preview"] == "not found"
-        assert c.expected_execution[1]["name"] == "glob"
-        assert c.expected_execution[1]["success"] is True
-        assert c.expected_execution[1]["result_preview"] == "x.txt"
+        assert c.expected_execution[0] == "read"
+        assert c.expected_execution[1] == "glob"
 
     def test_annotate_mode_placeholders(self, data_dir):
         p = _make_trace_reader(data_dir)
@@ -181,7 +175,7 @@ class TestBenchmarkBuilder:
         bm = builder.build("s1", "annot", annotate_mode=True)
         c = bm.cases[0]
         assert "[待标注]" in c.expected_output_contains[0]
-        assert c.expected_execution[0]["name"] == "[待标注] 该轮预期工具调用"
+        assert c.expected_execution == ["[待标注] 预期工具名"]
 
     def test_feedback_extraction(self, data_dir):
         p = _make_trace_reader(data_dir)
