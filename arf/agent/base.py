@@ -298,7 +298,7 @@ class BaseAgent:
             from arf.agent.state import Message as _M
             for m in existing["messages"]:
                 if isinstance(m, dict):
-                    self._primitive_agent.input(m.get("role", "user"), m.get("content", ""))
+                    self._primitive_agent.input(role=m.get("role", "user"), content=m.get("content", ""))
 
         self._active_sessions.add(session_id)
 
@@ -322,7 +322,7 @@ class BaseAgent:
             # Emit error event
             ctx = PluginContext(agent=self._primitive_agent, session_id=session_id,
                                event_bus=self._event_bus)
-            yield ctx.emit("error", {"detail": str(exc)})
+            yield ctx.emit(event_type="error", data={"detail": str(exc)})
 
     def reconfigure(self, **overrides) -> None:
         if "advanced" in overrides:

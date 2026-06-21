@@ -117,7 +117,7 @@ class CompactionPlugin(Plugin):
         self._compaction_count[sid] = count
         self._cooldown[sid] = 2
 
-        ctx.emit("compaction_end", {
+        ctx.emit(event_type="compaction_end", data={
             "compacted_count": compacted_count,
             "kept_count": len(kept),
             "total_compactions": count,
@@ -162,7 +162,7 @@ class CompactionPlugin(Plugin):
         else:
             messages[index] = Message(message_id=m.message_id, role=m.role, content=new_content)
 
-        ctx.emit("safeguard_triggered", {
+        ctx.emit(event_type="safeguard_triggered", data={
             "tool_name": tool_name,
             "original_chars": len(content),
             "round": ctx.interaction_round,

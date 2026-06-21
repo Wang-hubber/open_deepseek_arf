@@ -123,7 +123,7 @@ class MemoryPlugin(Plugin):
             return
         msgs = self._index.build_injected_messages()
         for msg in msgs:
-            ctx.agent.input("system", msg["content"])
+            ctx.agent.input(role="system", content=msg["content"])
 
     # ── round_end — rolling user memory extraction ────────
 

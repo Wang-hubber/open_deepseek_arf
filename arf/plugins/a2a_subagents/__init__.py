@@ -45,7 +45,7 @@ class A2APlugin(Plugin):
         """Wait for pending sub-agent tasks if any."""
         if self._active_tasks:
             # Signal harness to park if sub-agents are still running
-            ctx.agent.wait("after_round", "subagent_pending")
+            ctx.agent.wait(hook_name="after_round", reason="subagent_pending")
 
     async def _cleanup(self, ctx: PluginContext) -> None:
         self._active_tasks.pop(ctx.session_id, None)

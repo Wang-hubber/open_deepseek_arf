@@ -59,25 +59,25 @@ class ApprovalPlugin(Plugin):
                 approved, reason = self._results.pop(decision_id)
                 self._decisions.pop(decision_id, None)
                 if not approved:
-                    ctx.emit("approval_resolved", {
+                    ctx.emit(event_type="approval_resolved", data={
                         "decision_id": decision_id, "approved": False, "reason": reason,
                     })
                     self._block_tool(ctx, tc,
                         result=f"[blocked] {reason}",
                         error=reason)
                 else:
-                    ctx.emit("approval_resolved", {
+                    ctx.emit(event_type="approval_resolved", data={
                         "decision_id": decision_id, "approved": True,
                     })
                 continue
 
             # Phase 2: new tool needing approval — register wait
-            ctx.emit("approval_required", {
+            ctx.emit(event_type="approval_required", data={
                 "decision_id": decision_id,
                 "tool_name": name,
                 "params": tc.get("params", {}),
             })
-            wi = ctx.agent.wait("before_tools", f"approval:{decision_id}")
+            wi = ctx.agent.wait(hook_name="before_tools", reason=f"approval:{decision_id}")
             self._decisions[decision_id] = wi.wait_id
 
             # Start timeout timer if configured
@@ -96,7 +96,7 @@ class ApprovalPlugin(Plugin):
         self._timers.pop(decision_id, None)
         self._results[decision_id] = (False, "timeout")
         if self._agent:
-            self._agent.finish_wait(wait_id)
+            self._agent.finish_wait(wait_id=wait_id)
 
     @staticmethod
     def _block_tool(ctx: PluginContext, tc: dict, result: str, error: str) -> None:
@@ -118,7 +118,7 @@ class ApprovalPlugin(Plugin):
         self._results[decision_id] = (approved, "user_denied" if not approved else "")
         wait_id = self._decisions.pop(decision_id, None)
         if wait_id and self._agent:
-            self._agent.finish_wait(wait_id)
+            self._agent.finish_wait(wait_id=wait_id)
             return True
         return False
 

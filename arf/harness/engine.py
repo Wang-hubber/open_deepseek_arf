@@ -165,14 +165,10 @@ class AgentHarness:
         if is_new_session:
             # Framework-injected system prompt (from agent.yaml)
             if self._agent_config is not None:
-                sp = getattr(self._agent_config, "system_prompt", None)
-                if sp is not None:
-                    prefix = getattr(sp, "prefix", None)
-                    if prefix is not None:
-                        if getattr(prefix, "role", ""):
-                            agent.input("system", prefix.role.strip())
-                        if getattr(prefix, "critical_rules", ""):
-                            agent.input("system", prefix.critical_rules.strip())
+                from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
+                prompt = DefaultSystemPromptProvider(self._agent_config).build()
+                if prompt.prefix:
+                    agent.input(role="system", content=prompt.prefix, position="begin")
 
             # Plugins inject extra context (e.g. memory)
             await self._checkpoint("session_start", ctx)
@@ -181,11 +177,11 @@ class AgentHarness:
             ctx.captured_events.clear()
 
         # Inject user message
-        agent.input("user", user_message)
+        agent.input(role="user", content=user_message)
 
         # --- before_round ---
         if await self._checkpoint("before_round", ctx):
-            yield ctx.emit("parked", {"hook_name": "before_round", "waiting": agent.state.waiting})
+            yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
             await self._do_park()
             if self._parked:
                 return
@@ -197,7 +193,7 @@ class AgentHarness:
 
             # --- before_model ---
             if await self._checkpoint("before_model", ctx):
-                yield ctx.emit("parked", {"hook_name": "before_model", "waiting": agent.state.waiting})
+                yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
                     return
@@ -219,14 +215,14 @@ class AgentHarness:
                 if agent._stream_model:
                     stream = await agent.model_call(tools=openai_tools)
                     async for chunk in stream:
-                        yield ctx.emit("model_chunk", chunk)
+                        yield ctx.emit(event_type="model_chunk", data=chunk)
                     result = stream.result
                 else:
                     result = await agent.model_call(stream=False, tools=openai_tools)
             except Exception as exc:
                 ctx.hook_data["exception"] = exc
                 await self._checkpoint("on_error", ctx)
-                yield ctx.emit("error", {"detail": str(exc)})
+                yield ctx.emit(event_type="error", data={"detail": str(exc)})
                 break
 
             # Record the assistant response in agent state
@@ -237,12 +233,12 @@ class AgentHarness:
                     msg_content["tool_calls"] = result.tool_calls
                 if result.reasoning_content:
                     msg_content["reasoning_content"] = result.reasoning_content
-                agent.input("assistant", msg_content)
+                agent.input(role="assistant", content=msg_content)
             else:
-                agent.input("assistant", assistant_content)
+                agent.input(role="assistant", content=assistant_content)
 
             # Emit model_call_end for downstream consumers (collect_response, tests)
-            yield ctx.emit("model_call_end", {
+            yield ctx.emit(event_type="model_call_end", data={
                 "content": result.content,
                 "tool_calls": result.tool_calls,
                 "usage": result.usage,
@@ -252,7 +248,7 @@ class AgentHarness:
 
             # --- after_model ---
             if await self._checkpoint("after_model", ctx):
-                yield ctx.emit("parked", {"hook_name": "after_model", "waiting": agent.state.waiting})
+                yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
                     return
@@ -286,7 +282,7 @@ class AgentHarness:
                         for event in ctx.captured_events:
                             yield event
                         ctx.captured_events.clear()
-                        yield ctx.emit("parked", {"hook_name": "before_tools", "waiting": agent.state.waiting})
+                        yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
                         await self._do_park()
                         if self._parked:
                             return
@@ -313,7 +309,7 @@ class AgentHarness:
 
                 # Emit tool_call_start for all calls (pending + blocked)
                 for tc in all_calls:
-                    yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
+                    yield ctx.emit(event_type="tool_call_start", data={"name": tc["name"], "id": tc["id"]})
 
                 # Execute only pending (non-blocked, non-removed) calls
                 active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
@@ -344,20 +340,20 @@ class AgentHarness:
                         r = type('FakeToolResult', (), {
                             'success': False, 'data': {}, 'error': 'Tool result missing'})()
 
-                    agent.input("tool", {
+                    agent.input(role="tool", content={
                         "tool_call_id": tc["id"],
                         "name": tc["name"],
                         "result": r.data if r.success else "",
                         "error": r.error or "",
                     })
-                    yield ctx.emit("tool_call_end", {
+                    yield ctx.emit(event_type="tool_call_end", data={
                         "name": tc["name"], "id": tc["id"],
                         "success": r.success,
                     })
 
                 # --- after_tools ---
                 if await self._checkpoint("after_tools", ctx):
-                    yield ctx.emit("parked", {"hook_name": "after_tools", "waiting": agent.state.waiting})
+                    yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
                     await self._do_park()
                     if self._parked:
                         return
@@ -368,7 +364,7 @@ class AgentHarness:
 
         # --- after_round ---
         if await self._checkpoint("after_round", ctx):
-            yield ctx.emit("parked", {"hook_name": "after_round", "waiting": agent.state.waiting})
+            yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
             await self._do_park()
 
     # ── Session Mode ────────────────────────────────────
@@ -402,7 +398,7 @@ class AgentHarness:
                 role=inject_message.get("role", "user"),
                 content=inject_message.get("content", ""),
             )
-        self.agent.finish_wait(wait_id)
+        self.agent.finish_wait(wait_id=wait_id)
 
         if not self.agent.state.waiting:
             self._parked = False

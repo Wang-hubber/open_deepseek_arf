@@ -35,7 +35,7 @@ class PeerTeamPlugin(Plugin):
         elif event_name == "pre_action":
             await self._route_peer_messages(ctx)
         elif event_name == "session_park":
-            ctx.agent.wait("after_round", "peer_park")
+            ctx.agent.wait(hook_name="after_round", reason="peer_park")
 
     async def _route_peer_messages(self, ctx: PluginContext) -> None:
         """Check for send_peer_message calls and route them."""

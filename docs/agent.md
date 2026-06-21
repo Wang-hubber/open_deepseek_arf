@@ -163,11 +163,10 @@ session_start                   ← 仅新 session 时触发一次
 
 新 session 时（`session_id` 首次分配），Engine 先注入系统提示词，再触发 `session_start` checkpoint 让插件注入上下文。
 
-**框架注入**（Engine 直接写入 `state.messages`）：
+**框架注入**（Engine 通过 `DefaultSystemPromptProvider.build()` 写入）：
 
 ```
-1. system: role（agent.yaml system_prompt.prefix.role）
-2. system: critical_rules（agent.yaml system_prompt.prefix.critical_rules）
+1. system: <role>\n\n<critical_rules>
 ```
 
 **插件注入**（`session_start` checkpoint side 事件，memory 插件等）：

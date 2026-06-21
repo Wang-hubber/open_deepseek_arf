@@ -71,7 +71,7 @@ class ToolGuardPlugin(Plugin):
             params_str = json.dumps(params, ensure_ascii=False) if params else ""
             for pattern in self._deny_patterns:
                 if re.search(pattern, params_str, re.IGNORECASE):
-                    ctx.emit("guard_block", {
+                    ctx.emit(event_type="guard_block", data={
                         "tool_name": name,
                         "reason": f"matches deny_pattern: {pattern}",
                     })
@@ -82,7 +82,7 @@ class ToolGuardPlugin(Plugin):
             else:
                 # ── Layer 2: deny list (always enforced) ──
                 if matches_perm(name, self._deny):
-                    ctx.emit("guard_block", {
+                    ctx.emit(event_type="guard_block", data={
                         "tool_name": name, "reason": "in deny list",
                     })
                     self._block_tool(ctx, tc,
@@ -109,7 +109,7 @@ class ToolGuardPlugin(Plugin):
                                 is_path = param_props.get(key, {}).get("format") == "path"
                                 if is_path and isinstance(value, str):
                                     if not self._path_in_allowlist(value, allow_paths):
-                                        ctx.emit("guard_block", {
+                                        ctx.emit(event_type="guard_block", data={
                                             "tool_name": name,
                                             "reason": f"sandbox: {key} outside allow_paths",
                                         })
@@ -123,14 +123,14 @@ class ToolGuardPlugin(Plugin):
 
                 # ── Layer 4: AUTO — everything else passes ──
                 if effective_mode == SessionMode.AUTO:
-                    ctx.emit("guard_pass", {"tool_name": name})
+                    ctx.emit(event_type="guard_pass", data={"tool_name": name})
                     continue
 
                 # ── ask list ──
                 if matches_perm(name, self._ask):
                     if effective_mode == SessionMode.PLAN:
                         if has_side_effect(name, tool_defs):
-                            ctx.emit("guard_block", {
+                            ctx.emit(event_type="guard_block", data={
                                 "tool_name": name, "reason": "PLAN mode: side-effect tool in ask list",
                             })
                             self._block_tool(ctx, tc,
@@ -144,35 +144,35 @@ class ToolGuardPlugin(Plugin):
                 if matches_perm(name, self._allow):
                     if effective_mode == SessionMode.PLAN:
                         if has_side_effect(name, tool_defs):
-                            ctx.emit("guard_block", {
+                            ctx.emit(event_type="guard_block", data={
                                 "tool_name": name, "reason": "PLAN mode: side-effect tool in allow list",
                             })
                             self._block_tool(ctx, tc,
                                 result="[blocked] PLAN mode — read-only",
                                 error="Side-effect tools are blocked in PLAN mode")
                         else:
-                            ctx.emit("guard_pass", {"tool_name": name})
+                            ctx.emit(event_type="guard_pass", data={"tool_name": name})
                     else:
-                        ctx.emit("guard_pass", {"tool_name": name})
+                        ctx.emit(event_type="guard_pass", data={"tool_name": name})
                     continue
 
                 # ── unknown tool ──
                 if effective_mode == SessionMode.PLAN:
-                    ctx.emit("guard_block", {
+                    ctx.emit(event_type="guard_block", data={
                         "tool_name": name, "reason": "PLAN mode: unknown tool blocked",
                     })
                     self._block_tool(ctx, tc,
                         result="[blocked] PLAN mode — read-only",
                         error="Unknown tools are blocked in PLAN mode")
                 elif self._deny:
-                    ctx.emit("guard_block", {
+                    ctx.emit(event_type="guard_block", data={
                         "tool_name": name, "reason": "not in allow list",
                     })
                     self._block_tool(ctx, tc,
                         result="[blocked] not in allow list",
                         error="Denied")
                 else:
-                    ctx.emit("guard_pass", {"tool_name": name})
+                    ctx.emit(event_type="guard_pass", data={"tool_name": name})
 
     @staticmethod
     def _path_in_allowlist(value: str, allow_paths: list[str]) -> bool:

@@ -35,7 +35,7 @@ class ErrorHandlerPlugin(Plugin):
         count = self._error_counts.get(error_key, 0) + 1
         self._error_counts[error_key] = count
 
-        ctx.emit("error_handled", {
+        ctx.emit(event_type="error_handled", data={
             "error_type": error_key,
             "count": count,
             "detail": str(exc) if exc else "",
