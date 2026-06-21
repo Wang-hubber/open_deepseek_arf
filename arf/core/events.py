@@ -11,6 +11,8 @@ EventType = Literal[
     "model_call_start", "model_call_end",
     "tool_call_start", "tool_call_end", "tool_call_result",  # tool_call_result — used by ReplayController
     "compaction_start", "compaction_end",
+    "config_mismatch",      # Config hash mismatch on session resume
+    "snapshot_created",     # First-time snapshot written for new session
     "truncation_start", "truncation_end",
     "safeguard_triggered",
     "approval_required",
