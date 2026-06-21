@@ -241,6 +241,19 @@ class ModelAdapter:
             **kwargs,
         )
 
+    def describe(self) -> dict[str, Any]:
+        """Return a snapshot-safe description of this model adapter's config."""
+        default_temp = self.default_params.get("temperature", None)
+        default_max = self.default_params.get("max_tokens", None)
+        return {
+            "provider": "openai",
+            "base_url": self._config.get("base_url", ""),
+            "model_name": self.model_name,
+            "temperature": default_temp,
+            "max_tokens": default_max,
+            "thinking": self.default_params.get("thinking_enabled", False),
+        }
+
     async def chat(self, messages: list[dict], **kwargs) -> str:
         """Send a chat completion request and return the response text."""
         messages = self.format_messages(messages)

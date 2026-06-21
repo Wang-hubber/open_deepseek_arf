@@ -338,3 +338,36 @@ def test_retryable_status_set():
 
 def test_max_retries_default():
     assert MAX_RETRIES == 3
+
+
+# ---------------------------------------------------------------------------
+# describe() -- snapshot-safe model config introspection
+# ---------------------------------------------------------------------------
+
+def test_model_adapter_describe():
+    config = {
+        "base_url": "https://api.example.com/v1",
+        "api_key": "sk-test",
+        "model_name": "deepseek-chat",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "thinking_enabled": True,
+        "reasoning_effort": "high",
+    }
+    adapter = ModelAdapter(config)
+    desc = adapter.describe()
+    assert desc["provider"] == "openai"
+    assert desc["base_url"] == "https://api.example.com/v1"
+    assert desc["model_name"] == "deepseek-chat"
+    assert desc["temperature"] == 0.7
+    assert desc["max_tokens"] == 4096
+    assert desc["thinking"] is True
+    assert "api_key" not in desc  # never leak secrets
+
+
+def test_model_adapter_describe_minimal():
+    adapter = ModelAdapter({"base_url": "http://localhost:8080"})
+    desc = adapter.describe()
+    assert desc["model_name"] == ""
+    assert desc["temperature"] is None
+    assert desc["thinking"] is False
