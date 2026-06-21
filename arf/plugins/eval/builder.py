@@ -55,7 +55,6 @@ class BenchmarkBuilder:
             source_round = i  # derive from user_input index, matching engine's 0-based interaction_round
 
             golden_turns = self._build_golden_turns(case_events)
-            expected_execution = self._build_expected_execution(golden_turns)
 
             # Feedback: latest user_annotation for this round
             feedback = None
@@ -72,9 +71,11 @@ class BenchmarkBuilder:
             if annotate_mode:
                 expected_reasoning = ["[待标注] 该轮预期推理步骤..."]
                 expected_output = ["[待标注] 该轮预期输出关键词..."]
+                expected_execution = [{"type": "[待标注]", "name": "[待标注] 该轮预期工具调用", "params": {}, "success": True}]
             else:
                 expected_reasoning = []
                 expected_output = []
+                expected_execution = self._build_expected_execution(golden_turns)
 
             cases.append(EvalCase(
                 id=f"case_{i}",
