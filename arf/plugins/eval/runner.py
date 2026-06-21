@@ -162,7 +162,7 @@ class EvalRunner:
         _run_sid_suffix = uuid.uuid4().hex[:8]
         _last_source_sid: str | None = None
         _eval_sid: str = ""
-        _last_round: int = 0
+        _last_turn: int = 0
 
         for i, case in enumerate(benchmark.cases):
             case_start = time.time()
@@ -173,22 +173,23 @@ class EvalRunner:
                 sid = f"eval_{benchmark.name}_{case.id}_{_run_sid_suffix}"
                 _eval_sid = sid
                 _last_source_sid = case.session_id
-                _last_round = 0  # new session, reset round boundary
+                _last_turn = 0  # new session, reset turn boundary
             all_pass = True
 
             try:
                 # -- Get actual trace --
                 if chat_fn is not None:
-                    # Online: filter trace to only this case's rounds
-                    # (trace "round" field = engine interaction_round,
-                    #  fallback to old "turn" for backward compat)
-                    prev_round = _last_round
+                    # Online: filter trace to only this case's turns
+                    # (trace "turn" field is session-global and monotonically
+                    #  increasing, so filtering by turn > prev_turn isolates
+                    #  the latest round's events)
+                    prev_turn = _last_turn
                     await chat_fn(case.input, session_id=sid)
                     full_trace = self._read_trace(sid)
-                    actual_trace = [e for e in full_trace if (e.get("round") or e.get("turn") or 0) > prev_round]
-                    rounds = {e.get("round") or e.get("turn") or 0 for e in actual_trace}
-                    if rounds:
-                        _last_round = max(rounds)
+                    actual_trace = [e for e in full_trace if (e.get("turn") or 0) > prev_turn]
+                    turns = {e.get("turn") or 0 for e in actual_trace}
+                    if turns:
+                        _last_turn = max(turns)
                 else:
                     # Offline
                     sid = self._config.trace_session_ids[i]

@@ -54,7 +54,7 @@ class TestBenchmarkBuilder:
     def test_build_creates_cases_from_user_inputs(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "create file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "file_writer"}, "timestamp": 1.1},
@@ -65,7 +65,7 @@ class TestBenchmarkBuilder:
              "data": {"content": "File created successfully",
                       "tool_calls": [{"name": "file_writer", "params": {}}]},
              "timestamp": 1.3},
-            {"type": "user_input", "turn": 3, "round": 2,
+            {"type": "user_input", "turn": 3,
              "data": {"content": "read it"}, "timestamp": 2.0},
             {"type": "tool_call_start", "turn": 3,
              "data": {"tool_name": "file_reader"}, "timestamp": 2.1},
@@ -90,7 +90,7 @@ class TestBenchmarkBuilder:
                                                      "result_preview": "created", "success": True}]
         assert bm.cases[0].expected_output_contains == []
         assert bm.cases[0].max_turns == 1
-        assert bm.cases[0].source_round == 1
+        assert bm.cases[0].source_round == 0
 
         # Case 1
         assert bm.cases[1].input == "read it"
@@ -118,7 +118,7 @@ class TestBenchmarkBuilder:
     def test_golden_trajectory_no_tool_calls(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
              "data": {"content": "Hi there! How can I help?"},
@@ -135,7 +135,7 @@ class TestBenchmarkBuilder:
     def test_multi_turn_golden_trajectory(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "read x"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
              "data": {"content": "", "tool_calls": [
@@ -172,7 +172,7 @@ class TestBenchmarkBuilder:
     def test_annotate_mode_placeholders(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
              "data": {"content": "Hi!"}, "timestamp": 1.1},
@@ -186,7 +186,7 @@ class TestBenchmarkBuilder:
     def test_feedback_extraction(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "write file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "write"}, "timestamp": 1.1},
@@ -197,10 +197,10 @@ class TestBenchmarkBuilder:
              "data": {"content": "Done!",
                       "tool_calls": [{"name": "write", "params": {}}]},
              "timestamp": 1.3},
-            {"type": "user_annotation", "round": 1,
+            {"type": "user_annotation",
              "data": {"feedback": "good", "reason": "works",
                       "annotated_at": "2025-01-01T00:00:00",
-                      "round": 1},
+                      "round": 0},
              "timestamp": 2.0},
         ])
         builder = BenchmarkBuilder(p)
@@ -208,12 +208,12 @@ class TestBenchmarkBuilder:
         c = bm.cases[0]
         assert c.feedback == {"rating": "good", "reason": "works",
                               "annotated_at": "2025-01-01T00:00:00"}
-        assert c.source_round == 1
+        assert c.source_round == 0
 
     def test_feedback_latest_wins(self, data_dir):
         p = _make_trace_reader(data_dir)
         _write_trace_events(data_dir, "s1", [
-            {"type": "user_input", "turn": 1, "round": 1,
+            {"type": "user_input", "turn": 1,
              "data": {"content": "write file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "write"}, "timestamp": 1.1},
@@ -224,13 +224,13 @@ class TestBenchmarkBuilder:
             {"type": "tool_call_end", "turn": 1,
              "data": {"tool_name": "write", "success": True,
                       "result": "done"}, "timestamp": 1.3},
-            {"type": "user_annotation", "round": 1,
+            {"type": "user_annotation",
              "data": {"feedback": "bad", "reason": "broken",
-                      "round": 1},
+                      "round": 0},
              "timestamp": 2.0},
-            {"type": "user_annotation", "round": 1,
+            {"type": "user_annotation",
              "data": {"feedback": "good", "reason": "fixed",
-                      "round": 1},
+                      "round": 0},
              "timestamp": 3.0},
         ])
         builder = BenchmarkBuilder(p)

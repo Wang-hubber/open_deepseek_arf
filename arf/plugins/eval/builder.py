@@ -52,7 +52,7 @@ class BenchmarkBuilder:
             end = user_indices[i + 1] if i + 1 < len(user_indices) else len(events)
             case_events = events[start:end]
 
-            source_round = events[ui].get("round", 0)
+            source_round = i  # derive from user_input index, matching engine's 0-based interaction_round
 
             golden_turns = self._build_golden_turns(case_events)
             expected_execution = self._build_expected_execution(golden_turns)
