@@ -1,5 +1,6 @@
 """PluginContext — injected into plugins at each harness checkpoint."""
 from __future__ import annotations
+import asyncio
 from typing import TYPE_CHECKING, Any
 from arf.core.events import AgentEvent
 
@@ -15,12 +16,14 @@ class PluginContext:
         session_id: str,
         event_bus: InMemoryEventBus | None = None,
         data_dir: str = "./data",
+        trace_queue: asyncio.Queue | None = None,
     ) -> None:
         self.agent = agent
         self.session_id = session_id
         self.hook_data: dict[str, Any] = {}
         self.captured_events: list[AgentEvent] = []
         self._event_bus = event_bus
+        self._trace_queue = trace_queue
 
         # Lifecycle counters (set by harness at each checkpoint)
         self.turn: int = 0
@@ -38,6 +41,8 @@ class PluginContext:
         if self._event_bus:
             self._event_bus.emit(event)
         self.captured_events.append(event)
+        if self._trace_queue is not None:
+            self._trace_queue.put_nowait(event)
         return event
 
     def inject_engine_event(self, event_type: str, data: dict[str, Any]) -> None:
