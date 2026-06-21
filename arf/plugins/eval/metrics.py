@@ -841,7 +841,7 @@ class ReasoningSimilarityMetric:
         return True
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        expected = golden_case.expected_reasoning
+        expected = getattr(golden_case, "expected_reasoning", [])
         if not expected:
             return {"reasoning_similarity": None, "reason": "no expected_reasoning"}
 

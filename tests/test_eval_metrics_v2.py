@@ -333,7 +333,6 @@ class TestReasoningSimilarityMetric:
 
     def test_no_judge_returns_none(self):
         m = ReasoningSimilarityMetric()
-        c = EvalCase(id="c0", input="hi",
-                     expected_reasoning=["step 1"])
+        c = EvalCase(id="c0", input="hi")
         result = m.compute_sync([], c)
         assert result["reasoning_similarity"] is None

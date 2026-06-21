@@ -180,7 +180,6 @@ class TestBenchmarkBuilder:
         builder = BenchmarkBuilder(p)
         bm = builder.build("s1", "annot", annotate_mode=True)
         c = bm.cases[0]
-        assert c.expected_reasoning == ["[待标注] 该轮预期推理步骤..."]
         assert "[待标注]" in c.expected_output_contains[0]
         assert c.expected_execution[0]["name"] == "[待标注] 该轮预期工具调用"
 

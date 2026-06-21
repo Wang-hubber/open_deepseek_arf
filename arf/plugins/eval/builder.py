@@ -69,11 +69,9 @@ class BenchmarkBuilder:
                 }
 
             if annotate_mode:
-                expected_reasoning = ["[待标注] 该轮预期推理步骤..."]
                 expected_output = ["[待标注] 该轮预期输出关键词..."]
                 expected_execution = [{"type": "[待标注]", "name": "[待标注] 该轮预期工具调用", "params": {}, "success": True}]
             else:
-                expected_reasoning = []
                 expected_output = []
                 expected_execution = self._build_expected_execution(golden_turns)
 
@@ -82,7 +80,6 @@ class BenchmarkBuilder:
                 input=events[ui].get("data", {}).get("content", ""),
                 session_id=session_id,
                 source_round=source_round,
-                expected_reasoning=expected_reasoning,
                 expected_execution=expected_execution,
                 expected_output_contains=expected_output,
                 max_turns=len(golden_turns) if golden_turns else None,

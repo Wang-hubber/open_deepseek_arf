@@ -8,7 +8,6 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
-    expected_reasoning: list[str] = field(default_factory=list)
     expected_execution: list[dict] = field(default_factory=list)
     expected_output_contains: list[str] = field(default_factory=list)
     max_turns: int | None = None
@@ -36,7 +35,6 @@ class EvalBenchmark:
                     "input": c.input,
                     **({"session_id": c.session_id} if c.session_id else {}),
                     **({"source_round": c.source_round} if c.source_round is not None else {}),
-                    **({"expected_reasoning": c.expected_reasoning} if c.expected_reasoning else {}),
                     **({"expected_execution": c.expected_execution} if c.expected_execution else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
@@ -63,7 +61,6 @@ class EvalBenchmark:
                     input=c["input"],
                     session_id=c.get("session_id"),
                     source_round=c.get("source_round"),
-                    expected_reasoning=c.get("expected_reasoning", []),
                     expected_execution=c.get("expected_execution", []),
                     expected_output_contains=c.get("expected_output_contains", []),
                     max_turns=c.get("max_turns"),

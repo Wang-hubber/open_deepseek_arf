@@ -16,8 +16,7 @@ class TestEvalCase:
         c = EvalCase(id="c1", input="hello",
                      expected_execution=[{"type": "tool", "name": "file_writer", "params": {}}],
                      expected_output_contains=["hello.py"],
-                     max_turns=3,
-                     expected_reasoning=["step 1"])
+                     max_turns=3)
         assert c.max_turns == 3
 
 
@@ -63,13 +62,6 @@ class TestEvalBenchmarkJson:
         benchmark.to_json(str(p))
         loaded = EvalBenchmark.from_json(str(p))
         assert loaded.cases[0].source_round == 1
-
-    def test_expected_reasoning_roundtrip(self, benchmark, tmp_path):
-        benchmark.cases[0].expected_reasoning = ["step 1", "step 2"]
-        p = tmp_path / "bm.json"
-        benchmark.to_json(str(p))
-        loaded = EvalBenchmark.from_json(str(p))
-        assert loaded.cases[0].expected_reasoning == ["step 1", "step 2"]
 
     def test_defaults(self):
         bm = EvalBenchmark(name="test")
