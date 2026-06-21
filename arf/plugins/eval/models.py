@@ -8,6 +8,7 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
+    context_messages: list[dict] = field(default_factory=list)  # Mock message injection before user input
     expected_execution: list[str] = field(default_factory=list)  # 预期调用的工具名，按名称命中
     expected_output_contains: list[str] = field(default_factory=list)  # 关键词匹配
     max_turns: int | None = None
@@ -35,6 +36,7 @@ class EvalBenchmark:
                     "input": c.input,
                     **({"session_id": c.session_id} if c.session_id else {}),
                     **({"source_round": c.source_round} if c.source_round is not None else {}),
+                    **({"context_messages": c.context_messages} if c.context_messages else {}),
                     **({"expected_execution": c.expected_execution} if c.expected_execution else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
                     **({"max_turns": c.max_turns} if c.max_turns is not None else {}),
@@ -61,6 +63,7 @@ class EvalBenchmark:
                     input=c["input"],
                     session_id=c.get("session_id"),
                     source_round=c.get("source_round"),
+                    context_messages=c.get("context_messages", []),
                     expected_execution=c.get("expected_execution", []),
                     expected_output_contains=c.get("expected_output_contains", []),
                     max_turns=c.get("max_turns"),
@@ -94,6 +97,7 @@ class EvalSummary:
     trajectory_similarity: float | None = None  # 1-5 LLM judge
     execution_accuracy: float = 0.0
     reasoning_similarity: float | None = None
+    weighted_score: float = 0.0  # NEW: weighted composite score
 
 
 @dataclass
@@ -108,6 +112,7 @@ class EvalReport:
     metrics_enabled: list[str] = field(default_factory=list)
     mode: str = "online"
     snapshot_hash: str = ""
+    agent_snapshot: dict = field(default_factory=dict)  # NEW: full agent config snapshot
 
     def to_json(self, path: str) -> None:
         data = {
@@ -142,6 +147,7 @@ class EvalReport:
             "metrics_enabled": self.metrics_enabled,
             "mode": self.mode,
             "snapshot_hash": self.snapshot_hash,
+            "agent_snapshot": self.agent_snapshot,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -180,6 +186,7 @@ class EvalReport:
             metrics_enabled=data.get("metrics_enabled", []),
             mode=data.get("mode", "online"),
             snapshot_hash=data.get("snapshot_hash", ""),
+            agent_snapshot=data.get("agent_snapshot", {}),
         )
 
 
@@ -232,6 +239,16 @@ class EvalConfig:
     output_path: str | None = None
     timeout_per_case: float = 300.0
     prompts: dict[str, str] = field(default_factory=dict)
+    scoring_weights: dict[str, float] = field(default_factory=lambda: {
+        "tool_call_accuracy": 0.2,
+        "execution_accuracy": 0.15,
+        "turn_efficiency": 0.1,
+        "output_contains": 0.1,
+        "success_rate": 0.15,
+        "output_quality": 0.15,
+        "trajectory_similarity": 0.15,
+    })
+    annotation_enabled: bool = False
     # keys: tool_call_result_llm, output_quality, trajectory_similarity,
     #        output_quality_free, trajectory_similarity_free
 

@@ -8,6 +8,7 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
+    context_messages: list[dict] = field(default_factory=list)
     expected_execution: list[str] = field(default_factory=list)
     expected_output_contains: list[str] = field(default_factory=list)
     max_turns: int | None = None

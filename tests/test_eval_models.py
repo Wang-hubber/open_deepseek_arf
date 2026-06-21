@@ -171,3 +171,84 @@ class TestEvalConfig:
             judge_model=None,
         )
         config.validate()  # should not raise
+
+
+class TestEvalCaseContextMessages:
+    def test_context_messages_default_empty(self):
+        c = EvalCase(id="c1", input="hello")
+        assert c.context_messages == []
+
+    def test_context_messages_roundtrip(self, tmp_path):
+        bm = EvalBenchmark(
+            name="test",
+            cases=[
+                EvalCase(
+                    id="c0", input="hello",
+                    context_messages=[
+                        {"role": "assistant", "content": "I found 3 files"},
+                        {"role": "tool", "tool_call_id": "t1", "content": "a.txt\nb.txt"},
+                    ],
+                ),
+            ],
+        )
+        p = tmp_path / "bm.json"
+        bm.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+        assert loaded.cases[0].context_messages == [
+            {"role": "assistant", "content": "I found 3 files"},
+            {"role": "tool", "tool_call_id": "t1", "content": "a.txt\nb.txt"},
+        ]
+
+    def test_context_messages_omitted_when_empty(self, tmp_path):
+        bm = EvalBenchmark(name="test", cases=[EvalCase(id="c0", input="hi")])
+        p = tmp_path / "bm.json"
+        bm.to_json(str(p))
+        text = p.read_text()
+        assert "context_messages" not in text
+
+
+class TestEvalConfigScoringWeights:
+    def test_default_scoring_weights(self):
+        config = EvalConfig()
+        assert config.scoring_weights["tool_call_accuracy"] == 0.2
+        assert config.scoring_weights["output_quality"] == 0.15
+
+    def test_custom_scoring_weights(self):
+        config = EvalConfig(scoring_weights={"tool_call_accuracy": 0.5, "output_quality": 0.5})
+        assert config.scoring_weights["tool_call_accuracy"] == 0.5
+
+
+class TestEvalReportAgentSnapshot:
+    def test_agent_snapshot_default_empty(self):
+        report = EvalReport(run_id="r1", benchmark_name="bm", agent_config_hash="h1", timestamp=1.0)
+        assert report.agent_snapshot == {}
+
+    def test_agent_snapshot_roundtrip(self, tmp_path):
+        report = EvalReport(
+            run_id="r1", benchmark_name="bm", agent_config_hash="h1", timestamp=1.0,
+            agent_snapshot={"hash": "abc", "config": {"model": {"name": "deepseek-chat"}}},
+        )
+        p = tmp_path / "report.json"
+        report.to_json(str(p))
+        loaded = EvalReport.from_json(str(p))
+        assert loaded.agent_snapshot["hash"] == "abc"
+        assert loaded.agent_snapshot["config"]["model"]["name"] == "deepseek-chat"
+
+    def test_old_report_without_agent_snapshot_loads(self, tmp_path):
+        """向后兼容：旧 report JSON 没有 agent_snapshot 字段"""
+        p = tmp_path / "old_report.json"
+        import json
+        with open(str(p), "w") as f:
+            json.dump({
+                "run_id": "r1", "benchmark_name": "bm", "agent_config_hash": "h1",
+                "timestamp": 1.0, "summary": {"total": 1, "passed": 1, "failed": 0,
+                "pass_rate": 1.0, "avg_turns": 1.0, "avg_tool_calls": 0.0,
+                "avg_duration_seconds": 0.0, "total_tokens_in": 0, "total_tokens_out": 0,
+                "total_duration_seconds": 0.0, "tool_accuracy": 1.0, "output_contains": 1.0,
+                "tool_call_accuracy": 1.0, "turn_efficiency": 1.0, "success_rate": 1.0,
+                "execution_accuracy": 1.0},
+                "per_case": [], "judge_model": "", "metrics_enabled": [], "mode": "online",
+                "snapshot_hash": "",
+            }, f)
+        loaded = EvalReport.from_json(str(p))
+        assert loaded.agent_snapshot == {}
