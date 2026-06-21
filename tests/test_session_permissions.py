@@ -136,21 +136,40 @@ class TestSessionModeManager:
 
 
 class TestHasSideEffect:
-    def test_readonly_tools(self):
+    def test_kernel_readonly_tools(self):
         from arf.session.mode_manager import has_side_effect
-        assert not has_side_effect("file_reader")
-        assert not has_side_effect("grep")
-        assert not has_side_effect("glob")
-        assert not has_side_effect("web_search")
-        assert not has_side_effect("web_fetch")
-        assert not has_side_effect("memory_store")
+        assert not has_side_effect("use_skill")
+        assert not has_side_effect("ask_user")
+        assert not has_side_effect("list_secrets")
+        assert not has_side_effect("read_secret")
+        assert not has_side_effect("search_task_memory")
 
-    def test_write_tools(self):
+    def test_kernel_write_tools(self):
         from arf.session.mode_manager import has_side_effect
-        assert has_side_effect("file_writer")
-        assert has_side_effect("file_deleter")
-        assert has_side_effect("python_exec")
-        assert has_side_effect("bash")
+        assert has_side_effect("task_complete")
+        assert has_side_effect("write_project_memory")
+        assert has_side_effect("write_secret")
+        assert has_side_effect("write_user_memory")
+
+    def test_annotations_readonly(self):
+        """readOnlyHint from tool.yaml takes priority over everything."""
+        from arf.session.mode_manager import has_side_effect
+        ann = {"filesystem__read_text_file": {"readOnlyHint": True}}
+        assert not has_side_effect("filesystem__read_text_file", ann)
+        # Bare name also works
+        ann2 = {"read_text_file": {"readOnlyHint": True}}
+        assert not has_side_effect("user__read_text_file", ann2)
+
+    def test_annotations_write(self):
+        from arf.session.mode_manager import has_side_effect
+        ann = {"filesystem__write_file": {"readOnlyHint": False}}
+        assert has_side_effect("filesystem__write_file", ann)
+
+    def test_annotations_bare_name_match(self):
+        """Namespaced tool resolves via bare name in annotations."""
+        from arf.session.mode_manager import has_side_effect
+        ann = {"write_file": {"readOnlyHint": False}}
+        assert has_side_effect("filesystem__write_file", ann)
 
     def test_unknown_has_side_effect(self):
         from arf.session.mode_manager import has_side_effect

@@ -8,3 +8,5 @@ parameters:
       description: The secret name to read.
   required: [name]
 activation: kernel
+annotations:
+  readOnlyHint: true

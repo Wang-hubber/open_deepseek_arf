@@ -2,5 +2,5 @@ name: approval
 events:
   - {hook_name: "before_tools", event_name: "pre_action", mode: "blocking"}
 config:
-  timeout: 60.0
+  timeout: 0  # 0 = no timeout (wait indefinitely); > 0 = auto-reject after N seconds
   ask_list: []

@@ -11,3 +11,5 @@ parameters:
       description: The name of the skill to load.
   required: [name]
 activation: kernel
+annotations:
+  readOnlyHint: true

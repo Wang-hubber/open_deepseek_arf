@@ -33,6 +33,15 @@ from arf.engine.checkpoint import InMemoryStateStore, FileStateStore
 logger = logging.getLogger(__name__)
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
+    """Merge override dict into base dict in-place. Lists are replaced, not extended."""
+    for key, val in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+
+
 def _build_call_model(config: AgentConfig):
     """Build call_model and stream_model functions from agent config."""
     from arf.core.model_adapter import ModelAdapter
@@ -165,6 +174,13 @@ class BaseAgent:
         # Load plugins
         plugin_names = config.plugins if config.plugins else []
         plugin_configs = discover_plugins(plugins_dir, plugin_names)
+
+        # Merge plugins_config overrides (from agent.yaml) into each plugin's config
+        for pc in plugin_configs:
+            user_override = config.plugins_config.get(pc["name"], {})
+            if user_override:
+                _deep_merge(pc.setdefault("config", {}), user_override)
+
         plugins = instantiate_plugins(plugin_configs)
 
         # Build McpClientManager — unified tool gateway

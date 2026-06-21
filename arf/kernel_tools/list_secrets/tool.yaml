@@ -4,3 +4,5 @@ parameters:
   type: object
   properties: {}
 activation: kernel
+annotations:
+  readOnlyHint: true

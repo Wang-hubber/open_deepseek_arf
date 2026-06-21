@@ -19,6 +19,7 @@ class PluginContext:
         self.agent = agent
         self.session_id = session_id
         self.hook_data: dict[str, Any] = {}
+        self.captured_events: list[AgentEvent] = []
         self._event_bus = event_bus
 
         # Lifecycle counters (set by harness at each checkpoint)
@@ -36,6 +37,7 @@ class PluginContext:
         )
         if self._event_bus:
             self._event_bus.emit(event)
+        self.captured_events.append(event)
         return event
 
     def inject_engine_event(self, event_type: str, data: dict[str, Any]) -> None:

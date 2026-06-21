@@ -11,3 +11,5 @@ parameters:
       description: What kind of past experience to search for (e.g. 'auth module refactoring', 'redis connection timeout').
   required: [query]
 activation: kernel
+annotations:
+  readOnlyHint: true

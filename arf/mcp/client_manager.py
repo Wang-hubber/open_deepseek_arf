@@ -128,6 +128,7 @@ class McpClientManager:
                         "name": cfg["name"],
                         "description": cfg.get("description", ""),
                         "parameters": cfg.get("parameters", {}),
+                        "annotations": cfg.get("annotations", {}),
                     })
             except Exception:
                 logger.warning("Failed to load kernel tool def from %s", yaml_path, exc_info=True)

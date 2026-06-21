@@ -11,3 +11,5 @@ parameters:
       description: Markdown content to persist as user memory.
   required: [content]
 activation: kernel
+annotations:
+  readOnlyHint: false

@@ -1,11 +1,19 @@
 """ApprovalPlugin — human-in-the-loop tool approval.
 
 Deep port: directly extends Plugin base class.
+
+Uses park/resume: emits approval_required, registers a wait, and returns.
+On re-entry (after resolve_wait), checks resolved decisions and filters
+_pending_tool_calls.
+
+Optional timeout (config: timeout, default 0 = no timeout): when > 0, a
+background task auto-rejects unresolved decisions after timeout seconds.
 """
 from __future__ import annotations
 import asyncio
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
+from arf.core.tool_naming import matches_perm
 
 
 class ApprovalPlugin(Plugin):
@@ -16,76 +24,96 @@ class ApprovalPlugin(Plugin):
             {"hook_name": "before_tools", "event_name": "pre_action", "mode": "blocking"},
         ]
         super().__init__(name=name, events=events, config=config or {})
-        self._timeout = self.config.get("timeout", 60.0)
         self._ask_list = set(self.config.get("ask_list", []))
-        self._pending: dict[str, asyncio.Event] = {}
-        self._results: dict[str, bool] = {}
+        self._timeout: float = float(self.config.get("timeout", 0))
+        self._decisions: dict[str, str] = {}    # decision_id → wait_id (pending)
+        self._results: dict[str, tuple[bool, str]] = {}  # decision_id → (approved, reason)
+        self._timers: dict[str, asyncio.Task] = {}      # decision_id → timeout task
+        self._agent = None
 
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "pre_action":
             await self._check_approval(ctx)
 
     async def _check_approval(self, ctx: PluginContext) -> None:
-        """Check pending tool calls against ask_list. Blocks on approval."""
+        """Check pending tool calls against ask_list. Parks on new approvals."""
+        self._agent = ctx.agent
         tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
         if not tool_calls:
             return
 
-        for tc in tool_calls:
+        for tc in list(tool_calls):
             name = tc.get("name", "")
-            if name not in self._ask_list:
+            if not matches_perm(name, self._ask_list):
                 continue
 
             decision_id = f"{ctx.session_id}_{name}_{id(tc)}"
+
+            # Phase 1: apply already-resolved decision
+            if decision_id in self._results:
+                approved, reason = self._results.pop(decision_id)
+                self._decisions.pop(decision_id, None)
+                if not approved:
+                    ctx.emit("approval_resolved", {
+                        "decision_id": decision_id, "approved": False, "reason": reason,
+                    })
+                    ctx.agent.input("tool", {
+                        "tool_call_id": tc.get("id", ""),
+                        "name": name,
+                        "result": f"[blocked] {reason}",
+                        "error": reason,
+                    })
+                    self._remove_tool(ctx, tc)
+                else:
+                    ctx.emit("approval_resolved", {
+                        "decision_id": decision_id, "approved": True,
+                    })
+                continue
+
+            # Phase 2: new tool needing approval — register wait
             ctx.emit("approval_required", {
                 "decision_id": decision_id,
                 "tool_name": name,
                 "params": tc.get("params", {}),
             })
+            wi = ctx.agent.wait("before_tools", f"approval:{decision_id}")
+            self._decisions[decision_id] = wi.wait_id
 
-            # Wait for approve() to be called
-            evt = asyncio.Event()
-            self._pending[decision_id] = evt
-            try:
-                await asyncio.wait_for(evt.wait(), timeout=self._timeout)
-            except asyncio.TimeoutError:
-                self._pending.pop(decision_id, None)
-                ctx.emit("approval_resolved", {
-                    "decision_id": decision_id, "approved": False, "reason": "timeout",
-                })
-                # Inject error tool result and deny
-                ctx.agent.input("tool", {
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "result": "[blocked] timeout",
-                    "error": "Approval timed out",
-                })
-                raise RuntimeError(f"Approval timed out for tool '{name}'")
-            finally:
-                self._results.pop(decision_id, None)
+            # Start timeout timer if configured
+            if self._timeout > 0:
+                self._timers[decision_id] = asyncio.create_task(
+                    self._timeout_reject(decision_id, wi.wait_id, ctx.session_id)
+                )
 
-            approved = self._results.pop(decision_id, False)
-            if not approved:
-                ctx.emit("approval_resolved", {
-                    "decision_id": decision_id, "approved": False, "reason": "user_denied",
-                })
-                ctx.agent.input("tool", {
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "result": "[blocked] user denied",
-                    "error": "User denied",
-                })
-                raise RuntimeError(f"Tool '{name}' denied by user")
+    async def _timeout_reject(self, decision_id: str, wait_id: str, session_id: str) -> None:
+        """Background task: auto-reject after timeout."""
+        await asyncio.sleep(self._timeout)
+        # Check if already resolved externally
+        if decision_id in self._results or decision_id not in self._decisions:
+            return
+        self._decisions.pop(decision_id, None)
+        self._timers.pop(decision_id, None)
+        self._results[decision_id] = (False, "timeout")
+        if self._agent:
+            self._agent.finish_wait(wait_id)
 
-            ctx.emit("approval_resolved", {
-                "decision_id": decision_id, "approved": True,
-            })
+    def _remove_tool(self, ctx: PluginContext, tc: dict) -> None:
+        """Remove a tool call from _pending_tool_calls so the engine skips it."""
+        ctx.hook_data["_pending_tool_calls"] = [
+            t for t in ctx.hook_data.get("_pending_tool_calls", [])
+            if t.get("id") != tc.get("id")
+        ]
 
     def approve(self, decision_id: str, approved: bool = True) -> bool:
-        self._results[decision_id] = approved
-        evt = self._pending.pop(decision_id, None)
-        if evt:
-            evt.set()
+        """External call: resolve an approval decision and finish the wait."""
+        # Cancel timeout timer if active
+        timer = self._timers.pop(decision_id, None)
+        if timer:
+            timer.cancel()
+        self._results[decision_id] = (approved, "user_denied" if not approved else "")
+        wait_id = self._decisions.pop(decision_id, None)
+        if wait_id and self._agent:
+            self._agent.finish_wait(wait_id)
             return True
         return False
 

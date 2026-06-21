@@ -1,10 +1,27 @@
 """ToolGuardPlugin — unified tool permission + security check.
 
 Deep port: directly extends Plugin base class.
+
+Unified permission model — deny is always enforced first, then effective
+session mode determines how allow/ask/unknown are handled:
+
+  ┌──────────┬──────────┬──────────────┬──────────────┬──────────┐
+  │ mode     │ deny     │ allow        │ ask          │ unknown  │
+  ├──────────┼──────────┼──────────────┼──────────────┼──────────┤
+  │ AUTO     │ reject   │ pass         │ pass (no HITL)│ pass    │
+  │ PLAN     │ reject   │ readOnlyHint │ readOnlyHint │ reject   │
+  │ ASK      │ reject   │ pass         │ pass (→HITL) │ reject*  │
+  └──────────┴──────────┴──────────────┴──────────────┴──────────┘
+
+  * ASK unknown: reject if deny list is active, otherwise pass (implicit
+    allow-all when no deny list is configured).
 """
 from __future__ import annotations
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
+from arf.core.tool_naming import matches_perm
+from arf.session.mode_manager import has_side_effect
+from arf.session.types import SessionMode
 
 
 class ToolGuardPlugin(Plugin):
@@ -25,15 +42,18 @@ class ToolGuardPlugin(Plugin):
             await self._guard(ctx)
 
     async def _guard(self, ctx: PluginContext) -> None:
-        """Check tool calls against deny/allow lists."""
+        """Unified permission check: deny → mode → allow/ask/unknown."""
         tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
         if not tool_calls:
             return
 
-        for tc in tool_calls:
+        effective_mode = ctx.hook_data.get("_effective_mode", SessionMode.ASK)
+        tool_annotations: dict = ctx.hook_data.get("_tool_annotations", {})
+
+        for tc in list(tool_calls):
             name = tc.get("name", "")
 
-            # Check deny patterns
+            # ── deny patterns (always enforced) ──
             for pattern in self._deny_patterns:
                 if pattern in name:
                     ctx.emit("guard_block", {
@@ -45,43 +65,103 @@ class ToolGuardPlugin(Plugin):
                         "result": f"[blocked] matches deny pattern: {pattern}",
                         "error": "Denied",
                     })
-                    raise RuntimeError(f"Tool '{name}' denied by guard")
+                    self._remove_tool(ctx, tc)
+                    break
+            else:
+                # ── deny list (always enforced, highest priority) ──
+                if matches_perm(name, self._deny):
+                    ctx.emit("guard_block", {
+                        "tool_name": name, "reason": "in deny list",
+                    })
+                    ctx.agent.input("tool", {
+                        "tool_call_id": tc.get("id", ""),
+                        "name": name,
+                        "result": "[blocked] in deny list",
+                        "error": "Denied",
+                    })
+                    self._remove_tool(ctx, tc)
+                    continue
 
-            # Explicit deny overrides allow
-            if name in self._deny:
-                ctx.emit("guard_block", {
-                    "tool_name": name, "reason": "in deny list",
-                })
-                ctx.agent.input("tool", {
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "result": "[blocked] in deny list",
-                    "error": "Denied",
-                })
-                raise RuntimeError(f"Tool '{name}' denied by guard")
+                # ── AUTO: everything else passes ──
+                if effective_mode == SessionMode.AUTO:
+                    ctx.emit("guard_pass", {"tool_name": name})
+                    continue
 
-            # Send to ask list (approval plugin handles this)
-            if name in self._ask:
-                ctx.hook_data.setdefault("_pending_tool_calls_ask", []).append(tc)
-                continue
+                # ── ask list ──
+                if matches_perm(name, self._ask):
+                    if effective_mode == SessionMode.PLAN:
+                        if has_side_effect(name, tool_annotations):
+                            ctx.emit("guard_block", {
+                                "tool_name": name, "reason": "PLAN mode: side-effect tool in ask list",
+                            })
+                            ctx.agent.input("tool", {
+                                "tool_call_id": tc.get("id", ""),
+                                "name": name,
+                                "result": "[blocked] PLAN mode — read-only",
+                                "error": "Side-effect tools are blocked in PLAN mode",
+                            })
+                            self._remove_tool(ctx, tc)
+                        # else: read-only, let it pass
+                    else:
+                        # ASK mode: pass to approval plugin
+                        ctx.hook_data.setdefault("_pending_tool_calls_ask", []).append(tc)
+                    continue
 
-            # Allow known tools
-            if name in self._allow or not self._deny:
-                ctx.emit("guard_pass", {"tool_name": name})
-                continue
+                # ── allow list ──
+                if matches_perm(name, self._allow):
+                    if effective_mode == SessionMode.PLAN:
+                        if has_side_effect(name, tool_annotations):
+                            ctx.emit("guard_block", {
+                                "tool_name": name, "reason": "PLAN mode: side-effect tool in allow list",
+                            })
+                            ctx.agent.input("tool", {
+                                "tool_call_id": tc.get("id", ""),
+                                "name": name,
+                                "result": "[blocked] PLAN mode — read-only",
+                                "error": "Side-effect tools are blocked in PLAN mode",
+                            })
+                            self._remove_tool(ctx, tc)
+                        else:
+                            ctx.emit("guard_pass", {"tool_name": name})
+                    else:
+                        # ASK mode: allow
+                        ctx.emit("guard_pass", {"tool_name": name})
+                    continue
 
-            # Unknown tool with deny list active: block
-            if self._deny and name not in self._allow:
-                ctx.emit("guard_block", {
-                    "tool_name": name, "reason": "not in allow list",
-                })
-                ctx.agent.input("tool", {
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "result": "[blocked] not in allow list",
-                    "error": "Denied",
-                })
-                raise RuntimeError(f"Tool '{name}' not allowed")
+                # ── unknown tool ──
+                if effective_mode == SessionMode.PLAN:
+                    ctx.emit("guard_block", {
+                        "tool_name": name, "reason": "PLAN mode: unknown tool blocked",
+                    })
+                    ctx.agent.input("tool", {
+                        "tool_call_id": tc.get("id", ""),
+                        "name": name,
+                        "result": "[blocked] PLAN mode — read-only",
+                        "error": "Unknown tools are blocked in PLAN mode",
+                    })
+                    self._remove_tool(ctx, tc)
+                elif self._deny:
+                    # ASK mode with deny list active: unknown → block
+                    ctx.emit("guard_block", {
+                        "tool_name": name, "reason": "not in allow list",
+                    })
+                    ctx.agent.input("tool", {
+                        "tool_call_id": tc.get("id", ""),
+                        "name": name,
+                        "result": "[blocked] not in allow list",
+                        "error": "Denied",
+                    })
+                    self._remove_tool(ctx, tc)
+                else:
+                    # ASK mode no deny list: implicit allow-all
+                    ctx.emit("guard_pass", {"tool_name": name})
+
+    def _remove_tool(self, ctx: PluginContext, tc: dict) -> None:
+        """Remove a tool call from _pending_tool_calls so the engine skips it."""
+        ctx.hook_data["_pending_tool_calls"] = [
+            t for t in ctx.hook_data.get("_pending_tool_calls", [])
+            if t.get("id") != tc.get("id")
+        ]
 
 
 Plugin = ToolGuardPlugin

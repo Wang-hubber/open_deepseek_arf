@@ -14,3 +14,5 @@ parameters:
       description: The secret value to encrypt and store (password, token, key, etc.).
   required: [name, content]
 activation: kernel
+annotations:
+  readOnlyHint: false

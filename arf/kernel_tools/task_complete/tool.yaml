@@ -21,3 +21,5 @@ parameters:
       description: Additional notes for auditing.
   required: []
 activation: kernel
+annotations:
+  readOnlyHint: false

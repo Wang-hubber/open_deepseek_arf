@@ -533,6 +533,153 @@ tools: [read_file, grep]    # 启用的 user__ 工具（空/缺省 = 全部）
 
 ---
 
+### 权限控制
+
+ARF 的权限控制由两层组成：**Session Mode**（全局模式）和 **Plugin Config**（工具列表）。`tool_guard` 插件在 `before_tools` checkpoint 统一执行判定。
+
+#### 决策矩阵
+
+`deny` 和 `deny_patterns` **始终优先**，不随 mode 变化。然后 mode 决定 `allow` / `ask` / `unknown` 的处理：
+
+| mode | deny / deny_patterns | allow | ask | unknown |
+|------|---------------------|-------|-----|---------|
+| **AUTO** | 拒绝 | 放行 | 放行（跳过审批） | 放行 |
+| **PLAN** | 拒绝 | 检查 `readOnlyHint` | 检查 `readOnlyHint` | 拒绝 |
+| **ASK**（默认） | 拒绝 | 放行 | 转交 approval 审批 | 拒绝* |
+
+> \* ASK 下 unknown：若 `deny` 列表非空则拒绝；若 `deny` 为空则放行（隐式全局允许，方便开发阶段）。
+
+#### Session Mode
+
+```yaml
+session_mode: ask   # "auto" | "ask" | "plan"
+```
+
+| 模式 | 适用场景 |
+|------|---------|
+| `auto` | 信任模式 — 除 deny 列表外全部放行，无需审批 |
+| `ask`（默认） | 标准模式 — allow 放行、ask 审批、unknown 拒绝 |
+| `plan` | 只读模式 — 除 deny 外，额外检查 `readOnlyHint`，有副作用的工具即使列在 allow/ask 中也被阻止 |
+
+运行时切换：
+
+```python
+harness.set_session_mode("plan")
+harness.set_session_mode(SessionMode.AUTO)
+```
+
+#### Plugin Config
+
+`plugins_config` 覆盖各插件 `plugin.yaml` 的默认值。框架自动 deep-merge。
+
+```yaml
+plugins_config:
+  tool_guard:
+    deny: [bash, python_exec]        # 黑名单 — 始终拒绝，任何 mode 下
+    deny_patterns: ["rm -rf"]        # 参数模式拒绝 — 始终拒绝
+    allow: [read_file, grep]         # 白名单 — AUTO/ASK 放行，PLAN 还需检查 readOnlyHint
+    ask: [write_file]                # 审批列表 — ASK 下转交 approval，AUTO 放行，PLAN 检查 readOnlyHint
+  approval:
+    ask_list: [write_file]           # 与 tool_guard.ask 对应，实际触发审批
+    timeout: 0                       # 0 = 无限等待；> 0 = 超时自动拒绝（秒）
+```
+
+#### 工具名匹配：裸名 vs 全名
+
+`matches_perm()` 两层匹配：
+
+| 配置写法 | 匹配范围 |
+|---------|---------|
+| `read_file`（裸名） | 所有 namespace |
+| `filesystem__read_file`（全名） | 仅该 namespace |
+
+多 namespace 同名工具差异化管控时用全名。
+
+#### 工具声明 readOnlyHint（PLAN 模式）
+
+`has_side_effect(name, tool_annotations)` 三级判定：
+
+1. **工具自声明（权威）** — 读 `tool.yaml` 的 `annotations.readOnlyHint`
+2. **Kernel 硬编码兜底** — 仅 9 个框架内置 kernel tools
+3. **未知 → assume side effect** — 安全默认
+
+```yaml
+# tool.yaml
+annotations:
+  readOnlyHint: true   # 只读，PLAN 模式放行
+  # readOnlyHint: false  # 有副作用，PLAN 模式阻止
+```
+
+#### 可用插件
+
+| 插件 | 配置项 | 说明 |
+|------|------|------|
+| `tool_guard` | `allow`, `deny`, `ask`, `deny_patterns` | 统一权限门禁：集成 mode 判定 + 列表匹配 |
+| `approval` | `ask_list`, `timeout` | 人机审批：park → REPL → approve → resume |
+| `compaction` | `tool_output` | 工具输出外部化 |
+| `plan_solve` | `max_depth`, `timeout` | Plan-Solve 执行 |
+| `error_handler` | `max_retries` | 错误恢复策略 |
+
+#### 运行时切换
+
+```python
+# /mode 命令实现
+harness.set_session_mode("plan")   # 切换到只读模式
+harness.set_session_mode("auto")   # 切换到自动模式
+harness.set_session_mode("ask")    # 回到审批模式（默认）
+
+# 也可用枚举
+from arf.session.types import SessionMode
+harness.set_session_mode(SessionMode.PLAN)
+```
+
+调用 `set_session_mode()` 后，Engine 会 emit `session_policy_switch` 事件到 event_bus，下一轮 `run()` 生效。
+
+---
+
+### 审批流程 (Park/Resume)
+
+`approval` 插件使用 Engine 的 park/resume 机制，不内部阻塞。审批流程分两阶段：
+
+```
+Turn N, before_tools checkpoint:
+  approval._check_approval()
+    ├─ 检查 _pending_tool_calls 中是否有 ask_list 工具
+    ├─ emit approval_required 事件（→ captured_events → REPL）
+    ├─ ctx.agent.wait("before_tools", ...) 注册等待
+    └─ return（不阻塞）
+
+  Engine._checkpoint() → waiting 非空 → return True
+  Engine yield captured events（approval_required 到达 REPL）
+  Engine yield parked 事件
+  Engine._do_park() → await park_event.wait()  ← 阻塞在此
+
+外部（REPL）:
+  ├─ 用户看到审批请求，做出决定
+  ├─ plugin.approve(decision_id, approved=True/False)
+  │     └─ 存储决议 + agent.finish_wait(wait_id)
+  └─ engine.resolve_wait(wait_id)  → park_event.set()  ← 解除阻塞
+
+Turn N, before_tools checkpoint 重入（loop）:
+  approval._check_approval()
+    ├─ 检测到 decision_id 已有决议
+    ├─ 通过：emit approval_resolved(approved=True)，工具留在 _pending_tool_calls
+    └─ 拒绝：emit approval_resolved(approved=False)，注入 blocked tool result，
+    │         从 _pending_tool_calls 移除
+    └─ return（无新 wait 注册）
+
+  Engine._checkpoint() → waiting 为空 → return False
+  Engine 执行 _pending_tool_calls 中剩余工具（被拒的已移除）
+```
+
+**关键设计点**：
+- 审批插件不 `raise`，拒绝只是注入 blocked result + 移除工具——Session 不崩溃
+- `tool_guard` 的 `deny` 同理：注入 blocked result + 移除工具，正常继续
+- `tool_guard` 的 `ask` 列表不移除工具，留给 `approval` 插件处理
+- Engine 在 `before_tools` checkpoint 上 loop，支持审批决议后重入过滤
+
+---
+
 ### 工具执行
 
 工具执行收口到 `McpClientManager`——单一入口，namespace 路由：
@@ -616,7 +763,11 @@ class AgentEvent:
 | `tool_call_end` | `{name, id, success}` | 工具执行完成 |
 | `error` | `{detail}` | 发生错误 |
 | `parked` | `{hook_name, waiting}` | 执行暂停，等待人工输入 |
-| `approval_required` | `{decision_id, ...}` | 需要人工审批 |
+| `approval_required` | `{decision_id, tool_name, params}` | 需要人工审批（approval 插件 emit） |
+| `approval_resolved` | `{decision_id, approved, reason}` | 审批已决议（通过/拒绝/超时） |
+| `guard_block` | `{tool_name, reason}` | 工具被门禁阻止（tool_guard 插件 deny） |
+| `guard_pass` | `{tool_name}` | 工具通过门禁检查 |
+| `session_policy_switch` | `{new_mode}` | 运行时 session mode 切换 |
 | `task_completed` | — | 任务完成 |
 
 #### 获取 session_id

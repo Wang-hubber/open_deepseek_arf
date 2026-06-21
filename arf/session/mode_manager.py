@@ -6,6 +6,7 @@ effective mode used by the engine.
 
 from __future__ import annotations
 
+from typing import Any
 from arf.session.types import AgentPolicy, SessionMode
 
 
@@ -57,30 +58,43 @@ class SessionModeManager:
         }[agent_policy]
 
 
-def has_side_effect(tool_name: str) -> bool:
+def has_side_effect(tool_name: str, tool_annotations: dict[str, Any] | None = None) -> bool:
     """Return True if the tool is known to have side effects.
 
-    Used in PLAN mode to block write/exec tools.
-    Read-only tools: file_reader, glob, grep, web_search, web_fetch,
-                     memory_store (append-only), resource_loader, planner,
-                     todo, model_switch, undo
-    Side-effect tools: file_writer, file_deleter, file_download,
-                       python_exec, bash, resource_registrar, resource_scaffold,
-                       md2pdf, any tool starting with 'mcp__' (unknown)
+    Resolution order:
+    1. tool_annotations[name][\"readOnlyHint\"] — tool's own declaration (authoritative)
+    2. Hardcoded fallback sets (bare names only, for kernel tools without tool.yaml)
+    3. Unknown tools: assume side effect (safe default)
+
+    Handles namespaced names: ``user__write_file`` → bare ``write_file`` for lookup.
     """
+    from arf.core.tool_naming import split_name
+    namespace, bare = split_name(tool_name)
+
+    # 1. Check tool annotations (both full name and bare name)
+    if tool_annotations:
+        for lookup in (tool_name, bare):
+            ann = tool_annotations.get(lookup)
+            if ann and "readOnlyHint" in ann:
+                if ann["readOnlyHint"] is True:
+                    return False
+                if ann["readOnlyHint"] is False:
+                    return True
+
+    # 2. Hardcoded fallback — bare name lookup
+    # Only kernel tools — user/plugin tools declare readOnlyHint in tool.yaml
     READ_ONLY = {
-        "file_reader", "glob", "grep", "web_search", "web_fetch",
-        "memory_store", "resource_loader",
-        "planner", "todo", "model_switch", "undo",
+        "ask_user", "list_secrets", "read_secret",
+        "search_task_memory", "use_skill",
     }
-    if tool_name in READ_ONLY:
+    if bare in READ_ONLY:
         return False
     WRITE_TOOLS = {
-        "file_writer", "file_deleter", "file_download",
-        "python_exec", "bash", "resource_registrar", "resource_scaffold",
-        "md2pdf",
+        "task_complete",
+        "write_project_memory", "write_secret", "write_user_memory",
     }
-    if tool_name in WRITE_TOOLS:
+    if bare in WRITE_TOOLS:
         return True
-    # Unknown tools: assume side effect (safe default)
+
+    # 3. Unknown: assume side effect (safe default)
     return True

@@ -10,6 +10,8 @@ from arf.agent.primitive import PrimitiveAgent
 from arf.core.events import AgentEvent
 from arf.harness.context import PluginContext
 from arf.harness.plugin_base import Plugin
+from arf.session.mode_manager import SessionModeManager
+from arf.session.types import SessionMode
 
 logger = logging.getLogger("arf.harness")
 
@@ -40,6 +42,17 @@ class AgentHarness:
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
         self._interaction_round: int = 0
+
+        # Session mode manager
+        global_mode = SessionMode.ASK
+        if agent_config is not None:
+            raw = getattr(agent_config, "session_mode", None)
+            if raw:
+                try:
+                    global_mode = SessionMode(raw)
+                except ValueError:
+                    pass
+        self._mode_manager = SessionModeManager(global_mode=global_mode)
 
         # Index plugins by hook_name for fast lookup
         self._by_hook: dict[str, list[Plugin]] = {c: [] for c in CHECKPOINTS}
@@ -116,6 +129,7 @@ class AgentHarness:
     async def _checkpoint(self, hook_name: str, ctx: PluginContext) -> bool:
         """Run plugins at checkpoint, then check waiting. Returns True if should park."""
         ctx.hook_data["_current_hook"] = hook_name
+        ctx.captured_events.clear()
 
         # 1. Run blocking plugins
         await self._run_blocking(hook_name, ctx)
@@ -140,6 +154,10 @@ class AgentHarness:
 
         ctx = self._make_ctx()
         self._sync_ctx(ctx, turn=0)
+
+        # Resolve effective session mode for this round
+        effective_mode = self._mode_manager.resolve(agent_policy=None)
+        ctx.hook_data["_effective_mode"] = effective_mode
 
         # Inject user message
         agent.input("user", user_message)
@@ -221,22 +239,50 @@ class AgentHarness:
             # --- tool execution ---
             if result.tool_calls and self._tool_manager:
                 # --- before_tools ---
-                if await self._checkpoint("before_tools", ctx):
-                    yield ctx.emit("parked", {"hook_name": "before_tools", "waiting": agent.state.waiting})
-                    await self._do_park()
-                    if self._parked:
-                        return
+                ctx.hook_data["_pending_tool_calls"] = result.tool_calls
 
-                for tc in result.tool_calls:
+                # Build tool_annotations for permission plugins
+                _tool_annotations: dict[str, dict[str, Any]] = {}
+                if active_tool_definitions:
+                    for td in active_tool_definitions:
+                        ann = td.get("annotations")
+                        if ann:
+                            _tool_annotations[td["name"]] = ann
+                ctx.hook_data["_tool_annotations"] = _tool_annotations
+
+                # Loop: re-run checkpoint after park/resume so plugins can filter
+                while True:
+                    if await self._checkpoint("before_tools", ctx):
+                        # Drain captured events so REPL sees approval_required etc.
+                        for event in ctx.captured_events:
+                            yield event
+                        ctx.captured_events.clear()
+                        yield ctx.emit("parked", {"hook_name": "before_tools", "waiting": agent.state.waiting})
+                        await self._do_park()
+                        if self._parked:
+                            return
+                    else:
+                        # Drain captured events from non-parking pass
+                        for event in ctx.captured_events:
+                            yield event
+                        ctx.captured_events.clear()
+                        break
+
+                # Only execute tools still in _pending_tool_calls (plugins may have filtered)
+                tool_calls = ctx.hook_data["_pending_tool_calls"]
+                if not tool_calls:
+                    continue
+
+                for tc in tool_calls:
                     yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
 
                 # Parallel execution via McpClientManager.execute_batch()
                 if hasattr(self._tool_manager, 'execute_batch'):
-                    tool_results = await self._tool_manager.execute_batch(result.tool_calls)
+                    tool_results = await self._tool_manager.execute_batch(tool_calls)
                 else:
                     # Fallback sequential for tool_managers without execute_batch
                     tool_results = {}
-                    for tc in result.tool_calls:
+                    for tc in tool_calls:
                         try:
                             tool_results[tc["id"]] = await self._tool_manager.execute(
                                 tc["name"], tc.get("params", {}))
@@ -244,7 +290,7 @@ class AgentHarness:
                             tool_results[tc["id"]] = type('FakeToolResult', (), {
                                 'success': False, 'data': {}, 'error': str(exc)})()
 
-                for tc in result.tool_calls:
+                for tc in tool_calls:
                     r = tool_results.get(tc["id"])
                     if r is None:
                         r = type('FakeToolResult', (), {
@@ -277,10 +323,26 @@ class AgentHarness:
             yield ctx.emit("parked", {"hook_name": "after_round", "waiting": agent.state.waiting})
             await self._do_park()
 
+    # ── Session Mode ────────────────────────────────────
+
+    def set_session_mode(self, mode: str | SessionMode) -> None:
+        """Switch session mode at runtime (e.g. /mode command)."""
+        if isinstance(mode, str):
+            mode = SessionMode(mode)
+        self._mode_manager.set_global(mode)
+        if self._event_bus:
+            self._event_bus.emit(AgentEvent(
+                type="session_policy_switch",
+                data={"new_mode": mode.value},
+                session_id=self.agent.state.session_id,
+            ))
+
     # ── Park / Resume ────────────────────────────────────
 
     async def _do_park(self) -> None:
         """Block until external resolve_wait() empties all waiting groups."""
+        if not any(self.agent.state.waiting.values()):
+            return
         self._park_event = asyncio.Event()
         self._parked = True
         await self._park_event.wait()

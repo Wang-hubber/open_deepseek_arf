@@ -22,3 +22,5 @@ parameters:
       description: ID of the task this question belongs to.
   required: [question]
 activation: kernel
+annotations:
+  readOnlyHint: true

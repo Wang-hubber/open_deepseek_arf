@@ -33,6 +33,7 @@ class ToolConfig(BaseModel):
     description: str = ""          # optional for sub-agent tool references
     parameters: dict = Field(default_factory=dict)
     allowed_dir: str | None = None
+    annotations: dict = Field(default_factory=dict)
 
 
 class HookDefinition(BaseModel):
