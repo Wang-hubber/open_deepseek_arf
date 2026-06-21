@@ -22,6 +22,7 @@ class EvalPlugin:
         self._data_dir = Path(cfg.get("data_dir", "./data"))
         self._eval_dir = Path(cfg.get("eval_dir", "./eval"))
         self._eval_dir.mkdir(parents=True, exist_ok=True)
+        self._annotation_enabled = cfg.get("annotation_enabled", False)
 
     @property
     def name(self) -> str:
@@ -51,7 +52,10 @@ class EvalPlugin:
 
         Called by downstream apps to mark a round as good/bad during
         conversation. Side effect only — does not interrupt the session.
+        Gated by annotation_enabled config flag (default: off).
         """
+        if not self._annotation_enabled:
+            return
         import json
         import time
         from datetime import datetime, timezone
