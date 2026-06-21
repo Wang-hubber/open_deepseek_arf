@@ -37,6 +37,7 @@ class PluginContext:
             type=event_type,  # type: ignore[arg-type]
             data=data or {},
             session_id=self.session_id,
+            turn=self.turn,
         )
         if self._event_bus:
             self._event_bus.emit(event)
@@ -46,12 +47,9 @@ class PluginContext:
         return event
 
     def inject_engine_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Deprecated: trace is now handled by harness-level async writer.
-
-        Kept for backward compatibility with old plugins that may still call this.
-        No longer consumed by any trace subsystem.
-        """
+        """Deprecated: prefer ctx.emit(). Events still forwarded to trace."""
         self.hook_data.setdefault("_engine_events", []).append({
             "type": event_type,
             "data": data,
         })
+        self.emit(event_type, data)  # forward to trace queue

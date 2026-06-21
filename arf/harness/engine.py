@@ -194,6 +194,9 @@ class AgentHarness:
                         changed.append(f"{k}.{sub}: added")
                     for sub in sorted(sub_old_keys - sub_new_keys):
                         changed.append(f"{k}.{sub}: removed")
+                    for sub in sorted(sub_old_keys & sub_new_keys):
+                        if old_config[k][sub] != new_config[k][sub]:
+                            changed.append(f"{k}.{sub}: {old_config[k][sub]} -> {new_config[k][sub]}")
                 else:
                     old_repr = _json_mod.dumps(old_config[k], ensure_ascii=False)[:100]
                     new_repr = _json_mod.dumps(new_config[k], ensure_ascii=False)[:100]
@@ -202,7 +205,7 @@ class AgentHarness:
 
     # ── Plugin scheduling ───────────────────────────────
 
-    def _make_ctx(self, turn: int = 0) -> PluginContext:
+    def _make_ctx(self) -> PluginContext:
         return PluginContext(
             agent=self.agent,
             session_id=self.agent.state.session_id,
@@ -218,24 +221,46 @@ class AgentHarness:
 
     # ── Trace Writer ──────────────────────────────────────
 
+    @staticmethod
+    def _sanitize(obj: Any) -> Any:
+        """Recursively sanitize data for JSON serialization."""
+        if isinstance(obj, dict):
+            return {str(k): AgentHarness._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [AgentHarness._sanitize(v) for v in obj]
+        if isinstance(obj, Exception):
+            return f"{type(obj).__name__}: {obj}"
+        try:
+            _json_mod.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return str(obj)
+
     async def _trace_writer(self) -> None:
         """Background coroutine: drain _trace_queue, write JSONL, skip chunk events."""
         while self._trace_file is not None:
             event = await self._trace_queue.get()
             try:
                 if event.type in CHUNK_EVENTS:
-                    # Skip writing — task_done is called in finally block below
                     continue
-                line = _json_mod.dumps(asdict(event), ensure_ascii=False) + "\n"
+                record = asdict(event)
+                record["data"] = AgentHarness._sanitize(record["data"])
+                try:
+                    line = _json_mod.dumps(record, ensure_ascii=False) + "\n"
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Trace serialization error: %s", exc)
+                    continue
                 self._trace_file.write(line)
                 self._trace_file.flush()
-            except Exception:
-                logger.exception("Trace writer error")
+            except OSError as exc:
+                logger.warning("Trace write error: %s", exc)
             finally:
                 self._trace_queue.task_done()
 
     def _start_trace_writer(self, session_id: str) -> None:
         """Create trace directory, open file, launch writer coroutine."""
+        if self._trace_writer_task is not None and not self._trace_writer_task.done():
+            return  # already running
         trace_dir = Path(self._data_dir) / session_id / "traces"
         trace_dir.mkdir(parents=True, exist_ok=True)
         self._trace_file = open(trace_dir / f"{session_id}.jsonl", "a", encoding="utf-8")
@@ -328,9 +353,6 @@ class AgentHarness:
                 yield event
             ctx.captured_events.clear()
 
-            # Start trace writer after session_start checkpoint
-            self._start_trace_writer(agent.state.session_id)
-
             # Emit session_start lifecycle event for trace + SSE
             yield ctx.emit(event_type="session_start", data={})
         else:
@@ -342,6 +364,14 @@ class AgentHarness:
                 for m in existing["messages"]:
                     if isinstance(m, dict):
                         agent.input(role=m.get("role", "user"), content=m.get("content", ""))
+            # Rebuild system prompt text for snapshot consistency (Finding 3)
+            if self._agent_config is not None:
+                from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
+                prompt = DefaultSystemPromptProvider(self._agent_config).build()
+                self._system_prompt_text = prompt.prefix
+
+        # Start trace writer for both new AND resumed sessions (Finding 2)
+        self._start_trace_writer(agent.state.session_id)
 
         # Build snapshot, check against persisted state
         snapshot = self._build_snapshot()
@@ -364,7 +394,12 @@ class AgentHarness:
         # --- before_round ---
         if await self._checkpoint("before_round", ctx):
             yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
-            await self._do_park()
+            try:
+                await self._do_park()
+            except asyncio.CancelledError:
+                if self._parked:
+                    await self._save_and_teardown()
+                raise
             if self._parked:
                 await self._save_and_teardown()
                 return
@@ -377,7 +412,12 @@ class AgentHarness:
             # --- before_model ---
             if await self._checkpoint("before_model", ctx):
                 yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
-                await self._do_park()
+                try:
+                    await self._do_park()
+                except asyncio.CancelledError:
+                    if self._parked:
+                        await self._save_and_teardown()
+                    raise
                 if self._parked:
                     await self._save_and_teardown()
                     return
@@ -433,7 +473,12 @@ class AgentHarness:
             # --- after_model ---
             if await self._checkpoint("after_model", ctx):
                 yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
-                await self._do_park()
+                try:
+                    await self._do_park()
+                except asyncio.CancelledError:
+                    if self._parked:
+                        await self._save_and_teardown()
+                    raise
                 if self._parked:
                     await self._save_and_teardown()
                     return
@@ -468,7 +513,12 @@ class AgentHarness:
                             yield event
                         ctx.captured_events.clear()
                         yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
-                        await self._do_park()
+                        try:
+                            await self._do_park()
+                        except asyncio.CancelledError:
+                            if self._parked:
+                                await self._save_and_teardown()
+                            raise
                         if self._parked:
                             await self._save_and_teardown()
                             return
@@ -540,7 +590,12 @@ class AgentHarness:
                 # --- after_tools ---
                 if await self._checkpoint("after_tools", ctx):
                     yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
-                    await self._do_park()
+                    try:
+                        await self._do_park()
+                    except asyncio.CancelledError:
+                        if self._parked:
+                            await self._save_and_teardown()
+                        raise
                     if self._parked:
                         await self._save_and_teardown()
                         return
@@ -552,7 +607,15 @@ class AgentHarness:
         # --- after_round ---
         if await self._checkpoint("after_round", ctx):
             yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
-            await self._do_park()
+            try:
+                await self._do_park()
+            except asyncio.CancelledError:
+                if self._parked:
+                    await self._save_and_teardown()
+                raise
+            if self._parked:
+                await self._save_and_teardown()
+                return
 
         yield ctx.emit(event_type="round_end", data={})
         await self._save_and_teardown()
@@ -560,9 +623,9 @@ class AgentHarness:
     # ── State Persistence ───────────────────────────────
 
     async def _save_and_teardown(self) -> None:
-        """Save state and stop trace writer — called on all exit paths."""
-        await self._save_state()
+        """Stop trace writer then save state — called on all exit paths."""
         await self._stop_trace_writer()
+        await self._save_state()
 
     async def _save_state(self) -> None:
         """Persist current agent state so sessions survive restarts."""
