@@ -1,4 +1,5 @@
 """Unit tests for BenchmarkBuilder."""
+import json
 import tempfile
 from pathlib import Path
 
@@ -6,17 +7,42 @@ import pytest
 
 from arf.plugins.eval.builder import BenchmarkBuilder
 from arf.plugins.eval.exceptions import EvalError
-from arf.plugins.trace.plugin import TracePlugin
 
 
-def _make_trace_plugin(data_dir):
-    return TracePlugin({"data_dir": str(data_dir), "enabled": True})
+class _SimpleTraceReader:
+    """Minimal trace file reader — replaces TracePlugin dependency."""
+
+    def __init__(self, data_dir: Path):
+        self._data_dir = data_dir
+
+    def read_trace(self, session_id: str) -> list[dict]:
+        trace_file = self._data_dir / session_id / "traces" / f"{session_id}.jsonl"
+        if not trace_file.exists():
+            return []
+        events: list[dict] = []
+        with open(trace_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return events
 
 
-def _write_trace_events(p, session_id, events):
-    for e in events:
-        e.setdefault("session_id", session_id)
-        p._write_event(session_id, e)
+def _make_trace_reader(data_dir):
+    return _SimpleTraceReader(data_dir)
+
+
+def _write_trace_events(data_dir, session_id, events):
+    trace_dir = data_dir / session_id / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    trace_file = trace_dir / f"{session_id}.jsonl"
+    with open(trace_file, "a", encoding="utf-8") as f:
+        for e in events:
+            e.setdefault("session_id", session_id)
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
 
 class TestBenchmarkBuilder:
@@ -26,8 +52,8 @@ class TestBenchmarkBuilder:
             yield Path(td)
 
     def test_build_creates_cases_from_user_inputs(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "create file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
@@ -74,14 +100,14 @@ class TestBenchmarkBuilder:
         assert bm.created_at > 0
 
     def test_build_session_not_found(self, data_dir):
-        p = _make_trace_plugin(data_dir)
+        p = _make_trace_reader(data_dir)
         builder = BenchmarkBuilder(p)
         with pytest.raises(EvalError, match="not found"):
             builder.build("nope", "bm")
 
     def test_build_no_user_inputs(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "tool_call_start", "turn": 1,
              "data": {"tool_name": "x"}, "timestamp": 1.0},
         ])
@@ -90,8 +116,8 @@ class TestBenchmarkBuilder:
             builder.build("s1", "bm")
 
     def test_golden_trajectory_no_tool_calls(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
@@ -107,8 +133,8 @@ class TestBenchmarkBuilder:
         assert c.max_turns == 1
 
     def test_multi_turn_golden_trajectory(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "read x"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
@@ -144,8 +170,8 @@ class TestBenchmarkBuilder:
         assert c.expected_execution[1]["result_preview"] == "x.txt"
 
     def test_annotate_mode_placeholders(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "hello"}, "timestamp": 1.0},
             {"type": "model_call_end", "turn": 1,
@@ -158,8 +184,8 @@ class TestBenchmarkBuilder:
         assert "[待标注]" in c.expected_output_contains[0]
 
     def test_feedback_extraction(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "write file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,
@@ -185,8 +211,8 @@ class TestBenchmarkBuilder:
         assert c.source_round == 1
 
     def test_feedback_latest_wins(self, data_dir):
-        p = _make_trace_plugin(data_dir)
-        _write_trace_events(p, "s1", [
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
             {"type": "user_input", "turn": 1, "round": 1,
              "data": {"content": "write file"}, "timestamp": 1.0},
             {"type": "tool_call_start", "turn": 1,

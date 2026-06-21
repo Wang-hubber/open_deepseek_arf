@@ -83,27 +83,12 @@ class EvalRunner:
 
     async def _run(self, chat_fn=None, *,
                     system_prompt: str = "", tools: str = "") -> EvalReport:
-        from arf.plugins.trace.snapshot import EnvSnapshotBuilder
+        import hashlib, json
+        config_key = json.dumps({"eval_dir": self._config.eval_dir}, sort_keys=True)
+        current_hash = hashlib.sha256(config_key.encode()).hexdigest()[:12]
 
         benchmark = self._benchmark
         mode = "offline" if chat_fn is None else "online"
-
-        # --- Snapshot hash + persist XML ---
-        xml_str = ""
-        try:
-            xml_str, current_hash = EnvSnapshotBuilder(
-                "./arf/plugins"
-            ).build()
-        except Exception:
-            current_hash = "unknown"
-
-        # Save snapshot alongside benchmarks and reports
-        if xml_str:
-            snapshot_dir = Path(self._config.eval_dir) / "snapshots"
-            snapshot_dir.mkdir(parents=True, exist_ok=True)
-            snapshot_file = snapshot_dir / f"{current_hash}.xml"
-            if not snapshot_file.exists():
-                snapshot_file.write_text(xml_str, encoding="utf-8")
 
         # Hash check: warn if unchanged (testing config change effects)
         bm_hash = getattr(benchmark, 'config_hash', None) or current_hash
