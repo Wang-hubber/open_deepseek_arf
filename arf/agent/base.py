@@ -214,6 +214,14 @@ class BaseAgent:
         self._skill_index = skill_index
         self._tool_manager = tool_manager
 
+        # Resolve allow_paths — relative paths are relative to app_context.root
+        if config.allow_paths and app_context is not None:
+            root = app_context.root.resolve()
+            config.allow_paths = [
+                str(root / p) if not Path(p).is_absolute() else p
+                for p in config.allow_paths
+            ]
+
         # Build AgentHarness
         adv = config.effective_advanced()
         self._harness = AgentHarness(

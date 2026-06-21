@@ -562,15 +562,18 @@ async def execute(path: str, _workspace: str = "", **kwargs) -> dict:
 
 #### allow_paths（路径白名单）
 
-在 `agent.yaml` 顶层声明：
+在 `agent.yaml` 顶层以 `list[str]` 形式声明。支持绝对路径和相对路径：
 
 ```yaml
 allow_paths:
-  - /home/user/project
-  - /tmp/workspace
+  - /tmp/workspace           # 绝对路径 → 直接使用
+  - ./workspace              # 相对路径 → 以 AppContext.root 为基准解析
+  - data/output              # 同上
 ```
 
-**数据流**：`AgentConfig.allow_paths` → engine 注入 `ctx.hook_data["_allow_paths"]` → `tool_guard` 的 sandbox 层读取。
+**解析时机**：`BaseAgent.__init__` 创建 `AgentHarness` 之前。相对路径通过 `Path(root).resolve() / p` 转为绝对路径，绝对路径原样保留。最终到达 sandbox 的全部是绝对路径。
+
+**数据流**：`AgentConfig.allow_paths` → `BaseAgent` 解析相对路径 → engine 注入 `ctx.hook_data["_allow_paths"]` → `tool_guard` sandbox 读取。
 
 **检查逻辑**（`sandbox_check: true` 时生效）：
 
@@ -680,6 +683,37 @@ annotations:
   readOnlyHint: true   # 只读，PLAN 模式放行
   # readOnlyHint: false  # 有副作用，PLAN 模式阻止
 ```
+
+#### 工具处理管道
+
+`before_tools` checkpoint 上，`tool_guard` 和 `approval` 插件按序处理 `_pending_tool_calls`。被阻断的工具写入 `_blocked_results` 并从 `_pending_tool_calls` 移除，后续插件不再看到：
+
+```
+_pending_tool_calls (model 返回的全部 tool call)
+    │
+    ▼
+tool_guard._guard()
+    ├─ Layer 1: deny_patterns → _block_tool → 移除
+    ├─ Layer 2: deny          → _block_tool → 移除
+    ├─ Layer 3: sandbox       → _block_tool → 移除
+    └─ Layer 4: mode + allow/ask/unknown
+         ├─ AUTO: 全部 guard_pass
+         ├─ PLAN: readOnlyHint 检查 → 有副作用 → _block_tool → 移除
+         └─ ASK: allow→guard_pass, ask→留在 pending 等 approval
+    │
+    ▼ (仅未被移除的工具继续)
+approval._check_approval()
+    ├─ deny → _block_tool → 移除
+    └─ ask_list 匹配 → park 等待审批 → 拒绝时 _block_tool → 移除
+    │
+    ▼
+engine 执行
+    ├─ _all_tool_calls（原始列表）→ 所有 tool 都有 tool_call_start/end 事件
+    ├─ _pending_tool_calls（剩余）→ execute_batch 实际执行
+    └─ _blocked_results            → 合并为 ToolResult(success=False)
+```
+
+**关键设计**：阻断不丢事件。Engine 保存 `_all_tool_calls` 原始列表，被阻断移除的工具仍通过 `_blocked_results` 注入失败结果，LLM 看到完整的 tool response 序列。
 
 #### 可用插件
 

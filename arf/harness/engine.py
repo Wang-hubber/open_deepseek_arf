@@ -238,6 +238,9 @@ class AgentHarness:
 
             # --- tool execution ---
             if result.tool_calls and self._tool_manager:
+                # Save original — plugins may remove blocked tools from _pending_tool_calls
+                _all_tool_calls: list[dict] = list(result.tool_calls)
+
                 # --- before_tools ---
                 ctx.hook_data["_pending_tool_calls"] = result.tool_calls
 
@@ -275,16 +278,24 @@ class AgentHarness:
 
                 # Execute tools — skip those already blocked by plugins
                 tool_calls = ctx.hook_data["_pending_tool_calls"]
-                if not tool_calls:
+                blocked_results: dict[str, dict[str, str]] = ctx.hook_data.get("_blocked_results", {})
+
+                # Build complete call list: pending + blocked-and-removed
+                pending_ids = {tc["id"] for tc in tool_calls}
+                all_calls = list(tool_calls)
+                for tc in _all_tool_calls:
+                    if tc["id"] in blocked_results and tc["id"] not in pending_ids:
+                        all_calls.append(tc)
+
+                if not all_calls:
                     continue
 
-                blocked_results: dict[str, dict[str, str]] = ctx.hook_data.get("_blocked_results", {})
-                active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
-
-                for tc in tool_calls:
+                # Emit tool_call_start for all calls (pending + blocked)
+                for tc in all_calls:
                     yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
 
-                # Execute only active (non-blocked) calls
+                # Execute only pending (non-blocked, non-removed) calls
+                active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
                 if active_calls:
                     if hasattr(self._tool_manager, 'execute_batch'):
                         tool_results = await self._tool_manager.execute_batch(active_calls)
@@ -305,7 +316,8 @@ class AgentHarness:
                     tool_results[call_id] = type('FakeToolResult', (), {
                         'success': False, 'data': br.get('result', ''), 'error': br.get('error', '')})()
 
-                for tc in tool_calls:
+                # Inject results for ALL calls (pending + blocked)
+                for tc in all_calls:
                     r = tool_results.get(tc["id"])
                     if r is None:
                         r = type('FakeToolResult', (), {

@@ -186,13 +186,15 @@ class ToolGuardPlugin(Plugin):
 
     @staticmethod
     def _block_tool(ctx: PluginContext, tc: dict, result: str, error: str) -> None:
-        """Mark tool as blocked — engine will skip execution and use this result."""
+        """Write blocked result and remove from _pending_tool_calls.
+
+        Blocked tools are removed so subsequent plugins (e.g. approval) skip them.
+        The engine processes _blocked_results alongside _pending_tool_calls so the
+        LLM still sees the blocked result as a tool response.
+        """
         ctx.hook_data.setdefault("_blocked_results", {})[tc["id"]] = {
             "result": result, "error": error,
         }
-
-    def _remove_tool(self, ctx: PluginContext, tc: dict) -> None:
-        """Remove a tool call from _pending_tool_calls so the engine skips it."""
         ctx.hook_data["_pending_tool_calls"] = [
             t for t in ctx.hook_data.get("_pending_tool_calls", [])
             if t.get("id") != tc.get("id")
