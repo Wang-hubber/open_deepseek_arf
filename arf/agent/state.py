@@ -34,3 +34,4 @@ class AgentState:
     messages: list[Message]
     waiting: dict[str, list[WaitItem]]   # hook_name -> [WaitItem, ...]
     model_config: dict                   # {api_base, api_key_env, model_name, context_window}
+    snapshot: dict | None = None         # {"hash": "...", "config": {...}}
