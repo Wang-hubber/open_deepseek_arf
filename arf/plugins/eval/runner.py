@@ -207,6 +207,10 @@ class EvalRunner:
                     except Exception as exc:
                         case_metrics[f"{m.name}_error"] = str(exc)[:100]
 
+                # Compute weighted_score
+                ws = self._compute_weighted_score(case_metrics, self._config.scoring_weights)
+                case_metrics["weighted_score"] = ws
+
                 duration = time.time() - case_start
                 trace_stats = self._extract_trace_stats(actual_trace)
 
@@ -379,6 +383,28 @@ class EvalRunner:
         return {}
 
     @staticmethod
+    def _compute_weighted_score(metrics: dict, weights: dict[str, float]) -> float:
+        """Compute weighted score from metrics dict, normalizing LLM [1,5] metrics to [0,1].
+
+        Missing metrics (None or not present) are excluded; weights rebalance proportionally.
+        """
+        llm_metric_names = {"output_quality", "trajectory_similarity", "reasoning_similarity"}
+        available_weight = 0.0
+        weighted_sum = 0.0
+
+        for key, weight in weights.items():
+            val = metrics.get(key)
+            if val is None or not isinstance(val, (int, float)):
+                continue
+            score = val / 5.0 if key in llm_metric_names else val
+            weighted_sum += score * weight
+            available_weight += weight
+
+        if available_weight == 0.0:
+            return 0.0
+        return weighted_sum / available_weight
+
+    @staticmethod
     def _populate_summary(summary: EvalSummary, per_case: list[dict]) -> None:
         """Aggregate per-case metrics into summary averages."""
         metric_keys = [
@@ -412,3 +438,8 @@ class EvalRunner:
 
         summary.total_tokens_in = sum(pc.get("tokens_in", 0) for pc in per_case)
         summary.total_tokens_out = sum(pc.get("tokens_out", 0) for pc in per_case)
+
+        # Aggregate weighted_score
+        ws_vals = [pc.get("metrics", {}).get("weighted_score", 0.0) for pc in per_case]
+        if ws_vals:
+            summary.weighted_score = sum(ws_vals) / len(ws_vals)

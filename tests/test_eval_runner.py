@@ -262,3 +262,66 @@ class TestAgentSnapshot:
                 "plugins": {"eval": {}},
             },
         }
+
+
+class TestScoringWeights:
+    def test_weighted_score_with_missing_metrics(self):
+        """weighted_score = Σ(score_i × weight_i) with rebalancing for missing metrics."""
+        from arf.plugins.eval.runner import EvalRunner
+
+        metrics = {
+            "tool_call_accuracy": 1.0,
+            "execution_accuracy": 0.8,
+            "output_contains": 1.0,
+            "success_rate": 1.0,
+            # output_quality and trajectory_similarity missing
+        }
+
+        weights = {
+            "tool_call_accuracy": 0.2,
+            "execution_accuracy": 0.2,
+            "output_contains": 0.2,
+            "success_rate": 0.2,
+            "output_quality": 0.1,        # missing → weight redistributed
+            "trajectory_similarity": 0.1,  # missing → weight redistributed
+            "turn_efficiency": 0.0,
+        }
+
+        ws = EvalRunner._compute_weighted_score(metrics, weights)
+
+        # Available: tool_call_accuracy=1.0, execution_accuracy=0.8,
+        #   output_contains=1.0, success_rate=1.0
+        # Their weights: 0.2, 0.2, 0.2, 0.2 = 0.8 total
+        # Rebalanced: 0.2/0.8 = 0.25 each
+        # = 1.0*0.25 + 0.8*0.25 + 1.0*0.25 + 1.0*0.25 = 0.95
+        assert ws == pytest.approx(0.95, abs=0.01)
+
+    def test_weighted_score_all_metrics_present(self):
+        from arf.plugins.eval.runner import EvalRunner
+
+        metrics = {
+            "tool_call_accuracy": 0.9,
+            "execution_accuracy": 1.0,
+            "turn_efficiency": 0.8,
+            "output_contains": 1.0,
+            "success_rate": 1.0,
+            "output_quality": 4,
+            "trajectory_similarity": 3,
+        }
+
+        weights = {
+            "tool_call_accuracy": 0.15,
+            "execution_accuracy": 0.15,
+            "turn_efficiency": 0.1,
+            "output_contains": 0.1,
+            "success_rate": 0.15,
+            "output_quality": 0.2,
+            "trajectory_similarity": 0.15,
+        }
+
+        ws = EvalRunner._compute_weighted_score(metrics, weights)
+
+        # LLM metrics normalized: 4/5=0.8, 3/5=0.6
+        # = 0.9*0.15 + 1.0*0.15 + 0.8*0.1 + 1.0*0.1 + 1.0*0.15 + 0.8*0.2 + 0.6*0.15
+        # = 0.135 + 0.15 + 0.08 + 0.1 + 0.15 + 0.16 + 0.09 = 0.865
+        assert ws == pytest.approx(0.865, abs=0.01)
