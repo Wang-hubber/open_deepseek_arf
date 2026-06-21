@@ -56,10 +56,27 @@ class TestHarnessTraceWriter:
         assert trace_file.exists()
 
         lines = trace_file.read_text().strip().split("\n")
-        event_types = [json.loads(line)["type"] for line in lines]
+        records = [json.loads(line) for line in lines]
+        event_types = [r["type"] for r in records]
         assert "session_start" in event_types
+        assert "user_input" in event_types
         assert "model_call_end" in event_types
         assert "round_end" in event_types
+
+        # session_start has meaningful data
+        ss = next(r for r in records if r["type"] == "session_start")
+        assert ss["data"]["session_id"] == session_id
+        assert ss["data"]["is_new"] is True
+
+        # user_input has the message content
+        ui = next(r for r in records if r["type"] == "user_input")
+        assert ui["data"]["content"] == "hello"
+
+        # round_end has summary data
+        re = next(r for r in records if r["type"] == "round_end")
+        assert re["data"]["round"] >= 1
+        assert re["data"]["turns"] >= 1
+        assert re["data"]["stopped"] in ("completed", "max_turns")
 
     @pytest.mark.anyio
     async def test_chunk_events_filtered(self, tmp_path):

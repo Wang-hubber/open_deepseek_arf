@@ -354,7 +354,11 @@ class AgentHarness:
             ctx.captured_events.clear()
 
             # Emit session_start lifecycle event for trace + SSE
-            yield ctx.emit(event_type="session_start", data={})
+            yield ctx.emit(event_type="session_start", data={
+                "session_id": agent.state.session_id,
+                "is_new": True,
+                "effective_mode": effective_mode.value,
+            })
         else:
             # Restore messages from persisted state (resumed session)
             existing = await self._state_store.get(agent.state.session_id)
@@ -369,6 +373,13 @@ class AgentHarness:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
                 prompt = DefaultSystemPromptProvider(self._agent_config).build()
                 self._system_prompt_text = prompt.prefix
+
+            # Emit session_start for resumed sessions too
+            yield ctx.emit(event_type="session_start", data={
+                "session_id": agent.state.session_id,
+                "is_new": False,
+                "effective_mode": effective_mode.value,
+            })
 
         # Start trace writer for both new AND resumed sessions (Finding 2)
         self._start_trace_writer(agent.state.session_id)
@@ -393,6 +404,7 @@ class AgentHarness:
 
         # Inject user message
         agent.input(role="user", content=user_message)
+        yield ctx.emit(event_type="user_input", data={"content": user_message})
 
         # --- before_round ---
         if await self._checkpoint("before_round", ctx):
@@ -620,7 +632,11 @@ class AgentHarness:
                 await self._save_and_teardown()
                 return
 
-        yield ctx.emit(event_type="round_end", data={})
+        yield ctx.emit(event_type="round_end", data={
+            "round": self._interaction_round,
+            "turns": turn,
+            "stopped": "max_turns" if turn >= self._max_turns else "completed",
+        })
         await self._save_and_teardown()
 
     # ── State Persistence ───────────────────────────────
