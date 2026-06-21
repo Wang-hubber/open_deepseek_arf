@@ -75,3 +75,190 @@ class TestEvalConfigValidation:
         config = EvalConfig(mode="offline", trace_session_ids=[])
         with pytest.raises(ValueError, match="trace_session_ids"):
             config.validate()
+
+
+class TestCaseIsolation:
+    """Verify each case gets a unique session_id."""
+
+    @pytest.fixture
+    def tmpdir(self):
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    def test_each_case_gets_unique_session(self, tmpdir):
+        """Cases should NOT share session_ids even from same source session."""
+        from arf.plugins.eval.runner import EvalRunner
+
+        bm_path = str(tmpdir / "bm.json")
+        cases = [
+            EvalCase(id="c0", input="hello", session_id="src_s1"),
+            EvalCase(id="c1", input="world", session_id="src_s1"),
+        ]
+        _make_benchmark(bm_path, cases=cases)
+
+        sid_records = []
+
+        class FakeAgent:
+            class _PrimitiveAgent:
+                def input(self, *, role, content):
+                    pass
+            def __init__(self):
+                self._primitive_agent = self._PrimitiveAgent()
+            async def run(self, user_message, *, session_id):
+                sid_records.append(session_id)
+                return "ok"
+
+        config = EvalConfig(benchmark_path=bm_path, data_dir=str(tmpdir),
+                            judge_model=None)
+        agent = FakeAgent()
+
+        import asyncio
+        runner = EvalRunner(config)
+        asyncio.run(runner.run_online(agent))
+
+        # Two cases from same source session should have DIFFERENT eval sessions
+        assert sid_records[0] != sid_records[1]
+        assert len(set(sid_records)) == 2
+
+    def test_context_messages_injected_before_chat(self, tmpdir):
+        """context_messages should be injected via agent._primitive_agent.input() before chat."""
+        from arf.plugins.eval.runner import EvalRunner
+
+        bm_path = str(tmpdir / "bm.json")
+        context = [
+            {"role": "assistant", "content": "I found file.txt"},
+            {"role": "tool", "tool_call_id": "t1", "content": "hello world"},
+        ]
+        cases = [EvalCase(id="c0", input="read it", context_messages=context)]
+        _make_benchmark(bm_path, cases=cases)
+
+        injected_messages = []
+        chat_messages = []
+
+        class FakeAgent:
+            class _PrimitiveAgent:
+                def input(self, *, role, content):
+                    injected_messages.append({"role": role, "content": content})
+            def __init__(self):
+                self._primitive_agent = self._PrimitiveAgent()
+            async def run(self, user_message, *, session_id):
+                chat_messages.append(user_message)
+                return "done"
+
+        config = EvalConfig(benchmark_path=bm_path, data_dir=str(tmpdir),
+                            judge_model=None)
+        agent = FakeAgent()
+
+        import asyncio
+        runner = EvalRunner(config)
+        asyncio.run(runner.run_online(agent))
+
+        # context_messages injected in order
+        assert len(injected_messages) == 2
+        assert injected_messages[0]["role"] == "assistant"
+        assert injected_messages[0]["content"] == "I found file.txt"
+        assert injected_messages[1]["role"] == "tool"
+        assert injected_messages[1]["content"] == "hello world"
+        # Then the real input
+        assert chat_messages == ["read it"]
+
+    def test_empty_context_messages_no_op(self, tmpdir):
+        """When context_messages is empty, no injection happens."""
+        from arf.plugins.eval.runner import EvalRunner
+
+        bm_path = str(tmpdir / "bm.json")
+        cases = [EvalCase(id="c0", input="hello")]
+        _make_benchmark(bm_path, cases=cases)
+
+        class FakeAgent:
+            class _PrimitiveAgent:
+                def input(self, *, role, content):
+                    raise AssertionError("should not be called")
+            def __init__(self):
+                self._primitive_agent = self._PrimitiveAgent()
+            async def run(self, user_message, *, session_id):
+                return "ok"
+
+        config = EvalConfig(benchmark_path=bm_path, data_dir=str(tmpdir),
+                            judge_model=None)
+        agent = FakeAgent()
+
+        import asyncio
+        runner = EvalRunner(config)
+        report = asyncio.run(runner.run_online(agent))
+        assert len(report.per_case) == 1
+
+
+class TestAgentSnapshot:
+    """Verify agent_snapshot is read from snapshot_created event."""
+
+    @pytest.fixture
+    def tmpdir(self):
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    def test_agent_snapshot_in_report(self, tmpdir):
+        from arf.plugins.eval.runner import EvalRunner
+
+        bm_path = str(tmpdir / "bm.json")
+        cases = [EvalCase(id="c0", input="hello")]
+        _make_benchmark(bm_path, cases=cases)
+
+        class FakeAgent:
+            class _PrimitiveAgent:
+                def input(self, *, role, content):
+                    pass
+            def __init__(self):
+                self._primitive_agent = self._PrimitiveAgent()
+
+            async def run(self, user_message, *, session_id):
+                # Simulate snapshot_created event being written to trace
+                import json
+                trace_dir = Path(tmpdir) / session_id / "traces"
+                trace_dir.mkdir(parents=True, exist_ok=True)
+                trace_file = trace_dir / f"{session_id}.jsonl"
+                snapshot_event = {
+                    "type": "snapshot_created",
+                    "session_id": session_id,
+                    "turn": 0,
+                    "timestamp": 1.0,
+                    "data": {
+                        "hash": "abc123def456",
+                        "config": {
+                            "model": {"name": "deepseek-chat"},
+                            "tools": {"file_writer": {}},
+                            "plugins": {"eval": {}},
+                        },
+                    },
+                }
+                event = {
+                    "type": "model_call_end",
+                    "session_id": session_id,
+                    "turn": 1,
+                    "timestamp": 2.0,
+                    "data": {"content": "hello world"},
+                }
+                with open(trace_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(snapshot_event, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(event, ensure_ascii=False) + "\n")
+                return "hello world"
+
+        config = EvalConfig(
+            benchmark_path=bm_path,
+            data_dir=str(tmpdir),
+            judge_model=None,
+        )
+        agent = FakeAgent()
+
+        import asyncio
+        runner = EvalRunner(config)
+        report = asyncio.run(runner.run_online(agent))
+
+        assert report.agent_snapshot == {
+            "hash": "abc123def456",
+            "config": {
+                "model": {"name": "deepseek-chat"},
+                "tools": {"file_writer": {}},
+                "plugins": {"eval": {}},
+            },
+        }

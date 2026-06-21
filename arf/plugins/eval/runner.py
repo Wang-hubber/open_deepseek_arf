@@ -59,29 +59,29 @@ class EvalRunner:
 
     # -- Public API -------------------------------------------------------
 
-    async def run_online(self, chat_fn, *,
+    async def run_online(self, agent, *,
                           system_prompt: str = "",
                           tools: str = "") -> EvalReport:
-        """Run benchmark cases via live agent chat. Returns EvalReport.
+        """Run benchmark cases via live agent. Returns EvalReport.
 
-        chat_fn: async def chat_fn(input: str, session_id: str) -> str
+        agent: BaseAgent instance (provides .run() and ._primitive_agent.input())
         system_prompt: agent's system prompt, for no-reference judge context
         tools: available tools listing, for no-reference judge context
         """
         self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
-        return await self._run(chat_fn=chat_fn,
+        return await self._run(agent=agent,
                                system_prompt=system_prompt, tools=tools)
 
     async def run_offline(self, *, system_prompt: str = "",
                           tools: str = "") -> EvalReport:
         """Run benchmark cases against existing trace files. Returns EvalReport."""
         self._benchmark = EvalBenchmark.from_json(self._config.benchmark_path)
-        return await self._run(chat_fn=None,
+        return await self._run(agent=None,
                                system_prompt=system_prompt, tools=tools)
 
     # -- Internal ---------------------------------------------------------
 
-    async def _run(self, chat_fn=None, *,
+    async def _run(self, agent=None, *,
                     system_prompt: str = "", tools: str = "") -> EvalReport:
         benchmark = self._benchmark
 
@@ -96,7 +96,7 @@ class EvalRunner:
         }
         config_key = json.dumps(config_for_hash, sort_keys=True)
         current_hash = hashlib.sha256(config_key.encode()).hexdigest()[:12]
-        mode = "offline" if chat_fn is None else "online"
+        mode = "offline" if agent is None else "online"
 
         # Hash check: warn if unchanged (testing config change effects)
         bm_hash = getattr(benchmark, 'config_hash', None) or current_hash
@@ -168,37 +168,30 @@ class EvalRunner:
         per_case = []
         passed = 0
         _run_sid_suffix = uuid.uuid4().hex[:8]
-        _last_source_sid: str | None = None
-        _eval_sid: str = ""
-        _last_event_count: int = 0  # position in trace file, not turn number
+        agent_snapshot = {}
 
         for i, case in enumerate(benchmark.cases):
             case_start = time.time()
-            # Follow trace session boundaries: same source → reuse eval session
-            if case.session_id and case.session_id == _last_source_sid:
-                sid = _eval_sid
-            else:
-                sid = f"eval_{benchmark.name}_{case.id}_{_run_sid_suffix}"
-                _eval_sid = sid
-                _last_source_sid = case.session_id
-                _last_event_count = 0  # new session, reset position
+            # Each case gets a unique session_id — no cross-case state leakage
+            sid = f"eval_{benchmark.name}_{case.id}_{_run_sid_suffix}"
             all_pass = True
 
             try:
-                # -- Get actual trace --
-                if chat_fn is not None:
-                    # Online: isolate this round's events by append position.
-                    # Trace JSONL is append-only — events from each chat_fn()
-                    # call are appended to the end of the file. Using position
-                    # avoids the "turn resets per round" pitfall.
-                    await chat_fn(case.input, session_id=sid)
-                    full_trace = self._read_trace(sid)
-                    actual_trace = full_trace[_last_event_count:]
-                    _last_event_count = len(full_trace)
+                # -- Context injection & execution --
+                if agent is not None:
+                    for msg in case.context_messages:
+                        agent._primitive_agent.input(
+                            role=msg["role"], content=msg["content"],
+                        )
+                    await agent.run(user_message=case.input, session_id=sid)
+                    actual_trace = self._read_trace(sid)
                 else:
                     # Offline
                     sid = self._config.trace_session_ids[i]
                     actual_trace = self._read_trace(sid)
+
+                # -- Extract agent_snapshot from trace --
+                agent_snapshot = self._extract_snapshot(actual_trace) or agent_snapshot
 
                 # -- Compute metrics --
                 case_metrics = {}
@@ -328,6 +321,7 @@ class EvalRunner:
             snapshot_hash=current_hash,
             summary=summary,
             per_case=per_case,
+            agent_snapshot=agent_snapshot,
         )
 
         if self._config.output_path:
@@ -374,6 +368,15 @@ class EvalRunner:
             "tokens_out": tokens_out,
             "tool_calls": tool_calls,
         }
+
+    @staticmethod
+    def _extract_snapshot(trace: list[dict]) -> dict:
+        """Extract agent config snapshot from snapshot_created event."""
+        for e in trace:
+            if e.get("type") == "snapshot_created":
+                data = e.get("data", {})
+                return {"hash": data.get("hash", ""), "config": data.get("config", {})}
+        return {}
 
     @staticmethod
     def _populate_summary(summary: EvalSummary, per_case: list[dict]) -> None:
