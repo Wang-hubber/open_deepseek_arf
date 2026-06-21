@@ -103,6 +103,25 @@ class TestEvalReportJson:
                        agent_config_hash="", timestamp=0.0)
         assert r.summary.total == 0
 
+    def test_weighted_score_roundtrip(self, tmp_path):
+        report = EvalReport(
+            run_id="run-ws", benchmark_name="bm", agent_config_hash="h1", timestamp=1.0,
+            summary=EvalSummary(
+                total=5, passed=4, failed=1, pass_rate=0.8,
+                avg_turns=2.0, avg_tool_calls=3.0, avg_duration_seconds=1.5,
+                tool_accuracy=0.9, output_contains=0.8,
+                tool_call_accuracy=0.85, turn_efficiency=0.75, success_rate=0.8,
+                execution_accuracy=0.9,
+                weighted_score=0.82,
+            ),
+        )
+        p = tmp_path / "report.json"
+        report.to_json(str(p))
+        loaded = EvalReport.from_json(str(p))
+        assert loaded.summary.weighted_score == 0.82
+        assert loaded.summary.total == 5
+        assert loaded.summary.pass_rate == 0.8
+
 
 class TestEvalDiff:
     def test_diff_structure(self):
