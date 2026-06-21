@@ -96,6 +96,82 @@ class BenchmarkBuilder:
             trace_snapshot_path=str(snapshot_path),
         )
 
+    def build_from_annotations(self, session_id: str, name: str, *,
+                                benchmark_dir: str = "benchmarks") -> EvalBenchmark:
+        """Build EvalBenchmark from annotated rounds only.
+
+        Scans the session trace for user_annotation events and extracts
+        only the annotated rounds as bare EvalCases (expected fields empty).
+        A frozen trace snapshot is written alongside the benchmark.
+        """
+        events = self._trace.read_trace(session_id)
+        if not events:
+            raise EvalError(f"Session '{session_id}' not found in trace store")
+
+        bm_dir = Path(benchmark_dir)
+        bm_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = bm_dir / f"{name}.trace.jsonl"
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            for e in events:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+        # Collect annotations by round
+        annotations_by_round: dict[int, list[dict]] = {}
+        for e in events:
+            if e.get("type") == "user_annotation":
+                r = e.get("data", {}).get("round", e.get("round", 0))
+                annotations_by_round.setdefault(r, []).append(e)
+
+        if not annotations_by_round:
+            return EvalBenchmark(
+                name=name,
+                source_session=session_id,
+                created_at=time.time(),
+                cases=[],
+                trace_snapshot_path=str(snapshot_path),
+            )
+
+        # Find user_input events and their round indices
+        user_inputs = [
+            (i, e) for i, e in enumerate(events) if e.get("type") == "user_input"
+        ]
+        if not user_inputs:
+            raise EvalError(f"No user messages found in session '{session_id}'")
+
+        cases: list[EvalCase] = []
+        for round_idx, (ui_pos, ui_event) in enumerate(user_inputs):
+            if round_idx not in annotations_by_round:
+                continue  # skip unannotated rounds
+
+            # Latest annotation for this round
+            round_annotations = annotations_by_round[round_idx]
+            latest = max(round_annotations, key=lambda e: e.get("timestamp", 0))
+            data = latest.get("data", {})
+            feedback = {
+                "rating": data.get("rating", ""),
+                "comment": data.get("comment", data.get("reason", "")),
+                "annotated_at": data.get("annotated_at", ""),
+            }
+
+            cases.append(EvalCase(
+                id=f"case_{round_idx}",
+                input=ui_event.get("data", {}).get("content", ""),
+                session_id=session_id,
+                source_round=round_idx,
+                expected_execution=[],
+                expected_output_contains=[],
+                max_turns=None,
+                feedback=feedback,
+            ))
+
+        return EvalBenchmark(
+            name=name,
+            source_session=session_id,
+            created_at=time.time(),
+            cases=cases,
+            trace_snapshot_path=str(snapshot_path),
+        )
+
     @staticmethod
     def _collect_tool_names(events):
         """Extract ordered tool names from tool_call_start or model_call_end events."""

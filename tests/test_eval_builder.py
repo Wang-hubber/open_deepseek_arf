@@ -231,3 +231,91 @@ class TestBenchmarkBuilder:
         bm = builder.build("s1", "latest")
         c = bm.cases[0]
         assert c.feedback == {"rating": "good", "reason": "fixed", "annotated_at": ""}
+
+
+class TestBuildFromAnnotations:
+    @pytest.fixture
+    def data_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    def test_only_annotated_rounds_become_cases(self, data_dir):
+        """build_from_annotations should only extract rounds with user_annotation."""
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
+            # Round 0 — annotated
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "create file"}, "timestamp": 1.0},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "done"}, "timestamp": 1.1},
+            {"type": "user_annotation", "round": 0, "timestamp": 1.2,
+             "data": {"rating": "like", "comment": "good"}},
+            # Round 1 — NOT annotated
+            {"type": "user_input", "turn": 2,
+             "data": {"content": "read file"}, "timestamp": 2.0},
+            {"type": "model_call_end", "turn": 2,
+             "data": {"content": "content here"}, "timestamp": 2.1},
+            # Round 2 — annotated
+            {"type": "user_input", "turn": 3,
+             "data": {"content": "delete file"}, "timestamp": 3.0},
+            {"type": "model_call_end", "turn": 3,
+             "data": {"content": "deleted"}, "timestamp": 3.1},
+            {"type": "user_annotation", "round": 2, "timestamp": 3.2,
+             "data": {"rating": "dislike", "comment": "wrong"}},
+        ])
+
+        builder = BenchmarkBuilder(p)
+        bm = builder.build_from_annotations("s1", "test_bm",
+                                            benchmark_dir=str(data_dir / "benchmarks"))
+
+        # Only rounds 0 and 2 should become cases
+        assert len(bm.cases) == 2
+        assert bm.cases[0].input == "create file"
+        assert bm.cases[0].source_round == 0
+        assert bm.cases[0].feedback == {
+            "rating": "like",
+            "comment": "good",
+            "annotated_at": "",
+        }
+        assert bm.cases[0].expected_execution == []
+        assert bm.cases[0].expected_output_contains == []
+
+        assert bm.cases[1].input == "delete file"
+        assert bm.cases[1].source_round == 2
+        assert bm.cases[1].feedback["rating"] == "dislike"
+
+    def test_no_annotations_returns_empty(self, data_dir):
+        """build_from_annotations with no annotations should return empty benchmark."""
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "hello"}, "timestamp": 1.0},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "hi"}, "timestamp": 1.1},
+        ])
+
+        builder = BenchmarkBuilder(p)
+        bm = builder.build_from_annotations("s1", "empty_bm",
+                                            benchmark_dir=str(data_dir / "benchmarks"))
+        assert len(bm.cases) == 0
+
+    def test_feedback_from_latest_annotation(self, data_dir):
+        """Multiple annotations on same round: use the latest one."""
+        p = _make_trace_reader(data_dir)
+        _write_trace_events(data_dir, "s1", [
+            {"type": "user_input", "turn": 1,
+             "data": {"content": "test"}, "timestamp": 1.0},
+            {"type": "model_call_end", "turn": 1,
+             "data": {"content": "result"}, "timestamp": 1.1},
+            {"type": "user_annotation", "round": 0, "timestamp": 1.2,
+             "data": {"rating": "dislike", "comment": "first impression"}},
+            {"type": "user_annotation", "round": 0, "timestamp": 2.0,
+             "data": {"rating": "like", "comment": "revised opinion"}},
+        ])
+
+        builder = BenchmarkBuilder(p)
+        bm = builder.build_from_annotations("s1", "test_bm",
+                                            benchmark_dir=str(data_dir / "benchmarks"))
+        assert len(bm.cases) == 1
+        assert bm.cases[0].feedback["rating"] == "like"
+        assert bm.cases[0].feedback["comment"] == "revised opinion"
