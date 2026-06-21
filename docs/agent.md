@@ -15,19 +15,87 @@ Agent = `name` + `system_prompt` + `models`。它是一个**被动的消息状�
 │ state: messages, waiting    │ ◄──────────────────┘
 │ input() / model_call()      │    Harness 读写 state
 │ wait() / finish_wait()      │
-│ stop() / resume()           │
 └─────────────────────────────┘
 ```
 
-**核心原则**：PrimitiveAgent 只知道消息和模型调用，不知道 tools/hooks/sandbox/events。这些是 Harness + Plugin 的职责。Agent 提供 mechanism，Harness 决定 how。
+**核心原则**：PrimitiveAgent 只知道消息和模型调用，不知道 tools/hooks/sandbox/events。这些是 Harness + Plugin 的职责。
 
 ---
 
-## 组装 (注册)
+## 配置
+
+### agent.yaml 完整示例
+
+```yaml
+schema_version: "1.0"
+name: my-agent
+
+# ── 模型 ──
+model_defs:
+  - model: deepseek-chat
+    api_base: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 131072
+    message_format: deepseek        # "openai"（默认）| "deepseek"
+    temperature: 0.7
+    kwargs:
+      thinking_enabled: true
+      reasoning_effort: high
+
+# ── 系统提示词 ──
+system_prompt:
+  prefix:
+    role: "你是一个有用的助手"
+    critical_rules: "禁止编造文件路径"
+
+# ── 模式与路径 ──
+session_mode: ask                   # "auto" | "ask" | "plan"
+allow_paths:                        # 路径白名单（sandbox 用）
+  - ./
+  - /tmp/output
+
+# ── 工具与插件 ──
+plugins: [filesystem, memory, approval, tool_guard]
+tools: [read_file, grep]            # 启用的 user__ 工具（空 = 全部）
+
+plugins_config:
+  tool_guard:
+    deny: [bash, python_exec]
+    allow: [read_file, grep]
+    ask: [write_file]
+  approval:
+    ask_list: [write_file]
+    timeout: 0
+  memory:
+    interval: 5
+    model:
+      api_base: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat
+      context_window: 131072
+```
+
+### 配置字段速查
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | Agent 唯一标识 |
+| `model_defs` | `list[dict]` | 模型定义列表（api_base, api_key_env, model, context_window, message_format, kwargs） |
+| `system_prompt.prefix.role` | `str` | Agent 角色定义（第一条 system 消息） |
+| `system_prompt.prefix.critical_rules` | `str` | 硬约束规则（第二条 system 消息） |
+| `session_mode` | `"auto" \| "ask" \| "plan"` | 全局权限模式，默认 `"ask"` |
+| `allow_paths` | `list[str]` | 路径白名单，支持相对/绝对路径 |
+| `plugins` | `list[str]` | 启用的插件列表 |
+| `tools` | `list[str]` | 启用的 user__ 工具（空 = 全部） |
+| `plugins_config` | `dict` | 按插件名分组的配置，覆盖 plugin.yaml 默认值 |
+
+---
+
+## 组装
 
 两条路径，二选一：
 
-### 路径 A：`AgentHarnessFactory.create_harness()`（推荐）
+### 路径 A：`create_harness()`（推荐）
 
 ```python
 from arf.harness.factory import create_harness
@@ -36,13 +104,12 @@ harness = await create_harness("agent.yaml")
 
 async for event in harness.run("用户输入"):
     if event.type == "model_chunk":
-        send_sse(event.data)       # 流式输出
+        send_sse(event.data)
     elif event.type == "model_call_end":
-        print(event.data["content"])  # 完整文本
-        print(event.data["usage"])    # token 用量
+        print(event.data["content"])
 ```
 
-### 路径 B：`BaseAgent`（兼容封装）
+### 路径 B：`BaseAgent`
 
 ```python
 from arf.agent.base import BaseAgent
@@ -55,30 +122,321 @@ async for event in agent.astream("用户输入"):
     ...
 ```
 
-内部实际是 `PrimitiveAgent` + `AgentHarness`，`BaseAgent` 仅做薄封装。
+内部实际是 `PrimitiveAgent` + `AgentHarness`。
 
-### agent.yaml 最小示例
+---
+
+## Session 生命周期
+
+一次 `harness.run(user_message)` 调用 = 一个 round。多次调用共享 `session_id` = 一个 session。
+
+```
+session_start                   ← 仅新 session 时触发一次
+  ├─ 框架注入 system prompt（role + critical_rules）
+  └─ 插件注入（memory 等）
+    │
+    ▼
+┌─ Round 循环 ──────────────────────────────────────────┐
+│ before_round                                          │
+│   │                                                   │
+│   ▼                                                   │
+│ before_model → 工具发现 + 过滤                         │
+│   │                                                   │
+│   ▼                                                   │
+│ model_call → LLM 推理                                  │
+│   │                                                   │
+│   ▼                                                   │
+│ [有 tool_calls] before_tools → 权限控制 → 工具执行     │
+│ [无 tool_calls] 本轮结束                               │
+│   │                                                   │
+│   ▼                                                   │
+│ after_tools                                           │
+│   │                                                   │
+│   ▼                                                   │
+│ after_round → memory 提取                             │
+└───────────────────────────────────────────────────────┘
+```
+
+---
+
+### session_start — 新会话初始化
+
+新 session 时（`session_id` 首次分配），Engine 先注入系统提示词，再触发 `session_start` checkpoint 让插件注入上下文。
+
+**框架注入**（Engine 直接写入 `state.messages`）：
+
+```
+1. system: role（agent.yaml system_prompt.prefix.role）
+2. system: critical_rules（agent.yaml system_prompt.prefix.critical_rules）
+```
+
+**插件注入**（`session_start` checkpoint side 事件，memory 插件等）：
+
+```
+3. system: ## User Memory\n- ...（memory 插件）
+4. system: ## Project Memory\n- ...（memory 插件）
+```
+
+之后 Engine 注入用户消息 `user: "hello"`，进入 Round 循环。
+
+---
+
+### Round 循环
+
+#### 1. before_model — 工具发现与过滤
+
+Engine 调用 `tool_manager.get_tool_definitions()` 获取全部工具，按 `AgentConfig` 过滤：
+
+| namespace | 过滤规则 |
+|-----------|---------|
+| `kernel__` | 始终可用 |
+| `user__` | 按 `tools` 列表过滤，空列表 = 全部 |
+| `{plugin}__` | 按 `plugins` 列表过滤 |
+| `{server}__` | 配置了 `mcp_servers` 就全部可用 |
+
+过滤后的工具通过 `to_openai_tools()` 转为 OpenAI 格式，传给 `model_call()`。
+
+---
+
+#### 2. model_call — LLM 推理
+
+PrimitiveAgent 读取 `state.messages` 全部消息，调用 LLM API。详见 [PrimitiveAgent](#primitiveagent)。
+
+**消息格式转换**：`ModelAdapter.format_messages()` 在 API 边界统一处理。`assistant` 的 content 可能是 `{content, tool_calls}` dict，`tool` 的 content 可能是 `{tool_call_id, result, error}` dict。详见 [消息格式适配](#消息格式适配)。
+
+---
+
+#### 3. before_tools — 权限控制
+
+模型返回 `tool_calls` 后，Engine 将 `_pending_tool_calls` + `_tool_defs` + `_allow_paths` 注入 `hook_data`，触发 `before_tools` checkpoint。**`tool_guard` 和 `approval` 插件统一在此执行判定。**
+
+##### 决策矩阵
+
+`deny` 和 `deny_patterns` **始终优先**，在任何 mode 下都拒绝。然后 mode 决定 `allow` / `ask` / `unknown` 的处理：
+
+| mode | deny / deny_patterns | allow | ask | unknown |
+|------|---------------------|-------|-----|---------|
+| **AUTO** | 拒绝 | 放行 | 放行（跳过审批） | 放行 |
+| **PLAN** | 拒绝 | 检查 `readOnlyHint` | 检查 `readOnlyHint` | 拒绝 |
+| **ASK**（默认） | 拒绝 | 放行 | 转交 approval 审批 | 拒绝* |
+
+> \* ASK 下 unknown：若 `deny` 非空则拒绝；若 `deny` 为空则放行（开发阶段隐式全局允许）。
+
+##### Session Mode
 
 ```yaml
-schema_version: "1.0"
-name: my-agent
-
-model_defs:
-  - model: deepseek-chat
-    api_base: https://api.deepseek.com/v1
-    api_key_env: DEEPSEEK_API_KEY
-    context_window: 131072
-    message_format: deepseek        # "openai"（默认）| "deepseek"
-    temperature: 0.7
-    kwargs:
-      thinking_enabled: true
-      reasoning_effort: high
-
-system_prompt:
-  prefix:
-    role: "你是一个有用的助手"
-    critical_rules: "禁止编造文件路径"
+session_mode: ask   # "auto" | "ask" | "plan"
 ```
+
+| 模式 | 适用场景 |
+|------|---------|
+| `auto` | 信任模式 — 除 deny 外全部放行，无需审批 |
+| `ask`（默认） | 标准模式 — allow 放行、ask 审批、unknown 拒绝 |
+| `plan` | 只读模式 — 额外检查 `readOnlyHint`，副作用工具即使在 allow/ask 中也阻止 |
+
+**运行时切换**：
+
+```python
+harness.set_session_mode("plan")
+harness.set_session_mode(SessionMode.AUTO)
+```
+
+调用后 emit `session_policy_switch` 事件，下一轮 `run()` 生效。
+
+##### Plugin Config
+
+```yaml
+plugins_config:
+  tool_guard:
+    deny: [bash, python_exec]        # 黑名单 — 始终拒绝
+    deny_patterns: ["rm -rf"]        # 参数内容正则 — 对 json.dumps(params) 做 re.search
+    allow: [read_file, grep]         # 白名单 — AUTO/ASK 放行，PLAN 还需检查 readOnlyHint
+    ask: [write_file]                # 审批列表 — ASK 下转交 approval
+    sandbox_check: true              # 启用路径 sandbox（默认 true）
+  approval:
+    ask_list: [write_file]           # 实际触发审批
+    timeout: 0                       # 0 = 无限等待；> 0 = 超时自动拒绝（秒）
+```
+
+##### 工具名匹配：裸名 vs 全名
+
+工具运行时带 namespace 前缀（`filesystem__read_file`），配置文件可写裸名或全名。`matches_perm()` 两层匹配：
+
+| 配置写法 | 匹配范围 |
+|---------|---------|
+| `read_file`（裸名） | 所有 namespace |
+| `filesystem__read_file`（全名） | 仅该 namespace |
+
+多 namespace 同名工具差异化管控时用全名。
+
+##### 工具声明 readOnlyHint（PLAN 模式）
+
+`has_side_effect(name, tool_defs)` 三级判定：
+
+1. **工具自声明（权威）** — 读 `tool.yaml` 的 `annotations.readOnlyHint`：`true` → 放行，`false` → 阻止
+2. **Kernel 硬编码兜底** — 仅 3 个剩余 kernel tools（`ask_user`、`use_skill`、`task_complete`）
+3. **未知 → assume side effect** — 安全默认
+
+```yaml
+# tool.yaml
+annotations:
+  readOnlyHint: true   # 只读，PLAN 放行
+```
+
+##### Sandbox（路径白名单）
+
+`sandbox_check: true` 时，tool_guard 对每个 `format: path` 参数检查是否在 `allow_paths` 内：
+
+1. `os.path.normpath(value)` 标准化路径
+2. 检查是否等于或以 `allow_path + os.sep` 开头
+3. 不在白名单内 → `guard_block` + 写入 `_blocked_results`
+
+```yaml
+# agent.yaml
+allow_paths:
+  - /home/user/project     # 绝对路径
+  - ./workspace            # 相对路径 → 以 AppContext.root 为基准解析
+```
+
+##### 工具处理管道
+
+被阻断的工具写入 `_blocked_results` 并从 `_pending_tool_calls` 移除，后续插件不再看到：
+
+```
+_pending_tool_calls (model 返回的全部 tool call)
+    │
+    ▼
+tool_guard._guard()
+    ├─ Layer 1: deny_patterns → _block_tool → 移除
+    ├─ Layer 2: deny          → _block_tool → 移除
+    ├─ Layer 3: sandbox       → _block_tool → 移除
+    └─ Layer 4: mode + allow/ask/unknown
+         ├─ AUTO: 全部 guard_pass
+         ├─ PLAN: readOnlyHint → 副作用 → _block_tool → 移除
+         └─ ASK: allow→guard_pass, ask→留在 pending 等 approval
+    │
+    ▼ (仅未被移除的工具继续)
+approval._check_approval()
+    ├─ AUTO mode → 直接 return
+    ├─ 已决议 → 拒绝时 _block_tool → 移除
+    └─ 新审批 → park 等待 → 拒绝时 _block_tool → 移除
+    │
+    ▼
+engine 执行
+    ├─ _all_tool_calls（原始列表）→ 全部 tool 都有 tool_call_start/end 事件
+    ├─ _pending_tool_calls（剩余）→ execute_batch 实际执行
+    └─ _blocked_results            → 合并为 ToolResult(success=False)
+```
+
+**关键设计**：阻断不丢事件。Engine 保存 `_all_tool_calls` 原始列表，被阻断移除的工具仍通过 `_blocked_results` 注入失败结果。
+
+##### 审批流程 (Park/Resume)
+
+`approval` 插件使用 Engine 的 park/resume 机制，不内部阻塞：
+
+```
+Turn N, before_tools checkpoint:
+  approval._check_approval()
+    ├─ 检查 _pending_tool_calls 中是否有 ask_list 工具
+    ├─ emit approval_required 事件（→ captured_events → REPL）
+    ├─ ctx.agent.wait("before_tools", ...) 注册等待
+    └─ return（不阻塞）
+
+  Engine._checkpoint() → waiting 非空 → return True
+  Engine yield captured events（approval_required 到达 REPL）
+  Engine yield parked 事件
+  Engine._do_park() → await park_event.wait()
+
+外部（REPL）:
+  ├─ plugin.approve(decision_id, approved=True/False)
+  │     └─ 存储决议 + agent.finish_wait(wait_id)
+  └─ engine.resolve_wait(wait_id) → park_event.set()
+
+Turn N, before_tools checkpoint 重入（loop）:
+  approval 检测到已决议 → 通过/拒绝 → _block_tool → Engine 执行剩余工具
+```
+
+**关键设计点**：
+- 审批插件不 `raise`，拒绝只是 `_block_tool` → Session 不崩溃
+- `tool_guard` 的 `ask` 列表不移除工具，留给 `approval` 处理
+- Engine 在 `before_tools` checkpoint 上 loop，支持审批决议后重入过滤
+
+---
+
+#### 4. tool_execution — 工具执行
+
+工具执行收口到 `McpClientManager`，按 namespace 路由：
+
+```
+AgentHarness.run()
+  └─ tool_manager.execute_batch(active_calls)   # asyncio.gather 并行
+       └─ tool_manager.execute(name, params)    # 单次调用，按 namespace 路由
+            ├─ kernel__     → 进程内 handler
+            ├─ user__       → ToolProvider — tools/ 目录 function.py
+            ├─ {plugin}__   → PluginProvider — 插件 tools/ 目录 function.py
+            └─ {server}__   → 远程 MCP subprocess
+```
+
+**并行优先**：Engine 优先调用 `execute_batch()`（`asyncio.gather` 并行）。仅当 `tool_manager` 不提供 `execute_batch` 时才 fallback 顺序执行。
+
+**阻断处理**：Engine 检查 `_blocked_results`，跳过已阻断工具的 `execute_batch`，将预注入的失败结果合并到 `tool_results`，统一走 `tool_call_end` 事件和 `agent.input("tool", ...)`。
+
+---
+
+#### 5. after_round — Memory 自动提取
+
+`memory` 插件是完全自持的——自己管理 `MemoryIndex`、`SecretsStore` 和专有提取模型。
+
+**四层记忆**：
+
+| 层 | 文件 | 写入方 | 内容 |
+|----|------|--------|------|
+| **project** | `data/memory/project.md` | Agent 调 `memory__write_project_memory` | 架构决策、约定、修复记录 |
+| **user** | `data/memory/user.md` | Agent 调 `memory__write_user_memory` + 插件 `round_end` 自动提取 | 用户角色、偏好、决策 |
+| **secrets** | `data/memory/secrets.enc` | Agent 调 `memory__write_secret` | 加密的 API key、密码 |
+| **task_memory** | `data/memory/tasks.md` | 插件 `task_completed` 自动提取 + 合并 | 可复用任务经验 |
+
+**6 个 memory 工具**（`memory__*` namespace，PluginProvider 自动加载）：
+
+| 工具 | 类型 | 说明 |
+|------|------|------|
+| `memory__write_user_memory` | 写 | 持久化用户级记忆 |
+| `memory__write_project_memory` | 写 | 持久化项目级记忆 |
+| `memory__search_task_memory` | 读 | LLM 搜索 tasks.md |
+| `memory__list_secrets` | 读 | 列出 secret 名称 |
+| `memory__read_secret` | 读 | 解密返回 secret 值 |
+| `memory__write_secret` | 写 | 加密存储 secret |
+
+**自动提取**：
+
+- **session_start**：`MemoryIndex.build_injected_messages()` → 注入已有 memory 为 system 消息
+- **round_end**（每 N 轮）：取最近 20 条消息 → LLM 提取用户事实 → 写入 `user.md`。无新信息输出 `NO_NEW_MEMORY` 跳过
+- **task_completed**：取完整对话 → LLM 提取类别/方案/教训 → LLM 合并到 `tasks.md`（去重、计数、裁剪）
+
+```yaml
+plugins_config:
+  memory:
+    interval: 5                    # 提取间隔（每 N 轮）
+    max_memory_size: 300           # 消息截断阈值
+    model:                         # 专有提取模型（必需）
+      api_base: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat
+      context_window: 131072
+```
+
+---
+
+### 可用插件总览
+
+| 插件 | 配置项 | 触发点 | 说明 |
+|------|------|--------|------|
+| `tool_guard` | `allow`, `deny`, `ask`, `deny_patterns`, `sandbox_check` | `before_tools` | 统一权限门禁 + sandbox |
+| `approval` | `ask_list`, `timeout` | `before_tools` | 人机审批：park → REPL → approve → resume |
+| `memory` | `interval`, `model` | `session_start`, `round_end`, `task_completed` | 记忆注入 + LLM 提取 |
+| `compaction` | `tool_output` | `tool_output`, `round_end` | 工具输出外部化 + 消息窗口压缩 |
+| `plan_solve` | `max_depth`, `timeout` | — | Plan-Solve 执行 |
+| `error_handler` | `max_retries` | `on_error` | 错误恢复策略 |
 
 ---
 
@@ -98,9 +456,9 @@ PrimitiveAgent(
 | 参数 | 说明 |
 |------|------|
 | `agent_id` | 唯一标识，通常取自 `AgentConfig.name` |
-| `model_config` | 模型元信息，持久化到 `AgentState`，resume 时用 |
-| `call_model` | 非流式调用函数，由 `_build_call_model()` 注入（`ModelDegrader.chat_complete`） |
-| `stream_model` | 流式调用函数，由 `_build_call_model()` 注入（`ModelDegrader.chat_stream_full`），可为 None |
+| `model_config` | 模型元信息，持久化到 `AgentState` |
+| `call_model` | 非流式调用，由 `_build_call_model()` 注入 |
+| `stream_model` | 流式调用，可为 None |
 
 ### 状态属性 `state: AgentState`
 
@@ -118,12 +476,12 @@ class AgentState:
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `input` | `(role, content, position="end") → Message` | 向 `state.messages` 注入一条消息，role 可以是 `"system"` `"user"` `"assistant"` `"tool"` |
-| `model_call` | `async (stream=True, tools=None) → ModelResult \| ModelStream` | 发起 LLM 调用，默认流式，详见下文 |
-| `wait` | `(hook_name, reason) → WaitItem` | 向 `state.waiting[hook_name]` 追加等待项，同步方法不阻塞 |
-| `finish_wait` | `(wait_id, reason="") → dict` | 移除等待项，返回更新后的 `state.waiting` |
-| `stop` | `() → AgentState` | 停用 agent 并返回完整状态用于持久化 |
-| `resume` | `(state, call_model, stream_model=None) → PrimitiveAgent` | 从持久化状态重建 agent（类方法） |
+| `input` | `(role, content) → Message` | 向 `state.messages` 注入消息，role: `"system"` `"user"` `"assistant"` `"tool"` |
+| `model_call` | `async (stream=True, tools=None) → ModelResult \| ModelStream` | 发起 LLM 调用，默认流式 |
+| `wait` | `(hook_name, reason) → WaitItem` | 向 `state.waiting[hook_name]` 追加等待项 |
+| `finish_wait` | `(wait_id) → dict` | 移除等待项 |
+| `stop` | `() → AgentState` | 停用并返回持久化状态 |
+| `resume` | `(state, call_model, stream_model=None) → PrimitiveAgent` | 从持久化状态重建（类方法） |
 
 ---
 
@@ -137,35 +495,11 @@ async def model_call(self, stream: bool = True, tools: list[dict] | None = None)
 
 ### 行为
 
-读取 `state.messages` 全部消息，构造 `[{role, content}]` 列表，传给 `call_model` 或 `stream_model` 发起 API 调用。消息格式转换由 `ModelAdapter.format_messages()` 在 API 边界完成——`PrimitiveAgent` 和 `AgentHarness` 都不处理消息格式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `stream` | `bool` | `True` 返回 `ModelStream`（流式），`False` 返回 `ModelResult` |
-| `tools` | `list[dict] \| None` | OpenAI 格式工具定义列表（harness 已转换）。传参后 LLM 可获得工具调用能力。`None` 表示纯文本对话。 |
+读取 `state.messages` 全部消息，构造 `[{role, content}]` 列表，传给 `call_model` 或 `stream_model`。消息格式转换由 `ModelAdapter.format_messages()` 在 API 边界完成。
 
 ```
 state.messages ──► [{role, content}] ──► ModelAdapter.format_messages() ──► LLM API
        tools ──────────────────────────────────────────────────┘
-```
-
-**消息格式**：`state.messages` 内部格式中 `assistant` 的 `content` 可能是 `{content, tool_calls}` dict，`tool` 的 `content` 可能是 `{tool_call_id, result, error}` dict。`ModelAdapter.format_messages()` 统一转换为 provider API 兼容格式，加新 provider 只需扩展此方法。
-
-**非流式** (`stream=False`)：
-```
-result: ModelResult = await agent.model_call()
-# result.content      → 完整文本
-# result.tool_calls   → [{id, name, params}]
-# result.usage        → {prompt_tokens, completion_tokens, total_tokens}
-# result.finish_reason → "stop" | "tool_calls"
-```
-
-**流式** (`stream=True`，默认)：
-```
-stream: ModelStream = await agent.model_call(stream=True)
-async for chunk in stream:
-    # chunk → raw dict，直接转发给 App
-result = stream.result   # 迭代结束后可用，聚合好的 ModelResult
 ```
 
 ### 返回值类型
@@ -177,137 +511,87 @@ result = stream.result   # 迭代结束后可用，聚合好的 ModelResult
 class ModelResult:
     content: str                          # 完整文本
     tool_calls: list[dict] = []           # [{id, name, params}]
-    usage: dict = {}                      # {prompt_tokens, completion_tokens, total_tokens}，模型不返回时为空 dict
+    usage: dict = {}                      # {prompt_tokens, completion_tokens, total_tokens}
     finish_reason: str = "stop"           # "stop" | "tool_calls"
 ```
 
-> **注意**：部分模型不在响应中返回 usage。此时 `usage` 为空 dict `{}`，不会缺 key 或报错。消费方通过 `data.get("usage", {}).get("total_tokens", 0)` 安全取值。
-
 #### `ModelStream`（流式）
 
-既是 `AsyncIterator[dict]`，又提供 `.result` 聚合属性：
+既是 `AsyncIterator[dict]`，又提供 `.result` 聚合属性。
 
-```python
-class ModelStream:
-    def __aiter__(self) → self
-    async def __anext__(self) → dict     # 迭代 raw chunk
-    @property
-    def result(self) → ModelResult       # 迭代结束后可用
-```
+**Chunk 类型**：
 
-**Chunk 类型**（来自 `ModelAdapter.chat_stream_full`）：
-
-| chunk["type"] | 说明 | 示例 |
-|------|------|------|
-| `chunk` | 文本增量，可能含 `reasoning` | `{"type":"chunk","content":"Hello","reasoning":"用户说Hello..."}` |
-| `tool_call_chunk` | 工具调用增量 | `{"type":"tool_call_chunk","name":"read","arguments":"{\"pa","id":"call_0","delta":"{\"pa"}` |
-| `tool_call` | 完整工具调用（`finish_reason=tool_calls` 时） | `{"type":"tool_call","name":"read","arguments":"{\"path\":\"/a\"}","id":"call_0"}` |
-| `usage` | token 用量 | `{"type":"usage","prompt_tokens":100,"completion_tokens":50,"total_tokens":150}` |
-| `error` | API 错误 | `{"type":"error","code":429,"detail":"..."}` |
-
-**`.result` 聚合逻辑**（`ModelStream._finalize`）：
-
-```
-"chunk" chunks      → content_parts.join("")     → ModelResult.content
-"tool_call" chunks  → tool_calls dict            → ModelResult.tool_calls
-"usage" chunk       → usage dict                 → ModelResult.usage
-has tool_calls      → finish_reason="tool_calls" else "stop"
-```
-
-> **注意**：`tool_call_chunk` 是增量更新（App 可用于流式展示进度），`tool_call` 是完整结果。聚合时框架只用 `tool_call` 构建 `ModelResult`。
+| chunk["type"] | 说明 |
+|------|------|
+| `chunk` | 文本增量，可能含 `reasoning` |
+| `tool_call_chunk` | 工具调用增量 |
+| `tool_call` | 完整工具调用（`finish_reason=tool_calls` 时） |
+| `usage` | token 用量 |
+| `error` | API 错误 |
 
 ### App 消费模式
 
 ```python
 async for event in harness.run("用户输入"):
     if event.type == "model_chunk":
-        # 流式：逐 chunk 实时展示
         chunk = event.data
         if chunk["type"] == "chunk":
-            if "reasoning" in chunk:
-                show_reasoning(chunk["reasoning"])
             show_content(chunk["content"])
-        elif chunk["type"] == "tool_call_chunk":
-            show_tool_progress(chunk["name"], chunk["delta"])
         elif chunk["type"] == "tool_call":
             show_tool_call(chunk["name"], chunk["arguments"])
-
     elif event.type == "model_call_end":
-        # 聚合完成，state 已回写
-        data = event.data
-        print(f"本轮完成: {data['content'][:50]}..., tokens={data.get('usage', {})}")
+        print(f"tokens={event.data.get('usage', {})}")
 ```
-
-### Harness 内部流程
-
-```
-┌─ before_model ─────────────────────────────────────────────┐
-│  tools = tool_manager.get_tool_definitions()               │
-│  filtered = _filter_tools(tools)                           │
-│  openai_tools = to_openai_tools(filtered)                  │
-└────────────────────────────────────────────────────────────┘
-        │
-        ▼
-agent.model_call(stream=True, tools=openai_tools) → ModelStream
-    │
-    ├─ state.messages → [{role, content}]  (内部格式，content 可为 dict)
-    │
-    ├─ ModelAdapter.format_messages() → provider API 格式
-    │
-    ├─ async for chunk in stream:
-    │     yield AgentEvent("model_chunk", chunk)     # App 消费，实时 SSE
-    │
-    ├─ result = stream.result                        # 聚合好的 ModelResult
-    │
-    ├─ agent.input("assistant", result)              # 回写 state.messages
-    │     │
-    │     └─ 如有 tool_calls:
-    │          content = {"content": str, "tool_calls": list}
-    │        否则:
-    │          content = str
-    │
-    └─ yield AgentEvent("model_call_end", {content, tool_calls, usage, finish_reason})
-```
-
-App 消费 stream 和 Harness 回写 state **完全解耦，互不依赖**。流式路径下 `model_call_end` 仍会 emit（`collect_response`、测试等需要它作为完成信号）。
-
-### 兼容性
-
-- 当 `_stream_model` 为 None 时（旧构造、无模型配置），默认流式会 fallback 到非流式
-- `_noop` 占位（测试场景）提供空 generator
 
 ### 消息格式适配
 
 `ModelAdapter.format_messages()` — 所有 provider 格式适配的**唯一入口**。
 
-```python
-# arf/core/model_adapter.py
-def format_messages(self, messages: list[dict]) -> list[dict]
-```
-
-**两种格式**，通过 `model_defs[].message_format` 切换：
-
 | 格式 | 配置值 | 行为 |
 |------|------|------|
 | OpenAI（默认） | `"openai"` | 标准 OpenAI 消息格式 |
-| DeepSeek | `"deepseek"` | 在 OpenAI 基础上，将思考模式中积累的 `reasoning_content` 回写到 assistant 消息，保持多轮对话中模型思维链连贯 |
-
-```yaml
-model_defs:
-  - model: deepseek-chat
-    message_format: deepseek   # "openai" | "deepseek"
-```
+| DeepSeek | `"deepseek"` | 将 `reasoning_content` 回写到 assistant 消息 |
 
 **内部格式 → API 格式转换规则：**
 
-| role | 内部 content | OpenAI API | DeepSeek API |
-|------|-------------|-------------|-------------|
-| `assistant` (tool_calls) | `{content, tool_calls: [{id, name, params}]}` | `content: null` + `tool_calls: [...]` | 同 OpenAI |
-| `assistant` (reasoning) | `{..., reasoning_content: str}` | 忽略 | `content: null` + `reasoning_content: str` |
-| `tool` | `{tool_call_id, result, error}` | `content: result` + `tool_call_id` | 同 OpenAI |
-| 其他 | `str` | `str`（透传） | 同 OpenAI |
+| role | 内部 content | API |
+|------|-------------|-----|
+| `assistant` (tool_calls) | `{content, tool_calls: [{id, name, params}]}` | `content: null` + `tool_calls: [...]` |
+| `assistant` (reasoning) | `{..., reasoning_content: str}` | DeepSeek: `reasoning_content`；OpenAI: 忽略 |
+| `tool` | `{tool_call_id, result, error}` | `content: result` + `tool_call_id` |
+| 其他 | `str` | 透传 |
 
-转换在 `chat_complete()` / `chat_stream_full()` / `chat()` 内部自动调用——harness 和 agent 不感知。
+---
+
+## AgentEvent
+
+Harness 执行循环产出的事件流。App 通过 `async for event in harness.run()` 消费。
+
+```python
+@dataclass
+class AgentEvent:
+    type: str          # 事件类型
+    data: dict         # 事件负载
+    session_id: str    # 当前会话 ID
+    turn: int          # 当前 turn 编号
+```
+
+### 事件类型
+
+| `event.type` | `event.data` | 触发时机 |
+|------|------|------|
+| `model_chunk` | `{type, content, reasoning?, ...}` | 流式模型输出的每个 chunk |
+| `model_call_end` | `{content, tool_calls, usage, finish_reason}` | 模型调用完成 |
+| `tool_call_start` | `{name, id}` | 工具执行开始 |
+| `tool_call_end` | `{name, id, success}` | 工具执行完成 |
+| `approval_required` | `{decision_id, tool_name, params}` | 需要人工审批 |
+| `approval_resolved` | `{decision_id, approved, reason}` | 审批已决议 |
+| `guard_block` | `{tool_name, reason}` | 工具被门禁阻止 |
+| `guard_pass` | `{tool_name}` | 工具通过门禁 |
+| `parked` | `{hook_name, waiting}` | 执行暂停，等待人工输入 |
+| `session_policy_switch` | `{new_mode}` | 运行时 mode 切换 |
+| `error` | `{detail}` | 发生错误 |
+| `task_completed` | — | 任务完成 |
 
 ---
 
@@ -317,685 +601,83 @@ model_defs:
 
 #### `AgentConfig.from_yaml(path)`
 
-从 `agent.yaml` 文件加载 Agent 配置。
-
 ```python
-from arf.agent.config import AgentConfig
-
 config: AgentConfig = AgentConfig.from_yaml("agent.yaml")
-# config.name          → "my-agent"
-# config.model_defs    → [{model, api_base, api_key_env, ...}]
-# config.system_prompt → SystemPromptConfig
 ```
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `path` | `str \| Path` | agent.yaml 文件路径 |
 
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| config | `AgentConfig` | 验证后的 Pydantic 配置模型 |
-
----
-
 ### 工厂入口
 
 #### `create_harness(agent_config_path, ...)`
 
-从 YAML 配置一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、`McpClientManager` 组装（含 kernel 工具注册 + SkillIndex 初始化 + `await tool_manager.start()`）。
+一站式创建 `AgentHarness`。内部完成：配置加载、ModelAdapter 构建、PrimitiveAgent 创建、Plugin 发现与实例化、`McpClientManager` 组装。
 
 ```python
-from arf.harness.factory import create_harness
-
 harness = await create_harness(
     agent_config_path="agent.yaml",
-    harness_config_path="harness.yaml",   # 可选，默认在 agent.yaml 同级
+    harness_config_path="harness.yaml",   # 可选
     plugin_dir="path/to/plugins",         # 可选，默认 arf/plugins/
     event_bus=None,                       # 可选，默认 InMemoryEventBus
-    data_dir="./data",                    # 可选，默认 ./data
+    data_dir="./data",                    # 可选
 )
-
-async for event in harness.run("hello"):
-    ...
 ```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `agent_config_path` | `str` | (必需) | agent.yaml 路径 |
-| `harness_config_path` | `str \| None` | `None` | harness.yaml 路径，默认在 agent.yaml 同级查找 |
-| `plugin_dir` | `str \| None` | `None` | 插件目录，默认 `arf/plugins/` |
-| `event_bus` | `Any` | `None` | 事件总线，默认创建 `InMemoryEventBus` |
-| `data_dir` | `str` | `"./data"` | 数据根目录（traces/state/memory 放在此下） |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| harness | `AgentHarness` | 组装完成的执行器，调用 `run()` 启动 |
-
----
 
 ### Agent 生命周期
 
-#### `agent.start()`
+#### `agent.start()` / `agent.stop()`
 
-空操作，占位用于未来资源初始化（MCP 连接、文件监听等）。
-
-```python
-await agent.start()
-```
-
-#### `agent.stop()`
-
-清理活跃会话，释放资源。不会删除持久化的 session state。
-
-```python
-await agent.stop()
-```
-
----
+空操作，占位用于未来资源初始化 / 清理。
 
 ### 对话执行
 
 #### `agent.astream(user_message, session_id)`
 
-流式执行一个对话轮次，逐 `AgentEvent` yield。
+流式执行一个 round，逐 `AgentEvent` yield。
 
 ```python
 async for event in agent.astream("你好", session_id="my-session"):
     if event.type == "model_chunk":
-        chunk = event.data
-        if chunk["type"] == "chunk":
-            ui_stream(chunk["content"])
-        elif chunk["type"] == "reasoning" in chunk:
-            ui_reasoning(chunk["reasoning"])
-
+        ui_stream(event.data["content"])
     elif event.type == "model_call_end":
-        data = event.data
-        # data = {content, tool_calls, usage, finish_reason}
-
-    elif event.type == "error":
-        handle_error(event.data["detail"])
+        print(event.data["content"])
 ```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `user_message` | `str` | (必需) | 用户输入文本 |
-| `session_id` | `str` | `"default"` | 会话标识。空串或空白 → 自动生成 UUID |
-| `stop_on_text` | `bool` | `False` | 保留参数，当前未使用 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| events | `AsyncIterator[AgentEvent]` | 流式 AgentEvent 序列 |
-
-**Session 切换行为**：每次调用 `astream()` 会先 reset agent 内部状态（`messages`、`waiting`），然后检查 `session_id` 是否有存档——有则恢复 messages，无则新鲜启动。旧会话的 messages 不会泄漏到新会话。
 
 #### `agent.run(user_message, session_id)`
 
-便捷方法：内部调用 `astream()`，收集所有事件后返回最终文本。适用于不需要流式展示的场景（如标题生成）。
+便捷方法：内部调用 `astream()`，收集所有事件后返回最终文本。
 
 ```python
 title = await agent.run("为对话生成标题", session_id="title-gen")
-# title → "关于天气的讨论"
 ```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `user_message` | `str` | (必需) | 用户输入文本 |
-| `session_id` | `str` | `"default"` | 会话标识 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| text | `str` | 最终模型输出文本（通过 `collect_response` 收集） |
-
----
 
 ### 会话状态管理
 
-通过 `agent.state_store` 访问，实现为 `FileStateStore`（文件持久化）或 `InMemoryStateStore`（测试用）。
-
-#### `state_store.put(session_id, state)`
-
-写入会话状态。
-
-```python
-await agent.state_store.put("my-session", {
-    "session_id": "my-session",
-    "messages": [{"role": "user", "content": "你好"}, ...],
-    "session_active": True,
-})
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `session_id` | `str` | 会话标识 |
-| `state` | `dict` | 任意可 JSON 序列化的 dict |
-
-`FileStateStore` 写入路径为 `{data_dir}/{session_id}/state/{session_id}.json`。
-
-#### `state_store.get(session_id)`
-
-读取会话状态。不存在时返回 `None`。
-
-```python
-state = await agent.state_store.get("my-session")
-# state → {"session_id": "my-session", "messages": [...], ...}
-# 或 None
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `session_id` | `str` | 会话标识 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| state | `dict \| None` | 会话状态，无存档时为 `None` |
-
-#### `state_store.delete(session_id)`
-
-删除会话存档。
-
-```python
-await agent.state_store.delete("my-session")
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `session_id` | `str` | 要删除的会话标识 |
-
-#### `state_store.list_sessions()`
-
-列出所有有存档的会话 ID。
-
-```python
-sessions = await agent.state_store.list_sessions()
-# sessions → ["abc123", "def456", ...]
-```
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| sessions | `list[str]` | 会话 ID 列表（`FileStateStore` 返回排序后的列表） |
-
----
-
-### 工具过滤
-
-`AgentConfig` 控制每个 Agent 哪些工具可用：
-
-```yaml
-plugins: [filesystem]       # 启用的插件（插件工具挂到 {plugin}__ namespace）
-tools: [read_file, grep]    # 启用的 user__ 工具（空/缺省 = 全部）
-```
-
-过滤规则：
-- `kernel__` — 始终可用（`ask_user`、`use_skill`、`task_complete`）
-- `user__` — 按 `tools` 列表过滤，空列表 = 全部
-- `{plugin}__` — 按 `plugins` 列表过滤
-- `{server}__` — 远程 MCP 工具，配置了 `mcp_servers` 就全部可用
-
----
-
-### 路径控制
-
-ARF 的路径控制涉及两个概念：**项目根目录（project root）** 和 **路径白名单（allow_paths）**，各司其职。
-
-#### Project Root（项目根目录）
-
-通过 `AppContext(root=Path(__file__).parent)` 注入框架。框架从它派生所有标准路径：
-
-| 属性 | 路径 | 用途 |
-|------|------|------|
-| `workspace_dir` | `{root}/` | 项目工作区根目录 |
-| `tools_dir` | `{root}/tools/` | 用户自定义工具 |
-| `skills_dir` | `{root}/skills/` | 用户自定义技能 |
-| `data_dir` | `{root}/data/` | 运行时数据（state、traces、memory） |
-
-工具函数可通过 `_workspace` 参数接收 workspace 路径（`_` 前缀的 DI 参数由框架注入）：
-
-```python
-# tools/my_tool/function.py
-async def execute(path: str, _workspace: str = "", **kwargs) -> dict:
-    from pathlib import Path
-    full = Path(_workspace) / path if _workspace else Path(path)
-    ...
-```
-
-**影响范围**：`AppContext.root` 决定了工具的发现路径（`tools/`）、session 数据存储路径（`data/`）、以及工具函数的 `_workspace` 注入值。它只影响"在哪里找东西"和"相对路径的基准"，不做安全检查。
-
-#### allow_paths（路径白名单）
-
-在 `agent.yaml` 顶层以 `list[str]` 形式声明。支持绝对路径和相对路径：
-
-```yaml
-allow_paths:
-  - /tmp/workspace           # 绝对路径 → 直接使用
-  - ./workspace              # 相对路径 → 以 AppContext.root 为基准解析
-  - data/output              # 同上
-```
-
-**解析时机**：`BaseAgent.__init__` 创建 `AgentHarness` 之前。相对路径通过 `Path(root).resolve() / p` 转为绝对路径，绝对路径原样保留。最终到达 sandbox 的全部是绝对路径。
-
-**数据流**：`AgentConfig.allow_paths` → `BaseAgent` 解析相对路径 → engine 注入 `ctx.hook_data["_allow_paths"]` → `tool_guard` sandbox 读取。
-
-**检查逻辑**（`sandbox_check: true` 时生效）：
-
-1. 读 `_tool_defs[name].parameters.properties`，找到 `format: path` 的参数
-2. 对每个路径参数值调用 `os.path.normpath(value)`
-3. 检查是否等于或以 `allow_path + os.sep` 开头
-4. 不在白名单内 → `guard_block` + 写入 `_blocked_results` → engine 返回失败结果
-
-```python
-# /home/user/project/file.txt  → 在 /home/user/project 内 → 放行
-# /etc/passwd                  → 不在白名单内 → 拦截
-# ../outside                   → normpath 后不匹配 → 拦截
-```
-
-**影响范围**：`allow_paths` 是**安全机制**——只控制工具是否能访问某个路径。它不决定工具从哪里加载、session 数据存哪里。空列表时 sandbox 打 warning 不拦截。
-
-#### 两者关系
-
-```
-AppContext.root = "/home/user/myapp"
-    ├─ tools/          ← 工具发现（project root 决定）
-    ├─ data/           ← session 存储（project root 决定）
-    └─ _workspace      ← 注入给工具函数的基准路径
-
-agent.yaml allow_paths:
-    - /home/user/myapp  ← 安全检查（sandbox 决定能否访问）
-    - /tmp/output
-```
-
-Project root 和 allow_paths 通常是同一目录，但语义不同：root 是"从哪里加载"，allow_paths 是"能访问哪里"。
-
----
-
-### 权限控制
-
-ARF 的权限控制由两层组成：**Session Mode**（全局模式）和 **Plugin Config**（工具列表）。`tool_guard` 插件在 `before_tools` checkpoint 统一执行判定。
-
-#### 决策矩阵
-
-`deny` 和 `deny_patterns` **始终优先**，不随 mode 变化。然后 mode 决定 `allow` / `ask` / `unknown` 的处理：
-
-| mode | deny / deny_patterns | allow | ask | unknown |
-|------|---------------------|-------|-----|---------|
-| **AUTO** | 拒绝 | 放行 | 放行（跳过审批） | 放行 |
-| **PLAN** | 拒绝 | 检查 `readOnlyHint` | 检查 `readOnlyHint` | 拒绝 |
-| **ASK**（默认） | 拒绝 | 放行 | 转交 approval 审批 | 拒绝* |
-
-> \* ASK 下 unknown：若 `deny` 列表非空则拒绝；若 `deny` 为空则放行（隐式全局允许，方便开发阶段）。
-
-#### Session Mode
-
-```yaml
-session_mode: ask   # "auto" | "ask" | "plan"
-```
-
-| 模式 | 适用场景 |
-|------|---------|
-| `auto` | 信任模式 — 除 deny 列表外全部放行，无需审批 |
-| `ask`（默认） | 标准模式 — allow 放行、ask 审批、unknown 拒绝 |
-| `plan` | 只读模式 — 除 deny 外，额外检查 `readOnlyHint`，有副作用的工具即使列在 allow/ask 中也被阻止 |
-
-运行时切换：
-
-```python
-harness.set_session_mode("plan")
-harness.set_session_mode(SessionMode.AUTO)
-```
-
-#### Plugin Config
-
-`plugins_config` 覆盖各插件 `plugin.yaml` 的默认值。框架自动 deep-merge。
-
-```yaml
-plugins_config:
-  tool_guard:
-    deny: [bash, python_exec]        # 黑名单 — 始终拒绝，任何 mode 下
-    deny_patterns: ["rm -rf"]        # 参数模式拒绝 — 始终拒绝
-    allow: [read_file, grep]         # 白名单 — AUTO/ASK 放行，PLAN 还需检查 readOnlyHint
-    ask: [write_file]                # 审批列表 — ASK 下转交 approval，AUTO 放行，PLAN 检查 readOnlyHint
-  approval:
-    ask_list: [write_file]           # 与 tool_guard.ask 对应，实际触发审批
-    timeout: 0                       # 0 = 无限等待；> 0 = 超时自动拒绝（秒）
-```
-
-#### 工具名匹配：裸名 vs 全名
-
-`matches_perm()` 两层匹配：
-
-| 配置写法 | 匹配范围 |
-|---------|---------|
-| `read_file`（裸名） | 所有 namespace |
-| `filesystem__read_file`（全名） | 仅该 namespace |
-
-多 namespace 同名工具差异化管控时用全名。
-
-#### 工具声明 readOnlyHint（PLAN 模式）
-
-`has_side_effect(name, tool_annotations)` 三级判定：
-
-1. **工具自声明（权威）** — 读 `tool.yaml` 的 `annotations.readOnlyHint`
-2. **Kernel 硬编码兜底** — 仅 9 个框架内置 kernel tools
-3. **未知 → assume side effect** — 安全默认
-
-```yaml
-# tool.yaml
-annotations:
-  readOnlyHint: true   # 只读，PLAN 模式放行
-  # readOnlyHint: false  # 有副作用，PLAN 模式阻止
-```
-
-#### 工具处理管道
-
-`before_tools` checkpoint 上，`tool_guard` 和 `approval` 插件按序处理 `_pending_tool_calls`。被阻断的工具写入 `_blocked_results` 并从 `_pending_tool_calls` 移除，后续插件不再看到：
-
-```
-_pending_tool_calls (model 返回的全部 tool call)
-    │
-    ▼
-tool_guard._guard()
-    ├─ Layer 1: deny_patterns → _block_tool → 移除
-    ├─ Layer 2: deny          → _block_tool → 移除
-    ├─ Layer 3: sandbox       → _block_tool → 移除
-    └─ Layer 4: mode + allow/ask/unknown
-         ├─ AUTO: 全部 guard_pass
-         ├─ PLAN: readOnlyHint 检查 → 有副作用 → _block_tool → 移除
-         └─ ASK: allow→guard_pass, ask→留在 pending 等 approval
-    │
-    ▼ (仅未被移除的工具继续)
-approval._check_approval()
-    ├─ deny → _block_tool → 移除
-    └─ ask_list 匹配 → park 等待审批 → 拒绝时 _block_tool → 移除
-    │
-    ▼
-engine 执行
-    ├─ _all_tool_calls（原始列表）→ 所有 tool 都有 tool_call_start/end 事件
-    ├─ _pending_tool_calls（剩余）→ execute_batch 实际执行
-    └─ _blocked_results            → 合并为 ToolResult(success=False)
-```
-
-**关键设计**：阻断不丢事件。Engine 保存 `_all_tool_calls` 原始列表，被阻断移除的工具仍通过 `_blocked_results` 注入失败结果，LLM 看到完整的 tool response 序列。
-
-#### 可用插件
-
-| 插件 | 配置项 | 说明 |
-|------|------|------|
-| `tool_guard` | `allow`, `deny`, `ask`, `deny_patterns` | 统一权限门禁：集成 mode 判定 + 列表匹配 |
-| `approval` | `ask_list`, `timeout` | 人机审批：park → REPL → approve → resume |
-| `compaction` | `tool_output` | 工具输出外部化 |
-| `plan_solve` | `max_depth`, `timeout` | Plan-Solve 执行 |
-| `error_handler` | `max_retries` | 错误恢复策略 |
-
-#### 运行时切换
-
-```python
-# /mode 命令实现
-harness.set_session_mode("plan")   # 切换到只读模式
-harness.set_session_mode("auto")   # 切换到自动模式
-harness.set_session_mode("ask")    # 回到审批模式（默认）
-
-# 也可用枚举
-from arf.session.types import SessionMode
-harness.set_session_mode(SessionMode.PLAN)
-```
-
-调用 `set_session_mode()` 后，Engine 会 emit `session_policy_switch` 事件到 event_bus，下一轮 `run()` 生效。
-
----
-
-### Memory（记忆系统）
-
-`memory` 插件是**完全自持**的——自己管理 `MemoryIndex`、`SecretsStore` 和专有提取模型，不依赖框架注入。6 个工具以 plugin tools 方式（`memory__*` namespace）由 `PluginProvider` 自动加载。
-
-#### 四层记忆
-
-| 层 | 文件 | 写入方 | 内容 |
-|----|------|--------|------|
-| **project** | `data/memory/project.md` | Agent 调 `memory__write_project_memory` | 架构决策、约定、修复记录、项目上下文 |
-| **user** | `data/memory/user.md` | Agent 调 `memory__write_user_memory` + 插件 `round_end` 自动提取 | 用户角色、偏好、决策、知识 |
-| **secrets** | `data/memory/secrets.enc` | Agent 调 `memory__write_secret` | 加密的 API key、密码、token |
-| **task_memory** | `data/memory/tasks.md` | 插件 `task_completed` 自动提取 + 合并 | 可复用任务经验（分类、方案、教训） |
-
-#### 工具
-
-所有记忆工具在 `memory__` namespace 下，由 `PluginProvider` 自动发现：
-
-| 工具 | 类型 | 说明 |
-|------|------|------|
-| `memory__write_user_memory` | 写 | 持久化用户级记忆（Markdown） |
-| `memory__write_project_memory` | 写 | 持久化项目级记忆（Markdown） |
-| `memory__search_task_memory` | 读 | LLM 驱动搜索 `tasks.md` 中的历史经验 |
-| `memory__list_secrets` | 读 | 列出所有 secret 名称（不暴露值） |
-| `memory__read_secret` | 读 | 解密并返回 secret 值 |
-| `memory__write_secret` | 写 | 加密存储 secret |
-
-#### 自动提取
-
-插件在 `session_start` 时通过 `ctx.agent.input("system", ...)` 将已有记忆注入为系统消息。
-
-**用户记忆**（`round_end`，每 N 轮）：取最近 20 条消息 → LLM 提取用户事实 → 写入 `user.md`。无新信息时输出 `NO_NEW_MEMORY` 跳过。
-
-**任务经验**（`task_completed`）：取完整对话 → LLM 提取类别、方案、教训 → LLM 合并到 `tasks.md`（去重、计数、裁剪）。
-
-#### 配置
-
-```yaml
-# agent.yaml
-plugins: [memory]      # 启用 memory 插件
-
-plugins_config:
-  memory:
-    interval: 5                    # 提取间隔（每 N 轮）
-    max_memory_size: 300           # 消息截断阈值
-    model:                         # 专有提取模型（必需，不复用 agent 模型）
-      api_base: https://api.deepseek.com/v1
-      api_key_env: DEEPSEEK_API_KEY
-      model: deepseek-chat
-      context_window: 131072
-```
-
----
-
-### 审批流程 (Park/Resume)
-
-`approval` 插件使用 Engine 的 park/resume 机制，不内部阻塞。审批流程分两阶段：
-
-```
-Turn N, before_tools checkpoint:
-  approval._check_approval()
-    ├─ 检查 _pending_tool_calls 中是否有 ask_list 工具
-    ├─ emit approval_required 事件（→ captured_events → REPL）
-    ├─ ctx.agent.wait("before_tools", ...) 注册等待
-    └─ return（不阻塞）
-
-  Engine._checkpoint() → waiting 非空 → return True
-  Engine yield captured events（approval_required 到达 REPL）
-  Engine yield parked 事件
-  Engine._do_park() → await park_event.wait()  ← 阻塞在此
-
-外部（REPL）:
-  ├─ 用户看到审批请求，做出决定
-  ├─ plugin.approve(decision_id, approved=True/False)
-  │     └─ 存储决议 + agent.finish_wait(wait_id)
-  └─ engine.resolve_wait(wait_id)  → park_event.set()  ← 解除阻塞
-
-Turn N, before_tools checkpoint 重入（loop）:
-  approval._check_approval()
-    ├─ 检测到 decision_id 已有决议
-    ├─ 通过：emit approval_resolved(approved=True)，工具留在 _pending_tool_calls
-    └─ 拒绝：emit approval_resolved(approved=False)，注入 blocked tool result，
-    │         从 _pending_tool_calls 移除
-    └─ return（无新 wait 注册）
-
-  Engine._checkpoint() → waiting 为空 → return False
-  Engine 执行 _pending_tool_calls 中剩余工具（被拒的已移除）
-```
-
-**关键设计点**：
-- 审批插件不 `raise`，拒绝只是注入 blocked result + 移除工具——Session 不崩溃
-- `tool_guard` 的 `deny` 同理：注入 blocked result + 移除工具，正常继续
-- `tool_guard` 的 `ask` 列表不移除工具，留给 `approval` 插件处理
-- Engine 在 `before_tools` checkpoint 上 loop，支持审批决议后重入过滤
-
----
+通过 `agent.state_store` 访问（`FileStateStore` 或 `InMemoryStateStore`）。
+
+| 方法 | 说明 |
+|------|------|
+| `state_store.put(session_id, state)` | 写入会话状态 |
+| `state_store.get(session_id)` | 读取会话状态，无存档返回 `None` |
+| `state_store.delete(session_id)` | 删除会话存档 |
+| `state_store.list_sessions()` | 列出所有有存档的 session ID |
 
 ### 工具执行
 
-工具执行收口到 `McpClientManager`——单一入口，namespace 路由：
-
-```
-AgentHarness.run()
-  └─ tool_manager.execute_batch(tool_calls)    # asyncio.gather 并行
-       └─ tool_manager.execute(name, params)   # 单次调用，按 namespace 路由
-            ├─ kernel__     → 进程内 handler (use_skill, ask_user, task_complete)
-            ├─ user__       → ToolProvider — 本地 tools/ 目录 function.py
-            ├─ {plugin}__   → PluginProvider — 插件自带 function.py
-            └─ {server}__   → 远程 MCP subprocess (local_server.py)
-```
-
-**并行优先**：`AgentHarness` 优先调用 `execute_batch()`（`asyncio.gather` 并行执行全部 tool call）。仅当 `tool_manager` 不提供 `execute_batch` 时才 fallback 顺序执行。
-
-**容错**：`get_tool_definitions()` 失败时打日志继续无工具运行，不会崩溃整个 run loop。
-
 #### `McpClientManager.execute_batch(tool_calls)`
 
-```python
-async def execute_batch(self, tool_calls: list[dict]) -> dict[str, ToolResult]
-```
-
-并行执行多个工具调用。每个 tool call 独立——一个失败不影响其他。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `tool_calls` | `list[dict]` | `[{id, name, params}]` — 模型返回的工具调用列表 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| results | `dict[str, ToolResult]` | `{call_id: ToolResult}` — 每个调用的结果 |
+并行执行多个工具调用。`{call_id: ToolResult}`。
 
 #### `McpClientManager.execute(name, params)`
 
-```python
-async def execute(self, tool_name: str, params: dict) -> ToolResult
-```
-
-执行单个工具。按 namespace 前缀路由到对应 provider。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `tool_name` | `str` | 带 namespace 前缀的工具名（如 `user__read_file`） |
-| `params` | `dict` | 工具参数 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| result | `ToolResult` | `success`、`data`、`error`、`blocked` |
-
----
-
-### AgentEvent
-
-Harness 执行循环产出的事件流。App 通过 `async for event in harness.run()` 或 `agent.astream()` 消费。
-
-```python
-from arf.core.events import AgentEvent
-
-@dataclass
-class AgentEvent:
-    type: str          # 事件类型（见下方）
-    data: dict         # 事件负载
-    timestamp: float   # 事件时间戳
-    trace_id: str      # trace 标识
-    session_id: str    # 当前会话 ID
-    agent_name: str    # agent 名称
-    turn: int          # 当前 turn 编号
-    primitive: str     # "input" | "action" | "output" | "wait"
-    level: str         # "session" | "round" | "turn"
-```
-
-#### 常用事件类型
-
-| `event.type` | `event.data` 内容 | 触发时机 |
-|------|------|------|
-| `model_chunk` | `{type, content, reasoning?, ...}` | 流式模型输出的每个 chunk |
-| `model_call_end` | `{content, tool_calls, usage, finish_reason}` | 模型调用完成（聚合结果） |
-| `tool_call_start` | `{name, id}` | 工具执行开始 |
-| `tool_call_end` | `{name, id, success}` | 工具执行完成 |
-| `error` | `{detail}` | 发生错误 |
-| `parked` | `{hook_name, waiting}` | 执行暂停，等待人工输入 |
-| `approval_required` | `{decision_id, tool_name, params}` | 需要人工审批（approval 插件 emit） |
-| `approval_resolved` | `{decision_id, approved, reason}` | 审批已决议（通过/拒绝/超时） |
-| `guard_block` | `{tool_name, reason}` | 工具被门禁阻止（tool_guard 插件 deny） |
-| `guard_pass` | `{tool_name}` | 工具通过门禁检查 |
-| `session_policy_switch` | `{new_mode}` | 运行时 session mode 切换 |
-| `task_completed` | — | 任务完成 |
-
-#### 获取 session_id
-
-`astream()` 传入的 `session_id` 可能为空（自动生成 UUID），从事件中获取实际使用的 ID：
-
-```python
-async for event in agent.astream("hello"):
-    sid = event.session_id  # 框架实际使用的 session_id
-    ...
-```
-
----
+执行单个工具，按 namespace 前缀路由。
 
 ### 兼容工具
 
-位于 `arf.engine.compat`，用于简化事件流消费。
-
-#### `collect_response(astream)`
-
-遍历事件流，收集最终文本。等价于 `agent.run()` 的内部实现。
-
-```python
-from arf.engine.compat import collect_response
-
-text = await collect_response(agent.astream("hello", session_id="s1"))
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `astream` | `AsyncGenerator[AgentEvent, None]` | 事件流 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| text | `str` | 最后一个 `model_call_end` 事件的 `content` |
-
-#### `collect_events(astream)`
-
-收集所有事件到列表，用于测试断言。
-
-```python
-from arf.engine.compat import collect_events
-
-events = await collect_events(agent.astream("hello"))
-assert any(e.type == "model_call_end" for e in events)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `astream` | `AsyncGenerator[AgentEvent, None]` | 事件流 |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| events | `list[AgentEvent]` | 所有事件 |
-
-#### `drain_astream(engine, state)`
-
-消费引擎的事件流，返回最终持久化状态。用于旧式 `engine.invoke()` 的替代。
-
-```python
-from arf.engine.compat import drain_astream
-
-final_state = await drain_astream(engine, initial_state)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `engine` | — | 引擎实例（有 `astream()` 方法） |
-| `state` | `dict` | 初始状态 dict |
-
-| 返回 | 类型 | 说明 |
-|------|------|------|
-| state | `dict` | `state_store.get()` 返回的最终持久化状态 |
+| 函数 | 说明 |
+|------|------|
+| `collect_response(astream)` | 收集事件流中的最终文本 |
+| `collect_events(astream)` | 收集所有事件到列表 |
+| `drain_astream(engine, state)` | 消费引擎事件流，返回持久化状态 |

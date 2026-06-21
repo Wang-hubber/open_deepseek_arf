@@ -16,6 +16,7 @@ from arf.session.types import SessionMode
 logger = logging.getLogger("arf.harness")
 
 CHECKPOINTS = [
+    "session_start",
     "before_round", "before_model", "after_model",
     "before_tools", "after_tools", "after_round", "on_error",
 ]
@@ -149,7 +150,8 @@ class AgentHarness:
         self._interaction_round += 1
 
         # Assign session_id if this is a new session
-        if not agent.state.session_id:
+        is_new_session = not agent.state.session_id
+        if is_new_session:
             agent.state.session_id = session_id or str(uuid.uuid4())
 
         ctx = self._make_ctx()
@@ -158,6 +160,25 @@ class AgentHarness:
         # Resolve effective session mode for this round
         effective_mode = self._mode_manager.resolve(agent_policy=None)
         ctx.hook_data["_effective_mode"] = effective_mode
+
+        # --- session_start (new session only) ---
+        if is_new_session:
+            # Framework-injected system prompt (from agent.yaml)
+            if self._agent_config is not None:
+                sp = getattr(self._agent_config, "system_prompt", None)
+                if sp is not None:
+                    prefix = getattr(sp, "prefix", None)
+                    if prefix is not None:
+                        if getattr(prefix, "role", ""):
+                            agent.input("system", prefix.role.strip())
+                        if getattr(prefix, "critical_rules", ""):
+                            agent.input("system", prefix.critical_rules.strip())
+
+            # Plugins inject extra context (e.g. memory)
+            await self._checkpoint("session_start", ctx)
+            for event in ctx.captured_events:
+                yield event
+            ctx.captured_events.clear()
 
         # Inject user message
         agent.input("user", user_message)
