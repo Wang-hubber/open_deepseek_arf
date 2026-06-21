@@ -5,6 +5,10 @@ import uuid
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from dataclasses import asdict
+from pathlib import Path
+
+import json as _json_mod
 
 from arf.agent.primitive import PrimitiveAgent
 from arf.core.events import AgentEvent
@@ -14,6 +18,8 @@ from arf.session.mode_manager import SessionModeManager
 from arf.session.types import SessionMode
 
 logger = logging.getLogger("arf.harness")
+
+CHUNK_EVENTS = frozenset({"model_chunk", "thinking_delta"})
 
 CHECKPOINTS = [
     "session_start",
@@ -43,6 +49,11 @@ class AgentHarness:
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
         self._interaction_round: int = 0
+
+        # Trace writer — async JSONL output from ctx.emit()
+        self._trace_queue: asyncio.Queue = asyncio.Queue()
+        self._trace_writer_task: asyncio.Task | None = None
+        self._trace_file: Path | None = None
 
         # State persistence — harness owns session lifecycle
         from arf.engine.checkpoint import FileStateStore
@@ -104,12 +115,53 @@ class AgentHarness:
             session_id=self.agent.state.session_id,
             event_bus=self._event_bus,
             data_dir=self._data_dir,
+            trace_queue=self._trace_queue,
         )
 
     def _sync_ctx(self, ctx: PluginContext, turn: int) -> None:
         """Update context lifecycle counters at each checkpoint."""
         ctx.turn = turn
         ctx.interaction_round = self._interaction_round
+
+    # ── Trace Writer ──────────────────────────────────────
+
+    async def _trace_writer(self) -> None:
+        """Background coroutine: drain _trace_queue, write JSONL, skip chunk events."""
+        while self._trace_file is not None:
+            event = await self._trace_queue.get()
+            try:
+                if event.type in CHUNK_EVENTS:
+                    self._trace_queue.task_done()
+                    continue
+                line = _json_mod.dumps(asdict(event), ensure_ascii=False) + "\n"
+                self._trace_file.write(line)
+                self._trace_file.flush()
+            except Exception:
+                logger.exception("Trace writer error")
+            finally:
+                self._trace_queue.task_done()
+
+    def _start_trace_writer(self, session_id: str) -> None:
+        """Create trace directory, open file, launch writer coroutine."""
+        trace_dir = Path(self._data_dir) / session_id / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        self._trace_file = open(trace_dir / f"{session_id}.jsonl", "a", encoding="utf-8")
+        self._trace_writer_task = asyncio.create_task(self._trace_writer())
+
+    async def _stop_trace_writer(self) -> None:
+        """Drain remaining events, cancel writer, close file."""
+        if self._trace_writer_task is None:
+            return
+        await self._trace_queue.join()
+        self._trace_writer_task.cancel()
+        try:
+            await self._trace_writer_task
+        except asyncio.CancelledError:
+            pass
+        self._trace_writer_task = None
+        if self._trace_file:
+            self._trace_file.close()
+            self._trace_file = None
 
     async def _run_blocking(self, hook_name: str, ctx: PluginContext) -> None:
         for p in self._by_hook.get(hook_name, []):
@@ -181,6 +233,12 @@ class AgentHarness:
             for event in ctx.captured_events:
                 yield event
             ctx.captured_events.clear()
+
+            # Start trace writer after session_start checkpoint
+            self._start_trace_writer(agent.state.session_id)
+
+            # Emit session_start lifecycle event for trace + SSE
+            yield ctx.emit(event_type="session_start", data={})
         else:
             # Restore messages from persisted state (resumed session)
             existing = await self._state_store.get(agent.state.session_id)
@@ -199,7 +257,7 @@ class AgentHarness:
             yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
             await self._do_park()
             if self._parked:
-                await self._save_state()
+                await self._save_and_teardown()
                 return
 
         turn = 0
@@ -212,7 +270,7 @@ class AgentHarness:
                 yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
-                    await self._save_state()
+                    await self._save_and_teardown()
                     return
 
             # Fetch tool definitions, filter, convert to OpenAI format
@@ -268,7 +326,7 @@ class AgentHarness:
                 yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
-                    await self._save_state()
+                    await self._save_and_teardown()
                     return
 
             # --- tool execution ---
@@ -303,7 +361,7 @@ class AgentHarness:
                         yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
                         await self._do_park()
                         if self._parked:
-                            await self._save_state()
+                            await self._save_and_teardown()
                             return
                     else:
                         # Drain captured events from non-parking pass
@@ -375,7 +433,7 @@ class AgentHarness:
                     yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
                     await self._do_park()
                     if self._parked:
-                        await self._save_state()
+                        await self._save_and_teardown()
                         return
 
                 continue  # loop back to before_model
@@ -387,9 +445,15 @@ class AgentHarness:
             yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
             await self._do_park()
 
-        await self._save_state()
+        yield ctx.emit(event_type="round_end", data={})
+        await self._save_and_teardown()
 
     # ── State Persistence ───────────────────────────────
+
+    async def _save_and_teardown(self) -> None:
+        """Save state and stop trace writer — called on all exit paths."""
+        await self._save_state()
+        await self._stop_trace_writer()
 
     async def _save_state(self) -> None:
         """Persist current agent state so sessions survive restarts."""
