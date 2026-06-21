@@ -1,6 +1,7 @@
 """AgentHarness — execution skeleton + plugin scheduler + park/resume."""
 from __future__ import annotations
 import asyncio
+import hashlib as _hashlib
 import uuid
 import logging
 from collections.abc import AsyncIterator
@@ -49,6 +50,7 @@ class AgentHarness:
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
         self._interaction_round: int = 0
+        self._system_prompt_text: str = ""
 
         # Trace writer — async JSONL output from ctx.emit()
         self._trace_queue: asyncio.Queue = asyncio.Queue()
@@ -106,6 +108,97 @@ class AgentHarness:
                 # server__ or other namespace: include if unknown (future-proof)
                 result.append(t)
         return result
+
+    # ── Snapshot ──────────────────────────────────────────
+
+    def _build_snapshot(self) -> dict:
+        """Collect all agent configuration, compute hash, return {hash, config}."""
+        config: dict[str, Any] = {}
+
+        # Model -- declared config (not per-turn routing choice)
+        adapter = getattr(self.agent, "_model_adapter", None)
+        if adapter and hasattr(adapter, "describe"):
+            config["model"] = adapter.describe()
+        else:
+            config["model"] = {}
+
+        # Tools -- full definitions from resource registry
+        if self._tool_manager and hasattr(self._tool_manager, "list_tools"):
+            config["tools"] = self._tool_manager.list_tools()
+        else:
+            config["tools"] = {}
+
+        # Skills
+        if self._tool_manager and hasattr(self._tool_manager, "list_skills"):
+            config["skills"] = self._tool_manager.list_skills()
+        else:
+            config["skills"] = {}
+
+        # Plugins
+        config["plugins"] = {
+            p.name: p.config for p in self._plugins
+        }
+
+        # Memory
+        memory_store = getattr(self.agent, "_memory_store", None)
+        if memory_store and hasattr(memory_store, "describe"):
+            config["memory"] = memory_store.describe()
+        elif memory_store:
+            config["memory"] = {"type": type(memory_store).__name__}
+        else:
+            config["memory"] = {}
+
+        # Compaction -- from agent_config
+        compaction_cfg = getattr(self._agent_config, "plugins_config", None)
+        if compaction_cfg:
+            config["compaction"] = compaction_cfg.get("compaction", {})
+        else:
+            config["compaction"] = {}
+
+        # Routing -- from agent_config
+        routing_cfg = getattr(self._agent_config, "plugins_config", None)
+        if routing_cfg:
+            config["routing"] = routing_cfg.get("routing", {})
+        else:
+            config["routing"] = {}
+
+        # Sandbox
+        config["sandbox"] = getattr(self._agent_config, "allow_paths", []) or []
+
+        # Session mode
+        config["session_mode"] = self._mode_manager.global_mode.value
+
+        # System prompt
+        config["system_prompt"] = getattr(self, "_system_prompt_text", "")
+
+        # Canonical JSON for deterministic hash
+        canonical = _json_mod.dumps(config, sort_keys=True, ensure_ascii=False)
+        config_hash = _hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+        return {"hash": config_hash, "config": config}
+
+    def _compute_diff(self, old_config: dict, new_config: dict) -> dict:
+        """Return {added, removed, changed} between two snapshot configs."""
+        old_keys = set(old_config.keys())
+        new_keys = set(new_config.keys())
+        added = sorted(new_keys - old_keys)
+        removed = sorted(old_keys - new_keys)
+        changed: list[str] = []
+        for k in sorted(old_keys & new_keys):
+            if old_config[k] != new_config[k]:
+                # For dict values, show top-level key diffs
+                if isinstance(old_config[k], dict) and isinstance(new_config[k], dict):
+                    sub_old_keys = set(old_config[k].keys())
+                    sub_new_keys = set(new_config[k].keys())
+                    for sub in sorted(sub_new_keys - sub_old_keys):
+                        changed.append(f"{k}.{sub}: added")
+                    for sub in sorted(sub_old_keys - sub_new_keys):
+                        changed.append(f"{k}.{sub}: removed")
+                else:
+                    old_repr = _json_mod.dumps(old_config[k], ensure_ascii=False)[:100]
+                    new_repr = _json_mod.dumps(new_config[k], ensure_ascii=False)[:100]
+                    changed.append(f"{k}: {old_repr} -> {new_repr}")
+        return {"added": added, "removed": removed, "changed": changed}
 
     # ── Plugin scheduling ───────────────────────────────
 
@@ -225,6 +318,7 @@ class AgentHarness:
             if self._agent_config is not None:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
                 prompt = DefaultSystemPromptProvider(self._agent_config).build()
+                self._system_prompt_text = prompt.prefix  # save for snapshot
                 if prompt.prefix:
                     agent.input(role="system", content=prompt.prefix, position="begin")
 
@@ -248,6 +342,21 @@ class AgentHarness:
                 for m in existing["messages"]:
                     if isinstance(m, dict):
                         agent.input(role=m.get("role", "user"), content=m.get("content", ""))
+
+        # Build snapshot, check against persisted state
+        snapshot = self._build_snapshot()
+        existing = await self._state_store.get(agent.state.session_id)
+        if existing and existing.get("snapshot"):
+            old_hash = existing["snapshot"]["hash"]
+            if old_hash != snapshot["hash"]:
+                diff = self._compute_diff(existing["snapshot"]["config"], snapshot["config"])
+                yield ctx.emit("config_mismatch", {
+                    "old_hash": old_hash,
+                    "new_hash": snapshot["hash"],
+                    "diff": diff,
+                })
+                logger.warning("Config mismatch for session %s: %s", agent.state.session_id, diff)
+        agent.state.snapshot = snapshot
 
         # Inject user message
         agent.input(role="user", content=user_message)
@@ -462,6 +571,7 @@ class AgentHarness:
         await self._state_store.put(state.session_id, {
             "session_id": state.session_id,
             "messages": msgs,
+            "snapshot": state.snapshot,
             "session_active": True,
         })
 
