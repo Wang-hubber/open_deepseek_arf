@@ -1,6 +1,6 @@
 name: memory
 events:
-  - {hook_name: "session_start", event_name: "session_start", mode: "side"}
+  - {hook_name: "session_start", event_name: "session_start", mode: "blocking"}
   - {hook_name: "after_round", event_name: "round_end", mode: "side"}
   - {hook_name: "after_round", event_name: "task_completed", mode: "side"}
 config:

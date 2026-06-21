@@ -287,18 +287,19 @@ class BaseAgent:
         if not session_id or session_id.strip() == "":
             session_id = str(uuid.uuid4())
 
-        # Reset agent state for the target session
-        self._primitive_agent.state.session_id = session_id
+        # Reset per-round state (session_id managed by harness)
+        is_new_session = not self._primitive_agent.state.session_id
         self._primitive_agent.state.messages.clear()
         self._primitive_agent.state.waiting.clear()
 
-        # Restore messages if we have saved state for this session
-        existing = await self._state_store.get(session_id)
-        if existing and existing.get("messages"):
-            from arf.agent.state import Message as _M
-            for m in existing["messages"]:
-                if isinstance(m, dict):
-                    self._primitive_agent.input(role=m.get("role", "user"), content=m.get("content", ""))
+        # Restore messages if resuming an existing session
+        if not is_new_session:
+            existing = await self._state_store.get(session_id)
+            if existing and existing.get("messages"):
+                from arf.agent.state import Message as _M
+                for m in existing["messages"]:
+                    if isinstance(m, dict):
+                        self._primitive_agent.input(role=m.get("role", "user"), content=m.get("content", ""))
 
         self._active_sessions.add(session_id)
 

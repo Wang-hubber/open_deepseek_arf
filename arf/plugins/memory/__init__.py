@@ -29,7 +29,7 @@ class MemoryPlugin(Plugin):
 
     def __init__(self, name="memory", events=None, config=None):
         events = events or [
-            {"hook_name": "session_start", "event_name": "session_start", "mode": "side"},
+            {"hook_name": "session_start", "event_name": "session_start", "mode": "blocking"},
             {"hook_name": "after_round", "event_name": "round_end", "mode": "side"},
             {"hook_name": "after_round", "event_name": "task_completed", "mode": "side"},
         ]
@@ -65,10 +65,10 @@ class MemoryPlugin(Plugin):
         data_dir = ctx.data_dir
         self._data_dir = data_dir
 
-        # MemoryIndex
+        # SecretsStore must come first — MemoryIndex validates it when secrets enabled
         mem_cfg = MemoryConfig()
-        self._index = MemoryIndex(data_dir, mem_cfg)
         self._secrets = SecretsStore(mem_cfg.secrets)
+        self._index = MemoryIndex(data_dir, mem_cfg, secrets_store=self._secrets)
 
         # Wire tool globals
         self._wire_tool("write_user_memory", _index=self._index)
