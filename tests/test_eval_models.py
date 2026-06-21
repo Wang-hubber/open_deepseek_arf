@@ -255,8 +255,8 @@ class TestEvalReportAgentSnapshot:
 
     def test_old_report_without_agent_snapshot_loads(self, tmp_path):
         """向后兼容：旧 report JSON 没有 agent_snapshot 字段"""
-        p = tmp_path / "old_report.json"
         import json
+        p = tmp_path / "old_report.json"
         with open(str(p), "w") as f:
             json.dump({
                 "run_id": "r1", "benchmark_name": "bm", "agent_config_hash": "h1",
@@ -271,3 +271,79 @@ class TestEvalReportAgentSnapshot:
             }, f)
         loaded = EvalReport.from_json(str(p))
         assert loaded.agent_snapshot == {}
+
+
+class TestBackwardCompatibility:
+    """Backward compatibility: old JSON files without new fields must load with defaults."""
+
+    def test_old_benchmark_without_context_messages_loads(self, tmp_path):
+        """Old benchmark JSON without context_messages should load with empty list."""
+        import json
+        import pathlib
+        p = pathlib.Path(str(tmp_path / "old_bm.json"))
+        p.write_text(json.dumps({
+            "name": "old_bm",
+            "source_session": "s1",
+            "created_at": 1.0,
+            "cases": [
+                {"id": "c0", "input": "hello",
+                 "expected_execution": ["file_writer"],
+                 "expected_output_contains": ["done"]},
+            ],
+        }))
+        bm = EvalBenchmark.from_json(str(p))
+        assert bm.cases[0].context_messages == []
+
+    def test_old_benchmark_without_source_round_loads(self, tmp_path):
+        """Old benchmark without source_round should load with None."""
+        import json
+        import pathlib
+        p = pathlib.Path(str(tmp_path / "old_bm.json"))
+        p.write_text(json.dumps({
+            "name": "old_bm",
+            "cases": [{"id": "c0", "input": "hello"}],
+        }))
+        bm = EvalBenchmark.from_json(str(p))
+        assert bm.cases[0].source_round is None
+
+    def test_new_fields_serialization_roundtrip(self, tmp_path):
+        """Full roundtrip with all new fields."""
+        bm = EvalBenchmark(
+            name="full_test",
+            source_session="s1",
+            created_at=1.0,
+            cases=[
+                EvalCase(
+                    id="c0",
+                    input="search and read",
+                    context_messages=[
+                        {"role": "assistant", "content": "found 3 files"},
+                        {"role": "tool", "tool_call_id": "t1", "content": "[\"a.txt\"]"},
+                    ],
+                    expected_execution=["file_reader"],
+                    expected_output_contains=["content"],
+                    max_turns=5,
+                    feedback={
+                        "rating": "like",
+                        "comment": "great",
+                        "dimensions": {
+                            "tool_usage_correct": True,
+                            "answer_complete": True,
+                        },
+                    },
+                    source_round=3,
+                ),
+            ],
+        )
+        p = tmp_path / "bm.json"
+        bm.to_json(str(p))
+        loaded = EvalBenchmark.from_json(str(p))
+
+        c = loaded.cases[0]
+        assert c.context_messages == [
+            {"role": "assistant", "content": "found 3 files"},
+            {"role": "tool", "tool_call_id": "t1", "content": "[\"a.txt\"]"},
+        ]
+        assert c.feedback["dimensions"]["tool_usage_correct"] is True
+        assert c.source_round == 3
+        assert c.max_turns == 5
