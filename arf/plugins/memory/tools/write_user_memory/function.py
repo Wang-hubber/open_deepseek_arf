@@ -9,7 +9,6 @@ async def execute(content: str, **kwargs) -> dict:
     global _index
     if _index is None:
         return {"ok": False, "error": "MemoryIndex not wired"}
-    # Prefer group memory when configured, fall back to individual
     if _index._group_dir:
         _index.save_group_user(content)
     else:

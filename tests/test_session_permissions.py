@@ -140,16 +140,10 @@ class TestHasSideEffect:
         from arf.session.mode_manager import has_side_effect
         assert not has_side_effect("use_skill")
         assert not has_side_effect("ask_user")
-        assert not has_side_effect("list_secrets")
-        assert not has_side_effect("read_secret")
-        assert not has_side_effect("search_task_memory")
 
     def test_kernel_write_tools(self):
         from arf.session.mode_manager import has_side_effect
         assert has_side_effect("task_complete")
-        assert has_side_effect("write_project_memory")
-        assert has_side_effect("write_secret")
-        assert has_side_effect("write_user_memory")
 
     def test_annotations_readonly(self):
         """readOnlyHint from tool.yaml takes priority over everything."""

@@ -742,6 +742,59 @@ harness.set_session_mode(SessionMode.PLAN)
 
 ---
 
+### Memory（记忆系统）
+
+`memory` 插件是**完全自持**的——自己管理 `MemoryIndex`、`SecretsStore` 和专有提取模型，不依赖框架注入。6 个工具以 plugin tools 方式（`memory__*` namespace）由 `PluginProvider` 自动加载。
+
+#### 四层记忆
+
+| 层 | 文件 | 写入方 | 内容 |
+|----|------|--------|------|
+| **project** | `data/memory/project.md` | Agent 调 `memory__write_project_memory` | 架构决策、约定、修复记录、项目上下文 |
+| **user** | `data/memory/user.md` | Agent 调 `memory__write_user_memory` + 插件 `round_end` 自动提取 | 用户角色、偏好、决策、知识 |
+| **secrets** | `data/memory/secrets.enc` | Agent 调 `memory__write_secret` | 加密的 API key、密码、token |
+| **task_memory** | `data/memory/tasks.md` | 插件 `task_completed` 自动提取 + 合并 | 可复用任务经验（分类、方案、教训） |
+
+#### 工具
+
+所有记忆工具在 `memory__` namespace 下，由 `PluginProvider` 自动发现：
+
+| 工具 | 类型 | 说明 |
+|------|------|------|
+| `memory__write_user_memory` | 写 | 持久化用户级记忆（Markdown） |
+| `memory__write_project_memory` | 写 | 持久化项目级记忆（Markdown） |
+| `memory__search_task_memory` | 读 | LLM 驱动搜索 `tasks.md` 中的历史经验 |
+| `memory__list_secrets` | 读 | 列出所有 secret 名称（不暴露值） |
+| `memory__read_secret` | 读 | 解密并返回 secret 值 |
+| `memory__write_secret` | 写 | 加密存储 secret |
+
+#### 自动提取
+
+插件在 `session_start` 时通过 `ctx.agent.input("system", ...)` 将已有记忆注入为系统消息。
+
+**用户记忆**（`round_end`，每 N 轮）：取最近 20 条消息 → LLM 提取用户事实 → 写入 `user.md`。无新信息时输出 `NO_NEW_MEMORY` 跳过。
+
+**任务经验**（`task_completed`）：取完整对话 → LLM 提取类别、方案、教训 → LLM 合并到 `tasks.md`（去重、计数、裁剪）。
+
+#### 配置
+
+```yaml
+# agent.yaml
+plugins: [memory]      # 启用 memory 插件
+
+plugins_config:
+  memory:
+    interval: 5                    # 提取间隔（每 N 轮）
+    max_memory_size: 300           # 消息截断阈值
+    model:                         # 专有提取模型（必需，不复用 agent 模型）
+      api_base: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat
+      context_window: 131072
+```
+
+---
+
 ### 审批流程 (Park/Resume)
 
 `approval` 插件使用 Engine 的 park/resume 机制，不内部阻塞。审批流程分两阶段：

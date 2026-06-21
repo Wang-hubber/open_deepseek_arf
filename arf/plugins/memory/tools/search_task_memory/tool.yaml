@@ -1,4 +1,4 @@
-name: kernel__search_task_memory
+name: search_task_memory
 description: >
   Search past task experience for relevant approaches and pitfalls. Use
   this to learn from previous similar tasks before starting new work.
@@ -10,6 +10,5 @@ parameters:
       type: string
       description: What kind of past experience to search for (e.g. 'auth module refactoring', 'redis connection timeout').
   required: [query]
-activation: kernel
 annotations:
   readOnlyHint: true

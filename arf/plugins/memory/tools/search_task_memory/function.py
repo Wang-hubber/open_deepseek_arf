@@ -11,11 +11,7 @@ _call_model = None
 
 
 async def execute(query: str, **kwargs) -> dict:
-    """Search task memory for experiences relevant to the query.
-
-    Uses LLM to find matching entries from tasks.md and return the
-    relevant approach + lessons.
-    """
+    """Search task memory for experiences relevant to the query."""
     global _index, _call_model
     if _index is None or _call_model is None:
         return {"ok": False, "error": "Task memory not available"}

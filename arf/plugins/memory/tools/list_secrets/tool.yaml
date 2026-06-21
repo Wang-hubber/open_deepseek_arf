@@ -3,6 +3,5 @@ description: List all available secret names (values are NOT shown).
 parameters:
   type: object
   properties: {}
-activation: kernel
 annotations:
   readOnlyHint: true

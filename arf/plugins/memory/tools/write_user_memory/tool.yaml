@@ -1,4 +1,4 @@
-name: kernel__write_user_memory
+name: write_user_memory
 description: >
   Persist user-level memory that agents share about the user. Write user
   preferences, decisions, knowledge, working style, or constraints
@@ -10,6 +10,5 @@ parameters:
       type: string
       description: Markdown content to persist as user memory.
   required: [content]
-activation: kernel
 annotations:
   readOnlyHint: false

@@ -84,17 +84,11 @@ def has_side_effect(tool_name: str, tool_annotations: dict[str, Any] | None = No
                     return True
 
     # 2. Hardcoded fallback — bare name lookup
-    # Only kernel tools — user/plugin tools declare readOnlyHint in tool.yaml
-    READ_ONLY = {
-        "ask_user", "list_secrets", "read_secret",
-        "search_task_memory", "use_skill",
-    }
+    # Only kernel tools — all others declare readOnlyHint in tool.yaml
+    READ_ONLY = {"ask_user", "use_skill"}
     if bare in READ_ONLY:
         return False
-    WRITE_TOOLS = {
-        "task_complete",
-        "write_project_memory", "write_secret", "write_user_memory",
-    }
+    WRITE_TOOLS = {"task_complete"}
     if bare in WRITE_TOOLS:
         return True
 

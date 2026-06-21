@@ -1,8 +1,13 @@
 name: memory
 events:
+  - {hook_name: "session_start", event_name: "session_start", mode: "side"}
   - {hook_name: "after_round", event_name: "round_end", mode: "side"}
   - {hook_name: "after_round", event_name: "task_completed", mode: "side"}
 config:
   interval: 5
   max_memory_size: 300
-  extract_on_session_end: false
+  model:
+    api_base: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    model: deepseek-chat
+    context_window: 131072
