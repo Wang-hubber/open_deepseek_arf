@@ -77,7 +77,7 @@ def main():
         report = asyncio.run(runner.run_offline())
         print(f"\nReport ID: {report.run_id}")
     else:
-        print("Online mode: use Python API — await runner.run_online(agent.chat)")
+        print("Online mode: use Python API — await runner.run_online(agent)")
 
 
 if __name__ == "__main__":

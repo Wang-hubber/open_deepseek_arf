@@ -26,7 +26,7 @@ class EvalRunner:
         config = EvalConfig(benchmark_path="bm.json", data_dir="./data",
                              judge=JudgeModelConfig(model="gpt-4"))
         runner = EvalRunner(config)
-        report = await runner.run_online(agent.chat)
+        report = await runner.run_online(agent)
     """
 
     def __init__(self, config: EvalConfig, agent_config=None):
