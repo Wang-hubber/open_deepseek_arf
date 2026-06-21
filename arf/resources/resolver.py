@@ -132,6 +132,35 @@ class ResourceResolver:
                 result.append(config_cls(**ov))
         return result
 
+    # -- snapshot (sync, reads from cached provider data) --
+
+    def list_tools(self) -> dict[str, dict]:
+        """Return all tool definitions as a {name: {description, parameters}} dict.
+
+        Used by snapshot builder for config serialization. Synchronous --
+        reads from already-cached provider data.
+        """
+        if self._tool_provider is None:
+            return {}
+        tools = self._tool_provider.list()
+        result: dict[str, dict] = {}
+        for t in tools:
+            result[t.name] = {
+                "description": t.description,
+                "parameters": t.parameters,
+            }
+        return result
+
+    def list_skills(self) -> dict[str, dict]:
+        """Return all skill definitions as a {name: config} dict."""
+        skills: list = []
+        if self._skill_provider:
+            skills = list(self._skill_provider.list())
+        result: dict[str, dict] = {}
+        for s in skills:
+            result[s.name] = s.model_dump(exclude_none=True)
+        return result
+
     # -- config generation --
 
     async def generate_config(self) -> dict:
