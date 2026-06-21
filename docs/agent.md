@@ -533,6 +533,77 @@ tools: [read_file, grep]    # 启用的 user__ 工具（空/缺省 = 全部）
 
 ---
 
+### 路径控制
+
+ARF 的路径控制涉及两个概念：**项目根目录（project root）** 和 **路径白名单（allow_paths）**，各司其职。
+
+#### Project Root（项目根目录）
+
+通过 `AppContext(root=Path(__file__).parent)` 注入框架。框架从它派生所有标准路径：
+
+| 属性 | 路径 | 用途 |
+|------|------|------|
+| `workspace_dir` | `{root}/` | 项目工作区根目录 |
+| `tools_dir` | `{root}/tools/` | 用户自定义工具 |
+| `skills_dir` | `{root}/skills/` | 用户自定义技能 |
+| `data_dir` | `{root}/data/` | 运行时数据（state、traces、memory） |
+
+工具函数可通过 `_workspace` 参数接收 workspace 路径（`_` 前缀的 DI 参数由框架注入）：
+
+```python
+# tools/my_tool/function.py
+async def execute(path: str, _workspace: str = "", **kwargs) -> dict:
+    from pathlib import Path
+    full = Path(_workspace) / path if _workspace else Path(path)
+    ...
+```
+
+**影响范围**：`AppContext.root` 决定了工具的发现路径（`tools/`）、session 数据存储路径（`data/`）、以及工具函数的 `_workspace` 注入值。它只影响"在哪里找东西"和"相对路径的基准"，不做安全检查。
+
+#### allow_paths（路径白名单）
+
+在 `agent.yaml` 顶层声明：
+
+```yaml
+allow_paths:
+  - /home/user/project
+  - /tmp/workspace
+```
+
+**数据流**：`AgentConfig.allow_paths` → engine 注入 `ctx.hook_data["_allow_paths"]` → `tool_guard` 的 sandbox 层读取。
+
+**检查逻辑**（`sandbox_check: true` 时生效）：
+
+1. 读 `_tool_defs[name].parameters.properties`，找到 `format: path` 的参数
+2. 对每个路径参数值调用 `os.path.normpath(value)`
+3. 检查是否等于或以 `allow_path + os.sep` 开头
+4. 不在白名单内 → `guard_block` + 写入 `_blocked_results` → engine 返回失败结果
+
+```python
+# /home/user/project/file.txt  → 在 /home/user/project 内 → 放行
+# /etc/passwd                  → 不在白名单内 → 拦截
+# ../outside                   → normpath 后不匹配 → 拦截
+```
+
+**影响范围**：`allow_paths` 是**安全机制**——只控制工具是否能访问某个路径。它不决定工具从哪里加载、session 数据存哪里。空列表时 sandbox 打 warning 不拦截。
+
+#### 两者关系
+
+```
+AppContext.root = "/home/user/myapp"
+    ├─ tools/          ← 工具发现（project root 决定）
+    ├─ data/           ← session 存储（project root 决定）
+    └─ _workspace      ← 注入给工具函数的基准路径
+
+agent.yaml allow_paths:
+    - /home/user/myapp  ← 安全检查（sandbox 决定能否访问）
+    - /tmp/output
+```
+
+Project root 和 allow_paths 通常是同一目录，但语义不同：root 是"从哪里加载"，allow_paths 是"能访问哪里"。
+
+---
+
 ### 权限控制
 
 ARF 的权限控制由两层组成：**Session Mode**（全局模式）和 **Plugin Config**（工具列表）。`tool_guard` 插件在 `before_tools` checkpoint 统一执行判定。

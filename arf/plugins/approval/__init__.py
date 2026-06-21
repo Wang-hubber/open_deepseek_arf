@@ -14,6 +14,7 @@ import asyncio
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
 from arf.core.tool_naming import matches_perm
+from arf.session.types import SessionMode
 
 
 class ApprovalPlugin(Plugin):
@@ -37,6 +38,10 @@ class ApprovalPlugin(Plugin):
 
     async def _check_approval(self, ctx: PluginContext) -> None:
         """Check pending tool calls against ask_list. Parks on new approvals."""
+        # AUTO mode: skip approval, everything passes
+        if ctx.hook_data.get("_effective_mode") == SessionMode.AUTO:
+            return
+
         self._agent = ctx.agent
         tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
         if not tool_calls:
@@ -57,13 +62,9 @@ class ApprovalPlugin(Plugin):
                     ctx.emit("approval_resolved", {
                         "decision_id": decision_id, "approved": False, "reason": reason,
                     })
-                    ctx.agent.input("tool", {
-                        "tool_call_id": tc.get("id", ""),
-                        "name": name,
-                        "result": f"[blocked] {reason}",
-                        "error": reason,
-                    })
-                    self._remove_tool(ctx, tc)
+                    self._block_tool(ctx, tc,
+                        result=f"[blocked] {reason}",
+                        error=reason)
                 else:
                     ctx.emit("approval_resolved", {
                         "decision_id": decision_id, "approved": True,
@@ -96,6 +97,13 @@ class ApprovalPlugin(Plugin):
         self._results[decision_id] = (False, "timeout")
         if self._agent:
             self._agent.finish_wait(wait_id)
+
+    @staticmethod
+    def _block_tool(ctx: PluginContext, tc: dict, result: str, error: str) -> None:
+        """Mark tool as blocked — engine will skip execution and use this result."""
+        ctx.hook_data.setdefault("_blocked_results", {})[tc["id"]] = {
+            "result": result, "error": error,
+        }
 
     def _remove_tool(self, ctx: PluginContext, tc: dict) -> None:
         """Remove a tool call from _pending_tool_calls so the engine skips it."""

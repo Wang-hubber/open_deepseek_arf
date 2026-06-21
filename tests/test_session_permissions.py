@@ -154,22 +154,23 @@ class TestHasSideEffect:
     def test_annotations_readonly(self):
         """readOnlyHint from tool.yaml takes priority over everything."""
         from arf.session.mode_manager import has_side_effect
-        ann = {"filesystem__read_text_file": {"readOnlyHint": True}}
-        assert not has_side_effect("filesystem__read_text_file", ann)
+        # Full tool definitions with annotations sub-dict
+        td = {"filesystem__read_text_file": {"annotations": {"readOnlyHint": True}}}
+        assert not has_side_effect("filesystem__read_text_file", td)
         # Bare name also works
-        ann2 = {"read_text_file": {"readOnlyHint": True}}
-        assert not has_side_effect("user__read_text_file", ann2)
+        td2 = {"read_text_file": {"annotations": {"readOnlyHint": True}}}
+        assert not has_side_effect("user__read_text_file", td2)
 
     def test_annotations_write(self):
         from arf.session.mode_manager import has_side_effect
-        ann = {"filesystem__write_file": {"readOnlyHint": False}}
-        assert has_side_effect("filesystem__write_file", ann)
+        td = {"filesystem__write_file": {"annotations": {"readOnlyHint": False}}}
+        assert has_side_effect("filesystem__write_file", td)
 
     def test_annotations_bare_name_match(self):
         """Namespaced tool resolves via bare name in annotations."""
         from arf.session.mode_manager import has_side_effect
-        ann = {"write_file": {"readOnlyHint": False}}
-        assert has_side_effect("filesystem__write_file", ann)
+        td = {"write_file": {"annotations": {"readOnlyHint": False}}}
+        assert has_side_effect("filesystem__write_file", td)
 
     def test_unknown_has_side_effect(self):
         from arf.session.mode_manager import has_side_effect

@@ -241,14 +241,19 @@ class AgentHarness:
                 # --- before_tools ---
                 ctx.hook_data["_pending_tool_calls"] = result.tool_calls
 
-                # Build tool_annotations for permission plugins
-                _tool_annotations: dict[str, dict[str, Any]] = {}
+                # Build tool definitions lookup for permission plugins
+                # Full definition: {name, description, parameters, annotations, ...}
+                _tool_defs: dict[str, dict[str, Any]] = {}
                 if active_tool_definitions:
                     for td in active_tool_definitions:
-                        ann = td.get("annotations")
-                        if ann:
-                            _tool_annotations[td["name"]] = ann
-                ctx.hook_data["_tool_annotations"] = _tool_annotations
+                        _tool_defs[td["name"]] = td
+                ctx.hook_data["_tool_defs"] = _tool_defs
+
+                # Pass allow_paths from agent config for sandbox
+                _allow_paths: list[str] = []
+                if self._agent_config is not None:
+                    _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
+                ctx.hook_data["_allow_paths"] = _allow_paths
 
                 # Loop: re-run checkpoint after park/resume so plugins can filter
                 while True:
@@ -268,27 +273,37 @@ class AgentHarness:
                         ctx.captured_events.clear()
                         break
 
-                # Only execute tools still in _pending_tool_calls (plugins may have filtered)
+                # Execute tools — skip those already blocked by plugins
                 tool_calls = ctx.hook_data["_pending_tool_calls"]
                 if not tool_calls:
                     continue
 
+                blocked_results: dict[str, dict[str, str]] = ctx.hook_data.get("_blocked_results", {})
+                active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
+
                 for tc in tool_calls:
                     yield ctx.emit("tool_call_start", {"name": tc["name"], "id": tc["id"]})
 
-                # Parallel execution via McpClientManager.execute_batch()
-                if hasattr(self._tool_manager, 'execute_batch'):
-                    tool_results = await self._tool_manager.execute_batch(tool_calls)
+                # Execute only active (non-blocked) calls
+                if active_calls:
+                    if hasattr(self._tool_manager, 'execute_batch'):
+                        tool_results = await self._tool_manager.execute_batch(active_calls)
+                    else:
+                        tool_results = {}
+                        for tc in active_calls:
+                            try:
+                                tool_results[tc["id"]] = await self._tool_manager.execute(
+                                    tc["name"], tc.get("params", {}))
+                            except Exception as exc:
+                                tool_results[tc["id"]] = type('FakeToolResult', (), {
+                                    'success': False, 'data': {}, 'error': str(exc)})()
                 else:
-                    # Fallback sequential for tool_managers without execute_batch
                     tool_results = {}
-                    for tc in tool_calls:
-                        try:
-                            tool_results[tc["id"]] = await self._tool_manager.execute(
-                                tc["name"], tc.get("params", {}))
-                        except Exception as exc:
-                            tool_results[tc["id"]] = type('FakeToolResult', (), {
-                                'success': False, 'data': {}, 'error': str(exc)})()
+
+                # Merge pre-existing blocked results
+                for call_id, br in blocked_results.items():
+                    tool_results[call_id] = type('FakeToolResult', (), {
+                        'success': False, 'data': br.get('result', ''), 'error': br.get('error', '')})()
 
                 for tc in tool_calls:
                     r = tool_results.get(tc["id"])

@@ -72,13 +72,15 @@ def has_side_effect(tool_name: str, tool_annotations: dict[str, Any] | None = No
     namespace, bare = split_name(tool_name)
 
     # 1. Check tool annotations (both full name and bare name)
+    # tool_annotations values are full tool definitions: {..., annotations: {readOnlyHint: ...}}
     if tool_annotations:
         for lookup in (tool_name, bare):
-            ann = tool_annotations.get(lookup)
-            if ann and "readOnlyHint" in ann:
-                if ann["readOnlyHint"] is True:
+            td = tool_annotations.get(lookup)
+            if td:
+                hint = td.get("annotations", {}).get("readOnlyHint")
+                if hint is True:
                     return False
-                if ann["readOnlyHint"] is False:
+                if hint is False:
                     return True
 
     # 2. Hardcoded fallback — bare name lookup
