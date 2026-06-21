@@ -1,6 +1,6 @@
 """Tests for harness trace writer — JSONL output from ctx.emit()."""
 import json
-import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -8,7 +8,6 @@ import pytest
 from arf.agent.state import ModelResult
 from arf.agent.primitive import PrimitiveAgent
 from arf.harness.engine import AgentHarness
-from arf.event_bus import InMemoryEventBus
 
 
 def make_agent(call_model):
@@ -64,24 +63,48 @@ class TestHarnessTraceWriter:
 
     @pytest.mark.anyio
     async def test_chunk_events_filtered(self, tmp_path):
-        """model_chunk and thinking_delta are NOT written to JSONL."""
+        """model_chunk and thinking_delta are NOT written to JSONL — verified via direct trace writer dispatch.
+
+        This test directly exercises the trace writer's CHUNK_EVENTS filtering by
+        emitting events through the trace queue without running the full harness loop.
+        It will FAIL if CHUNK_EVENTS filtering is broken.
+        """
         data_dir = str(tmp_path)
+        session_id = str(uuid.uuid4())
 
         async def fake_call(messages, tools=None):
             return ModelResult(content="ok", tool_calls=[], usage={}, finish_reason="stop")
 
         agent = make_agent(fake_call)
-        # Use streaming agent to generate model_chunk events
-        agent._stream_model = True
+        agent.state.session_id = session_id
         harness = AgentHarness(agent, plugins=[], tool_manager=None, data_dir=data_dir)
-        events = [e async for e in harness.run("x")]
 
-        session_id = agent.state.session_id
+        # Start trace writer directly (don't run the full harness loop)
+        harness._start_trace_writer(session_id)
+
+        # Get context to emit events
+        ctx = harness._make_ctx()
+
+        # Emit chunk events — should be filtered out by _trace_writer
+        ctx.emit(event_type="model_chunk", data={"content": "hello"})
+        ctx.emit(event_type="thinking_delta", data={"delta": "thinking..."})
+        ctx.emit(event_type="thinking_delta", data={"delta": "more thinking"})
+
+        # Emit a non-chunk event — should appear in trace
+        ctx.emit(event_type="tool_call_start", data={"tool": "echo"})
+
+        # Stop writer: drains queue (processing all events), cancels task, closes file
+        await harness._stop_trace_writer()
+
+        # Read the trace file
         trace_file = Path(data_dir) / session_id / "traces" / f"{session_id}.jsonl"
-        lines = trace_file.read_text().strip().split("\n")
-        for line in lines:
-            evt = json.loads(line)
-            assert evt["type"] not in {"model_chunk", "thinking_delta"}
+        assert trace_file.exists()
+        lines = trace_file.read_text().splitlines()
+
+        # Only the tool_call_start event should be present
+        assert len(lines) == 1, f"Expected 1 line, got {len(lines)}: {lines}"
+        evt = json.loads(lines[0])
+        assert evt["type"] == "tool_call_start"
 
     @pytest.mark.anyio
     async def test_tool_events_in_trace(self, tmp_path):

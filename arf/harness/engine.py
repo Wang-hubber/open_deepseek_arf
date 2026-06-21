@@ -131,7 +131,7 @@ class AgentHarness:
             event = await self._trace_queue.get()
             try:
                 if event.type in CHUNK_EVENTS:
-                    self._trace_queue.task_done()
+                    # Skip writing — task_done is called in finally block below
                     continue
                 line = _json_mod.dumps(asdict(event), ensure_ascii=False) + "\n"
                 self._trace_file.write(line)
