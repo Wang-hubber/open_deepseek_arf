@@ -283,41 +283,14 @@ class BaseAgent:
         stop_on_text: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Main execution — delegates to AgentHarness.run()."""
-        # Resolve session
         if not session_id or session_id.strip() == "":
             session_id = str(uuid.uuid4())
-
-        # Reset per-round state (session_id managed by harness)
-        is_new_session = not self._primitive_agent.state.session_id
-        self._primitive_agent.state.messages.clear()
-        self._primitive_agent.state.waiting.clear()
-
-        # Restore messages if resuming an existing session
-        if not is_new_session:
-            existing = await self._state_store.get(session_id)
-            if existing and existing.get("messages"):
-                from arf.agent.state import Message as _M
-                for m in existing["messages"]:
-                    if isinstance(m, dict):
-                        self._primitive_agent.input(role=m.get("role", "user"), content=m.get("content", ""))
 
         self._active_sessions.add(session_id)
 
         try:
-            # Delegate to AgentHarness
             async for event in self._harness.run(user_message, session_id=session_id):
                 yield event
-
-            # Save state after round
-            msgs_dict = [
-                {"role": m.role, "content": m.content}
-                for m in self._primitive_agent.state.messages
-            ]
-            await self._state_store.put(session_id, {
-                "session_id": session_id,
-                "messages": msgs_dict,
-                "session_active": True,
-            })
         except Exception as exc:
             logger.exception("astream session=%s failed", session_id)
             # Emit error event

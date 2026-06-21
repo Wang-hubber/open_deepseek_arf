@@ -128,7 +128,7 @@ async for event in agent.astream("用户输入"):
 
 ## Session 生命周期
 
-一次 `harness.run(user_message)` 调用 = 一个 round。多次调用共享 `session_id` = 一个 session。**session_id 由 harness 管理**——`PrimitiveAgent.state.session_id` 初始为空字符串，harness 检测到空则判定为新 session、分配 ID、触发 `session_start`。`BaseAgent` 不设置 session_id，只负责在续接 session 时恢复历史消息。
+一次 `harness.run(user_message)` 调用 = 一个 round。多次调用共享 `session_id` = 一个 session。**session_id 和 state 由 harness 全权管理**——harness 创建 `FileStateStore`，新 session 时分配 ID + 注入 system prompt + 触发 `session_start`；续接 session 时从 state_store 恢复历史消息；每个 round 结束（含 park）自动落盘。`BaseAgent` 只负责解析 session_id、委托给 harness、异常兜底。
 
 ```
 session_start                   ← 仅新 session 时触发一次（harness 检测 session_id 为空）

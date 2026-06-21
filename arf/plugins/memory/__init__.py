@@ -67,7 +67,8 @@ class MemoryPlugin(Plugin):
 
         # SecretsStore must come first — MemoryIndex validates it when secrets enabled
         mem_cfg = MemoryConfig()
-        self._secrets = SecretsStore(mem_cfg.secrets)
+        master_key = os.environ.get(mem_cfg.secrets.master_key_env, "")
+        self._secrets = SecretsStore(data_dir=data_dir, master_key=master_key)
         self._index = MemoryIndex(data_dir, mem_cfg, secrets_store=self._secrets)
 
         # Wire tool globals

@@ -44,6 +44,10 @@ class AgentHarness:
         self._parked: bool = False
         self._interaction_round: int = 0
 
+        # State persistence — harness owns session lifecycle
+        from arf.engine.checkpoint import FileStateStore
+        self._state_store = FileStateStore(data_dir)
+
         # Session mode manager
         global_mode = SessionMode.ASK
         if agent_config is not None:
@@ -153,6 +157,8 @@ class AgentHarness:
         is_new_session = not agent.state.session_id
         if is_new_session:
             agent.state.session_id = session_id or str(uuid.uuid4())
+            agent.state.messages.clear()
+            agent.state.waiting.clear()
 
         ctx = self._make_ctx()
         self._sync_ctx(ctx, turn=0)
@@ -175,6 +181,15 @@ class AgentHarness:
             for event in ctx.captured_events:
                 yield event
             ctx.captured_events.clear()
+        else:
+            # Restore messages from persisted state (resumed session)
+            existing = await self._state_store.get(agent.state.session_id)
+            if existing and existing.get("messages"):
+                agent.state.messages.clear()
+                from arf.agent.state import Message as _M
+                for m in existing["messages"]:
+                    if isinstance(m, dict):
+                        agent.input(role=m.get("role", "user"), content=m.get("content", ""))
 
         # Inject user message
         agent.input(role="user", content=user_message)
@@ -184,6 +199,7 @@ class AgentHarness:
             yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
             await self._do_park()
             if self._parked:
+                await self._save_state()
                 return
 
         turn = 0
@@ -196,6 +212,7 @@ class AgentHarness:
                 yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
+                    await self._save_state()
                     return
 
             # Fetch tool definitions, filter, convert to OpenAI format
@@ -251,6 +268,7 @@ class AgentHarness:
                 yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
                 await self._do_park()
                 if self._parked:
+                    await self._save_state()
                     return
 
             # --- tool execution ---
@@ -285,6 +303,7 @@ class AgentHarness:
                         yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
                         await self._do_park()
                         if self._parked:
+                            await self._save_state()
                             return
                     else:
                         # Drain captured events from non-parking pass
@@ -356,6 +375,7 @@ class AgentHarness:
                     yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
                     await self._do_park()
                     if self._parked:
+                        await self._save_state()
                         return
 
                 continue  # loop back to before_model
@@ -366,6 +386,20 @@ class AgentHarness:
         if await self._checkpoint("after_round", ctx):
             yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
             await self._do_park()
+
+        await self._save_state()
+
+    # ── State Persistence ───────────────────────────────
+
+    async def _save_state(self) -> None:
+        """Persist current agent state so sessions survive restarts."""
+        state = self.agent.state
+        msgs = [{"role": m.role, "content": m.content} for m in state.messages]
+        await self._state_store.put(state.session_id, {
+            "session_id": state.session_id,
+            "messages": msgs,
+            "session_active": True,
+        })
 
     # ── Session Mode ────────────────────────────────────
 
