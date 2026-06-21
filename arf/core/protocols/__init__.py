@@ -18,7 +18,6 @@ from arf.core.protocols.communication import (
     AgentMessage, AgentInfo,
 )
 from arf.core.protocols.event_bus import EventBus, EventStream
-from arf.core.protocols.tracer import Tracer
 from arf.core.protocols.prompt import SystemPromptProvider
 from arf.core.protocols.replay import ReplayController, ReplayTrace, TurnRecord
 from arf.core.protocols.evaluation import (
@@ -48,7 +47,6 @@ __all__ = [
     "SharedWorkspace", "Lock", "ConsensusProtocol",
     "AgentMessage", "AgentInfo",
     "EventBus", "EventStream",
-    "Tracer",
     "SystemPromptProvider",
     "ReplayController", "ReplayTrace", "TurnRecord",
     "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset", "EvalBenchmark",

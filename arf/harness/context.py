@@ -46,7 +46,11 @@ class PluginContext:
         return event
 
     def inject_engine_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Record an engine-internal event for trace visibility."""
+        """Deprecated: trace is now handled by harness-level async writer.
+
+        Kept for backward compatibility with old plugins that may still call this.
+        No longer consumed by any trace subsystem.
+        """
         self.hook_data.setdefault("_engine_events", []).append({
             "type": event_type,
             "data": data,
