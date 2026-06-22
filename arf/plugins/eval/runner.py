@@ -391,6 +391,7 @@ class EvalRunner:
             from arf.plugins.eval.version import EvalVersionManager
             vm = EvalVersionManager(self._config.benchmark_path)
             version_hash = vm.save(report, agent_config)
+            report.snapshot_hash = version_hash
             print(f" Version archived: {version_hash[:12]} at eval/{report.benchmark_name}/{version_hash[:12]}.../")
 
         return report

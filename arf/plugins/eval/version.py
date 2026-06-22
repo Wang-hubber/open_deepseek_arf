@@ -1,10 +1,11 @@
 """Content-addressable eval version archives."""
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import yaml
+
+from arf.plugins.eval.models import EvalReport
 
 _EXCLUDED_HASH_FIELDS = {"data_path", "workspace_dir", "tools_dir", "skills_dir"}
 
@@ -88,8 +89,6 @@ class EvalVersionManager:
 
         Raises FileNotFoundError if the version does not exist.
         """
-        from arf.plugins.eval.models import EvalReport
-
         report_path = self._benchmark_dir / version_hash / "report.json"
         if not report_path.exists():
             raise FileNotFoundError(f"Version not found: {version_hash}")

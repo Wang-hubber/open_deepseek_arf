@@ -3,9 +3,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import yaml
 
-from arf.agent.config import AgentConfig, SystemPromptConfig
+from arf.agent.config import AgentConfig
 from arf.plugins.eval.version import EvalVersionManager, _EXCLUDED_HASH_FIELDS
 from arf.plugins.eval.models import EvalReport, EvalSummary, EvalBenchmark, EvalCase
 
@@ -158,7 +157,7 @@ class TestListAndBaseline:
         current_hash = versions[0]["hash"]
         baseline = vm_with_versions.find_baseline(exclude_hash=current_hash)
         assert baseline is not None
-        assert baseline.run_id != versions[0].get("run_id")  # different version
+        assert baseline.run_id == "r1"  # the older (second) version
 
     def test_find_baseline_only_version_returns_none(self, vm_with_versions):
         versions = vm_with_versions.list_versions()
