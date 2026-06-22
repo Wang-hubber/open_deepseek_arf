@@ -5,7 +5,6 @@ import uuid
 from pathlib import Path
 import os
 
-from arf.core.model_adapter import ModelAdapter
 from arf.plugins.eval.models import (
     EvalBenchmark, EvalReport, EvalSummary, EvalConfig, JudgeModelConfig,
 )
@@ -17,6 +16,40 @@ from arf.plugins.eval.metrics import (
     OutputContainsMetric,
     ExecutionAccuracyMetric, ReasoningSimilarityMetric,
 )
+
+
+class _JudgeAdapter:
+    """Harness-backed chat_complete — same interface as ModelAdapter
+    but every call goes through the ARF harness (trace, hooks, errors)."""
+
+    def __init__(self, harness, system_prompt: str = "") -> None:
+        self._harness = harness
+        self._system_prompt = system_prompt
+
+    async def chat_complete(self, messages, tools=None):
+        """Run *messages* through the judge harness, return object with .content."""
+        ctx_msgs = []
+        user_msg = ""
+        for m in messages:
+            if m.get("role") == "system":
+                ctx_msgs.append(m)
+            elif m.get("role") == "user":
+                user_msg = m.get("content", "")
+        sid = f"judge_{uuid.uuid4().hex[:8]}"
+        content = ""
+        async for event in self._harness.run(
+            user_msg, session_id=sid,
+            context_messages=ctx_msgs or None,
+        ):
+            if getattr(event, "type", "") == "model_call_end":
+                content = event.data.get("content", "")
+        return _FakeMsg(content)
+
+
+class _FakeMsg:
+    """Minimal adapter-like response object."""
+    def __init__(self, content: str) -> None:
+        self.content = content
 
 
 class EvalRunner:
@@ -43,19 +76,74 @@ class EvalRunner:
         if config.judge_model is not None and config.judge is None:
             config.judge = JudgeModelConfig()
         config.validate()
-        # Build judge ModelAdapter if judge_model is set
-        self._judge_adapter = None
+        # Build judge harness if judge_model is set — uses the full ARF
+        # pipeline so every judge call produces a session trace.
+        self._judge_harness = None
+        self._judge_system_prompt = ""
         if config.judge_model is not None:
             jm = config.judge_model
-            adapter_kwargs = dict(jm.kwargs)
-            if config.judge and config.judge.response_format:
-                adapter_kwargs["response_format"] = config.judge.response_format
-            self._judge_adapter = ModelAdapter({
-                "base_url": jm.api_base,
-                "api_key": os.environ.get(jm.api_key_env, ""),
+            if config.judge and config.judge.system_prompt:
+                self._judge_system_prompt = config.judge.system_prompt
+            self._judge_harness = self._build_judge_harness(jm)
+            self._judge_adapter = _JudgeAdapter(self._judge_harness,
+                                                 self._judge_system_prompt)
+        else:
+            self._judge_adapter = None
+
+    def _build_judge_harness(self, judge_model):
+        """Build a minimal ARF harness for judge LLM calls.
+
+        No plugins, no tools — just the harness pipeline so every judge
+        call produces a session trace under ``data_dir``.
+        """
+        from arf.core.model_adapter import ModelAdapter
+        from arf.agent.primitive import PrimitiveAgent, ModelResult
+        from arf.harness.engine import AgentHarness
+        import json as _json
+
+        jm = judge_model
+        adapter = ModelAdapter({
+            "base_url": jm.api_base,
+            "api_key": os.environ.get(jm.api_key_env, ""),
+            "model_name": jm.model,
+            **jm.kwargs,
+        })
+
+        async def call_model(messages, tools=None):
+            msg = await adapter.chat_complete(messages, tools=tools)
+            tc_list = []
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        params = _json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    except _json.JSONDecodeError:
+                        params = {}
+                    tc_list.append({"id": tc.id, "name": tc.function.name, "params": params})
+            usage = dict(msg.usage) if hasattr(msg, "usage") and msg.usage else {}
+            return ModelResult(
+                content=msg.content or "",
+                tool_calls=tc_list,
+                usage=usage,
+                finish_reason=getattr(msg, "finish_reason", "stop"),
+            )
+
+        agent = PrimitiveAgent(
+            agent_id="eval_judge",
+            model_config={
+                "api_base": jm.api_base,
+                "api_key_env": jm.api_key_env,
                 "model_name": jm.model,
-                **adapter_kwargs,
-            })
+                "context_window": 131072,
+            },
+            call_model=call_model,
+        )
+
+        return AgentHarness(
+            agent=agent,
+            plugins=[],
+            agent_config=None,
+            data_dir=str(self._data_dir),
+        )
 
     # -- Public API -------------------------------------------------------
 
