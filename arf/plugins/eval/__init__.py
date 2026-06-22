@@ -1,5 +1,6 @@
 """Evaluation — benchmark builder, runner, comparator, and metrics."""
 from arf.plugins.eval.runner import EvalRunner
+from arf.plugins.eval.annotator import AutoAnnotator
 from arf.plugins.eval.builder import BenchmarkBuilder
 from arf.plugins.eval.comparator import EvalComparator
 from arf.plugins.eval.metrics import (
@@ -31,7 +32,7 @@ class EvalPlugin(_NewPlugin):
 Plugin = EvalPlugin
 
 __all__ = [
-    "EvalRunner", "BenchmarkBuilder", "EvalComparator",
+    "EvalRunner", "AutoAnnotator", "BenchmarkBuilder", "EvalComparator",
     "SuccessRateMetric", "ToolCallAccuracyMetric", "ToolCallResultLLMMetric",
     "TurnEfficiencyMetric", "ExecutionAccuracyMetric", "ReasoningSimilarityMetric",
     "OutputQualityMetric", "TrajectorySimilarityMetric",

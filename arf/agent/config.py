@@ -144,12 +144,15 @@ class AgentConfig(BaseModel):
         refs = self.agent_models or [{"model": n} for n in registry.list_names()]
         return registry.resolve_list(refs)
 
-    def get_plugin_model_config(self, plugin_name: str) -> "ResolvedModelConfig | None":
+    def get_plugin_model_config(self, plugin_name: str, field: str = "model") -> "ResolvedModelConfig | None":
         """Resolve a plugin's model reference, returning ResolvedModelConfig or None.
 
         Supports two modes:
         - Reference: model name found in model_defs -> resolve + merge overrides
         - Inline: model name NOT in model_defs -> treat plugin_cfg as full definition
+
+        *field* specifies which key in the plugin config holds the model name
+        (default ``"model"``; use ``"annotator_model"`` for eval annotator).
         """
         from arf.core.model_registry import ResolvedModelConfig
 
@@ -157,10 +160,10 @@ class AgentConfig(BaseModel):
         if not registry:
             return None
         plugin_cfg = self.plugins_config.get(plugin_name, {})
-        if not isinstance(plugin_cfg, dict) or "model" not in plugin_cfg:
+        if not isinstance(plugin_cfg, dict) or field not in plugin_cfg:
             return None
-        model_name = plugin_cfg["model"]
-        overrides = {k: v for k, v in plugin_cfg.items() if k != "model"}
+        model_name = plugin_cfg[field]
+        overrides = {k: v for k, v in plugin_cfg.items() if k != field}
         if registry.has(model_name):
             cfg = registry.resolve(model_name)
             return ResolvedModelConfig(
