@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from arf.core.config_base import ToolConfig
+from arf.core.results import ToolResult
 from arf.resources.cache import ResourceCache
 
 logger = logging.getLogger("arf.plugins.discovery")
@@ -120,9 +121,30 @@ class PluginProvider:
     def list_skills(self) -> list:
         return []
 
-    async def execute_plugin_tool(self, tool_name: str, params: dict):
-        """Execute a plugin tool by namespaced name (e.g. filesystem__read_text_file)."""
+    async def execute_plugin_tool(self, tool_name: str, params: dict) -> ToolResult | None:
+        """Execute a plugin tool by namespaced name (e.g. filesystem__read_text_file).
+
+        Normalizes the return value to ToolResult so callers always see
+        .success / .data / .error attributes regardless of what the plugin
+        function returns.
+        """
         fn = self._functions.get(tool_name)
-        if fn:
-            return await fn(params)
-        return None
+        if fn is None:
+            return None
+        try:
+            result = await fn(**params)
+        except Exception as exc:
+            return ToolResult(
+                tool_name=tool_name, success=False,
+                error=str(exc))
+        if isinstance(result, ToolResult):
+            return result
+        if isinstance(result, dict):
+            return ToolResult(
+                tool_name=tool_name,
+                success=result.get("ok", result.get("success", False)),
+                data=result,
+                error=result.get("error"),
+            )
+        return ToolResult(
+            tool_name=tool_name, success=True, data={"result": result})

@@ -560,7 +560,10 @@ class AgentHarness:
 
                 # Emit tool_call_start for all calls (pending + blocked)
                 for tc in all_calls:
-                    yield ctx.emit(event_type="tool_call_start", data={"name": tc["name"], "id": tc["id"]})
+                    yield ctx.emit(event_type="tool_call_start", data={
+                        "name": tc["name"], "id": tc["id"],
+                        "arguments": tc.get("params", {}),
+                    })
 
                 # Execute only pending (non-blocked, non-removed) calls
                 active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
@@ -600,6 +603,9 @@ class AgentHarness:
                     yield ctx.emit(event_type="tool_call_end", data={
                         "name": tc["name"], "id": tc["id"],
                         "success": r.success,
+                        "error": r.error or "",
+                        "result": r.data if r.success else None,
+                        "blocked": getattr(r, "blocked", False),
                     })
 
                 # --- after_tools ---
