@@ -385,6 +385,14 @@ class EvalRunner:
             report.to_json(self._config.output_path)
             print(f"\n Report saved to {self._config.output_path}")
 
+        # Auto-archive version (content-addressable storage)
+        agent_config = getattr(agent, "config", None) if agent is not None else None
+        if self._config.auto_version and agent_config is not None:
+            from arf.plugins.eval.version import EvalVersionManager
+            vm = EvalVersionManager(self._config.benchmark_path)
+            version_hash = vm.save(report, agent_config)
+            print(f" Version archived: {version_hash[:12]} at eval/{report.benchmark_name}/{version_hash[:12]}.../")
+
         return report
 
     def _read_trace(self, session_id: str) -> list[dict]:
