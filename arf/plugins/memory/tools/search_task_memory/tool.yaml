@@ -3,6 +3,11 @@ description: >
   Search past task experience for relevant approaches and pitfalls. Use
   this to learn from previous similar tasks before starting new work.
   Provide a query describing what you want to learn about.
+
+  Only call when the current task matches a known category (refactoring,
+  bugfix, feature, deployment, etc.) and past experience would help.
+  Do NOT search proactively for every conversation — the user will
+  indicate when a task begins.
 parameters:
   type: object
   properties:

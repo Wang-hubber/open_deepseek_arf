@@ -4,6 +4,10 @@ description: >
   architecture decisions, conventions, bug fixes, design patterns, or
   important project context that all team members should know. Content
   is Markdown.
+
+  IMPORTANT: Only call this when the user explicitly asks you to
+  save project knowledge. Do NOT proactively write — wait for the
+  user to direct you. When in doubt, ask first.
 parameters:
   type: object
   properties:

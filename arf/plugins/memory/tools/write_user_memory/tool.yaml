@@ -3,6 +3,11 @@ description: >
   Persist user-level memory that agents share about the user. Write user
   preferences, decisions, knowledge, working style, or constraints
   discovered during conversation. Content is Markdown.
+
+  IMPORTANT: Only call this when the user explicitly asks you to
+  remember or save something. Do NOT proactively write memory — the
+  user may not want trivial details persisted. When in doubt, ask
+  the user first.
 parameters:
   type: object
   properties:
