@@ -104,7 +104,7 @@ class TestCaseIsolation:
                     pass
             def __init__(self):
                 self._primitive_agent = self._PrimitiveAgent()
-            async def run(self, user_message, *, session_id):
+            async def run(self, user_message, *, session_id, context_messages=None):
                 sid_records.append(session_id)
                 return "ok"
 
@@ -132,17 +132,19 @@ class TestCaseIsolation:
         cases = [EvalCase(id="c0", input="read it", context_messages=context)]
         _make_benchmark(bm_path, cases=cases)
 
-        injected_messages = []
-        chat_messages = []
+        received_context = []
+        received_input = []
 
         class FakeAgent:
             class _PrimitiveAgent:
                 def input(self, *, role, content):
-                    injected_messages.append({"role": role, "content": content})
+                    pass
             def __init__(self):
                 self._primitive_agent = self._PrimitiveAgent()
-            async def run(self, user_message, *, session_id):
-                chat_messages.append(user_message)
+            async def run(self, user_message, *, session_id, context_messages=None):
+                received_input.append(user_message)
+                if context_messages:
+                    received_context.extend(context_messages)
                 return "done"
 
         config = EvalConfig(benchmark_path=bm_path, data_dir=str(tmpdir),
@@ -153,14 +155,14 @@ class TestCaseIsolation:
         runner = EvalRunner(config)
         asyncio.run(runner.run_online(agent))
 
-        # context_messages injected in order
-        assert len(injected_messages) == 2
-        assert injected_messages[0]["role"] == "assistant"
-        assert injected_messages[0]["content"] == "I found file.txt"
-        assert injected_messages[1]["role"] == "tool"
-        assert injected_messages[1]["content"] == "hello world"
+        # context_messages passed through agent.run()
+        assert len(received_context) == 2
+        assert received_context[0]["role"] == "assistant"
+        assert received_context[0]["content"] == "I found file.txt"
+        assert received_context[1]["role"] == "tool"
+        assert received_context[1]["content"] == "hello world"
         # Then the real input
-        assert chat_messages == ["read it"]
+        assert received_input == ["read it"]
 
     def test_empty_context_messages_no_op(self, tmpdir):
         """When context_messages is empty, no injection happens."""
@@ -211,7 +213,7 @@ class TestAgentSnapshot:
             def __init__(self):
                 self._primitive_agent = self._PrimitiveAgent()
 
-            async def run(self, user_message, *, session_id):
+            async def run(self, user_message, *, session_id, context_messages=None):
                 # Simulate snapshot_created event being written to trace
                 import json
                 trace_dir = Path(tmpdir) / session_id / "traces"

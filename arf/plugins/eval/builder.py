@@ -21,7 +21,7 @@ class BenchmarkBuilder:
 
     def build(self, session_id: str, name: str, *,
               benchmark_dir: str = "benchmarks",
-              annotate_mode: bool = False) -> EvalBenchmark:
+              annotate_mode: bool = True) -> EvalBenchmark:
         events = self._trace.read_trace(session_id)
         if not events:
             raise EvalError(f"Session '{session_id}' not found in trace store")
@@ -70,31 +70,47 @@ class BenchmarkBuilder:
                     "annotated_at": data.get("annotated_at", ""),
                 }
 
+            original_output = self._collect_final_output(case_events)
+            original_tool_calls = self._collect_tool_calls(case_events)
+
             if annotate_mode:
-                expected_output = ["[待标注] 该轮预期输出关键词..."]
-                expected_execution = ["[待标注] 预期工具名"]
+                expected_output = [
+                    "[待标注] 关键词列表，如: '文件已创建', '操作成功'  — 以 [待标注] 开头的条目在评测时自动忽略",
+                ]
+                expected_execution = [
+                    "[待标注] 工具名列表，如: 'write_file', 'search_content'  — 以 [待标注] 开头的条目在评测时自动忽略",
+                ]
             else:
                 expected_output = []
                 expected_execution = tool_names
+
+            # Context: prior rounds' conversation for case isolation
+            prior_events = events[0:ui] if i > 0 else []
+            context_messages = self._build_context_messages(prior_events)
 
             cases.append(EvalCase(
                 id=f"case_{i}",
                 input=events[ui].get("data", {}).get("content", ""),
                 session_id=session_id,
                 source_round=source_round,
+                original_output=original_output,
+                original_tool_calls=original_tool_calls,
+                context_messages=context_messages,
                 expected_execution=expected_execution,
                 expected_output_contains=expected_output,
                 max_turns=len(turns_with_events) if turns_with_events else None,
                 feedback=feedback,
             ))
 
-        return EvalBenchmark(
+        bm = EvalBenchmark(
             name=name,
             source_session=session_id,
             created_at=time.time(),
             cases=cases,
             trace_snapshot_path=str(snapshot_path),
         )
+        bm.to_json(str(bm_dir / f"{name}.benchmark.json"))
+        return bm
 
     def build_from_annotations(self, session_id: str, name: str, *,
                                 benchmark_dir: str = "benchmarks") -> EvalBenchmark:
@@ -102,7 +118,7 @@ class BenchmarkBuilder:
 
         Scans the session trace for user_annotation events and extracts
         only the annotated rounds as bare EvalCases (expected fields empty).
-        A frozen trace snapshot is written alongside the benchmark.
+        A frozen trace snapshot and benchmark JSON are written alongside.
         """
         events = self._trace.read_trace(session_id)
         if not events:
@@ -123,13 +139,15 @@ class BenchmarkBuilder:
                 annotations_by_round.setdefault(r, []).append(e)
 
         if not annotations_by_round:
-            return EvalBenchmark(
+            bm = EvalBenchmark(
                 name=name,
                 source_session=session_id,
                 created_at=time.time(),
                 cases=[],
                 trace_snapshot_path=str(snapshot_path),
             )
+            bm.to_json(str(bm_dir / f"{name}.benchmark.json"))
+            return bm
 
         # Find user_input events and their round indices
         user_inputs = [
@@ -142,6 +160,16 @@ class BenchmarkBuilder:
         for round_idx, (ui_pos, ui_event) in enumerate(user_inputs):
             if round_idx not in annotations_by_round:
                 continue  # skip unannotated rounds
+
+            # Event range for this round
+            next_ui = next(
+                (pos for pos, _ in user_inputs if pos > ui_pos), len(events)
+            )
+            round_events = events[ui_pos:next_ui]
+
+            # Context: prior rounds' conversation
+            prior_events = events[0:ui_pos] if round_idx > 0 else []
+            context_messages = self._build_context_messages(prior_events)
 
             # Latest annotation for this round
             round_annotations = annotations_by_round[round_idx]
@@ -158,19 +186,28 @@ class BenchmarkBuilder:
                 input=ui_event.get("data", {}).get("content", ""),
                 session_id=session_id,
                 source_round=round_idx,
-                expected_execution=[],
-                expected_output_contains=[],
+                original_output=self._collect_final_output(round_events),
+                original_tool_calls=self._collect_tool_calls(round_events),
+                context_messages=context_messages,
+                expected_execution=[
+                    "[待标注] 工具名列表，如: 'write_file', 'search_content'  — 以 [待标注] 开头的条目在评测时自动忽略",
+                ],
+                expected_output_contains=[
+                    "[待标注] 关键词列表，如: '文件已创建', '操作成功'  — 以 [待标注] 开头的条目在评测时自动忽略",
+                ],
                 max_turns=None,
                 feedback=feedback,
             ))
 
-        return EvalBenchmark(
+        bm = EvalBenchmark(
             name=name,
             source_session=session_id,
             created_at=time.time(),
             cases=cases,
             trace_snapshot_path=str(snapshot_path),
         )
+        bm.to_json(str(bm_dir / f"{name}.benchmark.json"))
+        return bm
 
     @staticmethod
     def _collect_tool_names(events):
@@ -188,4 +225,117 @@ class BenchmarkBuilder:
                     if name and name not in names:
                         names.append(name)
         return names
+
+    @staticmethod
+    def _collect_final_output(events):
+        """Return the last non-empty model text output from the round."""
+        text = ""
+        for e in events:
+            if e.get("type") == "model_call_end":
+                content = e.get("data", {}).get("content", "")
+                if content:
+                    text = content
+        return text
+
+    @staticmethod
+    def _collect_tool_calls(events):
+        """Return paired tool call records (start + end) from the round.
+
+        Each record: {name, arguments, success, result, error, turn}.
+        For annotation reference only — not used by metrics for scoring.
+        """
+        starts: list[dict] = []
+        ends: list[dict] = []
+        for e in events:
+            if e.get("type") == "tool_call_start":
+                data = e.get("data", {})
+                starts.append({
+                    "name": data.get("name") or data.get("tool_name", ""),
+                    "arguments": BenchmarkBuilder._parse_arguments(
+                        data.get("arguments", "{}")
+                    ),
+                    "turn": e.get("turn"),
+                })
+            elif e.get("type") == "tool_call_end":
+                data = e.get("data", {})
+                ends.append({
+                    "success": data.get("success", True),
+                    "result": data.get("result", ""),
+                    "error": data.get("error", ""),
+                })
+
+        records: list[dict] = []
+        for i, start in enumerate(starts):
+            end = ends[i] if i < len(ends) else {}
+            records.append({
+                "name": start["name"],
+                "arguments": start["arguments"],
+                "success": end.get("success", True),
+                "result": end.get("result", ""),
+                "error": end.get("error", ""),
+                "turn": start["turn"],
+            })
+        return records
+
+    @staticmethod
+    def _parse_arguments(arguments):
+        """Parse tool_call_start arguments, which may be a JSON string or dict."""
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str):
+            try:
+                return json.loads(arguments)
+            except (json.JSONDecodeError, TypeError):
+                return {"_raw": arguments}
+        return {}
+
+    @staticmethod
+    def _build_context_messages(prior_events):
+        """Build context_messages from prior rounds' trace events.
+
+        Converts trace events into simplified {role, content} messages so
+        each case can be run independently without relying on prior session
+        state. User and assistant messages are preserved verbatim; tool
+        calls and results are summarized as readable user messages.
+        """
+        messages: list[dict] = []
+        for e in prior_events:
+            typ = e.get("type", "")
+            data = e.get("data", {})
+
+            if typ == "user_input":
+                content = data.get("content", "")
+                if content:
+                    messages.append({"role": "user", "content": content})
+
+            elif typ == "model_call_end":
+                tool_calls = data.get("tool_calls", [])
+                content = data.get("content", "")
+                if tool_calls:
+                    names = [tc.get("name", "?") for tc in tool_calls]
+                    messages.append({
+                        "role": "assistant",
+                        "content": f"[调用工具: {', '.join(names)}]",
+                    })
+                if content:
+                    messages.append({"role": "assistant", "content": content})
+
+            elif typ == "tool_call_end":
+                name = data.get("tool_name") or data.get("name", "?")
+                success = data.get("success", True)
+                error = data.get("error", "")
+                result = data.get("result", "")
+                if not success or error:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[工具 {name} 错误: {error or result}]",
+                    })
+                else:
+                    summary = str(result)[:500]
+                    messages.append({
+                        "role": "user",
+                        "content": f"[工具 {name} 返回: {summary}]",
+                    })
+
+        return messages
 

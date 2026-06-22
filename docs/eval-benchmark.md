@@ -40,6 +40,8 @@ class EvalCase:
     id: str                          # 唯一标识，如 "case_0"
     input: str                       # 用户消息，作为 chat_fn() 的输入
     session_id: str | None = None    # 来源 trace session
+    original_output: str = ""        # 模型在 trace 中的最终文本输出，供标注者对照参考
+    original_tool_calls: list[dict]  # 完整工具调用记录（name/arguments/success/result/turn），仅供标注参考
     context_messages: list[dict]     # 注入的 mock 消息，模拟前序操作结果
     expected_execution: list[str]    # 预期调用的工具名列表，按名称命中
     expected_output_contains: list[str]  # 预期输出包含的关键词
@@ -48,11 +50,30 @@ class EvalCase:
     source_round: int | None = None  # 0-based 的 interaction_round 索引
 ```
 
-**`context_messages`** 是 OpenAI 格式的消息列表，每个元素为 `{"role": "assistant"|"tool", "content": "..."}`。Runner 在发送 `input` 前将这些消息通过 `agent._primitive_agent.input()` 注入到 session，模拟前序工具调用和对话历史。不包含 system prompt。默认为空列表。
+**`original_output`** 是 benchmark 构建时从 trace 中提取的模型最终文本输出（每轮最后一个有内容的 `model_call_end`）。标注者可直接对照此字段判断输出是否正确，无需翻 trace 文件。
 
-**`expected_execution`** 是工具名列表，不是完整调用参数。评测时只检查这些工具名是否在实际 trace 中出现——命中即得分。annotate 模式下占位为 `["[待标注] 预期工具名"]`。
+**`original_tool_calls`** 是 benchmark 构建时从 trace 中提取的完整工具调用记录列表。每条记录配对 `tool_call_start` 和 `tool_call_end` 事件：
 
-**`expected_output_contains`** 是关键词列表。`OutputContainsMetric` 检查实际最终输出是否包含所有关键词。annotate 模式下占位为 `["[待标注] 该轮预期输出关键词..."]`。
+```json
+{
+  "name": "write_file",
+  "arguments": {"path": "test.md", "content": "# test"},
+  "success": true,
+  "result": "created",
+  "error": "",
+  "turn": 1
+}
+```
+
+该字段仅供标注参考，非评测依据。评测 metric 使用 `expected_execution`（工具名列表）做匹配。
+
+**`context_messages`** 是简化的对话消息列表，每个元素为 `{"role": "user"|"assistant", "content": "..."}`。`build()` 时自动从前序 round 的 trace 中提取：user_input → user 消息，model_call_end → assistant 消息（含工具调用摘要），tool_call_end → user 消息（工具结果摘要）。Runner 在发送 `input` 前将这些消息通过 `agent._primitive_agent.input()` 逐条注入到 session，使每个 case 可独立运行，无需依赖前序会话状态。case_0 无前序轮次，该字段为空列表。
+
+**`expected_execution`** 是工具名列表，不是完整调用参数。评测时只检查这些工具名是否在实际 trace 中出现——命中即得分。annotate 模式下占位为以 `[待标注]` 开头的引导文案。
+
+**`expected_output_contains`** 是关键词列表。`OutputContainsMetric` 检查实际最终输出是否包含所有关键词。annotate 模式下占位为以 `[待标注]` 开头的引导文案。
+
+**占位符自动忽略**：三个评测 metric（`ToolCallAccuracyMetric`、`OutputContainsMetric`、`ExecutionAccuracyMetric`）会自动过滤以 `[待标注]` 开头的条目，仅对非占位符条目评分。标注者可以在占位符后面追加真实值，也可以直接替换占位符。
 
 **`feedback`** 分为两种形态：轻量标注（生产环境 `{"rating": "like"|"dislike", "comment": "..."}`）和深度标注（benchmark 精标阶段，额外包含 `"dimensions": {"tool_usage_correct": true, ...}`）。
 
@@ -114,10 +135,10 @@ class EvalSummary:
 class EvalReport:
     run_id: str                  # 每次运行的 UUID
     benchmark_name: str
-    agent_config_hash: str       # 配置快照 hash（12 位）
+    agent_config_hash: str       # agent 配置 hash（12 位），同 benchmark 不同 agent 产生不同 hash
     timestamp: float
     summary: EvalSummary
-    per_case: list[dict]         # 每个 case 的详细结果
+    per_case: list[dict]         # 每个 case 的详细结果（含 evidence）
     judge_model: str             # LLM judge 模型名（无则 "none"）
     metrics_enabled: list[str]   # 启用的 metric 名列表
     mode: str                    # "online" | "offline"
@@ -138,8 +159,17 @@ class EvalReport:
     "tokens_in": 1500,
     "tokens_out": 200,
     "tool_calls": 2,
+    "evidence": {
+        "final_output": "agent 最终回复文本",
+        "tool_calls": [
+            {"name": "write_file", "arguments": {...}, "success": True, "result": "created", "error": ""}
+        ],
+        "error": "",
+    },
 }
 ```
+
+`evidence` 包含该 case 的关键证据——`final_output`（agent 最终文本输出）、`tool_calls`（完整工具调用链，含参数和结果）、`error`（异常详情）。无需翻 trace 文件即可判断 case 为什么过/为什么挂。
 
 ### EvalDiff — 回归对比
 
@@ -183,29 +213,37 @@ class EvalConfig:
 
 ### BenchmarkBuilder
 
-入口：`BenchmarkBuilder(trace_reader).build(session_id, name, annotate_mode=False)`
+入口：`BenchmarkBuilder(trace_reader).build(session_id, name, annotate_mode=True)`
 
 **构建流程：**
 
 1. 从 trace JSONL 读取全量事件
 2. 写入冻结的快照：`benchmarks/<name>.trace.jsonl`
-3. 按 `user_input` 事件切分 case 边界
-4. 每个 case：
+3. 写入 benchmark JSON：`benchmarks/<name>.benchmark.json`（自动调用 `to_json()`，无需手动再调）
+4. 按 `user_input` 事件切分 case 边界
+5. 每个 case：
    - `input` ← 该 `user_input` 事件的 `data.content`
-   - `expected_execution` ← 从 `tool_call_start` 事件的 `data.name` 和 `model_call_end` 事件的 `data.tool_calls[].name` 收集工具名
-   - `expected_output_contains` ← annotate 模式为占位文本，否则为 `[]`
+   - `context_messages` ← 前序所有 round 的对话消息（case_0 为空），保证 case 间无耦合
+   - `original_output` ← 该 round 最后一个有文本内容的 `model_call_end` 输出，供标注者对照
+   - `original_tool_calls` ← 该 round 的完整工具调用记录，供标注者对照
+   - `expected_execution` ← annotate 模式为占位引导文案，否则从 trace 事件自动采集工具名
+   - `expected_output_contains` ← annotate 模式为占位引导文案，否则为 `[]`
    - `max_turns` ← 该 case 内有事件的 distinct turn 数
    - `feedback` ← 该 round 的最新 `user_annotation` 事件
    - `source_round` ← case 索引（0-based）
 
-**annotate_mode=True（无 LLM 配置时）：**
+**`annotate_mode=True`（默认）：**
 
-三个评测字段均使用固定占位文案：
+评测字段填入带标注示例的占位引导文案，同时标明占位符在评测时自动忽略：
 
 | 字段 | 占位值 |
 |------|--------|
-| `expected_execution` | `["[待标注] 预期工具名"]` |
-| `expected_output_contains` | `["[待标注] 该轮预期输出关键词..."]` |
+| `expected_execution` | `["[待标注] 工具名列表，如: 'write_file', 'search_content'  — 以 [待标注] 开头的条目在评测时自动忽略"]` |
+| `expected_output_contains` | `["[待标注] 关键词列表，如: '文件已创建', '操作成功'  — 以 [待标注] 开头的条目在评测时自动忽略"]` |
+
+标注者可在占位符后追加真实值（推荐），也可直接替换占位符。Metric 在评测时自动过滤以 `[待标注]` 开头的条目，仅对真实值评分。未标注（仅剩占位符）的 case 过滤后为空，metric 返回 1.0。
+
+**`annotate_mode=False`**：自动从 trace 事件采集工具名填入 `expected_execution`，`expected_output_contains` 置空。适合快速跑不需要精标的 benchmark。
 
 ### build_from_annotations — 基于标注构建
 
@@ -214,10 +252,11 @@ class EvalConfig:
 **与 `build()` 的区别**：仅提取有 `user_annotation` 事件的 round 生成 case。适用于从生产环境的用户反馈中筛选高质量或需要改进的 case。
 
 **流程**：
-1. 读取全量 trace，写入冻结快照
+1. 读取全量 trace，写入冻结快照 + benchmark JSON
 2. 按 `user_annotation` 事件收集被标注的 round 列表
 3. 仅对标注过的 round 创建 EvalCase：
    - `input` ← 该 round 的 `user_input` 事件
+   - `original_output` ← 该 round 的最终模型输出
    - `expected_execution` ← `[]`（裸 case，待人工/LLM 补充）
    - `expected_output_contains` ← `[]`
    - `feedback` ← 该 round 最新的 `user_annotation` 事件
@@ -234,7 +273,7 @@ EvalPlugin.annotate() 标注 round → user_annotation 事件写入 trace
 build_from_annotations(session_id, name)
       │
       ├─ 筛选被标注的 round → 裸 EvalCase
-      └─ 冻结 trace snapshot
+      └─ 冻结 trace snapshot + benchmark JSON
       │
       ▼
 裸 Benchmark JSON → 人工/LLM 补充 expected 字段 → 完整 Benchmark
@@ -243,17 +282,16 @@ build_from_annotations(session_id, name)
 ### 使用示例
 
 ```python
-# 从 session trace 构建 benchmark（全部 round）
 builder = BenchmarkBuilder(trace_reader)
+
+# 默认 annotate 模式——生成带占位符 + original_output 的 benchmark，JSON 自动写入
 bm = builder.build("session_abc123", "my_bench")
-bm.to_json("benchmarks/my_bench.json")
+
+# 自动采集工具名模式——快速 benchmark，无占位符
+bm = builder.build("session_abc123", "my_bench", annotate_mode=False)
 
 # 仅提取被标注的 round
 bm = builder.build_from_annotations("session_abc123", "my_bench")
-bm.to_json("benchmarks/my_bench.json")
-
-# annotate 模式——仅生成占位，供人工标注
-bm = builder.build("session_abc123", "my_bench", annotate_mode=True)
 ```
 
 ---
@@ -275,29 +313,30 @@ report = await runner.run_offline()
 
 **在线模式流程（每个 case）：**
 
-1. **独立 session**：每个 case 获得唯一 `session_id`（`eval_{benchmark.name}_{case.id}_{uuid}`），不复用前序 case 的 session，避免状态污染
-2. **Context 注入**：若 `case.context_messages` 非空，通过 `agent._primitive_agent.input(role=msg["role"], content=msg["content"])` 逐条注入 mock 的 assistant/tool 消息
-3. 调用 `agent.run(case.input, session_id=sid)` → agent 执行完整一轮
+1. **独立 session**：每个 case 获得唯一 `session_id`（`eval_{benchmark.name}_{case.id}_{uuid}`），harness 检测 session_id 变化自动清理旧状态，不复用前序 case
+2. **Context 注入**：若 `case.context_messages` 非空，通过 `agent.run(context_messages=...)` 传递给 harness，在 session 初始化后、user_message 前注入，确保每个 case 可独立运行
+3. 调用 `agent.run(user_message=case.input, session_id=sid, context_messages=...)` → agent 执行完整一轮
 4. 从 `data/{sid}/traces/{sid}.jsonl` 读取全量 trace
-5. 对每个启用的 metric 调用 `metric.compute(actual_trace, case)`
-6. 计算 `weighted_score`：`_compute_weighted_score(case_metrics, scoring_weights)`
-7. 提取 trace 统计（turns, tokens, tool_calls）和 `agent_snapshot`（从 `snapshot_created` 事件）
-8. 判定 pass/fail：`success_rate > 0 且 tool_call_accuracy >= 0.5`
-9. 追加 per_case 记录
+5. 提取 `evidence`（final_output、tool_calls、error）供 report 使用
+6. 对每个启用的 metric 调用 `metric.compute(actual_trace, case)`
+7. 计算 `weighted_score`：`_compute_weighted_score(case_metrics, scoring_weights)`
+8. 提取 trace 统计（turns, tokens, tool_calls）和 `agent_snapshot`（从 `snapshot_created` 事件）
+9. 判定 pass/fail：`success_rate > 0 且 tool_call_accuracy >= 0.5`
+10. 追加 per_case 记录（含 `evidence`）
 
 **离线模式流程：**
 
 与在线类似，但跳过 `chat_fn()` 调用，直接从 `config.trace_session_ids[i]` 读取对应 session 的完整 trace。
 
-### 配置 hash 变更检测
+### agent_config_hash
 
-运行开始时，Runner 对 `eval_dir` + `benchmark.name` + `metrics` + `mode` + `judge_model` 做 SHA256[:12] hash。如果与 benchmark 记录的历史 hash 一致，打印 "Config unchanged" 提示；否则显示旧/新 hash 对比。
+运行开始时，Runner 对 agent 配置（`system_prompt` + `models` + `model_defs` + `plugins` + `plugins_config` + `tools` + `skills`）做 SHA256[:12] hash，写入 `EvalReport.agent_config_hash`。同一 benchmark 对不同 agent 配置运行会产生不同 hash，这是横向对比的关键标识。详细配置在 `agent_snapshot` 字段可查。
 
 ### CLI
 
 ```bash
 python -m arf.plugins.eval \
-  --benchmark benchmarks/my_bench.json \
+  --benchmark benchmarks/my_bench.benchmark.json \
   --data-dir ./data \
   --mode offline \
   --traces sess_1,sess_2,sess_3 \
@@ -372,11 +411,12 @@ success_rate = 0 if any event type is "error" else 1
 
 #### ToolCallAccuracyMetric → `tool_call_accuracy`
 
-按名称匹配：检查 `expected_execution` 中的每个工具名是否在 `actual_trace` 的 `tool_call_start` 事件中出现。
+按名称匹配：检查 `expected_execution` 中的每个工具名是否在 `actual_trace` 的 `tool_call_start` 事件中出现。以 `[待标注]` 开头的占位符条目在计算前自动过滤。
 
 ```
-matches = count(exp_name in actual_names for exp_name in expected_execution)
-total = max(len(expected_execution), len(actual_calls))
+filtered = [x for x in expected_execution if not x.startswith("[待标注]")]
+matches = count(exp_name in actual_names for exp_name in filtered)
+total = max(len(filtered), len(actual_calls))
 tool_call_accuracy = matches / total
 ```
 
@@ -391,20 +431,23 @@ turn_efficiency = max_turns / actual_turns  （cap 1.0）
 
 #### OutputContainsMetric → `output_contains`
 
-在 `model_call_end` 事件的 `data.content` 中搜索 `expected_output_contains` 中的每个关键词。
+在 `model_call_end` 事件的 `data.content` 中搜索 `expected_output_contains` 中的每个关键词。以 `[待标注]` 开头的占位符条目在计算前自动过滤。
 
 ```
-output_contains = matches / len(expected_output_contains)
+filtered = [x for x in expected_output_contains if not x.startswith("[待标注]")]
+output_contains = matches / len(filtered)
 ```
-若 `expected_output_contains` 为空，返回 1.0。
+若过滤后为空，返回 1.0。
 
 #### ExecutionAccuracyMetric → `execution_accuracy`
 
-与 `ToolCallAccuracyMetric` 相同——按名称匹配 `expected_execution` 中的工具名。
+与 `ToolCallAccuracyMetric` 相同——按名称匹配 `expected_execution` 中的工具名。以 `[待标注]` 开头的占位符条目在计算前自动过滤。
 
 ```
-execution_accuracy = matches / len(expected_execution)
+filtered = [x for x in expected_execution if not x.startswith("[待标注]")]
+execution_accuracy = matches / len(filtered)
 ```
+若过滤后为空，返回 1.0。
 
 ### LLM-as-Judge Metric（需 Judge 模型）
 
@@ -540,8 +583,8 @@ tests/
 典型数据目录结构：
 
 benchmarks/
-├── my_bench.json           # EvalBenchmark JSON
-└── my_bench.trace.jsonl    # 冻结的 golden trace 快照
+├── my_bench.benchmark.json  # EvalBenchmark JSON（build() 自动写入）
+└── my_bench.trace.jsonl     # 冻结的 golden trace 快照
 
 data/{session_id}/
 ├── traces/{session_id}.jsonl  # session trace

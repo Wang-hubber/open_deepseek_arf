@@ -294,8 +294,8 @@ class TestHarnessSessionId:
         _events = [e async for e in harness.run("first", session_id="s1")]
         first_sid = agent.state.session_id
         _events = [e async for e in harness.run("second", session_id="s2")]
-        # session_id should not change — already assigned
-        assert agent.state.session_id == first_sid
+        # session_id changes when a different one is requested
+        assert agent.state.session_id == "s2"
 
 
 class TestHarnessEventBus:

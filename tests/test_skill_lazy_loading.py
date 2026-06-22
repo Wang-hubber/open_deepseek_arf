@@ -110,9 +110,9 @@ class TestUseSkillTool:
         use_skill_mod._index = index
 
         result = await use_skill_mod.execute(name="react-component")
-        assert result["ok"] is True
-        assert result["skill"]["name"] == "react-component"
-        assert result["skill"]["body"] == body
+        assert isinstance(result, str)
+        assert "React Guidelines" in result
+        assert "Use Zustand" in result
 
     @pytest.mark.anyio
     async def test_use_skill_unknown_returns_error(self):

@@ -71,13 +71,113 @@ APP_DIR = Path(__file__).parent.parent / "app" / "arf_default_assistant"
 
 
 @pytest.fixture
-def tools_dir():
-    return APP_DIR / "tools"
+def tools_dir(tmp_path):
+    """Create temp dir with sample tools for integration tests."""
+    tools_root = tmp_path / "tools"
+    tools_root.mkdir()
+
+    _sample_tools = {
+        "file_writer": {
+            "description": "Create or overwrite a file with content",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path"},
+                    "content": {"type": "string", "description": "File content"},
+                },
+                "required": ["path", "content"],
+            },
+            "fn_body": "async def execute(path: str, content: str, **kwargs): return {'ok': True, 'path': path}",
+        },
+        "python_exec": {
+            "description": "Execute a Python script",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "script": {"type": "string", "description": "Script path"},
+                },
+                "required": ["script"],
+            },
+            "fn_body": "async def execute(script: str, **kwargs): return {'ok': True, 'script': script}",
+        },
+        "read_file": {
+            "description": "Read text from a file",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "fn_body": "async def execute(path: str, **kwargs): return {'ok': True, 'content': ''}",
+        },
+        "write_file": {
+            "description": "Write content to a file",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+            "fn_body": "async def execute(path: str, content: str, **kwargs): return {'ok': True}",
+        },
+        "delete_file": {
+            "description": "Delete a file by path",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "fn_body": "async def execute(path: str, **kwargs): return {'ok': True}",
+        },
+        "list_directory": {
+            "description": "List directory contents",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "fn_body": "async def execute(path: str, **kwargs): return {'ok': True, 'entries': []}",
+        },
+        "search_files": {
+            "description": "Search for files matching a pattern",
+            "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]},
+            "fn_body": "async def execute(pattern: str, **kwargs): return {'ok': True, 'matches': []}",
+        },
+        "search_content": {
+            "description": "Search for text within files",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            "fn_body": "async def execute(query: str, **kwargs): return {'ok': True, 'results': []}",
+        },
+        "create_directory": {
+            "description": "Create a new directory",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "fn_body": "async def execute(path: str, **kwargs): return {'ok': True}",
+        },
+        "get_file_info": {
+            "description": "Get metadata about a file",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "fn_body": "async def execute(path: str, **kwargs): return {'ok': True, 'size': 0}",
+        },
+        "move_file": {
+            "description": "Move or rename a file",
+            "parameters": {"type": "object", "properties": {"src": {"type": "string"}, "dst": {"type": "string"}}, "required": ["src", "dst"]},
+            "fn_body": "async def execute(src: str, dst: str, **kwargs): return {'ok': True}",
+        },
+    }
+
+    import yaml as _yaml
+    for name, data in _sample_tools.items():
+        tool_dir = tools_root / name
+        tool_dir.mkdir()
+        (tool_dir / "tool.yaml").write_text(_yaml.dump({
+            "name": name,
+            "description": data["description"],
+            "parameters": data["parameters"],
+        }), encoding="utf-8")
+        (tool_dir / "function.py").write_text(data["fn_body"], encoding="utf-8")
+
+    return tools_root
 
 
 @pytest.fixture
-def skills_dir():
-    return APP_DIR / "skills"
+def skills_dir(tmp_path):
+    """Create temp dir with sample skill YAML files for integration tests."""
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+
+    import yaml as _yaml
+    (skills_root / "react-component.yaml").write_text(_yaml.dump({
+        "name": "react-component",
+        "description": "Create a React component with state management",
+    }), encoding="utf-8")
+    (skills_root / "api-endpoint.yaml").write_text(_yaml.dump({
+        "name": "api-endpoint",
+        "description": "Create a REST API endpoint",
+    }), encoding="utf-8")
+
+    return skills_root
 
 
 @pytest.fixture
@@ -106,5 +206,14 @@ def fake_model():
 
 @pytest.fixture
 def agent_config():
-    from arf.agent.config import AgentConfig
-    return AgentConfig.from_yaml(str(APP_DIR / "agent.yaml"))
+    from arf.agent.config import AgentConfig, SystemPromptConfig, PrefixConfig
+    return AgentConfig(
+        name="test-agent",
+        system_prompt=SystemPromptConfig(
+            prefix=PrefixConfig(
+                role="You are a test assistant.",
+                critical_rules="R1: Always verify file operations.\nR2: Never write outside workspace.",
+            ),
+        ),
+        workspace_dir=str(Path(tempfile.gettempdir()) / "arf-test"),
+    )

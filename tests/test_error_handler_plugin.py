@@ -78,7 +78,7 @@ async def test_error_handler_execute_tools_phase_retry_with_inject():
 
 @pytest.mark.anyio
 async def test_error_handler_message_contract_repair():
-    """MessageContract violation → fallback with persist_state + repair."""
+    """MessageContract violation → retry_turn with repair attempt."""
     plugin = ErrorHandlerPlugin()
     ctx = _make_ctx(
         RuntimeError("message contract violation for tool results"),
@@ -90,5 +90,5 @@ async def test_error_handler_message_contract_repair():
 
     decision = ctx.hook_data["_recovery_decision"]
     assert "action" not in decision
-    assert decision["recovery"] == "persist_state"
-    assert decision["params"]["repair_messages"] is True
+    assert decision["recovery"] == "retry_turn"
+    assert "repaired" in decision["params"]

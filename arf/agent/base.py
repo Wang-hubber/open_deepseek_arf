@@ -277,14 +277,18 @@ class BaseAgent:
                 return p.approve(decision_id, approved)
         return False
 
-    async def run(self, user_message: str, session_id: str = "default") -> str:
+    async def run(self, user_message: str, session_id: str = "default",
+                  context_messages: list[dict] | None = None) -> str:
         """Convenience: run a single round, return final text."""
         from arf.engine.compat import collect_response
-        return await collect_response(self.astream(user_message, session_id))
+        return await collect_response(
+            self.astream(user_message, session_id, context_messages=context_messages)
+        )
 
     async def astream(
         self, user_message: str, session_id: str = "default",
         stop_on_text: bool = False,
+        context_messages: list[dict] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Main execution — delegates to AgentHarness.run()."""
         if not session_id or session_id.strip() == "":
@@ -293,7 +297,10 @@ class BaseAgent:
         self._active_sessions.add(session_id)
 
         try:
-            async for event in self._harness.run(user_message, session_id=session_id):
+            async for event in self._harness.run(
+                user_message, session_id=session_id,
+                context_messages=context_messages,
+            ):
                 yield event
         except Exception as exc:
             logger.exception("astream session=%s failed", session_id)

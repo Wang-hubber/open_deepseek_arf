@@ -76,10 +76,8 @@ class TestEngineToolExecution:
 
 
 class TestSystemPromptInventory:
-    """Verify system prompt inventory includes all expected sections
-    via DefaultSystemPromptProvider."""
+    """Verify system prompt assembly via DefaultSystemPromptProvider."""
 
-    _suffix = None
     _sp = None
 
     @pytest.fixture(autouse=True)
@@ -101,34 +99,29 @@ class TestSystemPromptInventory:
         from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
         provider = DefaultSystemPromptProvider(config=agent_config)
         self._sp = provider.build()
-        self._suffix = self._sp.suffix
 
-    def test_inventory_placeholder_present(self):
-        """Suffix should contain $INVENTORY placeholder for MCP fill."""
-        assert "$INVENTORY" in self._suffix, (
-            "Missing $INVENTORY placeholder in suffix"
-        )
-
-    def test_suffix_is_template_not_rendered(self):
-        """Suffix template should NOT have been rendered with tool descriptions.
-        Inventory filling is deferred to MCP at startup and cached thereafter."""
-        assert "Available Tools" not in self._suffix, (
-            "Invetory should NOT be pre-rendered — it's filled by MCP"
-        )
+    def test_prefix_is_assembled(self):
+        """Prefix should be a non-empty string containing role + rules + workspace."""
+        assert len(self._sp.prefix) > 0, "Prefix should be non-empty"
 
     def test_prefix_role_populated(self):
         """Prefix should contain role from agent.yaml."""
-        sp = self._sp
-        assert len(sp.prefix) > 0, "Prefix should be populated"
+        assert "test assistant" in self._sp.prefix, (
+            "Prefix should contain role text"
+        )
 
     def test_prefix_critical_rules_populated(self):
         """Prefix should contain critical rules."""
-        sp = self._sp
-        assert "R1" in sp.prefix or "R2" in sp.prefix, (
+        assert "R1" in self._sp.prefix or "R2" in self._sp.prefix, (
             "Prefix should contain critical rules"
         )
 
-    def test_full_text_combines_prefix_and_suffix(self):
-        """full_text should be prefix + suffix concatenated."""
-        sp = self._sp
-        assert sp.full_text == sp.prefix + sp.suffix
+    def test_prefix_includes_workspace_dir(self):
+        """Prefix should include workspace directory."""
+        assert "Workspace" in self._sp.prefix or "workspace" in self._sp.prefix.lower(), (
+            "Prefix should contain workspace directory"
+        )
+
+    def test_sp_is_dataclass_with_prefix_attr(self):
+        """SystemPrompt is a dataclass with only a prefix field."""
+        assert hasattr(self._sp, "prefix"), "SystemPrompt must have prefix attr"

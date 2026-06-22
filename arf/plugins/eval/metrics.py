@@ -5,6 +5,17 @@ from typing import Protocol, runtime_checkable
 
 from arf.plugins.eval.exceptions import EvalJudgeError
 
+_PLACEHOLDER_PREFIX = "[待标注]"
+
+
+def _filter_placeholders(items: list[str]) -> list[str]:
+    """Remove annotation placeholder entries so metrics ignore them.
+
+    Annotators can append real keywords/tool names after the placeholder
+    without deleting it — only non-placeholder entries are scored.
+    """
+    return [x for x in items if not x.startswith(_PLACEHOLDER_PREFIX)]
+
 
 @runtime_checkable
 class EvalMetric(Protocol):
@@ -91,7 +102,7 @@ class ToolCallAccuracyMetric:
                         dep_order_failures += 1
 
         # expected_execution is list[str] — tool names to match by name
-        expected_names = golden_case.expected_execution
+        expected_names = _filter_placeholders(golden_case.expected_execution)
 
         result: dict = {"tool_call_accuracy": 1.0}
         if expected_names:
@@ -712,7 +723,7 @@ class OutputContainsMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        expected = golden_case.expected_output_contains
+        expected = _filter_placeholders(golden_case.expected_output_contains)
         if not expected:
             return {"output_contains": 1.0}
 
@@ -748,7 +759,7 @@ class ExecutionAccuracyMetric:
         return False
 
     async def compute(self, actual_trace, golden_case, judge=None, judge_adapter=None):
-        expected: list[str] = golden_case.expected_execution
+        expected: list[str] = _filter_placeholders(golden_case.expected_execution)
         if not expected:
             return {"execution_accuracy": 1.0}
 

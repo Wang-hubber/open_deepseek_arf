@@ -78,22 +78,33 @@ class TestBenchmarkBuilder:
              "timestamp": 2.3},
         ])
         builder = BenchmarkBuilder(p)
-        bm = builder.build("s1", "my_bench")
+        bm = builder.build("s1", "my_bench", annotate_mode=False)
 
         assert bm.name == "my_bench"
         assert bm.source_session == "s1"
         assert len(bm.cases) == 2
 
-        # Case 0
+        # Case 0 — no prior rounds
         assert bm.cases[0].input == "create file"
         assert bm.cases[0].expected_execution == ["file_writer"]
         assert bm.cases[0].expected_output_contains == []
         assert bm.cases[0].max_turns == 1
         assert bm.cases[0].source_round == 0
+        assert bm.cases[0].original_output == "File created successfully"
+        assert len(bm.cases[0].original_tool_calls) == 1
+        assert bm.cases[0].original_tool_calls[0]["name"] == "file_writer"
+        assert bm.cases[0].original_tool_calls[0]["success"] is True
+        assert bm.cases[0].context_messages == []
 
-        # Case 1
+        # Case 1 — has prior round context
         assert bm.cases[1].input == "read it"
         assert bm.cases[1].expected_execution == ["file_reader"]
+        assert bm.cases[1].original_output == "The file says hello"
+        assert len(bm.cases[1].original_tool_calls) == 1
+        assert bm.cases[1].original_tool_calls[0]["name"] == "file_reader"
+        assert len(bm.cases[1].context_messages) > 0
+        assert any(msg["content"] == "create file" for msg in bm.cases[1].context_messages)
+        assert any("File created successfully" in msg["content"] for msg in bm.cases[1].context_messages)
 
         assert bm.created_at > 0
 
@@ -123,7 +134,7 @@ class TestBenchmarkBuilder:
              "timestamp": 1.1},
         ])
         builder = BenchmarkBuilder(p)
-        bm = builder.build("s1", "chat")
+        bm = builder.build("s1", "chat", annotate_mode=False)
         assert len(bm.cases) == 1
         c = bm.cases[0]
         assert c.expected_execution == []
@@ -154,7 +165,7 @@ class TestBenchmarkBuilder:
              "timestamp": 2.3},
         ])
         builder = BenchmarkBuilder(p)
-        bm = builder.build("s1", "multi")
+        bm = builder.build("s1", "multi", annotate_mode=False)
         assert len(bm.cases) == 1
         c = bm.cases[0]
         assert c.expected_output_contains == []
@@ -175,7 +186,11 @@ class TestBenchmarkBuilder:
         bm = builder.build("s1", "annot", annotate_mode=True)
         c = bm.cases[0]
         assert "[待标注]" in c.expected_output_contains[0]
-        assert c.expected_execution == ["[待标注] 预期工具名"]
+        assert "自动忽略" in c.expected_output_contains[0]
+        assert "[待标注]" in c.expected_execution[0]
+        assert "自动忽略" in c.expected_execution[0]
+        assert c.original_output == "Hi!"
+        assert c.original_tool_calls == []
 
     def test_feedback_extraction(self, data_dir):
         p = _make_trace_reader(data_dir)
@@ -198,7 +213,7 @@ class TestBenchmarkBuilder:
              "timestamp": 2.0},
         ])
         builder = BenchmarkBuilder(p)
-        bm = builder.build("s1", "fb_test")
+        bm = builder.build("s1", "fb_test", annotate_mode=False)
         c = bm.cases[0]
         assert c.feedback == {"rating": "good", "reason": "works",
                               "annotated_at": "2025-01-01T00:00:00"}
@@ -228,7 +243,7 @@ class TestBenchmarkBuilder:
              "timestamp": 3.0},
         ])
         builder = BenchmarkBuilder(p)
-        bm = builder.build("s1", "latest")
+        bm = builder.build("s1", "latest", annotate_mode=False)
         c = bm.cases[0]
         assert c.feedback == {"rating": "good", "reason": "fixed", "annotated_at": ""}
 
@@ -277,8 +292,8 @@ class TestBuildFromAnnotations:
             "comment": "good",
             "annotated_at": "",
         }
-        assert bm.cases[0].expected_execution == []
-        assert bm.cases[0].expected_output_contains == []
+        assert "[待标注]" in bm.cases[0].expected_execution[0]
+        assert "[待标注]" in bm.cases[0].expected_output_contains[0]
 
         assert bm.cases[1].input == "delete file"
         assert bm.cases[1].source_round == 2

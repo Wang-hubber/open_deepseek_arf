@@ -10,7 +10,7 @@ def load_plugin_yaml(plugin_dir: str, name: str) -> dict | None:
     if not path.exists():
         return None
     import yaml
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 

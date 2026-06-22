@@ -318,13 +318,26 @@ class AgentHarness:
 
     # ── Execution Loop ──────────────────────────────────
 
-    async def run(self, user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]:
-        """Main execution loop. Yields AgentEvent for SSE streaming."""
+    async def run(self, user_message: str, session_id: str | None = None,
+                  context_messages: list[dict] | None = None) -> AsyncIterator[AgentEvent]:
+        """Main execution loop. Yields AgentEvent for SSE streaming.
+
+        Args:
+            user_message: The user's input for this round.
+            session_id: Session identifier. A new session is created if this
+                        differs from the current state.session_id.
+            context_messages: Optional messages to inject after session setup
+                              but before user_message (e.g. eval prior rounds).
+        """
         agent = self.agent
         self._interaction_round += 1
 
-        # Assign session_id if this is a new session
-        is_new_session = not agent.state.session_id
+        # Detect new session: empty state OR explicit session_id change
+        requested_sid = session_id or ""
+        is_new_session = (
+            not agent.state.session_id
+            or (requested_sid and requested_sid != agent.state.session_id)
+        )
         if is_new_session:
             agent.state.session_id = session_id or str(uuid.uuid4())
             agent.state.messages.clear()
@@ -408,6 +421,11 @@ class AgentHarness:
             # First-time snapshot for new session
             yield ctx.emit("snapshot_created", {"hash": snapshot["hash"]})
         agent.state.snapshot = snapshot
+
+        # Inject context messages (e.g. eval prior rounds) before user message
+        if context_messages:
+            for msg in context_messages:
+                agent.input(role=msg["role"], content=msg["content"])
 
         # Inject user message
         agent.input(role="user", content=user_message)

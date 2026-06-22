@@ -8,6 +8,8 @@ class EvalCase:
     id: str
     input: str
     session_id: str | None = None
+    original_output: str = ""  # 模型在 trace 中的最终文本输出，供标注者参考
+    original_tool_calls: list[dict] = field(default_factory=list)  # 完整工具调用记录（name/arguments/success/result），仅供标注参考
     context_messages: list[dict] = field(default_factory=list)  # Mock message injection before user input
     expected_execution: list[str] = field(default_factory=list)  # 预期调用的工具名，按名称命中
     expected_output_contains: list[str] = field(default_factory=list)  # 关键词匹配
@@ -36,6 +38,8 @@ class EvalBenchmark:
                     "input": c.input,
                     **({"session_id": c.session_id} if c.session_id else {}),
                     **({"source_round": c.source_round} if c.source_round is not None else {}),
+                    **({"original_output": c.original_output} if c.original_output else {}),
+                    **({"original_tool_calls": c.original_tool_calls}),
                     **({"context_messages": c.context_messages} if c.context_messages else {}),
                     **({"expected_execution": c.expected_execution} if c.expected_execution else {}),
                     **({"expected_output_contains": c.expected_output_contains} if c.expected_output_contains else {}),
@@ -63,6 +67,8 @@ class EvalBenchmark:
                     input=c["input"],
                     session_id=c.get("session_id"),
                     source_round=c.get("source_round"),
+                    original_output=c.get("original_output", ""),
+                    original_tool_calls=c.get("original_tool_calls", []),
                     context_messages=c.get("context_messages", []),
                     expected_execution=c.get("expected_execution", []),
                     expected_output_contains=c.get("expected_output_contains", []),
@@ -161,7 +167,7 @@ class EvalReport:
         return cls(
             run_id=data["run_id"],
             benchmark_name=data["benchmark_name"],
-            agent_config_hash=data["agent_config_hash"],
+            agent_config_hash=data.get("agent_config_hash", ""),
             timestamp=data["timestamp"],
             summary=EvalSummary(
                 total=s["total"], passed=s["passed"], failed=s["failed"],

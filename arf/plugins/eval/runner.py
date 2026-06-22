@@ -86,23 +86,28 @@ class EvalRunner:
         benchmark = self._benchmark
 
         import hashlib, json
-        config_for_hash = {
-            "eval_dir": self._config.eval_dir,
-            "benchmark": getattr(benchmark, "name", ""),
-            "metrics": {k: v for k, v in self._config.metrics.items() if v},
-            "mode": self._config.mode,
-            "judge_model": (self._config.judge_model.model
-                            if self._config.judge_model else None),
-        }
-        config_key = json.dumps(config_for_hash, sort_keys=True)
-        current_hash = hashlib.sha256(config_key.encode()).hexdigest()[:12]
         mode = "offline" if agent is None else "online"
 
-        # Hash check: warn if unchanged (testing config change effects)
-        bm_hash = getattr(benchmark, 'config_hash', None) or current_hash
-        if bm_hash == current_hash:
-            print(f"\n  Config unchanged (hash={current_hash}). "
-                  f"Behavior should match baseline.\n")
+        # Hash the agent configuration — same benchmark + different agent
+        # yields different hashes, enabling meaningful cross-run comparison.
+        if agent is not None and hasattr(agent, "config"):
+            agent_cfg = agent.config.model_dump(exclude_none=True)
+            agent_key = json.dumps({
+                "system_prompt": agent_cfg.get("system_prompt"),
+                "models": agent_cfg.get("models"),
+                "model_defs": agent_cfg.get("model_defs"),
+                "plugins": agent_cfg.get("plugins"),
+                "plugins_config": agent_cfg.get("plugins_config"),
+                "tools": agent_cfg.get("tools"),
+                "skills": agent_cfg.get("skills"),
+            }, sort_keys=True, default=str)
+            current_hash = hashlib.sha256(agent_key.encode()).hexdigest()[:12]
+        elif agent is not None:
+            current_hash = "unknown"
+        else:
+            current_hash = "offline"
+
+        print(f"\n  Agent config hash: {current_hash}")
 
         # --- Build metrics ---
         prompts = self._config.prompts
@@ -177,13 +182,13 @@ class EvalRunner:
             all_pass = True
 
             try:
-                # -- Context injection & execution --
+                # -- Execution with context injection --
                 if agent is not None:
-                    for msg in case.context_messages:
-                        agent._primitive_agent.input(
-                            role=msg["role"], content=msg["content"],
-                        )
-                    await agent.run(user_message=case.input, session_id=sid)
+                    await agent.run(
+                        user_message=case.input,
+                        session_id=sid,
+                        context_messages=case.context_messages or None,
+                    )
                     actual_trace = self._read_trace(sid)
                 else:
                     # Offline
@@ -213,6 +218,7 @@ class EvalRunner:
 
                 duration = time.time() - case_start
                 trace_stats = self._extract_trace_stats(actual_trace)
+                evidence = self._extract_evidence(actual_trace)
 
                 # Determine pass/fail
                 sa = case_metrics.get("success_rate", 1.0)
@@ -265,6 +271,7 @@ class EvalRunner:
                 case_metrics = {"error": str(exc)[:200]}
                 all_pass = False
                 trace_stats = {"turns": 0, "tokens_in": 0, "tokens_out": 0, "tool_calls": 0}
+                evidence = {"error": str(exc)[:500]}
                 print(f"  [ERR] case_{i}: {exc}")
 
             per_case.append({
@@ -277,6 +284,7 @@ class EvalRunner:
                 "tokens_in": trace_stats["tokens_in"],
                 "tokens_out": trace_stats["tokens_out"],
                 "tool_calls": trace_stats["tool_calls"],
+                "evidence": evidence,
             })
 
         # --- Summary ---
@@ -349,6 +357,62 @@ class EvalRunner:
                     except json.JSONDecodeError:
                         pass
         return events
+
+    @staticmethod
+    def _extract_evidence(trace: list[dict]) -> dict:
+        """Extract state-level evidence from trace for per-case reporting.
+
+        Returns a dict with final_output, tool_calls, and error — the key
+        signals needed to understand why a case passed or failed without
+        opening the raw trace file.
+        """
+        final_output = ""
+        tool_calls: list[dict] = []
+        starts: list[dict] = []
+        ends: list[dict] = []
+        error_detail = ""
+
+        for e in trace:
+            typ = e.get("type", "")
+            data = e.get("data", {})
+
+            if typ == "model_call_end":
+                content = data.get("content", "")
+                if content:
+                    final_output = content
+
+            elif typ == "tool_call_start":
+                starts.append({
+                    "name": data.get("name") or data.get("tool_name", ""),
+                    "arguments": data.get("arguments", {}),
+                })
+
+            elif typ == "tool_call_end":
+                ends.append({
+                    "success": data.get("success", True),
+                    "result": data.get("result", ""),
+                    "error": data.get("error", ""),
+                })
+
+            elif typ == "error":
+                error_detail = data.get("detail", str(e))
+
+        # Pair starts and ends by position
+        for i, start in enumerate(starts):
+            end = ends[i] if i < len(ends) else {}
+            tool_calls.append({
+                "name": start["name"],
+                "arguments": start["arguments"],
+                "success": end.get("success", True),
+                "result": end.get("result", ""),
+                "error": end.get("error", ""),
+            })
+
+        return {
+            "final_output": final_output,
+            "tool_calls": tool_calls,
+            "error": error_detail,
+        }
 
     @staticmethod
     def _extract_trace_stats(trace: list[dict]) -> dict:
