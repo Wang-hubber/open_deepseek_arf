@@ -116,6 +116,7 @@ class AgentConfig(BaseModel):
     session_mode: Literal["auto", "ask", "plan"] = "ask"
     data_path: str = "."
     allow_paths: list[str] = Field(default_factory=list)
+    workspace_dir: str = ""  # set by BaseAgent from app_context.root
     plugins: list[str] = Field(default_factory=list)
     plugins_config: dict = Field(default_factory=dict)
     skills: list[SkillConfig] = Field(default_factory=list)

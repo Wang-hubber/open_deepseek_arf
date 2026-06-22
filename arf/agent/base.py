@@ -221,6 +221,10 @@ class BaseAgent:
                 str(root / p) if not Path(p).is_absolute() else p
                 for p in config.allow_paths
             ]
+        if app_context is not None:
+            config.workspace_dir = str(app_context.root.resolve())
+        elif not config.workspace_dir:
+            config.workspace_dir = str(Path.cwd().resolve())
 
         # Build AgentHarness
         adv = config.effective_advanced()

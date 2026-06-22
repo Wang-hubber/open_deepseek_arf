@@ -6,8 +6,9 @@ from arf.agent.prompt import SystemPrompt
 class DefaultSystemPromptProvider:
     """Default implementation of SystemPromptProvider.
 
-    Reads PrefixConfig (role + critical_rules). Skills, tools, and
-    memory are injected by the framework as separate system messages.
+    Assembles prefix from role + critical_rules + workspace_dir.
+    Skills, tools, and memory are injected by the framework as
+    separate system messages.
     """
 
     def __init__(self, config: AgentConfig) -> None:
@@ -20,4 +21,10 @@ class DefaultSystemPromptProvider:
             parts.append(pc.role.strip())
         if pc.critical_rules:
             parts.append(pc.critical_rules.strip())
+        if self._config.workspace_dir:
+            parts.append(
+                f"## Workspace\n\n"
+                f"Your working directory is: {self._config.workspace_dir}\n"
+                f"All file paths must stay within this directory tree."
+            )
         return SystemPrompt(prefix="\n\n".join(parts))

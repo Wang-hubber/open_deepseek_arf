@@ -347,7 +347,14 @@ class AgentHarness:
                 if prompt.prefix:
                     agent.input(role="system", content=prompt.prefix, position="begin")
 
-            # Plugins inject extra context (e.g. memory)
+            # Pass allow_paths to plugins at session_start (e.g. tool_guard
+            # injects them as a system message so the model knows its boundaries).
+            _allow_paths: list[str] = []
+            if self._agent_config is not None:
+                _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
+            ctx.hook_data["_allow_paths"] = _allow_paths
+
+            # Plugins inject extra context (e.g. memory, sandbox boundaries)
             await self._checkpoint("session_start", ctx)
             for event in ctx.captured_events:
                 yield event

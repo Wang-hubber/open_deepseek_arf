@@ -1,6 +1,7 @@
 name: tool_guard
 events:
   - {hook_name: "before_tools", event_name: "pre_action", mode: "blocking"}
+  - {hook_name: "session_start", event_name: "session_start", mode: "side"}
 config:
   deny: []
   ask: []

@@ -42,6 +42,7 @@ class ToolGuardPlugin(Plugin):
     def __init__(self, name="tool_guard", events=None, config=None):
         events = events or [
             {"hook_name": "before_tools", "event_name": "pre_action", "mode": "blocking"},
+            {"hook_name": "session_start", "event_name": "session_start", "mode": "side"},
         ]
         super().__init__(name=name, events=events, config=config or {})
         self._deny: set[str] = set(self.config.get("deny", []))
@@ -53,6 +54,27 @@ class ToolGuardPlugin(Plugin):
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "pre_action":
             await self._guard(ctx)
+        elif event_name == "session_start":
+            self._inject_allow_paths(ctx)
+
+    def _inject_allow_paths(self, ctx: PluginContext) -> None:
+        """Inject allowed paths as a system message at session start.
+
+        The model should know which directories it may access so it can
+        plan file operations without hitting sandbox blocks.
+        """
+        allow_paths: list[str] = ctx.hook_data.get("_allow_paths", [])
+        if not allow_paths:
+            return
+        lines = "\n".join(f"- {p}" for p in allow_paths)
+        msg = (
+            "## Allowed Directories\n\n"
+            "You may only read/write files within these directories:\n\n"
+            f"{lines}\n\n"
+            "Any file path outside these directories will be rejected "
+            "by the sandbox before the tool executes."
+        )
+        ctx.agent.input(role="system", content=msg)
 
     async def _guard(self, ctx: PluginContext) -> None:
         """Unified permission check: deny → sandbox → mode → allow/ask/unknown."""
