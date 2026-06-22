@@ -91,8 +91,9 @@ class MemoryPlugin(Plugin):
     @staticmethod
     def _wire_tool(name: str, **kwargs) -> None:
         """Inject globals into a plugin tool module."""
+        import importlib as _il
         try:
-            mod = __import__(f"arf.plugins.memory.tools.{name}", fromlist=["_index", "_store", "_call_model"])
+            mod = _il.import_module(f"arf.plugins.memory.tools.{name}.function")
             for attr, val in kwargs.items():
                 setattr(mod, attr, val)
         except ImportError:

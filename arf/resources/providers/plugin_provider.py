@@ -55,14 +55,10 @@ class PluginProvider:
                 func_path = tool_dir / "function.py"
                 if func_path.exists():
                     try:
-                        spec = importlib.util.spec_from_file_location(
-                            f"arf_plugin_{plugin_name}_{cfg.name}", str(func_path),
-                        )
-                        if spec and spec.loader:
-                            mod = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(mod)
-                            if hasattr(mod, "execute"):
-                                self._functions[f"{plugin_name}__{cfg.name}"] = mod.execute
+                        mod = importlib.import_module(
+                            f"arf.plugins.{plugin_name}.tools.{cfg.name}.function")
+                        if hasattr(mod, "execute"):
+                            self._functions[f"{plugin_name}__{cfg.name}"] = mod.execute
                     except Exception:
                         logger.warning("Failed to load function for %s/%s", plugin_name, cfg.name, exc_info=True)
 
