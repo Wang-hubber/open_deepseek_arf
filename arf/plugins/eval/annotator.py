@@ -50,7 +50,6 @@ DEFAULT_EXECUTION_PROMPT = (
     "反馈驱动标注：\n"
     "- 如果人工反馈评分是 \"like\"：实际行为≈正确行为，参考实际工具调用\n"
     "- 如果人工反馈评分是 \"dislike\"：实际行为有误，根据反馈原因推导**正确工具**\n"
-    "  （例：反馈说\"不应调用 write_memory\"→ execution=[]）\n"
     "- 如果没有反馈：独立判断正确流程\n\n"
     "示例输出格式：[\"read_file\", \"write_file\"]\n\n"
     "---\n"
