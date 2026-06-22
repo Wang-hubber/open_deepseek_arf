@@ -332,7 +332,7 @@ class McpClientManager:
         # ---- local: {plugin}__ (keep DI params for in-process execution) ----
         if self._plugin_provider:
             result = await self._plugin_provider.execute_plugin_tool(
-                source, local_name, _filter_serializable(params, keep_di=True))
+                f"{source}__{local_name}", _filter_serializable(params, keep_di=True))
             if result is not None:
                 return result
 
