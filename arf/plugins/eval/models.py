@@ -202,6 +202,8 @@ class EvalReport:
 class EvalDiff:
     baseline_run_id: str
     current_run_id: str
+    baseline_hash: str = ""
+    current_hash: str = ""
     summary_diff: dict = field(default_factory=dict)
     regressions: list[dict] = field(default_factory=list)
     improvements: list[dict] = field(default_factory=list)

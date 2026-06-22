@@ -134,6 +134,19 @@ class TestEvalDiff:
         assert len(diff.regressions) == 1
         assert diff.summary_diff["pass_rate"] == -0.1
 
+    def test_diff_with_hashes(self):
+        diff = EvalDiff(
+            baseline_run_id="r1", current_run_id="r2",
+            baseline_hash="abc123", current_hash="def456",
+        )
+        assert diff.baseline_hash == "abc123"
+        assert diff.current_hash == "def456"
+
+    def test_diff_hashes_default_empty(self):
+        diff = EvalDiff(baseline_run_id="r1", current_run_id="r2")
+        assert diff.baseline_hash == ""
+        assert diff.current_hash == ""
+
 
 class TestEvalConfig:
     def test_validate_no_judge_with_llm_metrics(self):
