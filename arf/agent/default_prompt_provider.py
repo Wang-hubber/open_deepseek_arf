@@ -24,7 +24,6 @@ class DefaultSystemPromptProvider:
         if self._config.workspace_dir:
             parts.append(
                 f"## Workspace\n\n"
-                f"Your working directory is: {self._config.workspace_dir}\n"
-                f"All file paths must stay within this directory tree."
+                f"Your working directory is: {self._config.workspace_dir}"
             )
         return SystemPrompt(prefix="\n\n".join(parts))
