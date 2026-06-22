@@ -1,12 +1,14 @@
 """AutoAnnotator — LLM-driven benchmark annotation.
 
 Fills ``expected_output_contains`` and ``expected_execution`` for each
-case in an EvalBenchmark so the user doesn't have to edit JSON by hand.
+case in an EvalBenchmark.  Uses an internal ARF agent so every LLM call
+goes through the full harness pipeline (trace, hooks, error handling).
 """
 from __future__ import annotations
 
 import json as _json
 import logging
+import uuid
 from pathlib import Path
 
 from arf.plugins.eval.models import EvalBenchmark, EvalCase
@@ -93,75 +95,60 @@ def _build_feedback_str(feedback: dict | None) -> str:
     return "\n".join(lines)
 
 
+# ── AutoAnnotator ─────────────────────────────────────────────────
+
 class AutoAnnotator:
-    """Fill benchmark expected fields via LLM.
+    """Fill benchmark expected fields via LLM, using an ARF agent.
+
+    The agent provides the full harness pipeline (trace, hooks, error
+    handling), so every annotation call produces a session trace for
+    debugging.
 
     Usage::
 
-        adapter = ModelAdapter({...})
-        annotator = AutoAnnotator("benchmarks/my_bm.benchmark.json", adapter)
+        annotator = AutoAnnotator("benchmarks/my_bm.benchmark.json", agent)
         await annotator.annotate()
         annotator.save()
-
-    Prompts can be customised via *prompts*::
-
-        annotator = AutoAnnotator(path, adapter, prompts={
-            "auto_annotate_output_contains": "Your custom prompt...",
-        })
     """
 
     def __init__(
         self,
         benchmark_path: str,
-        model_adapter,
+        agent,  # BaseAgent — provides .run() with full harness pipeline
         *,
         prompts: dict[str, str] | None = None,
     ) -> None:
         self._bm_path = Path(benchmark_path)
         self._bm = EvalBenchmark.from_json(str(self._bm_path))
-        self._adapter = model_adapter
+        self._agent = agent
         self._prompts = dict(prompts or {})
 
     # ── public API ────────────────────────────────────────────────
 
     async def annotate_output_contains(self) -> EvalBenchmark:
         """Fill ``expected_output_contains`` for every case."""
-        prompt = self._prompts.get(
+        prompt_tpl = self._prompts.get(
             "auto_annotate_output_contains", DEFAULT_OUTPUT_CONTAINS_PROMPT,
         )
         for case in self._bm.cases:
             if not self._needs_annotation(case.expected_output_contains):
                 continue
-            tool_names = [tc["name"] for tc in (case.original_tool_calls or [])]
-            user_msg = prompt.format(
-                input=case.input,
-                original_output=case.original_output,
-                tool_names=", ".join(tool_names) if tool_names else "(无工具调用)",
-                context_summary=_build_context_summary(case),
-                feedback=_build_feedback_str(case.feedback),
+            case.expected_output_contains = await self._annotate_one(
+                case, prompt_tpl, f"annot_output_{case.id}",
             )
-            case.expected_output_contains = await self._call_llm(user_msg)
-            logger.info("case %s: output_contains → %s", case.id, case.expected_output_contains)
         return self._bm
 
     async def annotate_execution(self) -> EvalBenchmark:
         """Fill ``expected_execution`` for every case."""
-        prompt = self._prompts.get(
+        prompt_tpl = self._prompts.get(
             "auto_annotate_execution", DEFAULT_EXECUTION_PROMPT,
         )
         for case in self._bm.cases:
             if not self._needs_annotation(case.expected_execution):
                 continue
-            tool_names = [tc["name"] for tc in (case.original_tool_calls or [])]
-            user_msg = prompt.format(
-                input=case.input,
-                original_output=case.original_output,
-                tool_names=", ".join(tool_names) if tool_names else "(无工具调用)",
-                context_summary=_build_context_summary(case),
-                feedback=_build_feedback_str(case.feedback),
+            case.expected_execution = await self._annotate_one(
+                case, prompt_tpl, f"annot_exec_{case.id}",
             )
-            case.expected_execution = await self._call_llm(user_msg)
-            logger.info("case %s: execution → %s", case.id, case.expected_execution)
         return self._bm
 
     async def annotate(self) -> EvalBenchmark:
@@ -191,18 +178,31 @@ class AutoAnnotator:
             isinstance(v, str) and v.startswith("[待标注]") for v in field
         )
 
-    async def _call_llm(self, user_message: str) -> list[str]:
-        """Send a single-turn request and parse the JSON-array response."""
-        messages = [{"role": "user", "content": user_message}]
+    async def _annotate_one(self, case: EvalCase, prompt_tpl: str,
+                            tag: str) -> list[str]:
+        """Run one annotation call through the agent harness."""
+        tool_names = [tc["name"] for tc in (case.original_tool_calls or [])]
+        user_msg = prompt_tpl.format(
+            input=case.input,
+            original_output=case.original_output,
+            tool_names=", ".join(tool_names) if tool_names else "(无工具调用)",
+            context_summary=_build_context_summary(case),
+            feedback=_build_feedback_str(case.feedback),
+        )
+
+        sid = f"annotate_{self._bm.name}_{tag}_{uuid.uuid4().hex[:8]}"
         try:
-            resp = await self._adapter.chat_complete(messages, tools=None)
-            content = resp.content if hasattr(resp, "content") else str(resp)
+            raw = await self._agent.run(user_msg, session_id=sid)
         except Exception:
-            logger.warning("LLM call failed for annotation", exc_info=True)
+            logger.warning("Annotation call failed for %s", tag, exc_info=True)
             return []
 
-        content = (content or "").strip()
-        # Strip markdown code fences if present
+        return self._parse_annotation(raw)
+
+    @staticmethod
+    def _parse_annotation(raw: str) -> list[str]:
+        """Parse the LLM's JSON-array response, stripping markdown fences."""
+        content = (raw or "").strip()
         if content.startswith("```"):
             lines = content.split("\n")
             if lines[0].startswith("```"):
