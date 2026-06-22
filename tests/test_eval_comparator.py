@@ -55,3 +55,47 @@ class TestEvalComparator:
         )
         with pytest.raises(EvalError, match="different benchmark"):
             EvalComparator().compare(baseline, other)
+
+    def test_compare_includes_llm_metrics(self, baseline, current_worse):
+        """Summary diff should include LLM metrics when both have non-None values."""
+        baseline.summary.output_quality = 4.0
+        baseline.summary.trajectory_similarity = 3.5
+        baseline.summary.weighted_score = 0.75
+        current_worse.summary.output_quality = 2.5
+        current_worse.summary.trajectory_similarity = 2.0
+        current_worse.summary.weighted_score = 0.50
+
+        diff = EvalComparator().compare(baseline, current_worse)
+        assert "output_quality" in diff.summary_diff
+        assert "trajectory_similarity" in diff.summary_diff
+        assert "weighted_score" in diff.summary_diff
+
+    def test_compare_skips_none_fields(self, baseline, current_worse):
+        """Fields where either report has None should be skipped."""
+        baseline.summary.output_quality = 4.0
+        current_worse.summary.output_quality = None  # not available
+
+        diff = EvalComparator().compare(baseline, current_worse)
+        assert "output_quality" not in diff.summary_diff
+        assert "pass_rate" in diff.summary_diff  # still compares fields with values
+
+    def test_compare_regressions_include_llm_metrics(self, baseline, current_worse):
+        """Per-case regressions should check LLM metrics too."""
+        baseline.per_case = [
+            {"case_id": "c0", "metrics": {"output_quality": 4.5, "weighted_score": 0.9}}
+        ]
+        current_worse.per_case = [
+            {"case_id": "c0", "metrics": {"output_quality": 2.0, "weighted_score": 0.5}}
+        ]
+        diff = EvalComparator().compare(baseline, current_worse)
+        metric_names = [r["metric"] for r in diff.regressions]
+        assert "output_quality" in metric_names
+        assert "weighted_score" in metric_names
+
+    def test_compare_passes_hash_fields(self, baseline, current_worse):
+        """EvalDiff should carry baseline_hash and current_hash from EvalReport snapshot_hash."""
+        baseline.snapshot_hash = "abc123"
+        current_worse.snapshot_hash = "def456"
+        diff = EvalComparator().compare(baseline, current_worse)
+        assert diff.baseline_hash == "abc123"
+        assert diff.current_hash == "def456"
