@@ -191,6 +191,15 @@ class TestEvalConfig:
         )
         config.validate()  # should not raise
 
+    def test_auto_version_default_true(self):
+        """auto_version defaults to True so eval runs auto-archive by default."""
+        config = EvalConfig()
+        assert config.auto_version is True
+
+    def test_auto_version_explicit_false(self):
+        config = EvalConfig(auto_version=False)
+        assert config.auto_version is False
+
 
 class TestEvalCaseContextMessages:
     def test_context_messages_default_empty(self):
@@ -227,10 +236,24 @@ class TestEvalCaseContextMessages:
 
 
 class TestEvalConfigScoringWeights:
-    def test_default_scoring_weights(self):
+    def test_scoring_weights_llm_dominant(self):
+        """LLM judge metrics should sum to 0.70, rule-based to 0.30."""
         config = EvalConfig()
-        assert config.scoring_weights["tool_call_accuracy"] == 0.2
-        assert config.scoring_weights["output_quality"] == 0.15
+        w = config.scoring_weights
+        # LLM metrics
+        assert w["output_quality"] == pytest.approx(0.30)
+        assert w["trajectory_similarity"] == pytest.approx(0.25)
+        assert w["reasoning_similarity"] == pytest.approx(0.10)
+        assert w["tool_call_result_llm"] == pytest.approx(0.05)
+        # Rule metrics
+        assert w["tool_call_accuracy"] == pytest.approx(0.08)
+        assert w["execution_accuracy"] == pytest.approx(0.06)
+        assert w["turn_efficiency"] == pytest.approx(0.05)
+        assert w["output_contains"] == pytest.approx(0.05)
+        assert w["success_rate"] == pytest.approx(0.06)
+        # Sum must be 1.0
+        total = sum(w.values())
+        assert total == pytest.approx(1.0)
 
     def test_custom_scoring_weights(self):
         config = EvalConfig(scoring_weights={"tool_call_accuracy": 0.5, "output_quality": 0.5})

@@ -248,15 +248,20 @@ class EvalConfig:
     timeout_per_case: float = 300.0
     prompts: dict[str, str] = field(default_factory=dict)
     scoring_weights: dict[str, float] = field(default_factory=lambda: {
-        "tool_call_accuracy": 0.2,
-        "execution_accuracy": 0.15,
-        "turn_efficiency": 0.1,
-        "output_contains": 0.1,
-        "success_rate": 0.15,
-        "output_quality": 0.15,
-        "trajectory_similarity": 0.15,
+        # LLM judge (70%)
+        "output_quality": 0.30,
+        "trajectory_similarity": 0.25,
+        "reasoning_similarity": 0.10,
+        "tool_call_result_llm": 0.05,
+        # Rule-based (30%)
+        "tool_call_accuracy": 0.08,
+        "execution_accuracy": 0.06,
+        "turn_efficiency": 0.05,
+        "output_contains": 0.05,
+        "success_rate": 0.06,
     })
     annotation_enabled: bool = False
+    auto_version: bool = True  # auto-archive report + config after run
     # keys: tool_call_result_llm, output_quality, trajectory_similarity,
     #        output_quality_free, trajectory_similarity_free
 
