@@ -123,6 +123,13 @@ class EvalRunner:
                     system_prompt: str = "", tools: str = "") -> EvalReport:
         benchmark = self._benchmark
 
+        # Auto-extract system prompt from the agent under test so the judge
+        # has full context (role, constraints) when scoring outputs.
+        if not system_prompt and agent is not None:
+            system_prompt = getattr(
+                getattr(agent, "_harness", None), "_system_prompt_text", "",
+            ) or ""
+
         import hashlib, json
         mode = "offline" if agent is None else "online"
 
