@@ -18,7 +18,13 @@ from arf.session.types import SessionMode
 
 
 class ApprovalPlugin(Plugin):
-    """Human-in-the-loop approval for tools in ask_list."""
+    """Human-in-the-loop approval for tools in ask_list and unknown tools.
+
+    Processes tools from two sources:
+    1. config ask_list — explicitly configured ask-list tools
+    2. _pending_tool_calls_ask — tools tagged by tool_guard (unknown tools
+       default to ask since we do not trust plugin developers)
+    """
 
     def __init__(self, name="approval", events=None, config=None):
         events = events or [
@@ -49,7 +55,11 @@ class ApprovalPlugin(Plugin):
 
         for tc in list(tool_calls):
             name = tc.get("name", "")
-            if not matches_perm(name, self._ask_list):
+            tagged = any(
+                t.get("id") == tc.get("id")
+                for t in ctx.hook_data.get("_pending_tool_calls_ask", [])
+            )
+            if not matches_perm(name, self._ask_list) and not tagged:
                 continue
 
             decision_id = f"{ctx.session_id}_{name}_{id(tc)}"

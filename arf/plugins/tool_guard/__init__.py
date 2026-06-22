@@ -16,11 +16,11 @@ Unified permission model:
   ├──────────┼──────────┼──────────────┼──────────────┼──────────┤
   │ AUTO     │ reject   │ pass         │ pass (no HITL)│ pass    │
   │ PLAN     │ reject   │ readOnlyHint │ readOnlyHint │ reject   │
-  │ ASK      │ reject   │ pass         │ pass (→HITL) │ reject*  │
+  │ ASK      │ reject   │ pass         │ pass (→HITL) │ →HITL   │
   └──────────┴──────────┴──────────────┴──────────────┴──────────┘
 
-  * ASK unknown: reject if deny list is active, otherwise pass (implicit
-    allow-all when no deny list is configured).
+  * ASK unknown: routed to approval (→HITL). Plugin developers are not
+    trusted by default — every unknown tool must earn user consent.
 """
 from __future__ import annotations
 import json
@@ -164,15 +164,14 @@ class ToolGuardPlugin(Plugin):
                     self._block_tool(ctx, tc,
                         result="[blocked] PLAN mode — read-only",
                         error="Unknown tools are blocked in PLAN mode")
-                elif self._deny:
-                    ctx.emit(event_type="guard_block", data={
-                        "tool_name": name, "reason": "not in allow list",
-                    })
-                    self._block_tool(ctx, tc,
-                        result="[blocked] not in allow list",
-                        error="Denied")
                 else:
-                    ctx.emit(event_type="guard_pass", data={"tool_name": name})
+                    # Default to ask: route to approval for user decision.
+                    # We do NOT trust plugin developers — every unknown tool
+                    # must earn user consent before execution.
+                    ctx.emit(event_type="guard_pending", data={
+                        "tool_name": name, "reason": "unknown tool, routing to approval",
+                    })
+                    ctx.hook_data.setdefault("_pending_tool_calls_ask", []).append(tc)
 
     @staticmethod
     def _path_in_allowlist(value: str, allow_paths: list[str]) -> bool:
