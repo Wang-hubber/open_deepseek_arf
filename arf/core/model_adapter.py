@@ -95,10 +95,15 @@ class ModelAdapter:
 
         Raises ModelAdapterError for non-retryable errors (400, 401, etc.).
         """
+        # Hard timeout per attempt — httpx read timeout can be defeated by
+        # keepalive bytes.  asyncio.wait_for provides a guaranteed upper bound.
+        _HARD_TIMEOUT = 320.0
+
         last_exc = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                return await self._create_completion(messages, tools, stream, max_tokens)
+                coro = self._create_completion(messages, tools, stream, max_tokens)
+                return await asyncio.wait_for(coro, timeout=_HARD_TIMEOUT)
             except APIStatusError as e:
                 last_exc = e
                 if self._should_retry(e.status_code) and attempt < MAX_RETRIES:
@@ -116,6 +121,22 @@ class ModelAdapter:
                     status_code=e.status_code,
                     message=str(e),
                 ) from e
+            except asyncio.TimeoutError:
+                last_exc = None  # will be set below
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_BASE ** (attempt + 1)
+                    logger.warning(
+                        "API call attempt %d/%d timed out after %.0fs, retrying in %.1fs",
+                        attempt + 1, MAX_RETRIES + 1, _HARD_TIMEOUT, delay,
+                    )
+                    await self._reset_client()
+                    await asyncio.sleep(delay)
+                    continue
+                raise ModelAdapterError(
+                    status_code=0,
+                    message=f"Request timed out after {_HARD_TIMEOUT}s "
+                            f"(all {MAX_RETRIES + 1} attempts exhausted)",
+                ) from None
             except Exception as e:
                 last_exc = e
                 if attempt < MAX_RETRIES:
