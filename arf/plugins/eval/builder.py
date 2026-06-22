@@ -298,61 +298,92 @@ class BenchmarkBuilder:
         messages.  Tool calls use the native ``content`` / ``tool_calls``
         / ``tool_call_id`` keys that ``format_messages`` flattens at the
         API boundary.
+
+        Trace event order is: model_call_end(tool_calls) →
+        tool_call_start → tool_call_end → model_call_end(text).  We buffer
+        the tool execution events and emit them when the closing text-only
+        model_call_end arrives, producing the correct chronological order:
+        assistant(tool_calls) → tool(results) → assistant(text).
         """
         messages: list[dict] = []
+        # Buffered tool execution within one ReAct turn
+        pending_starts: list[dict] = []   # {id, name, arguments}
+        pending_ends: list[dict] = []     # {id, name, result, error}
+
+        def _emit_tool_round():
+            """Emit buffered tool calls + results in correct order."""
+            nonlocal pending_starts, pending_ends
+            if pending_starts:
+                tc_list = [
+                    {
+                        "id": s["id"],
+                        "name": s["name"],
+                        "params": s["arguments"],
+                    }
+                    for s in pending_starts
+                ]
+                messages.append({
+                    "role": "assistant",
+                    "content": {"content": "", "tool_calls": tc_list},
+                })
+            for e in pending_ends:
+                messages.append({
+                    "role": "tool",
+                    "content": {
+                        "tool_call_id": e["id"],
+                        "name": e["name"],
+                        "result": e["result"],
+                        "error": e["error"],
+                    },
+                })
+            pending_starts = []
+            pending_ends = []
+
         for e in prior_events:
             typ = e.get("type", "")
             data = e.get("data", {})
 
             if typ == "user_input":
+                # Flush any dangling tool round before the next user message
+                _emit_tool_round()
                 content = data.get("content", "")
                 if content:
                     messages.append({"role": "user", "content": content})
 
+            elif typ == "tool_call_start":
+                pending_starts.append({
+                    "id": data.get("id", ""),
+                    "name": data.get("name", ""),
+                    "arguments": BenchmarkBuilder._parse_arguments(
+                        data.get("arguments", "{}")
+                    ),
+                })
+
+            elif typ == "tool_call_end":
+                pending_ends.append({
+                    "id": data.get("id", ""),
+                    "name": data.get("name", ""),
+                    "result": data.get("result", "") if data.get("success", True) else "",
+                    "error": data.get("error", ""),
+                })
+
             elif typ == "model_call_end":
                 tool_calls = data.get("tool_calls", [])
                 content = data.get("content", "")
+
                 if tool_calls:
-                    # Internal dict format matching harness storage so
-                    # format_messages flattens them into proper API
-                    # tool_calls (not text simulation).
-                    tc_list = [
-                        {
-                            "id": tc.get("id", f"ctx_{i}"),
-                            "name": tc.get("name", "?"),
-                            "params": tc.get("params", {}),
-                        }
-                        for i, tc in enumerate(tool_calls)
-                    ]
-                    msg_content: dict = {
-                        "content": content or "",
-                        "tool_calls": tc_list,
-                    }
-                    reasoning = data.get("reasoning_content")
-                    if reasoning:
-                        msg_content["reasoning_content"] = reasoning
-                    messages.append({
-                        "role": "assistant",
-                        "content": msg_content,
-                    })
+                    # Start of a tool round: flush previous, emit this
+                    # round's buffered tools, then emit any text that
+                    # follows the tool execution.
+                    _emit_tool_round()
+                    if content:
+                        messages.append({"role": "assistant", "content": content})
                 elif content:
+                    # End of a tool round (or toolless response).
+                    # Emit pending tool execution before the final text.
+                    _emit_tool_round()
                     messages.append({"role": "assistant", "content": content})
 
-            elif typ == "tool_call_end":
-                call_id = data.get("id", "")
-                name = data.get("name", "")
-                success = data.get("success", True)
-                error = data.get("error", "")
-                result = data.get("result", "")
-                messages.append({
-                    "role": "tool",
-                    "content": {
-                        "tool_call_id": call_id,
-                        "name": name,
-                        "result": result if success else "",
-                        "error": error or "",
-                    },
-                })
-
+        _emit_tool_round()
         return messages
 

@@ -245,17 +245,16 @@ class TestChatStreamFull:
         return ModelAdapter({"base_url": "https://test.api", "api_key": "sk-test",
                               "model_name": "test-model"})
 
-    def test_yields_error_event_on_model_adapter_error(self, adapter):
+    def test_model_adapter_error_propagates_to_caller(self, adapter):
+        """chat_stream_full lets ModelAdapterError propagate so the harness
+        catch-point can emit a proper error event.  Degradation is handled
+        at the ModelDegrader level via except Exception."""
         adapter._call_with_retry = AsyncMock(
             side_effect=ModelAdapterError(status_code=503, message="Service Unavailable")
         )
 
-        events = asyncio.run(_collect(adapter.chat_stream_full([], None)))
-
-        assert len(events) == 1
-        assert events[0]["type"] == "error"
-        assert events[0]["code"] == 503
-        assert "Service Unavailable" in events[0]["detail"]
+        with pytest.raises(ModelAdapterError, match="Service Unavailable"):
+            asyncio.run(_collect(adapter.chat_stream_full([], None)))
 
     def test_streams_text_chunks(self, adapter):
         chunk1 = MagicMock()

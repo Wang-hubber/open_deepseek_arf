@@ -320,16 +320,8 @@ class ModelAdapter:
             tools: Optional tool definitions (OpenAI format, already converted by harness).
         """
         messages = self.format_messages(messages)
-        try:
-            stream = await self._call_with_retry(messages, tools, stream=True,
-                                                 max_tokens=max_tokens)
-        except ModelAdapterError as e:
-            yield {
-                "type": "error",
-                "code": e.status_code,
-                "detail": e.message,
-            }
-            return
+        stream = await self._call_with_retry(messages, tools, stream=True,
+                                             max_tokens=max_tokens)
         tool_calls_acc: dict[int, dict] = {}
 
         async for chunk in stream:
