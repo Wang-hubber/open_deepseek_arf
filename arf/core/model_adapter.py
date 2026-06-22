@@ -172,12 +172,17 @@ class ModelAdapter:
                 result.append(api_msg)
             elif role == "tool" and isinstance(content, dict):
                 r = content.get("result")
-                tool_content = (
-                    json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else
-                    r if isinstance(r, str) else
-                    str(r) if r else
-                    content.get("error") or ""
-                )
+                error = content.get("error", "")
+                if isinstance(r, dict):
+                    tool_content = json.dumps(r, ensure_ascii=False)
+                elif isinstance(r, str) and r:
+                    tool_content = r
+                elif r:
+                    tool_content = str(r)
+                elif error:
+                    tool_content = f"[FAILED] {error}"
+                else:
+                    tool_content = ""
                 result.append({
                     "role": "tool",
                     "tool_call_id": content.get("tool_call_id", ""),
