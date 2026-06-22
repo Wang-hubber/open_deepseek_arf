@@ -293,10 +293,11 @@ class BenchmarkBuilder:
     def _build_context_messages(prior_events):
         """Build context_messages from prior rounds' trace events.
 
-        Converts trace events into simplified {role, content} messages so
-        each case can be run independently without relying on prior session
-        state. User and assistant messages are preserved verbatim; tool
-        calls and results are summarized as readable user messages.
+        Reconstructs the internal dict format used by the harness so that
+        injected messages are indistinguishable from live conversation
+        messages.  Tool calls use the native ``content`` / ``tool_calls``
+        / ``tool_call_id`` keys that ``format_messages`` flattens at the
+        API boundary.
         """
         messages: list[dict] = []
         for e in prior_events:
@@ -312,30 +313,46 @@ class BenchmarkBuilder:
                 tool_calls = data.get("tool_calls", [])
                 content = data.get("content", "")
                 if tool_calls:
-                    names = [tc.get("name", "?") for tc in tool_calls]
+                    # Internal dict format matching harness storage so
+                    # format_messages flattens them into proper API
+                    # tool_calls (not text simulation).
+                    tc_list = [
+                        {
+                            "id": tc.get("id", f"ctx_{i}"),
+                            "name": tc.get("name", "?"),
+                            "params": tc.get("params", {}),
+                        }
+                        for i, tc in enumerate(tool_calls)
+                    ]
+                    msg_content: dict = {
+                        "content": content or "",
+                        "tool_calls": tc_list,
+                    }
+                    reasoning = data.get("reasoning_content")
+                    if reasoning:
+                        msg_content["reasoning_content"] = reasoning
                     messages.append({
                         "role": "assistant",
-                        "content": f"[调用工具: {', '.join(names)}]",
+                        "content": msg_content,
                     })
-                if content:
+                elif content:
                     messages.append({"role": "assistant", "content": content})
 
             elif typ == "tool_call_end":
-                name = data.get("tool_name") or data.get("name", "?")
+                call_id = data.get("id", "")
+                name = data.get("name", "")
                 success = data.get("success", True)
                 error = data.get("error", "")
                 result = data.get("result", "")
-                if not success or error:
-                    messages.append({
-                        "role": "user",
-                        "content": f"[工具 {name} 错误: {error or result}]",
-                    })
-                else:
-                    summary = str(result)[:500]
-                    messages.append({
-                        "role": "user",
-                        "content": f"[工具 {name} 返回: {summary}]",
-                    })
+                messages.append({
+                    "role": "tool",
+                    "content": {
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "result": result if success else "",
+                        "error": error or "",
+                    },
+                })
 
         return messages
 

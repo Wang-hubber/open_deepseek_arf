@@ -504,6 +504,7 @@ class AgentHarness:
             # Emit model_call_end for downstream consumers (collect_response, tests)
             yield ctx.emit(event_type="model_call_end", data={
                 "content": result.content,
+                "reasoning_content": getattr(result, "reasoning_content", None) or None,
                 "tool_calls": result.tool_calls,
                 "usage": result.usage,
                 "finish_reason": result.finish_reason,

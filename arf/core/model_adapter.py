@@ -153,7 +153,10 @@ class ModelAdapter:
 
             if role == "assistant" and isinstance(content, dict):
                 tc = content.get("tool_calls", [])
-                api_msg: dict = {"role": "assistant", "content": content.get("content") or None}
+                text = content.get("content")
+                # Avoid falsy-coercion: "" is a valid (empty) content, don't
+                # turn it into None via ``or None``.
+                api_msg: dict = {"role": "assistant", "content": text}
                 if tc:
                     api_msg["tool_calls"] = [
                         {
@@ -169,6 +172,9 @@ class ModelAdapter:
                 # DeepSeek format: passthrough reasoning_content for thinking mode continuity
                 if self.message_format == "deepseek" and content.get("reasoning_content"):
                     api_msg["reasoning_content"] = content["reasoning_content"]
+                # Skip assistant messages that have neither content nor tool_calls
+                if api_msg.get("content") is None and not api_msg.get("tool_calls"):
+                    continue
                 result.append(api_msg)
             elif role == "tool" and isinstance(content, dict):
                 r = content.get("result")
@@ -189,6 +195,9 @@ class ModelAdapter:
                     "content": tool_content,
                 })
             else:
+                # Skip assistant messages with no content (API rejects them)
+                if role == "assistant" and not content:
+                    continue
                 result.append({"role": role, "content": content})
         return result
 

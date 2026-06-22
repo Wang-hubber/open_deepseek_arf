@@ -1,5 +1,10 @@
 # Eval — 回归评测体系
 
+> **适用范围：仅兼容 OpenAI API / DeepSeek 格式的模型测评。**
+> 本评测体系依赖 OpenAI 兼容的 function calling 协议（`tool_calls` / `tool_call_id` / `role: tool`），
+> `context_messages` 注入使用框架内部 dict 格式（与 harness 存储格式一致，经 `ModelAdapter.format_messages()` 转换为 API 格式）。
+> 非 OpenAI 兼容的 provider 需实现对应的 `format_messages()` 适配。
+
 ## 概念
 
 Eval 系统的核心流程：**标注 → 从 session trace 构建 Benchmark → 在线重放或离线读取 → 规则 + LLM 双轨指标 + 加权评分 → 回归对比**。
@@ -67,7 +72,14 @@ class EvalCase:
 
 该字段仅供标注参考，非评测依据。评测 metric 使用 `expected_execution`（工具名列表）做匹配。
 
-**`context_messages`** 是简化的对话消息列表，每个元素为 `{"role": "user"|"assistant", "content": "..."}`。`build()` 时自动从前序 round 的 trace 中提取：user_input → user 消息，model_call_end → assistant 消息（含工具调用摘要），tool_call_end → user 消息（工具结果摘要）。Runner 在发送 `input` 前将这些消息通过 `agent._primitive_agent.input()` 逐条注入到 session，使每个 case 可独立运行，无需依赖前序会话状态。case_0 无前序轮次，该字段为空列表。
+**`context_messages`** 是框架内部格式的对话消息列表，与 harness 存储格式一致。`build()` 时自动从前序 round 的 trace 中提取，注入后经 `ModelAdapter.format_messages()` 转换为 API 格式：
+
+- `user_input` → `{"role": "user", "content": "text"}`
+- `model_call_end`（带 `tool_calls`）→ `{"role": "assistant", "content": {"content": "", "tool_calls": [...], "reasoning_content": "..."}}` — dict 格式，含原生 tool_calls 和 reasoning
+- `model_call_end`（纯文本）→ `{"role": "assistant", "content": "text"}`
+- `tool_call_end` → `{"role": "tool", "content": {"tool_call_id": "id", "name": "...", "result": "...", "error": ""}}` — dict 格式，含原生 tool_call_id
+
+Runner 在发送 `input` 前将这些消息通过 `agent.run(context_messages=...)` 传递给 harness 注入，使每个 case 可独立运行。case_0 无前序轮次，为空列表。
 
 **`expected_execution`** 是工具名列表，不是完整调用参数。评测时只检查这些工具名是否在实际 trace 中出现——命中即得分。annotate 模式下占位为以 `[待标注]` 开头的引导文案。
 

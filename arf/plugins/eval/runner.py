@@ -378,8 +378,11 @@ class EvalRunner:
 
             if typ == "model_call_end":
                 content = data.get("content", "")
+                # DeepSeek thinking mode may emit reasoning but empty content
                 if content:
                     final_output = content
+                elif data.get("reasoning_content"):
+                    final_output = f"[reasoning] {data['reasoning_content']}"
 
             elif typ == "tool_call_start":
                 starts.append({

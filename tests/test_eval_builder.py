@@ -103,8 +103,22 @@ class TestBenchmarkBuilder:
         assert len(bm.cases[1].original_tool_calls) == 1
         assert bm.cases[1].original_tool_calls[0]["name"] == "file_reader"
         assert len(bm.cases[1].context_messages) > 0
-        assert any(msg["content"] == "create file" for msg in bm.cases[1].context_messages)
-        assert any("File created successfully" in msg["content"] for msg in bm.cases[1].context_messages)
+        # user_input → plain string content
+        assert any(
+            isinstance(msg["content"], str) and msg["content"] == "create file"
+            for msg in bm.cases[1].context_messages
+        )
+        # model_call_end with tool_calls → dict content with tool_calls
+        assert any(
+            isinstance(msg["content"], dict) and "tool_calls" in msg["content"]
+            for msg in bm.cases[1].context_messages
+        )
+        # model_call_end with text (+ tool_calls) → dict content with text inside
+        assert any(
+            (isinstance(msg["content"], dict) and "File created successfully" in msg["content"].get("content", ""))
+            or (isinstance(msg["content"], str) and "File created successfully" in msg["content"])
+            for msg in bm.cases[1].context_messages
+        )
 
         assert bm.created_at > 0
 
