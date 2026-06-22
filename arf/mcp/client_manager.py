@@ -5,8 +5,7 @@ ToolProvider / PluginProvider.  Only remote MCP servers (server__ namespace)
 go through a stdio subprocess for isolation — and only when at least one
 remote server is configured.
 
-Implements the ToolResolver protocol so it can drop into
-ConcurrentToolExecutor and GraphEngine without interface changes.
+Implements the ToolResolver protocol.
 """
 import asyncio
 import json

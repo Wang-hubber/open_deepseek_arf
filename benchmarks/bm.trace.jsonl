@@ -1,0 +1,1 @@
+{"type": "tool_call_start", "turn": 1, "data": {"tool_name": "x"}, "timestamp": 1.0, "session_id": "s1"}

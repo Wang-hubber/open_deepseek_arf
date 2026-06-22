@@ -1,28 +1,21 @@
 """Protocol definitions — abstract interfaces for all framework domains."""
-from arf.core.protocols.engine import (
-    StateStore, ToolExecutor,
-)
+from arf.core.protocols.engine import StateStore
 from arf.core.protocols.resources import (
     ToolResolver, ToolProvider, ToolRetriever, ToolBackend, ToolDefinition,
 )
-from arf.core.protocols.hooks import HookRunner
 from arf.core.protocols.guardrails import (
     GuardRunner, InputGuardrail, OutputGuardrail, ToolGuardrail,
 )
 from arf.core.protocols.compaction import CompactionStrategy
-from arf.core.protocols.sandbox import ToolSandbox
-from arf.core.protocols.concurrency import TaskScheduler
 from arf.core.protocols.communication import (
-    AgentBus, PeerAgent, TaskDelegator, Supervisor,
-    SharedWorkspace, Lock, ConsensusProtocol,
-    AgentMessage, AgentInfo,
+    AgentBus, TaskDelegator, AgentMessage, AgentInfo,
 )
-from arf.core.protocols.event_bus import EventBus, EventStream
+from arf.core.protocols.event_bus import EventBus
 from arf.core.protocols.prompt import SystemPromptProvider
 from arf.core.protocols.replay import ReplayController, ReplayTrace, TurnRecord
 from arf.core.protocols.evaluation import (
-    EvalRunner, MetricCalculator, EvalCase, EvalDataset, EvalBenchmark,
-    EvalSummary, EvalReport, EvalDiff, BenchmarkBuilder, EvalComparator,
+    EvalCase, EvalDataset, EvalBenchmark,
+    EvalSummary, EvalReport, EvalDiff,
 )
 from arf.core.protocols.plugin import PluginProtocol
 from arf.core.plugin_context import PluginContext
@@ -36,21 +29,16 @@ from arf.core.execution import (
 )
 
 __all__ = [
-    "StateStore", "ToolExecutor",
+    "StateStore",
     "ToolResolver", "ToolProvider", "ToolRetriever", "ToolBackend", "ToolDefinition",
-    "HookRunner",
     "GuardRunner", "InputGuardrail", "OutputGuardrail", "ToolGuardrail",
     "CompactionStrategy",
-    "ToolSandbox",
-    "TaskScheduler",
-    "AgentBus", "PeerAgent", "TaskDelegator", "Supervisor",
-    "SharedWorkspace", "Lock", "ConsensusProtocol",
-    "AgentMessage", "AgentInfo",
-    "EventBus", "EventStream",
+    "AgentBus", "TaskDelegator", "AgentMessage", "AgentInfo",
+    "EventBus",
     "SystemPromptProvider",
     "ReplayController", "ReplayTrace", "TurnRecord",
-    "EvalRunner", "MetricCalculator", "EvalCase", "EvalDataset", "EvalBenchmark",
-    "EvalSummary", "EvalReport", "EvalDiff", "BenchmarkBuilder", "EvalComparator",
+    "EvalCase", "EvalDataset", "EvalBenchmark",
+    "EvalSummary", "EvalReport", "EvalDiff",
     "PluginProtocol", "PluginContext",
     "Decision",
     "Executable",

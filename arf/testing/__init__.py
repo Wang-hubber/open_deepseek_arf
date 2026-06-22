@@ -52,36 +52,10 @@ class InMemoryToolResolver:
         self.calls.clear()
 
 
-class InMemoryToolExecutor:
-    """ConcurrentToolExecutor for testing. Records all calls."""
-    def __init__(self, tools: dict | None = None) -> None:
-        self.calls: list = []
-        self.results: dict[str, dict] = {}
-        # tools param accepted for caller convenience (not yet used internally)
-
-    def set_result(self, call_id: str, success: bool = True, data: dict | None = None, error: str | None = None) -> None:
-        self.results[call_id] = {"success": success, "data": data or {}, "error": error}
-
-    async def execute(self, tool_calls: list[dict], strategy: str = "parallel", max_concurrency: int = 5):
-        self.calls.extend(tool_calls)
-        from arf.core.results import ToolResult
-        results = {}
-        for tc in tool_calls:
-            preset = self.results.get(tc["id"], {"success": True, "data": {"result": "ok"}, "error": None})
-            results[tc["id"]] = ToolResult(tool_name=tc.get("name", tc["id"]),
-                                            success=preset["success"],
-                                            data=preset["data"],
-                                            error=preset["error"])
-        return results
-
-    def reset(self) -> None:
-        self.calls.clear()
-        self.results.clear()
-
 
 __all__ = [
     "InMemoryStateStore", "InMemoryEventBus",
     "InMemoryGuardRunner",
-    "InMemoryToolResolver", "InMemoryToolExecutor",
+    "InMemoryToolResolver",
     "QueuedTaskDelegator",
 ]

@@ -1,7 +1,6 @@
 """Protocols for engine domain."""
 from typing import Protocol
-from arf.core.state import AgentState, TurnContext
-from arf.core.results import ToolResult, ErrorAction
+from arf.core.state import AgentState
 
 
 class StateStore(Protocol):
@@ -12,11 +11,5 @@ class StateStore(Protocol):
     async def list_sessions(self) -> list[str]: ...
 
 
-class ToolExecutor(Protocol):
-    """Execute multiple tool_calls with concurrency control."""
-    async def execute(
-        self,
-        tool_calls: list[dict],
-        strategy: str = "parallel",
-        max_concurrency: int = 5,
-    ) -> dict[str, ToolResult]: ...
+
+

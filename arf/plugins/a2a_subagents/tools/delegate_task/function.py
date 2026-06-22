@@ -104,7 +104,7 @@ async def execute(
         parent_sid = getattr(_engine, "_current_session_id", "default")
 
     if _engine is None:
-        return {"ok": False, "error": "delegate_task: _engine not injected by tool executor. Ensure the a2a plugin is enabled and ConcurrentToolExecutor is passing DI params correctly."}
+        return {"ok": False, "error": "delegate_task: _engine not injected. Ensure the a2a plugin is enabled."}
 
     effective_timeout = (
         min(timeout, registry.max_task_timeout) if timeout

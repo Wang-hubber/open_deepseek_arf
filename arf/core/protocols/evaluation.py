@@ -1,5 +1,4 @@
-"""Protocols for evaluation domain."""
-from typing import Protocol
+"""Evaluation domain types."""
 from dataclasses import dataclass, field
 
 
@@ -60,17 +59,5 @@ class EvalDiff:
     improvements: list[dict] = field(default_factory=list)
 
 
-class MetricCalculator(Protocol):
-    async def compute(self, trace: dict, expected: EvalCase) -> dict[str, float]: ...
 
 
-class BenchmarkBuilder(Protocol):
-    def build(self, session_id: str, name: str) -> EvalBenchmark: ...
-
-
-class EvalRunner(Protocol):
-    async def run(self, benchmark: EvalBenchmark) -> EvalReport: ...
-
-
-class EvalComparator(Protocol):
-    def compare(self, baseline: EvalReport, current: EvalReport) -> EvalDiff: ...
