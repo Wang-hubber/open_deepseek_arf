@@ -91,59 +91,9 @@ class EvalRunner:
             self._judge_adapter = None
 
     def _build_judge_harness(self, judge_model):
-        """Build a minimal ARF harness for judge LLM calls.
-
-        No plugins, no tools — just the harness pipeline so every judge
-        call produces a session trace under ``data_dir``.
-        """
-        from arf.core.model_adapter import ModelAdapter
-        from arf.agent.primitive import PrimitiveAgent, ModelResult
-        from arf.harness.engine import AgentHarness
-        import json as _json
-
-        jm = judge_model
-        adapter = ModelAdapter({
-            "base_url": jm.api_base,
-            "api_key": os.environ.get(jm.api_key_env, ""),
-            "model_name": jm.model,
-            **jm.kwargs,
-        })
-
-        async def call_model(messages, tools=None):
-            msg = await adapter.chat_complete(messages, tools=tools)
-            tc_list = []
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    try:
-                        params = _json.loads(tc.function.arguments) if tc.function.arguments else {}
-                    except _json.JSONDecodeError:
-                        params = {}
-                    tc_list.append({"id": tc.id, "name": tc.function.name, "params": params})
-            usage = dict(msg.usage) if hasattr(msg, "usage") and msg.usage else {}
-            return ModelResult(
-                content=msg.content or "",
-                tool_calls=tc_list,
-                usage=usage,
-                finish_reason=getattr(msg, "finish_reason", "stop"),
-            )
-
-        agent = PrimitiveAgent(
-            agent_id="eval_judge",
-            model_config={
-                "api_base": jm.api_base,
-                "api_key_env": jm.api_key_env,
-                "model_name": jm.model,
-                "context_window": 131072,
-            },
-            call_model=call_model,
-        )
-
-        return AgentHarness(
-            agent=agent,
-            plugins=[],
-            agent_config=None,
-            data_dir=str(self._data_dir),
-        )
+        """Build a minimal ARF harness for judge LLM calls."""
+        from arf.plugins.eval.annotator import _build_plugin_harness
+        return _build_plugin_harness(judge_model, data_dir=str(self._data_dir))
 
     # -- Public API -------------------------------------------------------
 

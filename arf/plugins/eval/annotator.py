@@ -1,13 +1,18 @@
 """AutoAnnotator — LLM-driven benchmark annotation.
 
 Fills ``expected_output_contains`` and ``expected_execution`` for each
-case in an EvalBenchmark.  Uses an internal ARF agent so every LLM call
-goes through the full harness pipeline (trace, hooks, error handling).
+case in an EvalBenchmark.  Builds an internal ARF agent from the appʼs
+agent config so every LLM call goes through the full harness pipeline
+(trace, hooks, error handling).
+
+Requires explicit ``annotator_model`` in ``plugins_config.eval`` —
+raises ``ValueError`` if not configured (defensive programming).
 """
 from __future__ import annotations
 
 import json as _json
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -95,18 +100,70 @@ def _build_feedback_str(feedback: dict | None) -> str:
     return "\n".join(lines)
 
 
+# ── harness builder (shared with judge) ────────────────────────────
+
+def _build_plugin_harness(model_config, data_dir: str = "./data"):
+    """Build a minimal ARF harness for plugin-internal LLM calls.
+
+    No plugins, no tools — just the harness pipeline (trace, state,
+    session lifecycle) so every call produces a proper session trace.
+    """
+    from arf.core.model_adapter import ModelAdapter
+    from arf.agent.primitive import PrimitiveAgent, ModelResult
+    from arf.harness.engine import AgentHarness
+    import json as _json
+
+    adapter = ModelAdapter({
+        "base_url": model_config.api_base,
+        "api_key": os.environ.get(model_config.api_key_env, ""),
+        "model_name": model_config.model,
+        **model_config.kwargs,
+    })
+
+    async def call_model(messages, tools=None):
+        msg = await adapter.chat_complete(messages, tools=tools)
+        tc_list = []
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    params = _json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except _json.JSONDecodeError:
+                    params = {}
+                tc_list.append({"id": tc.id, "name": tc.function.name, "params": params})
+        usage = dict(msg.usage) if hasattr(msg, "usage") and msg.usage else {}
+        return ModelResult(
+            content=msg.content or "",
+            tool_calls=tc_list,
+            usage=usage,
+            finish_reason=getattr(msg, "finish_reason", "stop"),
+        )
+
+    agent = PrimitiveAgent(
+        agent_id="eval_plugin",
+        model_config={
+            "api_base": model_config.api_base,
+            "api_key_env": model_config.api_key_env,
+            "model_name": model_config.model,
+            "context_window": 131072,
+        },
+        call_model=call_model,
+    )
+
+    return AgentHarness(agent, plugins=[], agent_config=None, data_dir=data_dir)
+
+
 # ── AutoAnnotator ─────────────────────────────────────────────────
 
 class AutoAnnotator:
-    """Fill benchmark expected fields via LLM, using an ARF agent.
+    """Fill benchmark expected fields via LLM.
 
-    The agent provides the full harness pipeline (trace, hooks, error
-    handling), so every annotation call produces a session trace for
-    debugging.
+    Builds an internal ARF agent from *agent_config*, so every LLM call
+    produces a session trace.  Requires explicit ``annotator_model`` in
+    ``plugins_config.eval`` — raises ``ValueError`` if missing.
 
     Usage::
 
-        annotator = AutoAnnotator("benchmarks/my_bm.benchmark.json", agent)
+        annotator = AutoAnnotator("bm.benchmark.json", agent_config)
         await annotator.annotate()
         annotator.save()
     """
@@ -114,14 +171,22 @@ class AutoAnnotator:
     def __init__(
         self,
         benchmark_path: str,
-        agent,  # BaseAgent — provides .run() with full harness pipeline
+        agent_config,  # AgentConfig — used to resolve annotator_model
         *,
+        data_dir: str = "./data",
         prompts: dict[str, str] | None = None,
     ) -> None:
         self._bm_path = Path(benchmark_path)
         self._bm = EvalBenchmark.from_json(str(self._bm_path))
-        self._agent = agent
         self._prompts = dict(prompts or {})
+
+        model = agent_config.get_plugin_model_config("eval", field="annotator_model")
+        if model is None:
+            raise ValueError(
+                "AutoAnnotator requires plugins_config.eval.annotator_model "
+                "to be configured in agent.yaml"
+            )
+        self._harness = _build_plugin_harness(model, data_dir=data_dir)
 
     # ── public API ────────────────────────────────────────────────
 
@@ -180,7 +245,7 @@ class AutoAnnotator:
 
     async def _annotate_one(self, case: EvalCase, prompt_tpl: str,
                             tag: str) -> list[str]:
-        """Run one annotation call through the agent harness."""
+        """Run one annotation call through the harness."""
         tool_names = [tc["name"] for tc in (case.original_tool_calls or [])]
         user_msg = prompt_tpl.format(
             input=case.input,
@@ -191,13 +256,16 @@ class AutoAnnotator:
         )
 
         sid = f"annotate_{self._bm.name}_{tag}_{uuid.uuid4().hex[:8]}"
+        content = ""
         try:
-            raw = await self._agent.run(user_msg, session_id=sid)
+            async for event in self._harness.run(user_msg, session_id=sid):
+                if getattr(event, "type", "") == "model_call_end":
+                    content = event.data.get("content", "")
         except Exception:
             logger.warning("Annotation call failed for %s", tag, exc_info=True)
             return []
 
-        return self._parse_annotation(raw)
+        return self._parse_annotation(content)
 
     @staticmethod
     def _parse_annotation(raw: str) -> list[str]:
