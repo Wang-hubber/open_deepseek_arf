@@ -13,6 +13,7 @@ from arf.plugins.eval.models import (
     EvalConfig, JudgeModelConfig,
 )
 from arf.plugins.eval.exceptions import EvalError
+from arf.plugins.eval.version import EvalVersionManager
 from arf.plugins.eval.trace_adapter import events_to_trace
 
 from arf.harness.plugin_base import Plugin as _NewPlugin
@@ -38,6 +39,6 @@ __all__ = [
     "OutputQualityMetric", "TrajectorySimilarityMetric",
     "EvalCase", "EvalBenchmark", "EvalReport", "EvalSummary", "EvalDiff",
     "EvalConfig", "JudgeModelConfig",
-    "EvalError", "events_to_trace",
+    "EvalError", "EvalVersionManager", "events_to_trace",
     "EvalPlugin", "Plugin",
 ]
