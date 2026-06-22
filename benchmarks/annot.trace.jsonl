@@ -1,2 +1,0 @@
-{"type": "user_input", "turn": 1, "data": {"content": "hello"}, "timestamp": 1.0, "session_id": "s1"}
-{"type": "model_call_end", "turn": 1, "data": {"content": "Hi!"}, "timestamp": 1.1, "session_id": "s1"}
