@@ -27,6 +27,7 @@ _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "side"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
+    {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "session_end", "mode": "side"},
 ]
 
@@ -64,6 +65,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_inject_peer_msgs(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
+        elif event_name == "peer_park":
+            await self._on_peer_park(ctx)
         elif event_name == "session_end":
             await self._on_session_end(ctx)
 
@@ -131,15 +134,15 @@ class PeerTeamPlugin(Plugin):
             ctx.agent.input(role="system", content=system_msg)
 
     # ==================================================================
-    # inject_peer_msgs — drain inbox + park if nothing to do
+    # inject_peer_msgs — drain inbox + mid-cycle park
     # ==================================================================
 
     async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
         """Drain AgentBus inbox before model call.
 
-        If messages arrive → inject them and let the agent process.
-        If no messages and nothing to do → park (blocking at before_model
-        inside the ReAct loop, not waiting for after_round).
+        Only parks mid-cycle when the agent has an outgoing pending
+        (waiting for a reply). Idle-park happens at after_round instead
+        so the agent can process user input first.
         """
         bus = _registry.agent_bus
         if bus is None:
@@ -159,33 +162,30 @@ class PeerTeamPlugin(Plugin):
             await self._inject_messages(ctx, messages)
             return  # agent has work — don't park
 
-        # 2. No messages — check if agent should park
-        # Park conditions (either one triggers park):
-        #   a. Has outgoing pending → waiting for a reply
-        #   b. Not an entry_point → idle worker, waits for first task
+        # 2. Mid-cycle park: only when actively waiting for a reply
         has_pending = any(
             entry.get("sender") == role_key
             for entry in _registry._pending_replies.values()
         )
-        is_entry_point = self._entry_points.get(role_key, False)
+        if not has_pending:
+            return  # no reply to wait for → let the model think
 
-        if has_pending or not is_entry_point:
-            wi = ctx.agent.wait("before_model", f"peer_idle:{role_key}")
-            _registry._peer_wait_ids[role_key] = wi.wait_id
+        harness = _registry._peer_harnesses.get(role_key)
+        if harness is None:
+            return
 
-            harness = _registry._peer_harnesses.get(role_key)
-            if harness is None or bus is None:
-                return  # no way to wake — don't spawn bg task
+        wi = ctx.agent.wait("before_model", f"peer_wait:{role_key}")
+        _registry._peer_wait_ids[role_key] = wi.wait_id
 
-            asyncio.create_task(_peer_wait_loop(
-                harness=harness,
-                wait_id=wi.wait_id,
-                role_key=role_key,
-                bus=bus,
-                cancel_evt=ctx.hook_data.get("_cancel_event"),
-                data_dir=ctx.data_dir,
-                group_id=_group_id,
-            ))
+        asyncio.create_task(_peer_wait_loop(
+            harness=harness,
+            wait_id=wi.wait_id,
+            role_key=role_key,
+            bus=bus,
+            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            data_dir=ctx.data_dir,
+            group_id=_group_id,
+        ))
 
     async def _inject_messages(
         self, ctx: PluginContext, messages: list,
@@ -312,6 +312,55 @@ class PeerTeamPlugin(Plugin):
                 "Peer '%s' reply forwarded to '%s' (corr=%s, file=%s)",
                 role_key, sender_role, corr_id, result_file,
             )
+
+    # ==================================================================
+    # peer_park — idle park at after_round
+    # ==================================================================
+
+    async def _on_peer_park(self, ctx: PluginContext) -> None:
+        """Park at end of round if the agent is idle or waiting for a reply.
+
+        Runs at after_round so the agent gets to finish its current round
+        (e.g. setup messages, user input processing) before parking.
+        """
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        group_id, role = parsed
+        role_key = role.lower()
+
+        has_pending = any(
+            entry.get("sender") == role_key
+            for entry in _registry._pending_replies.values()
+        )
+        is_entry_point = self._entry_points.get(role_key, False)
+
+        # Park when:
+        #   a. waiting for a reply, OR
+        #   b. idle worker with no assigned task
+        if not has_pending and is_entry_point:
+            return  # initiator with nothing to wait for → can act
+
+        harness = _registry._peer_harnesses.get(role_key)
+        if harness is None:
+            return
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        wi = ctx.agent.wait("after_round", f"peer_idle:{role_key}")
+        _registry._peer_wait_ids[role_key] = wi.wait_id
+
+        asyncio.create_task(_peer_wait_loop(
+            harness=harness,
+            wait_id=wi.wait_id,
+            role_key=role_key,
+            bus=bus,
+            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            data_dir=ctx.data_dir,
+            group_id=group_id,
+        ))
 
     # ==================================================================
     # session_end — update group index
