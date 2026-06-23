@@ -49,6 +49,7 @@ class AgentHarness:
         self._data_dir = data_dir
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
+        self._cancel_event: asyncio.Event = asyncio.Event()
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
 
@@ -307,6 +308,7 @@ class AgentHarness:
     async def _checkpoint(self, hook_name: str, ctx: PluginContext) -> bool:
         """Run plugins at checkpoint, then check waiting. Returns True if should park."""
         ctx.hook_data["_current_hook"] = hook_name
+        ctx.hook_data["_cancel_event"] = self._cancel_event
         ctx.captured_events.clear()
 
         # 1. Run blocking plugins
@@ -400,7 +402,8 @@ class AgentHarness:
                 from arf.agent.state import Message as _M
                 for m in existing["messages"]:
                     if isinstance(m, dict):
-                        agent.input(role=m.get("role", "user"), content=m.get("content", ""))
+                        agent.input(role=m.get("role", "user"), content=m.get("content", ""),
+                                    name=m.get("name"))
             # Rebuild system prompt text for snapshot consistency (Finding 3)
             if self._agent_config is not None:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
@@ -450,6 +453,7 @@ class AgentHarness:
             try:
                 await self._do_park()
             except asyncio.CancelledError:
+                self._cancel_event.set()
                 if self._parked:
                     await self._save_and_teardown()
                 raise
@@ -468,6 +472,7 @@ class AgentHarness:
                 try:
                     await self._do_park()
                 except asyncio.CancelledError:
+                    self._cancel_event.set()
                     if self._parked:
                         await self._save_and_teardown()
                     raise
@@ -530,6 +535,7 @@ class AgentHarness:
                 try:
                     await self._do_park()
                 except asyncio.CancelledError:
+                    self._cancel_event.set()
                     if self._parked:
                         await self._save_and_teardown()
                     raise
@@ -570,6 +576,7 @@ class AgentHarness:
                         try:
                             await self._do_park()
                         except asyncio.CancelledError:
+                            self._cancel_event.set()
                             if self._parked:
                                 await self._save_and_teardown()
                             raise
@@ -678,6 +685,7 @@ class AgentHarness:
                     try:
                         await self._do_park()
                     except asyncio.CancelledError:
+                        self._cancel_event.set()
                         if self._parked:
                             await self._save_and_teardown()
                         raise
@@ -692,6 +700,7 @@ class AgentHarness:
                     try:
                         await self._do_park()
                     except asyncio.CancelledError:
+                        self._cancel_event.set()
                         if self._parked:
                             await self._save_and_teardown()
                         raise
@@ -709,6 +718,7 @@ class AgentHarness:
             try:
                 await self._do_park()
             except asyncio.CancelledError:
+                self._cancel_event.set()
                 if self._parked:
                     await self._save_and_teardown()
                 raise
@@ -733,7 +743,7 @@ class AgentHarness:
     async def _save_state(self) -> None:
         """Persist current agent state so sessions survive restarts."""
         state = self.agent.state
-        msgs = [{"role": m.role, "content": m.content} for m in state.messages]
+        msgs = [{"role": m.role, "content": m.content, "name": m.name} for m in state.messages]
         await self._state_store.put(state.session_id, {
             "session_id": state.session_id,
             "messages": msgs,
@@ -771,6 +781,7 @@ class AgentHarness:
             self.agent.input(
                 role=inject_message.get("role", "user"),
                 content=inject_message.get("content", ""),
+                name=inject_message.get("name"),
             )
         self.agent.finish_wait(wait_id=wait_id)
 

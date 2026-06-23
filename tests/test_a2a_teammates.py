@@ -226,6 +226,46 @@ class TestPluginHooks:
         assert "default_group__pm" in _state_mod._state.last_activity
         assert _state_mod._state.last_activity["default_group__pm"] > 0
 
+    @pytest.mark.anyio
+    async def test_park_receives_cancel_event(self):
+        """_park_for_peer passes cancel_event from hook_data to wait loop."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+
+        _state_mod._state.peer_harnesses["default_group__pm"] = \
+            ctx.hook_data["_harness_ref"]["harness"]
+        _state_mod._state.entry_points["default_group__pm"] = True
+
+        # Set a cancel_event in hook_data
+        cancel_evt = asyncio.Event()
+        ctx.hook_data["_cancel_event"] = cancel_evt
+
+        # Make send_peer_message trigger park
+        ctx.hook_data["_pending_tool_calls"] = [{
+            "name": "send_peer_message",
+            "params": {"to": "default_group__dev", "message": "hi"},
+        }]
+
+        # inject_session_id sets _peer_just_sent=True
+        ctx.hook_data["_peer_just_sent"] = True
+
+        await plugin.handle("park_after_send", ctx)
+
+        # The spawned task should exist and have been passed the cancel_event
+        task = _state_mod._state._wait_tasks.get("default_group__pm")
+        assert task is not None, "Wait task should have been spawned"
+
+        # Cleanup: cancel the task
+        cancel_evt.set()
+        await asyncio.sleep(0.1)
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
 
 class TestCancelPeerTask:
     @pytest.fixture(autouse=True)
