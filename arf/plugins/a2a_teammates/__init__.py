@@ -42,6 +42,7 @@ _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
+    {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
     {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "session_end", "mode": "side"},
@@ -78,6 +79,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_inject_session_id(ctx)
         elif event_name == "inject_peer_msgs":
             await self._on_inject_peer_msgs(ctx)
+        elif event_name == "heartbeat":
+            await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
         elif event_name == "peer_park":
@@ -228,6 +231,14 @@ class PeerTeamPlugin(Plugin):
         if result_file:
             parts.append(f"\nFull result: {result_file}")
         return "\n".join(parts)
+
+    # ==================================================================
+    # heartbeat — update liveness timestamp
+    # ==================================================================
+
+    async def _on_heartbeat(self, ctx: PluginContext) -> None:
+        import time
+        _registry._last_activity[ctx.session_id] = time.time()
 
     # ==================================================================
     # forward_reply — send task_complete result back to pending sender
