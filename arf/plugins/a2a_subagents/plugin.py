@@ -45,6 +45,12 @@ class Plugin(Plugin):
         if not _registry.cancel_events:
             _registry.cancel_events = {}
 
+        # Parent park tracking — used by runner to wake parent on sub-agent completion
+        if not hasattr(_registry, "_parent_wait_ids"):
+            _registry._parent_wait_ids: dict[str, str] = {}
+        if not hasattr(_registry, "parent_harness"):
+            _registry.parent_harness = None
+
     # ==================================================================
     # handle — dispatch by event_name
     # ==================================================================
@@ -69,6 +75,9 @@ class Plugin(Plugin):
         _registry.current_session_id = ctx.session_id
         _registry.data_dir = ctx.data_dir
 
+        # Store parent harness so runner can wake it when sub-agent completes
+        _registry.parent_harness = harness_ref.get("harness")
+
         _registry.parent_config = {
             "call_model": agent._call_model,
             "stream_model": agent._stream_model,
@@ -86,7 +95,11 @@ class Plugin(Plugin):
     # ==================================================================
 
     async def _on_inject_results(self, ctx: PluginContext) -> None:
-        """Consume completed results from delegator, inject as user messages."""
+        """Consume completed results from delegator, inject as user messages.
+
+        If sub-agents are still running and no results are ready, park the
+        parent harness. The runner will wake it when a sub-agent completes.
+        """
         _registry.current_session_id = ctx.session_id
 
         parent_sid = ctx.session_id
@@ -94,34 +107,44 @@ class Plugin(Plugin):
         if delegator is None:
             return
 
+        # 1. Inject any completed results
         pending = await delegator.get_pending(parent_sid)
-        if not pending:
-            return
+        if pending:
+            applied_paths: set[str] = set()
 
-        applied_paths: set[str] = set()
+            for task_result in pending:
+                task_id = task_result.get("task_id", "")
+                result = {k: v for k, v in task_result.items() if k != "task_id"}
+                changes = result.get("file_changes")
+                changed = (
+                    set(changes["added"] + changes["modified"] + changes["deleted"])
+                    if changes else set()
+                )
 
-        for task_result in pending:
-            task_id = task_result.get("task_id", "")
-            result = {k: v for k, v in task_result.items() if k != "task_id"}
-            changes = result.get("file_changes")
-            changed = (
-                set(changes["added"] + changes["modified"] + changes["deleted"])
-                if changes else set()
-            )
+                conflicts = applied_paths & changed if changed else set()
+                if conflicts:
+                    self._hold_changes(ctx, parent_sid, task_id, result, conflicts)
+                    content = self._format_conflict_warning(task_id, result, conflicts)
+                else:
+                    if changed:
+                        applied_paths |= changed
+                    content = self._format_result(task_id, result)
 
-            conflicts = applied_paths & changed if changed else set()
-            if conflicts:
-                self._hold_changes(ctx, parent_sid, task_id, result, conflicts)
-                content = self._format_conflict_warning(task_id, result, conflicts)
-            else:
-                if changed:
-                    applied_paths |= changed
-                content = self._format_result(task_id, result)
+                ctx.agent.input(role="user", content=content)
+                logger.info(
+                    "Injected A2A result for %s into parent session %s",
+                    task_id, parent_sid,
+                )
 
-            ctx.agent.input(role="user", content=content)
+        # 2. If sub-agents are still running, park until next completion
+        status = await delegator.queue_status(parent_sid)
+        if status.get("running"):
+            reason = f"waiting for {len(status['running'])} sub-agent(s)"
+            wi = ctx.agent.wait("before_model", reason)
+            _registry._parent_wait_ids[parent_sid] = wi.wait_id
             logger.info(
-                "Injected A2A result for %s into parent session %s",
-                task_id, parent_sid,
+                "Parent %s parked — %d sub-agents still running",
+                parent_sid, len(status["running"]),
             )
 
     # ==================================================================

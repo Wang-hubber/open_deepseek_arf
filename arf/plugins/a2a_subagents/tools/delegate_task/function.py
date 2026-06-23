@@ -30,11 +30,14 @@ SUBAGENT_ROLE = (
 SUBAGENT_CRITICAL_RULES = (
     "## Critical Rules\n\n"
     "1. Focus exclusively on the assigned task. Do not expand scope.\n"
-    "2. Call task_complete when finished. This signals the parent agent to "
-    "collect your result. Include a clear summary of what you did.\n"
+    "2. When finished, call task_complete(result=\"...\") with your complete "
+    "findings in the 'result' parameter. The parent agent only sees this "
+    "result field — it does NOT see your conversation. Example:\n"
+    "   task_complete(result=\"Found 3 security issues: XSS in login.py, \"\n"
+    "                \"SQL injection in query.py, weak password policy in auth.py\")\n"
     "3. Do NOT use delegate_task — you cannot spawn further sub-agents.\n"
-    "4. Be concise. The parent agent only sees your final result, "
-    "not your intermediate reasoning steps."
+    "4. Be thorough in your result. Include specific file paths, line numbers, "
+    "and concrete findings. The parent agent relies entirely on your result."
 )
 
 
@@ -246,6 +249,25 @@ async def execute(
     }
 
 
+def _wake_parent(registry, parent_sid: str) -> None:
+    """Wake the parent harness if it's parked waiting for sub-agent results.
+
+    Safe to call when parent hasn't parked yet (race condition) —
+    resolve_wait is a no-op for unknown wait_ids.
+    """
+    parent_harness = getattr(registry, "parent_harness", None)
+    if parent_harness is None:
+        return
+    wait_id = getattr(registry, "_parent_wait_ids", {}).pop(parent_sid, None)
+    if wait_id is None:
+        return  # parent hasn't parked yet — result will be picked up at next before_model
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(parent_harness.resolve_wait(wait_id))
+    except Exception:
+        logger.exception("Failed to wake parent harness for %s", parent_sid)
+
+
 def _make_yaml_runner(
     config_path, agent_name, parent_sid, child_sid, hard_timeout, registry,
 ):
@@ -397,6 +419,9 @@ def _make_yaml_runner(
             complete_result["error"] = final_result
 
         await registry.delegator.complete(parent_sid, task_id, complete_result)
+
+        # Wake parent harness if it's parked waiting for this result
+        _wake_parent(registry, parent_sid)
 
         if final_status == "error":
             return {"ok": False, "error": final_result}
@@ -586,6 +611,9 @@ def _make_inherit_runner(
             complete_result["error"] = final_result
 
         await registry.delegator.complete(parent_sid, task_id, complete_result)
+
+        # Wake parent harness if it's parked waiting for this result
+        _wake_parent(registry, parent_sid)
 
         if final_status == "error":
             return {"ok": False, "error": final_result}

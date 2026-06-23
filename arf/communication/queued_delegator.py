@@ -141,7 +141,10 @@ class QueuedTaskDelegator:
     async def queue_status(self, session_id: str) -> dict:
         session = self._sessions.get(session_id)
         if session is None:
-            return {"running": [], "queued": [], "max_concurrent": self._max_concurrent}
+            return {
+                "running": [], "queued": [], "completed": 0,
+                "max_concurrent": self._max_concurrent,
+            }
 
         return {
             "running": [
@@ -152,6 +155,7 @@ class QueuedTaskDelegator:
                 {"task_id": e.task_id, "task": e.task, "position": i + 1}
                 for i, e in enumerate(session.queue)
             ],
+            "completed": len(session.completed),
             "max_concurrent": session.max_concurrent,
         }
 

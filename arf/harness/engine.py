@@ -370,6 +370,7 @@ class AgentHarness:
             # Pass harness config to plugins so a2a_subagents can capture
             # parent config for inline-like sub-agent creation
             ctx.hook_data["_harness_ref"] = {
+                "harness": self,
                 "tool_manager": self._tool_manager,
                 "plugins": self._plugins,
                 "agent_config": self._agent_config,
