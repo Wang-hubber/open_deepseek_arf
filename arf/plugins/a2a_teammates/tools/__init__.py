@@ -26,6 +26,8 @@ class _TeammatesRegistry:
         self._peer_context_injected: set[str] = set()
         # session_id → is_entry_point
         self._entry_points: dict[str, bool] = {}
+        # role_key → monotonic timestamp for receiver liveness
+        self._last_activity: dict[str, float] = {}
         # data_dir set by plugin at init
         self.data_dir: str = "./data"
 
