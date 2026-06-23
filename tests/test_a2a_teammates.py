@@ -167,9 +167,9 @@ class TestPluginHooks:
 
         await plugin.handle("inject_and_park", ctx)
 
-        # Should have injected the peer message
-        system_msgs = [m for m in agent.state.messages if m.role == "system"]
-        peer_msgs = [m for m in system_msgs if "[Peer task from default_group__pm]" in str(m.content)]
+        # Should have injected the peer message as user role
+        user_msgs = [m for m in agent.state.messages if m.role == "user"]
+        peer_msgs = [m for m in user_msgs if "[PEER_MESSAGE]" in str(m.content)]
         assert len(peer_msgs) == 1
         assert "review login.py" in str(peer_msgs[0].content)
 
@@ -250,31 +250,29 @@ class TestCancelPeerTask:
         assert msgs[0].type == "cancel"
 
     @pytest.mark.anyio
-    async def test_cancel_wakes_parked_receiver(self):
+    async def test_cancel_sends_to_bus_and_pops_pending(self):
         from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
-        from unittest.mock import MagicMock
+
+        await tm_registry.agent_bus.register(
+            AgentInfo(name="default_group__dev", description="", capabilities=[]))
 
         tm_registry._pending_replies["peer_456"] = {
             "sender": "default_group__pm",
             "receiver": "default_group__dev",
         }
 
-        harness_mock = MagicMock()
-        harness_mock.resolve_wait = MagicMock()
-        fut = asyncio.Future()
-        fut.set_result(True)
-        harness_mock.resolve_wait.return_value = fut
-
-        tm_registry._peer_harnesses["default_group__dev"] = harness_mock
-        tm_registry._peer_wait_ids["default_group__dev"] = "wait_dev_001"
-
         result = await execute(
             correlation_id="peer_456",
             session_id="default_group__pm",
         )
         assert result["ok"] is True
+        assert "peer_456" not in tm_registry._pending_replies
 
-        harness_mock.resolve_wait.assert_called_once_with("wait_dev_001")
+        # Cancel message sent to bus — bg task will drain + wake
+        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        assert len(msgs) == 1
+        assert msgs[0].type == "cancel"
+        assert msgs[0].payload["correlation_id"] == "peer_456"
 
     @pytest.mark.anyio
     async def test_cancel_unknown_task_fails(self):

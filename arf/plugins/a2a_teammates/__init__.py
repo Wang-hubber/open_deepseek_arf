@@ -44,10 +44,8 @@ _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
     {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
-    {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
-    {"hook_name": "after_round", "event_name": "session_end", "mode": "side"},
 ]
 
 
@@ -81,14 +79,10 @@ class PeerTeamPlugin(Plugin):
             await self._on_inject_session_id(ctx)
         elif event_name == "inject_and_park":
             await self._on_inject_and_park(ctx)
-        elif event_name == "inject_peer_msgs":
-            await self._on_inject_peer_msgs(ctx)
         elif event_name == "heartbeat":
             await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
-        elif event_name == "session_end":
-            await self._on_session_end(ctx)
 
     # ==================================================================
     # init — create group index + inject team context
@@ -248,19 +242,8 @@ class PeerTeamPlugin(Plugin):
         ))
 
     # ==================================================================
-    # inject_peer_msgs — drain inbox only (safety net at before_model)
+    # _inject_messages / _format_peer_message — shared helpers
     # ==================================================================
-
-    async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
-        """Drain inbox at before_model. No park — the bg task already
-        injected any messages during park resolution."""
-        bus = _registry.agent_bus
-        if bus is None:
-            return
-        sid = ctx.session_id
-        messages = [m async for m in bus.receive(sid)]
-        if messages:
-            await self._inject_messages(ctx, messages)
 
     async def _inject_messages(
         self, ctx: PluginContext, messages: list,
@@ -268,23 +251,21 @@ class PeerTeamPlugin(Plugin):
         """Inject peer messages as system messages into agent state."""
         for msg in messages:
             formatted = self._format_peer_message(msg)
-            ctx.agent.input(role="system", content=formatted)
+            ctx.agent.input(role="user", content=formatted)
 
     @staticmethod
     def _format_peer_message(msg) -> str:
-        sender = msg.sender
-        msg_type = msg.type
-        body = msg.payload.get("message", str(msg.payload))
+        import json as _json
+        payload = {
+            "from": msg.sender,
+            "type": msg.type,
+            "correlation_id": getattr(msg, "correlation_id", ""),
+            "content": msg.payload.get("message", str(msg.payload)),
+        }
         result_file = msg.payload.get("result_file", "")
-
-        parts = [
-            f"[Peer {msg_type} from {sender}]",
-            "",
-            body,
-        ]
         if result_file:
-            parts.append(f"\nFull result: {result_file}")
-        return "\n".join(parts)
+            payload["result_file"] = result_file
+        return "[PEER_MESSAGE]\n" + _json.dumps(payload, ensure_ascii=False)
 
     # ==================================================================
     # heartbeat — update liveness timestamp
@@ -407,31 +388,6 @@ class PeerTeamPlugin(Plugin):
     # session_end — update group index
     # ==================================================================
 
-    async def _on_session_end(self, ctx: PluginContext) -> None:
-        sid = ctx.session_id
-        parsed = SessionIndex.parse_session_id(sid)
-        if parsed is None:
-            return
-        group_id, role = parsed
-
-        # Clean up harness ref
-        _registry._peer_harnesses.pop(sid, None)
-        _registry._peer_wait_ids.pop(sid, None)
-        _registry._entry_points.pop(sid, None)
-
-        _base_data = Path(ctx.data_dir or "./data")
-        _session_index_dir = (
-            _base_data.parent / "team_sessions"
-            if _base_data.name != "team_sessions"
-            else _base_data
-        )
-        idx = SessionIndex(str(_session_index_dir))
-        await idx.update_member(group_id, role, {"status": "ended"})
-
-    # ==================================================================
-    # group resume (public, kept from old plugin)
-    # ==================================================================
-
     @staticmethod
     def find_group_id(session_id: str) -> str | None:
         parsed = SessionIndex.parse_session_id(session_id)
@@ -506,7 +462,7 @@ async def _peer_wait_loop(
                 content = "\n\n".join(parts)
                 await harness.resolve_wait(
                     wait_id,
-                    inject_message={"role": "system", "content": content},
+                    inject_message={"role": "user", "content": content},
                 )
                 return
 
@@ -516,13 +472,19 @@ async def _peer_wait_loop(
         if pending_receiver_sid is not None:
             last = _registry._last_activity.get(pending_receiver_sid, 0)
             if _time.time() - last > idle_timeout:
+                import json as _json
                 await harness.resolve_wait(
                     wait_id,
                     inject_message={
-                        "role": "system",
+                        "role": "user",
                         "content": (
-                            f"[Peer] No reply from {pending_receiver_sid} "
-                            f"after {idle_timeout:.0f}s idle"
+                            "[PEER_MESSAGE]\n"
+                            + _json.dumps({
+                                "from": pending_receiver_sid,
+                                "type": "timeout",
+                                "correlation_id": "",
+                                "content": f"No reply after {idle_timeout:.0f}s idle",
+                            }, ensure_ascii=False)
                         ),
                     },
                 )

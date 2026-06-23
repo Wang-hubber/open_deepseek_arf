@@ -27,9 +27,4 @@ async def execute(correlation_id: str, session_id: str = "") -> dict:
             correlation_id=f"cancel_{correlation_id}",
         ))
 
-    harness = _registry._peer_harnesses.get(receiver_sid)
-    wait_id = _registry._peer_wait_ids.pop(receiver_sid, None)
-    if harness is not None and wait_id is not None:
-        await harness.resolve_wait(wait_id)
-
     return {"ok": True, "cancelled": True}
