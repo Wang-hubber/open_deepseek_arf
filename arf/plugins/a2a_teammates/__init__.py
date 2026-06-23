@@ -1,46 +1,439 @@
-"""A2A Teammates Plugin — peer team collaboration.
+"""A2A Teammates Plugin — peer-to-peer agent collaboration.
 
-Deep port: directly extends Plugin base class.
+Each agent in a group is a first-class citizen with independent harness,
+session, state, and trace. Communication via shared AgentBus. Park/resume
+uses harness-native ctx.agent.wait() / resolve_wait().
 """
 from __future__ import annotations
+
+import asyncio
 import logging
-from arf.harness.plugin_base import Plugin
+import uuid
+from pathlib import Path
+
+from arf.communication.agent_bus import InMemoryAgentBus
+from arf.core.protocols.communication import AgentInfo, AgentMessage
 from arf.harness.context import PluginContext
-from arf.plugins.a2a_teammates.config import PeerTeamConfig, MemberConfig
+from arf.harness.plugin_base import Plugin
+from arf.plugins.a2a_teammates.config import PeerTeamConfig
+from arf.plugins.a2a_teammates.result_file import write_peer_result
+from arf.plugins.a2a_teammates.tools import _registry
+from arf.session.session_index import SessionIndex
 
 logger = logging.getLogger("arf.plugins.a2a_teammates")
 
 _DEFAULT_EVENTS = [
-    {"hook_name": "before_round", "event_name": "session_start", "mode": "side"},
-    {"hook_name": "before_model", "event_name": "pre_action", "mode": "blocking"},
-    {"hook_name": "after_round", "event_name": "session_park", "mode": "blocking"},
-    {"hook_name": "after_round", "event_name": "round_end", "mode": "side"},
-    {"hook_name": "after_round", "event_name": "task_completed", "mode": "side"},
+    {"hook_name": "session_start", "event_name": "init", "mode": "side"},
+    {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
+    {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
+    {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "session_end", "mode": "side"},
 ]
 
 
 class PeerTeamPlugin(Plugin):
-    """Manages peer-to-peer collaboration between agents."""
+    """Manages peer-to-peer agent collaboration via AgentBus + harness park/resume."""
 
-    def __init__(self, name="a2a_teammates", events=None, config=None):
+    def __init__(
+        self,
+        name: str = "a2a_teammates",
+        events: list[dict] | None = None,
+        config: dict | None = None,
+    ) -> None:
         super().__init__(name=name, events=events or _DEFAULT_EVENTS, config=config or {})
-        if not self.config.get("members"):
-            self.config.setdefault("members", [{"role": "default", "agent_name": "default"}])
-        self._peers: dict[str, dict] = {}
+        cfg = PeerTeamConfig(**(config or {}))
+        self._group_id = cfg.group_id
+        self._members = cfg.members
+
+        if _registry.agent_bus is None:
+            _registry.agent_bus = InMemoryAgentBus()
+
+    # ==================================================================
+    # handle — dispatch by event_name
+    # ==================================================================
 
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
-        if event_name == "session_start":
-            logger.debug("A2A teammates: session_start for %s", ctx.session_id)
-        elif event_name == "pre_action":
-            await self._route_peer_messages(ctx)
-        elif event_name == "session_park":
-            ctx.agent.wait(hook_name="after_round", reason="peer_park")
+        if event_name == "init":
+            await self._on_init(ctx)
+        elif event_name == "inject_peer_msgs":
+            await self._on_inject_peer_msgs(ctx)
+        elif event_name == "forward_reply":
+            await self._on_forward_reply(ctx)
+        elif event_name == "peer_park":
+            await self._on_peer_park(ctx)
+        elif event_name == "session_end":
+            await self._on_session_end(ctx)
 
-    async def _route_peer_messages(self, ctx: PluginContext) -> None:
-        """Check for send_peer_message calls and route them."""
-        pass
+    # ==================================================================
+    # init — create group index + inject team context
+    # ==================================================================
+
+    async def _on_init(self, ctx: PluginContext) -> None:
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        group_id, role = parsed
+
+        _registry.data_dir = ctx.data_dir
+
+        # Store harness ref for bg task wake-up
+        harness_ref = ctx.hook_data.get("_harness_ref", {})
+        parent_harness = harness_ref.get("harness")
+        if parent_harness is not None:
+            _registry._peer_harnesses[role.lower()] = parent_harness
+
+        # SessionIndex stored in shared team_sessions/ directory
+        _base_data = Path(ctx.data_dir or "./data")
+        _session_index_dir = (
+            _base_data.parent / "team_sessions"
+            if _base_data.name != "team_sessions"
+            else _base_data
+        )
+        idx = SessionIndex(str(_session_index_dir))
+        existing = await idx.load(group_id)
+
+        if existing is None:
+            members = []
+            for m in self._members:
+                members.append({
+                    "role": m.role,
+                    "agent_name": m.agent_name,
+                    "session_id": f"{group_id}__{m.role}",
+                    "status": "active" if m.role == role else "idle",
+                })
+            await idx.create(group_id, members)
+
+            for m in members:
+                await _registry.agent_bus.register(AgentInfo(
+                    name=m["role"].lower(),
+                    description=f"Agent: {m['agent_name']}",
+                    capabilities=[],
+                ))
+            logger.info("Peer team group %s created with %d members", group_id, len(members))
+
+        # Inject team communication context once per session
+        if sid not in _registry._peer_context_injected:
+            _registry._peer_context_injected.add(sid)
+            teammates = [m.role for m in self._members]
+            system_msg = (
+                "[Team Communication]\n"
+                "You are part of an agent team. Messages from teammates are "
+                "delivered as system messages prefixed with [Peer]. To send "
+                "a task to a teammate, use send_peer_message. When you finish "
+                "a task assigned to you, call task_complete(result=\"...\") — "
+                "your result will be auto-forwarded to the sender.\n\n"
+                f"Available teammates: {', '.join(teammates)}"
+            )
+            ctx.agent.input(role="system", content=system_msg)
+
+    # ==================================================================
+    # inject_peer_msgs — drain AgentBus inbox before model call
+    # ==================================================================
+
+    async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        _group_id, role = parsed
+
+        role_key = role.lower()
+        messages = [m async for m in bus.receive(role_key)]
+        if messages:
+            await self._inject_messages(ctx, messages)
+
+    async def _inject_messages(
+        self, ctx: PluginContext, messages: list,
+    ) -> None:
+        """Inject peer messages as system messages into agent state."""
+        for msg in messages:
+            formatted = self._format_peer_message(msg)
+            ctx.agent.input(role="system", content=formatted)
+
+    @staticmethod
+    def _format_peer_message(msg) -> str:
+        sender = msg.sender
+        msg_type = msg.type
+        body = msg.payload.get("message", str(msg.payload))
+        result_file = msg.payload.get("result_file", "")
+
+        parts = [
+            f"[Peer {msg_type} from {sender}]",
+            "",
+            body,
+        ]
+        if result_file:
+            parts.append(f"\nFull result: {result_file}")
+        return "\n".join(parts)
+
+    # ==================================================================
+    # forward_reply — send task_complete result back to pending sender
+    # ==================================================================
+
+    async def _on_forward_reply(self, ctx: PluginContext) -> None:
+        """Read last assistant + task_complete result, write file, bus.send back."""
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        group_id, role = parsed
+
+        # Check for pending reply expectations targeting this role
+        role_key = role.lower()
+        my_pending = [
+            (corr_id, entry) for corr_id, entry in _registry._pending_replies.items()
+            if entry.get("receiver") == role_key
+        ]
+        if not my_pending:
+            return
+
+        # Merge full result from task_complete + last assistant
+        messages = ctx.agent.state.messages
+        last_assistant = ""
+        for m in reversed(messages):
+            if m.role == "assistant" and m.content:
+                last_assistant = str(m.content)
+                break
+
+        # Collect tool calls from this round for result file
+        tool_calls_summary: list[dict] = []
+        # (tool calls tracked by harness events — simplified here)
+
+        full_result = last_assistant  # task_complete.result preferred via system prompt
+
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        for corr_id, entry in my_pending:
+            sender_role = entry["sender"]
+
+            # Write full result file
+            result_file = write_peer_result(
+                data_dir=ctx.data_dir,
+                group_id=group_id,
+                correlation_id=corr_id,
+                agent_role=role_key,
+                task_description=f"Task from {sender_role}",
+                full_result=full_result,
+                tool_calls=tool_calls_summary,
+                turn_count=getattr(ctx, "turn", 0),
+            )
+
+            # Send brief + file pointer back
+            brief = full_result[:300] if full_result else "(no output)"
+            if len(full_result) > 300:
+                brief += "..."
+
+            reply = AgentMessage(
+                sender=role_key,
+                receiver=sender_role,
+                type="reply",
+                payload={
+                    "brief": brief,
+                    "result_file": result_file,
+                    "correlation_id": corr_id,
+                },
+                priority="normal",
+                correlation_id=f"peer_rpl_{uuid.uuid4().hex[:8]}",
+            )
+            await bus.send(reply)
+
+            # Clear the expectation
+            _registry._pending_replies.pop(corr_id, None)
+            logger.info(
+                "Peer '%s' reply forwarded to '%s' (corr=%s, file=%s)",
+                role_key, sender_role, corr_id, result_file,
+            )
+
+    # ==================================================================
+    # peer_park — park if waiting for peer replies
+    # ==================================================================
+
+    async def _on_peer_park(self, ctx: PluginContext) -> None:
+        """Park agent if it's expecting replies from any peer."""
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        group_id, role = parsed
+        role_key = role.lower()
+
+        # Check if this agent has sent messages awaiting replies
+        has_pending = any(
+            entry.get("sender") == role_key
+            for entry in _registry._pending_replies.values()
+        )
+        if not has_pending:
+            return
+
+        wi = ctx.agent.wait("after_round", f"waiting for peer reply")
+        _registry._peer_wait_ids[role_key] = wi.wait_id
+
+        harness = _registry._peer_harnesses.get(role_key)
+        if harness is None:
+            return
+
+        bus = _registry.agent_bus
+        data_dir = ctx.data_dir
+
+        asyncio.create_task(_peer_wait_loop(
+            harness=harness,
+            wait_id=wi.wait_id,
+            role_key=role_key,
+            bus=bus,
+            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            data_dir=data_dir,
+            group_id=group_id,
+        ))
+
+    # ==================================================================
+    # session_end — update group index
+    # ==================================================================
+
+    async def _on_session_end(self, ctx: PluginContext) -> None:
+        sid = ctx.session_id
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is None:
+            return
+        group_id, role = parsed
+
+        # Clean up harness ref
+        _registry._peer_harnesses.pop(role.lower(), None)
+        _registry._peer_wait_ids.pop(role.lower(), None)
+
+        _base_data = Path(ctx.data_dir or "./data")
+        _session_index_dir = (
+            _base_data.parent / "team_sessions"
+            if _base_data.name != "team_sessions"
+            else _base_data
+        )
+        idx = SessionIndex(str(_session_index_dir))
+        await idx.update_member(group_id, role, {"status": "ended"})
+
+    # ==================================================================
+    # group resume (public, kept from old plugin)
+    # ==================================================================
+
+    @staticmethod
+    def find_group_id(session_id: str) -> str | None:
+        parsed = SessionIndex.parse_session_id(session_id)
+        return parsed[0] if parsed else None
+
+    async def resume_group(self, session_id: str, data_dir: str) -> dict | None:
+        group_id = self.find_group_id(session_id)
+        if group_id is None:
+            return None
+
+        idx = SessionIndex(data_dir)
+        index = await idx.load(group_id)
+        if index is None:
+            return None
+
+        for m in index["members"]:
+            await _registry.agent_bus.register(AgentInfo(
+                name=m["role"].lower(),
+                description=f"Agent: {m['agent_name']}",
+                capabilities=[],
+            ))
+
+        logger.info("Peer team group %s resumed with %d members", group_id, len(index["members"]))
+        return index
 
 
+# ==================================================================
+# Background: _peer_wait_loop — wait for peer reply on AgentBus
+# ==================================================================
+
+async def _peer_wait_loop(
+    *,
+    harness,
+    wait_id: str,
+    role_key: str,
+    bus,
+    cancel_evt,
+    data_dir: str,
+    group_id: str,
+) -> None:
+    """Background task: wait for peer message, then wake own harness.
+
+    Uses AgentBus.wait_for_message for push notification. Holds own
+    harness reference — no cross-harness coordination needed.
+    """
+    import random
+
+    base_timeout = 30.0
+    max_retries = 3
+    backoff_factor = 2.0
+
+    for attempt in range(max_retries):
+        current = base_timeout * (backoff_factor ** attempt)
+        jitter = current * 0.2 * (2 * random.random() - 1)
+        current += jitter
+
+        if bus is None:
+            break
+
+        has_msg = await bus.wait_for_message(
+            role_key, timeout=current, cancel_event=cancel_evt,
+        )
+
+        if has_msg:
+            messages = [m async for m in bus.receive(role_key)]
+            if messages:
+                parts = []
+                for msg in messages:
+                    formatted = PeerTeamPlugin._format_peer_message(msg)
+                    parts.append(formatted)
+                content = "\n\n".join(parts)
+                await harness.resolve_wait(
+                    wait_id,
+                    inject_message={"role": "system", "content": content},
+                )
+                return
+
+        if cancel_evt is not None and cancel_evt.is_set():
+            return
+
+        # Alive check — if peers dead, try resume
+        if attempt < max_retries - 1:
+            try:
+                _base = Path(data_dir)
+                _idx_dir = _base.parent / "team_sessions" if _base.name != "team_sessions" else _base
+                idx = SessionIndex(str(_idx_dir))
+                index = await idx.load(group_id)
+                peers_alive = False
+                if index:
+                    for m in index.get("members", []):
+                        if m["role"] == role_key:
+                            continue
+                        if m.get("status") in ("active", "idle", "waiting_human"):
+                            peers_alive = True
+                            break
+                if not peers_alive:
+                    # Try wake peers via resume_group
+                    pass  # resume_group is on the plugin instance; skip for bg task
+            except Exception:
+                pass
+
+    # Exhausted retries — resolve with timeout notice
+    try:
+        await harness.resolve_wait(
+            wait_id,
+            inject_message={
+                "role": "system",
+                "content": f"[Peer] No reply received for {role_key} after {max_retries} retries",
+            },
+        )
+    except Exception:
+        logger.exception("Failed to resolve wait for %s after timeout", role_key)
+
+
+# Export Plugin class for harness loader
 Plugin = PeerTeamPlugin
-__all__ = ["PeerTeamPlugin", "PeerTeamConfig", "MemberConfig", "Plugin"]
+__all__ = ["PeerTeamPlugin", "PeerTeamConfig", "Plugin"]
