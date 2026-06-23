@@ -79,11 +79,13 @@ class MemoryIndex:
 
     def save_project(self, content: str) -> None:
         """Overwrite project.md."""
+        self._dir.mkdir(parents=True, exist_ok=True)
         self._truncate_check("project.md", content, self._cfg.project.max_size_kb)
         (self._dir / "project.md").write_text(content, encoding="utf-8")
 
     def save_user(self, content: str) -> None:
         """Overwrite user.md."""
+        self._dir.mkdir(parents=True, exist_ok=True)
         self._truncate_check("user.md", content, self._cfg.user.max_size_kb)
         (self._dir / "user.md").write_text(content, encoding="utf-8")
 
@@ -122,6 +124,7 @@ class MemoryIndex:
 
     def save_tasks(self, content: str) -> None:
         """Overwrite tasks.md."""
+        self._dir.mkdir(parents=True, exist_ok=True)
         self._truncate_check("tasks.md", content, self._cfg.task_memory.max_size_kb)
         (self._dir / "tasks.md").write_text(content, encoding="utf-8")
 
