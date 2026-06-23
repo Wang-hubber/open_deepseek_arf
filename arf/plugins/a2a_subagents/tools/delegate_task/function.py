@@ -95,6 +95,72 @@ async def _add_child_task(
         logger.exception("Failed to add child_tasks entry for %s", task_id)
 
 
+def _write_result_file(
+    data_dir: str, parent_sid: str, task_id: str,
+    agent_name: str, task_description: str, status: str,
+    final_result: str, tool_calls: list[dict],
+    file_changes: dict, turn_count: int,
+) -> str:
+    """Write sub-agent full result to a persistent file.
+
+    Returns the relative path (from data_dir root) suitable for display.
+    The parent sees a brief result + this file pointer instead of the full
+    output being injected directly into the conversation.
+    """
+    import time as _time
+    result_dir = Path(data_dir) / parent_sid / "subagent_results"
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_task_id = task_id.replace("/", "_").replace(" ", "_") if task_id else "unknown"
+    result_path = result_dir / f"{safe_task_id}.md"
+
+    # Build structured result document
+    parts = [
+        "# Sub-agent Result",
+        "",
+        f"**Task ID:** `{task_id}`",
+        f"**Agent:** {agent_name}",
+        f"**Status:** {status}",
+        f"**Turns:** {turn_count}",
+        f"**Completed at:** {_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## Task",
+        "",
+        task_description,
+        "",
+        "## Result",
+        "",
+        final_result or "(no output)",
+    ]
+
+    if tool_calls:
+        success_count = sum(1 for tc in tool_calls if tc.get("success"))
+        parts.append("")
+        parts.append(f"## Tool Calls ({len(tool_calls)} total, {success_count} ok)")
+        parts.append("")
+        parts.append("| # | Tool | Success | Duration | Error |")
+        parts.append("|---|------|---------|----------|-------|")
+        for i, tc in enumerate(tool_calls):
+            err = tc.get("error", "") or ""
+            dur = f"{tc.get('duration_ms', 0)}ms"
+            ok = "yes" if tc.get("success") else "no"
+            parts.append(f"| {i+1} | `{tc.get('tool_name', '?')}` | {ok} | {dur} | {err} |")
+
+    if file_changes:
+        parts.append("")
+        parts.append("## File Changes")
+        parts.append("")
+        for category in ("added", "modified", "deleted"):
+            paths = file_changes.get(category, [])
+            if paths:
+                prefix = {"added": "+", "modified": "~", "deleted": "-"}[category]
+                for p in paths:
+                    parts.append(f"- {prefix} `{p}`")
+
+    result_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    return str(result_path.relative_to(data_dir))
+
+
 async def execute(
     task: str,
     agent: str = "",
@@ -295,12 +361,33 @@ def _make_yaml_runner(
                 "deleted": sorted(deleted),
             }
 
+        # Write full result to persistent file for caching / inspection.
+        # Parent sees a brief summary + file pointer, not the full output.
+        result_file = _write_result_file(
+            data_dir=registry.data_dir,
+            parent_sid=parent_sid,
+            task_id=task_id,
+            agent_name=agent_name,
+            task_description=t.get("task", ""),
+            status=final_status,
+            final_result=final_result,
+            tool_calls=tool_calls,
+            file_changes=file_changes,
+            turn_count=len(tool_calls),
+        )
+
+        # Brief content for parent message injection
+        brief = final_result[:300] if final_result else "(no output)"
+        if len(final_result) > 300:
+            brief += "..."
+
         # Complete via delegator
         complete_result = {
             "ok": final_status == "completed",
-            "content": final_result,
+            "content": brief,
             "turn_count": len(tool_calls),
             "gate_exceeded": final_status == "error",
+            "result_file": result_file,
         }
         if tool_calls:
             complete_result["tool_calls_summary"] = tool_calls
@@ -319,6 +406,7 @@ def _make_yaml_runner(
             "session_id": child_sid,
             "agent_name": agent_name,
             "tool_calls_summary": tool_calls,
+            "result_file": result_file,
             "file_changes": file_changes,
         }
 
@@ -462,12 +550,33 @@ def _make_inherit_runner(
                 "deleted": sorted(deleted),
             }
 
+        # Write full result to persistent file for caching / inspection.
+        # Parent sees a brief summary + file pointer, not the full output.
+        result_file = _write_result_file(
+            data_dir=registry.data_dir,
+            parent_sid=parent_sid,
+            task_id=task_id,
+            agent_name="inline",
+            task_description=t.get("task", ""),
+            status=final_status,
+            final_result=final_result,
+            tool_calls=tool_calls,
+            file_changes=file_changes,
+            turn_count=len(tool_calls),
+        )
+
+        # Brief content for parent message injection
+        brief = final_result[:300] if final_result else "(no output)"
+        if len(final_result) > 300:
+            brief += "..."
+
         # Complete via delegator
         complete_result = {
             "ok": final_status == "completed",
-            "content": final_result,
+            "content": brief,
             "turn_count": len(tool_calls),
             "gate_exceeded": final_status == "error",
+            "result_file": result_file,
         }
         if tool_calls:
             complete_result["tool_calls_summary"] = tool_calls
@@ -487,6 +596,7 @@ def _make_inherit_runner(
             "agent_name": "inline",
             "tool_calls_summary": tool_calls,
             "file_changes": file_changes,
+            "result_file": result_file,
         }
 
     return runner

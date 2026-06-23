@@ -242,6 +242,10 @@ class Plugin(Plugin):
             if change_parts:
                 parts.append(f"[Files: {', '.join(change_parts)}]")
 
+        result_file = result.get("result_file")
+        if result_file:
+            parts.append(f"[Full result: {result_file}]")
+
         if parts:
             return main + "\n" + "\n".join(parts)
         return main
