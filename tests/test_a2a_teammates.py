@@ -315,6 +315,30 @@ class TestPluginHooks:
         if path.exists():
             os.remove(path)
 
+    @pytest.mark.anyio
+    async def test_drain_inbox_mid_processing(self):
+        """before_model drain picks up messages arriving after before_round."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="default_group__dev", description="", capabilities=[]))
+        await _state_mod._state.agent_bus.send(AgentMessage(
+            sender="default_group__pm", receiver="default_group__dev", type="request",
+            payload={"jsonrpc": "2.0", "method": "task.assign",
+                     "params": {"message": "urgent fix"}, "id": "peer_mid"},
+            priority="normal",
+            correlation_id="peer_mid",
+        ))
+
+        await plugin.handle("drain_inbox", ctx)
+
+        user_msgs = [m for m in agent.state.messages if m.role == "user"]
+        peer_msgs = [m for m in user_msgs if m.name and m.name.startswith("peer:")]
+        assert len(peer_msgs) == 1
+        assert "urgent fix" in str(peer_msgs[0].content)
+
 
 class TestCancelPeerTask:
     @pytest.fixture(autouse=True)
@@ -644,6 +668,40 @@ class TestForwardReply:
 
         # Pending MUST be cleared — this is the fix
         assert "peer_empty" not in _state_mod._state.pending_replies
+
+    @pytest.mark.anyio
+    async def test_forward_reply_handles_multiple_pending_one_per_round(self):
+        """When multiple tasks pending, forward_reply processes one per round."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="pm", description="", capabilities=[]))
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="qa", description="", capabilities=[]))
+
+        # Two pending tasks from different senders
+        _state_mod._state.pending_replies["peer_aaa"] = {
+            "sender": "default_group__pm", "receiver": "default_group__dev",
+        }
+        _state_mod._state.pending_replies["peer_bbb"] = {
+            "sender": "default_group__qa", "receiver": "default_group__dev",
+        }
+
+        ctx.agent.input(role="assistant", content="Done.")
+        ctx.agent.input(role="tool", content={
+            "tool_call_id": "call_1",
+            "name": "task_complete",
+            "result": {"ok": True, "task_complete": True, "result": "All done"},
+            "error": "",
+        })
+
+        await plugin.handle("forward_reply", ctx)
+
+        # Only one pending should be cleared (first in iteration order)
+        remaining = len(_state_mod._state.pending_replies)
+        assert remaining == 1, f"Should have 1 remaining pending, got {remaining}"
 
 
 class TestAgentBusCleanup:

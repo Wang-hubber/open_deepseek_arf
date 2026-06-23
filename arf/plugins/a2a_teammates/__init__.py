@@ -53,6 +53,7 @@ _DEFAULT_EVENTS = [
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
     {"hook_name": "after_tools", "event_name": "park_after_send", "mode": "blocking"},
     {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
+    {"hook_name": "before_model", "event_name": "drain_inbox", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
     {"hook_name": "session_end", "event_name": "teardown", "mode": "blocking"},
@@ -92,6 +93,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_park_after_send(ctx)
         elif event_name == "inject_and_park":
             await self._on_inject_and_park(ctx)
+        elif event_name == "drain_inbox":
+            await self._on_drain_inbox(ctx)
         elif event_name == "heartbeat":
             await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
@@ -263,6 +266,22 @@ class PeerTeamPlugin(Plugin):
         await self._park_for_peer(ctx, "before_round", f"peer_idle:{sid}")
 
     # ==================================================================
+    # drain_inbox — drain bus messages arriving mid-processing
+    # ==================================================================
+
+    async def _on_drain_inbox(self, ctx: PluginContext) -> None:
+        """Drain any messages that arrived mid-processing (between before_round and model_call)."""
+        bus = self._state.agent_bus
+        if bus is None:
+            return
+        sid = ctx.session_id
+        messages = [m async for m in bus.receive(sid)]
+        if messages:
+            for msg in messages:
+                formatted = self._format_peer_message(msg)
+                ctx.agent.input(role="user", content=formatted, name=f"peer:{msg.sender}")
+
+    # ==================================================================
     # _park_for_peer / _format_peer_message / _package_peer_messages
     # ==================================================================
 
@@ -419,44 +438,53 @@ class PeerTeamPlugin(Plugin):
 
         group_id = self._group_id
 
-        for corr_id, entry in my_pending:
-            sender_sid = entry["sender"]
+        # If multiple pending tasks for this receiver, process one per round
+        # to avoid sending the same result to all senders.
+        corr_id, entry = my_pending[0]
+        sender_sid = entry["sender"]
 
-            # Write full result file
-            result_file = write_peer_result(
-                data_dir=ctx.data_dir,
-                group_id=group_id,
-                correlation_id=corr_id,
-                agent_role=sid,
-                task_description=f"Task from {sender_sid}",
-                full_result=full_result,
-                tool_calls=tool_calls_summary,
-                turn_count=getattr(ctx, "turn", 0),
-            )
+        # Write full result file
+        result_file = write_peer_result(
+            data_dir=ctx.data_dir,
+            group_id=group_id,
+            correlation_id=corr_id,
+            agent_role=sid,
+            task_description=f"Task from {sender_sid}",
+            full_result=full_result,
+            tool_calls=tool_calls_summary,
+            turn_count=getattr(ctx, "turn", 0),
+        )
 
-            reply = AgentMessage(
-                sender=sid,
-                receiver=sender_sid,
-                type="response",
-                payload=JrpcEnvelope.response(
-                    id=corr_id,
-                    result={
-                        "summary": full_result[:300] if full_result else "(no output)",
-                        "result_file": result_file,
-                    },
-                ),
-                priority="normal",
-                correlation_id=corr_id,
-            )
-            await bus.send(reply)
+        reply = AgentMessage(
+            sender=sid,
+            receiver=sender_sid,
+            type="response",
+            payload=JrpcEnvelope.response(
+                id=corr_id,
+                result={
+                    "summary": full_result[:300] if full_result else "(no output)",
+                    "result_file": result_file,
+                },
+            ),
+            priority="normal",
+            correlation_id=corr_id,
+        )
+        await bus.send(reply)
 
-            # Clear the expectation
-            self._state.pending_replies.pop(corr_id, None)
-            from arf.plugins.a2a_teammates.state import save_pending_replies
-            await save_pending_replies()
-            logger.info(
-                "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
-                sid, sender_sid, corr_id, result_file,
+        # Clear the expectation
+        self._state.pending_replies.pop(corr_id, None)
+        from arf.plugins.a2a_teammates.state import save_pending_replies
+        await save_pending_replies()
+        logger.info(
+            "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
+            sid, sender_sid, corr_id, result_file,
+        )
+
+        if len(my_pending) > 1:
+            logger.warning(
+                "Agent %s has %d pending tasks; forwarded result for %s, "
+                "%d remaining for subsequent rounds",
+                sid, len(my_pending), corr_id, len(my_pending) - 1,
             )
 
     # ==================================================================

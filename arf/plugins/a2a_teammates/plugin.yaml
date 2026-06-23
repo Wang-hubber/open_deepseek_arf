@@ -4,6 +4,7 @@ events:
   - {hook_name: "before_tools", event_name: "inject_session_id", mode: "blocking"}
   - {hook_name: "after_tools", event_name: "park_after_send", mode: "blocking"}
   - {hook_name: "before_round", event_name: "inject_and_park", mode: "blocking"}
+  - {hook_name: "before_model", event_name: "drain_inbox", mode: "blocking"}
   - {hook_name: "after_model", event_name: "heartbeat", mode: "side"}
   - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
   - {hook_name: "session_end", event_name: "teardown", mode: "blocking"}
