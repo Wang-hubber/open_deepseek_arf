@@ -24,7 +24,7 @@ from arf.session.session_index import SessionIndex
 logger = logging.getLogger("arf.plugins.a2a_teammates")
 
 _DEFAULT_EVENTS = [
-    {"hook_name": "session_start", "event_name": "init", "mode": "side"},
+    {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
     {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
