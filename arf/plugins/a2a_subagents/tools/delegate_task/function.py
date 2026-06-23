@@ -19,6 +19,24 @@ logger = logging.getLogger("arf.plugins.a2a_subagents.delegate_task")
 
 _IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "data", ".claude"}
 
+# Default system prompt for inherit-mode sub-agents (agent="").
+# Injected so sub-agents know their role, boundaries, and completion signal.
+SUBAGENT_ROLE = (
+    "You are a sub-agent spawned to complete a specific task delegated by "
+    "a parent agent. Operate autonomously with the tools available to you. "
+    "Focus only on the assigned task — do not expand scope."
+)
+
+SUBAGENT_CRITICAL_RULES = (
+    "## Critical Rules\n\n"
+    "1. Focus exclusively on the assigned task. Do not expand scope.\n"
+    "2. Call task_complete when finished. This signals the parent agent to "
+    "collect your result. Include a clear summary of what you did.\n"
+    "3. Do NOT use delegate_task — you cannot spawn further sub-agents.\n"
+    "4. Be concise. The parent agent only sees your final result, "
+    "not your intermediate reasoning steps."
+)
+
 
 def _snapshot_workspace(workspace_dir: str) -> dict[str, str]:
     """Scan workspace -> {relative_path: sha256_hex}."""
@@ -308,7 +326,7 @@ def _make_inherit_runner(
     async def runner(t: dict) -> dict:
         from arf.agent.primitive import PrimitiveAgent
         from arf.harness.engine import AgentHarness
-        from arf.agent.config import AgentConfig
+        from arf.agent.config import AgentConfig, SystemPromptConfig, PrefixConfig
         task_id = t.get("_delegator_task_id", "")
         ws_root = Path(os.environ.get("A4A_WORKSPACE", "."))
         ws_dir = str(ws_root)
@@ -328,23 +346,36 @@ def _make_inherit_runner(
             if getattr(p, "name", "") != "a2a_subagents"
         ]
 
-        # Build a minimal agent config for filtering delegate_task
+        # Build dedicated sub-agent config — NOT a copy of parent's.
+        # Sub-agent gets its own lightweight identity prompt instead of
+        # the parent's heavy role-playing prompt. Tools/plugins are still
+        # inherited, minus a2a_subagents to prevent recursive delegation.
         parent_agent_cfg = parent_cfg.get("agent_config")
         sub_agent_cfg = None
         if parent_agent_cfg is not None:
-            # Clone without a2a_subagents plugin
+            # Clone without a2a_subagents plugin (harness _filter_tools
+            # will exclude delegate_task based on plugin_names)
             sub_plugins = [
                 p for p in (parent_agent_cfg.plugins or [])
                 if p != "a2a_subagents"
             ]
+            # Inherit workspace_dir so sandbox boundaries are visible
+            sub_ws_dir = getattr(parent_agent_cfg, "workspace_dir", "")
             sub_agent_cfg = AgentConfig(
                 name="inline_sub",
                 model_defs=parent_agent_cfg.model_defs,
                 models=parent_agent_cfg.models,
                 plugins=sub_plugins,
                 tools=parent_agent_cfg.tools or [],
-                system_prompt=parent_agent_cfg.system_prompt,
+                system_prompt=SystemPromptConfig(
+                    prefix=PrefixConfig(
+                        role=SUBAGENT_ROLE,
+                        critical_rules=SUBAGENT_CRITICAL_RULES,
+                    ),
+                ),
                 session_mode="auto",
+                workspace_dir=sub_ws_dir,
+                allow_paths=parent_agent_cfg.allow_paths or [],
             )
 
         # Create sub-harness with shared tool_manager
