@@ -367,6 +367,15 @@ class AgentHarness:
                 _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
             ctx.hook_data["_allow_paths"] = _allow_paths
 
+            # Pass harness config to plugins so a2a_subagents can capture
+            # parent config for inline-like sub-agent creation
+            ctx.hook_data["_harness_ref"] = {
+                "tool_manager": self._tool_manager,
+                "plugins": self._plugins,
+                "agent_config": self._agent_config,
+                "max_turns": self._max_turns,
+            }
+
             # Plugins inject extra context (e.g. memory, sandbox boundaries)
             await self._checkpoint("session_start", ctx)
             for event in ctx.captured_events:
