@@ -1,11 +1,10 @@
 name: a2a_teammates
 events:
-  - {hook_name: "before_round", event_name: "session_start", mode: "side"}
-  - {hook_name: "before_model", event_name: "pre_action", mode: "blocking"}
-  - {hook_name: "after_round", event_name: "session_park", mode: "blocking"}
-  - {hook_name: "after_round", event_name: "round_end", mode: "side"}
-  - {hook_name: "after_round", event_name: "task_completed", mode: "side"}
+  - {hook_name: "session_start", event_name: "init", mode: "side"}
+  - {hook_name: "before_model", event_name: "inject_peer_msgs", mode: "blocking"}
+  - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
+  - {hook_name: "after_round", event_name: "peer_park", mode: "blocking"}
   - {hook_name: "after_round", event_name: "session_end", mode: "side"}
 config:
-  group_id: ""
+  group_id: default
   members: []
