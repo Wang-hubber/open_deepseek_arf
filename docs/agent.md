@@ -594,6 +594,132 @@ class AgentEvent:
 
 ---
 
+## JRPC 通讯协议
+
+A2A（Agent-to-Agent）通讯在 AgentBus 之上使用 **JRPC 2.0**（JSON-RPC 2.0）信封，提供请求-响应配对、方法命名空间和结构化参数。每条总线消息都是一个自描述事件，具备完整的可追溯性。
+
+### 架构层次
+
+```
+┌─ LLM 层 ───────────────────────────────────────────────────────┐
+│  模型只看到纯文本 + 薄标签: [task] ... / [reply] ...            │
+│  JRPC JSON 在注入前已被剥离（Plugin 负责 unwrap）               │
+└────────────────────────────────────────────────────────────────┘
+        ▲ content extraction (JrpcEnvelope.extract_content)
+        │
+┌─ Transport 层 ─────────────────────────────────────────────────┐
+│  AgentMessage {sender, receiver, type, payload, correlation_id} │
+│  Bus Registry: sid → agent_bus (每 agent 独立 inbox)            │
+│  _peer_wait_loop: bus.wait_for_message() → harness.resolve_wait │
+└────────────────────────────────────────────────────────────────┘
+        ▲ send / receive
+        │
+┌─ Bus 层 ───────────────────────────────────────────────────────┐
+│  InMemoryAgentBus: per-agent inbox, Event-driven wake-up       │
+│  send(msg) → inbox.append + event.set()                        │
+│  wait_for_message(sid) → event.wait() → True/False             │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### JRPC 信封格式
+
+```python
+# ── Request（发送任务或信息）──
+{
+    "jsonrpc": "2.0",
+    "method": "task.assign",        # 或 "info.message"
+    "params": {"message": "请分析 sales.csv"},
+    "id": "peer_a1b2c3d4"          # correlation_id, 用于响应配对
+}
+
+# ── Response（任务完成回传）──
+{
+    "jsonrpc": "2.0",
+    "id": "peer_a1b2c3d4",         # 匹配 request 的 id
+    "result": {
+        "summary": "华东 490, 华北 932",   # ≤300 chars 简报
+        "result_file": "sales_team/peer_results/peer_a1b2c3d4.md"  # 完整结果文件路径
+    }
+}
+
+# ── Notification（取消任务，无 id，无响应）──
+{
+    "jsonrpc": "2.0",
+    "method": "task.cancel",
+    "params": {"correlation_id": "peer_a1b2c3d4"}
+}
+```
+
+### 方法定义
+
+| 方法 | 语义 | LLM 标签 | 说明 |
+|------|------|---------|------|
+| `task.assign` | 派发任务 | `[task]` | PM → 队友，要求执行任务并回传结果 |
+| `task.result` | 任务结果 | `[response]` | 队友 → PM，`task_complete` 后自动转发 |
+| `task.cancel` | 取消任务 | `[cancel]` | 通知 receiver 某任务已取消 |
+| `info.message` | 通知消息 | `[info]` | 轻量通知，无需回复 |
+
+### 消息流
+
+```
+send_peer_message(to="team__data", message="分析 sales.csv")
+    │
+    ├─ 1. JrpcEnvelope.request(method="task.assign", params={message}, id=corr_id)
+    ├─ 2. AgentMessage(sender=pm_sid, receiver=to, payload=jrpc, correlation_id=corr_id)
+    ├─ 3. get_bus("team__data").send(msg)          ← 查 registry 找目标的 bus
+    ├─ 4. _pending_replies[corr_id] = {sender, receiver, created_at}
+    └─ 5. park → _peer_wait_loop(pm_bus)           ← 等回复
+
+接收端:
+    ├─ _peer_wait_loop(data_bus) → bus.wait_for_message("team__data") → True
+    ├─ bus.receive() → AgentMessage
+    ├─ _format_peer_message() → "[task] 分析 sales.csv"  ← 剥离 JRPC 信封
+    ├─ harness.resolve_wait(wait_id, inject_message={...})
+    └─ 模型处理 → task_complete → forward_reply
+
+回传:
+    ├─ forward_reply: write_peer_result() → data/{group}/peer_results/{corr_id}.md
+    ├─ JrpcEnvelope.response(id=corr_id, result={summary, result_file})
+    ├─ get_bus(pm_sid).send(reply)                 ← 查 registry 找 PM 的 bus
+    └─ pm_bus.wait_for_message("team__pm") → PM wakes
+```
+
+### Bus Registry（总线注册表）
+
+每个 agent 在 `session_start` 时将自己的 bus 注册到模块级 registry：
+
+```
+_bus_registry = {
+    "sales_team__pm":   pm_bus,     # PM 的 bus + inbox
+    "sales_team__data": data_bus,   # Data 的 bus + inbox
+    "sales_team__viz":  viz_bus,    # Viz 的 bus + inbox
+}
+```
+
+- **发消息**：`get_bus(target_sid).send(msg)` → 消息进入目标 agent 的 inbox
+- **收消息**：`_peer_wait_loop(own_bus)` → 监听自己 bus 上的新消息
+- **回传**：`forward_reply` → `get_bus(sender_sid).send(reply)` → sender 的 bus
+- **注销**：`session_end` → `unregister_bus(sid)` 清理
+
+共享数据（跨 agent）：
+- `_pending_replies`：发送方记录待回复的任务（correlation_id → {sender, receiver, created_at}）
+- `_last_activity`：心跳时间戳，用于 idle timeout 检测
+
+### 内容提取
+
+Plugin 负责在消息注入模型前剥离 JRPC 信封。模型**不会**看到 JSON：
+
+| JRPC 字段 | 注入到模型的内容 |
+|-----------|---------------|
+| `method` | 薄标签前缀：`[task]` / `[response]` / `[cancel]` / `[info]` |
+| `params.message` | 消息正文 |
+| `result.summary` | 回复摘要 |
+| `result.result_file` | `(full result: <path>)` 附加在文本末尾 |
+| `error` | `error.message` |
+| `sender` | 通过 `name="peer:<sender_sid>"` 传递 |
+
+---
+
 ## API 参考
 
 ### 配置加载

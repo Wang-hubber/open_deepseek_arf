@@ -5,7 +5,10 @@ import uuid
 
 from arf.communication.jrpc import JrpcEnvelope
 from arf.core.protocols.communication import AgentMessage
-from arf.plugins.a2a_teammates.state import get_state
+from arf.plugins.a2a_teammates.state import (
+    get_bus,
+    get_pending_replies,
+)
 
 
 _METHOD_MAP = {
@@ -21,26 +24,23 @@ async def execute(
     priority: str = "normal",
     session_id: str = "",
 ) -> dict:
-    """Send a JRPC request to *to* (target session_id) via the AgentBus.
+    """Send a JRPC request to *to* (target session_id) via their AgentBus.
 
     *session_id* is injected by the plugin at before_tools — the caller
     does not provide it.  The sender is the calling agent's own session_id.
-
-    The LLM's ``message`` string becomes ``params.message`` inside a
-    JRPC request envelope.  The receiver's plugin unwraps the envelope
-    and injects only the plain text content to the model.
     """
-    state = get_state()
-    if state.agent_bus is None:
+    to = to.strip()
+    target_bus = get_bus(to)
+    if target_bus is None:
         return {
             "ok": False,
-            "error": "AgentBus not initialized — is the a2a_teammates plugin enabled?",
+            "error": f"Target agent '{to}' not found in bus registry. "
+                      f"Registered: {list(get_bus.__globals__.get('_bus_registry', {}).keys())}",
         }
 
     if not session_id:
         return {"ok": False, "error": "session_id not provided — plugin must inject it"}
 
-    to = to.strip()
     correlation_id = f"peer_{uuid.uuid4().hex[:8]}"
     method = _METHOD_MAP.get(type, JrpcEnvelope.METHOD_ASSIGN)
 
@@ -57,9 +57,9 @@ async def execute(
         correlation_id=correlation_id,
     )
 
-    await state.agent_bus.send(msg)
+    await target_bus.send(msg)
 
-    state.pending_replies[correlation_id] = {
+    get_pending_replies()[correlation_id] = {
         "sender": session_id,
         "receiver": to,
         "created_at": __import__("time").time(),

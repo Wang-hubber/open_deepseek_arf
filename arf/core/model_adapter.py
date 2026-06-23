@@ -219,7 +219,11 @@ class ModelAdapter:
                 # Skip assistant messages with no content (API rejects them)
                 if role == "assistant" and not content:
                     continue
-                result.append({"role": role, "content": content})
+                api_msg = {"role": role, "content": content}
+                name = m.get("name")
+                if name:
+                    api_msg["name"] = name
+                result.append(api_msg)
         return result
 
     def _build_api_params(self) -> tuple[dict, dict]:

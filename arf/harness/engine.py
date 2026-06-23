@@ -26,6 +26,7 @@ CHECKPOINTS = [
     "session_start",
     "before_round", "before_model", "after_model",
     "before_tools", "after_tools", "after_round", "on_error",
+    "session_end",
 ]
 
 
@@ -52,6 +53,7 @@ class AgentHarness:
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
+        self._current_ctx: PluginContext | None = None
 
         # HITL — harness tracks pending human-input requests
         self._hitl_waits: dict[str, str] = {}  # session_id → wait_id
@@ -349,6 +351,7 @@ class AgentHarness:
             agent.state.waiting.clear()
 
         ctx = self._make_ctx()
+        self._current_ctx = ctx
         self._sync_ctx(ctx, turn=0)
 
         # Resolve effective session mode for this round
@@ -740,13 +743,22 @@ class AgentHarness:
             "stopped": "max_turns" if turn >= self._max_turns else "completed",
         })
         await self._save_and_teardown()
+        yield ctx.emit(event_type="session_end", data={
+            "session_id": agent.state.session_id,
+        })
 
     # ── State Persistence ───────────────────────────────
 
     async def _save_and_teardown(self) -> None:
-        """Stop trace writer then save state — called on all exit paths."""
+        """Stop trace writer, save state, fire session_end — called on all exit paths."""
         await self._stop_trace_writer()
         await self._save_state()
+        # Fire session_end lifecycle so plugins clean up (deregister, cancel tasks, etc.)
+        if self._current_ctx is not None:
+            try:
+                await self._checkpoint("session_end", self._current_ctx)
+            except Exception:
+                logger.exception("session_end checkpoint failed")
 
     async def _save_state(self) -> None:
         """Persist current agent state so sessions survive restarts."""

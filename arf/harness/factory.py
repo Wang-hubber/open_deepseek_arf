@@ -12,6 +12,7 @@ from typing import Any
 from arf.agent.primitive import PrimitiveAgent
 from arf.agent.config import AgentConfig
 from arf.agent.state import ModelResult
+from arf.agent.base import _deep_merge
 from arf.harness.engine import AgentHarness
 from arf.harness.config import HarnessConfig
 from arf.harness.loader import discover_plugins, instantiate_plugins
@@ -157,6 +158,11 @@ async def create_harness(
 
     # 6. Discover and instantiate plugins
     plugin_configs = discover_plugins(plugin_dir, harness_cfg.plugins)
+    # Merge plugins_config overrides (from agent.yaml) into each plugin's config
+    for pc in plugin_configs:
+        user_override = agent_cfg.plugins_config.get(pc["name"], {})
+        if user_override:
+            _deep_merge(pc.setdefault("config", {}), user_override)
     plugins = instantiate_plugins(plugin_configs)
 
     # 7. Build McpClientManager — unified tool gateway

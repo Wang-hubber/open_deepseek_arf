@@ -98,12 +98,14 @@ class PrimitiveAgent:
 
     # ── input ──────────────────────────────────────────
 
-    def input(self, role: str, content: Any, position: str | int = "end") -> Message:
+    def input(self, role: str, content: Any, position: str | int = "end",
+              name: str | None = None) -> Message:
         """Inject a message into state.messages."""
         msg = Message(
             message_id=str(uuid.uuid4()),
             role=role,
             content=content,
+            name=name,
         )
         if position == "end":
             self.state.messages.append(msg)

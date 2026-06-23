@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from arf.communication.jrpc import JrpcEnvelope
 from arf.core.protocols.communication import AgentMessage
-from arf.plugins.a2a_teammates.state import get_state
+from arf.plugins.a2a_teammates.state import (
+    get_bus,
+    get_pending_replies,
+)
 
 
 async def execute(correlation_id: str, session_id: str = "") -> dict:
@@ -12,8 +15,7 @@ async def execute(correlation_id: str, session_id: str = "") -> dict:
     Pops the pending reply expectation, sends a ``task.cancel``
     notification to the receiver via the AgentBus.
     """
-    state = get_state()
-    entry = state.pending_replies.pop(correlation_id, None)
+    entry = get_pending_replies().pop(correlation_id, None)
     if entry is None:
         return {"ok": False, "error": f"no pending task '{correlation_id}'"}
 
@@ -21,9 +23,10 @@ async def execute(correlation_id: str, session_id: str = "") -> dict:
     await save_pending_replies()
 
     receiver_sid = entry["receiver"]
+    target_bus = get_bus(receiver_sid)
 
-    if state.agent_bus is not None:
-        await state.agent_bus.send(AgentMessage(
+    if target_bus is not None:
+        await target_bus.send(AgentMessage(
             sender=session_id,
             receiver=receiver_sid,
             type="notification",

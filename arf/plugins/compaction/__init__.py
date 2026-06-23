@@ -158,9 +158,9 @@ class CompactionPlugin(Plugin):
 
         if isinstance(m.content, dict):
             new_content_dict = {**m.content, "result": new_content, "content": new_content}
-            messages[index] = Message(message_id=m.message_id, role=m.role, content=new_content_dict)
+            messages[index] = Message(message_id=m.message_id, role=m.role, content=new_content_dict, name=m.name)
         else:
-            messages[index] = Message(message_id=m.message_id, role=m.role, content=new_content)
+            messages[index] = Message(message_id=m.message_id, role=m.role, content=new_content, name=m.name)
 
         ctx.emit(event_type="safeguard_triggered", data={
             "tool_name": tool_name,

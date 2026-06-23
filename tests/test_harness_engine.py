@@ -360,3 +360,45 @@ class TestToolFilter:
         assert "kernel__builtin_echo" in names, "kernel tools must be included"
         assert "user__read_file" in names, "user__read_file must be included (in tools list)"
         assert "user__write_file" not in names, "user__write_file must be excluded (not in tools list)"
+
+
+class TestHarnessSessionEnd:
+    """Engine must emit session_end lifecycle event so plugins can teardown."""
+
+    @pytest.mark.anyio
+    async def test_normal_path_emits_session_end(self):
+        """session_end event is yielded after round_end on normal completion."""
+        async def fake_call(messages, tools=None):
+            return ModelResult(content="ok", tool_calls=[], usage={}, finish_reason="stop")
+
+        agent = make_agent(fake_call)
+        harness = AgentHarness(agent, plugins=[], tool_manager=None)
+        events = [e async for e in harness.run("hi")]
+
+        assert any(e.type == "session_end" for e in events), \
+            "session_end must be emitted on normal path"
+
+    @pytest.mark.anyio
+    async def test_session_end_triggers_plugin_teardown(self):
+        """Plugins registered for session_end must receive teardown call."""
+        async def fake_call(messages, tools=None):
+            return ModelResult(content="ok", tool_calls=[], usage={}, finish_reason="stop")
+
+        class TeardownPlugin(Plugin):
+            def __init__(self):
+                super().__init__("teardown_test", [
+                    {"hook_name": "session_end", "event_name": "cleanup", "mode": "blocking"},
+                ])
+                self.teardown_called = False
+
+            async def handle(self, event_name: str, ctx: PluginContext) -> None:
+                if event_name == "cleanup":
+                    self.teardown_called = True
+
+        plugin = TeardownPlugin()
+        agent = make_agent(fake_call)
+        harness = AgentHarness(agent, plugins=[plugin], tool_manager=None)
+        _events = [e async for e in harness.run("hi")]
+
+        assert plugin.teardown_called, \
+            "session_end checkpoint must call plugin teardown handler"

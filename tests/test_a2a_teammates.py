@@ -750,6 +750,72 @@ class TestForwardReply:
         assert remaining == 1, f"Should have 1 remaining pending, got {remaining}"
 
 
+class TestGlobalTTLCleanup:
+    """C3: Global TTL scan in inject_and_park cleans ALL stale entries."""
+
+    @pytest.fixture(autouse=True)
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
+        path = Path(self.state.data_dir) / "pending_replies.json"
+        if path.exists():
+            path.unlink()
+        yield
+        _teardown_state()
+
+    def _make_plugin(self):
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        return PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_global_ttl_cleans_stale_entries_for_any_receiver(self):
+        """Global TTL scan removes entries where the receiver may never come back."""
+        import time
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+
+        _state_mod._state.peer_harnesses["default_group__pm"] = \
+            ctx.hook_data["_harness_ref"]["harness"]
+        _state_mod._state.entry_points["default_group__pm"] = True
+
+        # Add stale entries for different receivers
+        _state_mod._state.pending_replies["peer_stale_viz"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__viz",
+            "created_at": time.time() - 3600,  # 1 hour ago
+        }
+        _state_mod._state.pending_replies["peer_stale_data"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__data",
+            "created_at": time.time() - 2000,  # >30 min ago
+        }
+        # Fresh entry should survive
+        _state_mod._state.pending_replies["peer_fresh"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+            "created_at": time.time(),  # just now
+        }
+
+        await plugin.handle("inject_and_park", ctx)
+
+        # Stale entries should be gone
+        assert "peer_stale_viz" not in _state_mod._state.pending_replies, \
+            "Global TTL must clean stale entries for any receiver"
+        assert "peer_stale_data" not in _state_mod._state.pending_replies
+        # Fresh entry survives
+        assert "peer_fresh" in _state_mod._state.pending_replies
+
+
 class TestAgentBusCleanup:
     @pytest.fixture(autouse=True)
     def setup_state(self):
@@ -772,6 +838,215 @@ class TestAgentBusCleanup:
         assert "test_agent" not in bus._agents
         assert "test_agent" not in bus._inboxes
         assert "test_agent" not in bus._events
+
+
+class TestAgentBusBackpressure:
+    """H1: InMemoryAgentBus must have backpressure to prevent OOM."""
+
+    @pytest.mark.anyio
+    async def test_max_inbox_size_drops_oldest(self):
+        """When inbox exceeds max size, oldest message is dropped."""
+        bus = InMemoryAgentBus(max_inbox_size=3)
+        await bus.register(AgentInfo(name="receiver", description="", capabilities=[]))
+
+        for i in range(5):
+            await bus.send(AgentMessage(
+                sender=f"sender_{i}", receiver="receiver", type="info",
+                payload={"message": f"msg_{i}"},
+            ))
+
+        # Only last 3 messages should remain
+        msgs = [m async for m in bus.receive("receiver")]
+        assert len(msgs) == 3
+        assert msgs[0].payload["message"] == "msg_2"
+        assert msgs[1].payload["message"] == "msg_3"
+        assert msgs[2].payload["message"] == "msg_4"
+
+    @pytest.mark.anyio
+    async def test_unlimited_by_default(self):
+        """Default is no limit (max_inbox_size=0 means unlimited)."""
+        bus = InMemoryAgentBus()
+        await bus.register(AgentInfo(name="receiver", description="", capabilities=[]))
+
+        for i in range(100):
+            await bus.send(AgentMessage(
+                sender="sender", receiver="receiver", type="info",
+                payload={"message": f"msg_{i}"},
+            ))
+
+        msgs = [m async for m in bus.receive("receiver")]
+        assert len(msgs) == 100, "Default must be unlimited (no backpressure)"
+
+    @pytest.mark.anyio
+    async def test_broadcast_backpressure_per_receiver(self):
+        """Backpressure applies per-receiver inbox, not globally."""
+        bus = InMemoryAgentBus(max_inbox_size=2)
+        await bus.register(AgentInfo(name="a", description="", capabilities=[]))
+        await bus.register(AgentInfo(name="b", description="", capabilities=[]))
+
+        # Broadcast to both a and b
+        for i in range(5):
+            await bus.send(AgentMessage(
+                sender="sender", receiver=None, type="info",
+                payload={"message": f"bc_{i}"},
+            ))
+
+        # Each receiver has only 2 messages
+        msgs_a = [m async for m in bus.receive("a")]
+        msgs_b = [m async for m in bus.receive("b")]
+        assert len(msgs_a) == 2
+        assert len(msgs_b) == 2
+
+
+class TestStatePruning:
+    """H2: Orphaned state entries are pruned when sessions leave the bus."""
+
+    @pytest.fixture(autouse=True)
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
+        path = Path(self.state.data_dir) / "pending_replies.json"
+        if path.exists():
+            path.unlink()
+        yield
+        _teardown_state()
+
+    def _make_plugin(self):
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        return PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_prunes_state_for_deregistered_sessions(self):
+        """Entries for sessions not on the bus are cleaned up."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+
+        _state_mod._state.peer_harnesses["default_group__pm"] = \
+            ctx.hook_data["_harness_ref"]["harness"]
+        _state_mod._state.entry_points["default_group__pm"] = True
+
+        # Inject orphan state for sessions not on the bus
+        _state_mod._state.peer_harnesses["orphan_session"] = MagicMock()
+        _state_mod._state.last_activity["orphan_session"] = 100.0
+        _state_mod._state.context_injected_sessions.add("orphan_session")
+        _state_mod._state.entry_points["orphan_session"] = False
+        _state_mod._state.last_activity["default_group__pm"] = 200.0
+        _state_mod._state.context_injected_sessions.add("default_group__pm")
+
+        await plugin.handle("inject_and_park", ctx)
+
+        # Active session state preserved
+        assert "default_group__pm" in _state_mod._state.peer_harnesses
+        assert "default_group__pm" in _state_mod._state.last_activity
+        assert "default_group__pm" in _state_mod._state.context_injected_sessions
+        assert "default_group__pm" in _state_mod._state.entry_points
+
+        # Orphan state pruned
+        assert "orphan_session" not in _state_mod._state.peer_harnesses
+        assert "orphan_session" not in _state_mod._state.last_activity
+        assert "orphan_session" not in _state_mod._state.context_injected_sessions
+        assert "orphan_session" not in _state_mod._state.entry_points
+
+
+class TestCancelProgrammaticInterrupt:
+    """M1: Cancel notifications are detected and handled programmatically."""
+
+    @pytest.fixture(autouse=True)
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
+        path = Path(self.state.data_dir) / "pending_replies.json"
+        if path.exists():
+            path.unlink()
+        yield
+        _teardown_state()
+
+    def _make_plugin(self):
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        return PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_cancel_notification_generates_system_message(self):
+        """Cancel notifications produce clear system messages, not peer tasks."""
+        from arf.communication.jrpc import JrpcEnvelope
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="default_group__dev", description="", capabilities=[]))
+        await _state_mod._state.agent_bus.send(AgentMessage(
+            sender="default_group__pm", receiver="default_group__dev",
+            type="notification",
+            payload=JrpcEnvelope.notification(
+                method=JrpcEnvelope.METHOD_CANCEL,
+                params={"correlation_id": "peer_deadbeef"},
+            ),
+            correlation_id="cancel_peer_deadbeef",
+        ))
+
+        await plugin.handle("inject_and_park", ctx)
+
+        # Should have a system message about the cancellation, not a peer task
+        user_msgs = [m for m in agent.state.messages if m.role == "user"]
+        system_named = [m for m in user_msgs if m.name == "system"]
+        assert len(system_named) >= 1, "Cancel should produce system message"
+        assert "cancelled" in str(system_named[0].content).lower()
+        assert "peer_deadbeef" in str(system_named[0].content)
+
+    @pytest.mark.anyio
+    async def test_cancel_clears_receiver_pending_reply(self):
+        """Cancel notification pops pending_reply on the receiver side."""
+        from arf.communication.jrpc import JrpcEnvelope
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        _state_mod._state.peer_harnesses["default_group__dev"] = \
+            ctx.hook_data["_harness_ref"]["harness"]
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="default_group__dev", description="", capabilities=[]))
+
+        # Simulate: dev has a pending task from pm
+        _state_mod._state.pending_replies["peer_xyz"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+        }
+
+        # Send cancel notification
+        await _state_mod._state.agent_bus.send(AgentMessage(
+            sender="default_group__pm", receiver="default_group__dev",
+            type="notification",
+            payload=JrpcEnvelope.notification(
+                method=JrpcEnvelope.METHOD_CANCEL,
+                params={"correlation_id": "peer_xyz"},
+            ),
+        ))
+
+        await plugin.handle("inject_and_park", ctx)
+
+        # Pending reply should be cleared by cancel processing
+        assert "peer_xyz" not in _state_mod._state.pending_replies
 
 
 class TestSessionEnd:

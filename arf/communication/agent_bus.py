@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict, deque
 from typing import AsyncIterator
 
 from arf.core.protocols.communication import AgentBus, AgentMessage, AgentInfo
+
+logger = logging.getLogger("arf.communication.agent_bus")
 
 
 class InMemoryAgentBus:
@@ -18,12 +21,17 @@ class InMemoryAgentBus:
     wait_for_message() provides a push notification mechanism — callers
     can block until a message arrives for a specific agent, with optional
     timeout and cancellation support.
+
+    Args:
+        max_inbox_size: Per-receiver max queue depth. When exceeded, the
+            oldest message is dropped with a warning. 0 means unlimited.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_inbox_size: int = 0) -> None:
         self._inboxes: dict[str, deque[AgentMessage]] = defaultdict(deque)
         self._agents: dict[str, AgentInfo] = {}
         self._events: dict[str, asyncio.Event] = defaultdict(asyncio.Event)
+        self._max_inbox_size = max_inbox_size
 
     async def send(self, message: AgentMessage) -> None:
         """Deliver a message to the receiver's inbox.
@@ -31,15 +39,22 @@ class InMemoryAgentBus:
         If receiver is None, broadcasts to all registered agents
         except the sender.
         """
+        receivers: list[str] = []
         if message.receiver is None:
-            # Broadcast to all except sender
-            for name in self._agents:
-                if name != message.sender:
-                    self._inboxes[name].append(message)
-                    self._events[name].set()
+            receivers = [n for n in self._agents if n != message.sender]
         else:
-            self._inboxes[message.receiver].append(message)
-            self._events[message.receiver].set()
+            receivers = [message.receiver]
+
+        for name in receivers:
+            inbox = self._inboxes[name]
+            if self._max_inbox_size > 0 and len(inbox) >= self._max_inbox_size:
+                dropped = inbox.popleft()
+                logger.warning(
+                    "Inbox for %s full (%d), dropped oldest msg from %s",
+                    name, self._max_inbox_size, dropped.sender,
+                )
+            inbox.append(message)
+            self._events[name].set()
 
     async def receive(self, agent_name: str) -> AsyncIterator[AgentMessage]:
         """Drain and yield all messages from *agent_name*'s inbox.
@@ -50,8 +65,6 @@ class InMemoryAgentBus:
         inbox = self._inboxes[agent_name]
         while inbox:
             yield inbox.popleft()
-        # Yield control so caller sees an empty iterator if no messages
-        # (avoids blocking — caller's async for loops cleanly with 0 iterations)
 
     async def wait_for_message(
         self,

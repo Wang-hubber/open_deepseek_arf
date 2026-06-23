@@ -8,6 +8,7 @@ class Message:
     message_id: str
     role: str          # "system" | "user" | "assistant" | "tool"
     content: Any       # str for text, dict for structured data
+    name: str | None = None  # optional sender name (OpenAI API name field)
 
 
 @dataclass

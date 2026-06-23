@@ -1,8 +1,9 @@
 """A2A Teammates Plugin — peer-to-peer agent collaboration.
 
 Each agent in a group is a first-class citizen with independent harness,
-session, state, and trace. Communication via shared AgentBus. Park/resume
-uses harness-native ctx.agent.wait() / resolve_wait().
+session, state, and trace. Communication via per-agent AgentBus with a
+module-level sid→bus registry so peers can discover each other's inboxes.
+Park/resume uses harness-native ctx.agent.wait() / resolve_wait().
 """
 from __future__ import annotations
 
@@ -18,8 +19,17 @@ from arf.harness.context import PluginContext
 from arf.harness.plugin_base import Plugin
 from arf.plugins.a2a_teammates.config import PeerTeamConfig
 from arf.plugins.a2a_teammates.result_file import write_peer_result
-from arf.plugins.a2a_teammates.state import PeerTeamState
 from arf.session.session_index import SessionIndex
+from arf.plugins.a2a_teammates.state import (
+    PeerTeamState,
+    register_bus,
+    unregister_bus,
+    get_bus,
+    get_pending_replies,
+    get_last_activity,
+    save_pending_replies,
+    restore_pending_replies,
+)
 
 logger = logging.getLogger("arf.plugins.a2a_teammates")
 
@@ -61,7 +71,12 @@ _DEFAULT_EVENTS = [
 
 
 class PeerTeamPlugin(Plugin):
-    """Manages peer-to-peer agent collaboration via AgentBus + harness park/resume."""
+    """Manages peer-to-peer agent collaboration via AgentBus + harness park/resume.
+
+    Each plugin instance owns its own AgentBus and per-agent state.
+    Cross-agent shared state (bus registry, pending_replies, last_activity)
+    lives at module level in ``state.py``.
+    """
 
     def __init__(
         self,
@@ -76,9 +91,6 @@ class PeerTeamPlugin(Plugin):
 
         self._state = PeerTeamState()
         self._state.agent_bus = InMemoryAgentBus()
-        # Set module-level slot so tools and _peer_wait_loop can access state
-        import arf.plugins.a2a_teammates.state as _s
-        _s._state = self._state
 
     # ==================================================================
     # handle — dispatch by event_name
@@ -114,6 +126,9 @@ class PeerTeamPlugin(Plugin):
         group_id, role = parsed
 
         self._state.data_dir = ctx.data_dir
+
+        # Register this agent's bus so peers can discover it
+        register_bus(sid, self._state.agent_bus)
 
         # Store harness ref for bg task wake-up
         harness_ref = ctx.hook_data.get("_harness_ref", {})
@@ -155,7 +170,6 @@ class PeerTeamPlugin(Plugin):
                 }])
 
         # Always register THIS agent on the bus with session_id as the key.
-        # Every agent registers itself — not just the group creator.
         await self._state.agent_bus.register(AgentInfo(
             name=sid,
             description=f"Agent: {role}",
@@ -168,7 +182,6 @@ class PeerTeamPlugin(Plugin):
         # Inject team communication context once per session
         if sid not in self._state.context_injected_sessions:
             self._state.context_injected_sessions.add(sid)
-            # Dynamic roster with session_ids — LLM uses these as addresses
             roster_lines = []
             for m in self._members:
                 member_sid = f"{group_id}__{m.role}"
@@ -183,7 +196,6 @@ class PeerTeamPlugin(Plugin):
                 f"Your session_id: {sid}\n"
                 f"Teammates (use session_id for send_peer_message):\n{roster}"
             ))
-            # Static protocol — cache-friendly constant
             ctx.agent.input(role="system", content=_TEAM_PROTOCOL)
 
     # ==================================================================
@@ -191,12 +203,7 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_inject_session_id(self, ctx: PluginContext) -> None:
-        """Inject session_id into send_peer_message tool params before execution.
-
-        The model calls send_peer_message(to=..., message=...) — it does
-        not provide its own session_id.  We inject it here so the tool
-        function always knows who the sender is.
-        """
+        """Inject session_id into send_peer_message tool params before execution."""
         tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
         for tc in tool_calls:
             name = tc.get("name", "")
@@ -224,7 +231,6 @@ class PeerTeamPlugin(Plugin):
         sid = ctx.session_id
 
         # --- Lazy resume recovery ---
-        # Re-register harness if lost (e.g., after process restart)
         if sid not in self._state.peer_harnesses:
             harness_ref = ctx.hook_data.get("_harness_ref", {})
             parent_harness = harness_ref.get("harness")
@@ -232,7 +238,6 @@ class PeerTeamPlugin(Plugin):
                 self._state.peer_harnesses[sid] = parent_harness
 
         # Re-register on bus if not already registered
-        from arf.core.protocols.communication import AgentInfo
         agents = await bus.discover()
         if not any(a.name == sid for a in agents):
             parsed = SessionIndex.parse_session_id(sid)
@@ -243,22 +248,40 @@ class PeerTeamPlugin(Plugin):
                 capabilities=[],
             ))
 
+        # Re-register bus in case of recovery
+        if get_bus(sid) is None:
+            register_bus(sid, bus)
+
         # Restore pending_replies from disk
-        from arf.plugins.a2a_teammates.state import restore_pending_replies
-        await restore_pending_replies()
+        await restore_pending_replies(data_dir=ctx.data_dir)
+
+        # Global TTL scan
+        self._cleanup_stale_pending_replies()
+
+        # Prune orphaned state entries for sessions no longer on the bus
+        self._prune_stale_state(bus)
 
         # Drain any messages that arrived before this checkpoint
         messages = [m async for m in bus.receive(sid)]
         if messages:
-            for msg in messages:
+            cancels, regular = self._split_cancel_messages(messages)
+            for msg in regular:
                 formatted = self._format_peer_message(msg)
                 ctx.agent.input(role="user", content=formatted, name=f"peer:{msg.sender}")
-            return
+            for corr_id, sender in cancels:
+                ctx.agent.input(role="user",
+                    content=f"[system] Task {corr_id} was cancelled by {sender}.",
+                    name="system")
+            if regular:
+                return
+            if not self._state.entry_points.get(sid, False):
+                return
 
         # Park if idle worker or waiting for reply
+        pending_replies = get_pending_replies()
         has_pending = any(
             entry.get("sender") == sid
-            for entry in self._state.pending_replies.values()
+            for entry in pending_replies.values()
         )
         if not has_pending and self._state.entry_points.get(sid, False):
             return
@@ -270,16 +293,21 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_drain_inbox(self, ctx: PluginContext) -> None:
-        """Drain any messages that arrived mid-processing (between before_round and model_call)."""
+        """Drain any messages that arrived mid-processing."""
         bus = self._state.agent_bus
         if bus is None:
             return
         sid = ctx.session_id
         messages = [m async for m in bus.receive(sid)]
         if messages:
-            for msg in messages:
+            cancels, regular = self._split_cancel_messages(messages)
+            for msg in regular:
                 formatted = self._format_peer_message(msg)
                 ctx.agent.input(role="user", content=formatted, name=f"peer:{msg.sender}")
+            for corr_id, sender in cancels:
+                ctx.agent.input(role="user",
+                    content=f"[system] Task {corr_id} was cancelled by {sender}.",
+                    name="system")
 
     # ==================================================================
     # _park_for_peer / _format_peer_message / _package_peer_messages
@@ -295,14 +323,13 @@ class PeerTeamPlugin(Plugin):
         if bus is None:
             return
 
-        # Cancel any existing wait task for this session before spawning a new one
+        # Cancel any existing wait task for this session
         old_task = self._state._wait_tasks.pop(sid, None)
         if old_task is not None and not old_task.done():
             old_task.cancel()
 
         wi = ctx.agent.wait(hook_name, reason)
 
-        # idle workers (before_round) wait indefinitely; reply-waiters get 600s timeout
         is_idle_worker = hook_name == "before_round"
         task_idle_timeout = None if is_idle_worker else 600.0
 
@@ -313,7 +340,7 @@ class PeerTeamPlugin(Plugin):
             bus=bus,
             cancel_evt=ctx.hook_data.get("_cancel_event"),
             pending_receiver_sid=self._get_pending_receiver_sid(sid),
-            last_activity=self._state.last_activity,
+            last_activity=get_last_activity(),
             idle_timeout=task_idle_timeout,
         ))
         self._state._wait_tasks[sid] = task
@@ -325,12 +352,7 @@ class PeerTeamPlugin(Plugin):
 
     @staticmethod
     def _format_peer_message(msg) -> str:
-        """Unwrap AgentMessage → plain text for LLM injection.
-
-        JRPC payload: extract content + thin type tag.
-        Legacy payload: format directly (migration fallback).
-        The model sees only ``[label] message`` — no JSON, no method paths.
-        """
+        """Unwrap AgentMessage → plain text for LLM injection."""
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         if "jsonrpc" in payload:
             content = JrpcEnvelope.extract_content(payload)
@@ -340,7 +362,6 @@ class PeerTeamPlugin(Plugin):
             if result_file:
                 text += f"\n(full result: {result_file})"
             return text
-        # Legacy plain payload — keep working during migration
         result_file = payload.get("result_file", "")
         content = payload.get("message", str(payload))
         prefix = f"[{msg.type}]"
@@ -365,42 +386,42 @@ class PeerTeamPlugin(Plugin):
 
     async def _on_heartbeat(self, ctx: PluginContext) -> None:
         import time
-        self._state.last_activity[ctx.session_id] = time.time()
+        get_last_activity()[ctx.session_id] = time.time()
 
     # ==================================================================
     # forward_reply — send task_complete result back to pending sender
     # ==================================================================
 
     async def _on_forward_reply(self, ctx: PluginContext) -> None:
-        """Read last assistant + task_complete result, write file, bus.send back."""
+        """Read last assistant + task_complete result, write file, send back."""
         sid = ctx.session_id
+
+        pending_replies = get_pending_replies()
 
         # TTL cleanup: discard stale pending entries (>30 min)
         import time as _time
         _now = _time.time()
-        _pending_ttl = 1800.0  # 30 minutes
+        _pending_ttl = 1800.0
         stale = [
-            corr_id for corr_id, entry in self._state.pending_replies.items()
+            corr_id for corr_id, entry in pending_replies.items()
             if entry.get("receiver") == sid
             and entry.get("created_at", 0) > 0
             and _now - entry.get("created_at", 0) > _pending_ttl
         ]
         for corr_id in stale:
-            self._state.pending_replies.pop(corr_id, None)
+            pending_replies.pop(corr_id, None)
             logger.warning("Pending reply %s expired (TTL %ss)", corr_id, _pending_ttl)
 
         # Check for pending reply expectations targeting this session_id
         my_pending = [
-            (corr_id, entry) for corr_id, entry in self._state.pending_replies.items()
+            (corr_id, entry) for corr_id, entry in pending_replies.items()
             if entry.get("receiver") == sid
         ]
         if not my_pending:
             return
 
-        # Merge full result from task_complete + last assistant
+        # Extract task_complete result
         messages = ctx.agent.state.messages
-
-        # Extract task_complete tool call result (preferred over assistant text)
         tc_result = ""
         found_tc = False
         for m in reversed(messages):
@@ -415,8 +436,6 @@ class PeerTeamPlugin(Plugin):
                         tc_result = result_data
                     break
 
-        # Only skip if task_complete was NOT called this round.
-        # If called with empty result, still forward and clear pending.
         if not found_tc:
             return
 
@@ -432,21 +451,14 @@ class PeerTeamPlugin(Plugin):
                         "params": tc.get("params", {}),
                     })
 
-        bus = self._state.agent_bus
-        if bus is None:
-            return
-
-        group_id = self._group_id
-
-        # If multiple pending tasks for this receiver, process one per round
-        # to avoid sending the same result to all senders.
+        # Process one pending task per round
         corr_id, entry = my_pending[0]
         sender_sid = entry["sender"]
 
         # Write full result file
         result_file = write_peer_result(
             data_dir=ctx.data_dir,
-            group_id=group_id,
+            group_id=self._group_id,
             correlation_id=corr_id,
             agent_role=sid,
             task_description=f"Task from {sender_sid}",
@@ -469,12 +481,17 @@ class PeerTeamPlugin(Plugin):
             priority="normal",
             correlation_id=corr_id,
         )
-        await bus.send(reply)
+
+        # Send reply to sender's bus so their _peer_wait_loop detects it
+        sender_bus = get_bus(sender_sid)
+        if sender_bus is not None:
+            await sender_bus.send(reply)
+        else:
+            logger.warning("Cannot forward reply: sender %s not in bus registry", sender_sid)
 
         # Clear the expectation
-        self._state.pending_replies.pop(corr_id, None)
-        from arf.plugins.a2a_teammates.state import save_pending_replies
-        await save_pending_replies()
+        pending_replies.pop(corr_id, None)
+        await save_pending_replies(data_dir=ctx.data_dir)
         logger.info(
             "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
             sid, sender_sid, corr_id, result_file,
@@ -498,20 +515,23 @@ class PeerTeamPlugin(Plugin):
         if bus is not None:
             await bus.deregister(sid)
 
+        # Unregister bus from shared registry
+        unregister_bus(sid)
+
         # Cancel any running wait task
         task = self._state._wait_tasks.pop(sid, None)
         if task is not None and not task.done():
             task.cancel()
 
         # Clear pending replies for this agent as sender
+        pending_replies = get_pending_replies()
         stale = [
-            corr_id for corr_id, entry in self._state.pending_replies.items()
+            corr_id for corr_id, entry in pending_replies.items()
             if entry.get("sender") == sid
         ]
         for corr_id in stale:
-            self._state.pending_replies.pop(corr_id, None)
-        from arf.plugins.a2a_teammates.state import save_pending_replies
-        await save_pending_replies()
+            pending_replies.pop(corr_id, None)
+        await save_pending_replies(data_dir=ctx.data_dir)
 
         # Update session_index status
         parsed = SessionIndex.parse_session_id(sid)
@@ -521,9 +541,62 @@ class PeerTeamPlugin(Plugin):
             idx = SessionIndex(str(session_index_dir))
             await idx.update_member(group_id, role, {"status": "inactive"})
 
+    def _cleanup_stale_pending_replies(self) -> None:
+        """Remove ALL pending_replies entries older than TTL (30 min)."""
+        import time as _time
+        _now = _time.time()
+        _pending_ttl = 1800.0
+        pending_replies = get_pending_replies()
+        stale = [
+            corr_id for corr_id, entry in pending_replies.items()
+            if entry.get("created_at", 0) > 0
+            and _now - entry.get("created_at", 0) > _pending_ttl
+        ]
+        for corr_id in stale:
+            pending_replies.pop(corr_id, None)
+            logger.warning("Global TTL: pending reply %s expired", corr_id)
+        if stale:
+            import asyncio as _asyncio
+            _asyncio.create_task(save_pending_replies(data_dir=self._state.data_dir))
+
+    @staticmethod
+    def _split_cancel_messages(messages: list) -> tuple[list[tuple[str, str]], list]:
+        """Separate cancel notifications from regular messages."""
+        cancels: list[tuple[str, str]] = []
+        regular: list = []
+        pending_replies = get_pending_replies()
+        for msg in messages:
+            payload = msg.payload if isinstance(msg.payload, dict) else {}
+            if payload.get("method") == JrpcEnvelope.METHOD_CANCEL:
+                corr_id = payload.get("params", {}).get("correlation_id", "?")
+                cancels.append((corr_id, msg.sender))
+                pending_replies.pop(corr_id, None)
+            else:
+                regular.append(msg)
+        return cancels, regular
+
+    def _prune_stale_state(self, bus) -> None:
+        """Remove state entries for sessions no longer registered on the bus."""
+        registered_names = {a.name for a in bus._agents.values()} if bus else set()
+        if not registered_names:
+            return
+
+        for sid in list(self._state.peer_harnesses):
+            if sid not in registered_names:
+                del self._state.peer_harnesses[sid]
+                logger.debug("Pruned stale harness for %s", sid)
+
+        for sid in list(self._state.context_injected_sessions):
+            if sid not in registered_names:
+                self._state.context_injected_sessions.discard(sid)
+
+        for sid in list(self._state.entry_points):
+            if sid not in registered_names:
+                del self._state.entry_points[sid]
+
     def _get_pending_receiver_sid(self, sender_sid: str) -> str | None:
         """Return the first receiver_sid for which sender_sid has a pending reply."""
-        for entry in self._state.pending_replies.values():
+        for entry in get_pending_replies().values():
             if entry.get("sender") == sender_sid:
                 return entry.get("receiver")
         return None
@@ -559,7 +632,7 @@ class PeerTeamPlugin(Plugin):
 
 
 # ==================================================================
-# Background: _peer_wait_loop — wait for peer reply on AgentBus
+# Background: _peer_wait_loop — wait for peer reply on own AgentBus
 # ==================================================================
 
 async def _peer_wait_loop(
@@ -573,7 +646,7 @@ async def _peer_wait_loop(
     last_activity: dict[str, float] | None = None,
     idle_timeout: float | None = None,
 ) -> None:
-    """Background task: detect peer message, wake harness.
+    """Background task: detect peer message on own bus, wake harness.
 
     If *idle_timeout* is set and *pending_receiver_sid* is provided,
     checks that receiver's heartbeat — idle for *idle_timeout* seconds

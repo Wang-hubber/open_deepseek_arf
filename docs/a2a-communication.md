@@ -80,51 +80,51 @@ send_peer_message = 持久队友（整个 session 存活）
     - {role: data, agent_name: data_agent}
 
 初始化:
-  pm.init  → SessionIndex 创建 group → bus.register(pm_sid)
-  dev.init → bus.register(dev_sid) → roster 注入 → after_round → park
-  data.init → bus.register(data_sid) → roster 注入 → after_round → park
+  pm.init  → SessionIndex 创建 group → bus_registry[pm_sid] = pm_bus
+  dev.init → bus_registry[dev_sid] = dev_bus → roster 注入 → park
+  data.init → bus_registry[data_sid] = data_bus → roster 注入 → park
 
                ┌──────────────────────────────────────┐
-               │              AgentBus                │
-               │  pm_sid → [inbox]                    │
-               │  dev_sid → [inbox]                   │
-               │  data_sid → [inbox]                  │
+               │           Bus Registry               │
+               │  pm_sid   → pm_bus   ([pm inbox])    │
+               │  dev_sid  → dev_bus  ([dev inbox])   │
+               │  data_sid → data_bus ([data inbox])  │
                └──────────────────────────────────────┘
-                    ↑ send           ↓ receive
+                 get_bus(to) ↑          ↓ own bus
 
 用户: "分析销售数据，做一个仪表板"
 
 PM (wakes from park via user input):
   → send_peer_message(to="team__dev", type="task", message="写一个 dashboard.html")
-    → bus.send → dev's inbox + _pending_replies 注册
+    → get_bus("team__dev") → dev_bus.send() → dev's inbox + _pending_replies 注册
   → send_peer_message(to="team__data", type="task", message="扫描 test_data/ 统计销量")
-    → bus.send → data's inbox + _pending_replies 注册
-  → after_round → peer_park (等回复)
+    → get_bus("team__data") → data_bus.send() → data's inbox + _pending_replies 注册
+  → park_after_send → park (等回复)
 
-Dev (parked, woken by bg task):
-  _peer_wait_loop → bus.wait_for_message("team__dev") → 收到 PM 的 task
-  → inject → model: "收到任务，开始写仪表板"
+Dev (parked, woken by bg task on own bus):
+  _peer_wait_loop → dev_bus.wait_for_message("team__dev") → 收到 PM 的 task
+  → resolve_wait → inject → model: "收到任务，开始写仪表板"
   → write_file("dashboard.html", "<!DOCTYPE html>...")
   → task_complete(result="dashboard.html 已完成")
-  → after_round: forward_reply → write_peer_result() → bus.send(to=pm, type="reply")
-  → peer_park (idle)
+  → forward_reply → write_peer_result() → get_bus(pm_sid).send(reply)
+  → park (idle)
 
-Data (parked, woken by bg task):
-  _peer_wait_loop → bus.wait_for_message("team__data") → 收到 PM 的 task
-  → inject → model: "开始扫描数据"
+Data (parked, woken by bg task on own bus):
+  _peer_wait_loop → data_bus.wait_for_message("team__data") → 收到 PM 的 task
+  → resolve_wait → inject → model: "开始扫描数据"
   → read test_data/* → 统计销量
   → task_complete(result="华东 490, 华北 932, 华南 845")
-  → after_round: forward_reply → bus.send(to=pm, type="reply")
-  → peer_park (idle)
+  → forward_reply → get_bus(pm_sid).send(reply)
+  → park (idle)
 
-PM (bg task wakes, resolves park):
-  → 收到 Dev 的 reply: "dashboard.html 已完成"
-  → 收到 Data 的 reply: "华东 490, 华北 932, 华南 845"
-  → 汇总 → 报告给用户
+PM (own bus wakes, resolves park):
+  → pm_bus.receive() → 收到 Dev 的 reply: "dashboard.html 已完成"
+  → pm_bus.receive() → 收到 Data 的 reply: "华东 490, 华北 932, 华南 845"
+  → resolve_wait → inject → model 汇总 → 报告给用户
 
 数据流:
-  PM ──send_peer_message──→ bus ──→ Dev inbox
-  Dev task_complete → forward_reply ──→ bus ──→ PM inbox → bg task → resolve_wait
+  PM ──get_bus(dev)──→ dev_bus ──→ Dev inbox → bg task → resolve_wait
+  Dev task_complete → forward_reply ──get_bus(pm)──→ pm_bus ──→ PM inbox → bg task → resolve_wait
   PM park ←→ user interrupt via resolve_wait (随时可打断, 取消任务, 做别的事)
 ```
 
@@ -138,9 +138,10 @@ CLI → pm_harness.resolve_wait(pm_wait_id, inject_message={role:"user", content
 
 PM wakes:
   → cancel_peer_task(correlation_id=data_task)
-    → _pending_replies.pop → bus.send(cancel) → data_harness.resolve_wait
+    → _pending_replies.pop → get_bus(data_sid).send(cancel) → data_harness.resolve_wait
   → send_peer_message(to="team__dev", message="仪表板用蓝色主题")
-  → after_round → peer_park (继续等 Dev)
+    → get_bus("team__dev") → dev_bus.send()
+  → park (继续等 Dev)
 
 Data wakes (被 cancel 唤醒):
   → inject: "[Peer cancel from team__pm] ..."
