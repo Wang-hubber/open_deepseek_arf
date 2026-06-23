@@ -273,13 +273,7 @@ class TestCancelPeerTask:
         )
         assert result["ok"] is True
 
-        harness_mock.resolve_wait.assert_called_once_with(
-            "wait_dev_001",
-            inject_message={
-                "role": "system",
-                "content": "[Peer cancel from default_group__pm] Task peer_456 cancelled by sender.",
-            },
-        )
+        harness_mock.resolve_wait.assert_called_once_with("wait_dev_001")
 
     @pytest.mark.anyio
     async def test_cancel_unknown_task_fails(self):
@@ -333,11 +327,12 @@ class TestPeerWaitLoop:
             timeout=5.0,
         )
 
-        harness.resolve_wait.assert_called_once()
-        call_args = harness.resolve_wait.call_args
-        # wait_id is first positional arg, inject_message is keyword arg
-        assert call_args[0][0] == "wait_001"
-        assert "done" in call_args[1]["inject_message"]["content"]
+        harness.resolve_wait.assert_called_once_with("wait_001")
+
+        # Message stays in inbox — inject_peer_msgs drains it at before_model
+        remaining = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
+        assert len(remaining) == 1
+        assert remaining[0].payload["message"] == "done"
 
 
 class TestForwardReply:
@@ -411,8 +406,8 @@ class TestForwardReply:
         assert "peer_abc" not in tm_registry._pending_replies
 
     @pytest.mark.anyio
-    async def test_forward_reply_uses_assistant_fallback(self):
-        """forward_reply falls back to assistant content when no task_complete tool."""
+    async def test_forward_reply_skips_without_task_complete(self):
+        """forward_reply skips when no task_complete — pending stays for next round."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
@@ -429,12 +424,12 @@ class TestForwardReply:
 
         await plugin.handle("forward_reply", ctx)
 
+        # No reply sent — task_complete is required to forward
         msgs = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
-        assert len(msgs) == 1
-        assert "I did some work." in msgs[0].payload["brief"]
+        assert len(msgs) == 0
 
-        # Pending should be cleared
-        assert "peer_def" not in tm_registry._pending_replies
+        # Pending NOT cleared — agent hasn't finished yet
+        assert "peer_def" in tm_registry._pending_replies
 
     @pytest.mark.anyio
     async def test_forward_reply_skips_when_no_pending(self):

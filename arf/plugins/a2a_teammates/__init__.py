@@ -255,7 +255,9 @@ class PeerTeamPlugin(Plugin):
             (corr_id, entry) for corr_id, entry in _registry._pending_replies.items()
             if entry.get("receiver") == sid
         ]
+        print(f"[DEBUG forward_reply:{sid}] pending_replies={list(_registry._pending_replies.keys())} my_pending={[(c, e.get('sender')) for c, e in my_pending]}", flush=True)
         if not my_pending:
+            print(f"[DEBUG forward_reply:{sid}] no pending replies for me, skip", flush=True)
             return
 
         # Merge full result from task_complete + last assistant
@@ -274,12 +276,14 @@ class PeerTeamPlugin(Plugin):
                         tc_result = result_data
                     break
 
-        # Fallback: last assistant message content
-        last_assistant = ""
-        for m in reversed(messages):
-            if m.role == "assistant" and m.content:
-                last_assistant = str(m.content)
-                break
+        # Only forward if task_complete was actually called this round.
+        # Otherwise the agent hasn't finished processing yet — keep
+        # pending_replies for the next round.
+        if not tc_result:
+            print(f"[DEBUG forward_reply:{sid}] no task_complete yet, keeping pending", flush=True)
+            return
+
+        full_result = tc_result
 
         # Collect tool calls from this round for result file
         tool_calls_summary: list[dict] = []
@@ -290,9 +294,6 @@ class PeerTeamPlugin(Plugin):
                         "tool_name": tc.get("name", ""),
                         "params": tc.get("params", {}),
                     })
-
-        # task_complete.result preferred over last assistant
-        full_result = tc_result or last_assistant
 
         bus = _registry.agent_bus
         if bus is None:
@@ -333,6 +334,7 @@ class PeerTeamPlugin(Plugin):
                 correlation_id=f"peer_rpl_{uuid.uuid4().hex[:8]}",
             )
             await bus.send(reply)
+            print(f"[DEBUG forward_reply:{sid}] bus.send reply to {sender_sid} brief={brief[:80]}", flush=True)
 
             # Clear the expectation
             _registry._pending_replies.pop(corr_id, None)
@@ -355,15 +357,26 @@ class PeerTeamPlugin(Plugin):
         if bus is None:
             return
 
+        # Cancel any previous wait_loop for this session — only the
+        # latest wait_id matters (the one the harness is blocking on).
+        old_evt = _registry._peer_cancel_events.get(sid)
+        if old_evt is not None:
+            old_evt.set()
+            print(f"[DEBUG peer_park:{sid}] cancelled old wait_loop", flush=True)
+
+        cancel_evt = asyncio.Event()
+        _registry._peer_cancel_events[sid] = cancel_evt
+
         wi = ctx.agent.wait("after_round", f"peer_idle:{sid}")
         _registry._peer_wait_ids[sid] = wi.wait_id
+        print(f"[DEBUG peer_park:{sid}] spawning wait_loop wait_id={wi.wait_id}", flush=True)
 
         asyncio.create_task(_peer_wait_loop(
             harness=harness,
             wait_id=wi.wait_id,
             inbox_key=sid,
             bus=bus,
-            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            cancel_evt=cancel_evt,
             data_dir=ctx.data_dir,
             group_id=self._group_id,
             pending_receiver_sid=self._get_pending_receiver_sid(sid),
@@ -447,14 +460,18 @@ async def _peer_wait_loop(
     group_id: str,
     pending_receiver_sid: str | None = None,
 ) -> None:
-    """Background task: wait for peer message, then wake own harness.
+    """Background task: detect peer message, wake harness.
 
-    Runs indefinitely, polling the bus every 30 s.  If *pending_receiver_sid*
-    is set, checks that receiver's heartbeat — if the receiver has been
-    idle for 600 s the wait is resolved with a timeout notice.
+    Only detects message arrival and resolves the wait — does NOT drain
+    or inject.  Message consumption is handled by inject_peer_msgs at
+    the next before_model, which the caller's _peer_loop triggers by
+    re-entering run() after this resolves.
+
+    If *pending_receiver_sid* is set, checks that receiver's heartbeat —
+    idle for 600 s resolves the wait with a timeout notice.
     """
     import time as _time
-    idle_timeout = 600.0  # 10 minutes without heartbeat → give up
+    idle_timeout = 600.0
     poll_interval = 30.0
 
     while True:
@@ -466,23 +483,12 @@ async def _peer_wait_loop(
         )
 
         if has_msg:
-            messages = [m async for m in bus.receive(inbox_key)]
-            if messages:
-                parts = []
-                for msg in messages:
-                    formatted = PeerTeamPlugin._format_peer_message(msg)
-                    parts.append(formatted)
-                content = "\n\n".join(parts)
-                await harness.resolve_wait(
-                    wait_id,
-                    inject_message={"role": "system", "content": content},
-                )
-                return
+            await harness.resolve_wait(wait_id)
+            return
 
         if cancel_evt is not None and cancel_evt.is_set():
             return
 
-        # Liveness check: has the receiver gone silent?
         if pending_receiver_sid is not None:
             last = _registry._last_activity.get(pending_receiver_sid, 0)
             if _time.time() - last > idle_timeout:
