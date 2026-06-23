@@ -170,103 +170,8 @@ async def execute(
             "session_id": parent_sid,
         }
 
-    # === Inline mode: sub-state on parent engine ===
-    async def runner(t: dict) -> dict:
-        from arf.plugins.a2a_subagents.state import build_sub_state
-
-        sub_state = build_sub_state(
-            parent_session_id=parent_sid,
-            task_id="",
-            task=t.get("task", task),
-            system_prompt="",
-            model="",
-            parent_state={},
-        )
-        child_sid = f"{parent_sid}--{t.get('task_id', 'unknown')}"
-        sub_state["session_id"] = child_sid
-        sub_state["_tool_blacklist"] = ["delegate_task"]
-        ws_dir = getattr(_engine, '_workspace_dir', '') or '.'
-        pre_snapshot = _snapshot_workspace(ws_dir)
-        t["_pre_snapshot"] = pre_snapshot
-        sub_state["_workspace_snapshot"] = t["_pre_snapshot"]
-
-        # Create shared tool_calls ref for A2ATaskLifecycle
-        tool_calls_ref: list[dict] = []
-        t["_tool_calls_ref"] = tool_calls_ref
-
-        # Write child_tasks entry BEFORE async work — prevents race with round_end
-        await _add_child_task(_engine, parent_sid, t.get("task_id", ""), child_sid, agent or "inline")
-
-        # Inject A2ATaskLifecycle so inline sub-agent results are recorded
-        _original_lifecycle = _engine._task_lifecycle
-        from arf.plugins.a2a_subagents.task_lifecycle import A2ATaskLifecycle
-        _engine._task_lifecycle = A2ATaskLifecycle(
-            _engine._task_lifecycle._event_bus, registry.delegator,
-            parent_sid=parent_sid, child_sid=child_sid, task_id=t.get("task_id", ""),
-            pre_snapshot=t.get("_pre_snapshot"),
-            tool_calls_ref=t.get("_tool_calls_ref"),
-        )
-
-        # Register park condition for subagent wake
-        _park_coordinator = getattr(_engine, '_park_coordinator', None) \
-                            or _registry.park_coordinator
-        if _park_coordinator is not None:
-            _park_wait_id = await _park_coordinator.register(
-                sub_state, "subagent",
-                metadata={"task_id": t.get("task_id", ""), "child_sid": child_sid},
-            )
-            t["_park_wait_id"] = _park_wait_id
-
-        try:
-            tool_calls = await asyncio.wait_for(
-                _drain_stream(_engine, sub_state, tool_calls_ref=tool_calls_ref),
-                timeout=effective_timeout,
-            )
-        finally:
-            # Complete park condition before lifecycle restoration
-            # so sub_state is still valid on exception paths
-            _park_wait_id = t.get("_park_wait_id")
-            if _park_wait_id and _park_coordinator is not None:
-                from arf.plugins.a2a_subagents.plugin import A2APlugin
-                _park_content = sub_state.get("messages", [])[-1].get("content", "") \
-                    if sub_state.get("messages") else ""
-                _formatted = A2APlugin._format_result(
-                    t.get("_delegator_task_id", ""),
-                    {
-                        "content": _park_content,
-                        "turn_count": sub_state.get("current_turn", 0),
-                        "gate_exceeded": False,
-                    },
-                )
-                await _park_coordinator.complete(
-                    sub_state, _park_wait_id,
-                    {"content": _formatted, "task_id": t.get("task_id", "")},
-                )
-            _engine._task_lifecycle = _original_lifecycle
-
-        sub_state["_tool_calls_summary"] = tool_calls
-
-        # Fallback: ensure delegator task is completed even without kernel__task_complete
-        task_id_inline = t.get("_delegator_task_id", "")
-        if task_id_inline:
-            try:
-                await registry.delegator.complete(
-                    parent_sid, task_id_inline,
-                    {
-                        "ok": True,
-                        "content": sub_state.get("messages", [])[-1].get("content", "")
-                        if sub_state.get("messages") else "",
-                        "turn_count": sub_state.get("current_turn", 0),
-                        "gate_exceeded": False,
-                    },
-                )
-            except Exception:
-                pass  # delegator.complete is idempotent — ignore race
-
-        return {"ok": True, "final_state": sub_state}
-
-    result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
-    return result
+    # Inline mode removed — see task 7 for full rewrite
+    return {"ok": False, "error": "inline mode removed — agent name required"}
 
 
 async def _dispatch_external(
@@ -358,19 +263,7 @@ async def _dispatch_external(
             sub_agent = BaseAgent(config, app_context=ctx)
             _registry.running_sub_agents[rid]["agent"] = sub_agent
 
-            # Inject A2A-specific HITL and TaskLifecycle protocols
-            from arf.plugins.a2a_subagents.hitl import A2AHITL
-            from arf.plugins.a2a_subagents.task_lifecycle import A2ATaskLifecycle
-
-            _delegator_task_id = t.get("_delegator_task_id", "")
-            sub_agent._engine._hitl = A2AHITL(
-                sub_agent._engine.event_bus, sub_agent.state_store)
-            sub_agent._engine._task_lifecycle = A2ATaskLifecycle(
-                sub_agent._engine.event_bus, _registry.delegator,
-                parent_sid=parent_sid, child_sid=sid, task_id=_delegator_task_id,
-                pre_snapshot=t.get("_pre_snapshot"),
-                tool_calls_ref=t.get("_tool_calls_ref"),
-            )
+            # A2AHITL/A2ATaskLifecycle injection removed — modules deleted
             # Inject cancel_event for cascade cancel
             import asyncio as _asyncio
             cancel_evt = _asyncio.Event()
@@ -648,25 +541,3 @@ async def _dispatch_external(
         "task": task,
         "session_id": parent_sid,
     }
-
-
-async def _drain_stream(engine, sub_state: dict,
-                         tool_calls_ref: list | None = None) -> list[dict]:
-    """Drain astream events, collect tool_call_end events, return tool_calls_summary.
-
-    The round_end hook (in plugin.py) handles completion via _collect_result.
-    This function supplements that result with tool_call metadata.
-
-    If *tool_calls_ref* is provided, it is used as the collector instead of
-    creating a new list, allowing A2ATaskLifecycle to share the same reference.
-    """
-    tool_calls = tool_calls_ref if tool_calls_ref is not None else []
-    async for event in engine.astream(sub_state, stop_on_text=True):
-        if event.type == "tool_call_end":
-            tool_calls.append({
-                "tool_name": event.data.get("tool_name", ""),
-                "success": event.data.get("success", False),
-                "duration_ms": event.data.get("duration_ms", 0),
-                "error": event.data.get("error", ""),
-            })
-    return tool_calls
