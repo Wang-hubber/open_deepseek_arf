@@ -169,37 +169,63 @@ class TestPluginHooks:
         assert "review login.py" in str(peer_msgs[0].content)
 
     @pytest.mark.anyio
-    async def test_peer_park_waits_when_pending_replies(self):
+    async def test_inject_peer_msgs_parks_when_pending(self):
+        """PM has outgoing pending, no messages → parks at before_model."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
-        # Register a pending reply expectation (pm → dev)
+        # PM sent a task to dev, waiting for reply
         tm_registry._pending_replies["peer_123"] = {
             "sender": "pm", "receiver": "dev",
         }
 
-        # Simulate _on_init storing harness ref (C1 fix: harness must exist
-        # before park, otherwise park is skipped to avoid deadlock)
         harness_mock = ctx.hook_data["_harness_ref"]["harness"]
         tm_registry._peer_harnesses["pm"] = harness_mock
 
-        await plugin.handle("peer_park", ctx)
+        await plugin.handle("inject_peer_msgs", ctx)
 
-        # Should have registered a wait
-        assert len(agent.state.waiting.get("after_round", [])) > 0
+        # Park at before_model (inside ReAct loop, not after_round)
+        assert len(agent.state.waiting.get("before_model", [])) > 0
         assert "pm" in tm_registry._peer_wait_ids
 
     @pytest.mark.anyio
-    async def test_peer_park_skips_when_no_pending(self):
+    async def test_inject_peer_msgs_parks_when_idle_worker(self):
+        """Dev has no pending, not entry_point → parks as idle worker."""
         plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        harness_mock = ctx.hook_data["_harness_ref"]["harness"]
+        tm_registry._peer_harnesses["dev"] = harness_mock
+
+        await plugin.handle("inject_peer_msgs", ctx)
+
+        # Idle worker (entry_point=false) should park
+        assert len(agent.state.waiting.get("before_model", [])) > 0
+        assert "dev" in tm_registry._peer_wait_ids
+
+    @pytest.mark.anyio
+    async def test_inject_peer_msgs_skips_when_entry_point_no_pending(self):
+        """PM is entry_point, no pending, no messages → does NOT park."""
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        plugin = PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
-        await plugin.handle("peer_park", ctx)
+        await plugin.handle("inject_peer_msgs", ctx)
 
-        # No pending → no wait registered
-        assert "after_round" not in agent.state.waiting
+        # entry_point=true + no pending → should not park
+        assert "before_model" not in agent.state.waiting
 
 
 class TestPeerWaitLoop:

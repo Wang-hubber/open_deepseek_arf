@@ -3,10 +3,10 @@ events:
   - {hook_name: "session_start", event_name: "init", mode: "side"}
   - {hook_name: "before_model", event_name: "inject_peer_msgs", mode: "blocking"}
   - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
-  - {hook_name: "after_round", event_name: "peer_park", mode: "blocking"}
   - {hook_name: "after_round", event_name: "session_end", mode: "side"}
 config:
   group_id: default
   members:
     - role: default
       agent_name: default
+      entry_point: true
