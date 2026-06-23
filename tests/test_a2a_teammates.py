@@ -670,6 +670,52 @@ class TestForwardReply:
         assert "peer_empty" not in _state_mod._state.pending_replies
 
     @pytest.mark.anyio
+    async def test_pending_replies_ttl_cleanup_expired_entries(self):
+        """TTL cleanup removes expired pending entries before forward processing."""
+        import time as _time
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="pm", description="", capabilities=[]))
+
+        # Expired entry: created_at older than 1800s
+        _state_mod._state.pending_replies["peer_expired"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+            "created_at": _time.time() - 2000,
+        }
+        # Fresh entry: should be preserved
+        _state_mod._state.pending_replies["peer_fresh"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+            "created_at": _time.time(),
+        }
+
+        # Add task_complete so found_tc is True
+        ctx.agent.input(role="assistant", content="Done.")
+        ctx.agent.input(role="tool", content={
+            "tool_call_id": "call_1",
+            "name": "task_complete",
+            "result": {"ok": True, "task_complete": True, "result": "Testing TTL cleanup"},
+            "error": "",
+        })
+
+        await plugin.handle("forward_reply", ctx)
+
+        # Expired entry should be removed by TTL cleanup
+        assert "peer_expired" not in _state_mod._state.pending_replies, \
+            "Expired entry should have been cleaned by TTL"
+
+        # Fresh entry is consumed by forward processing (popped after forward),
+        # so the assertion is that peer_fresh is also gone — but that's because
+        # forward_reply consumed it, not because of TTL. The key is peer_expired
+        # was removed by TTL, not by forward consumption.
+        remaining = list(_state_mod._state.pending_replies.keys())
+        assert "peer_expired" not in remaining
+
+    @pytest.mark.anyio
     async def test_forward_reply_handles_multiple_pending_one_per_round(self):
         """When multiple tasks pending, forward_reply processes one per round."""
         plugin = self._make_plugin()

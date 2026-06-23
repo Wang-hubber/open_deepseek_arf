@@ -510,6 +510,8 @@ class PeerTeamPlugin(Plugin):
         ]
         for corr_id in stale:
             self._state.pending_replies.pop(corr_id, None)
+        from arf.plugins.a2a_teammates.state import save_pending_replies
+        await save_pending_replies()
 
         # Update session_index status
         parsed = SessionIndex.parse_session_id(sid)

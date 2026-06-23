@@ -22,6 +22,10 @@ class PeerTeamState:
     _wait_tasks: dict[str, "asyncio.Task[None]"] = field(default_factory=dict)
 
 
+# NOTE: This module-level slot supports the legacy tool-access pattern
+# where tool functions need to reach plugin state without injection.
+# Only a single PeerTeamPlugin instance should be active in a process.
+# For multi-group deployments, restructure to pass state explicitly.
 _state: PeerTeamState | None = None
 
 
