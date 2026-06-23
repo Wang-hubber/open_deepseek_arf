@@ -1,11 +1,14 @@
 name: delegate_task
 description: >
-  Dispatch a task to a sub-agent. If 'agent' is specified, the named
-  pre-configured agent handles the task. Otherwise a temporary agent
-  inherits the parent's model and tools. The sub-agent runs while you wait;
-  its result is automatically injected into the conversation when ready —
-  no need to poll. Use queue_status only to check whether tasks are still
-  in progress (running/queued).
+  Dispatch a task to a TEMPORARY sub-agent (one-off, short-lived).
+  If 'agent' is specified, the named pre-configured agent handles it.
+  Otherwise a temporary agent inherits your model and tools.
+  The sub-agent runs while you wait; its result is auto-injected
+  when ready — no need to poll.
+
+  DO NOT use this for persistent team members. If you have teammates
+  listed in your system prompt, use send_peer_message instead.
+  delegate_task = throwaway worker. send_peer_message = teammate.
 parameters:
   type: object
   properties:

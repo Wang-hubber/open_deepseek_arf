@@ -26,8 +26,11 @@ logger = logging.getLogger("arf.plugins.a2a_teammates")
 _TEAM_PROTOCOL = (
     "[Team Communication]\n"
     "Protocol:\n"
-    "- send_peer_message(receiver, message, type) to talk to a teammate.\n"
+    "- send_peer_message(to, message, type) to talk to a teammate.\n"
     "  Use type=\"task\" to assign work, type=\"info\" to notify.\n"
+    "- If you also have delegate_task available: send_peer_message is for\n"
+    "  persistent teammates, delegate_task is for temporary one-off workers.\n"
+    "  Do NOT use delegate_task on your teammates — use send_peer_message.\n"
     "- Messages from teammates arrive as [Peer <type> from <sender>] "
     "system messages. Read them and respond accordingly.\n"
     "- If you receive type=\"task\", you are expected to complete it "
