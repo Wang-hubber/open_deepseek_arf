@@ -128,11 +128,16 @@ class TestPluginHooks:
 
         await plugin.handle("init", ctx)
 
-        # Team context should be injected as system message
+        # Two system messages: dynamic roster + static protocol
         system_msgs = [m for m in agent.state.messages if m.role == "system"]
-        assert len(system_msgs) >= 1
-        assert "Team Communication" in str(system_msgs[0].content)
-        assert "send_peer_message" in str(system_msgs[0].content)
+        assert len(system_msgs) >= 2
+        # Roster: session-specific
+        assert "default_group" in str(system_msgs[0].content)
+        assert "pm" in str(system_msgs[0].content)
+        # Protocol: cache-friendly constant
+        assert "Team Communication" in str(system_msgs[1].content)
+        assert "send_peer_message" in str(system_msgs[1].content)
+        assert "do not do the receiver's work" in str(system_msgs[1].content)
 
     @pytest.mark.anyio
     async def test_init_captures_harness(self):

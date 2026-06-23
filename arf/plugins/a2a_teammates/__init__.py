@@ -23,6 +23,21 @@ from arf.session.session_index import SessionIndex
 
 logger = logging.getLogger("arf.plugins.a2a_teammates")
 
+# Static protocol — identical across all team sessions, prompt-cache friendly.
+_TEAM_PROTOCOL = (
+    "[Team Communication]\n"
+    "Protocol:\n"
+    "- send_peer_message(receiver, message, type) to talk to a teammate.\n"
+    "  Use type=\"task\" to assign work, type=\"info\" to notify.\n"
+    "- Messages from teammates arrive as [Peer <type> from <sender>] "
+    "system messages. Read them and respond accordingly.\n"
+    "- If you receive type=\"task\", you are expected to complete it "
+    "and call task_complete(result=\"...\"). Your result will be "
+    "auto-forwarded to the sender.\n"
+    "- After sending a task, wait for the reply — do not do the "
+    "receiver's work yourself."
+)
+
 _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
@@ -108,30 +123,43 @@ class PeerTeamPlugin(Plugin):
                     "session_id": f"{group_id}__{m.role}",
                     "status": "active" if m.role == role else "idle",
                 })
-            await idx.create(group_id, members)
+            if members:
+                await idx.create(group_id, members)
+                logger.info("Peer team group %s created with %d members", group_id, len(members))
+            else:
+                # No member config on this agent — register self as sole member
+                await idx.create(group_id, [{
+                    "role": role,
+                    "agent_name": role,
+                    "session_id": sid,
+                    "status": "active",
+                }])
 
-            for m in members:
-                await _registry.agent_bus.register(AgentInfo(
-                    name=m["role"].lower(),
-                    description=f"Agent: {m['agent_name']}",
-                    capabilities=[],
-                ))
-            logger.info("Peer team group %s created with %d members", group_id, len(members))
+        # Always register THIS agent on the bus (regardless of who created the group)
+        await _registry.agent_bus.register(AgentInfo(
+            name=role.lower(),
+            description=f"Agent: {role}",
+            capabilities=[],
+        ))
+
+        # Update own status to active
+        await idx.update_member(group_id, role, {"status": "active"})
 
         # Inject team communication context once per session
         if sid not in _registry._peer_context_injected:
             _registry._peer_context_injected.add(sid)
-            teammates = [m.role for m in self._members]
-            system_msg = (
-                "[Team Communication]\n"
-                "You are part of an agent team. Messages from teammates are "
-                "delivered as system messages prefixed with [Peer]. To send "
-                "a task to a teammate, use send_peer_message. When you finish "
-                "a task assigned to you, call task_complete(result=\"...\") — "
-                "your result will be auto-forwarded to the sender.\n\n"
-                f"Available teammates: {', '.join(teammates)}"
-            )
-            ctx.agent.input(role="system", content=system_msg)
+            # Dynamic roster — per-session
+            roster_lines = []
+            for m in self._members:
+                desc = f" — {m.agent_name}" if m.agent_name else ""
+                roster_lines.append(f"  {m.role}{desc}")
+            roster = "\n".join(roster_lines) if roster_lines else f"  {role}"
+            ctx.agent.input(role="system", content=(
+                f"You are in team \"{group_id}\", role: \"{role}\".\n"
+                f"Teammates:\n{roster}"
+            ))
+            # Static protocol — cache-friendly constant
+            ctx.agent.input(role="system", content=_TEAM_PROTOCOL)
 
     # ==================================================================
     # inject_peer_msgs — drain inbox + mid-cycle park
