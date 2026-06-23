@@ -43,6 +43,7 @@ _TEAM_PROTOCOL = (
 _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
+    {"hook_name": "after_tools", "event_name": "park_after_send", "mode": "blocking"},
     {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
@@ -77,6 +78,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_init(ctx)
         elif event_name == "inject_session_id":
             await self._on_inject_session_id(ctx)
+        elif event_name == "park_after_send":
+            await self._on_park_after_send(ctx)
         elif event_name == "inject_and_park":
             await self._on_inject_and_park(ctx)
         elif event_name == "heartbeat":
@@ -189,6 +192,44 @@ class PeerTeamPlugin(Plugin):
             name = tc.get("name", "")
             if name.endswith("send_peer_message"):
                 tc.setdefault("params", {})["session_id"] = ctx.session_id
+                ctx.hook_data["_peer_just_sent"] = True
+
+    # ==================================================================
+    # park_after_send — park at after_tools right after send_peer_message
+    # ==================================================================
+
+    async def _on_park_after_send(self, ctx: PluginContext) -> None:
+        """Park immediately after send_peer_message.
+
+        The tool just executed and bus.send delivered the task.  Park
+        NOW so the bg task is listening before the receiver replies.
+        Wake→continue→before_model means the reply is processed in
+        the SAME run() call, no round exit needed.
+        """
+        if not ctx.hook_data.pop("_peer_just_sent", False):
+            return
+
+        sid = ctx.session_id
+        harness = _registry._peer_harnesses.get(sid)
+        if harness is None:
+            return
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        wi = ctx.agent.wait("after_tools", f"peer_wait:{sid}")
+        _registry._peer_wait_ids[sid] = wi.wait_id
+
+        asyncio.create_task(_peer_wait_loop(
+            harness=harness,
+            wait_id=wi.wait_id,
+            inbox_key=sid,
+            bus=bus,
+            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            data_dir=ctx.data_dir,
+            group_id=self._group_id,
+            pending_receiver_sid=self._get_pending_receiver_sid(sid),
+        ))
 
     # ==================================================================
     # inject_and_park — drain inbox + park at before_round
