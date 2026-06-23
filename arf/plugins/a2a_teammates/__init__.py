@@ -217,6 +217,30 @@ class PeerTeamPlugin(Plugin):
             return
         sid = ctx.session_id
 
+        # --- Lazy resume recovery ---
+        # Re-register harness if lost (e.g., after process restart)
+        if sid not in self._state.peer_harnesses:
+            harness_ref = ctx.hook_data.get("_harness_ref", {})
+            parent_harness = harness_ref.get("harness")
+            if parent_harness is not None:
+                self._state.peer_harnesses[sid] = parent_harness
+
+        # Re-register on bus if not already registered
+        from arf.core.protocols.communication import AgentInfo
+        agents = await bus.discover()
+        if not any(a.name == sid for a in agents):
+            parsed = SessionIndex.parse_session_id(sid)
+            role = parsed[1] if parsed else sid
+            await bus.register(AgentInfo(
+                name=sid,
+                description=f"Agent: {role}",
+                capabilities=[],
+            ))
+
+        # Restore pending_replies from disk
+        from arf.plugins.a2a_teammates.state import restore_pending_replies
+        await restore_pending_replies()
+
         # Drain any messages that arrived before this checkpoint
         messages = [m async for m in bus.receive(sid)]
         if messages:
@@ -411,6 +435,8 @@ class PeerTeamPlugin(Plugin):
 
             # Clear the expectation
             self._state.pending_replies.pop(corr_id, None)
+            from arf.plugins.a2a_teammates.state import save_pending_replies
+            await save_pending_replies()
             logger.info(
                 "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
                 sid, sender_sid, corr_id, result_file,

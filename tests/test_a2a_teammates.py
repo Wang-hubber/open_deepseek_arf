@@ -1,5 +1,6 @@
 """Tests for A2A Teammates Plugin — peer messaging, park/resume, result persistence."""
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -112,6 +113,10 @@ class TestPluginHooks:
     def setup_state(self):
         self.state = _setup_fresh_state()
         self.state.data_dir = "./data"
+        # Clean up any leftover pending_replies.json from previous tests
+        path = Path(self.state.data_dir) / "pending_replies.json"
+        if path.exists():
+            path.unlink()
         yield
         _teardown_state()
 
@@ -265,6 +270,50 @@ class TestPluginHooks:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    @pytest.mark.anyio
+    async def test_inject_and_park_recovers_harness_on_resume(self):
+        """After simulated resume (empty peer_harnesses), inject_and_park re-registers harness."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+
+        # Simulate resume: harness is in hook_data but not in peer_harnesses
+        assert "default_group__pm" not in _state_mod._state.peer_harnesses
+
+        await plugin.handle("inject_and_park", ctx)
+
+        # Should have recovered harness from hook_data
+        assert "default_group__pm" in _state_mod._state.peer_harnesses
+        assert _state_mod._state.peer_harnesses["default_group__pm"] is \
+            ctx.hook_data["_harness_ref"]["harness"]
+
+    @pytest.mark.anyio
+    async def test_pending_replies_survives_save_restore(self):
+        """pending_replies saved to disk and restored after simulated restart."""
+        plugin = self._make_plugin()
+
+        # Set pending and persist
+        from arf.plugins.a2a_teammates.state import save_pending_replies, restore_pending_replies
+        _state_mod._state.pending_replies["peer_test123"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+        }
+        await save_pending_replies()
+
+        # Simulate restart: clear in-memory, then restore
+        _state_mod._state.pending_replies.clear()
+        assert len(_state_mod._state.pending_replies) == 0
+
+        await restore_pending_replies()
+        assert "peer_test123" in _state_mod._state.pending_replies
+        assert _state_mod._state.pending_replies["peer_test123"]["sender"] == "default_group__pm"
+
+        # Cleanup: remove test file
+        import os
+        path = Path(_state_mod._state.data_dir) / "pending_replies.json"
+        if path.exists():
+            os.remove(path)
 
 
 class TestCancelPeerTask:

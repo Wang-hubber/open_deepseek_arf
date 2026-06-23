@@ -404,6 +404,14 @@ class AgentHarness:
                     if isinstance(m, dict):
                         agent.input(role=m.get("role", "user"), content=m.get("content", ""),
                                     name=m.get("name"))
+            # Set harness_ref for resumed sessions (needed by plugins like a2a_teammates)
+            ctx.hook_data["_harness_ref"] = {
+                "harness": self,
+                "tool_manager": self._tool_manager,
+                "plugins": self._plugins,
+                "agent_config": self._agent_config,
+                "max_turns": self._max_turns,
+            }
             # Rebuild system prompt text for snapshot consistency (Finding 3)
             if self._agent_config is not None:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
