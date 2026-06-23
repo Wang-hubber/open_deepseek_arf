@@ -55,6 +55,7 @@ _DEFAULT_EVENTS = [
     {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
+    {"hook_name": "session_end", "event_name": "teardown", "mode": "blocking"},
 ]
 
 
@@ -95,6 +96,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
+        elif event_name == "teardown":
+            await self._on_teardown(ctx)
 
     # ==================================================================
     # init — create group index + inject team context
@@ -353,6 +356,20 @@ class PeerTeamPlugin(Plugin):
         """Read last assistant + task_complete result, write file, bus.send back."""
         sid = ctx.session_id
 
+        # TTL cleanup: discard stale pending entries (>30 min)
+        import time as _time
+        _now = _time.time()
+        _pending_ttl = 1800.0  # 30 minutes
+        stale = [
+            corr_id for corr_id, entry in self._state.pending_replies.items()
+            if entry.get("receiver") == sid
+            and entry.get("created_at", 0) > 0
+            and _now - entry.get("created_at", 0) > _pending_ttl
+        ]
+        for corr_id in stale:
+            self._state.pending_replies.pop(corr_id, None)
+            logger.warning("Pending reply %s expired (TTL %ss)", corr_id, _pending_ttl)
+
         # Check for pending reply expectations targeting this session_id
         my_pending = [
             (corr_id, entry) for corr_id, entry in self._state.pending_replies.items()
@@ -441,6 +458,38 @@ class PeerTeamPlugin(Plugin):
                 "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
                 sid, sender_sid, corr_id, result_file,
             )
+
+    # ==================================================================
+    # teardown — clean up agent resources on session end
+    # ==================================================================
+
+    async def _on_teardown(self, ctx: PluginContext) -> None:
+        """Clean up agent resources on session end."""
+        sid = ctx.session_id
+        bus = self._state.agent_bus
+        if bus is not None:
+            await bus.deregister(sid)
+
+        # Cancel any running wait task
+        task = self._state._wait_tasks.pop(sid, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+        # Clear pending replies for this agent as sender
+        stale = [
+            corr_id for corr_id, entry in self._state.pending_replies.items()
+            if entry.get("sender") == sid
+        ]
+        for corr_id in stale:
+            self._state.pending_replies.pop(corr_id, None)
+
+        # Update session_index status
+        parsed = SessionIndex.parse_session_id(sid)
+        if parsed is not None:
+            group_id, role = parsed
+            session_index_dir = Path(ctx.data_dir or "./data").parent / "team_sessions"
+            idx = SessionIndex(str(session_index_dir))
+            await idx.update_member(group_id, role, {"status": "inactive"})
 
     def _get_pending_receiver_sid(self, sender_sid: str) -> str | None:
         """Return the first receiver_sid for which sender_sid has a pending reply."""

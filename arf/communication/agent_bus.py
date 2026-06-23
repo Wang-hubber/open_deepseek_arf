@@ -117,6 +117,12 @@ class InMemoryAgentBus:
         """Register an agent with the bus."""
         self._agents[agent.name] = agent
 
+    async def deregister(self, agent_name: str) -> None:
+        """Remove an agent from the bus and clean up its resources."""
+        self._agents.pop(agent_name, None)
+        self._inboxes.pop(agent_name, None)
+        self._events.pop(agent_name, None)
+
     async def discover(self, capability: str | None = None) -> list[AgentInfo]:
         """Return registered agents, optionally filtered by capability."""
         agents = list(self._agents.values())

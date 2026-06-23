@@ -62,6 +62,7 @@ async def execute(
     state.pending_replies[correlation_id] = {
         "sender": session_id,
         "receiver": to,
+        "created_at": __import__("time").time(),
     }
 
     from arf.plugins.a2a_teammates.state import save_pending_replies

@@ -6,6 +6,7 @@ events:
   - {hook_name: "before_round", event_name: "inject_and_park", mode: "blocking"}
   - {hook_name: "after_model", event_name: "heartbeat", mode: "side"}
   - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
+  - {hook_name: "session_end", event_name: "teardown", mode: "blocking"}
 config:
   group_id: default
   members:

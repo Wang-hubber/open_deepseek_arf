@@ -644,3 +644,72 @@ class TestForwardReply:
 
         # Pending MUST be cleared — this is the fix
         assert "peer_empty" not in _state_mod._state.pending_replies
+
+
+class TestAgentBusCleanup:
+    @pytest.fixture(autouse=True)
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        yield
+        _teardown_state()
+
+    @pytest.mark.anyio
+    async def test_deregister_removes_agent_and_events(self):
+        bus = _state_mod._state.agent_bus
+        await bus.register(AgentInfo(name="test_agent", description="", capabilities=[]))
+        # Trigger _events creation by calling wait_for_message
+        await bus.wait_for_message("test_agent", timeout=0.01)
+
+        assert "test_agent" in bus._agents
+        assert "test_agent" in bus._events
+
+        await bus.deregister("test_agent")
+
+        assert "test_agent" not in bus._agents
+        assert "test_agent" not in bus._inboxes
+        assert "test_agent" not in bus._events
+
+
+class TestSessionEnd:
+    @pytest.fixture(autouse=True)
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
+        yield
+        _teardown_state()
+
+    def _make_plugin(self):
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        return PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent"},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_teardown_deregisters_and_cleans_up(self):
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+
+        # Register agent on bus first
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="default_group__pm", description="", capabilities=[]))
+        _state_mod._state.pending_replies["peer_stale"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+        }
+
+        await plugin.handle("teardown", ctx)
+
+        # Agent should be deregistered
+        agents = await _state_mod._state.agent_bus.discover()
+        assert not any(a.name == "default_group__pm" for a in agents)
+
+        # Own pending replies should be cleared
+        assert "peer_stale" not in _state_mod._state.pending_replies
