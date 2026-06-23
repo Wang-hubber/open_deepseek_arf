@@ -12,32 +12,40 @@ import uuid
 from pathlib import Path
 
 from arf.communication.agent_bus import InMemoryAgentBus
+from arf.communication.jrpc import JrpcEnvelope
 from arf.core.protocols.communication import AgentInfo, AgentMessage
 from arf.harness.context import PluginContext
 from arf.harness.plugin_base import Plugin
 from arf.plugins.a2a_teammates.config import PeerTeamConfig
 from arf.plugins.a2a_teammates.result_file import write_peer_result
-from arf.plugins.a2a_teammates.tools import _registry
+from arf.plugins.a2a_teammates.state import PeerTeamState
 from arf.session.session_index import SessionIndex
 
 logger = logging.getLogger("arf.plugins.a2a_teammates")
 
+
+# ═══════════════════════════════════════════════════════════════════════
 # Static protocol — identical across all team sessions, prompt-cache friendly.
+# ═══════════════════════════════════════════════════════════════════════
 _TEAM_PROTOCOL = (
     "[Team Communication]\n"
-    "Protocol:\n"
+    "Messages use JSON-RPC 2.0 semantics:\n"
     "- send_peer_message(to, message, type) to talk to a teammate.\n"
-    "  Use type=\"task\" to assign work, type=\"info\" to notify.\n"
+    "  This sends a JRPC request — type=\"task\" → method task.assign,\n"
+    "  type=\"info\" → method info.message.  Wait for the response.\n"
     "- If you also have delegate_task available: send_peer_message is for\n"
     "  persistent teammates, delegate_task is for temporary one-off workers.\n"
     "  Do NOT use delegate_task on your teammates — use send_peer_message.\n"
-    "- Messages from teammates arrive as [Peer <type> from <sender>] "
-    "system messages. Read them and respond accordingly.\n"
-    "- If you receive type=\"task\", you are expected to complete it "
-    "and call task_complete(result=\"...\"). Your result will be "
-    "auto-forwarded to the sender.\n"
-    "- After sending a task, wait for the reply — do not do the "
-    "receiver's work yourself."
+    "- Messages from teammates arrive as user messages with\n"
+    "  name=\"peer:<session_id>\".  Content is formatted:\n"
+    "  [task assign] <message> — a task for you\n"
+    "  [response] <summary> — a reply to your request\n"
+    "  [info message] <text> — an informational notice\n"
+    "- When you receive a task, complete it and call\n"
+    "  task_complete(result=\"...\").  Your result is auto-forwarded\n"
+    "  as a JRPC response to the sender.\n"
+    "- After sending a task, wait for the reply — do not do the\n"
+    "  receiver's work yourself."
 )
 
 _DEFAULT_EVENTS = [
@@ -64,10 +72,11 @@ class PeerTeamPlugin(Plugin):
         self._group_id = cfg.group_id
         self._members = cfg.members
 
-        # role → entry_point mapping; stored on registry by session_id at init
-
-        if _registry.agent_bus is None:
-            _registry.agent_bus = InMemoryAgentBus()
+        self._state = PeerTeamState()
+        self._state.agent_bus = InMemoryAgentBus()
+        # Set module-level slot so tools and _peer_wait_loop can access state
+        import arf.plugins.a2a_teammates.state as _s
+        _s._state = self._state
 
     # ==================================================================
     # handle — dispatch by event_name
@@ -98,30 +107,25 @@ class PeerTeamPlugin(Plugin):
             return
         group_id, role = parsed
 
-        _registry.data_dir = ctx.data_dir
+        self._state.data_dir = ctx.data_dir
 
         # Store harness ref for bg task wake-up
         harness_ref = ctx.hook_data.get("_harness_ref", {})
         parent_harness = harness_ref.get("harness")
         if parent_harness is not None:
-            _registry._peer_harnesses[sid] = parent_harness
+            self._state.peer_harnesses[sid] = parent_harness
 
         # Store entry_point on registry for park decisions
         for m in self._members:
             if m.role == role:
-                _registry._entry_points[sid] = m.entry_point
+                self._state.entry_points[sid] = m.entry_point
                 break
         else:
-            _registry._entry_points[sid] = False
+            self._state.entry_points[sid] = False
 
-        # SessionIndex stored in shared team_sessions/ directory
-        _base_data = Path(ctx.data_dir or "./data")
-        _session_index_dir = (
-            _base_data.parent / "team_sessions"
-            if _base_data.name != "team_sessions"
-            else _base_data
-        )
-        idx = SessionIndex(str(_session_index_dir))
+        # SessionIndex at team_sessions/ alongside data_dir
+        session_index_dir = Path(ctx.data_dir or "./data").parent / "team_sessions"
+        idx = SessionIndex(str(session_index_dir))
         existing = await idx.load(group_id)
 
         if existing is None:
@@ -146,7 +150,7 @@ class PeerTeamPlugin(Plugin):
 
         # Always register THIS agent on the bus with session_id as the key.
         # Every agent registers itself — not just the group creator.
-        await _registry.agent_bus.register(AgentInfo(
+        await self._state.agent_bus.register(AgentInfo(
             name=sid,
             description=f"Agent: {role}",
             capabilities=[],
@@ -156,8 +160,8 @@ class PeerTeamPlugin(Plugin):
         await idx.update_member(group_id, role, {"status": "active"})
 
         # Inject team communication context once per session
-        if sid not in _registry._peer_context_injected:
-            _registry._peer_context_injected.add(sid)
+        if sid not in self._state.context_injected_sessions:
+            self._state.context_injected_sessions.add(sid)
             # Dynamic roster with session_ids — LLM uses these as addresses
             roster_lines = []
             for m in self._members:
@@ -199,51 +203,16 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_park_after_send(self, ctx: PluginContext) -> None:
-        """Park immediately after send_peer_message.
-
-        The tool just executed and bus.send delivered the task.  Park
-        NOW so the bg task is listening before the receiver replies.
-        Wake→continue→before_model means the reply is processed in
-        the SAME run() call, no round exit needed.
-        """
         if not ctx.hook_data.pop("_peer_just_sent", False):
             return
-
-        sid = ctx.session_id
-        harness = _registry._peer_harnesses.get(sid)
-        if harness is None:
-            return
-        bus = _registry.agent_bus
-        if bus is None:
-            return
-
-        wi = ctx.agent.wait("after_tools", f"peer_wait:{sid}")
-        _registry._peer_wait_ids[sid] = wi.wait_id
-
-        asyncio.create_task(_peer_wait_loop(
-            harness=harness,
-            wait_id=wi.wait_id,
-            inbox_key=sid,
-            bus=bus,
-            cancel_evt=ctx.hook_data.get("_cancel_event"),
-            data_dir=ctx.data_dir,
-            group_id=self._group_id,
-            pending_receiver_sid=self._get_pending_receiver_sid(sid),
-        ))
+        await self._park_for_peer(ctx, "after_tools", f"peer_wait:{ctx.session_id}")
 
     # ==================================================================
     # inject_and_park — drain inbox + park at before_round
     # ==================================================================
 
     async def _on_inject_and_park(self, ctx: PluginContext) -> None:
-        """Drain inbox at before_round. Park if idle/waiting.
-
-        Park resolves in the _peer_wait_loop bg task which drains the
-        inbox and injects via resolve_wait(inject_message=...).  On
-        wake the message is already in agent state — model sees it
-        immediately in the turn loop.
-        """
-        bus = _registry.agent_bus
+        bus = self._state.agent_bus
         if bus is None:
             return
         sid = ctx.session_id
@@ -251,62 +220,81 @@ class PeerTeamPlugin(Plugin):
         # Drain any messages that arrived before this checkpoint
         messages = [m async for m in bus.receive(sid)]
         if messages:
-            await self._inject_messages(ctx, messages)
+            for msg in messages:
+                formatted = self._format_peer_message(msg)
+                ctx.agent.input(role="user", content=formatted, name=f"peer:{msg.sender}")
             return
 
         # Park if idle worker or waiting for reply
         has_pending = any(
             entry.get("sender") == sid
-            for entry in _registry._pending_replies.values()
+            for entry in self._state.pending_replies.values()
         )
-        is_entry_point = _registry._entry_points.get(sid, False)
-
-        if not has_pending and is_entry_point:
+        if not has_pending and self._state.entry_points.get(sid, False):
             return
 
-        harness = _registry._peer_harnesses.get(sid)
+        await self._park_for_peer(ctx, "before_round", f"peer_idle:{sid}")
+
+    # ==================================================================
+    # _park_for_peer / _format_peer_message / _package_peer_messages
+    # ==================================================================
+
+    async def _park_for_peer(self, ctx: PluginContext, hook_name: str, reason: str) -> None:
+        """Park the agent and spawn a bg task waiting for peer messages."""
+        sid = ctx.session_id
+        harness = self._state.peer_harnesses.get(sid)
         if harness is None:
             return
+        bus = self._state.agent_bus
+        if bus is None:
+            return
 
-        wi = ctx.agent.wait("before_round", f"peer_idle:{sid}")
-        _registry._peer_wait_ids[sid] = wi.wait_id
-
+        wi = ctx.agent.wait(hook_name, reason)
         asyncio.create_task(_peer_wait_loop(
             harness=harness,
             wait_id=wi.wait_id,
             inbox_key=sid,
             bus=bus,
             cancel_evt=ctx.hook_data.get("_cancel_event"),
-            data_dir=ctx.data_dir,
-            group_id=self._group_id,
             pending_receiver_sid=self._get_pending_receiver_sid(sid),
+            last_activity=self._state.last_activity,
         ))
-
-    # ==================================================================
-    # _inject_messages / _format_peer_message — shared helpers
-    # ==================================================================
-
-    async def _inject_messages(
-        self, ctx: PluginContext, messages: list,
-    ) -> None:
-        """Inject peer messages as system messages into agent state."""
-        for msg in messages:
-            formatted = self._format_peer_message(msg)
-            ctx.agent.input(role="user", content=formatted)
 
     @staticmethod
     def _format_peer_message(msg) -> str:
-        import json as _json
-        payload = {
-            "from": msg.sender,
-            "type": msg.type,
-            "correlation_id": getattr(msg, "correlation_id", ""),
-            "content": msg.payload.get("message", str(msg.payload)),
-        }
-        result_file = msg.payload.get("result_file", "")
+        """Unwrap AgentMessage → plain text for LLM injection.
+
+        JRPC payload: extract content + thin type tag.
+        Legacy payload: format directly (migration fallback).
+        The model sees only ``[label] message`` — no JSON, no method paths.
+        """
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        if "jsonrpc" in payload:
+            content = JrpcEnvelope.extract_content(payload)
+            label = JrpcEnvelope.method_to_label(payload.get("method", ""))
+            result_file = (payload.get("result") or {}).get("result_file", "")
+            text = f"[{label}] {content}"
+            if result_file:
+                text += f"\n(full result: {result_file})"
+            return text
+        # Legacy plain payload — keep working during migration
+        result_file = payload.get("result_file", "")
+        content = payload.get("message", str(payload))
+        prefix = f"[{msg.type}]"
         if result_file:
-            payload["result_file"] = result_file
-        return "[PEER_MESSAGE]\n" + _json.dumps(payload, ensure_ascii=False)
+            return f"{prefix} {content}\n(result file: {result_file})"
+        return f"{prefix} {content}"
+
+    @staticmethod
+    def _package_peer_messages(messages: list) -> dict:
+        """Format messages and return an inject_message dict for resolve_wait."""
+        sender_name = messages[0].sender
+        parts = [PeerTeamPlugin._format_peer_message(m) for m in messages]
+        return {
+            "role": "user",
+            "content": "\n\n".join(parts),
+            "name": f"peer:{sender_name}",
+        }
 
     # ==================================================================
     # heartbeat — update liveness timestamp
@@ -314,7 +302,7 @@ class PeerTeamPlugin(Plugin):
 
     async def _on_heartbeat(self, ctx: PluginContext) -> None:
         import time
-        _registry._last_activity[ctx.session_id] = time.time()
+        self._state.last_activity[ctx.session_id] = time.time()
 
     # ==================================================================
     # forward_reply — send task_complete result back to pending sender
@@ -326,12 +314,10 @@ class PeerTeamPlugin(Plugin):
 
         # Check for pending reply expectations targeting this session_id
         my_pending = [
-            (corr_id, entry) for corr_id, entry in _registry._pending_replies.items()
+            (corr_id, entry) for corr_id, entry in self._state.pending_replies.items()
             if entry.get("receiver") == sid
         ]
-        print(f"[DEBUG forward_reply:{sid}] pending_replies={list(_registry._pending_replies.keys())} my_pending={[(c, e.get('sender')) for c, e in my_pending]}", flush=True)
         if not my_pending:
-            print(f"[DEBUG forward_reply:{sid}] no pending replies for me, skip", flush=True)
             return
 
         # Merge full result from task_complete + last assistant
@@ -339,10 +325,12 @@ class PeerTeamPlugin(Plugin):
 
         # Extract task_complete tool call result (preferred over assistant text)
         tc_result = ""
+        found_tc = False
         for m in reversed(messages):
             if m.role == "tool" and isinstance(m.content, dict):
                 name = m.content.get("name", "")
                 if name.endswith("task_complete"):
+                    found_tc = True
                     result_data = m.content.get("result", {})
                     if isinstance(result_data, dict):
                         tc_result = result_data.get("result", "") or ""
@@ -350,11 +338,9 @@ class PeerTeamPlugin(Plugin):
                         tc_result = result_data
                     break
 
-        # Only forward if task_complete was actually called this round.
-        # Otherwise the agent hasn't finished processing yet — keep
-        # pending_replies for the next round.
-        if not tc_result:
-            print(f"[DEBUG forward_reply:{sid}] no task_complete yet, keeping pending", flush=True)
+        # Only skip if task_complete was NOT called this round.
+        # If called with empty result, still forward and clear pending.
+        if not found_tc:
             return
 
         full_result = tc_result
@@ -369,7 +355,7 @@ class PeerTeamPlugin(Plugin):
                         "params": tc.get("params", {}),
                     })
 
-        bus = _registry.agent_bus
+        bus = self._state.agent_bus
         if bus is None:
             return
 
@@ -390,37 +376,32 @@ class PeerTeamPlugin(Plugin):
                 turn_count=getattr(ctx, "turn", 0),
             )
 
-            # Send brief + file pointer back
-            brief = full_result[:300] if full_result else "(no output)"
-            if len(full_result) > 300:
-                brief += "..."
-
             reply = AgentMessage(
                 sender=sid,
                 receiver=sender_sid,
-                type="reply",
-                payload={
-                    "brief": brief,
-                    "result_file": result_file,
-                    "correlation_id": corr_id,
-                },
+                type="response",
+                payload=JrpcEnvelope.response(
+                    id=corr_id,
+                    result={
+                        "summary": full_result[:300] if full_result else "(no output)",
+                        "result_file": result_file,
+                    },
+                ),
                 priority="normal",
-                correlation_id=f"peer_rpl_{uuid.uuid4().hex[:8]}",
+                correlation_id=corr_id,
             )
             await bus.send(reply)
-            print(f"[DEBUG forward_reply:{sid}] bus.send reply to {sender_sid} brief={brief[:80]}", flush=True)
 
             # Clear the expectation
-            _registry._pending_replies.pop(corr_id, None)
+            self._state.pending_replies.pop(corr_id, None)
             logger.info(
                 "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
                 sid, sender_sid, corr_id, result_file,
             )
 
-    @staticmethod
-    def _get_pending_receiver_sid(sender_sid: str) -> str | None:
+    def _get_pending_receiver_sid(self, sender_sid: str) -> str | None:
         """Return the first receiver_sid for which sender_sid has a pending reply."""
-        for entry in _registry._pending_replies.values():
+        for entry in self._state.pending_replies.values():
             if entry.get("sender") == sender_sid:
                 return entry.get("receiver")
         return None
@@ -445,7 +426,7 @@ class PeerTeamPlugin(Plugin):
             return None
 
         for m in index["members"]:
-            await _registry.agent_bus.register(AgentInfo(
+            await self._state.agent_bus.register(AgentInfo(
                 name=m["role"].lower(),
                 description=f"Agent: {m['agent_name']}",
                 capabilities=[],
@@ -466,9 +447,8 @@ async def _peer_wait_loop(
     inbox_key: str,
     bus: object,
     cancel_evt: asyncio.Event | None,
-    data_dir: str,
-    group_id: str,
     pending_receiver_sid: str | None = None,
+    last_activity: dict[str, float] | None = None,
 ) -> None:
     """Background task: detect peer message, wake harness.
 
@@ -491,42 +471,27 @@ async def _peer_wait_loop(
         has_msg = await bus.wait_for_message(
             inbox_key, timeout=poll_interval, cancel_event=cancel_evt,
         )
-        print(f"[DEBUG peer_wait:{inbox_key}] has_msg={has_msg}", flush=True)
-
         if has_msg:
             messages = [m async for m in bus.receive(inbox_key)]
             if messages:
-                parts = []
-                for msg in messages:
-                    formatted = PeerTeamPlugin._format_peer_message(msg)
-                    parts.append(formatted)
-                content = "\n\n".join(parts)
                 await harness.resolve_wait(
                     wait_id,
-                    inject_message={"role": "user", "content": content},
+                    inject_message=PeerTeamPlugin._package_peer_messages(messages),
                 )
                 return
 
         if cancel_evt is not None and cancel_evt.is_set():
             return
 
-        if pending_receiver_sid is not None:
-            last = _registry._last_activity.get(pending_receiver_sid, 0)
+        if pending_receiver_sid is not None and last_activity is not None:
+            last = last_activity.get(pending_receiver_sid, 0)
             if _time.time() - last > idle_timeout:
-                import json as _json
                 await harness.resolve_wait(
                     wait_id,
                     inject_message={
                         "role": "user",
-                        "content": (
-                            "[PEER_MESSAGE]\n"
-                            + _json.dumps({
-                                "from": pending_receiver_sid,
-                                "type": "timeout",
-                                "correlation_id": "",
-                                "content": f"No reply after {idle_timeout:.0f}s idle",
-                            }, ensure_ascii=False)
-                        ),
+                        "name": "system",
+                        "content": f"[timeout] No reply from {pending_receiver_sid} after {idle_timeout:.0f}s idle",
                     },
                 )
                 return

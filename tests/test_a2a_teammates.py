@@ -9,7 +9,8 @@ from arf.agent.primitive import PrimitiveAgent
 from arf.agent.state import ModelResult
 from arf.core.protocols.communication import AgentInfo, AgentMessage
 from arf.harness.context import PluginContext
-from arf.plugins.a2a_teammates.tools import _registry as tm_registry
+from arf.plugins.a2a_teammates.state import PeerTeamState
+import arf.plugins.a2a_teammates.state as _state_mod
 
 
 def _make_primitive_agent():
@@ -46,22 +47,30 @@ def _make_ctx(session_id="default_group__pm", agent=None):
     return ctx
 
 
+def _setup_fresh_state():
+    """Create a fresh PeerTeamState and set it as the module-level slot."""
+    _state_mod._state = PeerTeamState()
+    _state_mod._state.agent_bus = InMemoryAgentBus()
+    return _state_mod._state
+
+
+def _teardown_state():
+    _state_mod._state = None
+
+
 class TestSendPeerMessage:
     @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        tm_registry.agent_bus = InMemoryAgentBus()
-        tm_registry._pending_replies.clear()
-        tm_registry._peer_context_injected.clear()
-        tm_registry._peer_harnesses.clear()
+    def setup_state(self):
+        self.state = _setup_fresh_state()
         yield
-        tm_registry.agent_bus = None
+        _teardown_state()
 
     @pytest.mark.anyio
     async def test_send_peer_message_dispatches_to_bus(self):
         from arf.plugins.a2a_teammates.tools.send_peer_message.function import execute
 
         # Register dev on bus with session_id
-        await tm_registry.agent_bus.register(AgentInfo(name="default_group__dev", description="", capabilities=[]))
+        await _state_mod._state.agent_bus.register(AgentInfo(name="default_group__dev", description="", capabilities=[]))
 
         result = await execute(
             to="default_group__dev",
@@ -72,17 +81,20 @@ class TestSendPeerMessage:
         assert result["ok"] is True
         assert "correlation_id" in result
 
-        # Message should be in dev's inbox (keyed by session_id)
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        # Message should be in dev's inbox as JRPC request
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__dev")]
         assert len(msgs) == 1
-        assert msgs[0].payload["message"] == "review login.py"
+        assert msgs[0].type == "request"
         assert msgs[0].sender == "default_group__pm"
+        assert msgs[0].payload["jsonrpc"] == "2.0"
+        assert msgs[0].payload["method"] == "task.assign"
+        assert msgs[0].payload["params"]["message"] == "review login.py"
 
     @pytest.mark.anyio
     async def test_send_registers_pending_reply(self):
         from arf.plugins.a2a_teammates.tools.send_peer_message.function import execute
 
-        await tm_registry.agent_bus.register(AgentInfo(name="default_group__dev", description="", capabilities=[]))
+        await _state_mod._state.agent_bus.register(AgentInfo(name="default_group__dev", description="", capabilities=[]))
 
         result = await execute(
             to="default_group__dev",
@@ -90,22 +102,18 @@ class TestSendPeerMessage:
             session_id="default_group__pm",
         )
         corr_id = result["correlation_id"]
-        assert corr_id in tm_registry._pending_replies
-        assert tm_registry._pending_replies[corr_id]["sender"] == "default_group__pm"
-        assert tm_registry._pending_replies[corr_id]["receiver"] == "default_group__dev"
+        assert corr_id in _state_mod._state.pending_replies
+        assert _state_mod._state.pending_replies[corr_id]["sender"] == "default_group__pm"
+        assert _state_mod._state.pending_replies[corr_id]["receiver"] == "default_group__dev"
 
 
 class TestPluginHooks:
     @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        tm_registry.agent_bus = InMemoryAgentBus()
-        tm_registry._pending_replies.clear()
-        tm_registry._peer_context_injected.clear()
-        tm_registry._peer_harnesses.clear()
-        tm_registry._peer_wait_ids.clear()
-        tm_registry.data_dir = "./data"
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
         yield
-        tm_registry.agent_bus = None
+        _teardown_state()
 
     def _make_plugin(self):
         from arf.plugins.a2a_teammates import PeerTeamPlugin
@@ -137,7 +145,9 @@ class TestPluginHooks:
         # Protocol: cache-friendly constant
         assert "Team Communication" in str(system_msgs[1].content)
         assert "send_peer_message" in str(system_msgs[1].content)
-        assert "do not do the receiver's work" in str(system_msgs[1].content)
+        assert "JRPC" in str(system_msgs[1].content)
+        assert "do not do the" in str(system_msgs[1].content)
+        assert "receiver's work yourself" in str(system_msgs[1].content)
 
     @pytest.mark.anyio
     async def test_init_captures_harness(self):
@@ -146,18 +156,19 @@ class TestPluginHooks:
 
         await plugin.handle("init", ctx)
 
-        assert "default_group__pm" in tm_registry._peer_harnesses
+        assert "default_group__pm" in _state_mod._state.peer_harnesses
 
     @pytest.mark.anyio
     async def test_inject_and_park_drains_bus(self):
         plugin = self._make_plugin()
 
-        # Put a message in dev's inbox
-        await tm_registry.agent_bus.register(
+        # Put a JRPC task request in dev's inbox
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="default_group__dev", description="", capabilities=[]))
-        await tm_registry.agent_bus.send(AgentMessage(
-            sender="default_group__pm", receiver="default_group__dev", type="task",
-            payload={"message": "review login.py"},
+        await _state_mod._state.agent_bus.send(AgentMessage(
+            sender="default_group__pm", receiver="default_group__dev", type="request",
+            payload={"jsonrpc": "2.0", "method": "task.assign",
+                     "params": {"message": "review login.py"}, "id": "peer_123"},
             priority="normal",
             correlation_id="peer_123",
         ))
@@ -167,10 +178,12 @@ class TestPluginHooks:
 
         await plugin.handle("inject_and_park", ctx)
 
-        # Should have injected the peer message as user role
+        # Should have injected the peer message as user role with name attribution
         user_msgs = [m for m in agent.state.messages if m.role == "user"]
-        peer_msgs = [m for m in user_msgs if "[PEER_MESSAGE]" in str(m.content)]
+        peer_msgs = [m for m in user_msgs if m.name and m.name.startswith("peer:")]
         assert len(peer_msgs) == 1
+        assert peer_msgs[0].name == "peer:default_group__pm"
+        assert "[task]" in str(peer_msgs[0].content)
         assert "review login.py" in str(peer_msgs[0].content)
 
 
@@ -183,13 +196,12 @@ class TestPluginHooks:
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
 
-        tm_registry._peer_harnesses["default_group__dev"] = \
+        _state_mod._state.peer_harnesses["default_group__dev"] = \
             ctx.hook_data["_harness_ref"]["harness"]
 
         await plugin.handle("inject_and_park", ctx)
 
         assert len(agent.state.waiting.get("before_round", [])) > 0
-        assert "default_group__dev" in tm_registry._peer_wait_ids
 
     @pytest.mark.anyio
     async def test_inject_and_park_skips_when_entry_point(self):
@@ -198,7 +210,7 @@ class TestPluginHooks:
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
-        tm_registry._entry_points["default_group__pm"] = True
+        _state_mod._state.entry_points["default_group__pm"] = True
 
         await plugin.handle("inject_and_park", ctx)
 
@@ -211,28 +223,25 @@ class TestPluginHooks:
 
         await plugin.handle("heartbeat", ctx)
 
-        assert "default_group__pm" in tm_registry._last_activity
-        assert tm_registry._last_activity["default_group__pm"] > 0
+        assert "default_group__pm" in _state_mod._state.last_activity
+        assert _state_mod._state.last_activity["default_group__pm"] > 0
 
 
 class TestCancelPeerTask:
     @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        tm_registry.agent_bus = InMemoryAgentBus()
-        tm_registry._pending_replies.clear()
-        tm_registry._peer_harnesses.clear()
-        tm_registry._peer_wait_ids.clear()
+    def setup_state(self):
+        self.state = _setup_fresh_state()
         yield
-        tm_registry.agent_bus = None
+        _teardown_state()
 
     @pytest.mark.anyio
     async def test_cancel_removes_pending_and_sends_to_bus(self):
         from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
 
-        await tm_registry.agent_bus.register(
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="default_group__dev", description="", capabilities=[]))
 
-        tm_registry._pending_replies["peer_123"] = {
+        _state_mod._state.pending_replies["peer_123"] = {
             "sender": "default_group__pm",
             "receiver": "default_group__dev",
         }
@@ -243,20 +252,22 @@ class TestCancelPeerTask:
         )
         assert result["ok"] is True
         assert result["cancelled"] is True
-        assert "peer_123" not in tm_registry._pending_replies
+        assert "peer_123" not in _state_mod._state.pending_replies
 
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__dev")]
         assert len(msgs) == 1
-        assert msgs[0].type == "cancel"
+        assert msgs[0].type == "notification"
+        assert msgs[0].payload["method"] == "task.cancel"
+        assert msgs[0].payload["params"]["correlation_id"] == "peer_123"
 
     @pytest.mark.anyio
     async def test_cancel_sends_to_bus_and_pops_pending(self):
         from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
 
-        await tm_registry.agent_bus.register(
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="default_group__dev", description="", capabilities=[]))
 
-        tm_registry._pending_replies["peer_456"] = {
+        _state_mod._state.pending_replies["peer_456"] = {
             "sender": "default_group__pm",
             "receiver": "default_group__dev",
         }
@@ -266,13 +277,14 @@ class TestCancelPeerTask:
             session_id="default_group__pm",
         )
         assert result["ok"] is True
-        assert "peer_456" not in tm_registry._pending_replies
+        assert "peer_456" not in _state_mod._state.pending_replies
 
-        # Cancel message sent to bus — bg task will drain + wake
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        # Cancel notification sent to bus
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__dev")]
         assert len(msgs) == 1
-        assert msgs[0].type == "cancel"
-        assert msgs[0].payload["correlation_id"] == "peer_456"
+        assert msgs[0].type == "notification"
+        assert msgs[0].payload["method"] == "task.cancel"
+        assert msgs[0].payload["params"]["correlation_id"] == "peer_456"
 
     @pytest.mark.anyio
     async def test_cancel_unknown_task_fails(self):
@@ -288,11 +300,10 @@ class TestCancelPeerTask:
 
 class TestPeerWaitLoop:
     @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        tm_registry.agent_bus = InMemoryAgentBus()
-        tm_registry._pending_replies.clear()
+    def setup_state(self):
+        self.state = _setup_fresh_state()
         yield
-        tm_registry.agent_bus = None
+        _teardown_state()
 
     @pytest.mark.anyio
     async def test_loop_wakes_on_message(self):
@@ -304,11 +315,13 @@ class TestPeerWaitLoop:
             return_value=asyncio.Future())
         harness.resolve_wait.return_value.set_result(True)
 
-        await tm_registry.agent_bus.register(
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="default_group__pm", description="", capabilities=[]))
-        await tm_registry.agent_bus.send(AgentMessage(
-            sender="default_group__dev", receiver="default_group__pm", type="reply",
-            payload={"message": "done", "result_file": "x.md"},
+        await _state_mod._state.agent_bus.send(AgentMessage(
+            sender="default_group__dev", receiver="default_group__pm", type="response",
+            payload={"jsonrpc": "2.0",
+                     "result": {"summary": "done", "result_file": "x.md"},
+                     "id": "peer_rpl_001"},
             priority="normal",
             correlation_id="peer_rpl_001",
         ))
@@ -318,10 +331,8 @@ class TestPeerWaitLoop:
                 harness=harness,
                 wait_id="wait_001",
                 inbox_key="default_group__pm",
-                bus=tm_registry.agent_bus,
+                bus=_state_mod._state.agent_bus,
                 cancel_evt=None,
-                data_dir="./data",
-                group_id="default_group",
             ),
             timeout=5.0,
         )
@@ -329,23 +340,21 @@ class TestPeerWaitLoop:
         harness.resolve_wait.assert_called_once()
         call_args = harness.resolve_wait.call_args
         assert call_args[0][0] == "wait_001"
+        assert call_args[1]["inject_message"]["name"] == "peer:default_group__dev"
         assert "done" in call_args[1]["inject_message"]["content"]
 
         # Inbox drained by _peer_wait_loop
-        remaining = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
+        remaining = [m async for m in _state_mod._state.agent_bus.receive("default_group__pm")]
         assert len(remaining) == 0
 
 
 class TestForwardReply:
     @pytest.fixture(autouse=True)
-    def setup_registry(self):
-        tm_registry.agent_bus = InMemoryAgentBus()
-        tm_registry._pending_replies.clear()
-        tm_registry._peer_context_injected.clear()
-        tm_registry._peer_harnesses.clear()
-        tm_registry.data_dir = "./data"
+    def setup_state(self):
+        self.state = _setup_fresh_state()
+        self.state.data_dir = "./data"
         yield
-        tm_registry.agent_bus = None
+        _teardown_state()
 
     def _make_plugin(self):
         from arf.plugins.a2a_teammates import PeerTeamPlugin
@@ -367,11 +376,11 @@ class TestForwardReply:
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
 
-        await tm_registry.agent_bus.register(
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="pm", description="", capabilities=[]))
 
         # Register a pending reply: pm sent a task to dev
-        tm_registry._pending_replies["peer_abc"] = {
+        _state_mod._state.pending_replies["peer_abc"] = {
             "sender": "default_group__pm", "receiver": "default_group__dev",
         }
 
@@ -393,18 +402,19 @@ class TestForwardReply:
 
         await plugin.handle("forward_reply", ctx)
 
-        # Verify reply sent to pm
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
+        # Verify JRPC response sent to pm
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__pm")]
         assert len(msgs) == 1
         reply = msgs[0]
         assert reply.sender == "default_group__dev"
         assert reply.receiver == "default_group__pm"
-        assert reply.type == "reply"
-        assert "Found 3 security issues" in reply.payload["brief"]
-        assert reply.payload["correlation_id"] == "peer_abc"
+        assert reply.type == "response"
+        assert reply.payload["jsonrpc"] == "2.0"
+        assert reply.payload["id"] == "peer_abc"
+        assert "Found 3 security issues" in reply.payload["result"]["summary"]
 
         # Verify pending cleared
-        assert "peer_abc" not in tm_registry._pending_replies
+        assert "peer_abc" not in _state_mod._state.pending_replies
 
     @pytest.mark.anyio
     async def test_forward_reply_skips_without_task_complete(self):
@@ -413,10 +423,10 @@ class TestForwardReply:
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
 
-        await tm_registry.agent_bus.register(
+        await _state_mod._state.agent_bus.register(
             AgentInfo(name="pm", description="", capabilities=[]))
 
-        tm_registry._pending_replies["peer_def"] = {
+        _state_mod._state.pending_replies["peer_def"] = {
             "sender": "default_group__pm", "receiver": "default_group__dev",
         }
 
@@ -426,11 +436,11 @@ class TestForwardReply:
         await plugin.handle("forward_reply", ctx)
 
         # No reply sent — task_complete is required to forward
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__pm")]
         assert len(msgs) == 0
 
         # Pending NOT cleared — agent hasn't finished yet
-        assert "peer_def" in tm_registry._pending_replies
+        assert "peer_def" in _state_mod._state.pending_replies
 
     @pytest.mark.anyio
     async def test_forward_reply_skips_when_no_pending(self):
@@ -442,6 +452,46 @@ class TestForwardReply:
         await plugin.handle("forward_reply", ctx)
 
         # No pending matches dev — no message should appear on bus
-        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__dev")]
         assert len(msgs) == 0
-        assert len(tm_registry._pending_replies) == 0
+        assert len(_state_mod._state.pending_replies) == 0
+
+    @pytest.mark.anyio
+    async def test_forward_reply_clears_pending_on_empty_task_complete(self):
+        """forward_reply clears pending even when task_complete result is empty string."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="pm", description="", capabilities=[]))
+
+        _state_mod._state.pending_replies["peer_empty"] = {
+            "sender": "default_group__pm", "receiver": "default_group__dev",
+        }
+
+        # Assistant message + task_complete with empty result string
+        ctx.agent.input(role="assistant", content="Done, nothing to report.")
+        ctx.agent.input(role="tool", content={
+            "tool_call_id": "call_empty",
+            "name": "task_complete",
+            "result": {
+                "ok": True,
+                "task_complete": True,
+                "result": "",
+                "files_changed": {},
+                "confidence": 1.0,
+                "notes": "",
+            },
+            "error": "",
+        })
+
+        await plugin.handle("forward_reply", ctx)
+
+        # Should still forward (empty summary) and clear pending
+        msgs = [m async for m in _state_mod._state.agent_bus.receive("default_group__pm")]
+        assert len(msgs) == 1
+        assert msgs[0].payload["result"]["summary"] == "(no output)"
+
+        # Pending MUST be cleared — this is the fix
+        assert "peer_empty" not in _state_mod._state.pending_replies
