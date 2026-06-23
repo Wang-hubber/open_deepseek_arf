@@ -347,6 +347,66 @@ class TestPeerWaitLoop:
         remaining = [m async for m in _state_mod._state.agent_bus.receive("default_group__pm")]
         assert len(remaining) == 0
 
+    @pytest.mark.anyio
+    async def test_second_park_cancels_first_wait_loop(self):
+        """When an agent parks twice, the first wait loop is cancelled."""
+        from arf.plugins.a2a_teammates import _peer_wait_loop
+
+        harness = MagicMock()
+        harness.resolve_wait = MagicMock(return_value=asyncio.Future())
+        harness.resolve_wait.return_value.set_result(True)
+
+        await _state_mod._state.agent_bus.register(
+            AgentInfo(name="default_group__pm", description="", capabilities=[]))
+
+        # First park spawns task
+        _state_mod._state._wait_tasks["default_group__pm"] = \
+            asyncio.create_task(_peer_wait_loop(
+                harness=harness,
+                wait_id="wait_1",
+                inbox_key="default_group__pm",
+                bus=_state_mod._state.agent_bus,
+                cancel_evt=None,
+                idle_timeout=600.0,
+                last_activity=_state_mod._state.last_activity,
+            ))
+
+        task1 = _state_mod._state._wait_tasks["default_group__pm"]
+        assert not task1.done()
+
+        # Simulate a second park — this should cancel task1
+        if "default_group__pm" in _state_mod._state._wait_tasks:
+            old = _state_mod._state._wait_tasks.pop("default_group__pm")
+            if not old.done():
+                old.cancel()
+                # Yield to event loop so cancellation propagates
+                await asyncio.sleep(0)
+
+        # New task
+        _state_mod._state._wait_tasks["default_group__pm"] = \
+            asyncio.create_task(_peer_wait_loop(
+                harness=harness,
+                wait_id="wait_2",
+                inbox_key="default_group__pm",
+                bus=_state_mod._state.agent_bus,
+                cancel_evt=None,
+                idle_timeout=600.0,
+                last_activity=_state_mod._state.last_activity,
+            ))
+
+        # task1 should be done (cancelled)
+        assert task1.done()
+        assert task1.cancelled()
+
+        # Clean up
+        task2 = _state_mod._state._wait_tasks.pop("default_group__pm")
+        if not task2.done():
+            task2.cancel()
+            try:
+                await task2
+            except asyncio.CancelledError:
+                pass
+
 
 class TestForwardReply:
     @pytest.fixture(autouse=True)

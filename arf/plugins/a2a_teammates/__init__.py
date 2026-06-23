@@ -249,8 +249,18 @@ class PeerTeamPlugin(Plugin):
         if bus is None:
             return
 
+        # Cancel any existing wait task for this session before spawning a new one
+        old_task = self._state._wait_tasks.pop(sid, None)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+
         wi = ctx.agent.wait(hook_name, reason)
-        asyncio.create_task(_peer_wait_loop(
+
+        # idle workers (before_round) wait indefinitely; reply-waiters get 600s timeout
+        is_idle_worker = hook_name == "before_round"
+        task_idle_timeout = None if is_idle_worker else 600.0
+
+        task = asyncio.create_task(_peer_wait_loop(
             harness=harness,
             wait_id=wi.wait_id,
             inbox_key=sid,
@@ -258,7 +268,14 @@ class PeerTeamPlugin(Plugin):
             cancel_evt=ctx.hook_data.get("_cancel_event"),
             pending_receiver_sid=self._get_pending_receiver_sid(sid),
             last_activity=self._state.last_activity,
+            idle_timeout=task_idle_timeout,
         ))
+        self._state._wait_tasks[sid] = task
+
+        def _cleanup(_fut: asyncio.Task) -> None:
+            self._state._wait_tasks.pop(sid, None)
+
+        task.add_done_callback(_cleanup)
 
     @staticmethod
     def _format_peer_message(msg) -> str:
@@ -449,19 +466,18 @@ async def _peer_wait_loop(
     cancel_evt: asyncio.Event | None,
     pending_receiver_sid: str | None = None,
     last_activity: dict[str, float] | None = None,
+    idle_timeout: float | None = None,
 ) -> None:
     """Background task: detect peer message, wake harness.
 
-    Only detects message arrival and resolves the wait — does NOT drain
-    or inject.  Message consumption is handled by inject_peer_msgs at
-    the next before_model, which the caller's _peer_loop triggers by
-    re-entering run() after this resolves.
+    If *idle_timeout* is set and *pending_receiver_sid* is provided,
+    checks that receiver's heartbeat — idle for *idle_timeout* seconds
+    resolves the wait with a timeout notice.
 
-    If *pending_receiver_sid* is set, checks that receiver's heartbeat —
-    idle for 600 s resolves the wait with a timeout notice.
+    If *idle_timeout* is None (idle worker), the loop runs indefinitely
+    until a message arrives or the task is cancelled.
     """
     import time as _time
-    idle_timeout = 600.0
     poll_interval = 30.0
 
     while True:
@@ -483,7 +499,11 @@ async def _peer_wait_loop(
         if cancel_evt is not None and cancel_evt.is_set():
             return
 
-        if pending_receiver_sid is not None and last_activity is not None:
+        if (
+            idle_timeout is not None
+            and pending_receiver_sid is not None
+            and last_activity is not None
+        ):
             last = last_activity.get(pending_receiver_sid, 0)
             if _time.time() - last > idle_timeout:
                 await harness.resolve_wait(
