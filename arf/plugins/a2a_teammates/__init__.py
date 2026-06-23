@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
 from pathlib import Path
 
@@ -194,6 +195,21 @@ class PeerTeamPlugin(Plugin):
 
         # Merge full result from task_complete + last assistant
         messages = ctx.agent.state.messages
+
+        # Extract task_complete tool call result (preferred over assistant text)
+        tc_result = ""
+        for m in reversed(messages):
+            if m.role == "tool" and isinstance(m.content, dict):
+                name = m.content.get("name", "")
+                if name.endswith("task_complete"):
+                    result_data = m.content.get("result", {})
+                    if isinstance(result_data, dict):
+                        tc_result = result_data.get("result", "") or ""
+                    elif isinstance(result_data, str):
+                        tc_result = result_data
+                    break
+
+        # Fallback: last assistant message content
         last_assistant = ""
         for m in reversed(messages):
             if m.role == "assistant" and m.content:
@@ -202,9 +218,16 @@ class PeerTeamPlugin(Plugin):
 
         # Collect tool calls from this round for result file
         tool_calls_summary: list[dict] = []
-        # (tool calls tracked by harness events — simplified here)
+        for m in messages:
+            if m.role == "assistant" and isinstance(m.content, dict):
+                for tc in m.content.get("tool_calls", []):
+                    tool_calls_summary.append({
+                        "tool_name": tc.get("name", ""),
+                        "params": tc.get("params", {}),
+                    })
 
-        full_result = last_assistant  # task_complete.result preferred via system prompt
+        # task_complete.result preferred over last assistant
+        full_result = tc_result or last_assistant
 
         bus = _registry.agent_bus
         if bus is None:
@@ -272,14 +295,19 @@ class PeerTeamPlugin(Plugin):
         if not has_pending:
             return
 
-        wi = ctx.agent.wait("after_round", f"waiting for peer reply")
-        _registry._peer_wait_ids[role_key] = wi.wait_id
-
+        # Check harness AND bus BEFORE registering wait to avoid deadlock:
+        # if no background task can be spawned to resolve the wait, the agent
+        # would park forever (Critical: review C1).
         harness = _registry._peer_harnesses.get(role_key)
         if harness is None:
             return
-
         bus = _registry.agent_bus
+        if bus is None:
+            return
+
+        wi = ctx.agent.wait("after_round", f"waiting for peer reply")
+        _registry._peer_wait_ids[role_key] = wi.wait_id
+
         data_dir = ctx.data_dir
 
         asyncio.create_task(_peer_wait_loop(
@@ -352,11 +380,11 @@ class PeerTeamPlugin(Plugin):
 
 async def _peer_wait_loop(
     *,
-    harness,
+    harness: object,
     wait_id: str,
     role_key: str,
-    bus,
-    cancel_evt,
+    bus: object,
+    cancel_evt: asyncio.Event | None,
     data_dir: str,
     group_id: str,
 ) -> None:
@@ -365,7 +393,6 @@ async def _peer_wait_loop(
     Uses AgentBus.wait_for_message for push notification. Holds own
     harness reference — no cross-harness coordination needed.
     """
-    import random
 
     base_timeout = 30.0
     max_retries = 3

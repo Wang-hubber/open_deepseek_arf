@@ -1,7 +1,6 @@
 """A2A Teammates plugin tools — registry singleton."""
 from __future__ import annotations
 
-import asyncio
 import logging
 
 logger = logging.getLogger("arf.plugins.a2a_teammates.tools")

@@ -179,6 +179,11 @@ class TestPluginHooks:
             "sender": "pm", "receiver": "dev",
         }
 
+        # Simulate _on_init storing harness ref (C1 fix: harness must exist
+        # before park, otherwise park is skipped to avoid deadlock)
+        harness_mock = ctx.hook_data["_harness_ref"]["harness"]
+        tm_registry._peer_harnesses["pm"] = harness_mock
+
         await plugin.handle("peer_park", ctx)
 
         # Should have registered a wait
@@ -242,3 +247,114 @@ class TestPeerWaitLoop:
         # wait_id is first positional arg, inject_message is keyword arg
         assert call_args[0][0] == "wait_001"
         assert "done" in call_args[1]["inject_message"]["content"]
+
+
+class TestForwardReply:
+    @pytest.fixture(autouse=True)
+    def setup_registry(self):
+        tm_registry.agent_bus = InMemoryAgentBus()
+        tm_registry._pending_replies.clear()
+        tm_registry._peer_context_injected.clear()
+        tm_registry._peer_harnesses.clear()
+        tm_registry.data_dir = "./data"
+        yield
+        tm_registry.agent_bus = None
+
+    def _make_plugin(self):
+        from arf.plugins.a2a_teammates import PeerTeamPlugin
+        return PeerTeamPlugin(
+            name="a2a_teammates",
+            config={
+                "group_id": "default_group",
+                "members": [
+                    {"role": "pm", "agent_name": "pm_agent"},
+                    {"role": "dev", "agent_name": "dev_agent"},
+                ],
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_forward_reply_extracts_task_complete_result(self):
+        """forward_reply extracts task_complete result, sends bus reply, clears pending."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await tm_registry.agent_bus.register(
+            AgentInfo(name="pm", description="", capabilities=[]))
+
+        # Register a pending reply: pm sent a task to dev
+        tm_registry._pending_replies["peer_abc"] = {
+            "sender": "pm", "receiver": "dev",
+        }
+
+        # Inject assistant message + task_complete tool result
+        ctx.agent.input(role="assistant", content="I have completed the review.")
+        ctx.agent.input(role="tool", content={
+            "tool_call_id": "call_1",
+            "name": "task_complete",
+            "result": {
+                "ok": True,
+                "task_complete": True,
+                "result": "Found 3 security issues: XSS in login.py, SQL injection in db.py",
+                "files_changed": {},
+                "confidence": 1.0,
+                "notes": "",
+            },
+            "error": "",
+        })
+
+        await plugin.handle("forward_reply", ctx)
+
+        # Verify reply sent to pm
+        msgs = [m async for m in tm_registry.agent_bus.receive("pm")]
+        assert len(msgs) == 1
+        reply = msgs[0]
+        assert reply.sender == "dev"
+        assert reply.receiver == "pm"
+        assert reply.type == "reply"
+        assert "Found 3 security issues" in reply.payload["brief"]
+        assert reply.payload["correlation_id"] == "peer_abc"
+
+        # Verify pending cleared
+        assert "peer_abc" not in tm_registry._pending_replies
+
+    @pytest.mark.anyio
+    async def test_forward_reply_uses_assistant_fallback(self):
+        """forward_reply falls back to assistant content when no task_complete tool."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await tm_registry.agent_bus.register(
+            AgentInfo(name="pm", description="", capabilities=[]))
+
+        tm_registry._pending_replies["peer_def"] = {
+            "sender": "pm", "receiver": "dev",
+        }
+
+        # Only an assistant message, no task_complete tool result
+        ctx.agent.input(role="assistant", content="I did some work.")
+
+        await plugin.handle("forward_reply", ctx)
+
+        msgs = [m async for m in tm_registry.agent_bus.receive("pm")]
+        assert len(msgs) == 1
+        assert "I did some work." in msgs[0].payload["brief"]
+
+        # Pending should be cleared
+        assert "peer_def" not in tm_registry._pending_replies
+
+    @pytest.mark.anyio
+    async def test_forward_reply_skips_when_no_pending(self):
+        """forward_reply is no-op when no pending replies target this role."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
+
+        await plugin.handle("forward_reply", ctx)
+
+        # No pending matches dev — no message should appear on bus
+        msgs = [m async for m in tm_registry.agent_bus.receive("dev")]
+        assert len(msgs) == 0
+        assert len(tm_registry._pending_replies) == 0

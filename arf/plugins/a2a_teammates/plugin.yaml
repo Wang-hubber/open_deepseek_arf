@@ -7,4 +7,6 @@ events:
   - {hook_name: "after_round", event_name: "session_end", mode: "side"}
 config:
   group_id: default
-  members: []
+  members:
+    - role: default
+      agent_name: default
