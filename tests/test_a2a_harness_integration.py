@@ -1,5 +1,4 @@
 """Smoke tests for A2A plugin wired through AgentHarness."""
-import asyncio
 import pytest
 
 from arf.communication.queued_delegator import QueuedTaskDelegator

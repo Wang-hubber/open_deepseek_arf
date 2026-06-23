@@ -309,8 +309,6 @@ def _make_inherit_runner(
         from arf.agent.primitive import PrimitiveAgent
         from arf.harness.engine import AgentHarness
         from arf.agent.config import AgentConfig
-        from arf.agent.state import AgentState
-
         task_id = t.get("_delegator_task_id", "")
         ws_root = Path(os.environ.get("A4A_WORKSPACE", "."))
         ws_dir = str(ws_root)
