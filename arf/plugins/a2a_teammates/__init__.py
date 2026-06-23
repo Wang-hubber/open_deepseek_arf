@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import uuid
 from pathlib import Path
 
@@ -447,24 +446,20 @@ async def _peer_wait_loop(
 ) -> None:
     """Background task: wait for peer message, then wake own harness.
 
-    *inbox_key* is the agent's session_id — messages arrive on the bus
-    keyed by session_id.
+    Runs indefinitely, polling the bus every 30 s.  If *pending_receiver_sid*
+    is set, checks that receiver's heartbeat — if the receiver has been
+    idle for 600 s the wait is resolved with a timeout notice.
     """
+    import time as _time
+    idle_timeout = 600.0  # 10 minutes without heartbeat → give up
+    poll_interval = 30.0
 
-    base_timeout = 30.0
-    max_retries = 3
-    backoff_factor = 2.0
-
-    for attempt in range(max_retries):
-        current = base_timeout * (backoff_factor ** attempt)
-        jitter = current * 0.2 * (2 * random.random() - 1)
-        current += jitter
-
-        if bus is None:
-            break
+    while True:
+        if cancel_evt is not None and cancel_evt.is_set():
+            return
 
         has_msg = await bus.wait_for_message(
-            inbox_key, timeout=current, cancel_event=cancel_evt,
+            inbox_key, timeout=poll_interval, cancel_event=cancel_evt,
         )
 
         if has_msg:
@@ -484,40 +479,21 @@ async def _peer_wait_loop(
         if cancel_evt is not None and cancel_evt.is_set():
             return
 
-        my_role = SessionIndex.parse_session_id(inbox_key)
-        my_role = my_role[1] if my_role else inbox_key
-        # Alive check — if peers dead, try resume
-        if attempt < max_retries - 1:
-            try:
-                _base = Path(data_dir)
-                _idx_dir = _base.parent / "team_sessions" if _base.name != "team_sessions" else _base
-                idx = SessionIndex(str(_idx_dir))
-                index = await idx.load(group_id)
-                peers_alive = False
-                if index:
-                    for m in index.get("members", []):
-                        if m["role"] == my_role:
-                            continue
-                        if m.get("status") in ("active", "idle", "waiting_human"):
-                            peers_alive = True
-                            break
-                if not peers_alive:
-                    # Try wake peers via resume_group
-                    pass  # resume_group is on the plugin instance; skip for bg task
-            except Exception:
-                pass
-
-    # Exhausted retries — resolve with timeout notice
-    try:
-        await harness.resolve_wait(
-            wait_id,
-            inject_message={
-                "role": "system",
-                "content": f"[Peer] No reply received for {inbox_key} after {max_retries} retries",
-            },
-        )
-    except Exception:
-        logger.exception("Failed to resolve wait for %s after timeout", inbox_key)
+        # Liveness check: has the receiver gone silent?
+        if pending_receiver_sid is not None:
+            last = _registry._last_activity.get(pending_receiver_sid, 0)
+            if _time.time() - last > idle_timeout:
+                await harness.resolve_wait(
+                    wait_id,
+                    inject_message={
+                        "role": "system",
+                        "content": (
+                            f"[Peer] No reply from {pending_receiver_sid} "
+                            f"after {idle_timeout:.0f}s idle"
+                        ),
+                    },
+                )
+                return
 
 
 # Export Plugin class for harness loader
