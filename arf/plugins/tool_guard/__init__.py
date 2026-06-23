@@ -199,14 +199,13 @@ class ToolGuardPlugin(Plugin):
     def _path_in_allowlist(value: str, allow_paths: list[str]) -> bool:
         """Return True if *value* resolves to a path within any allow_paths entry.
 
-        Resolves *value* against each allow_path before checking containment,
-        so both relative paths (joined to the workspace) and absolute paths
-        are handled correctly.
+        Uses abspath so that relative allow_paths (e.g. ".") work correctly
+        — normpath strips "./" prefixes which breaks startswith comparisons.
         """
         for ap in allow_paths:
-            ap_norm = os.path.normpath(ap)
-            resolved = os.path.normpath(os.path.join(ap_norm, value))
-            if resolved == ap_norm or resolved.startswith(ap_norm + os.sep):
+            ap_abs = os.path.abspath(ap)
+            resolved = os.path.abspath(os.path.join(ap_abs, value))
+            if resolved == ap_abs or resolved.startswith(ap_abs + os.sep):
                 return True
         return False
 
