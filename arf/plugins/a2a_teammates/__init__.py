@@ -481,8 +481,10 @@ async def _peer_wait_loop(
         has_msg = await bus.wait_for_message(
             inbox_key, timeout=poll_interval, cancel_event=cancel_evt,
         )
+        print(f"[DEBUG peer_wait:{inbox_key}] has_msg={has_msg}", flush=True)
 
         if has_msg:
+            print(f"[DEBUG peer_wait:{inbox_key}] waking harness", flush=True)
             await harness.resolve_wait(wait_id)
             return
 
