@@ -43,6 +43,7 @@ _TEAM_PROTOCOL = (
 _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
+    {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
@@ -78,6 +79,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_init(ctx)
         elif event_name == "inject_session_id":
             await self._on_inject_session_id(ctx)
+        elif event_name == "inject_and_park":
+            await self._on_inject_and_park(ctx)
         elif event_name == "inject_peer_msgs":
             await self._on_inject_peer_msgs(ctx)
         elif event_name == "heartbeat":
@@ -194,23 +197,29 @@ class PeerTeamPlugin(Plugin):
                 tc.setdefault("params", {})["session_id"] = ctx.session_id
 
     # ==================================================================
-    # inject_peer_msgs — drain inbox + park
+    # inject_and_park — drain inbox + park at before_round
     # ==================================================================
 
-    async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
-        """Drain inbox. Park if idle or waiting. Wakes in same run()."""
+    async def _on_inject_and_park(self, ctx: PluginContext) -> None:
+        """Drain inbox at before_round. Park if idle/waiting.
+
+        Park resolves in the _peer_wait_loop bg task which drains the
+        inbox and injects via resolve_wait(inject_message=...).  On
+        wake the message is already in agent state — model sees it
+        immediately in the turn loop.
+        """
         bus = _registry.agent_bus
         if bus is None:
             return
         sid = ctx.session_id
 
-        # 1. Drain and inject any pending messages
+        # Drain any messages that arrived before this checkpoint
         messages = [m async for m in bus.receive(sid)]
         if messages:
             await self._inject_messages(ctx, messages)
-            return  # agent has work — don't park
+            return
 
-        # 2. Park if idle worker or waiting for reply
+        # Park if idle worker or waiting for reply
         has_pending = any(
             entry.get("sender") == sid
             for entry in _registry._pending_replies.values()
@@ -218,13 +227,13 @@ class PeerTeamPlugin(Plugin):
         is_entry_point = _registry._entry_points.get(sid, False)
 
         if not has_pending and is_entry_point:
-            return  # initiator with no pending → can act
+            return
 
         harness = _registry._peer_harnesses.get(sid)
         if harness is None:
             return
 
-        wi = ctx.agent.wait("before_model", f"peer_idle:{sid}")
+        wi = ctx.agent.wait("before_round", f"peer_idle:{sid}")
         _registry._peer_wait_ids[sid] = wi.wait_id
 
         asyncio.create_task(_peer_wait_loop(
@@ -237,6 +246,21 @@ class PeerTeamPlugin(Plugin):
             group_id=self._group_id,
             pending_receiver_sid=self._get_pending_receiver_sid(sid),
         ))
+
+    # ==================================================================
+    # inject_peer_msgs — drain inbox only (safety net at before_model)
+    # ==================================================================
+
+    async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
+        """Drain inbox at before_model. No park — the bg task already
+        injected any messages during park resolution."""
+        bus = _registry.agent_bus
+        if bus is None:
+            return
+        sid = ctx.session_id
+        messages = [m async for m in bus.receive(sid)]
+        if messages:
+            await self._inject_messages(ctx, messages)
 
     async def _inject_messages(
         self, ctx: PluginContext, messages: list,
@@ -473,9 +497,18 @@ async def _peer_wait_loop(
         print(f"[DEBUG peer_wait:{inbox_key}] has_msg={has_msg}", flush=True)
 
         if has_msg:
-            print(f"[DEBUG peer_wait:{inbox_key}] waking harness", flush=True)
-            await harness.resolve_wait(wait_id)
-            return
+            messages = [m async for m in bus.receive(inbox_key)]
+            if messages:
+                parts = []
+                for msg in messages:
+                    formatted = PeerTeamPlugin._format_peer_message(msg)
+                    parts.append(formatted)
+                content = "\n\n".join(parts)
+                await harness.resolve_wait(
+                    wait_id,
+                    inject_message={"role": "system", "content": content},
+                )
+                return
 
         if cancel_evt is not None and cancel_evt.is_set():
             return

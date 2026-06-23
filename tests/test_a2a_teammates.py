@@ -149,7 +149,7 @@ class TestPluginHooks:
         assert "default_group__pm" in tm_registry._peer_harnesses
 
     @pytest.mark.anyio
-    async def test_inject_peer_msgs_drains_bus(self):
+    async def test_inject_and_park_drains_bus(self):
         plugin = self._make_plugin()
 
         # Put a message in dev's inbox
@@ -165,7 +165,7 @@ class TestPluginHooks:
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
 
-        await plugin.handle("inject_peer_msgs", ctx)
+        await plugin.handle("inject_and_park", ctx)
 
         # Should have injected the peer message
         system_msgs = [m for m in agent.state.messages if m.role == "system"]
@@ -177,8 +177,8 @@ class TestPluginHooks:
 
 
     @pytest.mark.anyio
-    async def test_inject_peer_msgs_parks_when_idle(self):
-        """Idle worker (not entry_point) parks at before_model."""
+    async def test_inject_and_park_parks_when_idle(self):
+        """Idle worker (not entry_point) parks at before_round."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__dev", agent=agent)
@@ -186,13 +186,13 @@ class TestPluginHooks:
         tm_registry._peer_harnesses["default_group__dev"] = \
             ctx.hook_data["_harness_ref"]["harness"]
 
-        await plugin.handle("inject_peer_msgs", ctx)
+        await plugin.handle("inject_and_park", ctx)
 
-        assert len(agent.state.waiting.get("before_model", [])) > 0
+        assert len(agent.state.waiting.get("before_round", [])) > 0
         assert "default_group__dev" in tm_registry._peer_wait_ids
 
     @pytest.mark.anyio
-    async def test_inject_peer_msgs_skips_when_entry_point(self):
+    async def test_inject_and_park_skips_when_entry_point(self):
         """Entry point with no pending skips park."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
@@ -200,9 +200,9 @@ class TestPluginHooks:
 
         tm_registry._entry_points["default_group__pm"] = True
 
-        await plugin.handle("inject_peer_msgs", ctx)
+        await plugin.handle("inject_and_park", ctx)
 
-        assert "before_model" not in agent.state.waiting
+        assert "before_round" not in agent.state.waiting
 
     @pytest.mark.anyio
     async def test_heartbeat_updates_last_activity(self):
@@ -328,12 +328,14 @@ class TestPeerWaitLoop:
             timeout=5.0,
         )
 
-        harness.resolve_wait.assert_called_once_with("wait_001")
+        harness.resolve_wait.assert_called_once()
+        call_args = harness.resolve_wait.call_args
+        assert call_args[0][0] == "wait_001"
+        assert "done" in call_args[1]["inject_message"]["content"]
 
-        # Message stays in inbox — inject_peer_msgs drains it at before_model
+        # Inbox drained by _peer_wait_loop
         remaining = [m async for m in tm_registry.agent_bus.receive("default_group__pm")]
-        assert len(remaining) == 1
-        assert remaining[0].payload["message"] == "done"
+        assert len(remaining) == 0
 
 
 class TestForwardReply:
