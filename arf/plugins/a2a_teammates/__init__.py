@@ -40,6 +40,7 @@ _TEAM_PROTOCOL = (
 
 _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
+    {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
     {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
@@ -61,10 +62,7 @@ class PeerTeamPlugin(Plugin):
         self._group_id = cfg.group_id
         self._members = cfg.members
 
-        # role → entry_point mapping for idle-park decision
-        self._entry_points: dict[str, bool] = {
-            m.role.lower(): m.entry_point for m in self._members
-        }
+        # role → entry_point mapping; stored on registry by session_id at init
 
         if _registry.agent_bus is None:
             _registry.agent_bus = InMemoryAgentBus()
@@ -76,6 +74,8 @@ class PeerTeamPlugin(Plugin):
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "init":
             await self._on_init(ctx)
+        elif event_name == "inject_session_id":
+            await self._on_inject_session_id(ctx)
         elif event_name == "inject_peer_msgs":
             await self._on_inject_peer_msgs(ctx)
         elif event_name == "forward_reply":
@@ -102,7 +102,15 @@ class PeerTeamPlugin(Plugin):
         harness_ref = ctx.hook_data.get("_harness_ref", {})
         parent_harness = harness_ref.get("harness")
         if parent_harness is not None:
-            _registry._peer_harnesses[role.lower()] = parent_harness
+            _registry._peer_harnesses[sid] = parent_harness
+
+        # Store entry_point on registry for park decisions
+        for m in self._members:
+            if m.role == role:
+                _registry._entry_points[sid] = m.entry_point
+                break
+        else:
+            _registry._entry_points[sid] = False
 
         # SessionIndex stored in shared team_sessions/ directory
         _base_data = Path(ctx.data_dir or "./data")
@@ -127,7 +135,6 @@ class PeerTeamPlugin(Plugin):
                 await idx.create(group_id, members)
                 logger.info("Peer team group %s created with %d members", group_id, len(members))
             else:
-                # No member config on this agent — register self as sole member
                 await idx.create(group_id, [{
                     "role": role,
                     "agent_name": role,
@@ -135,9 +142,10 @@ class PeerTeamPlugin(Plugin):
                     "status": "active",
                 }])
 
-        # Always register THIS agent on the bus (regardless of who created the group)
+        # Always register THIS agent on the bus with session_id as the key.
+        # Every agent registers itself — not just the group creator.
         await _registry.agent_bus.register(AgentInfo(
-            name=role.lower(),
+            name=sid,
             description=f"Agent: {role}",
             capabilities=[],
         ))
@@ -148,71 +156,82 @@ class PeerTeamPlugin(Plugin):
         # Inject team communication context once per session
         if sid not in _registry._peer_context_injected:
             _registry._peer_context_injected.add(sid)
-            # Dynamic roster — per-session
+            # Dynamic roster with session_ids — LLM uses these as addresses
             roster_lines = []
             for m in self._members:
+                member_sid = f"{group_id}__{m.role}"
                 desc = f" — {m.agent_name}" if m.agent_name else ""
-                roster_lines.append(f"  {m.role}{desc}")
-            roster = "\n".join(roster_lines) if roster_lines else f"  {role}"
+                marker = " (you)" if m.role == role else ""
+                roster_lines.append(
+                    f"  {m.role}{desc}{marker} → {member_sid}"
+                )
+            roster = "\n".join(roster_lines) if roster_lines else f"  {role} → {sid}"
             ctx.agent.input(role="system", content=(
                 f"You are in team \"{group_id}\", role: \"{role}\".\n"
-                f"Teammates:\n{roster}"
+                f"Your session_id: {sid}\n"
+                f"Teammates (use session_id for send_peer_message):\n{roster}"
             ))
             # Static protocol — cache-friendly constant
             ctx.agent.input(role="system", content=_TEAM_PROTOCOL)
+
+    # ==================================================================
+    # inject_session_id — inject session_id into send_peer_message calls
+    # ==================================================================
+
+    async def _on_inject_session_id(self, ctx: PluginContext) -> None:
+        """Inject session_id into send_peer_message tool params before execution.
+
+        The model calls send_peer_message(to=..., message=...) — it does
+        not provide its own session_id.  We inject it here so the tool
+        function always knows who the sender is.
+        """
+        tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            if name.endswith("send_peer_message"):
+                tc.setdefault("params", {})["session_id"] = ctx.session_id
 
     # ==================================================================
     # inject_peer_msgs — drain inbox + mid-cycle park
     # ==================================================================
 
     async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
-        """Drain AgentBus inbox before model call.
-
-        Only parks mid-cycle when the agent has an outgoing pending
-        (waiting for a reply). Idle-park happens at after_round instead
-        so the agent can process user input first.
-        """
+        """Drain AgentBus inbox before model call (session_id is the key)."""
         bus = _registry.agent_bus
         if bus is None:
             return
 
         sid = ctx.session_id
-        parsed = SessionIndex.parse_session_id(sid)
-        if parsed is None:
-            return
-        _group_id, role = parsed
-
-        role_key = role.lower()
 
         # 1. Drain and inject any pending messages
-        messages = [m async for m in bus.receive(role_key)]
+        messages = [m async for m in bus.receive(sid)]
         if messages:
             await self._inject_messages(ctx, messages)
-            return  # agent has work — don't park
+            return
 
         # 2. Mid-cycle park: only when actively waiting for a reply
         has_pending = any(
-            entry.get("sender") == role_key
+            entry.get("sender") == sid
             for entry in _registry._pending_replies.values()
         )
         if not has_pending:
-            return  # no reply to wait for → let the model think
+            return
 
-        harness = _registry._peer_harnesses.get(role_key)
+        harness = _registry._peer_harnesses.get(sid)
         if harness is None:
             return
 
-        wi = ctx.agent.wait("before_model", f"peer_wait:{role_key}")
-        _registry._peer_wait_ids[role_key] = wi.wait_id
+        wi = ctx.agent.wait("before_model", f"peer_wait:{sid}")
+        _registry._peer_wait_ids[sid] = wi.wait_id
 
         asyncio.create_task(_peer_wait_loop(
             harness=harness,
             wait_id=wi.wait_id,
-            role_key=role_key,
+            inbox_key=sid,
             bus=bus,
             cancel_evt=ctx.hook_data.get("_cancel_event"),
             data_dir=ctx.data_dir,
-            group_id=_group_id,
+            group_id=self._group_id,
         ))
 
     async def _inject_messages(
@@ -246,16 +265,11 @@ class PeerTeamPlugin(Plugin):
     async def _on_forward_reply(self, ctx: PluginContext) -> None:
         """Read last assistant + task_complete result, write file, bus.send back."""
         sid = ctx.session_id
-        parsed = SessionIndex.parse_session_id(sid)
-        if parsed is None:
-            return
-        group_id, role = parsed
 
-        # Check for pending reply expectations targeting this role
-        role_key = role.lower()
+        # Check for pending reply expectations targeting this session_id
         my_pending = [
             (corr_id, entry) for corr_id, entry in _registry._pending_replies.items()
-            if entry.get("receiver") == role_key
+            if entry.get("receiver") == sid
         ]
         if not my_pending:
             return
@@ -300,16 +314,18 @@ class PeerTeamPlugin(Plugin):
         if bus is None:
             return
 
+        group_id = self._group_id
+
         for corr_id, entry in my_pending:
-            sender_role = entry["sender"]
+            sender_sid = entry["sender"]
 
             # Write full result file
             result_file = write_peer_result(
                 data_dir=ctx.data_dir,
                 group_id=group_id,
                 correlation_id=corr_id,
-                agent_role=role_key,
-                task_description=f"Task from {sender_role}",
+                agent_role=sid,
+                task_description=f"Task from {sender_sid}",
                 full_result=full_result,
                 tool_calls=tool_calls_summary,
                 turn_count=getattr(ctx, "turn", 0),
@@ -321,8 +337,8 @@ class PeerTeamPlugin(Plugin):
                 brief += "..."
 
             reply = AgentMessage(
-                sender=role_key,
-                receiver=sender_role,
+                sender=sid,
+                receiver=sender_sid,
                 type="reply",
                 payload={
                     "brief": brief,
@@ -337,8 +353,8 @@ class PeerTeamPlugin(Plugin):
             # Clear the expectation
             _registry._pending_replies.pop(corr_id, None)
             logger.info(
-                "Peer '%s' reply forwarded to '%s' (corr=%s, file=%s)",
-                role_key, sender_role, corr_id, result_file,
+                "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
+                sid, sender_sid, corr_id, result_file,
             )
 
     # ==================================================================
@@ -346,48 +362,36 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_peer_park(self, ctx: PluginContext) -> None:
-        """Park at end of round if the agent is idle or waiting for a reply.
-
-        Runs at after_round so the agent gets to finish its current round
-        (e.g. setup messages, user input processing) before parking.
-        """
+        """Park at end of round if the agent is idle or waiting for a reply."""
         sid = ctx.session_id
-        parsed = SessionIndex.parse_session_id(sid)
-        if parsed is None:
-            return
-        group_id, role = parsed
-        role_key = role.lower()
 
         has_pending = any(
-            entry.get("sender") == role_key
+            entry.get("sender") == sid
             for entry in _registry._pending_replies.values()
         )
-        is_entry_point = self._entry_points.get(role_key, False)
+        is_entry_point = _registry._entry_points.get(sid, False)
 
-        # Park when:
-        #   a. waiting for a reply, OR
-        #   b. idle worker with no assigned task
         if not has_pending and is_entry_point:
             return  # initiator with nothing to wait for → can act
 
-        harness = _registry._peer_harnesses.get(role_key)
+        harness = _registry._peer_harnesses.get(sid)
         if harness is None:
             return
         bus = _registry.agent_bus
         if bus is None:
             return
 
-        wi = ctx.agent.wait("after_round", f"peer_idle:{role_key}")
-        _registry._peer_wait_ids[role_key] = wi.wait_id
+        wi = ctx.agent.wait("after_round", f"peer_idle:{sid}")
+        _registry._peer_wait_ids[sid] = wi.wait_id
 
         asyncio.create_task(_peer_wait_loop(
             harness=harness,
             wait_id=wi.wait_id,
-            role_key=role_key,
+            inbox_key=sid,
             bus=bus,
             cancel_evt=ctx.hook_data.get("_cancel_event"),
             data_dir=ctx.data_dir,
-            group_id=group_id,
+            group_id=self._group_id,
         ))
 
     # ==================================================================
@@ -402,8 +406,9 @@ class PeerTeamPlugin(Plugin):
         group_id, role = parsed
 
         # Clean up harness ref
-        _registry._peer_harnesses.pop(role.lower(), None)
-        _registry._peer_wait_ids.pop(role.lower(), None)
+        _registry._peer_harnesses.pop(sid, None)
+        _registry._peer_wait_ids.pop(sid, None)
+        _registry._entry_points.pop(sid, None)
 
         _base_data = Path(ctx.data_dir or "./data")
         _session_index_dir = (
@@ -452,7 +457,7 @@ async def _peer_wait_loop(
     *,
     harness: object,
     wait_id: str,
-    role_key: str,
+    inbox_key: str,
     bus: object,
     cancel_evt: asyncio.Event | None,
     data_dir: str,
@@ -460,8 +465,8 @@ async def _peer_wait_loop(
 ) -> None:
     """Background task: wait for peer message, then wake own harness.
 
-    Uses AgentBus.wait_for_message for push notification. Holds own
-    harness reference — no cross-harness coordination needed.
+    *inbox_key* is the agent's session_id — messages arrive on the bus
+    keyed by session_id.
     """
 
     base_timeout = 30.0
@@ -477,11 +482,11 @@ async def _peer_wait_loop(
             break
 
         has_msg = await bus.wait_for_message(
-            role_key, timeout=current, cancel_event=cancel_evt,
+            inbox_key, timeout=current, cancel_event=cancel_evt,
         )
 
         if has_msg:
-            messages = [m async for m in bus.receive(role_key)]
+            messages = [m async for m in bus.receive(inbox_key)]
             if messages:
                 parts = []
                 for msg in messages:
@@ -497,6 +502,8 @@ async def _peer_wait_loop(
         if cancel_evt is not None and cancel_evt.is_set():
             return
 
+        my_role = SessionIndex.parse_session_id(inbox_key)
+        my_role = my_role[1] if my_role else inbox_key
         # Alive check — if peers dead, try resume
         if attempt < max_retries - 1:
             try:
@@ -507,7 +514,7 @@ async def _peer_wait_loop(
                 peers_alive = False
                 if index:
                     for m in index.get("members", []):
-                        if m["role"] == role_key:
+                        if m["role"] == my_role:
                             continue
                         if m.get("status") in ("active", "idle", "waiting_human"):
                             peers_alive = True
@@ -524,11 +531,11 @@ async def _peer_wait_loop(
             wait_id,
             inject_message={
                 "role": "system",
-                "content": f"[Peer] No reply received for {role_key} after {max_retries} retries",
+                "content": f"[Peer] No reply received for {inbox_key} after {max_retries} retries",
             },
         )
     except Exception:
-        logger.exception("Failed to resolve wait for %s after timeout", role_key)
+        logger.exception("Failed to resolve wait for %s after timeout", inbox_key)
 
 
 # Export Plugin class for harness loader

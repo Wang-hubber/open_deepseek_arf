@@ -24,6 +24,8 @@ class _TeammatesRegistry:
         self._pending_replies: dict[str, dict[str, str]] = {}
         # session_ids that already got team context injected
         self._peer_context_injected: set[str] = set()
+        # session_id → is_entry_point
+        self._entry_points: dict[str, bool] = {}
         # data_dir set by plugin at init
         self.data_dir: str = "./data"
 

@@ -1,4 +1,4 @@
-"""send_peer_message — send a message to another peer agent."""
+"""send_peer_message — send a message to another peer agent via session_id."""
 from __future__ import annotations
 
 import uuid
@@ -8,21 +8,20 @@ from arf.plugins.a2a_teammates.tools import _registry
 
 
 async def execute(
-    receiver: str,
+    to: str,
     message: str,
     type: str = "task",
     priority: str = "normal",
     session_id: str = "",
 ) -> dict:
-    """Send a peer message to *receiver* via the AgentBus.
+    """Send a peer message to *to* (target session_id) via the AgentBus.
 
-    The sender is inferred from *session_id* (the caller's session).
+    *session_id* is injected by the plugin at before_tools — the caller
+    does not provide it.  The sender is the calling agent's own session_id.
+
     Message lands in the receiver's inbox and is injected at the next
-    before_model hook. When the receiver calls task_complete, the
-    reply is auto-forwarded back to the sender.
-
-    Use type="task" to assign work (receiver should call task_complete
-    when done). Use type="info" for notifications without reply.
+    before_model hook.  When the receiver calls task_complete, the reply
+    is auto-forwarded back to the sender.
     """
     if _registry.agent_bus is None:
         return {
@@ -30,18 +29,15 @@ async def execute(
             "error": "AgentBus not initialized — is the a2a_teammates plugin enabled?",
         }
 
-    receiver = receiver.lower().strip()
+    if not session_id:
+        return {"ok": False, "error": "session_id not provided — plugin must inject it"}
 
-    from arf.session.session_index import SessionIndex
-    parsed = SessionIndex.parse_session_id(session_id) if session_id else None
-    sender = parsed[1] if parsed else "unknown"
-    group_id = parsed[0] if parsed else ""
-
+    to = to.strip()
     correlation_id = f"peer_{uuid.uuid4().hex[:8]}"
 
     msg = AgentMessage(
-        sender=sender,
-        receiver=receiver,
+        sender=session_id,
+        receiver=to,
         type=type,
         payload={"message": message},
         priority=priority,
@@ -50,11 +46,9 @@ async def execute(
 
     await _registry.agent_bus.send(msg)
 
-    # Register reply expectation — forward_reply uses this to route
-    # the task_complete result back to the sender
     _registry._pending_replies[correlation_id] = {
-        "sender": sender,
-        "receiver": receiver,
+        "sender": session_id,
+        "receiver": to,
     }
 
     return {"ok": True, "correlation_id": correlation_id}
