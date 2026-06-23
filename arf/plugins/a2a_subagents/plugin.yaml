@@ -1,9 +1,8 @@
 name: a2a_subagents
 events:
-  - {hook_name: "before_round", event_name: "session_start", mode: "side"}
-  - {hook_name: "before_model", event_name: "pre_action", mode: "blocking"}
-  - {hook_name: "after_round", event_name: "round_end", mode: "blocking"}
-  - {hook_name: "after_round", event_name: "session_end", mode: "side"}
+  - {hook_name: "session_start", event_name: "init", mode: "side"}
+  - {hook_name: "before_model", event_name: "inject_results", mode: "blocking"}
+  - {hook_name: "after_round", event_name: "cleanup", mode: "blocking"}
 config:
   max_concurrent_tasks: 3
   max_task_timeout: 600
