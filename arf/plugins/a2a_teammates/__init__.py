@@ -46,7 +46,6 @@ _DEFAULT_EVENTS = [
     {"hook_name": "before_model", "event_name": "inject_peer_msgs", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
-    {"hook_name": "after_round", "event_name": "peer_park", "mode": "blocking"},
     {"hook_name": "after_round", "event_name": "session_end", "mode": "side"},
 ]
 
@@ -85,8 +84,6 @@ class PeerTeamPlugin(Plugin):
             await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
-        elif event_name == "peer_park":
-            await self._on_peer_park(ctx)
         elif event_name == "session_end":
             await self._on_session_end(ctx)
 
@@ -197,18 +194,49 @@ class PeerTeamPlugin(Plugin):
                 tc.setdefault("params", {})["session_id"] = ctx.session_id
 
     # ==================================================================
-    # inject_peer_msgs — drain inbox + mid-cycle park
+    # inject_peer_msgs — drain inbox + park
     # ==================================================================
 
     async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
-        """Drain AgentBus inbox before model call. Never parks here."""
+        """Drain inbox. Park if idle or waiting. Wakes in same run()."""
         bus = _registry.agent_bus
         if bus is None:
             return
         sid = ctx.session_id
+
+        # 1. Drain and inject any pending messages
         messages = [m async for m in bus.receive(sid)]
         if messages:
             await self._inject_messages(ctx, messages)
+            return  # agent has work — don't park
+
+        # 2. Park if idle worker or waiting for reply
+        has_pending = any(
+            entry.get("sender") == sid
+            for entry in _registry._pending_replies.values()
+        )
+        is_entry_point = _registry._entry_points.get(sid, False)
+
+        if not has_pending and is_entry_point:
+            return  # initiator with no pending → can act
+
+        harness = _registry._peer_harnesses.get(sid)
+        if harness is None:
+            return
+
+        wi = ctx.agent.wait("before_model", f"peer_idle:{sid}")
+        _registry._peer_wait_ids[sid] = wi.wait_id
+
+        asyncio.create_task(_peer_wait_loop(
+            harness=harness,
+            wait_id=wi.wait_id,
+            inbox_key=sid,
+            bus=bus,
+            cancel_evt=ctx.hook_data.get("_cancel_event"),
+            data_dir=ctx.data_dir,
+            group_id=self._group_id,
+            pending_receiver_sid=self._get_pending_receiver_sid(sid),
+        ))
 
     async def _inject_messages(
         self, ctx: PluginContext, messages: list,
@@ -342,45 +370,6 @@ class PeerTeamPlugin(Plugin):
                 "Peer reply forwarded from %s to %s (corr=%s, file=%s)",
                 sid, sender_sid, corr_id, result_file,
             )
-
-    # ==================================================================
-    # peer_park — idle park at after_round
-    # ==================================================================
-
-    async def _on_peer_park(self, ctx: PluginContext) -> None:
-        """Park at end of every round. User or peer message wakes it."""
-        sid = ctx.session_id
-        harness = _registry._peer_harnesses.get(sid)
-        if harness is None:
-            return
-        bus = _registry.agent_bus
-        if bus is None:
-            return
-
-        # Cancel any previous wait_loop for this session — only the
-        # latest wait_id matters (the one the harness is blocking on).
-        old_evt = _registry._peer_cancel_events.get(sid)
-        if old_evt is not None:
-            old_evt.set()
-            print(f"[DEBUG peer_park:{sid}] cancelled old wait_loop", flush=True)
-
-        cancel_evt = asyncio.Event()
-        _registry._peer_cancel_events[sid] = cancel_evt
-
-        wi = ctx.agent.wait("after_round", f"peer_idle:{sid}")
-        _registry._peer_wait_ids[sid] = wi.wait_id
-        print(f"[DEBUG peer_park:{sid}] spawning wait_loop wait_id={wi.wait_id}", flush=True)
-
-        asyncio.create_task(_peer_wait_loop(
-            harness=harness,
-            wait_id=wi.wait_id,
-            inbox_key=sid,
-            bus=bus,
-            cancel_evt=cancel_evt,
-            data_dir=ctx.data_dir,
-            group_id=self._group_id,
-            pending_receiver_sid=self._get_pending_receiver_sid(sid),
-        ))
 
     @staticmethod
     def _get_pending_receiver_sid(sender_sid: str) -> str | None:

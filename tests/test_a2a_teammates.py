@@ -177,31 +177,32 @@ class TestPluginHooks:
 
 
     @pytest.mark.anyio
-    async def test_peer_park_always_parks(self):
-        """Every agent parks at after_round unconditionally."""
+    async def test_inject_peer_msgs_parks_when_idle(self):
+        """Idle worker (not entry_point) parks at before_model."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
-        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
+        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
 
-        tm_registry._peer_harnesses["default_group__pm"] = \
+        tm_registry._peer_harnesses["default_group__dev"] = \
             ctx.hook_data["_harness_ref"]["harness"]
 
-        await plugin.handle("peer_park", ctx)
+        await plugin.handle("inject_peer_msgs", ctx)
 
-        assert len(agent.state.waiting.get("after_round", [])) > 0
-        assert "default_group__pm" in tm_registry._peer_wait_ids
+        assert len(agent.state.waiting.get("before_model", [])) > 0
+        assert "default_group__dev" in tm_registry._peer_wait_ids
 
     @pytest.mark.anyio
-    async def test_peer_park_skips_when_no_harness(self):
-        """No harness ref → no park (safety guard)."""
+    async def test_inject_peer_msgs_skips_when_entry_point(self):
+        """Entry point with no pending skips park."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
-        # No harness registered → should not crash
-        await plugin.handle("peer_park", ctx)
+        tm_registry._entry_points["default_group__pm"] = True
 
-        assert "after_round" not in agent.state.waiting
+        await plugin.handle("inject_peer_msgs", ctx)
+
+        assert "before_model" not in agent.state.waiting
 
     @pytest.mark.anyio
     async def test_heartbeat_updates_last_activity(self):

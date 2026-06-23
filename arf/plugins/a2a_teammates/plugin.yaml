@@ -5,7 +5,6 @@ events:
   - {hook_name: "before_model", event_name: "inject_peer_msgs", mode: "blocking"}
   - {hook_name: "after_model", event_name: "heartbeat", mode: "side"}
   - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
-  - {hook_name: "after_round", event_name: "peer_park", mode: "blocking"}
   - {hook_name: "after_round", event_name: "session_end", mode: "side"}
 config:
   group_id: default
