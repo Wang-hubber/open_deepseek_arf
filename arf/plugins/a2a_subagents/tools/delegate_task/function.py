@@ -234,12 +234,20 @@ def _make_yaml_runner(
                 await event_queue.put(event)
 
                 if event.type == "tool_call_end":
+                    tool_name = event.data.get("name", "")
                     tool_calls.append({
-                        "tool_name": event.data.get("name", ""),
+                        "tool_name": tool_name,
                         "success": event.data.get("success", False),
                         "duration_ms": event.data.get("duration_ms", 0),
                         "error": event.data.get("error", ""),
                     })
+                    # task_complete signals explicit completion —
+                    # harvest result and stop the sub-agent immediately
+                    if tool_name.endswith("task_complete"):
+                        result_data = event.data.get("result", {})
+                        if isinstance(result_data, dict) and result_data.get("task_complete"):
+                            final_result = result_data.get("result", "") or final_result
+                            break
 
                 if event.type == "model_call_end":
                     content = (event.data or {}).get("content", "")
@@ -247,7 +255,7 @@ def _make_yaml_runner(
                         final_result = content
 
                 if event.type == "round_end":
-                    # Harness finished
+                    # Harness finished (natural stop)
                     pass
 
                 if event.type == "error":
@@ -405,12 +413,20 @@ def _make_inherit_runner(
                 session_id=child_sid,
             ):
                 if event.type == "tool_call_end":
+                    tool_name = event.data.get("name", "")
                     tool_calls.append({
-                        "tool_name": event.data.get("name", ""),
+                        "tool_name": tool_name,
                         "success": event.data.get("success", False),
                         "duration_ms": event.data.get("duration_ms", 0),
                         "error": event.data.get("error", ""),
                     })
+                    # task_complete signals explicit completion —
+                    # harvest result and stop the sub-agent immediately
+                    if tool_name.endswith("task_complete"):
+                        result_data = event.data.get("result", {})
+                        if isinstance(result_data, dict) and result_data.get("task_complete"):
+                            final_result = result_data.get("result", "") or final_result
+                            break
 
                 if event.type == "model_call_end":
                     content = (event.data or {}).get("content", "")
