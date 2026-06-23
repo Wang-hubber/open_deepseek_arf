@@ -196,43 +196,14 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_inject_peer_msgs(self, ctx: PluginContext) -> None:
-        """Drain AgentBus inbox before model call (session_id is the key)."""
+        """Drain AgentBus inbox before model call. Never parks here."""
         bus = _registry.agent_bus
         if bus is None:
             return
-
         sid = ctx.session_id
-
-        # 1. Drain and inject any pending messages
         messages = [m async for m in bus.receive(sid)]
         if messages:
             await self._inject_messages(ctx, messages)
-            return
-
-        # 2. Mid-cycle park: only when actively waiting for a reply
-        has_pending = any(
-            entry.get("sender") == sid
-            for entry in _registry._pending_replies.values()
-        )
-        if not has_pending:
-            return
-
-        harness = _registry._peer_harnesses.get(sid)
-        if harness is None:
-            return
-
-        wi = ctx.agent.wait("before_model", f"peer_wait:{sid}")
-        _registry._peer_wait_ids[sid] = wi.wait_id
-
-        asyncio.create_task(_peer_wait_loop(
-            harness=harness,
-            wait_id=wi.wait_id,
-            inbox_key=sid,
-            bus=bus,
-            cancel_evt=ctx.hook_data.get("_cancel_event"),
-            data_dir=ctx.data_dir,
-            group_id=self._group_id,
-        ))
 
     async def _inject_messages(
         self, ctx: PluginContext, messages: list,
@@ -362,18 +333,8 @@ class PeerTeamPlugin(Plugin):
     # ==================================================================
 
     async def _on_peer_park(self, ctx: PluginContext) -> None:
-        """Park at end of round if the agent is idle or waiting for a reply."""
+        """Park at end of every round. User or peer message wakes it."""
         sid = ctx.session_id
-
-        has_pending = any(
-            entry.get("sender") == sid
-            for entry in _registry._pending_replies.values()
-        )
-        is_entry_point = _registry._entry_points.get(sid, False)
-
-        if not has_pending and is_entry_point:
-            return  # initiator with nothing to wait for → can act
-
         harness = _registry._peer_harnesses.get(sid)
         if harness is None:
             return
@@ -392,7 +353,16 @@ class PeerTeamPlugin(Plugin):
             cancel_evt=ctx.hook_data.get("_cancel_event"),
             data_dir=ctx.data_dir,
             group_id=self._group_id,
+            pending_receiver_sid=self._get_pending_receiver_sid(sid),
         ))
+
+    @staticmethod
+    def _get_pending_receiver_sid(sender_sid: str) -> str | None:
+        """Return the first receiver_sid for which sender_sid has a pending reply."""
+        for entry in _registry._pending_replies.values():
+            if entry.get("sender") == sender_sid:
+                return entry.get("receiver")
+        return None
 
     # ==================================================================
     # session_end — update group index
@@ -462,6 +432,7 @@ async def _peer_wait_loop(
     cancel_evt: asyncio.Event | None,
     data_dir: str,
     group_id: str,
+    pending_receiver_sid: str | None = None,
 ) -> None:
     """Background task: wait for peer message, then wake own harness.
 
