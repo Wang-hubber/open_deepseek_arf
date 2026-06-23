@@ -173,100 +173,124 @@ class TestPluginHooks:
         assert len(peer_msgs) == 1
         assert "review login.py" in str(peer_msgs[0].content)
 
+
+
+
     @pytest.mark.anyio
-    async def test_inject_peer_msgs_parks_when_pending(self):
-        """PM has outgoing pending, no messages → parks at before_model."""
+    async def test_peer_park_always_parks(self):
+        """Every agent parks at after_round unconditionally."""
         plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
-        # PM sent a task to dev, waiting for reply
-        tm_registry._pending_replies["peer_123"] = {
-            "sender": "default_group__pm", "receiver": "default_group__dev",
-        }
-
-        harness_mock = ctx.hook_data["_harness_ref"]["harness"]
-        tm_registry._peer_harnesses["default_group__pm"] = harness_mock
-
-        await plugin.handle("inject_peer_msgs", ctx)
-
-        # Park at before_model (inside ReAct loop, not after_round)
-        assert len(agent.state.waiting.get("before_model", [])) > 0
-        assert "default_group__pm" in tm_registry._peer_wait_ids
-
-    @pytest.mark.anyio
-    async def test_inject_peer_msgs_skips_when_idle_worker(self):
-        """Idle park belongs at after_round, not before_model."""
-        plugin = self._make_plugin()
-        agent = _make_primitive_agent()
-        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
-
-        harness_mock = ctx.hook_data["_harness_ref"]["harness"]
-        tm_registry._peer_harnesses["default_group__dev"] = harness_mock
-
-        await plugin.handle("inject_peer_msgs", ctx)
-
-        # Idle worker (entry_point=false) should NOT park at before_model
-        # — idle park happens at after_round instead
-        assert "before_model" not in agent.state.waiting
-
-    @pytest.mark.anyio
-    async def test_inject_peer_msgs_skips_when_entry_point_no_pending(self):
-        """PM is entry_point, no pending, no messages → does NOT park."""
-        from arf.plugins.a2a_teammates import PeerTeamPlugin
-        plugin = PeerTeamPlugin(
-            name="a2a_teammates",
-            config={
-                "group_id": "default_group",
-                "members": [
-                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
-                    {"role": "dev", "agent_name": "dev_agent"},
-                ],
-            },
-        )
-        agent = _make_primitive_agent()
-        ctx = _make_ctx(session_id="default_group__pm", agent=agent)
-
-        await plugin.handle("inject_peer_msgs", ctx)
-
-        # entry_point=true + no pending → should not park
-        assert "before_model" not in agent.state.waiting
-
-    @pytest.mark.anyio
-    async def test_peer_park_parks_when_idle_worker(self):
-        """Dev (not entry_point) parks at after_round waiting for tasks."""
-        plugin = self._make_plugin()
-        agent = _make_primitive_agent()
-        ctx = _make_ctx(session_id="default_group__dev", agent=agent)
-
-        harness_mock = ctx.hook_data["_harness_ref"]["harness"]
-        tm_registry._peer_harnesses["default_group__dev"] = harness_mock
+        tm_registry._peer_harnesses["default_group__pm"] = \
+            ctx.hook_data["_harness_ref"]["harness"]
 
         await plugin.handle("peer_park", ctx)
 
         assert len(agent.state.waiting.get("after_round", [])) > 0
-        assert "default_group__dev" in tm_registry._peer_wait_ids
+        assert "default_group__pm" in tm_registry._peer_wait_ids
 
     @pytest.mark.anyio
-    async def test_peer_park_skips_when_entry_point_no_pending(self):
-        """PM (entry_point, no pending) does NOT park at after_round."""
-        from arf.plugins.a2a_teammates import PeerTeamPlugin
-        plugin = PeerTeamPlugin(
-            name="a2a_teammates",
-            config={
-                "group_id": "default_group",
-                "members": [
-                    {"role": "pm", "agent_name": "pm_agent", "entry_point": True},
-                    {"role": "dev", "agent_name": "dev_agent"},
-                ],
-            },
-        )
+    async def test_peer_park_skips_when_no_harness(self):
+        """No harness ref → no park (safety guard)."""
+        plugin = self._make_plugin()
         agent = _make_primitive_agent()
         ctx = _make_ctx(session_id="default_group__pm", agent=agent)
 
+        # No harness registered → should not crash
         await plugin.handle("peer_park", ctx)
 
         assert "after_round" not in agent.state.waiting
+
+    @pytest.mark.anyio
+    async def test_heartbeat_updates_last_activity(self):
+        plugin = self._make_plugin()
+        ctx = _make_ctx(session_id="default_group__pm")
+
+        await plugin.handle("heartbeat", ctx)
+
+        assert "default_group__pm" in tm_registry._last_activity
+        assert tm_registry._last_activity["default_group__pm"] > 0
+
+
+class TestCancelPeerTask:
+    @pytest.fixture(autouse=True)
+    def setup_registry(self):
+        tm_registry.agent_bus = InMemoryAgentBus()
+        tm_registry._pending_replies.clear()
+        tm_registry._peer_harnesses.clear()
+        tm_registry._peer_wait_ids.clear()
+        yield
+        tm_registry.agent_bus = None
+
+    @pytest.mark.anyio
+    async def test_cancel_removes_pending_and_sends_to_bus(self):
+        from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
+
+        await tm_registry.agent_bus.register(
+            AgentInfo(name="default_group__dev", description="", capabilities=[]))
+
+        tm_registry._pending_replies["peer_123"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+        }
+
+        result = await execute(
+            correlation_id="peer_123",
+            session_id="default_group__pm",
+        )
+        assert result["ok"] is True
+        assert result["cancelled"] is True
+        assert "peer_123" not in tm_registry._pending_replies
+
+        msgs = [m async for m in tm_registry.agent_bus.receive("default_group__dev")]
+        assert len(msgs) == 1
+        assert msgs[0].type == "cancel"
+
+    @pytest.mark.anyio
+    async def test_cancel_wakes_parked_receiver(self):
+        from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
+        from unittest.mock import MagicMock
+
+        tm_registry._pending_replies["peer_456"] = {
+            "sender": "default_group__pm",
+            "receiver": "default_group__dev",
+        }
+
+        harness_mock = MagicMock()
+        harness_mock.resolve_wait = MagicMock()
+        fut = asyncio.Future()
+        fut.set_result(True)
+        harness_mock.resolve_wait.return_value = fut
+
+        tm_registry._peer_harnesses["default_group__dev"] = harness_mock
+        tm_registry._peer_wait_ids["default_group__dev"] = "wait_dev_001"
+
+        result = await execute(
+            correlation_id="peer_456",
+            session_id="default_group__pm",
+        )
+        assert result["ok"] is True
+
+        harness_mock.resolve_wait.assert_called_once_with(
+            "wait_dev_001",
+            inject_message={
+                "role": "system",
+                "content": "[Peer cancel from default_group__pm] Task peer_456 cancelled by sender.",
+            },
+        )
+
+    @pytest.mark.anyio
+    async def test_cancel_unknown_task_fails(self):
+        from arf.plugins.a2a_teammates.tools.cancel_peer_task.function import execute
+
+        result = await execute(
+            correlation_id="nonexistent",
+            session_id="default_group__pm",
+        )
+        assert result["ok"] is False
+        assert "no pending task" in result["error"]
 
 
 class TestPeerWaitLoop:
