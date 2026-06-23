@@ -139,7 +139,7 @@ class TestQueueStatus:
     @pytest.mark.anyio
     async def test_queue_status_empty_session(self, d):
         status = await d.queue_status("s1")
-        assert status == {"running": [], "queued": [], "max_concurrent": 2}
+        assert status == {"running": [], "queued": [], "completed": 0, "max_concurrent": 2}
 
     @pytest.mark.anyio
     async def test_queue_status_shows_running_and_queued(self, d):
@@ -253,4 +253,4 @@ class TestReset:
         d.reset()
 
         assert await d.get_pending("s1") == []
-        assert await d.queue_status("s1") == {"running": [], "queued": [], "max_concurrent": 2}
+        assert await d.queue_status("s1") == {"running": [], "queued": [], "completed": 0, "max_concurrent": 2}

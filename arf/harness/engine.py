@@ -52,6 +52,9 @@ class AgentHarness:
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
 
+        # HITL — harness tracks pending human-input requests
+        self._hitl_waits: dict[str, str] = {}  # session_id → wait_id
+
         # Trace writer — async JSONL output from ctx.emit()
         self._trace_queue: asyncio.Queue = asyncio.Queue()
         self._trace_writer_task: asyncio.Task | None = None
@@ -644,6 +647,45 @@ class AgentHarness:
                         "blocked": getattr(r, "blocked", False),
                     })
 
+                # --- HITL: detect pending=True in tool results ---
+                hitl_tc = None
+                hitl_data = None
+                for tc in all_calls:
+                    r = tool_results.get(tc["id"])
+                    if r and r.success and isinstance(r.data, dict) and r.data.get("pending"):
+                        hitl_tc = tc
+                        hitl_data = r.data
+                        break
+
+                if hitl_tc is not None:
+                    question = hitl_data.get("question", "")
+                    yield ctx.emit(event_type="need_human_input", data={
+                        "question": question,
+                        "options": hitl_data.get("options", []),
+                        "context": hitl_data.get("context", ""),
+                        "task_id": hitl_data.get("task_id", ""),
+                        "tool_name": hitl_tc["name"],
+                        "session_id": agent.state.session_id,
+                    })
+                    wi = agent.wait("after_tools", "hitl")
+                    self._hitl_waits[agent.state.session_id] = wi.wait_id
+                    yield ctx.emit(event_type="parked", data={
+                        "hook_name": "after_tools",
+                        "reason": "hitl",
+                        "question": question[:120],
+                        "waiting": agent.state.waiting,
+                    })
+                    try:
+                        await self._do_park()
+                    except asyncio.CancelledError:
+                        if self._parked:
+                            await self._save_and_teardown()
+                        raise
+                    if self._parked:
+                        await self._save_and_teardown()
+                        return
+                    continue  # resume ReAct loop → before_model with human answer
+
                 # --- after_tools ---
                 if await self._checkpoint("after_tools", ctx):
                     yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
@@ -738,3 +780,18 @@ class AgentHarness:
                 self._park_event.set()
             return True
         return False
+
+    async def provide_hitl_response(self, session_id: str, answer: str) -> bool:
+        """Provide a human response to a pending HITL request.
+
+        Called by CLI / frontend after the user answers an ask_user prompt.
+        Injects the answer as a user message and resolves the harness park,
+        so the agent continues its ReAct loop with the human's input.
+        """
+        wait_id = self._hitl_waits.pop(session_id, None)
+        if wait_id is None:
+            return False
+        return await self.resolve_wait(wait_id, inject_message={
+            "role": "user",
+            "content": answer,
+        })
