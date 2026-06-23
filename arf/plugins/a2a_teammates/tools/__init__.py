@@ -1,6 +1,7 @@
 """A2A Teammates plugin tools — registry singleton."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 logger = logging.getLogger("arf.plugins.a2a_teammates.tools")
@@ -28,6 +29,8 @@ class _TeammatesRegistry:
         self._entry_points: dict[str, bool] = {}
         # role_key → monotonic timestamp for receiver liveness
         self._last_activity: dict[str, float] = {}
+        # role_key → asyncio.Event to cancel previous wait_loop
+        self._peer_cancel_events: dict[str, asyncio.Event] = {}
         # data_dir set by plugin at init
         self.data_dir: str = "./data"
 

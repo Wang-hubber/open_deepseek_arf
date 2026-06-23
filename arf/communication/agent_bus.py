@@ -75,6 +75,11 @@ class InMemoryAgentBus:
 
         event = self._events[agent_name]
         event.clear()
+        # Re-check after clear: sender may have delivered between
+        # the first check and event.clear(), leaving a message in
+        # the inbox with a cleared event.
+        if self._inboxes.get(agent_name):
+            return True
 
         # Build list of awaitables to wait on
         wait_tasks = [asyncio.create_task(event.wait())]
