@@ -3,8 +3,10 @@ description: >
   Send a message to a PERSISTENT teammate (part of your team for the
   entire session). The target is identified by session_id (e.g.
   "default_group__dev"). Find session_ids in the roster at session start.
-  Messages are delivered to the receiver's inbox and injected before
-  their next model call.
+
+  IMPORTANT: This is a TERMINAL action — the round ends immediately
+  after sending. The teammate's reply is auto-injected when ready.
+  Do NOT poll or make additional calls in this round.
 
   DO NOT use this for one-off tasks that don't need a persistent
   teammate. Use delegate_task for throwaway sub-agents instead.

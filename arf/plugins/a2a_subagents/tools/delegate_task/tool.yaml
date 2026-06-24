@@ -3,8 +3,10 @@ description: >
   Dispatch a task to a TEMPORARY sub-agent (one-off, short-lived).
   If 'agent' is specified, the named pre-configured agent handles it.
   Otherwise a temporary agent inherits your model and tools.
-  The sub-agent runs while you wait; its result is auto-injected
-  when ready — no need to poll.
+
+  IMPORTANT: This is a TERMINAL action — the round ends immediately
+  after dispatch. Results are auto-injected when the sub-agent finishes.
+  Do NOT poll queue_status. Do NOT make additional calls in this round.
 
   DO NOT use this for persistent team members. If you have teammates
   listed in your system prompt, use send_peer_message instead.
