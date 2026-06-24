@@ -155,3 +155,56 @@ class TestBeforeRoundMessagesInjected:
             assert harness._parked is False
 
         asyncio.run(do_test())
+
+
+class TestRegisterWaitInjection:
+    """Engine injects _register_wait and _emit into all tool calls at before_tools."""
+
+    def test_register_wait_injected_into_tool_params(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Simulate pending tool calls from model
+        harness._current_ctx = harness._make_ctx()
+        harness._current_ctx.hook_data["_pending_tool_calls"] = [
+            {"name": "delegate_task", "id": "1", "params": {"task": "x"}},
+            {"name": "send_peer_message", "id": "2", "params": {"to": "y"}},
+        ]
+
+        # Manually inject like before_tools loop would
+        for tc in harness._current_ctx.hook_data["_pending_tool_calls"]:
+            tc.setdefault("params", {})["_register_wait"] = (
+                lambda h, r, resume_key="": agent.wait(h, r, resume_key=resume_key)
+            )
+            tc.setdefault("params", {})["_emit"] = harness._current_ctx.emit
+
+        # Verify injection
+        for tc in harness._current_ctx.hook_data["_pending_tool_calls"]:
+            assert "_register_wait" in tc["params"]
+            assert callable(tc["params"]["_register_wait"])
+            assert "_emit" in tc["params"]
+            assert callable(tc["params"]["_emit"])
+
+    def test_register_wait_creates_wait_item(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Simulate injection
+        harness._current_ctx = harness._make_ctx()
+        harness._current_ctx.hook_data["_pending_tool_calls"] = [
+            {"name": "some_tool", "id": "1", "params": {}},
+        ]
+        for tc in harness._current_ctx.hook_data["_pending_tool_calls"]:
+            tc.setdefault("params", {})["_register_wait"] = (
+                lambda h, r, resume_key="": agent.wait(h, r, resume_key=resume_key)
+            )
+
+        # Call the injected _register_wait (as a tool would)
+        register_wait = harness._current_ctx.hook_data["_pending_tool_calls"][0]["params"]["_register_wait"]
+        wi = register_wait("before_round", "test_reason", resume_key="test:resume")
+
+        assert wi is not None
+        assert wi.hook_name == "before_round"
+        assert wi.reason == "test_reason"
+        assert wi.resume_key == "test:resume"
+        assert agent.state.waiting["before_round"][0].wait_id == wi.wait_id

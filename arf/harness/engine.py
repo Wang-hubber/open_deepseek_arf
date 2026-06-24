@@ -597,7 +597,15 @@ class AgentHarness:
     
                     # --- before_tools ---
                     ctx.hook_data["_pending_tool_calls"] = result.tool_calls
-    
+
+                    # Inject _register_wait and _emit into ALL tool calls (framework-level)
+                    # Any tool can call _register_wait to park the harness, or _emit to yield events
+                    for tc in ctx.hook_data["_pending_tool_calls"]:
+                        tc.setdefault("params", {})["_register_wait"] = (
+                            lambda hook, reason, resume_key="": agent.wait(hook, reason, resume_key=resume_key)
+                        )
+                        tc.setdefault("params", {})["_emit"] = ctx.emit
+
                     # Build tool definitions lookup for permission plugins
                     # Full definition: {name, description, parameters, annotations, ...}
                     _tool_defs: dict[str, dict[str, Any]] = {}
