@@ -1,8 +1,9 @@
 """A2A Plugin — hook-driven task delegation for AgentHarness.
 
 Hooks:
-  session_start — capture parent config for inline-like sub-agents
-  before_model  — inject completed task results into parent messages
+  session_start — capture parent config for inline-like sub-agents + resume rebuild
+  before_tools  — inject session_id into delegate_task tool params
+  before_model  — safety net: inject completed task results into parent messages
   after_round   — child cleanup + parent cascade cancel
 """
 from __future__ import annotations
@@ -18,6 +19,13 @@ from arf.plugins.a2a_subagents.tools import _registry
 
 logger = logging.getLogger("arf.plugins.a2a_subagents")
 
+_DEFAULT_EVENTS = [
+    {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
+    {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
+    {"hook_name": "before_model", "event_name": "inject_results", "mode": "blocking"},
+    {"hook_name": "after_round", "event_name": "cleanup", "mode": "blocking"},
+]
+
 
 class Plugin(Plugin):
     """Harness plugin for A2A task delegation.
@@ -26,8 +34,8 @@ class Plugin(Plugin):
     No extra setup needed — enabling the plugin in harness.yaml is enough.
     """
 
-    def __init__(self, name: str, events: list[dict], config: dict | None = None) -> None:
-        super().__init__(name=name, events=events, config=config)
+    def __init__(self, name: str, events: list[dict] | None = None, config: dict | None = None) -> None:
+        super().__init__(name=name, events=events or _DEFAULT_EVENTS, config=config or {})
         cfg = A2APluginConfig(**(config or {}))
 
         self._max_task_timeout = cfg.max_task_timeout
@@ -58,6 +66,8 @@ class Plugin(Plugin):
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "init":
             await self._on_init(ctx)
+        elif event_name == "inject_session_id":
+            await self._on_inject_session_id(ctx)
         elif event_name == "inject_results":
             await self._on_inject_results(ctx)
         elif event_name == "cleanup":
@@ -90,15 +100,33 @@ class Plugin(Plugin):
             "event_bus": ctx._event_bus,
         }
 
+        # Resume rebuild: re-establish parent_wait_ids for subagent waits
+        pending_resume = ctx.hook_data.get("_pending_resume", [])
+        for wi in pending_resume:
+            if wi.resume_key.startswith("subagent:"):
+                _registry._parent_wait_ids[ctx.session_id] = wi.wait_id
+                _registry.parent_harness = ctx.hook_data.get("_harness_ref", {}).get("harness")
+                logger.info("Rebuilt subagent wait %s for session %s", wi.resume_key, ctx.session_id)
+
+    # ==================================================================
+    # inject_session_id — inject session_id into delegate_task params
+    # ==================================================================
+
+    async def _on_inject_session_id(self, ctx: PluginContext) -> None:
+        """Inject session_id into delegate_task tool params before execution."""
+        for tc in ctx.hook_data.get("_pending_tool_calls", []):
+            if tc.get("name", "").endswith("delegate_task"):
+                tc.setdefault("params", {})["session_id"] = ctx.session_id
+
     # ==================================================================
     # inject_results — inject completed task results into parent messages
     # ==================================================================
 
     async def _on_inject_results(self, ctx: PluginContext) -> None:
-        """Consume completed results from delegator, inject as user messages.
+        """Safety net: inject any results that arrived between wake_parent and before_model.
 
-        If sub-agents are still running and no results are ready, park the
-        parent harness. The runner will wake it when a sub-agent completes.
+        No wait registration here — delegate_task tool already registered
+        the wait via _register_wait at before_tools.
         """
         _registry.current_session_id = ctx.session_id
 
@@ -107,7 +135,7 @@ class Plugin(Plugin):
         if delegator is None:
             return
 
-        # 1. Inject any completed results
+        # Only inject results (safety net for race between wake and before_model)
         pending = await delegator.get_pending(parent_sid)
         if pending:
             applied_paths: set[str] = set()
@@ -132,20 +160,9 @@ class Plugin(Plugin):
 
                 ctx.agent.input(role="user", content=content)
                 logger.info(
-                    "Injected A2A result for %s into parent session %s",
+                    "Injected A2A result for %s into parent session %s (safety net)",
                     task_id, parent_sid,
                 )
-
-        # 2. If sub-agents are still running, park until next completion
-        status = await delegator.queue_status(parent_sid)
-        if status.get("running"):
-            reason = f"waiting for {len(status['running'])} sub-agent(s)"
-            wi = ctx.agent.wait("before_model", reason)
-            _registry._parent_wait_ids[parent_sid] = wi.wait_id
-            logger.info(
-                "Parent %s parked — %d sub-agents still running",
-                parent_sid, len(status["running"]),
-            )
 
     # ==================================================================
     # cleanup — child status update + parent cascade cancel

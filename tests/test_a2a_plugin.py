@@ -204,6 +204,7 @@ class TestA2APluginHooks:
             name="a2a_subagents",
             events=[
                 {"hook_name": "session_start", "event_name": "init", "mode": "side"},
+                {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
                 {"hook_name": "before_model", "event_name": "inject_results", "mode": "blocking"},
                 {"hook_name": "after_round", "event_name": "cleanup", "mode": "blocking"},
             ],
@@ -215,7 +216,7 @@ class TestA2APluginHooks:
         """Plugin extends Plugin(ABC) with correct name."""
         plugin = self._make_plugin()
         assert plugin.name == "a2a_subagents"
-        assert len(plugin.events) == 3
+        assert len(plugin.events) == 4
 
     @pytest.mark.anyio
     async def test_init_captures_parent_config(self):
@@ -236,6 +237,57 @@ class TestA2APluginHooks:
         assert a2a_registry.parent_config["call_model"] is agent._call_model
         assert a2a_registry.parent_config["stream_model"] is agent._stream_model
         assert a2a_registry.current_session_id == "parent_x"
+
+    @pytest.mark.anyio
+    async def test_inject_session_id_injects_session_id(self):
+        """inject_session_id injects session_id into delegate_task params."""
+        plugin = self._make_plugin()
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="parent_y", agent=agent)
+
+        # Simulate pending tool calls with delegate_task
+        tool_calls = [
+            {"name": "delegate_task", "params": {"task": "do stuff"}},
+            {"name": "read_file", "params": {"path": "/tmp/x"}},
+        ]
+        ctx.hook_data["_pending_tool_calls"] = tool_calls
+
+        await plugin.handle("inject_session_id", ctx)
+
+        # delegate_task should have session_id injected
+        assert tool_calls[0]["params"]["session_id"] == "parent_y"
+        # read_file should NOT have session_id injected
+        assert "session_id" not in tool_calls[1]["params"]
+
+    @pytest.mark.anyio
+    async def test_resume_rebuild_rebuilds_parent_wait_ids(self):
+        """init with _pending_resume rebuilds parent_wait_ids for subagent waits."""
+        plugin = self._make_plugin()
+        a2a_registry._parent_wait_ids.clear()
+        a2a_registry.parent_harness = None
+
+        agent = _make_primitive_agent()
+        ctx = _make_ctx(session_id="parent_z", agent=agent)
+        ctx.hook_data["_harness_ref"] = {
+            "tool_manager": MagicMock(),
+            "plugins": [],
+            "agent_config": None,
+            "max_turns": 50,
+        }
+        from arf.agent.state import WaitItem
+        ctx.hook_data["_pending_resume"] = [
+            WaitItem(wait_id="w1", hook_name="before_round", reason="subagent:x",
+                     resume_key="subagent:task_x"),
+            WaitItem(wait_id="w2", hook_name="before_round", reason="other",
+                     resume_key="other:w2"),
+        ]
+
+        await plugin.handle("init", ctx)
+
+        # Subagent wait should be rebuilt
+        assert a2a_registry._parent_wait_ids["parent_z"] == "w1"
+        # Non-subagent wait should not affect parent_wait_ids
+        assert len(a2a_registry._parent_wait_ids) == 1
 
     @pytest.mark.anyio
     async def test_inject_results_adds_messages(self):
