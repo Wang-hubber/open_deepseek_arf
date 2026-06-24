@@ -17,6 +17,7 @@ class WaitItem:
     hook_name: str     # harness checkpoint name
     reason: str
     created_at: float = 0.0
+    resume_key: str = ""   # non-empty means plugin needs background task rebuild on session resume
 
 
 @dataclass

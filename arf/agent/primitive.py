@@ -141,13 +141,14 @@ class PrimitiveAgent:
 
     # ── wait ───────────────────────────────────────────
 
-    def wait(self, hook_name: str, reason: str) -> WaitItem:
+    def wait(self, hook_name: str, reason: str, resume_key: str = "") -> WaitItem:
         """Append WaitItem to state.waiting[hook_name]. Synchronous, does not block."""
         wi = WaitItem(
             wait_id=str(uuid.uuid4()),
             hook_name=hook_name,
             reason=reason,
             created_at=time.time(),
+            resume_key=resume_key,
         )
         self.state.waiting.setdefault(hook_name, []).append(wi)
         return wi
