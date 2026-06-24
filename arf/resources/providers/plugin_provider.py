@@ -115,7 +115,23 @@ class PluginProvider:
         return []
 
     def list_skills(self) -> list:
-        return []
+        """Scan enabled plugin skills/ dirs for *.yaml skill definitions."""
+        result: list[dict] = []
+        for plugin_name in sorted(self._enabled):
+            skills_dir = self._root / plugin_name / "skills"
+            if not skills_dir.is_dir():
+                continue
+            for yaml_path in sorted(skills_dir.glob("*.yaml")):
+                try:
+                    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                    if raw and raw.get("name"):
+                        result.append({
+                            "name": raw["name"],
+                            "description": raw.get("description", ""),
+                        })
+                except Exception:
+                    continue
+        return result
 
     async def execute_plugin_tool(self, tool_name: str, params: dict) -> ToolResult | None:
         """Execute a plugin tool by namespaced name (e.g. filesystem__read_text_file).

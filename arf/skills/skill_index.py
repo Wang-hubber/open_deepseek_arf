@@ -22,6 +22,7 @@ class SkillEntry:
     description: str
     source_dir: str  # parent directory containing skill.yaml + skill.md
     tools_sequence: list[str] = field(default_factory=list)
+    body: str | None = None  # inline prompt from flat *.yaml (plugin skills)
 
 
 class SkillIndex:
@@ -76,10 +77,16 @@ class SkillIndex:
         return self._index.get(name)
 
     def load_body(self, name: str) -> str | None:
-        """Read the full skill.md body for *name*."""
+        """Read the full skill body for *name*.
+
+        For subdirectory-format skills, reads skill.md.
+        For flat-yaml skills, returns the inline prompt.
+        """
         entry = self.resolve(name)
         if entry is None:
             return None
+        if entry.body is not None:
+            return entry.body
         md_path = Path(entry.source_dir) / "skill.md"
         if not md_path.exists():
             logger.warning("Skill '%s' has no skill.md at %s", name, md_path)
@@ -103,22 +110,27 @@ class SkillIndex:
     # ------------------------------------------------------------------
 
     def _scan_dir(self, skills_dir: Path, namespace: str = "") -> None:
-        """Scan a single skills directory for skill subdirectories.
+        """Scan a single skills directory for skills.
 
-        If *namespace* is provided (plugin name), skill names are prefixed:
-        ``{namespace}__{skill_name}`` — matching MCP tool naming convention.
+        Two formats are supported:
+          1. Subdirectory with skill.yaml + skill.md (project skills)
+          2. Flat *.yaml file with inline prompt (plugin skills)
+
+        If *namespace* is provided (plugin name), skill names from
+        subdirectory format are prefixed: ``{namespace}__{skill_name}``.
+        Flat *.yaml files use their ``name`` field as-is.
         """
         if not skills_dir.exists() or not skills_dir.is_dir():
             return
 
+        # Format 1: subdirectories containing skill.yaml
         for skill_dir in sorted(skills_dir.iterdir()):
             if not skill_dir.is_dir():
                 continue
 
             yaml_path = skill_dir / "skill.yaml"
             if not yaml_path.exists():
-                logger.debug(
-                    "Skipping %s: no skill.yaml", skill_dir)
+                logger.debug("Skipping %s: no skill.yaml", skill_dir)
                 continue
 
             try:
@@ -135,8 +147,27 @@ class SkillIndex:
                     tools_sequence=raw.get("tools_sequence", []),
                 )
                 self._index[skill_name] = entry
-                logger.debug(
-                    "Indexed skill '%s' from %s", skill_name, skill_dir)
+                logger.debug("Indexed skill '%s' from %s", skill_name, skill_dir)
             except Exception as exc:
-                logger.warning(
-                    "Failed to parse %s: %s", yaml_path, exc)
+                logger.warning("Failed to parse %s: %s", yaml_path, exc)
+
+        # Format 2: flat *.yaml files (plugin skills with inline prompt)
+        for yaml_path in sorted(skills_dir.glob("*.yaml")):
+            try:
+                raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                if not raw or "name" not in raw:
+                    continue
+                skill_name = raw["name"]
+                if skill_name in self._index:
+                    continue  # subdirectory format takes precedence
+                entry = SkillEntry(
+                    name=skill_name,
+                    description=raw.get("description", ""),
+                    source_dir=str(skills_dir),
+                    tools_sequence=raw.get("tools", []),
+                    body=raw.get("prompt", ""),
+                )
+                self._index[skill_name] = entry
+                logger.debug("Indexed skill '%s' from %s", skill_name, yaml_path)
+            except Exception as exc:
+                logger.warning("Failed to parse %s: %s", yaml_path, exc)

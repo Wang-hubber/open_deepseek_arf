@@ -25,7 +25,8 @@ CHUNK_EVENTS = frozenset({"model_chunk", "thinking_delta"})
 CHECKPOINTS = [
     "session_start",
     "before_round", "before_model", "after_model",
-    "before_tools", "after_tools", "after_round", "on_error",
+    "before_tools", "after_tools", "after_round",
+    "before_break", "on_error",
     "session_end",
 ]
 
@@ -367,6 +368,16 @@ class AgentHarness:
                 self._system_prompt_text = prompt.prefix  # save for snapshot
                 if prompt.prefix:
                     agent.input(role="system", content=prompt.prefix, position="begin")
+
+            # Inject available skills inventory (MCP-style)
+            if self._tool_manager is not None and hasattr(self._tool_manager, "list_skills"):
+                skill_list = self._tool_manager.list_skills()
+                if skill_list:
+                    lines = ["## Available Skills"]
+                    for s in skill_list:
+                        lines.append(f"- **{s['name']}**: {s['description']}")
+                    agent.input(role="system", content="\n".join(lines),
+                                position=1, name="MCP")
 
             # Pass allow_paths to plugins at session_start (e.g. tool_guard
             # injects them as a system message so the model knows its boundaries).
@@ -720,6 +731,24 @@ class AgentHarness:
                         return
 
                 continue  # loop back to before_model
+
+            # No tool calls — plugins may intercept to force retry
+            if await self._checkpoint("before_break", ctx):
+                for event in ctx.captured_events:
+                    yield event
+                ctx.captured_events.clear()
+                yield ctx.emit(event_type="parked", data={"hook_name": "before_break", "waiting": agent.state.waiting})
+                try:
+                    await self._do_park()
+                except asyncio.CancelledError:
+                    self._cancel_event.set()
+                    if self._parked:
+                        await self._save_and_teardown()
+                    raise
+                if self._parked:
+                    await self._save_and_teardown()
+                    return
+                continue  # retry — plugin wants another turn
 
             break  # no tool_calls → round done
 

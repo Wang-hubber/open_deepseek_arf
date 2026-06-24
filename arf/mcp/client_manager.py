@@ -252,6 +252,27 @@ class McpClientManager:
             results.append(d)
         return results
 
+    def list_skills(self) -> list[dict]:
+        """List all available skills with name and description.
+
+        Aggregates from the agent's skills_dir (SkillProvider) and
+        enabled plugin skills/ directories (PluginProvider).
+        """
+        skills: list[dict] = []
+        seen: set[str] = set()
+
+        for s in self._skill_provider.list():
+            skills.append({"name": s.name, "description": s.description})
+            seen.add(s.name)
+
+        if self._plugin_provider:
+            for s in self._plugin_provider.list_skills():
+                if s["name"] not in seen:
+                    skills.append(s)
+                    seen.add(s["name"])
+
+        return skills
+
     async def _list_remote_tools(self) -> list[dict]:
         """List tools from the remote subprocess."""
         result = await self._remote_send("tools/list", {})
