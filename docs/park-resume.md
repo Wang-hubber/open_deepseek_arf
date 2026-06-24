@@ -59,11 +59,15 @@ Round N:
   ┌─────────────────────────────────────────────────────────┐
   │ turn K: model_call                                       │
   │   → tool_calls [ask_user / delegate_task / send_peer]    │
-  │   → _register_wait("before_round", reason, resume_key)  │ ← 注册，不 park
-  │   → 继续走完 after_tools → after_round → round_end       │
+  │   → _register_wait("before_round", reason, resume_key)  │ ← 注册 wait
+  │   → engine 检测 state.waiting 非空                       │
+  │   → _round_restart = True, break turn loop              │ ← 立即结束 round
   └─────────────────────────────────────────────────────────┘
-
-Round N+1:
+  │                                                          │
+  │   after_round → round_end → _round_restart → continue    │
+  │                                                          │
+  ▼                                                          │
+Round N+1 (新 round):                                        │
   ┌── before_round ─────────────────────────────────────────┐
   │ → state.waiting["before_round"] 有 wait                  │
   │ → _messages_injected == False → park                     │
@@ -88,8 +92,61 @@ Round N+1:
 ```
 
 **关键设计决策**：
+
+- **立即 break round**。工具注册 wait 后，engine 检测 `state.waiting` 非空 → `_round_restart = True` + `break` turn loop。这防止模型在同一个 round 里继续调工具（如轮询 `queue_status`），强制进入 park。
 - **只有注入消息时才跳过 park**。只有 `inject_message` 不为空时 `_messages_injected` 才为 True。这样确保了"没有任何新信息就不浪费 round"。
 - **剩余 wait 在下一轮自动 park**。处理完 A 的结果后，下一轮 before_round 会检测到 B 的 wait 还在，自然 park。
+
+## 用户打断非 HITL Park
+
+当 harness 因 `delegate_task` 或 `send_peer_message` park 时（`reason="subagent:*"` / `reason="peer_wait:*"`），用户可以发送消息打断等待，立即得到回复：
+
+```
+Harness parked (delegate_task wait, before_round):
+
+用户: "任务进展如何？"
+  → 新 run() 存储用户消息
+  → 检测 self._parked → _user_interrupted = True
+  → before_round: has_waiting=True, 无 hitl wait, _user_interrupted=True
+  → 跳过 park → 进入 round → 模型立即回复用户
+  → round 结束 → 回到 before_round
+  → _user_interrupted=False → PARK 继续等子Agent结果
+
+子Agent 完成 → wake_parent → resolve_wait → resume → 模型看到结果
+```
+
+**规则**：
+- **非 HITL wait**（`subagent:` / `peer_wait:`）→ 用户可打断，立刻得到回复
+- **HITL wait**（`hitl`）→ 不可打断，必须用户明确回答（`provide_hitl_response`）
+- 打断后 wait 不丢失，round 结束后自动重新 park
+
+## 框架参数注入与过滤
+
+Engine 在 `before_tools` 注入 `_register_wait` 和 `_emit` 到所有 `_pending_tool_calls`。这些参数需要两层过滤：
+
+### 1. Trace 输出过滤
+
+```python
+# engine.py — tool_call_start 事件中过滤框架参数
+_framework_params = {"_register_wait", "_emit"}
+clean_args = {k: v for k, v in params.items() if k not in _framework_params}
+```
+
+### 2. 工具函数签名检查
+
+`function_backend` 和 `plugin_provider` 在执行 `fn(**params)` 前检查函数签名，只向声明了 `_register_wait` / `_emit` 的工具（如 `delegate_task`、`ask_user`、`send_peer_message`）传递这些参数。其他工具（如 `queue_status`、`write_file`）不会收到：
+
+```python
+# plugin_provider.py — execute_plugin_tool 前检查签名
+sig = inspect.signature(fn)
+for reserved in ("_register_wait", "_emit"):
+    if reserved not in sig.parameters:
+        params.pop(reserved, None)
+```
+
+### 3. JSON 序列化保护
+
+`tool_guard` 在 `json.dumps(params)` 时使用 `default=str` fallback，防止函数对象导致序列化崩溃。
 
 ## Multi-Wait：同时等多事件
 
@@ -159,14 +216,23 @@ delegate_task 工具:
   创建 runner → delegator.dispatch(parent_sid, task, runner)
   wi = _register_wait("before_round", f"subagent:{task_id}",
                        resume_key=f"subagent:{task_id}")
-  return {ok: true, task_id, pending: true}
+  return {ok: true, task_id, session_id, dispatched: true}
+  → engine 检测 state.waiting 非空 → _round_restart, break turn loop
+  → after_round → 回到 before_round → PARK
 
 子任务完成:
   runner → delegator.complete(parent_sid, task_id, result)
   _wake_parent(registry, parent_sid)
     → delegator.get_pending(parent_sid) 取结果
+    → 注入消息含: 截断内容(500字符) + file_changes + result_file 路径
+    → result_file 在 data/{parent_sid}/subagent_results/task_N.md
     → resolve_wait(wait_id, inject_message=formatted_result)
     → 父 harness 唤醒，结果已在 messages 中
+
+等待期间用户打断:
+  → 新 run() 检测 self._parked → _user_interrupted = True
+  → before_round 跳过 park（无 hitl wait）→ 模型立即回复用户
+  → round 结束 → 重新 park 等子Agent
 ```
 
 ### Peer Agent — 对等通讯
@@ -200,7 +266,7 @@ wait("after_tools") in before_tools
   → 本轮内 after_tools 处 park（同步等待）
 ```
 
-**不需要 break/continue 原语**。框架只提供 wait/resolve 机制。插件如果想跳过后续节点直接开始新 round，自行控制。
+**引擎内置 round break 原语**。工具注册 wait 后 engine 检测 `state.waiting` 自动 break turn loop，立即结束当前 round 进入 park。不再需要等到下一轮才 park——这一轮调了 `delegate_task`，这一轮就会结束。
 
 ## 与现有 checkpoint 的关系
 

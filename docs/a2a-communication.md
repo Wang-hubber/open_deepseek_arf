@@ -54,18 +54,32 @@ send_peer_message = 持久队友（整个 session 存活）
   → read src/* → 无问题
   → task_complete(result="src/: no issues found")
 
-主 agent (等所有子 agent 完成):
-  before_model → delegator.get_pending()
-  → 注入 3 条结果:
-    [A2A] Task task_1 completed: auth/login.py: XSS on line 42
-    [A2A] Task task_2 completed: api/handler.py: SQLi on line 108
-    [A2A] Task task_3 completed: src/: no issues found
-  → 汇总报告给用户
+主 agent (派发后立即 park，等子Agent完成):
+  → delegate_task × 3 → _register_wait("before_round", "subagent:task_N")
+  → engine 检测 state.waiting 非空 → _round_restart, break turn loop
+  → after_round → 回到 before_round → PARK
+
+子 agent 完成:
+  runner → delegator.complete(task_id, result)
+  → 长结果截断到 500 字符 + file path (data/{parent_sid}/subagent_results/task_N.md)
+  → _wake_parent → get_pending(parent_sid) → resolve_wait(wait_id, inject_message=formatted)
+  → 父 harness 唤醒, _messages_injected=True
+  → 注入消息格式:
+    [A2A] Task task_1 completed (5 turns, ok=True)
+    
+    auth/login.py: XSS on line 42
+    
+    ## File Changes
+    + `auth/report.md`
+    
+    Full result cached at: `data/{sid}/subagent_results/task_1.md`
+  → 模型汇总报告给用户
 
 数据流:
   parent ──dispatch──→ delegator ──runner──→ harness(child_sid)
-  child task_complete → runner detects → delegator.complete()
-  parent before_model → delegator.get_pending() → ctx.agent.input()
+  child task_complete → runner captures → delegator.complete(result)
+  runner → _wake_parent → resolve_wait(inject_message) → parent wakes
+  parent model sees injected message directly (no polling needed)
 ```
 
 ## 案例 2: teammates — 团队协作
@@ -163,6 +177,32 @@ Dev wakes:
 ```
 
 每个 teammate 可以再派发 subagents，形成层级。
+
+## 工具权限与 session_id 注入
+
+所有 a2a_subagents 工具（`delegate_task`、`queue_status`、`cancel_task`、`cancel_held`）都需要 `session_id` 来定位当前会话。插件在 `before_tools` 统一注入：
+
+```python
+# plugin.py _on_inject_session_id
+_a2a_tools = {"delegate_task", "queue_status", "cancel_task", "cancel_held"}
+for tc in _pending_tool_calls:
+    local = tc["name"].rsplit("__", 1)[-1]
+    if local in _a2a_tools:
+        tc["params"]["session_id"] = ctx.session_id
+```
+
+`queue_status` 和 `cancel_task` 的 function.py 同时有 `registry.current_session_id` fallback，防御注入失败的情况。
+
+## 数据存储与允许路径
+
+子Agent 输出文件、超长工具结果等产出默认存放在 `data/{session_id}/` 下。框架自动将 `data_dir`（默认 `./data`）加入 agent 的 `allow_paths`，确保父Agent 可以直接 `read_file` 读取子Agent 的结果文件：
+
+```python
+# engine.py — session_start 和 before_tools 两处
+_allow_paths.append(self._data_dir)  # "./data" 始终可访问
+```
+
+子Agent 结果文件路径：`data/{parent_sid}/subagent_results/task_N.md`
 
 ## 选择指南
 
