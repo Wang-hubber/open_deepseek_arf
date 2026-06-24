@@ -8,7 +8,34 @@ last_activity) lives at module level — no global singleton.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import os as _os
+import sys as _sys
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
+
+# ── Debug log: writes to terminal + data/debug_bus.log ──────────────────
+
+_debug_log_path: str | None = None
+
+
+def _set_debug_log_dir(data_dir: str) -> None:
+    global _debug_log_path
+    _debug_log_path = str(_Path(data_dir) / "debug_bus.log")
+    _Path(_debug_log_path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def _dbg(msg: str) -> None:
+    """Write *msg* to stdout and append to debug log file (if configured)."""
+    ts = _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    if _debug_log_path:
+        try:
+            with open(_debug_log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 @dataclass
@@ -36,17 +63,23 @@ _last_activity: dict[str, float] = {}
 
 def register_bus(sid: str, bus: object) -> None:
     """Register an agent's bus so peers can look it up by session_id."""
+    _dbg(f"register_bus | sid={sid} bus={hex(id(bus))}")
     _bus_registry[sid] = bus
 
 
 def unregister_bus(sid: str) -> None:
     """Remove an agent's bus from the registry."""
+    _dbg(f"unregister_bus | sid={sid}")
     _bus_registry.pop(sid, None)
 
 
 def get_bus(sid: str) -> object | None:
     """Return the bus for *sid*, or None."""
-    return _bus_registry.get(sid)
+    bus = _bus_registry.get(sid)
+    if bus is None:
+        _known = list(_bus_registry.keys())
+        _dbg(f"get_bus MISS | sid={sid!r} registered={_known}")
+    return bus
 
 
 def get_registered_sids() -> list[str]:

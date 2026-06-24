@@ -217,6 +217,9 @@ class PeerTeamPlugin(Plugin):
         pending_resume = ctx.hook_data.get("_pending_resume", [])
         for wi in pending_resume:
             if wi.resume_key.startswith("peer_wait:"):
+                # Remove the old wait from persisted state (it will be replaced)
+                ctx.agent.finish_wait(wait_id=wi.wait_id)
+                # Park with fresh wait
                 await self._park_for_peer(ctx, "before_round", wi.reason)
                 logger.info("Rebuilt peer wait %s for session %s", wi.resume_key, sid)
 
@@ -344,7 +347,7 @@ class PeerTeamPlugin(Plugin):
         if old_task is not None and not old_task.done():
             old_task.cancel()
 
-        wi = ctx.agent.wait(hook_name, reason)
+        wi = ctx.agent.wait(hook_name, reason, resume_key=reason if reason else "")
 
         is_idle_worker = hook_name == "before_round"
         task_idle_timeout = None if is_idle_worker else 600.0

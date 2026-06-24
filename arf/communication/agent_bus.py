@@ -2,13 +2,35 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 from collections import defaultdict, deque
+from pathlib import Path as _Path
 from typing import AsyncIterator
 
 from arf.core.protocols.communication import AgentBus, AgentMessage, AgentInfo
 
 logger = logging.getLogger("arf.communication.agent_bus")
+
+_BUS_LOG_PATH: str | None = None
+
+
+def set_bus_log_dir(data_dir: str) -> None:
+    global _BUS_LOG_PATH
+    _BUS_LOG_PATH = str(_Path(data_dir) / "debug_bus.log")
+    _Path(_BUS_LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+
+def _buslog(msg: str) -> None:
+    ts = _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] [BUS] {msg}"
+    print(line, flush=True)
+    if _BUS_LOG_PATH:
+        try:
+            with open(_BUS_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 class InMemoryAgentBus:
@@ -56,7 +78,7 @@ class InMemoryAgentBus:
             inbox.append(message)
             ev = self._events[name]
             ev.set()
-            print(f"[BUS] send | bus={hex(id(self))} key={name} event={hex(id(ev))} inbox={len(inbox)} corr={getattr(message, 'correlation_id', '-')}")
+            _buslog(f"send | bus={hex(id(self))} key={name} event={hex(id(ev))} inbox={len(inbox)} corr={getattr(message, 'correlation_id', '-')}")
 
     async def receive(self, agent_name: str) -> AsyncIterator[AgentMessage]:
         """Drain and yield all messages from *agent_name*'s inbox.
@@ -87,7 +109,7 @@ class InMemoryAgentBus:
         # Fast path: messages already queued
         inbox = self._inboxes.get(agent_name)
         if inbox:
-            print(f"[BUS] wait fast-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)}")
+            _buslog(f"wait fast-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)}")
             return True
 
         event = self._events[agent_name]
@@ -97,10 +119,10 @@ class InMemoryAgentBus:
         # the inbox with a cleared event.
         inbox = self._inboxes.get(agent_name)
         if inbox:
-            print(f"[BUS] wait recheck-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)} event={hex(id(event))}")
+            _buslog(f"wait recheck-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)} event={hex(id(event))}")
             return True
 
-        print(f"[BUS] wait blocking | bus={hex(id(self))} key={agent_name} event={hex(id(event))} timeout={timeout}")
+        _buslog(f"wait blocking | bus={hex(id(self))} key={agent_name} event={hex(id(event))} timeout={timeout}")
 
         # Build list of awaitables to wait on
         wait_tasks = [asyncio.create_task(event.wait())]
@@ -118,14 +140,14 @@ class InMemoryAgentBus:
             )
             # Check if we were cancelled
             if cancel_task is not None and cancel_task in done:
-                print(f"[BUS] wait cancelled | bus={hex(id(self))} key={agent_name}")
+                _buslog(f"wait cancelled | bus={hex(id(self))} key={agent_name}")
                 return False
             # Check if event was set (message arrived)
             if event.is_set():
-                print(f"[BUS] wait woke-event | bus={hex(id(self))} key={agent_name} event={hex(id(event))} inbox={len(self._inboxes.get(agent_name, []))}")
+                _buslog(f"wait woke-event | bus={hex(id(self))} key={agent_name} event={hex(id(event))} inbox={len(self._inboxes.get(agent_name, []))}")
                 return True
             # Timeout
-            print(f"[BUS] wait timeout | bus={hex(id(self))} key={agent_name} event={hex(id(event))}")
+            _buslog(f"wait timeout | bus={hex(id(self))} key={agent_name} event={hex(id(event))}")
             return False
         finally:
             # Clean up pending tasks
