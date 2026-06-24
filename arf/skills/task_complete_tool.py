@@ -9,6 +9,7 @@ logger = logging.getLogger("arf.skills.task_complete")
 
 
 async def execute(
+    summary: str = "",
     result: str = "",
     files_changed: dict[str, list[str]] | None = None,
     confidence: float = 1.0,
@@ -18,6 +19,7 @@ async def execute(
     return {
         "ok": True,
         "task_complete": True,
+        "summary": summary,
         "result": result,
         "files_changed": files_changed or {},
         "confidence": max(0.0, min(1.0, confidence)),

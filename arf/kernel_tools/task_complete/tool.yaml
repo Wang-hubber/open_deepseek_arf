@@ -1,15 +1,34 @@
 name: kernel__task_complete
 description: >
-  Signal that the current task is complete. Call this when you have
-  finished the user's request. Provide a result summary, confidence
-  (0.0-1.0), and optional notes. After calling, your round ends and a
-  task_completed hook fires for memory extraction and task archiving.
+  Signal that the current task is complete.
+
+  **LLM's responsibility**: provide both a short summary and the complete
+  result. The framework persists the full result to disk and forwards
+  the summary to your teammate.
+
+  **Plugin's responsibility**: persist the complete result to a file,
+  pass the summary (and file path) to the sender. The LLM does NOT
+  need to truncate or manage files.
+
+  After calling, your round ends and a task_completed hook fires for
+  memory extraction and task archiving.
 parameters:
   type: object
   properties:
+    summary:
+      type: string
+      description: >
+        Short summary (≤200 chars) for forwarding to the teammate who
+        assigned the task. Be specific — what was accomplished, key
+        findings, or decisions made. This is what your teammate sees
+        directly; the full result goes to a file they can read.
     result:
       type: string
-      description: Summary of what was accomplished.
+      description: >
+        Complete output — everything you found, analyzed, or produced.
+        Write your full report here. The framework persists this to
+        disk; your teammate receives the file path. Do NOT truncate or
+        summarize in place of the full output.
     files_changed:
       type: object
       description: 'Files added/modified/deleted: {"added":[],"modified":[],"deleted":[]}.'
