@@ -57,7 +57,11 @@ class ModelAdapter:
         self._init_client()
         self.model_name = config.get("model_name", "")
         self.context_window = self._context_window
-        self.message_format = config.get("message_format", "openai")
+        # Auto-detect DeepSeek format from base_url so reasoning_content is
+        # passed back in subsequent requests (required by thinking mode).
+        _base = config.get("base_url", "")
+        _explicit = config.get("message_format", "")
+        self.message_format = _explicit or ("deepseek" if "deepseek" in _base else "openai")
         self.default_params = {}
         for k, v in config.items():
             if k not in self._META_KEYS:

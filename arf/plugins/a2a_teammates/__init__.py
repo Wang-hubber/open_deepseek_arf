@@ -477,9 +477,12 @@ class PeerTeamPlugin(Plugin):
         sender_sid = entry["sender"]
 
         # Always persist summary + full result to disk (audit trail)
+        # Extract group_id from session_id ({group}__{role}) — config may be empty
+        parsed = SessionIndex.parse_session_id(sid)
+        effective_group = (parsed[0] if parsed else None) or self._group_id or "default"
         result_file = write_peer_result(
             data_dir=ctx.data_dir,
-            group_id=self._group_id,
+            group_id=effective_group,
             correlation_id=corr_id,
             agent_role=sid,
             task_description=f"Task from {sender_sid}",
