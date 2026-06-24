@@ -37,7 +37,12 @@ class TestNewlineBypassPathTraversal:
             # create a symlink inside the boundary to test symlink detection
             (Path(tmp) / "data").mkdir()
             os.symlink("/etc/passwd", Path(tmp) / "data" / "escape_link")
-            yield DirectoryBoundary(tmp)
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                yield DirectoryBoundary(tmp)
+            finally:
+                os.chdir(old)
 
     # ── baseline: without newline, attacks are blocked ──
 
@@ -124,7 +129,12 @@ class TestRejectIllegalChars:
     @pytest.fixture
     def boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
-            yield DirectoryBoundary(tmp)
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                yield DirectoryBoundary(tmp)
+            finally:
+                os.chdir(old)
 
     def test_multi_line_content_rejected(self, guard, boundary):
         """Any string with embedded newlines is rejected — newlines cannot
@@ -166,7 +176,12 @@ class TestPathParamFiltering:
     @pytest.fixture
     def boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
-            yield DirectoryBoundary(tmp)
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                yield DirectoryBoundary(tmp)
+            finally:
+                os.chdir(old)
 
     def test_checks_only_marked_params(self, guard, boundary):
         """file_path=/etc/passwd is checked; content=/etc/passwd is skipped."""

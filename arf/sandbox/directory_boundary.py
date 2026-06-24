@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -32,12 +33,15 @@ class DirectoryBoundary:
         """Return True if path_str resolves within any allowed root.
 
         Rejects paths with ``..`` traversal before resolution.
+        Resolves *path_str* relative to CWD (via abspath), not by
+        joining it to *r*, which would double-prefix when *path_str*
+        already starts with a subdirectory inside *r*.
         """
         if ".." in Path(path_str).parts:
             return False
+        resolved = Path(os.path.abspath(path_str))
         for r in self._roots:
-            resolved = (r / path_str).resolve()
-            if resolved.is_relative_to(r):
+            if resolved == r or resolved.is_relative_to(r):
                 return True
         return False
 
