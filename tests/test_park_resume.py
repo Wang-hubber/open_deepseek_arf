@@ -381,3 +381,57 @@ class TestSubagentPark:
             _registry._parent_wait_ids = {}
 
         asyncio.run(_run())
+
+
+class TestMultiWaitIntegration:
+    """End-to-end: multiple waits, partial wakeup, sequential processing."""
+
+    def test_multi_wait_partial_wakeup(self):
+        """Agent waits for 3 events, processes each as it arrives."""
+        harness = make_harness()
+        agent = harness.agent
+
+        # Register 3 waits
+        w1 = agent.wait("before_round", "peer_wait:aaa", resume_key="peer_wait:aaa")
+        w2 = agent.wait("before_round", "peer_wait:bbb", resume_key="peer_wait:bbb")
+        w3 = agent.wait("before_round", "subagent:task1", resume_key="subagent:task1")
+
+        assert len(agent.state.waiting["before_round"]) == 3
+
+        async def _run():
+            # Resolve w2 first (simulate peer B replying first)
+            harness._park_event = asyncio.Event()
+            harness._parked = True
+            await harness.resolve_wait(wait_id=w2.wait_id, inject_message={
+                "role": "user",
+                "content": "peer B result",
+            })
+
+            # Flags: _messages_injected=True, w2 removed
+            assert harness._messages_injected is True
+            assert len(agent.state.waiting["before_round"]) == 2
+            assert harness._parked is False
+            assert harness._park_event.is_set()
+
+            # Consume _messages_injected (simulate before_round logic)
+            harness._messages_injected = False
+
+            # Resolve w1
+            harness._park_event = asyncio.Event()
+            harness._parked = True
+            await harness.resolve_wait(wait_id=w1.wait_id, inject_message={
+                "role": "user",
+                "content": "peer A result",
+            })
+            assert len(agent.state.waiting["before_round"]) == 1
+            assert harness._parked is False
+
+            # Resolve w3 (last one)
+            harness._park_event = asyncio.Event()
+            harness._parked = True
+            result = await harness.resolve_wait(wait_id=w3.wait_id)
+            assert result is True  # all done
+            assert len(agent.state.waiting) == 0
+            assert harness._parked is False
+
+        asyncio.run(_run())
