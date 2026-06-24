@@ -475,8 +475,13 @@ class AgentHarness:
         # peer_wait) eventually loop back here, so plugins get a uniform chance
         # to inspect state (drain inbox, re-register bus, decide to park).
         while True:
-            if await self._checkpoint("before_round", ctx):
-                yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
+            has_waiting = await self._checkpoint("before_round", ctx)
+
+            if has_waiting and not self._messages_injected:
+                yield ctx.emit(event_type="parked", data={
+                    "hook_name": "before_round",
+                    "waiting": agent.state.waiting,
+                })
                 try:
                     await self._do_park()
                 except asyncio.CancelledError:
@@ -485,8 +490,20 @@ class AgentHarness:
                         await self._save_and_teardown()
                     raise
                 if self._parked:
+                    # CancelledError path kept _parked=True → teardown
                     await self._save_and_teardown()
                     return
+                # Normal wakeup: loop back to before_round checkpoint
+                continue
+
+            if has_waiting and self._messages_injected:
+                # Messages were just injected — proceed to round so agent can process them.
+                # Remaining waits will park at next round's before_round.
+                self._messages_injected = False
+                break
+
+            # No waiting → proceed to round
+            break
 
             turn = 0
             _round_restart = False

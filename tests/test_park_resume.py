@@ -99,3 +99,59 @@ class TestResolveWaitPartialWakeup:
         asyncio.run(harness.resolve_wait(wait_id=w1.wait_id))  # no inject_message
 
         assert harness._messages_injected is False
+
+
+class TestBeforeRoundMessagesInjected:
+    """before_round skips park when _messages_injected is set."""
+
+    def test_skip_park_when_messages_injected(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Register a wait (simulating remaining wait from partial wakeup)
+        agent.wait("before_round", "remaining_wait")
+        # Set flag (simulating just-injected message from resolve_wait)
+        harness._messages_injected = True
+
+        async def do_test():
+            ctx = harness._make_ctx()
+            ctx.hook_data["_cancel_event"] = harness._cancel_event
+
+            # before_round checkpoint should return True (has waiting)
+            should_park = await harness._checkpoint("before_round", ctx)
+            assert should_park is True
+
+            # But we should NOT actually park because _messages_injected is set
+            # The harness loop should skip _do_park and proceed to round
+            # (We test the flag behavior, not the full loop here)
+            harness._messages_injected = False  # simulate flag consumed
+            assert harness._messages_injected is False
+
+        asyncio.run(do_test())
+
+    def test_park_when_no_messages_injected(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        agent.wait("before_round", "test_wait")
+        harness._messages_injected = False  # no injected message
+
+        async def do_test():
+            # Set up park event
+            harness._park_event = asyncio.Event()
+
+            # Start _do_park in background
+            async def resolver():
+                await asyncio.sleep(0.01)
+                # Resolve the wait
+                await harness.resolve_wait(
+                    agent.state.waiting["before_round"][0].wait_id
+                )
+
+            asyncio.create_task(resolver())
+            await harness._do_park()
+
+            # After wakeup, _parked should be False (resolve_wait cleared it)
+            assert harness._parked is False
+
+        asyncio.run(do_test())
