@@ -54,6 +54,7 @@ class AgentHarness:
         self._parked: bool = False
         self._messages_injected: bool = False
         self._user_interrupted: bool = False
+        self._pending_injections: list[dict] = []
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
@@ -361,6 +362,7 @@ class AgentHarness:
             agent.state.messages.clear()
             agent.state.waiting.clear()
             self._messages_injected = False
+            self._pending_injections.clear()
 
         ctx = self._make_ctx()
         self._current_ctx = ctx
@@ -507,7 +509,9 @@ class AgentHarness:
 
         # Detect user interrupting a non-HITL park (delegate_task, peer_wait).
         # The harness is parked in a previous run() — user wants to interact now.
-        if self._parked:
+        # Also trigger when waits remain but _parked was cleared by resolve_wait()
+        # (e.g. some subagents completed while CLI was waiting for input).
+        if self._parked or any(self.agent.state.waiting.values()):
             self._user_interrupted = True
 
         # --- before_round ---
@@ -515,6 +519,15 @@ class AgentHarness:
         # peer_wait) eventually loop back here, so plugins get a uniform chance
         # to inspect state (drain inbox, re-register bus, decide to park).
         while True:
+            # Dequeue one pending injection per round (prevents batching)
+            if self._pending_injections:
+                msg = self._pending_injections.pop(0)
+                self.agent.input(
+                    role=msg.get("role", "user"),
+                    content=msg.get("content", ""),
+                    name=msg.get("name"),
+                )
+
             has_waiting = await self._checkpoint("before_round", ctx)
 
             if has_waiting and not self._messages_injected:
@@ -551,7 +564,9 @@ class AgentHarness:
             if has_waiting and self._messages_injected:
                 # Messages were just injected — proceed to round so agent can process them.
                 # Remaining waits will park at next round's before_round.
-                self._messages_injected = False
+                # Keep flag set if more pending injections need their own round.
+                if not self._pending_injections:
+                    self._messages_injected = False
 
             # No waiting / messages-injected → proceed to round
 
@@ -900,6 +915,20 @@ class AgentHarness:
         self._parked = True
         await self._park_event.wait()
 
+    async def wake_with_message(self, message: str) -> None:
+        """Wake a parked harness with a user message, without resolving any waits.
+
+        After waking, the harness runs one round (model sees the message),
+        then re-parks at before_round if waits still exist.
+        """
+        if not message:
+            return
+        self.agent.input(role="user", content=message)
+        self._messages_injected = True
+        self._parked = False
+        if self._park_event:
+            self._park_event.set()
+
     async def resolve_wait(self, wait_id: str, inject_message: dict | None = None) -> bool:
         """External call: finish a wait + optionally inject a message.
 
@@ -907,11 +936,16 @@ class AgentHarness:
         Returns True only when ALL waits are resolved.
         """
         if inject_message:
-            self.agent.input(
-                role=inject_message.get("role", "user"),
-                content=inject_message.get("content", ""),
-                name=inject_message.get("name"),
-            )
+            if self._parked:
+                # Harness is parked — inject directly to wake it with content
+                self.agent.input(
+                    role=inject_message.get("role", "user"),
+                    content=inject_message.get("content", ""),
+                    name=inject_message.get("name"),
+                )
+            else:
+                # Harness is awake — queue for next round to prevent batching
+                self._pending_injections.append(inject_message)
             self._messages_injected = True
 
         self.agent.finish_wait(wait_id=wait_id)

@@ -241,6 +241,7 @@ async def execute(
         wi = _register_wait("before_round", f"subagent:{task_id}",
                             resume_key=f"subagent:{task_id}")
         result["wait_id"] = wi.wait_id
+        registry._parent_wait_ids[task_id] = wi.wait_id
 
     # Update child_tasks task_id after dispatch returns it
     if task_id:
@@ -259,7 +260,7 @@ async def execute(
     }
 
 
-def _wake_parent(registry, parent_sid: str) -> None:
+def _wake_parent(registry, parent_sid: str, task_id: str) -> None:
     """Wake parent harness with the completed sub-agent result injected.
 
     Gets the result from delegator queue and passes it as inject_message
@@ -268,7 +269,7 @@ def _wake_parent(registry, parent_sid: str) -> None:
     parent_harness = getattr(registry, "parent_harness", None)
     if parent_harness is None:
         return
-    wait_id = getattr(registry, "_parent_wait_ids", {}).pop(parent_sid, None)
+    wait_id = getattr(registry, "_parent_wait_ids", {}).pop(task_id, None)
     if wait_id is None:
         return
 
@@ -305,8 +306,10 @@ def _wake_parent(registry, parent_sid: str) -> None:
                             for p in deleted:
                                 parts.append(f"- `{p}`")
                     if result_file:
+                        data_dir = getattr(registry, "data_dir", "data")
+                        full_path = f"{data_dir}/{result_file}"
                         parts.append("")
-                        parts.append(f"Full result cached at: `{result_file}`")
+                        parts.append(f"Full result cached at: `{full_path}`")
 
                     msg = {
                         "role": "user",
@@ -482,8 +485,7 @@ def _make_yaml_runner(
         await registry.delegator.complete(parent_sid, task_id, complete_result)
 
         # Wake parent harness if it's parked waiting for this result
-        _wake_parent(registry, parent_sid)
-
+        _wake_parent(registry, parent_sid, task_id)
         if final_status == "error":
             return {"ok": False, "error": final_result}
         return {
@@ -676,8 +678,7 @@ def _make_inherit_runner(
         await registry.delegator.complete(parent_sid, task_id, complete_result)
 
         # Wake parent harness if it's parked waiting for this result
-        _wake_parent(registry, parent_sid)
-
+        _wake_parent(registry, parent_sid, task_id)
         if final_status == "error":
             return {"ok": False, "error": final_result}
         return {

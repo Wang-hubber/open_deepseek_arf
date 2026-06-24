@@ -284,8 +284,8 @@ class TestA2APluginHooks:
 
         await plugin.handle("init", ctx)
 
-        # Subagent wait should be rebuilt
-        assert a2a_registry._parent_wait_ids["parent_z"] == "w1"
+        # Subagent wait should be rebuilt, keyed by task_id from resume_key
+        assert a2a_registry._parent_wait_ids["task_x"] == "w1"
         # Non-subagent wait should not affect parent_wait_ids
         assert len(a2a_registry._parent_wait_ids) == 1
 

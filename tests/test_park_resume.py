@@ -364,10 +364,10 @@ class TestSubagentPark:
             # Simulate _wake_parent
             from arf.plugins.a2a_subagents.tools.delegate_task.function import _wake_parent
 
-            # Override _parent_wait_ids
-            _registry._parent_wait_ids = {"test-sid": wi.wait_id}
+            # Override _parent_wait_ids, now keyed by task_id
+            _registry._parent_wait_ids = {"task123": wi.wait_id}
 
-            _wake_parent(_registry, "test-sid")
+            _wake_parent(_registry, "test-sid", "task123")
 
             # Give the asyncio task time to run
             await asyncio.sleep(0.05)

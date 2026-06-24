@@ -104,7 +104,8 @@ class Plugin(Plugin):
         pending_resume = ctx.hook_data.get("_pending_resume", [])
         for wi in pending_resume:
             if wi.resume_key.startswith("subagent:"):
-                _registry._parent_wait_ids[ctx.session_id] = wi.wait_id
+                task_id = wi.resume_key[len("subagent:"):]
+                _registry._parent_wait_ids[task_id] = wi.wait_id
                 _registry.parent_harness = ctx.hook_data.get("_harness_ref", {}).get("harness")
                 logger.info("Rebuilt subagent wait %s for session %s", wi.resume_key, ctx.session_id)
 
