@@ -90,7 +90,7 @@ class ToolGuardPlugin(Plugin):
             params: dict = tc.get("params", {})
 
             # ── Layer 1: deny_patterns — param content regex (always enforced) ──
-            params_str = json.dumps(params, ensure_ascii=False) if params else ""
+            params_str = json.dumps(params, ensure_ascii=False, default=str) if params else ""
             for pattern in self._deny_patterns:
                 if re.search(pattern, params_str, re.IGNORECASE):
                     ctx.emit(event_type="guard_block", data={
@@ -199,12 +199,15 @@ class ToolGuardPlugin(Plugin):
     def _path_in_allowlist(value: str, allow_paths: list[str]) -> bool:
         """Return True if *value* resolves to a path within any allow_paths entry.
 
-        Uses abspath so that relative allow_paths (e.g. ".") work correctly
-        — normpath strips "./" prefixes which breaks startswith comparisons.
+        *value* is resolved relative to CWD (via abspath), then checked
+        against each allow_path (also absolutized).  This avoids the
+        double-prefix bug where ``os.path.join(ap_abs, value)`` would
+        concatenate the allow_path prefix when *value* already starts
+        with the same subdirectory.
         """
+        resolved = os.path.abspath(value)
         for ap in allow_paths:
             ap_abs = os.path.abspath(ap)
-            resolved = os.path.abspath(os.path.join(ap_abs, value))
             if resolved == ap_abs or resolved.startswith(ap_abs + os.sep):
                 return True
         return False

@@ -100,7 +100,11 @@ class SkillIndex:
         if not self._index:
             return ""
 
-        lines = ["## Available Skills"]
+        lines = [
+            "## Available Skills",
+            "If a skill matches your task, invoke it BEFORE proceeding.",
+            "",
+        ]
         for entry in sorted(self._index.values(), key=lambda e: e.name):
             lines.append(f"- **{entry.name}**: {entry.description}")
         return "\n".join(lines)

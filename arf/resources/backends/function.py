@@ -29,7 +29,8 @@ class FunctionBackend:
                     sig = None
                 if sig:
                     for reserved in ("_agent_mode", "_engine", "_state_store",
-                                     "_workspace", "session_id"):
+                                     "_workspace", "session_id",
+                                     "_register_wait", "_emit"):
                         if reserved not in sig.parameters:
                             params.pop(reserved, None)
                 result = fn(**params)

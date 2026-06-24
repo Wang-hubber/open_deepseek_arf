@@ -359,6 +359,7 @@ class AgentHarness:
             agent.state.session_id = session_id or str(uuid.uuid4())
             agent.state.messages.clear()
             agent.state.waiting.clear()
+            self._messages_injected = False
 
         ctx = self._make_ctx()
         self._current_ctx = ctx
@@ -382,7 +383,11 @@ class AgentHarness:
             if self._tool_manager is not None and hasattr(self._tool_manager, "list_skills"):
                 skill_list = self._tool_manager.list_skills()
                 if skill_list:
-                    lines = ["## Available Skills"]
+                    lines = [
+                        "## Available Skills",
+                        "If a skill matches your task, invoke it BEFORE proceeding.",
+                        "",
+                    ]
                     for s in skill_list:
                         lines.append(f"- **{s['name']}**: {s['description']}")
                     agent.input(role="system", content="\n".join(lines),
@@ -427,6 +432,20 @@ class AgentHarness:
                     if isinstance(m, dict):
                         agent.input(role=m.get("role", "user"), content=m.get("content", ""),
                                     name=m.get("name"))
+            # Restore waiting from persisted state (critical for resume_key rebuild)
+            if existing and existing.get("waiting"):
+                from arf.agent.state import WaitItem as _WI
+                for hook_name_str, items in existing["waiting"].items():
+                    agent.state.waiting[hook_name_str] = [
+                        _WI(
+                            wait_id=wi_data["wait_id"],
+                            hook_name=wi_data["hook_name"],
+                            reason=wi_data["reason"],
+                            created_at=wi_data.get("created_at", 0.0),
+                            resume_key=wi_data.get("resume_key", ""),
+                        )
+                        for wi_data in items
+                    ]
             # Set harness_ref for resumed sessions (needed by plugins like a2a_teammates)
             ctx.hook_data["_harness_ref"] = {
                 "harness": self,
@@ -807,11 +826,21 @@ class AgentHarness:
         """Persist current agent state so sessions survive restarts."""
         state = self.agent.state
         msgs = [{"role": m.role, "content": m.content, "name": m.name} for m in state.messages]
+        # Serialize waiting dict: hook_name -> [WaitItem dataclass fields]
+        waiting_serialized = {}
+        for hook_name, items in state.waiting.items():
+            waiting_serialized[hook_name] = [
+                {"wait_id": wi.wait_id, "hook_name": wi.hook_name,
+                 "reason": wi.reason, "created_at": wi.created_at,
+                 "resume_key": wi.resume_key}
+                for wi in items
+            ]
         await self._state_store.put(state.session_id, {
             "session_id": state.session_id,
             "messages": msgs,
             "snapshot": state.snapshot,
             "session_active": True,
+            "waiting": waiting_serialized,
         })
 
     # ── Session Mode ────────────────────────────────────
@@ -875,10 +904,13 @@ class AgentHarness:
         as a user message, and resolves the wait.
         """
         hitl_waits = self.agent.state.waiting.get("before_round", [])
-        for wi in hitl_waits:
-            if wi.reason == "hitl":
-                return await self.resolve_wait(wi.wait_id, inject_message={
-                    "role": "user",
-                    "content": answer,
-                })
+        hitl_items = [wi for wi in hitl_waits if wi.reason == "hitl"]
+        if len(hitl_items) > 1:
+            logger.warning("Multiple HITL waits (%d) for session %s — resolving first only",
+                           len(hitl_items), session_id)
+        for wi in hitl_items:
+            return await self.resolve_wait(wi.wait_id, inject_message={
+                "role": "user",
+                "content": answer,
+            })
         return False
