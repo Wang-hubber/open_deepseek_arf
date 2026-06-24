@@ -500,10 +500,8 @@ class AgentHarness:
                 # Messages were just injected — proceed to round so agent can process them.
                 # Remaining waits will park at next round's before_round.
                 self._messages_injected = False
-                break
 
-            # No waiting → proceed to round
-            break
+            # No waiting / messages-injected → proceed to round
 
             turn = 0
             _round_restart = False
