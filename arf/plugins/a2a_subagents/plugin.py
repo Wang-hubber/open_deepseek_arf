@@ -113,9 +113,16 @@ class Plugin(Plugin):
     # ==================================================================
 
     async def _on_inject_session_id(self, ctx: PluginContext) -> None:
-        """Inject session_id into delegate_task tool params before execution."""
+        """Inject session_id into ALL a2a_subagents tool params before execution.
+
+        delegate_task, queue_status, cancel_task, cancel_held all need
+        session_id to scope their operations to the current session.
+        Without it, queue_status looks up _sessions[""] and returns all zeros.
+        """
+        _a2a_tools = {"delegate_task", "queue_status", "cancel_task", "cancel_held"}
         for tc in ctx.hook_data.get("_pending_tool_calls", []):
-            if tc.get("name", "").endswith("delegate_task"):
+            local = tc.get("name", "").rsplit("__", 1)[-1]
+            if local in _a2a_tools:
                 tc.setdefault("params", {})["session_id"] = ctx.session_id
 
     # ==================================================================
