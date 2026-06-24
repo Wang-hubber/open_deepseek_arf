@@ -7,6 +7,7 @@ events:
   - {hook_name: "before_model", event_name: "drain_inbox", mode: "blocking"}
   - {hook_name: "after_model", event_name: "heartbeat", mode: "side"}
   - {hook_name: "after_round", event_name: "forward_reply", mode: "side"}
+  - {hook_name: "before_break", event_name: "validate_output", mode: "blocking"}
   - {hook_name: "session_end", event_name: "teardown", mode: "blocking"}
 config:
   group_id: default

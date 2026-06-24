@@ -51,11 +51,21 @@ _TEAM_PROTOCOL = (
     "  [task assign] <message> — a task for you\n"
     "  [response] <summary> — a reply to your request\n"
     "  [info message] <text> — an informational notice\n"
-    "- When you receive a task, complete it and call\n"
-    "  task_complete(result=\"...\").  Your result is auto-forwarded\n"
-    "  as a JRPC response to the sender.\n"
+    "- **CRITICAL**: When you receive a [task], you MUST complete it and\n"
+    "  call task_complete(result=\"...\").  This is NOT optional — your\n"
+    "  output is BLOCKED until task_complete is called.  Do not reply\n"
+    "  with plain text; always use the tool.\n"
+    "- Your task_complete result is auto-forwarded as a JRPC response\n"
+    "  to the sender.\n"
     "- After sending a task, wait for the reply — do not do the\n"
     "  receiver's work yourself."
+)
+
+_RETRY_TASK_COMPLETE = (
+    "Your last response was BLOCKED: you have an active [task] from a "
+    "teammate but did not call task_complete(result=\"...\"). "
+    "You MUST complete the task and call the task_complete tool. "
+    "Do NOT output plain text — use the tool."
 )
 
 _DEFAULT_EVENTS = [
@@ -66,6 +76,7 @@ _DEFAULT_EVENTS = [
     {"hook_name": "before_model", "event_name": "drain_inbox", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
     {"hook_name": "after_round", "event_name": "forward_reply", "mode": "side"},
+    {"hook_name": "before_break", "event_name": "validate_output", "mode": "blocking"},
     {"hook_name": "session_end", "event_name": "teardown", "mode": "blocking"},
 ]
 
@@ -111,6 +122,8 @@ class PeerTeamPlugin(Plugin):
             await self._on_heartbeat(ctx)
         elif event_name == "forward_reply":
             await self._on_forward_reply(ctx)
+        elif event_name == "validate_output":
+            await self._on_validate_output(ctx)
         elif event_name == "teardown":
             await self._on_teardown(ctx)
 
@@ -503,6 +516,55 @@ class PeerTeamPlugin(Plugin):
                 "%d remaining for subsequent rounds",
                 sid, len(my_pending), corr_id, len(my_pending) - 1,
             )
+
+    # ==================================================================
+    # validate_output — enforce task_complete for pending peer tasks
+    # ==================================================================
+
+    async def _on_validate_output(self, ctx: PluginContext) -> None:
+        """Block round end if agent has pending tasks but didn't call task_complete.
+
+        Injects a retry message and parks briefly, forcing the agent to
+        take another turn with the reminder in context.
+        """
+        sid = ctx.session_id
+        pending_replies = get_pending_replies()
+        my_pending = [
+            (corr_id, entry) for corr_id, entry in pending_replies.items()
+            if entry.get("receiver") == sid
+        ]
+        if not my_pending:
+            return  # no pending tasks — round can end normally
+
+        # Check if task_complete was called
+        messages = ctx.agent.state.messages
+        found_tc = False
+        for m in reversed(messages):
+            if m.role == "tool" and isinstance(m.content, dict):
+                name = m.content.get("name", "")
+                if name.endswith("task_complete"):
+                    found_tc = True
+                    break
+
+        if found_tc:
+            return  # OK — task_complete was called
+
+        # No task_complete despite pending task — inject reminder and retry
+        ctx.agent.input(role="system", content=_RETRY_TASK_COMPLETE, name="MCP")
+        logger.warning(
+            "Agent %s has %d pending task(s) but did not call task_complete — retrying",
+            sid, len(my_pending),
+        )
+
+        wi = ctx.agent.wait("before_break", "missing_task_complete")
+        harness = self._state.peer_harnesses.get(sid)
+        if harness is not None:
+
+            async def _retry_soon() -> None:
+                await asyncio.sleep(0.1)
+                await harness.resolve_wait(wi.wait_id)
+
+            asyncio.create_task(_retry_soon())
 
     # ==================================================================
     # teardown — clean up agent resources on session end
