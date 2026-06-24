@@ -277,3 +277,37 @@ class TestRebuildWaitTasks:
         ctx.hook_data["_pending_resume"] = waits_with_resume
 
         assert len(ctx.hook_data["_pending_resume"]) == 0
+
+
+class TestAskUserTool:
+    """ask_user tool registers wait on before_round and emits need_human_input."""
+
+    def test_ask_user_registers_wait_and_emits(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        emit_events = []
+        def fake_emit(event_type, data):
+            emit_events.append((event_type, data))
+
+        from arf.skills.ask_user_tool import execute
+        result = asyncio.run(execute(
+            question="Proceed?",
+            options=["yes", "no"],
+            _register_wait=lambda h, r, resume_key="": agent.wait(h, r, resume_key=resume_key),
+            _emit=fake_emit,
+        ))
+
+        assert result["ok"] is True
+        assert result["pending"] is True
+        assert "wait_id" in result
+
+        # Verify wait was registered
+        waits = agent.state.waiting.get("before_round", [])
+        assert len(waits) == 1
+        assert waits[0].reason == "hitl"
+
+        # Verify need_human_input emitted
+        assert len(emit_events) == 1
+        assert emit_events[0][0] == "need_human_input"
+        assert emit_events[0][1]["question"] == "Proceed?"

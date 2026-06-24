@@ -1,9 +1,7 @@
 """ask_user — kernel tool for human-in-the-loop input requests.
 
-Returns a structured result with pending=True. Engine detects this
-in _detect_primitives, calls HITLProtocol.request_input() which emits
-need_human_input event. The round ends. Human answer is injected as
-a new user message for the next round.
+Registers a wait on before_round and emits need_human_input event.
+Engine injects _register_wait and _emit at before_tools (see Task 4).
 """
 import logging
 
@@ -15,11 +13,25 @@ async def execute(
     options: list[str] | None = None,
     context: str = "",
     task_id: str = "",
+    _register_wait=None,
+    _emit=None,
     **kwargs,
 ) -> dict:
+    wi = None
+    if _register_wait is not None:
+        wi = _register_wait("before_round", "hitl", resume_key="")
+    if _emit is not None:
+        _emit("need_human_input", {
+            "question": question,
+            "options": options or [],
+            "context": context,
+            "task_id": task_id,
+            "wait_id": wi.wait_id if wi else "",
+        })
     return {
         "ok": True,
         "pending": True,
+        "wait_id": wi.wait_id if wi else "",
         "question": question,
         "options": options or [],
         "context": context,
