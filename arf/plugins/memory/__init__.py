@@ -9,7 +9,7 @@ import asyncio
 import json as _json_mod
 import logging
 import os
-from pathlib import Path
+from copy import deepcopy
 
 from arf.harness.plugin_base import Plugin
 from arf.harness.context import PluginContext
@@ -18,6 +18,43 @@ from arf.memory.index import MemoryIndex
 from arf.memory.secrets_store import SecretsStore
 
 logger = logging.getLogger("arf.plugins.memory")
+
+
+def _user_memory_messages(messages) -> list[dict]:
+    """Convert messages for user-fact extraction — strip tool results.
+
+    Tool outputs are noise for user memory (preferences, identity, decisions)
+    and can cause API 400 errors when slice boundaries orphan them from
+    their preceding assistant tool_calls.
+    """
+    result: list[dict] = []
+    for m in messages:
+        if m.role == "tool":
+            continue
+        content = m.content
+        if m.role == "assistant" and isinstance(content, dict):
+            content = content.get("content", "")
+        if m.role == "assistant" and not content:
+            continue
+        result.append({"role": m.role, "content": content})
+    return result
+
+
+def _task_memory_messages(messages) -> list[dict]:
+    """Convert messages for task-experience extraction — keep tool results.
+
+    Skips leading orphaned tool messages (no preceding assistant tool_calls)
+    to satisfy the OpenAI API requirement.
+    """
+    # Skip orphaned tool messages at the head
+    start = 0
+    while start < len(messages) and messages[start].role == "tool":
+        start += 1
+
+    result: list[dict] = []
+    for m in messages[start:]:
+        result.append({"role": m.role, "content": m.content})
+    return result
 
 
 class MemoryPlugin(Plugin):
@@ -42,7 +79,6 @@ class MemoryPlugin(Plugin):
         # Lazy-initialized components
         self._index: MemoryIndex | None = None
         self._secrets: SecretsStore | None = None
-        self._call_model = None
         self._data_dir: str = ""
 
     # ── lifecycle ────────────────────────────────────────
@@ -79,13 +115,6 @@ class MemoryPlugin(Plugin):
         self._wire_tool("read_secret", _store=self._secrets)
         self._wire_tool("write_secret", _store=self._secrets)
 
-        # Extraction model
-        model_cfg = self.config.get("model")
-        if model_cfg:
-            self._call_model = self._build_call_model(model_cfg)
-            # Also wire for search_task_memory tool
-            self._wire_tool("search_task_memory", _call_model=self._call_model)
-
         logger.info("MemoryPlugin initialized (data_dir=%s)", data_dir)
 
     @staticmethod
@@ -98,24 +127,6 @@ class MemoryPlugin(Plugin):
                 setattr(mod, attr, val)
         except ImportError:
             logger.warning("Memory tool '%s' not found for wiring", name)
-
-    def _build_call_model(self, model_cfg: dict):
-        """Build an async call_model function from plugin model config."""
-        from arf.core.model_adapter import ModelAdapter
-        api_key = os.environ.get(model_cfg.get("api_key_env", ""), "placeholder")
-        adapter = ModelAdapter({
-            "base_url": model_cfg.get("api_base", "https://api.deepseek.com/v1"),
-            "api_key": api_key,
-            "model_name": model_cfg.get("model", "deepseek-chat"),
-            "context_window": model_cfg.get("context_window", 131072),
-        })
-
-        async def _call(messages: list[dict], model_name: str = "") -> dict:
-            msg = await adapter.chat_complete(messages, tools=None)
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            return {"content": content}
-
-        return _call
 
     # ── session_start — inject memory ─────────────────────
 
@@ -142,26 +153,33 @@ class MemoryPlugin(Plugin):
         if len(messages) > self._max_memory_size:
             ctx.agent.state.messages = messages[-self._max_memory_size:]
 
-        if self._call_model is not None and self._index is not None:
+        if self._index is not None:
             asyncio.create_task(self._rolling_update(ctx))
 
     async def _rolling_update(self, ctx: PluginContext) -> None:
-        """LLM extracts user-specific facts from recent conversation."""
-        messages = ctx.agent.state.messages
-        if not messages or self._index is None or self._call_model is None:
+        """LLM extracts user-specific facts from recent conversation.
+
+        Deep-copies the agent's messages (including framework-injected system
+        prompts), strips tool results (noise for user memory), and calls the
+        agent's own ModelAdapter so server-side prompt caches hit.
+        """
+        agent_messages = ctx.agent.state.messages
+        if not agent_messages or self._index is None:
             return
 
-        existing = self._index.load_user()
-        recent = [{"role": m.role, "content": m.content} for m in messages[-20:]]
+        # Deep-copy to avoid polluting the agent's context
+        messages = deepcopy(agent_messages)
+        recent = _user_memory_messages(messages)
 
+        existing = self._index.load_user()
         instruction = _USER_EXTRACTION_PROMPT.format(
             existing=existing or "(no existing user memory)",
         )
         call_messages = recent + [{"role": "user", "content": instruction}]
 
         try:
-            resp = await self._call_model(call_messages, model_name="")
-            content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            result = await ctx.agent._call_model(call_messages, tools=None)
+            content = result.content if hasattr(result, "content") else str(result)
         except Exception:
             logger.warning("User memory extraction failed", exc_info=True)
             return
@@ -179,7 +197,7 @@ class MemoryPlugin(Plugin):
     # ── task_completed — task experience extraction ───────
 
     async def _on_task_completed(self, ctx: PluginContext) -> None:
-        if self._call_model is None or self._index is None:
+        if self._index is None:
             return
 
         messages = ctx.agent.state.messages
@@ -190,27 +208,32 @@ class MemoryPlugin(Plugin):
         notes = ctx.hook_data.get("notes", "")
         confidence = ctx.hook_data.get("confidence", 1.0)
 
-        entry = await self._extract_task_experience(messages, task_result, notes, confidence)
+        entry = await self._extract_task_experience(ctx, task_result, notes, confidence)
         if entry is None:
             return
 
         entry["agent_name"] = ctx.agent.state.agent_id
-        asyncio.create_task(self._merge_and_save(entry))
+        call_model = ctx.agent._call_model
+        asyncio.create_task(self._merge_and_save(entry, call_model))
 
     async def _extract_task_experience(
-        self, messages, task_result: str, notes: str, confidence: float,
+        self, ctx: PluginContext, task_result: str, notes: str, confidence: float,
     ) -> dict | None:
+        # Deep-copy agent messages (tool results are valuable context for task memory)
+        agent_messages = ctx.agent.state.messages
+        messages = deepcopy(agent_messages)
+
         instruction = _TASK_EXTRACTION_PROMPT.format(
             task_result=task_result,
             notes=notes,
             confidence=confidence,
         )
-        raw_messages = [{"role": m.role, "content": m.content} for m in messages]
+        raw_messages = _task_memory_messages(messages)
         call_messages = raw_messages + [{"role": "user", "content": instruction}]
 
         try:
-            resp = await self._call_model(call_messages, model_name="")
-            content = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            result = await ctx.agent._call_model(call_messages, tools=None)
+            content = result.content if hasattr(result, "content") else str(result)
         except Exception:
             logger.warning("Task memory extraction failed", exc_info=True)
             return None
@@ -229,7 +252,7 @@ class MemoryPlugin(Plugin):
             return None
         return entry
 
-    async def _merge_and_save(self, entry: dict) -> None:
+    async def _merge_and_save(self, entry: dict, call_model) -> None:
         existing = self._index.load_tasks() if self._index else ""
 
         prompt = _TASK_MERGE_PROMPT.format(
@@ -238,11 +261,11 @@ class MemoryPlugin(Plugin):
         )
 
         try:
-            resp = await self._call_model(
+            result = await call_model(
                 [{"role": "user", "content": prompt}],
-                model_name="",
+                tools=None,
             )
-            merged = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            merged = result.content if hasattr(result, "content") else str(result)
         except Exception:
             logger.warning("Task memory merge failed", exc_info=True)
             return
