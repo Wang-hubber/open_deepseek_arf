@@ -311,3 +311,73 @@ class TestAskUserTool:
         assert len(emit_events) == 1
         assert emit_events[0][0] == "need_human_input"
         assert emit_events[0][1]["question"] == "Proceed?"
+
+
+class TestSubagentPark:
+    """delegate_task registers wait on before_round, _wake_parent injects result."""
+
+    def test_delegate_task_registers_wait(self, monkeypatch):
+        """delegate_task tool registers wait when _register_wait is injected.
+
+        Tests that execute accepts _register_wait as an explicit kwarg (injected
+        by engine at before_tools).
+        """
+        from arf.plugins.a2a_subagents.tools.delegate_task.function import execute
+        import inspect
+
+        sig = inspect.signature(execute)
+        params = list(sig.parameters.keys())
+
+        assert "_register_wait" in params  # injected by engine at before_tools
+
+    def test_wake_parent_injects_result(self):
+        """_wake_parent calls resolve_wait with inject_message from delegator results."""
+
+        async def _run():
+            harness = make_harness()
+            agent = harness.agent
+
+            # Register a subagent wait (as delegate_task would)
+            wi = agent.wait("before_round", "subagent:task123", resume_key="subagent:task123")
+
+            # Mock the registries
+            from arf.plugins.a2a_subagents.tools import _registry
+            old_delegator = _registry.delegator
+
+            class FakeDelegator:
+                async def get_pending(self, parent_sid):
+                    return [{
+                        "task_id": "task123",
+                        "content": "subagent result text",
+                        "turn_count": 3,
+                        "tool_calls_summary": [],
+                    }]
+
+            _registry.delegator = FakeDelegator()
+
+            harness._park_event = asyncio.Event()
+            harness._parked = True
+
+            # Set parent_harness so _wake_parent can find the harness
+            _registry.parent_harness = harness
+
+            # Simulate _wake_parent
+            from arf.plugins.a2a_subagents.tools.delegate_task.function import _wake_parent
+
+            # Override _parent_wait_ids
+            _registry._parent_wait_ids = {"test-sid": wi.wait_id}
+
+            _wake_parent(_registry, "test-sid")
+
+            # Give the asyncio task time to run
+            await asyncio.sleep(0.05)
+
+            # The wait should be resolved and a message injected
+            assert harness._park_event.is_set()
+            assert harness._parked is False
+
+            # Cleanup
+            _registry.delegator = old_delegator
+            _registry._parent_wait_ids = {}
+
+        asyncio.run(_run())

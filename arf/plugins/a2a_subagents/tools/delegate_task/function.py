@@ -167,6 +167,8 @@ async def execute(
     timeout: int = 0,
     context: dict | None = None,
     session_id: str = "",
+    _register_wait=None,
+    **kwargs,
 ) -> dict:
     """Spawn a sub-agent to handle *task*.
 
@@ -174,6 +176,10 @@ async def execute(
     AgentHarness with its own config/tools/model via create_harness().
     Otherwise inherits the parent's model/tools/plugins for a lightweight
     sub-agent with the same capabilities.
+
+    When _register_wait is injected (by engine at before_tools), a wait
+    is registered on before_round so the parent harness parks until the
+    sub-agent completes.
     """
     registry = _registry
     if registry.delegator is None:
@@ -229,11 +235,18 @@ async def execute(
 
     result = await registry.delegator.dispatch(parent_sid, task_obj, runner)
 
+    # Register wait on before_round — harness parks next round
+    task_id = result.get("task_id", "")
+    if _register_wait is not None and task_id:
+        wi = _register_wait("before_round", f"subagent:{task_id}",
+                            resume_key=f"subagent:{task_id}")
+        result["wait_id"] = wi.wait_id
+
     # Update child_tasks task_id after dispatch returns it
-    if result.get("task_id"):
+    if task_id:
         await _add_child_task(
             parent_sid=parent_sid,
-            task_id=result["task_id"],
+            task_id=task_id,
             child_sid=child_sid,
             agent_name=agent or "inline",
             data_dir=registry.data_dir,
@@ -247,20 +260,44 @@ async def execute(
 
 
 def _wake_parent(registry, parent_sid: str) -> None:
-    """Wake the parent harness if it's parked waiting for sub-agent results.
+    """Wake parent harness with the completed sub-agent result injected.
 
-    Safe to call when parent hasn't parked yet (race condition) —
-    resolve_wait is a no-op for unknown wait_ids.
+    Gets the result from delegator queue and passes it as inject_message
+    to resolve_wait, so the parent sees the result immediately on wakeup.
     """
     parent_harness = getattr(registry, "parent_harness", None)
     if parent_harness is None:
         return
     wait_id = getattr(registry, "_parent_wait_ids", {}).pop(parent_sid, None)
     if wait_id is None:
-        return  # parent hasn't parked yet — result will be picked up at next before_model
+        return
+
+    async def _resolve_with_result():
+        # Get the result from delegator
+        msg = None
+        if registry.delegator is not None:
+            try:
+                pending = await registry.delegator.get_pending(parent_sid)
+                for r in pending:
+                    # Format the result as a user message
+                    task_id = r.get("task_id", "")
+                    content = r.get("content", "(no output)")
+                    turns = r.get("turn_count", "?")
+                    msg = {
+                        "role": "user",
+                        "content": f"[A2A] Task {task_id} completed ({turns} turns):\n{content}",
+                    }
+                    break
+            except Exception:
+                pass
+        try:
+            await parent_harness.resolve_wait(wait_id, inject_message=msg)
+        except Exception:
+            logger.exception("Failed to wake parent harness for %s", parent_sid)
+
     try:
         import asyncio as _asyncio
-        _asyncio.create_task(parent_harness.resolve_wait(wait_id))
+        _asyncio.create_task(_resolve_with_result())
     except Exception:
         logger.exception("Failed to wake parent harness for %s", parent_sid)
 
