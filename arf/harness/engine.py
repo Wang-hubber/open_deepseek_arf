@@ -694,10 +694,14 @@ class AgentHarness:
                         continue
     
                     # Emit tool_call_start for all calls (pending + blocked)
+                    # Strip framework-injected params from trace output.
+                    _framework_params = {"_register_wait", "_emit"}
                     for tc in all_calls:
+                        clean_args = {k: v for k, v in tc.get("params", {}).items()
+                                      if k not in _framework_params}
                         yield ctx.emit(event_type="tool_call_start", data={
                             "name": tc["name"], "id": tc["id"],
-                            "arguments": tc.get("params", {}),
+                            "arguments": clean_args,
                         })
     
                     # Execute only pending (non-blocked, non-removed) calls

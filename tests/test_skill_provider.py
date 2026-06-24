@@ -16,6 +16,19 @@ class TestList:
         p = SkillProvider(temp_root)
         assert p.list() == []
 
+    def test_subdirectory_format(self, temp_root):
+        """SkillProvider must find skills in subdirectories (sales-report/skill.yaml)."""
+        (temp_root / "sales-report").mkdir()
+        (temp_root / "sales-report" / "skill.yaml").write_text(
+            "name: sales-report\ndescription: Generate sales reports\n",
+            encoding="utf-8",
+        )
+        p = SkillProvider(temp_root)
+        skills = p.list()
+        assert len(skills) == 1
+        assert skills[0].name == "sales-report"
+        assert skills[0].description == "Generate sales reports"
+
 
 class TestCaching:
     def test_second_list_uses_cache(self, temp_root, skill_yaml):

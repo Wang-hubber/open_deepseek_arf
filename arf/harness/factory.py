@@ -186,7 +186,7 @@ async def create_harness(
     await tool_manager.start()
 
     # Initialize skill index for use_skill
-    skill_index = SkillIndex(skills_dir)
+    skill_index = SkillIndex(agent_dir)
     skill_index.scan()
     import arf.skills.use_skill_tool as _use_skill_mod
     _use_skill_mod._index = skill_index

@@ -89,6 +89,33 @@ class TestSkillIndex:
 
             assert len(index.list_index()) == 2
 
+    def test_project_root_must_be_project_root_not_skills_dir(self):
+        """Regression: passing skills_dir as project_root causes double-join.
+
+        scan() internally does ``self._root / "skills"``, so *project_root*
+        must not already end in ``skills/``.  This bug existed in both
+        factory.py and base.py (they passed the already-resolved skills_dir).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills"
+            skill_dir = skills_dir / "my-skill"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "skill.yaml").write_text(
+                "name: my-skill\ndescription: test\n"
+            )
+
+            # BUG pattern (from factory/base): skills_dir as project_root
+            bug_index = SkillIndex(project_root=skills_dir)
+            bug_index.scan()
+            assert bug_index.resolve("my-skill") is None, (
+                "double-join bug: scan() looked for skills_dir/skills/ which doesn't exist"
+            )
+
+            # CORRECT pattern: project root (parent of skills/)
+            ok_index = SkillIndex(project_root=tmp)
+            ok_index.scan()
+            assert ok_index.resolve("my-skill") is not None
+
 
 class TestUseSkillTool:
     @pytest.mark.anyio
