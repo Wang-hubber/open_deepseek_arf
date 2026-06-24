@@ -30,14 +30,11 @@ SUBAGENT_ROLE = (
 SUBAGENT_CRITICAL_RULES = (
     "## Critical Rules\n\n"
     "1. Focus exclusively on the assigned task. Do not expand scope.\n"
-    "2. When finished, call task_complete(result=\"...\") with your complete "
-    "findings in the 'result' parameter. The parent agent only sees this "
-    "result field — it does NOT see your conversation. Example:\n"
-    "   task_complete(result=\"Found 3 security issues: XSS in login.py, \"\n"
-    "                \"SQL injection in query.py, weak password policy in auth.py\")\n"
+    "2. When finished, call task_complete with your complete findings.\n"
+    "   The parent agent only sees your tool call result — it does NOT\n"
+    "   see your conversation.  Include specific file paths, line\n"
+    "   numbers, and concrete findings.  Be thorough.\n"
     "3. Do NOT use delegate_task — you cannot spawn further sub-agents.\n"
-    "4. Be thorough in your result. Include specific file paths, line numbers, "
-    "and concrete findings. The parent agent relies entirely on your result."
 )
 
 

@@ -40,9 +40,8 @@ logger = logging.getLogger("arf.plugins.a2a_teammates")
 _TEAM_PROTOCOL = (
     "[Team Communication]\n"
     "Messages use JSON-RPC 2.0 semantics:\n"
-    "- send_peer_message(to, message, type) to talk to a teammate.\n"
-    "  This sends a JRPC request — type=\"task\" → method task.assign,\n"
-    "  type=\"info\" → method info.message.  Wait for the response.\n"
+    "- Use send_peer_message to assign tasks to a teammate.  Wait for\n"
+    "  the reply — do not do the receiver's work yourself.\n"
     "- If you also have delegate_task available: send_peer_message is for\n"
     "  persistent teammates, delegate_task is for temporary one-off workers.\n"
     "  Do NOT use delegate_task on your teammates — use send_peer_message.\n"
@@ -50,21 +49,20 @@ _TEAM_PROTOCOL = (
     "  name=\"peer:<session_id>\".  Content is formatted:\n"
     "  [task assign] <message> — a task for you\n"
     "  [response] <summary> — a reply to your request\n"
-    "  [info message] <text> — an informational notice\n"
-    "- **CRITICAL**: When you receive a [task], you MUST complete it and\n"
-    "  call task_complete(result=\"...\").  This is NOT optional — your\n"
-    "  output is BLOCKED until task_complete is called.  Do not reply\n"
-    "  with plain text; always use the tool.\n"
-    "- Your task_complete result is auto-forwarded as a JRPC response\n"
-    "  to the sender.\n"
+    "- **CRITICAL**: When you receive a [task], you MUST call task_complete\n"
+    "  when finished.  This is NOT optional — your output is BLOCKED until\n"
+    "  task_complete is called.  Do not reply with plain text.\n"
+    "  The framework persists your full output to disk and forwards a\n"
+    "  summary to the sender — just provide both in the tool call.\n"
     "- After sending a task, wait for the reply — do not do the\n"
     "  receiver's work yourself."
 )
 
 _RETRY_TASK_COMPLETE = (
     "Your last response was BLOCKED: you have an active [task] from a "
-    "teammate but did not call task_complete(result=\"...\"). "
+    "teammate but did not call task_complete. "
     "You MUST complete the task and call the task_complete tool. "
+    "Provide both a short summary and your full findings. "
     "Do NOT output plain text — use the tool."
 )
 
@@ -436,6 +434,7 @@ class PeerTeamPlugin(Plugin):
         # Extract task_complete result
         messages = ctx.agent.state.messages
         tc_result = ""
+        tc_summary = ""
         found_tc = False
         for m in reversed(messages):
             if m.role == "tool" and isinstance(m.content, dict):
@@ -445,6 +444,7 @@ class PeerTeamPlugin(Plugin):
                     result_data = m.content.get("result", {})
                     if isinstance(result_data, dict):
                         tc_result = result_data.get("result", "") or ""
+                        tc_summary = result_data.get("summary", "") or ""
                     elif isinstance(result_data, str):
                         tc_result = result_data
                     break
@@ -468,17 +468,29 @@ class PeerTeamPlugin(Plugin):
         corr_id, entry = my_pending[0]
         sender_sid = entry["sender"]
 
-        # Write full result file
+        # Always persist summary + full result to disk (audit trail)
         result_file = write_peer_result(
             data_dir=ctx.data_dir,
             group_id=self._group_id,
             correlation_id=corr_id,
             agent_role=sid,
             task_description=f"Task from {sender_sid}",
+            summary=tc_summary,
             full_result=full_result,
             tool_calls=tool_calls_summary,
             turn_count=getattr(ctx, "turn", 0),
         )
+
+        # Decide reply format: direct (short) or file reference (long)
+        combined = f"{tc_summary}\n\n{full_result}".strip()
+        _DIRECT_THRESHOLD = 1000
+        if len(combined) <= _DIRECT_THRESHOLD:
+            reply_result = {"summary": combined}
+        else:
+            reply_result = {
+                "summary": tc_summary or (full_result[:300] if full_result else "(no output)"),
+                "result_file": result_file,
+            }
 
         reply = AgentMessage(
             sender=sid,
@@ -486,10 +498,7 @@ class PeerTeamPlugin(Plugin):
             type="response",
             payload=JrpcEnvelope.response(
                 id=corr_id,
-                result={
-                    "summary": full_result[:300] if full_result else "(no output)",
-                    "result_file": result_file,
-                },
+                result=reply_result,
             ),
             priority="normal",
             correlation_id=corr_id,
@@ -720,8 +729,11 @@ async def _peer_wait_loop(
     import time as _time
     poll_interval = 30.0
 
+    print(f"[A2A] peer_wait_loop start | sid={inbox_key} bus={hex(id(bus))} wait_id={wait_id} idle_timeout={idle_timeout}")
+
     while True:
         if cancel_evt is not None and cancel_evt.is_set():
+            print(f"[A2A] peer_wait_loop cancelled | sid={inbox_key}")
             return
 
         has_msg = await bus.wait_for_message(
@@ -730,6 +742,7 @@ async def _peer_wait_loop(
         if has_msg:
             messages = [m async for m in bus.receive(inbox_key)]
             if messages:
+                print(f"[A2A] peer_wait_loop woke | sid={inbox_key} n_msgs={len(messages)}")
                 await harness.resolve_wait(
                     wait_id,
                     inject_message=PeerTeamPlugin._package_peer_messages(messages),

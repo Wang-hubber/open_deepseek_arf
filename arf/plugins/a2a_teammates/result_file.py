@@ -11,7 +11,8 @@ def write_peer_result(
     correlation_id: str,
     agent_role: str,
     task_description: str,
-    full_result: str,
+    summary: str = "",
+    full_result: str = "",
     tool_calls: list[dict] | None = None,
     file_changes: dict[str, list[str]] | None = None,
     turn_count: int = 0,
@@ -39,11 +40,12 @@ def write_peer_result(
         "## Task",
         "",
         task_description,
-        "",
-        "## Result",
-        "",
-        full_result or "(no output)",
     ]
+
+    if summary:
+        parts += ["", "## Summary", "", summary]
+
+    parts += ["", "## Result", "", full_result or "(no output)"]
 
     if tool_calls:
         success_count = sum(1 for tc in tool_calls if tc.get("success"))
