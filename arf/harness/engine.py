@@ -51,6 +51,7 @@ class AgentHarness:
         self._data_dir = data_dir
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
+        self._messages_injected: bool = False
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
@@ -470,27 +471,12 @@ class AgentHarness:
         yield ctx.emit(event_type="user_input", data={"content": user_message})
 
         # --- before_round ---
-        if await self._checkpoint("before_round", ctx):
-            yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
-            try:
-                await self._do_park()
-            except asyncio.CancelledError:
-                self._cancel_event.set()
-                if self._parked:
-                    await self._save_and_teardown()
-                raise
-            if self._parked:
-                await self._save_and_teardown()
-                return
-
-        turn = 0
-        while turn < self._max_turns:
-            turn += 1
-            self._sync_ctx(ctx, turn)
-
-            # --- before_model ---
-            if await self._checkpoint("before_model", ctx):
-                yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
+        # Outer round loop: all external park/resume paths (HITL, delegate_task,
+        # peer_wait) eventually loop back here, so plugins get a uniform chance
+        # to inspect state (drain inbox, re-register bus, decide to park).
+        while True:
+            if await self._checkpoint("before_round", ctx):
+                yield ctx.emit(event_type="parked", data={"hook_name": "before_round", "waiting": agent.state.waiting})
                 try:
                     await self._do_park()
                 except asyncio.CancelledError:
@@ -502,99 +488,232 @@ class AgentHarness:
                     await self._save_and_teardown()
                     return
 
-            # Fetch tool definitions, filter, convert to OpenAI format
-            openai_tools = None
-            active_tool_definitions: list[dict] | None = None
-            if self._tool_manager:
-                from arf.core.tool_convert import to_openai_tools
-                try:
-                    all_tools = await self._tool_manager.get_tool_definitions()
-                    active_tool_definitions = self._filter_tools(all_tools)
-                    openai_tools = to_openai_tools(active_tool_definitions)
-                except Exception:
-                    logger.exception("Failed to fetch tool definitions, proceeding without tools")
+            turn = 0
+            _round_restart = False
 
-            # --- model_call ---
-            try:
-                if agent._stream_model:
-                    stream = await agent.model_call(tools=openai_tools)
-                    async for chunk in stream:
-                        yield ctx.emit(event_type="model_chunk", data=chunk)
-                    result = stream.result
+            while turn < self._max_turns:
+                turn += 1
+                self._sync_ctx(ctx, turn)
+    
+                # --- before_model ---
+                if await self._checkpoint("before_model", ctx):
+                    yield ctx.emit(event_type="parked", data={"hook_name": "before_model", "waiting": agent.state.waiting})
+                    try:
+                        await self._do_park()
+                    except asyncio.CancelledError:
+                        self._cancel_event.set()
+                        if self._parked:
+                            await self._save_and_teardown()
+                        raise
+                    if self._parked:
+                        await self._save_and_teardown()
+                        return
+                    # Resume from delegate_task park → restart via before_round
+                    _round_restart = True
+                    break
+
+                # Fetch tool definitions, filter, convert to OpenAI format
+                openai_tools = None
+                active_tool_definitions: list[dict] | None = None
+                if self._tool_manager:
+                    from arf.core.tool_convert import to_openai_tools
+                    try:
+                        all_tools = await self._tool_manager.get_tool_definitions()
+                        active_tool_definitions = self._filter_tools(all_tools)
+                        openai_tools = to_openai_tools(active_tool_definitions)
+                    except Exception:
+                        logger.exception("Failed to fetch tool definitions, proceeding without tools")
+    
+                # --- model_call ---
+                try:
+                    if agent._stream_model:
+                        stream = await agent.model_call(tools=openai_tools)
+                        async for chunk in stream:
+                            yield ctx.emit(event_type="model_chunk", data=chunk)
+                        result = stream.result
+                    else:
+                        result = await agent.model_call(stream=False, tools=openai_tools)
+                except Exception as exc:
+                    ctx.hook_data["exception"] = exc
+                    await self._checkpoint("on_error", ctx)
+                    yield ctx.emit(event_type="error", data={"detail": str(exc)})
+                    break
+    
+                # Record the assistant response in agent state
+                assistant_content = result.content if result.content else ""
+                if result.tool_calls or result.reasoning_content:
+                    msg_content: dict = {"content": assistant_content}
+                    if result.tool_calls:
+                        msg_content["tool_calls"] = result.tool_calls
+                    if result.reasoning_content:
+                        msg_content["reasoning_content"] = result.reasoning_content
+                    agent.input(role="assistant", content=msg_content)
                 else:
-                    result = await agent.model_call(stream=False, tools=openai_tools)
-            except Exception as exc:
-                ctx.hook_data["exception"] = exc
-                await self._checkpoint("on_error", ctx)
-                yield ctx.emit(event_type="error", data={"detail": str(exc)})
-                break
-
-            # Record the assistant response in agent state
-            assistant_content = result.content if result.content else ""
-            if result.tool_calls or result.reasoning_content:
-                msg_content: dict = {"content": assistant_content}
-                if result.tool_calls:
-                    msg_content["tool_calls"] = result.tool_calls
-                if result.reasoning_content:
-                    msg_content["reasoning_content"] = result.reasoning_content
-                agent.input(role="assistant", content=msg_content)
-            else:
-                agent.input(role="assistant", content=assistant_content)
-
-            # Emit model_call_end for downstream consumers (collect_response, tests)
-            yield ctx.emit(event_type="model_call_end", data={
-                "content": result.content,
-                "reasoning_content": getattr(result, "reasoning_content", None) or None,
-                "tool_calls": result.tool_calls,
-                "usage": result.usage,
-                "finish_reason": result.finish_reason,
-                "tool_definitions": active_tool_definitions,
-            })
-
-            # --- after_model ---
-            if await self._checkpoint("after_model", ctx):
-                yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
-                try:
-                    await self._do_park()
-                except asyncio.CancelledError:
-                    self._cancel_event.set()
+                    agent.input(role="assistant", content=assistant_content)
+    
+                # Emit model_call_end for downstream consumers (collect_response, tests)
+                yield ctx.emit(event_type="model_call_end", data={
+                    "content": result.content,
+                    "reasoning_content": getattr(result, "reasoning_content", None) or None,
+                    "tool_calls": result.tool_calls,
+                    "usage": result.usage,
+                    "finish_reason": result.finish_reason,
+                    "tool_definitions": active_tool_definitions,
+                })
+    
+                # --- after_model ---
+                if await self._checkpoint("after_model", ctx):
+                    yield ctx.emit(event_type="parked", data={"hook_name": "after_model", "waiting": agent.state.waiting})
+                    try:
+                        await self._do_park()
+                    except asyncio.CancelledError:
+                        self._cancel_event.set()
+                        if self._parked:
+                            await self._save_and_teardown()
+                        raise
                     if self._parked:
                         await self._save_and_teardown()
-                    raise
-                if self._parked:
-                    await self._save_and_teardown()
-                    return
-
-            # --- tool execution ---
-            if result.tool_calls and self._tool_manager:
-                # Save original — plugins may remove blocked tools from _pending_tool_calls
-                _all_tool_calls: list[dict] = list(result.tool_calls)
-
-                # --- before_tools ---
-                ctx.hook_data["_pending_tool_calls"] = result.tool_calls
-
-                # Build tool definitions lookup for permission plugins
-                # Full definition: {name, description, parameters, annotations, ...}
-                _tool_defs: dict[str, dict[str, Any]] = {}
-                if active_tool_definitions:
-                    for td in active_tool_definitions:
-                        _tool_defs[td["name"]] = td
-                ctx.hook_data["_tool_defs"] = _tool_defs
-
-                # Pass allow_paths from agent config for sandbox
-                _allow_paths: list[str] = []
-                if self._agent_config is not None:
-                    _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
-                ctx.hook_data["_allow_paths"] = _allow_paths
-
-                # Loop: re-run checkpoint after park/resume so plugins can filter
-                while True:
-                    if await self._checkpoint("before_tools", ctx):
-                        # Drain captured events so REPL sees approval_required etc.
-                        for event in ctx.captured_events:
-                            yield event
-                        ctx.captured_events.clear()
-                        yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
+                        return
+    
+                # --- tool execution ---
+                if result.tool_calls and self._tool_manager:
+                    # Save original — plugins may remove blocked tools from _pending_tool_calls
+                    _all_tool_calls: list[dict] = list(result.tool_calls)
+    
+                    # --- before_tools ---
+                    ctx.hook_data["_pending_tool_calls"] = result.tool_calls
+    
+                    # Build tool definitions lookup for permission plugins
+                    # Full definition: {name, description, parameters, annotations, ...}
+                    _tool_defs: dict[str, dict[str, Any]] = {}
+                    if active_tool_definitions:
+                        for td in active_tool_definitions:
+                            _tool_defs[td["name"]] = td
+                    ctx.hook_data["_tool_defs"] = _tool_defs
+    
+                    # Pass allow_paths from agent config for sandbox
+                    _allow_paths: list[str] = []
+                    if self._agent_config is not None:
+                        _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
+                    ctx.hook_data["_allow_paths"] = _allow_paths
+    
+                    # Loop: re-run checkpoint after park/resume so plugins can filter
+                    while True:
+                        if await self._checkpoint("before_tools", ctx):
+                            # Drain captured events so REPL sees approval_required etc.
+                            for event in ctx.captured_events:
+                                yield event
+                            ctx.captured_events.clear()
+                            yield ctx.emit(event_type="parked", data={"hook_name": "before_tools", "waiting": agent.state.waiting})
+                            try:
+                                await self._do_park()
+                            except asyncio.CancelledError:
+                                self._cancel_event.set()
+                                if self._parked:
+                                    await self._save_and_teardown()
+                                raise
+                            if self._parked:
+                                await self._save_and_teardown()
+                                return
+                        else:
+                            # Drain captured events from non-parking pass
+                            for event in ctx.captured_events:
+                                yield event
+                            ctx.captured_events.clear()
+                            break
+    
+                    # Execute tools — skip those already blocked by plugins
+                    tool_calls = ctx.hook_data["_pending_tool_calls"]
+                    blocked_results: dict[str, dict[str, str]] = ctx.hook_data.get("_blocked_results", {})
+    
+                    # Build complete call list: pending + blocked-and-removed
+                    pending_ids = {tc["id"] for tc in tool_calls}
+                    all_calls = list(tool_calls)
+                    for tc in _all_tool_calls:
+                        if tc["id"] in blocked_results and tc["id"] not in pending_ids:
+                            all_calls.append(tc)
+    
+                    if not all_calls:
+                        continue
+    
+                    # Emit tool_call_start for all calls (pending + blocked)
+                    for tc in all_calls:
+                        yield ctx.emit(event_type="tool_call_start", data={
+                            "name": tc["name"], "id": tc["id"],
+                            "arguments": tc.get("params", {}),
+                        })
+    
+                    # Execute only pending (non-blocked, non-removed) calls
+                    active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
+                    if active_calls:
+                        if hasattr(self._tool_manager, 'execute_batch'):
+                            tool_results = await self._tool_manager.execute_batch(active_calls)
+                        else:
+                            tool_results = {}
+                            for tc in active_calls:
+                                try:
+                                    tool_results[tc["id"]] = await self._tool_manager.execute(
+                                        tc["name"], tc.get("params", {}))
+                                except Exception as exc:
+                                    tool_results[tc["id"]] = type('FakeToolResult', (), {
+                                        'success': False, 'data': {}, 'error': str(exc)})()
+                    else:
+                        tool_results = {}
+    
+                    # Merge pre-existing blocked results
+                    for call_id, br in blocked_results.items():
+                        tool_results[call_id] = type('FakeToolResult', (), {
+                            'success': False, 'data': br.get('result', ''), 'error': br.get('error', '')})()
+    
+                    # Inject results for ALL calls (pending + blocked)
+                    for tc in all_calls:
+                        r = tool_results.get(tc["id"])
+                        if r is None:
+                            r = type('FakeToolResult', (), {
+                                'success': False, 'data': {}, 'error': 'Tool result missing'})()
+    
+                        agent.input(role="tool", content={
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "result": r.data if r.success else "",
+                            "error": r.error or "",
+                        })
+                        yield ctx.emit(event_type="tool_call_end", data={
+                            "name": tc["name"], "id": tc["id"],
+                            "success": r.success,
+                            "error": r.error or "",
+                            "result": r.data if r.success else None,
+                            "blocked": getattr(r, "blocked", False),
+                        })
+    
+                    # --- HITL: detect pending=True in tool results ---
+                    hitl_tc = None
+                    hitl_data = None
+                    for tc in all_calls:
+                        r = tool_results.get(tc["id"])
+                        if r and r.success and isinstance(r.data, dict) and r.data.get("pending"):
+                            hitl_tc = tc
+                            hitl_data = r.data
+                            break
+    
+                    if hitl_tc is not None:
+                        question = hitl_data.get("question", "")
+                        yield ctx.emit(event_type="need_human_input", data={
+                            "question": question,
+                            "options": hitl_data.get("options", []),
+                            "context": hitl_data.get("context", ""),
+                            "task_id": hitl_data.get("task_id", ""),
+                            "tool_name": hitl_tc["name"],
+                            "session_id": agent.state.session_id,
+                        })
+                        wi = agent.wait("after_tools", "hitl")
+                        self._hitl_waits[agent.state.session_id] = wi.wait_id
+                        yield ctx.emit(event_type="parked", data={
+                            "hook_name": "after_tools",
+                            "reason": "hitl",
+                            "question": question[:120],
+                            "waiting": agent.state.waiting,
+                        })
                         try:
                             await self._do_park()
                         except asyncio.CancelledError:
@@ -605,105 +724,33 @@ class AgentHarness:
                         if self._parked:
                             await self._save_and_teardown()
                             return
-                    else:
-                        # Drain captured events from non-parking pass
-                        for event in ctx.captured_events:
-                            yield event
-                        ctx.captured_events.clear()
-                        break
-
-                # Execute tools — skip those already blocked by plugins
-                tool_calls = ctx.hook_data["_pending_tool_calls"]
-                blocked_results: dict[str, dict[str, str]] = ctx.hook_data.get("_blocked_results", {})
-
-                # Build complete call list: pending + blocked-and-removed
-                pending_ids = {tc["id"] for tc in tool_calls}
-                all_calls = list(tool_calls)
-                for tc in _all_tool_calls:
-                    if tc["id"] in blocked_results and tc["id"] not in pending_ids:
-                        all_calls.append(tc)
-
-                if not all_calls:
-                    continue
-
-                # Emit tool_call_start for all calls (pending + blocked)
-                for tc in all_calls:
-                    yield ctx.emit(event_type="tool_call_start", data={
-                        "name": tc["name"], "id": tc["id"],
-                        "arguments": tc.get("params", {}),
-                    })
-
-                # Execute only pending (non-blocked, non-removed) calls
-                active_calls = [tc for tc in tool_calls if tc["id"] not in blocked_results]
-                if active_calls:
-                    if hasattr(self._tool_manager, 'execute_batch'):
-                        tool_results = await self._tool_manager.execute_batch(active_calls)
-                    else:
-                        tool_results = {}
-                        for tc in active_calls:
-                            try:
-                                tool_results[tc["id"]] = await self._tool_manager.execute(
-                                    tc["name"], tc.get("params", {}))
-                            except Exception as exc:
-                                tool_results[tc["id"]] = type('FakeToolResult', (), {
-                                    'success': False, 'data': {}, 'error': str(exc)})()
-                else:
-                    tool_results = {}
-
-                # Merge pre-existing blocked results
-                for call_id, br in blocked_results.items():
-                    tool_results[call_id] = type('FakeToolResult', (), {
-                        'success': False, 'data': br.get('result', ''), 'error': br.get('error', '')})()
-
-                # Inject results for ALL calls (pending + blocked)
-                for tc in all_calls:
-                    r = tool_results.get(tc["id"])
-                    if r is None:
-                        r = type('FakeToolResult', (), {
-                            'success': False, 'data': {}, 'error': 'Tool result missing'})()
-
-                    agent.input(role="tool", content={
-                        "tool_call_id": tc["id"],
-                        "name": tc["name"],
-                        "result": r.data if r.success else "",
-                        "error": r.error or "",
-                    })
-                    yield ctx.emit(event_type="tool_call_end", data={
-                        "name": tc["name"], "id": tc["id"],
-                        "success": r.success,
-                        "error": r.error or "",
-                        "result": r.data if r.success else None,
-                        "blocked": getattr(r, "blocked", False),
-                    })
-
-                # --- HITL: detect pending=True in tool results ---
-                hitl_tc = None
-                hitl_data = None
-                for tc in all_calls:
-                    r = tool_results.get(tc["id"])
-                    if r and r.success and isinstance(r.data, dict) and r.data.get("pending"):
-                        hitl_tc = tc
-                        hitl_data = r.data
-                        break
-
-                if hitl_tc is not None:
-                    question = hitl_data.get("question", "")
-                    yield ctx.emit(event_type="need_human_input", data={
-                        "question": question,
-                        "options": hitl_data.get("options", []),
-                        "context": hitl_data.get("context", ""),
-                        "task_id": hitl_data.get("task_id", ""),
-                        "tool_name": hitl_tc["name"],
-                        "session_id": agent.state.session_id,
-                    })
-                    wi = agent.wait("after_tools", "hitl")
-                    self._hitl_waits[agent.state.session_id] = wi.wait_id
-                    yield ctx.emit(event_type="parked", data={
-                        "hook_name": "after_tools",
-                        "reason": "hitl",
-                        "question": question[:120],
-                        "waiting": agent.state.waiting,
-                    })
+                        # Resume via before_round so plugins get a uniform
+                        # chance to inspect state (inbox drain, bus recovery, etc.)
+                        _round_restart = True
+                        break  # exit turn loop → after_round → round_end → before_round
+    
+                    # --- after_tools ---
+                    if await self._checkpoint("after_tools", ctx):
+                        yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
+                        try:
+                            await self._do_park()
+                        except asyncio.CancelledError:
+                            self._cancel_event.set()
+                            if self._parked:
+                                await self._save_and_teardown()
+                            raise
+                        if self._parked:
+                            await self._save_and_teardown()
+                            return
+    
+                    continue  # loop back to before_model
+    
+                # No tool calls — plugins may intercept to force retry
+                if await self._checkpoint("before_break", ctx):
+                    for event in ctx.captured_events:
+                        yield event
+                    ctx.captured_events.clear()
+                    yield ctx.emit(event_type="parked", data={"hook_name": "before_break", "waiting": agent.state.waiting})
                     try:
                         await self._do_park()
                     except asyncio.CancelledError:
@@ -714,30 +761,13 @@ class AgentHarness:
                     if self._parked:
                         await self._save_and_teardown()
                         return
-                    continue  # resume ReAct loop → before_model with human answer
+                    continue  # retry — plugin wants another turn
+    
+                break  # no tool_calls → round done
 
-                # --- after_tools ---
-                if await self._checkpoint("after_tools", ctx):
-                    yield ctx.emit(event_type="parked", data={"hook_name": "after_tools", "waiting": agent.state.waiting})
-                    try:
-                        await self._do_park()
-                    except asyncio.CancelledError:
-                        self._cancel_event.set()
-                        if self._parked:
-                            await self._save_and_teardown()
-                        raise
-                    if self._parked:
-                        await self._save_and_teardown()
-                        return
-
-                continue  # loop back to before_model
-
-            # No tool calls — plugins may intercept to force retry
-            if await self._checkpoint("before_break", ctx):
-                for event in ctx.captured_events:
-                    yield event
-                ctx.captured_events.clear()
-                yield ctx.emit(event_type="parked", data={"hook_name": "before_break", "waiting": agent.state.waiting})
+            # --- after_round ---
+            if await self._checkpoint("after_round", ctx):
+                yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
                 try:
                     await self._do_park()
                 except asyncio.CancelledError:
@@ -748,33 +778,20 @@ class AgentHarness:
                 if self._parked:
                     await self._save_and_teardown()
                     return
-                continue  # retry — plugin wants another turn
+    
+            yield ctx.emit(event_type="round_end", data={
+                "round": self._interaction_round,
+                "turns": turn,
+                "stopped": "max_turns" if turn >= self._max_turns else "completed",
+            })
 
-            break  # no tool_calls → round done
+            if _round_restart:
+                continue  # resume via before_round for next round
 
-        # --- after_round ---
-        if await self._checkpoint("after_round", ctx):
-            yield ctx.emit(event_type="parked", data={"hook_name": "after_round", "waiting": agent.state.waiting})
-            try:
-                await self._do_park()
-            except asyncio.CancelledError:
-                self._cancel_event.set()
-                if self._parked:
-                    await self._save_and_teardown()
-                raise
-            if self._parked:
-                await self._save_and_teardown()
-                return
-
-        yield ctx.emit(event_type="round_end", data={
-            "round": self._interaction_round,
-            "turns": turn,
-            "stopped": "max_turns" if turn >= self._max_turns else "completed",
-        })
-        await self._save_and_teardown()
-        yield ctx.emit(event_type="session_end", data={
-            "session_id": agent.state.session_id,
-        })
+            await self._save_and_teardown()
+            yield ctx.emit(event_type="session_end", data={
+                "session_id": agent.state.session_id,
+            })
 
     # ── State Persistence ───────────────────────────────
 
@@ -817,7 +834,7 @@ class AgentHarness:
     # ── Park / Resume ────────────────────────────────────
 
     async def _do_park(self) -> None:
-        """Block until external resolve_wait() empties all waiting groups."""
+        """Block until external resolve_wait() wakes the harness (partial or full)."""
         if not any(self.agent.state.waiting.values()):
             return
         self._park_event = asyncio.Event()
@@ -825,21 +842,25 @@ class AgentHarness:
         await self._park_event.wait()
 
     async def resolve_wait(self, wait_id: str, inject_message: dict | None = None) -> bool:
-        """External call: finish a wait + optionally inject a message. Returns True if park resolves."""
+        """External call: finish a wait + optionally inject a message.
+
+        Always wakes the harness (sets _park_event, clears _parked).
+        Returns True only when ALL waits are resolved.
+        """
         if inject_message:
             self.agent.input(
                 role=inject_message.get("role", "user"),
                 content=inject_message.get("content", ""),
                 name=inject_message.get("name"),
             )
-        self.agent.finish_wait(wait_id=wait_id)
+            self._messages_injected = True
 
-        if not self.agent.state.waiting:
-            self._parked = False
-            if self._park_event:
-                self._park_event.set()
-            return True
-        return False
+        self.agent.finish_wait(wait_id=wait_id)
+        self._parked = False
+        if self._park_event:
+            self._park_event.set()
+
+        return not bool(self.agent.state.waiting)
 
     async def provide_hitl_response(self, session_id: str, answer: str) -> bool:
         """Provide a human response to a pending HITL request.
