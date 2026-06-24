@@ -60,7 +60,7 @@ class TestResolveWaitPartialWakeup:
         harness._parked = True
 
         # Resolve only one wait
-        result = asyncio.run(harness.resolve_wait(w1.wait_id))
+        result = asyncio.run(harness.resolve_wait(wait_id=w1.wait_id))
 
         # Event should be set (harness woken up)
         assert harness._park_event.is_set()
@@ -78,7 +78,7 @@ class TestResolveWaitPartialWakeup:
         harness._park_event = asyncio.Event()
         harness._parked = True
 
-        asyncio.run(harness.resolve_wait(w1.wait_id, inject_message={
+        asyncio.run(harness.resolve_wait(wait_id=w1.wait_id, inject_message={
             "role": "user",
             "content": "injected result",
         }))
@@ -96,6 +96,6 @@ class TestResolveWaitPartialWakeup:
         harness._park_event = asyncio.Event()
         harness._parked = True
 
-        asyncio.run(harness.resolve_wait(w1.wait_id))  # no inject_message
+        asyncio.run(harness.resolve_wait(wait_id=w1.wait_id))  # no inject_message
 
         assert harness._messages_injected is False
