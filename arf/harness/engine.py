@@ -57,9 +57,6 @@ class AgentHarness:
         self._system_prompt_text: str = ""
         self._current_ctx: PluginContext | None = None
 
-        # HITL — harness tracks pending human-input requests
-        self._hitl_waits: dict[str, str] = {}  # session_id → wait_id
-
         # Trace writer — async JSONL output from ctx.emit()
         self._trace_queue: asyncio.Queue = asyncio.Queue()
         self._trace_writer_task: asyncio.Task | None = None
@@ -427,6 +424,10 @@ class AgentHarness:
                 "agent_config": self._agent_config,
                 "max_turns": self._max_turns,
             }
+            # Rebuild background wait listeners for resumed sessions
+            await self._rebuild_wait_tasks(ctx)
+            # Re-fire session_start so plugins rebuild (peer_wait_loop, subagent listeners)
+            await self._checkpoint("session_start", ctx)
             # Rebuild system prompt text for snapshot consistency (Finding 3)
             if self._agent_config is not None:
                 from arf.agent.default_prompt_provider import DefaultSystemPromptProvider
@@ -709,48 +710,6 @@ class AgentHarness:
                             "blocked": getattr(r, "blocked", False),
                         })
     
-                    # --- HITL: detect pending=True in tool results ---
-                    hitl_tc = None
-                    hitl_data = None
-                    for tc in all_calls:
-                        r = tool_results.get(tc["id"])
-                        if r and r.success and isinstance(r.data, dict) and r.data.get("pending"):
-                            hitl_tc = tc
-                            hitl_data = r.data
-                            break
-    
-                    if hitl_tc is not None:
-                        question = hitl_data.get("question", "")
-                        yield ctx.emit(event_type="need_human_input", data={
-                            "question": question,
-                            "options": hitl_data.get("options", []),
-                            "context": hitl_data.get("context", ""),
-                            "task_id": hitl_data.get("task_id", ""),
-                            "tool_name": hitl_tc["name"],
-                            "session_id": agent.state.session_id,
-                        })
-                        wi = agent.wait("after_tools", "hitl")
-                        self._hitl_waits[agent.state.session_id] = wi.wait_id
-                        yield ctx.emit(event_type="parked", data={
-                            "hook_name": "after_tools",
-                            "reason": "hitl",
-                            "question": question[:120],
-                            "waiting": agent.state.waiting,
-                        })
-                        try:
-                            await self._do_park()
-                        except asyncio.CancelledError:
-                            self._cancel_event.set()
-                            if self._parked:
-                                await self._save_and_teardown()
-                            raise
-                        if self._parked:
-                            await self._save_and_teardown()
-                            return
-                        # Resume via before_round so plugins get a uniform
-                        # chance to inspect state (inbox drain, bus recovery, etc.)
-                        _round_restart = True
-                        break  # exit turn loop → after_round → round_end → before_round
     
                     # --- after_tools ---
                     if await self._checkpoint("after_tools", ctx):
@@ -885,17 +844,26 @@ class AgentHarness:
 
         return not bool(self.agent.state.waiting)
 
+    async def _rebuild_wait_tasks(self, ctx) -> None:
+        """Pass waits with resume_key to plugins so they can rebuild background listeners."""
+        waits_with_resume = [
+            wi for wi_list in self.agent.state.waiting.values()
+            for wi in wi_list if wi.resume_key
+        ]
+        if waits_with_resume:
+            ctx.hook_data["_pending_resume"] = waits_with_resume
+
     async def provide_hitl_response(self, session_id: str, answer: str) -> bool:
         """Provide a human response to a pending HITL request.
 
-        Called by CLI / frontend after the user answers an ask_user prompt.
-        Injects the answer as a user message and resolves the harness park,
-        so the agent continues its ReAct loop with the human's input.
+        Finds the hitl wait in state.waiting["before_round"], injects the answer
+        as a user message, and resolves the wait.
         """
-        wait_id = self._hitl_waits.pop(session_id, None)
-        if wait_id is None:
-            return False
-        return await self.resolve_wait(wait_id, inject_message={
-            "role": "user",
-            "content": answer,
-        })
+        hitl_waits = self.agent.state.waiting.get("before_round", [])
+        for wi in hitl_waits:
+            if wi.reason == "hitl":
+                return await self.resolve_wait(wi.wait_id, inject_message={
+                    "role": "user",
+                    "content": answer,
+                })
+        return False

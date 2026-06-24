@@ -208,3 +208,72 @@ class TestRegisterWaitInjection:
         assert wi.reason == "test_reason"
         assert wi.resume_key == "test:resume"
         assert agent.state.waiting["before_round"][0].wait_id == wi.wait_id
+
+
+class TestHITLUnified:
+    """HITL uses generic wait("before_round") mechanism, no engine special-casing."""
+
+    def test_provide_hitl_response_finds_wait(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Register a hitl wait (as ask_user tool would)
+        wi = agent.wait("before_round", "hitl", resume_key="")
+        harness._park_event = asyncio.Event()
+        harness._parked = True
+
+        # provide_hitl_response should find the hitl wait and resolve it
+        result = asyncio.run(harness.provide_hitl_response("test-sid", "user answer"))
+
+        assert result is True
+        # The human answer should be injected as a user message
+        assert any(
+            m.content == "user answer" and m.role == "user"
+            for m in agent.state.messages
+        )
+        # The hitl wait should be resolved
+        assert "before_round" not in agent.state.waiting
+
+    def test_provide_hitl_response_no_pending(self):
+        harness = make_harness()
+        # No hitl wait registered
+        result = asyncio.run(harness.provide_hitl_response("test-sid", "answer"))
+        assert result is False
+
+
+class TestRebuildWaitTasks:
+    """Session resume propagates waits with resume_key to plugins."""
+
+    def test_rebuild_wait_tasks_passes_to_ctx(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Register a wait with resume_key
+        agent.wait("before_round", "peer_wait:abc123", resume_key="peer_wait:abc123")
+
+        # Simulate rebuild
+        ctx = harness._make_ctx()
+        waits_with_resume = [
+            wi for wi_list in agent.state.waiting.values()
+            for wi in wi_list if wi.resume_key
+        ]
+        ctx.hook_data["_pending_resume"] = waits_with_resume
+
+        assert len(ctx.hook_data["_pending_resume"]) == 1
+        assert ctx.hook_data["_pending_resume"][0].resume_key == "peer_wait:abc123"
+
+    def test_rebuild_skips_empty_resume_keys(self):
+        harness = make_harness()
+        agent = harness.agent
+
+        # Register wait WITHOUT resume_key
+        agent.wait("before_round", "hitl", resume_key="")
+
+        ctx = harness._make_ctx()
+        waits_with_resume = [
+            wi for wi_list in agent.state.waiting.values()
+            for wi in wi_list if wi.resume_key
+        ]
+        ctx.hook_data["_pending_resume"] = waits_with_resume
+
+        assert len(ctx.hook_data["_pending_resume"]) == 0
