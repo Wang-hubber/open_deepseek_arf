@@ -54,7 +54,9 @@ class InMemoryAgentBus:
                     name, self._max_inbox_size, dropped.sender,
                 )
             inbox.append(message)
-            self._events[name].set()
+            ev = self._events[name]
+            ev.set()
+            print(f"[BUS] send | bus={hex(id(self))} key={name} event={hex(id(ev))} inbox={len(inbox)} corr={getattr(message, 'correlation_id', '-')}")
 
     async def receive(self, agent_name: str) -> AsyncIterator[AgentMessage]:
         """Drain and yield all messages from *agent_name*'s inbox.
@@ -83,7 +85,9 @@ class InMemoryAgentBus:
             cancel_event: If set, the wait is cancelled and returns False.
         """
         # Fast path: messages already queued
-        if self._inboxes.get(agent_name):
+        inbox = self._inboxes.get(agent_name)
+        if inbox:
+            print(f"[BUS] wait fast-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)}")
             return True
 
         event = self._events[agent_name]
@@ -91,8 +95,12 @@ class InMemoryAgentBus:
         # Re-check after clear: sender may have delivered between
         # the first check and event.clear(), leaving a message in
         # the inbox with a cleared event.
-        if self._inboxes.get(agent_name):
+        inbox = self._inboxes.get(agent_name)
+        if inbox:
+            print(f"[BUS] wait recheck-hit | bus={hex(id(self))} key={agent_name} inbox={len(inbox)} event={hex(id(event))}")
             return True
+
+        print(f"[BUS] wait blocking | bus={hex(id(self))} key={agent_name} event={hex(id(event))} timeout={timeout}")
 
         # Build list of awaitables to wait on
         wait_tasks = [asyncio.create_task(event.wait())]
@@ -110,11 +118,14 @@ class InMemoryAgentBus:
             )
             # Check if we were cancelled
             if cancel_task is not None and cancel_task in done:
+                print(f"[BUS] wait cancelled | bus={hex(id(self))} key={agent_name}")
                 return False
             # Check if event was set (message arrived)
             if event.is_set():
+                print(f"[BUS] wait woke-event | bus={hex(id(self))} key={agent_name} event={hex(id(event))} inbox={len(self._inboxes.get(agent_name, []))}")
                 return True
             # Timeout
+            print(f"[BUS] wait timeout | bus={hex(id(self))} key={agent_name} event={hex(id(event))}")
             return False
         finally:
             # Clean up pending tasks
