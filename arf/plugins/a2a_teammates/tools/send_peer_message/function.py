@@ -8,12 +8,12 @@ from arf.core.protocols.communication import AgentMessage
 from arf.plugins.a2a_teammates.state import (
     get_bus,
     get_pending_replies,
+    get_registered_sids,
 )
 
 
 _METHOD_MAP = {
     "task": JrpcEnvelope.METHOD_ASSIGN,
-    "info": JrpcEnvelope.METHOD_INFO,
 }
 
 
@@ -57,6 +57,7 @@ async def execute(
         correlation_id=correlation_id,
     )
 
+    print(f"[A2A] send_peer_message | to={to} sender={session_id} corr={correlation_id} bus={hex(id(target_bus))} registered={get_registered_sids()}")
     await target_bus.send(msg)
 
     get_pending_replies()[correlation_id] = {

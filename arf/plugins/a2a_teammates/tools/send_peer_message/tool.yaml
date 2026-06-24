@@ -20,7 +20,7 @@ parameters:
       description: "Message content."
     type:
       type: string
-      description: "Message type: task (assign work) or info (notify)."
+      description: "Message type. Currently only 'task' is supported."
       default: task
     priority:
       type: string

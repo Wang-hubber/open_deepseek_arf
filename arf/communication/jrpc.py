@@ -17,13 +17,11 @@ class JrpcEnvelope:
     METHOD_ASSIGN = "task.assign"
     METHOD_CANCEL = "task.cancel"
     METHOD_RESULT = "task.result"
-    METHOD_INFO = "info.message"
 
     _LABEL_MAP = {
         "task.assign": "task",
         "task.cancel": "cancel",
         "task.result": "reply",
-        "info.message": "info",
     }
 
     # ── factories (tools → JRPC payload) ──────────────────────────
