@@ -1,6 +1,7 @@
 """AgentHarness — execution skeleton + plugin scheduler + park/resume."""
 from __future__ import annotations
 import asyncio
+import copy
 import hashlib as _hashlib
 import uuid
 import logging
@@ -248,8 +249,18 @@ class AgentHarness:
             try:
                 if event.type in CHUNK_EVENTS:
                     continue
-                record = asdict(event)
-                record["data"] = AgentHarness._sanitize(record["data"])
+                # Sanitize data BEFORE asdict (which calls deepcopy internally),
+                # so callable objects like _register_wait / _emit don't cause
+                # "cannot pickle '_asyncio.Future'" crashes.
+                clean_data: dict[str, Any] = AgentHarness._sanitize(event.data)
+                # Create a lightweight record dict manually (avoid asdict deepcopy)
+                record = {
+                    "type": event.type,
+                    "data": clean_data,
+                    "session_id": event.session_id,
+                    "timestamp": event.timestamp,
+                    "turn": event.turn,
+                }
                 try:
                     line = _json_mod.dumps(record, ensure_ascii=False) + "\n"
                 except (TypeError, ValueError) as exc:
@@ -597,7 +608,10 @@ class AgentHarness:
                     _all_tool_calls: list[dict] = list(result.tool_calls)
     
                     # --- before_tools ---
-                    ctx.hook_data["_pending_tool_calls"] = result.tool_calls
+                    # Deep-copy tool calls before injecting framework params so the
+                    # originals stored in agent.state.messages are not polluted with
+                    # unserializable objects (_register_wait / _emit).
+                    ctx.hook_data["_pending_tool_calls"] = copy.deepcopy(result.tool_calls)
 
                     # Inject _register_wait and _emit into ALL tool calls (framework-level)
                     # Any tool can call _register_wait to park the harness, or _emit to yield events
@@ -774,6 +788,7 @@ class AgentHarness:
             yield ctx.emit(event_type="session_end", data={
                 "session_id": agent.state.session_id,
             })
+            return  # exit outer while True loop — session is done
 
     # ── State Persistence ───────────────────────────────
 
