@@ -29,6 +29,8 @@ from arf.plugins.a2a_teammates.state import (
     get_last_activity,
     save_pending_replies,
     restore_pending_replies,
+    _dbg,
+    _set_debug_log_dir,
 )
 
 logger = logging.getLogger("arf.plugins.a2a_teammates")
@@ -69,7 +71,6 @@ _RETRY_TASK_COMPLETE = (
 _DEFAULT_EVENTS = [
     {"hook_name": "session_start", "event_name": "init", "mode": "blocking"},
     {"hook_name": "before_tools", "event_name": "inject_session_id", "mode": "blocking"},
-    {"hook_name": "after_tools", "event_name": "park_after_send", "mode": "blocking"},
     {"hook_name": "before_round", "event_name": "inject_and_park", "mode": "blocking"},
     {"hook_name": "before_model", "event_name": "drain_inbox", "mode": "blocking"},
     {"hook_name": "after_model", "event_name": "heartbeat", "mode": "side"},
@@ -110,8 +111,6 @@ class PeerTeamPlugin(Plugin):
             await self._on_init(ctx)
         elif event_name == "inject_session_id":
             await self._on_inject_session_id(ctx)
-        elif event_name == "park_after_send":
-            await self._on_park_after_send(ctx)
         elif event_name == "inject_and_park":
             await self._on_inject_and_park(ctx)
         elif event_name == "drain_inbox":
@@ -137,6 +136,11 @@ class PeerTeamPlugin(Plugin):
         group_id, role = parsed
 
         self._state.data_dir = ctx.data_dir
+
+        # Activate file-backed debug logging for bus diagnostics
+        _set_debug_log_dir(ctx.data_dir)
+        from arf.communication.agent_bus import set_bus_log_dir
+        set_bus_log_dir(ctx.data_dir)
 
         # Register this agent's bus so peers can discover it
         register_bus(sid, self._state.agent_bus)
@@ -209,6 +213,13 @@ class PeerTeamPlugin(Plugin):
             ))
             ctx.agent.input(role="system", content=_TEAM_PROTOCOL)
 
+        # Resume rebuild: re-establish peer_wait_loop for peer waits
+        pending_resume = ctx.hook_data.get("_pending_resume", [])
+        for wi in pending_resume:
+            if wi.resume_key.startswith("peer_wait:"):
+                await self._park_for_peer(ctx, "before_round", wi.reason)
+                logger.info("Rebuilt peer wait %s for session %s", wi.resume_key, sid)
+
     # ==================================================================
     # inject_session_id — inject session_id into send_peer_message calls
     # ==================================================================
@@ -220,16 +231,6 @@ class PeerTeamPlugin(Plugin):
             name = tc.get("name", "")
             if name.endswith("send_peer_message"):
                 tc.setdefault("params", {})["session_id"] = ctx.session_id
-                ctx.hook_data["_peer_just_sent"] = True
-
-    # ==================================================================
-    # park_after_send — park at after_tools right after send_peer_message
-    # ==================================================================
-
-    async def _on_park_after_send(self, ctx: PluginContext) -> None:
-        if not ctx.hook_data.pop("_peer_just_sent", False):
-            return
-        await self._park_for_peer(ctx, "after_tools", f"peer_wait:{ctx.session_id}")
 
     # ==================================================================
     # inject_and_park — drain inbox + park at before_round
@@ -297,6 +298,7 @@ class PeerTeamPlugin(Plugin):
         if not has_pending and self._state.entry_points.get(sid, False):
             return
 
+        _dbg(f"inject_and_park → IDLE PARK | sid={sid} entry_point={self._state.entry_points.get(sid, False)}")
         await self._park_for_peer(ctx, "before_round", f"peer_idle:{sid}")
 
     # ==================================================================
@@ -329,9 +331,12 @@ class PeerTeamPlugin(Plugin):
         sid = ctx.session_id
         harness = self._state.peer_harnesses.get(sid)
         if harness is None:
+            _dbg(f"_park_for_peer SKIP (no harness) | sid={sid} hook={hook_name} "
+                 f"have_harnesses={list(self._state.peer_harnesses.keys())}")
             return
         bus = self._state.agent_bus
         if bus is None:
+            _dbg(f"_park_for_peer SKIP (no bus) | sid={sid} hook={hook_name}")
             return
 
         # Cancel any existing wait task for this session
@@ -729,11 +734,11 @@ async def _peer_wait_loop(
     import time as _time
     poll_interval = 30.0
 
-    print(f"[A2A] peer_wait_loop start | sid={inbox_key} bus={hex(id(bus))} wait_id={wait_id} idle_timeout={idle_timeout}")
+    _dbg(f"peer_wait_loop start | sid={inbox_key} bus={hex(id(bus))} wait_id={wait_id} idle_timeout={idle_timeout}")
 
     while True:
         if cancel_evt is not None and cancel_evt.is_set():
-            print(f"[A2A] peer_wait_loop cancelled | sid={inbox_key}")
+            _dbg(f"peer_wait_loop cancelled | sid={inbox_key}")
             return
 
         has_msg = await bus.wait_for_message(
@@ -742,7 +747,7 @@ async def _peer_wait_loop(
         if has_msg:
             messages = [m async for m in bus.receive(inbox_key)]
             if messages:
-                print(f"[A2A] peer_wait_loop woke | sid={inbox_key} n_msgs={len(messages)}")
+                _dbg(f"peer_wait_loop woke | sid={inbox_key} n_msgs={len(messages)}")
                 await harness.resolve_wait(
                     wait_id,
                     inject_message=PeerTeamPlugin._package_peer_messages(messages),
