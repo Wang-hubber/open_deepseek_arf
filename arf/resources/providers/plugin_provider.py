@@ -144,6 +144,19 @@ class PluginProvider:
         if fn is None:
             return None
         try:
+            # Strip framework-injected params that the tool doesn't declare.
+            # _register_wait and _emit are injected by engine for IPC; only
+            # tools that explicitly declare them (delegate_task, ask_user)
+            # should receive them.
+            import inspect
+            try:
+                sig = inspect.signature(fn)
+            except (ValueError, TypeError):
+                sig = None
+            if sig:
+                for reserved in ("_register_wait", "_emit"):
+                    if reserved not in sig.parameters:
+                        params.pop(reserved, None)
             result = await fn(**params)
         except Exception as exc:
             return ToolResult(
