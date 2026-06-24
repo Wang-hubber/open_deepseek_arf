@@ -53,6 +53,7 @@ class AgentHarness:
         self._park_event: asyncio.Event | None = None
         self._parked: bool = False
         self._messages_injected: bool = False
+        self._user_interrupted: bool = False
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._interaction_round: int = 0
         self._system_prompt_text: str = ""
@@ -398,6 +399,9 @@ class AgentHarness:
             _allow_paths: list[str] = []
             if self._agent_config is not None:
                 _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
+            # data_dir is always accessible — sub-agent results, peer outputs,
+            # and externalized tool outputs live here.
+            _allow_paths.append(self._data_dir)
             ctx.hook_data["_allow_paths"] = _allow_paths
 
             # Pass harness config to plugins so a2a_subagents can capture
@@ -501,6 +505,11 @@ class AgentHarness:
         agent.input(role="user", content=user_message)
         yield ctx.emit(event_type="user_input", data={"content": user_message})
 
+        # Detect user interrupting a non-HITL park (delegate_task, peer_wait).
+        # The harness is parked in a previous run() — user wants to interact now.
+        if self._parked:
+            self._user_interrupted = True
+
         # --- before_round ---
         # Outer round loop: all external park/resume paths (HITL, delegate_task,
         # peer_wait) eventually loop back here, so plugins get a uniform chance
@@ -509,23 +518,35 @@ class AgentHarness:
             has_waiting = await self._checkpoint("before_round", ctx)
 
             if has_waiting and not self._messages_injected:
-                yield ctx.emit(event_type="parked", data={
-                    "hook_name": "before_round",
-                    "waiting": agent.state.waiting,
-                })
-                try:
-                    await self._do_park()
-                except asyncio.CancelledError:
-                    self._cancel_event.set()
+                # Let user interrupt non-HITL parks (delegate_task, peer_wait).
+                # HITL waits are always blocking — user must explicitly answer.
+                _hitl_waits = [
+                    wi for items in agent.state.waiting.values()
+                    for wi in items if wi.reason == "hitl"
+                ]
+                if not _hitl_waits and self._user_interrupted:
+                    self._user_interrupted = False
+                    self._parked = False
+                    # Proceed to round — user wants to interact.
+                    # Waits remain registered; will re-park next round.
+                else:
+                    yield ctx.emit(event_type="parked", data={
+                        "hook_name": "before_round",
+                        "waiting": agent.state.waiting,
+                    })
+                    try:
+                        await self._do_park()
+                    except asyncio.CancelledError:
+                        self._cancel_event.set()
+                        if self._parked:
+                            await self._save_and_teardown()
+                        raise
                     if self._parked:
+                        # CancelledError path kept _parked=True → teardown
                         await self._save_and_teardown()
-                    raise
-                if self._parked:
-                    # CancelledError path kept _parked=True → teardown
-                    await self._save_and_teardown()
-                    return
-                # Normal wakeup: loop back to before_round checkpoint
-                continue
+                        return
+                    # Normal wakeup: loop back to before_round checkpoint
+                    continue
 
             if has_waiting and self._messages_injected:
                 # Messages were just injected — proceed to round so agent can process them.
@@ -652,6 +673,7 @@ class AgentHarness:
                     _allow_paths: list[str] = []
                     if self._agent_config is not None:
                         _allow_paths = getattr(self._agent_config, "allow_paths", []) or []
+                    _allow_paths.append(self._data_dir)
                     ctx.hook_data["_allow_paths"] = _allow_paths
     
                     # Loop: re-run checkpoint after park/resume so plugins can filter
@@ -762,6 +784,13 @@ class AgentHarness:
                             await self._save_and_teardown()
                             return
     
+                    # If tools registered a wait (delegate_task, send_peer_message),
+                    # force round end so the harness loops to before_round and parks.
+                    # This prevents the model from polling queue_status in a loop.
+                    if agent.state.waiting:
+                        _round_restart = True
+                        break
+
                     continue  # loop back to before_model
     
                 # No tool calls — plugins may intercept to force retry

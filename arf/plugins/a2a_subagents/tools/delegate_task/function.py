@@ -279,13 +279,38 @@ def _wake_parent(registry, parent_sid: str) -> None:
             try:
                 pending = await registry.delegator.get_pending(parent_sid)
                 for r in pending:
-                    # Format the result as a user message
                     task_id = r.get("task_id", "")
                     content = r.get("content", "(no output)")
                     turns = r.get("turn_count", "?")
+                    ok = r.get("ok", False)
+                    file_changes = r.get("file_changes")
+                    result_file = r.get("result_file", "")
+
+                    parts = [
+                        f"[A2A] Task {task_id} completed ({turns} turns, ok={ok})",
+                        "",
+                        content,
+                    ]
+                    if file_changes:
+                        added = file_changes.get("added", [])
+                        modified = file_changes.get("modified", [])
+                        deleted = file_changes.get("deleted", [])
+                        if added or modified or deleted:
+                            parts.append("")
+                            parts.append("## File Changes")
+                            for p in added:
+                                parts.append(f"+ `{p}`")
+                            for p in modified:
+                                parts.append(f"~ `{p}`")
+                            for p in deleted:
+                                parts.append(f"- `{p}`")
+                    if result_file:
+                        parts.append("")
+                        parts.append(f"Full result cached at: `{result_file}`")
+
                     msg = {
                         "role": "user",
-                        "content": f"[A2A] Task {task_id} completed ({turns} turns):\n{content}",
+                        "content": "\n".join(parts),
                     }
                     break
             except Exception:
@@ -432,10 +457,12 @@ def _make_yaml_runner(
             turn_count=len(tool_calls),
         )
 
-        # Brief content for parent message injection
-        brief = final_result[:300] if final_result else "(no output)"
-        if len(final_result) > 300:
-            brief += "..."
+        # Brief summary for parent message injection.
+        # Long results go to result_file (inside data_dir, which is
+        # always in allow_paths). Parent reads the file if needed.
+        brief = final_result[:500] if final_result else "(no output)"
+        if len(final_result) > 500:
+            brief += f"\n...(truncated, full result at {result_file})"
 
         # Complete via delegator
         complete_result = {
@@ -624,10 +651,12 @@ def _make_inherit_runner(
             turn_count=len(tool_calls),
         )
 
-        # Brief content for parent message injection
-        brief = final_result[:300] if final_result else "(no output)"
-        if len(final_result) > 300:
-            brief += "..."
+        # Brief summary for parent message injection.
+        # Long results go to result_file (inside data_dir, which is
+        # always in allow_paths). Parent reads the file if needed.
+        brief = final_result[:500] if final_result else "(no output)"
+        if len(final_result) > 500:
+            brief += f"\n...(truncated, full result at {result_file})"
 
         # Complete via delegator
         complete_result = {
