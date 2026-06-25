@@ -37,6 +37,7 @@ class ApprovalPlugin(Plugin):
         self._results: dict[str, tuple[bool, str]] = {}  # decision_id → (approved, reason)
         self._timers: dict[str, asyncio.Task] = {}      # decision_id → timeout task
         self._agent = None
+        self._harness = None
 
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "pre_action":
@@ -49,6 +50,7 @@ class ApprovalPlugin(Plugin):
             return
 
         self._agent = ctx.agent
+        self._harness = ctx.hook_data.get("_harness_ref", {}).get("harness")
         tool_calls = ctx.hook_data.get("_pending_tool_calls", [])
         if not tool_calls:
             return
@@ -82,6 +84,8 @@ class ApprovalPlugin(Plugin):
                 continue
 
             # Phase 2: new tool needing approval — register wait
+            if decision_id in self._decisions:
+                continue  # already waiting for this decision
             ctx.emit(event_type="approval_required", data={
                 "decision_id": decision_id,
                 "tool_name": name,
@@ -107,6 +111,10 @@ class ApprovalPlugin(Plugin):
         self._results[decision_id] = (False, "timeout")
         if self._agent:
             self._agent.finish_wait(wait_id=wait_id)
+            if self._harness:
+                self._harness._parked = False
+                if self._harness._park_event:
+                    self._harness._park_event.set()
 
     @staticmethod
     def _block_tool(ctx: PluginContext, tc: dict, result: str, error: str) -> None:
@@ -129,6 +137,11 @@ class ApprovalPlugin(Plugin):
         wait_id = self._decisions.pop(decision_id, None)
         if wait_id and self._agent:
             self._agent.finish_wait(wait_id=wait_id)
+            # Wake the parked engine — same as harness.resolve_wait()
+            if self._harness:
+                self._harness._parked = False
+                if self._harness._park_event:
+                    self._harness._park_event.set()
             return True
         return False
 
