@@ -350,6 +350,7 @@ class AgentHarness:
         """
         agent = self.agent
         self._interaction_round += 1
+        self._cancel_event.clear()
 
         # Detect new session: empty state OR explicit session_id change
         requested_sid = session_id or ""
