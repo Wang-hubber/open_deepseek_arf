@@ -213,9 +213,11 @@ async def execute(
         "context": context or {},
     }
 
-    # Pre-generate child session id
+    # Pre-generate child session id and runtime_id for frontend SSE
     child_sid = f"{parent_sid}--{uuid.uuid4().hex[:8]}"
+    rid = f"sub_{agent or 'inline'}_{uuid.uuid4().hex[:8]}"
     task_obj["_child_sid"] = child_sid
+    task_obj["_runtime_id"] = rid
 
     if config_path is not None:
         # === YAML mode: full create_harness() ===
@@ -257,6 +259,9 @@ async def execute(
         "ok": True,
         **result,
         "session_id": parent_sid,
+        "runtime_id": rid,
+        "agent_name": agent or "inline",
+        "child_sid": child_sid,
     }
 
 
@@ -354,8 +359,9 @@ def _make_yaml_runner(
             logger.exception("Failed to create harness for %s", agent_name)
             return {"ok": False, "error": f"harness_create: {exc}"}
 
-        # Register for frontend SSE
-        rid = f"sub_{agent_name}_{uuid.uuid4().hex[:8]}"
+        # Use pre-generated runtime_id from execute() so frontend can
+        # discover the sub-agent before the runner starts.
+        rid = t.get("_runtime_id") or f"sub_{agent_name}_{uuid.uuid4().hex[:8]}"
         event_queue: asyncio.Queue = asyncio.Queue()
         registry.running_sub_agents[rid] = {
             "agent_name": agent_name,
