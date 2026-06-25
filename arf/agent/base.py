@@ -55,7 +55,7 @@ def _build_call_model(config: AgentConfig):
                 "api_key": api_key,
                 "model_name": md.get("model", "deepseek-chat"),
                 "context_window": md.get("context_window", 131072),
-                "message_format": md.get("message_format", "openai"),
+                "message_format": md.get("message_format", ""),
                 **md.get("kwargs", {}),
             }
             adapters.append(ModelAdapter(cfg))
@@ -67,7 +67,7 @@ def _build_call_model(config: AgentConfig):
                 "api_key": api_key,
                 "model_name": m.model,
                 "context_window": m.context_window,
-                "message_format": getattr(m, "message_format", "openai"),
+                "message_format": getattr(m, "message_format", ""),
                 **getattr(m, "kwargs", {}),
             }
             adapters.append(ModelAdapter(cfg))
@@ -94,6 +94,7 @@ def _build_call_model(config: AgentConfig):
             tool_calls=tool_calls,
             usage=usage,
             finish_reason=getattr(msg, "finish_reason", "stop"),
+            reasoning_content=getattr(msg, "reasoning_content", "") or "",
         )
 
     def stream_model(messages: list[dict], tools=None):

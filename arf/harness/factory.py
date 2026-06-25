@@ -79,6 +79,7 @@ def _build_call_model(model_defs: list[dict], models: list) -> Any:
             tool_calls=tool_calls,
             usage=usage,
             finish_reason=getattr(msg, "finish_reason", "stop"),
+            reasoning_content=getattr(msg, "reasoning_content", "") or "",
         )
 
     def stream_model(messages: list[dict], tools=None):
