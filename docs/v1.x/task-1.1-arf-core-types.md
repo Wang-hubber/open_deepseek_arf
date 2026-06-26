@@ -151,7 +151,7 @@ pub struct Message {
 - `id: Uuid` — 每条消息有全局唯一 ID，后续 trace/回放靠它定位
 - `msg_type: String` — 不是 enum 而是字符串，方便新增类型无需改 `arf-core`
 - `to: Option<NodeId>` — `None` 广播，`Some(id)` 定向（给接收侧过滤器用，Bus 不区分对待）
-- `payload: serde_json::Value` — 任意 JSON，Engine 塞模型输出，MCP 塞工具结果，不做 schema 约束
+- `payload: serde_json::Value` — 任意 JSON，Engine 塞模型输出和 action，MCP 塞资源执行结果（prompt / tool / skill），不做 schema 约束
 - `timestamp: u64` — Unix 毫秒，生成时打时间戳
 
 ```rust
@@ -216,8 +216,10 @@ fn now_ms() -> u64 {
 pub struct NodeInfo {
     pub node_id: NodeId,
     /// Node type: `"engine"`, `"mcp"`, `"model"`, `"trace"`.
+    /// Engine = Agent + State = one active session.
     pub node_type: String,
-    /// Capabilities: `{"tools": [...], "session_id": "s1"}`.
+    /// Capabilities: MCP declares `{"resources": ["prompt/...", "tool/...", "skill/..."]}`;
+    /// Engine declares `{"sessions": ["sid1", "sid2"]}`. Engine = Agent + State = one active session.
     pub capabilities: serde_json::Value,
     /// Milliseconds since Unix epoch when this node connected.
     pub online_since: u64,
@@ -225,7 +227,8 @@ pub struct NodeInfo {
 ```
 
 逐行：
-- `capabilities: Value` — 不同 node_type 声明不同能力，MCP 声明 tool 列表，Engine 声明 session_id，不做强类型约束保持灵活
+- `node_type: String` — `"engine"`、`"mcp"`、`"model"`、`"trace"`。区分节点角色
+- `capabilities: Value` — 不同 node_type 声明不同能力。MCP 声明资源列表（`prompt` / `tool` / `skill`），Engine 声明自己管理的 `sessions`（一个 Engine = 一个 Agent + 一个 State = 一个活跃 session）。不做强类型约束保持灵活
 - `online_since` — 上线时间戳，bus graph 展示用
 
 ```rust
@@ -397,12 +400,12 @@ mod tests {
         let info = NodeInfo {
             node_id: NodeId::new("mcp/fs"),
             node_type: "mcp".into(),
-            capabilities: serde_json::json!({"tools": ["read", "write"]}),
+            capabilities: serde_json::json!({"resources": ["tool/read", "tool/write", "prompt/summarize"]}),
             online_since: 1000,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("mcp/fs"));
-        assert!(json.contains("tools"));
+        assert!(json.contains("resources"));
     }
 
     #[test]
