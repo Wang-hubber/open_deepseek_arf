@@ -227,16 +227,32 @@ async fn run_message_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(BusCommand::Send { msg, respond_to }) => {
+                        // Validate target for directed messages
+                        if let Some(ref target) = msg.to {
+                            let map = nodes.read().unwrap();
+                            if !map.contains_key(target) {
+                                let _ = respond_to
+                                    .send(Err(SendError::NodeOffline(target.clone())));
+                                continue;
+                            }
+                        }
+
                         let msg_id = msg.id;
+                        let is_broadcast = msg.to.is_none();
                         let _ = broadcast_tx.send(msg);
                         message_count.fetch_add(1, Ordering::Relaxed);
                         while drain_rx.try_recv().is_ok() {}
 
                         let online_nodes = nodes.read().unwrap().len();
+                        let matching_nodes = if is_broadcast {
+                            online_nodes
+                        } else {
+                            1
+                        };
                         let receipt = SendReceipt {
                             message_id: msg_id,
                             online_nodes,
-                            matching_nodes: online_nodes, // TODO: filter matching in 1.6
+                            matching_nodes,
                         };
                         let _ = respond_to.send(Ok(receipt));
                     }
@@ -354,7 +370,7 @@ pub use connection::NodeHandle;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arf_core::{Message, NodeId};
+    use arf_core::{Message, MessageFilter, NodeId, NodeInfo, ToMatch};
     use std::time::Duration;
 
     // Helper to create a bus with default test parameters
@@ -368,6 +384,22 @@ mod tests {
 
     fn test_msg(payload: serde_json::Value) -> Message {
         Message::new("test", NodeId::new("s"), None, payload)
+    }
+
+    fn test_node_info(id: &str) -> NodeInfo {
+        NodeInfo {
+            node_id: NodeId::new(id),
+            node_type: "test".into(),
+            capabilities: serde_json::json!({}),
+            online_since: 0,
+        }
+    }
+
+    fn test_filter() -> MessageFilter {
+        MessageFilter {
+            types: None,
+            to_match: ToMatch::All,
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -479,6 +511,23 @@ mod tests {
         let mut rx1 = bus.subscribe();
         let mut rx2 = bus.subscribe();
 
+        // Register the target node so the check passes (task 1.5)
+        let _target = bus
+            .connect(
+                NodeInfo {
+                    node_id: NodeId::new("mcp/filesystem"),
+                    node_type: "mcp".into(),
+                    capabilities: serde_json::json!({}),
+                    online_since: 0,
+                },
+                MessageFilter {
+                    types: None,
+                    to_match: ToMatch::All,
+                },
+            )
+            .await
+            .unwrap();
+
         let msg = Message::new(
             "tool_call",
             NodeId::new("engine"),
@@ -491,6 +540,81 @@ mod tests {
         assert!(rx1.recv().await.is_ok());
         assert!(rx2.recv().await.is_ok());
 
+        _target.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Send — 定向消息投递保证 (3 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    // [投递] 定向发送给在线节点 → 成功，matching_nodes=1
+    #[tokio::test]
+    async fn directed_send_to_online_node_succeeds() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+        let _target = bus
+            .connect(test_node_info("t"), test_filter())
+            .await
+            .unwrap();
+
+        let receipt = sender
+            .send("action", Some(NodeId::new("t")), serde_json::json!("hi"))
+            .await
+            .unwrap();
+        assert_eq!(receipt.online_nodes, 2); // sender + target
+        assert_eq!(receipt.matching_nodes, 1); // directed: only target
+
+        sender.disconnect().await;
+        _target.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [投递] 定向发送给不在线节点 → SendError::NodeOffline
+    #[tokio::test]
+    async fn directed_send_to_offline_node_fails() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+
+        let result = sender
+            .send("action", Some(NodeId::new("ghost")), serde_json::json!("hi"))
+            .await;
+        assert!(
+            matches!(result, Err(SendError::NodeOffline(ref id)) if id.as_str() == "ghost")
+        );
+
+        sender.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [投递] 广播消息 matching_nodes=online_nodes
+    #[tokio::test]
+    async fn broadcast_message_matching_nodes_equals_online_nodes() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+        let _n2 = bus
+            .connect(test_node_info("n2"), test_filter())
+            .await
+            .unwrap();
+
+        let receipt = sender
+            .send("action", None, serde_json::json!("all"))
+            .await
+            .unwrap();
+        assert_eq!(receipt.online_nodes, 2);
+        assert_eq!(receipt.matching_nodes, 2); // broadcast: everyone
+
+        sender.disconnect().await;
+        _n2.disconnect().await;
         bus.shutdown().await;
     }
 
