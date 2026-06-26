@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>王协 — Harness 工程师</title>
+<title>王协 — 野生 Agent 工程师</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -379,13 +379,13 @@
     <div class="section-title">我在做什么：从具体到抽象再到具体，探索 Agent 基础设施的边界</div>
 
     <div class="section-intro">
-      <p>过去两年做 AI 应用落地，每做一个项目都在解决类似的共性问题——Agent 调度、状态管理、上下文压缩、多 Agent 通讯、Eval 评测。这些问题与业务无关，但每个项目都绕不开。我发现一个更深层的现象：<strong>协调层在膨胀</strong>——RAG 知识注入、系统提示词身份赋予、外部记忆管理……这些能力正一块块往 Harness 里塞，每次模型能力不够就在外面打一个补丁。</p>
+      <p>过去两年做 AI 应用落地，每做一个项目都在解决类似的共性问题——Agent 调度、状态管理、上下文压缩、多 Agent 通讯、Eval 评测。这些问题与业务无关，但每个项目都绕不开。我发现一个更深层的现象：<strong>协调层在膨胀</strong>——RAG 知识注入、系统提示词身份赋予、外部记忆管理……这些能力正一块块往 协调层 里塞，每次模型能力不够就在外面打一个补丁。</p>
 
-      <p>这指向一个更底层的疑问：<strong>Harness 到底该做什么，不该做什么？</strong></p>
+      <p>这指向一个更底层的疑问：<strong>协调层 到底该做什么，不该做什么？</strong></p>
     </div>
 
     <div class="highlight-box">
-      核心假设：<strong>模型负责认知与推理，Harness 负责固定的感知编码、可靠的行动执行、硬连线的安全门控。Harness 不思考，不追问，不澄清——它只是本能地编码、执行、门控。</strong>
+      核心假设：<strong>模型负责认知与推理，协调层 负责固定的感知编码、可靠的行动执行、硬连线的安全门控。协调层 不思考，不追问，不澄清——它只是本能地编码、执行、门控。</strong>
     </div>
 
     <p style="font-size:14px; color: var(--text); margin-top: 12px;">
@@ -393,7 +393,7 @@
     </p>
 
     <p style="font-size:14px; color: var(--text); margin-top: 6px;">
-      第一个循环踩了足够多的坑（Agent/Harness 边界模糊、A2A park 位置反复迁移、State 抽象不够鲁棒、Log 系统性缺失），现在进入第二个循环——更彻底的抽象分离，用 Rust 重写 Engine / State / Park-Resume / AgentBus 四个核心模块，把已验证的设计翻译成更严格的语言。
+      第一个循环踩了足够多的坑（Agent/协调层 边界模糊、A2A park 位置反复迁移、State 抽象不够鲁棒、Log 系统性缺失），现在进入第二个循环——更彻底的抽象分离，用 Rust 重写 Engine / State / Park-Resume / AgentBus 四个核心模块，把已验证的设计翻译成更严格的语言。
     </p>
   </section>
 
@@ -413,7 +413,7 @@
         ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。
       </div>
       <ul class="bullet-list">
-        <li><strong>三层架构</strong>：Agent（消息状态机）→ Harness（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。</li>
+        <li><strong>三层架构</strong>：Agent（消息状态机）→ 协调层（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。</li>
         <li><strong>Hook 生命周期</strong>：10 个检查点 × 2 种模式（blocking/side），插件按需注册，引擎不做硬编码限制。覆盖 session_start 到 session_end 的完整 Agent 生命周期。</li>
         <li><strong>Agent-to-Agent 通讯</strong>：Subagents（父子委派，一次性用完即焚）+ Teammates（对等队友，Park/Wake 协作循环）。AgentBus 消息总线 + JRPC 结构化通讯。</li>
         <li><strong>全链路可观测 + Eval 评测</strong>：JSONL Trace / Token 统计 / 离线评估回放。EvalRunner + BenchmarkBuilder + LLM Judge 自动标注 + 版本化存档。</li>

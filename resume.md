@@ -8,15 +8,15 @@
 
 ## 我在做什么：从具体到抽象再到具体，探索 Agent 基础设施的边界
 
-过去两年做 AI 应用落地，每做一个项目都在解决类似的共性问题——Agent 调度、状态管理、上下文压缩、多 Agent 通讯、Eval 评测。这些问题与业务无关，但每个项目都绕不开。我发现一个更深层的现象：**协调层在膨胀**——RAG 知识注入、系统提示词身份赋予、外部记忆管理……这些能力正一块块往 Harness 里塞，每次模型能力不够就在外面打一个补丁。
+过去两年做 AI 应用落地，每做一个项目都在解决类似的共性问题——Agent 调度、状态管理、上下文压缩、多 Agent 通讯、Eval 评测。这些问题与业务无关，但每个项目都绕不开。我发现一个更深层的现象：**协调层在膨胀**——RAG 知识注入、系统提示词身份赋予、外部记忆管理……这些能力正一块块往 协调层 里塞，每次模型能力不够就在外面打一个补丁。
 
-这指向一个更底层的疑问：**Harness 到底该做什么，不该做什么？**
+这指向一个更底层的疑问：**协调层 到底该做什么，不该做什么？**
 
-**核心假设：模型负责认知与推理，Harness 负责固定的感知编码、可靠的行动执行、硬连线的安全门控。Harness 不思考，不追问，不澄清——它只是本能地编码、执行、门控。**
+**核心假设：模型负责认知与推理，协调层 负责固定的感知编码、可靠的行动执行、硬连线的安全门控。协调层 不思考，不追问，不澄清——它只是本能地编码、执行、门控。**
 
 为验证这个假设，我走完了一个完整的"具体→抽象→具体"循环：从业务痛点出发，抽象出 ARF 框架（Engine + 10 检查点 Hook + Park/Resume + A2A 通讯 + Trace/Eval），落地 14 单元教学课程让这个思路可理解、可复现。框架本身由 DeepSeek V4 Pro 与 Claude Code 协作完成，我只做设计审核，未手写代码。
 
-第一个循环踩了足够多的坑（Agent/Harness 边界模糊、A2A park 位置反复迁移、State 抽象不够鲁棒、Log 系统性缺失），现在进入第二个循环——更彻底的抽象分离，用 Rust 重写 Engine / State / Park-Resume / AgentBus 四个核心模块，把已验证的设计翻译成更严格的语言。
+第一个循环踩了足够多的坑（Agent/协调层 边界模糊、A2A park 位置反复迁移、State 抽象不够鲁棒、Log 系统性缺失），现在进入第二个循环——更彻底的抽象分离，用 Rust 重写 Engine / State / Park-Resume / AgentBus 四个核心模块，把已验证的设计翻译成更严格的语言。
 
 ---
 
@@ -30,7 +30,7 @@ https://github.com/Wang-hubber/open_deepseek_arf
 
 ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。
 
-- **三层架构**：Agent（消息状态机）→ Harness（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。
+- **三层架构**：Agent（消息状态机）→ 协调层（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。
 - **Hook 生命周期**：10 个检查点 × 2 种模式（blocking/side），插件按需注册，引擎不做硬编码限制。
 - **Agent-to-Agent 通讯**：Subagents（父子委派，一次性）+ Teammates（对等队友，Park/Wake 协作循环）。AgentBus 消息总线 + JRPC 结构化通讯。
 - **全链路可观测 + Eval 评测**：JSONL Trace / Token 统计 / 离线评估回放。EvalRunner + BenchmarkBuilder + LLM Judge + 版本化存档。
