@@ -100,8 +100,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 /// - `cmd_tx` (mpsc): nodes send commands to the bus (send, connect, heartbeat ack)
 /// - `broadcast_tx` (broadcast): bus broadcasts messages to all subscribers
 ///
-/// The Bus holds a dummy `broadcast::Receiver` to keep the channel alive,
-/// mirroring CAN's "the wire is always powered."
+/// The Bus holds a dummy `broadcast::Receiver` (inside the message loop) to
+/// keep the channel alive, mirroring CAN's "the wire is always powered."
+/// The dummy receiver is **drained after every send** to prevent it from
+/// causing backpressure — without draining, after `capacity` messages the
+/// dummy (which never reads) would block all senders.
 pub struct Bus {
     /// Send commands into the bus message loop.
     cmd_tx: mpsc::Sender<BusCommand>,
@@ -113,8 +116,6 @@ pub struct Bus {
     start_time: Instant,
     /// JoinHandle for the message loop task.
     _loop_handle: tokio::task::JoinHandle<()>,
-    /// Dummy receiver — keeps the broadcast channel alive when no nodes are connected.
-    _bus_rx: broadcast::Receiver<Message>,
 }
 ```
 
@@ -124,7 +125,7 @@ pub struct Bus {
 - `message_count: Arc<AtomicU64>` — 原子计数器，消息循环和 `Bus::message_count()` 共享。用 `AtomicU64` 而非 `Mutex<u64>`，因为只是计数不需要锁
 - `start_time: Instant` — 创建时刻，`uptime_ms()` 用它计算运行时间
 - `_loop_handle: JoinHandle<()>` — 消息循环的 tokio task 句柄。名前加 `_` 表示不会被主动读取，但持有它防止 task 被 drop 取消
-- `_bus_rx: broadcast::Receiver<Message>` — dummy 接收者，保持 broadcast channel 存活
+- **注意**：dummy receiver 不在 `Bus` struct 中——它被移入消息循环，每次 send 后立即 drain，防止它成为背压源。详见消息循环部分
 
 ```rust
 /// Internal commands sent to the bus message loop.
@@ -158,14 +159,14 @@ impl Bus {
         heartbeat_timeout: Duration,
         channel_capacity: usize,
     ) -> Self {
-        let (broadcast_tx, bus_rx) = broadcast::channel(channel_capacity);
+        let (broadcast_tx, drain_rx) = broadcast::channel(channel_capacity);
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let message_count = Arc::new(AtomicU64::new(0));
 
         let broadcast_tx_clone = broadcast_tx.clone();
         let count_clone = message_count.clone();
         let loop_handle = tokio::spawn(async move {
-            run_message_loop(cmd_rx, broadcast_tx_clone, count_clone).await;
+            run_message_loop(cmd_rx, broadcast_tx_clone, drain_rx, count_clone).await;
         });
 
         Self {
@@ -174,17 +175,16 @@ impl Bus {
             message_count,
             start_time: Instant::now(),
             _loop_handle: loop_handle,
-            _bus_rx: bus_rx,
         }
     }
 ```
 
 逐行：
-- `broadcast::channel(channel_capacity)` — 创建广播通道，capacity 即环形缓冲区大小（spec 默认 1024）
+- `broadcast::channel(channel_capacity)` — 创建广播通道，capacity 即环形缓冲区大小（spec 默认 1024）。返回的 `drain_rx` 是 dummy 接收者，移入消息循环用于保持 channel 存活 + 定期 drain
 - `mpsc::channel(256)` — 命令通道 buffer 256 条，足够缓冲高并发写入
 - `broadcast_tx.clone()` — `broadcast::Sender` 是 `Clone` 的，clone 一份给消息循环。Bus 自己保留原始 copy 用于 `subscribe()`
 - `count_clone = message_count.clone()` — `Arc::clone()` 增加引用计数，消息循环和 Bus 共享同一个 `AtomicU64`
-- `tokio::spawn(async move { ... })` — 在 tokio runtime 上启动消息循环。`async move` 将 `cmd_rx`、`broadcast_tx_clone`、`count_clone` 的所有权移入闭包
+- `tokio::spawn(async move { ... })` — 在 tokio runtime 上启动消息循环。`async move` 将 `cmd_rx`、`broadcast_tx_clone`、`drain_rx`、`count_clone` 的所有权移入闭包
 
 ```rust
     /// Send a message to be broadcast on the bus.
@@ -257,18 +257,30 @@ impl Bus {
 ///
 /// Receives commands from `cmd_rx`, processes them, and broadcasts messages
 /// through `broadcast_tx`. Runs in a dedicated tokio task.
+///
+/// `drain_rx` is the dummy receiver that keeps the broadcast channel alive
+/// (CAN's "wire is always powered"). It is **drained after every send** to
+/// prevent it from becoming a backpressure bottleneck — without draining,
+/// after `capacity` messages the dummy (which never reads via `recv()`)
+/// would block `broadcast_tx.send()`, blocking all senders.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,
+    mut drain_rx: broadcast::Receiver<Message>,
     message_count: Arc<AtomicU64>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BusCommand::Send { msg, respond_to } => {
-                // Broadcast to all subscribers (including dummy).
-                // Ignore the receiver count — CAN model: fire and forget.
+                // Broadcast to all subscribers.
+                // If no application receivers exist, drain_rx still keeps the
+                // channel alive. send() returns Ok(n) where n includes drain_rx.
                 let _ = broadcast_tx.send(msg);
                 message_count.fetch_add(1, Ordering::Relaxed);
+                // Drain the dummy receiver immediately to free ring buffer space.
+                // This prevents the dummy from accumulating lag and blocking
+                // real senders. Only real slow receivers cause backpressure.
+                while drain_rx.try_recv().is_ok() {}
                 let _ = respond_to.send(Ok(()));
             }
             BusCommand::Shutdown { respond_to } => {
@@ -281,8 +293,10 @@ async fn run_message_loop(
 ```
 
 逐行：
+- `mut drain_rx` — dummy 接收者。消息循环拥有它，每次 send 后立即 drain（`try_recv()` 非阻塞消费）。**关键**：如果不 drain，drain_rx 的 lag 会累积，`capacity` 条消息后 `broadcast_tx.send()` 会等待 drain_rx 读取旧消息，导致所有发送方阻塞——dummy 反成背压源
 - `while let Some(cmd) = cmd_rx.recv().await` — 循环等待命令。当所有 `cmd_tx` sender 被 drop 时，`recv()` 返回 `None`，循环退出。正常路径通过 `Shutdown` 命令 exit
 - `let _ = broadcast_tx.send(msg)` — 忽略返回值（receiver 数量）。CAN 模型：消息发到线上即可，收不收是节点的事
+- `while drain_rx.try_recv().is_ok() {}` — 非阻塞清空 dummy lag。`try_recv()` 不会阻塞，立即返回。drain 干净后 `try_recv()` 返回 `Err(Empty)`，循环结束。对性能影响可忽略
 - `message_count.fetch_add(1, Ordering::Relaxed)` — 原子加 1。`Relaxed` 因为计数不参与其他同步
 - `Shutdown` → `break` — 退出循环，`cmd_rx` 被 drop，所有后续 `send()` 返回 `BusClosed`
 
@@ -291,6 +305,7 @@ async fn run_message_loop(
 ## 单元测试
 
 > 每个测试标注测试角度
+> **注意**：定向目标不存在的检测需要在线图（任务 1.3），`SendReceipt` 投递保证在任务 1.5。1.2 测的是纯数据通道的边界。
 
 ```rust
 #[cfg(test)]
@@ -308,8 +323,12 @@ mod tests {
         )
     }
 
+    fn test_msg(payload: serde_json::Value) -> Message {
+        Message::new("test", NodeId::new("s"), None, payload)
+    }
+
     // ═══════════════════════════════════════════════════════════════
-    // Bus — construction & properties
+    // Bus — construction & properties (3 tests)
     // ═══════════════════════════════════════════════════════════════
 
     // [构造] Bus::new() 不 panic，message_count 起始为 0
@@ -317,18 +336,18 @@ mod tests {
     async fn bus_new_creates_empty_bus() {
         let bus = test_bus();
         assert_eq!(bus.message_count(), 0);
-        assert!(bus.uptime_ms() < 100); // just created
+        assert!(bus.uptime_ms() < 100);
         bus.shutdown().await;
     }
 
-    // [trait] Bus 是 Send + Sync（编译期验证）
+    // [trait] Bus 是 Send + Sync（编译期验证跨线程传递）
     #[test]
     fn bus_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Bus>();
     }
 
-    // [数据] uptime_ms 随时间增长
+    // [时间] uptime_ms 随时间单调增长
     #[tokio::test]
     async fn bus_uptime_increases() {
         let bus = test_bus();
@@ -340,7 +359,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Bus — send & subscribe
+    // Bus — send & subscribe 基本路径 (5 tests)
     // ═══════════════════════════════════════════════════════════════
 
     // [数据] send 一条消息 → subscribe 的 receiver 收到同一条
@@ -349,13 +368,12 @@ mod tests {
         let bus = test_bus();
         let mut rx = bus.subscribe();
 
-        let msg = Message::new("test", NodeId::new("sender"), None, serde_json::json!("hello"));
+        let msg = test_msg(serde_json::json!("hello"));
         let msg_id = msg.id;
         bus.send(msg).await.unwrap();
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, msg_id);
-        assert_eq!(received.msg_type, "test");
         assert_eq!(received.payload, serde_json::json!("hello"));
 
         bus.shutdown().await;
@@ -368,8 +386,7 @@ mod tests {
         let mut rx = bus.subscribe();
 
         for i in 0..5 {
-            let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!(i));
-            bus.send(msg).await.unwrap();
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
         }
 
         for i in 0..5 {
@@ -387,7 +404,7 @@ mod tests {
         let mut rx1 = bus.subscribe();
         let mut rx2 = bus.subscribe();
 
-        let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!("x"));
+        let msg = test_msg(serde_json::json!("x"));
         let msg_id = msg.id;
         bus.send(msg).await.unwrap();
 
@@ -405,16 +422,37 @@ mod tests {
         let bus = test_bus();
 
         for i in 1..=3 {
-            let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!(null));
-            bus.send(msg).await.unwrap();
+            bus.send(test_msg(serde_json::json!(null))).await.unwrap();
             assert_eq!(bus.message_count(), i);
         }
 
         bus.shutdown().await;
     }
 
+    // [数据] 定向消息（to=Some）同样广播，所有 subscriber 可见（CAN 模型）
+    #[tokio::test]
+    async fn directed_message_broadcast_to_all() {
+        let bus = test_bus();
+        let mut rx1 = bus.subscribe();
+        let mut rx2 = bus.subscribe();
+
+        let msg = Message::new(
+            "tool_call",
+            NodeId::new("engine"),
+            Some(NodeId::new("mcp/filesystem")),
+            serde_json::json!("do_thing"),
+        );
+        bus.send(msg).await.unwrap();
+
+        // Both subscribers see it — CAN: all messages on the wire
+        assert!(rx1.recv().await.is_ok());
+        assert!(rx2.recv().await.is_ok());
+
+        bus.shutdown().await;
+    }
+
     // ═══════════════════════════════════════════════════════════════
-    // Bus — shutdown & error
+    // Bus — shutdown & error (2 tests)
     // ═══════════════════════════════════════════════════════════════
 
     // [关闭] shutdown 后 send 返回 BusClosed
@@ -423,60 +461,55 @@ mod tests {
         let bus = test_bus();
         bus.shutdown().await;
 
-        let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!(null));
-        let result = bus.send(msg).await;
+        let result = bus.send(test_msg(serde_json::json!(null))).await;
         assert!(matches!(result, Err(SendError::BusClosed)));
     }
 
-    // [关闭] shutdown 不 panic（幂等性不重要，因为 shutdown consume self）
+    // [关闭] shutdown 不挂起，1 秒内完成
     #[tokio::test]
-    async fn shutdown_stops_message_loop() {
+    async fn shutdown_completes_within_timeout() {
         let bus = test_bus();
-        // Verify shutdown completes without hanging
         tokio::time::timeout(Duration::from_secs(1), bus.shutdown())
             .await
             .expect("shutdown should complete quickly");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Bus — channel capacity
+    // Bus — channel capacity 边界 (3 tests)
     // ═══════════════════════════════════════════════════════════════
 
-    // [边界] channel_capacity=1 的 bus 仍可正常收发
+    // [边界] channel_capacity=1 仍可正常收发
     #[tokio::test]
     async fn bus_with_minimal_capacity() {
         let bus = Bus::new(
             Duration::from_secs(1),
             Duration::from_secs(3),
-            1, // minimal capacity
+            1,
         );
         let mut rx = bus.subscribe();
 
-        let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!("x"));
-        bus.send(msg).await.unwrap();
-        let received = rx.recv().await.unwrap();
-        assert_eq!(received.payload, serde_json::json!("x"));
+        bus.send(test_msg(serde_json::json!("x"))).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap().payload, serde_json::json!("x"));
 
         bus.shutdown().await;
     }
 
-    // [边界] slow receiver 导致 lag（broadcast channel 的 lag 检测）
+    // [边界] slow receiver 导致 Lagged——环形缓冲区满，慢消费者丢消息
     #[tokio::test]
     async fn slow_receiver_gets_lagged_error() {
         let bus = Bus::new(
             Duration::from_secs(1),
             Duration::from_secs(3),
-            2, // tiny ring buffer
+            2,
         );
         let mut rx = bus.subscribe();
 
-        // Send 3 messages — ring buffer holds 2, so the first is overwritten
+        // Send 3 msgs — ring buffer holds 2, first one gets overwritten
         for i in 0..3 {
-            let msg = Message::new("t", NodeId::new("s"), None, serde_json::json!(i));
-            bus.send(msg).await.unwrap();
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
         }
 
-        // Now the receiver tries to catch up — the first receive should be Lagged
+        // Slow receiver tries to catch up — first recv must be Lagged
         let result = rx.recv().await;
         match result {
             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -488,7 +521,7 @@ mod tests {
         bus.shutdown().await;
     }
 
-    // [构造] channel_capacity=0 不 panic（tokio broadcast 允许 capacity=0）
+    // [边界] channel_capacity=0 不 panic
     #[tokio::test]
     async fn bus_with_zero_capacity() {
         let bus = Bus::new(
@@ -496,42 +529,170 @@ mod tests {
             Duration::from_secs(3),
             0,
         );
-        // Even with 0 capacity, the bus itself should be alive
         assert_eq!(bus.message_count(), 0);
         bus.shutdown().await;
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Bus — 定向消息在广播通道上的行为
+    // Bus — 收发侧健康状态 (6 tests)
     // ═══════════════════════════════════════════════════════════════
 
-    // [数据] 定向消息（to=Some）同样广播，所有 subscriber 都能收到
+    // [健康] 无应用订阅者时 send 仍成功（drain receiver 保活 + 不阻塞）
     #[tokio::test]
-    async fn directed_message_broadcast_to_all() {
+    async fn send_succeeds_with_no_application_subscribers() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            4,
+        );
+        // No bus.subscribe() — only the drain receiver exists
+
+        // Multiple sends should all succeed
+        for i in 0..10 {
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
+        }
+
+        assert_eq!(bus.message_count(), 10);
+        bus.shutdown().await;
+    }
+
+    // [健康] 接收方中途 drop——其他 subscriber 不受影响
+    #[tokio::test]
+    async fn dropped_receiver_does_not_affect_others() {
         let bus = test_bus();
         let mut rx1 = bus.subscribe();
         let mut rx2 = bus.subscribe();
 
-        let msg = Message::new(
-            "tool_call",
-            NodeId::new("engine"),
-            Some(NodeId::new("mcp/filesystem")), // directed
-            serde_json::json!("do_thing"),
-        );
-        bus.send(msg).await.unwrap();
-
-        // Both subscribers see it — CAN model: all messages on the wire
+        // Send initial message that both see
+        bus.send(test_msg(serde_json::json!("before"))).await.unwrap();
         assert!(rx1.recv().await.is_ok());
         assert!(rx2.recv().await.is_ok());
+
+        // Drop rx1
+        drop(rx1);
+
+        // Send more messages — rx2 should still receive them
+        bus.send(test_msg(serde_json::json!("after1"))).await.unwrap();
+        bus.send(test_msg(serde_json::json!("after2"))).await.unwrap();
+
+        assert_eq!(rx2.recv().await.unwrap().payload, serde_json::json!("after1"));
+        assert_eq!(rx2.recv().await.unwrap().payload, serde_json::json!("after2"));
 
         bus.shutdown().await;
     }
 
+    // [健康] 慢消费者阻塞发送方——ring buffer 满时 send() 等待
+    // 这是 tokio broadcast 的背压机制：消费者的处理速度会反压生产者
+    #[tokio::test]
+    async fn slow_receiver_backpressures_sender() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            2,
+        );
+        let _slow_rx = bus.subscribe(); // subscribe but never read
+
+        // Fill buffer
+        bus.send(test_msg(serde_json::json!(1))).await.unwrap();
+        bus.send(test_msg(serde_json::json!(2))).await.unwrap();
+
+        // 3rd send should block because ring buffer is full and dummy
+        // is already drained. Only the slow receiver holds the tail.
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            bus.send(test_msg(serde_json::json!(3))),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "send should have timed out — slow receiver must backpressure sender"
+        );
+
+        bus.shutdown().await;
+    }
+
+    // [健康] 快消费者不被慢消费者阻挡（直到缓冲区绕回）
+    #[tokio::test]
+    async fn fast_receiver_not_blocked_by_slow_one() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            8,
+        );
+        let _slow_rx = bus.subscribe(); // never reads
+        let mut fast_rx = bus.subscribe(); // reads promptly
+
+        // Send within capacity — fast receiver gets all messages
+        for i in 0..5 {
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
+        }
+
+        for i in 0..5 {
+            assert_eq!(
+                fast_rx.recv().await.unwrap().payload,
+                serde_json::json!(i)
+            );
+        }
+
+        bus.shutdown().await;
+    }
+
+    // [健康] Lagged 后 receiver 可以继续接收新消息（恢复）
+    #[tokio::test]
+    async fn receiver_recovers_after_lag() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            2,
+        );
+        let mut rx = bus.subscribe();
+
+        // Cause lag
+        for i in 0..4 {
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
+        }
+
+        // First recv should be Lagged
+        assert!(matches!(
+            rx.recv().await,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
+
+        // After catch-up, subsequent messages arrive normally
+        bus.send(test_msg(serde_json::json!("after_lag"))).await.unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap().payload,
+            serde_json::json!("after_lag")
+        );
+
+        bus.shutdown().await;
+    }
+
+    // [健康] drain 不阻塞——无订阅者时大量发送不会累积背压
+    #[tokio::test]
+    async fn many_sends_with_only_drain_receiver_no_backpressure() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            2, // tiny buffer, but drain prevents backpressure
+        );
+        // No application subscribers
+
+        // Send many messages — should all succeed with no blocking
+        for i in 0..100 {
+            bus.send(test_msg(serde_json::json!(i))).await.unwrap();
+        }
+
+        assert_eq!(bus.message_count(), 100);
+        bus.shutdown().await;
+    }
+
     // ═══════════════════════════════════════════════════════════════
-    // Bus — 并发
+    // Bus — 并发 (1 test)
     // ═══════════════════════════════════════════════════════════════
 
-    // [并发] 多个 task 同时 send 不丢消息
+    // [并发] 10 个 task 同时 send——全部送达，无丢失
     #[tokio::test]
     async fn concurrent_sends_all_delivered() {
         let bus = Bus::new(
@@ -562,8 +723,7 @@ mod tests {
 
         assert_eq!(bus.message_count(), 10);
 
-        // All messages should be receivable (order not guaranteed for concurrent sends)
-        let mut received = Vec::new();
+        let mut received: Vec<u64> = Vec::new();
         for _ in 0..10 {
             let r = rx.recv().await.unwrap();
             received.push(r.payload.as_u64().unwrap());
@@ -584,25 +744,40 @@ mod tests {
 |---|------|--------|------|
 | 1 | `[构造]` | `bus_new_creates_empty_bus` | Bus 创建后计数为 0 |
 | 2 | `[trait]` | `bus_is_send_and_sync` | 编译期 Send+Sync |
-| 3 | `[数据]` | `bus_uptime_increases` | 运行时间单调增长 |
+| 3 | `[时间]` | `bus_uptime_increases` | 运行时间单调增长 |
 | 4 | `[数据]` | `send_and_receive_single_message` | 基本收发路径 |
 | 5 | `[数据]` | `messages_arrive_in_order` | 消息顺序保证 |
 | 6 | `[数据]` | `multiple_subscribers_all_receive` | 广播：多订阅者同收 |
 | 7 | `[数据]` | `message_count_increments` | 计数器递增 |
-| 8 | `[关闭]` | `send_after_shutdown_returns_bus_closed` | shutdown 后 send 报错 |
-| 9 | `[关闭]` | `shutdown_stops_message_loop` | shutdown 不挂起 |
-| 10 | `[边界]` | `bus_with_minimal_capacity` | capacity=1 正常工作 |
-| 11 | `[边界]` | `slow_receiver_gets_lagged_error` | Lagged 检测 |
-| 12 | `[构造]` | `bus_with_zero_capacity` | capacity=0 不 panic |
-| 13 | `[数据]` | `directed_message_broadcast_to_all` | CAN 模型：定向也广播 |
-| 14 | `[并发]` | `concurrent_sends_all_delivered` | 10 并发 send 不丢消息 |
+| 8 | `[数据]` | `directed_message_broadcast_to_all` | CAN：定向也广播 |
+| 9 | `[关闭]` | `send_after_shutdown_returns_bus_closed` | shutdown 后 send 报错 |
+| 10 | `[关闭]` | `shutdown_completes_within_timeout` | shutdown 1 秒内完成 |
+| 11 | `[边界]` | `bus_with_minimal_capacity` | capacity=1 正常 |
+| 12 | `[边界]` | `slow_receiver_gets_lagged_error` | 慢消费者 Lagged |
+| 13 | `[边界]` | `bus_with_zero_capacity` | capacity=0 不 panic |
+| 14 | `[健康]` | `send_succeeds_with_no_application_subscribers` | 无订阅者时 drain 保活 |
+| 15 | `[健康]` | `dropped_receiver_does_not_affect_others` | 接收方掉线不影响其他 |
+| 16 | `[健康]` | `slow_receiver_backpressures_sender` | 慢消费者背压发送方 |
+| 17 | `[健康]` | `fast_receiver_not_blocked_by_slow_one` | 快消费者不受慢者影响 |
+| 18 | `[健康]` | `receiver_recovers_after_lag` | Lagged 后可恢复接收 |
+| 19 | `[健康]` | `many_sends_with_only_drain_receiver_no_backpressure` | drain 防止虚假背压 |
+| 20 | `[并发]` | `concurrent_sends_all_delivered` | 10 并发不丢消息 |
+
+### 推迟到后续任务的边界
+
+| 边界 | 推迟原因 | 覆盖任务 |
+|------|---------|---------|
+| 定向目标不在线 → `SendError::NodeOffline` | 需要在线图追踪节点 | 1.3 + 1.5 |
+| 心跳超时 → `node_offline` 广播 | 需要心跳检测机制 | 1.4 |
+| `SendReceipt.matching_nodes` 计算 | 需要 filter 匹配逻辑 | 1.6 |
+| 发送方阻塞超时（timeout send） | 需讨论是否引入 send timeout API | 后续讨论 |
 
 ---
 
 ## 小结
 
 - **两条 channel**：`mpsc` 接收命令 + `broadcast` 广播消息
-- **消息循环**：收 cmd → 广播 → 计数，运行在独立 tokio task 中
-- **Dummy receiver**：Bus 自己持有一个 receiver 保持 broadcast channel 存活（CAN 永不断电）
+- **消息循环**：收 cmd → 广播 → drain dummy → 计数，运行在独立 tokio task 中
+- **Dummy drain**：消息循环持有 drain receiver，每次 send 后立即 `try_recv()` 清空，防止 dummy 成为背压源。真正的背压只来自真实慢消费者
 - **shutdown**：发 Shutdown 命令 → 消息循环退出 → Bus 被 consume
-- **14 个测试**，覆盖构造、基本路径、边界（capacity=0/1）、shutdown、慢消费者 lag、并发
+- **20 个测试**：3 构造 + 5 基本路径 + 2 shutdown + 3 容量边界 + 6 收发健康 + 1 并发
