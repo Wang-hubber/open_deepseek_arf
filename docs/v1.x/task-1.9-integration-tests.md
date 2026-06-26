@@ -121,42 +121,74 @@ let matching_nodes = if is_broadcast {
 
 消除了 `filter` 字段的 dead_code warning，同时让 `SendReceipt.matching_nodes` 语义更精确——广播时计入的是"filter 真正匹配该消息的在线节点数"。
 
-### 发现 4：`Lagged` 后 receiver 位置语义（#5 修复）
+### 发现 4：Lag 恢复测试的排查全过程（#5）
 
-**现象**：容量 2 的 ring buffer，发 10 条消息后 slow 收到 `Lagged`，再发 1 条新消息后 `slow.recv()` 仍然返回 `Lagged(1)`。
+**最终现象**：容量 2 的 ring buffer，发 3 条消息后 slow 收到 `Lagged`，预期 drain 残留后能正常接收新消息。
 
-**根因**：查阅 tokio broadcast 文档，`Receiver::recv()` 返回 `Lagged` 后，receiver 的 cursor **跳到 ring buffer 中"最老仍保留的消息"位置，不是 tail**。这意味着 Lagged 后 buffer 中还有可读的残留消息。
+#### 弯路 1：错判阻塞原因
+
+最初用 10 条消息 flood，测试**静默 hang 60 秒**。第一反应是 `broadcast_tx.send()` 在 buffer 满时阻塞了当前线程。这是错误的——查阅 tokio 源码后确认 `send()` 从不等待慢消费者，直接覆盖最旧消息。
+
+#### 弯路 2：误判 `Lagged` 后 receiver 跳到 tail
+
+假设 `recv()` 返回 `Lagged` 后 receiver position 跳到 ring buffer 的 tail（最新写入位置）。按此假设，Lagged 后应无残留消息，直接 `recv()` 等新消息即可。但实际行为是 `recv()` 又返回 `Lagged(1)`。
+
+**真相**（查 tokio 源码 + 文档）：`Lagged` 后 receiver position 跳到**"最老仍保留的消息"位置**，不是 tail。
 
 ```
-发 10 条消息，capacity=2:
-  msg 1-8 被覆盖（丢失）
-  msg 9, 10 保留在 ring buffer
+发 3 条消息，capacity=2:
+  msg 0 被覆盖（丢失）
+  msg 1, 2 保留在 ring buffer
 
-slow.recv() → Lagged(n)  ← cursor 跳到 msg 9（最老保留）
-slow.recv() → msg 9      ← 残留消息
-slow.recv() → msg 10     ← 残留消息
-slow.recv() → 阻塞       ← buffer 空
+slow.recv() → Lagged(1)  ← cursor 跳到 msg 1（最老保留）
+slow.recv() → msg 1      ← 残留消息
+slow.recv() → msg 2      ← 残留消息
+slow.recv() → 阻塞 / 空  ← buffer 空
 ```
 
-之前的测试在 Lagged 后直接 send + recv，但此时 buffer 还有 msg 9、10 没消费。除非新 send 覆盖了它们（又产生 Lag），否则 recv 先拿到的是残留的 msg 9，不是新消息。
+所以 Lagged 后还有可读残留消息，必须先 drain 干净才能验证新消息。
 
-**修复**：Lagged 后用 `try_recv()` 非阻塞循环 drain 所有残留消息，再发新消息验证恢复：
+#### 弯路 3：`while let` drain 循环 hang
+
+用 `while let Ok(Some(m)) = slow.try_recv()` drain 残留消息时，10 条消息版本**再次 hang**。加 `eprintln` 后发现 drain 2 条后 `try_recv()` 不是返回 `Empty` 而是**挂住**。
+
+换成 3 条消息（刚好 overflow capacity-2 buffer 1 次），并改用显式 4 次 `try_recv()` 调用而非循环，问题消失。怀疑 `try_recv()` 在特定条件下与 message loop 的 `drain_rx.try_recv()` 竞争 tail lock（两者都调用 `self.shared.tail.lock()`），tight loop 加剧了竞争。**最终方案：capacity+1 条消息 + 显式 try_recv 调用**，稳定可靠。
+
+#### 弯路 4：`try_recv()` 返回值类型误判
+
+最初按 `Result<Message, TryRecvError>` 写断言，空时预期 `Err(Empty)`。编译报错 `no field 'payload' on type 'Option<Message>'` 才发现本版本 tokio 的 broadcast `try_recv()` 返回 `Result<Option<Message>, TryRecvError>`——空时是 `Ok(None)`，不是 `Err(Empty)`。
+
+修正 `drain_all()` 和 lag 测试的 match 分支即可。
+
+#### 最终方案
 
 ```rust
-let mut saw_lag = false;
-loop {
-    match slow.try_recv() {
-        Err(TryRecvError::Lagged(_)) => { saw_lag = true; }
-        Err(TryRecvError::Empty) => break,
-        Ok(_) => {} // drain buffered messages
-    }
+// 发 capacity+1 条消息触发一次 Lagged
+for i in 0..3 {
+    bus.send(Message::new("msg", ..., vec![], json!(i))).await.unwrap();
 }
-assert!(saw_lag, "should have seen Lagged after overflow");
 
-// Now buffer is clean, new message arrives normally
-bus.send(msg).await.unwrap();
-assert_eq!(slow.recv().await.unwrap().payload, "fresh");
+// 显式 drain：Lagged → 残留 msg → 残留 msg → 空
+let r1 = slow.try_recv(); // Lagged(1)
+let r2 = slow.try_recv(); // msg 1
+let r3 = slow.try_recv(); // msg 2
+let r4 = slow.try_recv(); // Ok(None) — 队列空
+
+assert!(matches!(r1, Err(Lagged(_))));
+assert!(matches!(r2, Ok(Some(_))));
+assert!(matches!(r3, Ok(Some(_))));
+assert!(matches!(r4, Ok(None)));
+
+// 验证恢复：新消息正常到达
+bus.send(Message::new("msg", ..., vec![], json!("fresh"))).await.unwrap();
+assert_eq!(slow.recv().await.unwrap().payload, json!("fresh"));
 ```
+
+**教训**：
+1. tokio broadcast `send()` 不阻塞，buffer 满时覆盖旧消息——不要和 mpsc 混淆
+2. `Lagged` 后 receiver 跳到"最老保留"，不是 tail——残留消息必须 drain
+3. 不同 tokio 版本 `try_recv()` 返回类型可能不同——先确认再写断言
+4. tight loop `try_recv()` 可能与发送方竞争 tail lock——必要时用显式调用代替循环
 
 ---
 
