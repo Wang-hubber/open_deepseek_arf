@@ -8,92 +8,178 @@
 
 集成测试验证多组件协作场景——多个 NodeHandle + Bus + 心跳 + 过滤在真实 tokio runtime 下的行为。放在 `crates/arf-bus/tests/integration.rs`（独立于 `src/` 的集成测试目录）。
 
+---
+
 ## 测试场景
 
 ### 基础多节点 (6 tests)
 
-| # | 场景 | 描述 |
-|---|------|------|
-| 1 | 上线/下线广播 | 3 节点互相看到 node_online/node_offline |
-| 2 | 定向消息过滤 | DirectedToMe 只收定向到己，BroadcastOnly 只收广播 |
-| 3 | 心跳超时 | 僵尸节点停止消费 → 超时 → node_offline 被其他节点看到 |
-| 4 | Trace 全量消费 | ToMatch::All + types=None → 看到所有消息 |
-| 5 | Lag 恢复 | 慢消费者 Lagged → 继续正常接收 |
-| 6 | 并发 connect/disconnect/send | 不丢消息不 panic |
+| # | 场景 | 描述 | 状态 |
+|---|------|------|------|
+| 1 | 上线/下线广播 | 3 节点互相看到 node_online/node_offline | ✅ |
+| 2 | 定向消息过滤 | DirectedToMe 只收定向到己，BroadcastOnly 只收广播 | ✅ |
+| 3 | 心跳超时 | 僵尸节点停止消费 → 超时 → node_offline 被其他节点看到 | ✅ |
+| 4 | Trace 全量消费 | ToMatch::All + types=None → 看到所有消息 | ✅ |
+| 5 | Lag 恢复 | 慢消费者 Lagged → 继续正常接收 | ❌ 待分析 |
+| 6 | 并发 connect/disconnect/send | 不丢消息不 panic | ✅ |
 
 ### Corner case (6 tests)
 
-| # | 场景 | 为什么是 corner | 描述 |
-|---|------|----------------|------|
-| 7 | **Late joiner + graph()** | 新节点 subscribe 晚于已有节点的 node_online，看不到历史 | 新节点通过 `graph()` 获取当前在线节点列表，补偿消息流的"不可见窗口" |
-| 8 | **多 filter 不同子集** | 同一批消息经过不同 filter，各节点收到不同子集 | 3 节点：All+全type、DirectedToMe+action、BroadcastOnly+action → 发广播 action + 定向 action + 广播 noise → 验证各自收到正确的子集 |
-| 9 | **心跳超时 + 同 NodeId 重连** | 僵尸超时下线后同 ID 重新连接，其他节点看到完整周期 | node_offline(zombie) → node_online(zombie) 顺序正确，新 handle 正常收发 |
-| 10 | **disconnect 时消息还在广播缓冲里** | send 和 disconnect 在消息循环中串行，但消息广播到所有 rx | 节点 A send 消息后立即 disconnect，节点 B 仍能收到该消息（消息先广播） |
-| 11 | **快速 connect/disconnect 循环** | 资源泄漏风险 | 同一 NodeId connect → disconnect × 10 次，graph 始终正确，无残留 |
-| 12 | **shutdown 时还有在线节点** | 优雅关闭 | Bus shutdown → 所有 NodeHandle.recv() 返回 Closed，graph 仍可读 |
+| # | 场景 | 为什么是 corner | 描述 | 状态 |
+|---|------|----------------|------|------|
+| 7 | Late joiner + graph() | 新节点 subscribe 晚于已有节点的 node_online，看不到历史 | 新节点通过 `graph()` 获取当前在线节点列表 | ✅ |
+| 8 | 多 filter 不同子集 | 同一批消息经过不同 filter，各节点收到不同子集 | 3 节点，4 条消息，trace 全收/worker 1/ watcher 1 | ✅ |
+| 9 | 心跳超时 + 同 NodeId 重连 | 僵尸超时下线后同 ID 重新连接 | node_offline → node_online 完整周期 | ✅ |
+| 10 | disconnect 时消息还在缓冲 | send 和 disconnect 消息循环串行 | 消息先于 node_offline 到达 | ✅ |
+| 11 | 快速 connect/disconnect 循环 | 资源泄漏风险 | ×10 次，graph 始终正确 | ✅ |
+| 12 | shutdown 时还有在线节点 | 优雅关闭 | recv 返回 Closed，send 返回 BusClosed | ✅ |
+
+**当前：11/12 通过，1 个待分析（#5 Lag 恢复）。**
 
 ---
 
-## 代码结构
+## 实现中发现的问题与修复
+
+### 发现 1：`node_online` 可见性规则
+
+**现象**：测试中断言 `a.recv()` 返回 `node_offline`，却收到了 `node_online`。
+
+**根因**：`Bus::connect()` 在 `handle_connect` 返回后才创建 `broadcast_rx`。所以节点永远看不到自己的 `node_online`，但可以看到后续连接节点的 `node_online`。未消费的 `node_online` 会阻塞在 recv 队列里。
+
+具体时序：
+
+```
+A 连接: handle_connect 注册 A → broadcast A 的 node_online → A.rx 创建（在广播之后）
+B 连接: handle_connect 注册 B → broadcast B 的 node_online → A.rx 收到（A.rx 已存在）
+C 连接: handle_connect 注册 C → broadcast C 的 node_online → A.rx 收到，B.rx 收到
+```
+
+- A.rx 可见：B 的 node_online, C 的 node_online（2 条）
+- B.rx 可见：C 的 node_online（1 条）
+- C.rx 可见：无（rx 创建在所有 node_online 之后）
+
+**修复**：每个测试在发送应用消息前，先用 `drain_all()` 清空各节点的 `node_online` 残留。`drain_all()` 是 try_recv 循环——不阻塞，安全。
+
+### 发现 2：lifecycle 消息不 drain dummy receiver
+
+**现象**：无直接测试失败，但潜在 bug：长时间运行后 ring buffer 被生命周期消息（node_online、node_offline、heartbeat_request）填满，导致 `broadcast_tx.send()` 阻塞。
+
+**根因**：消息循环中只有 `BusCommand::Send` 分支在广播后调用了 `while drain_rx.try_recv().is_ok() {}`。`Connect`、`Disconnect`、`heartbeat_tick` 三个分支都通过 `broadcast_tx.send()` 广播了消息，但**没有 drain**。
+
+```
+Send 分支:        broadcast → drain ✅
+Connect 分支:     broadcast → ❌ 没有 drain
+Disconnect 分支:  broadcast → ❌ 没有 drain
+heartbeat_tick:   broadcast → ❌ 没有 drain
+```
+
+每次 lifecycle 事件，drain_rx 累积 1 条未读消息。`capacity` 次之后 ring buffer 满，所有 send 阻塞。
+
+**修复**：在三个 lifecycle 分支的 `select!` arm 中广播后添加 `while drain_rx.try_recv().is_ok() {}`：
 
 ```rust
-// crates/arf-bus/tests/integration.rs
-
-use arf_bus::Bus;
-use arf_core::{MessageFilter, NodeId, NodeInfo, ToMatch, SendError};
-use std::sync::Arc;
-use std::time::Duration;
-
-fn node(id: &str, node_type: &str) -> NodeInfo { ... }
-fn all_filter() -> MessageFilter { ... }
-fn directed_filter() -> MessageFilter { ... }
-fn broadcast_filter() -> MessageFilter { ... }
-fn action_only_filter() -> MessageFilter { ... }     // types=["action"], All
-fn action_directed_filter() -> MessageFilter { ... }  // types=["action"], DirectedToMe
-fn empty_filter() -> MessageFilter { ... }            // types=[], All
+// lib.rs 消息循环
+Some(BusCommand::Connect { .. }) => {
+    let result = handle_connect(&broadcast_tx, &nodes, info, filter);
+    while drain_rx.try_recv().is_ok() {}  // ← 新增
+    let _ = respond_to.send(result);
+}
+Some(BusCommand::Disconnect { .. }) => {
+    handle_disconnect(&broadcast_tx, &nodes, &node_id);
+    while drain_rx.try_recv().is_ok() {}  // ← 新增
+    let _ = respond_to.send(());
+}
+// ...
+_ = heartbeat_timer.tick() => {
+    heartbeat::handle_heartbeat_tick(&broadcast_tx, &nodes, heartbeat_timeout);
+    while drain_rx.try_recv().is_ok() {}  // ← 新增
+}
 ```
 
-### 测试 8 详细：多 filter 不同子集
+### 发现 3：`NodeEntry.filter` 存储但从未使用
 
-```
-节点:
-  trace:   All + types=None        → 应收到全部 4 条
-  worker:  DirectedToMe + action   → 只收定向 action 1 条
-  watcher: BroadcastOnly + action  → 只收广播 action 1 条
+**现象**：编译 warning `field `filter` is never read`。
 
-发送:
-  1. sender.send("action", [])         → trace:✅  watcher:✅  worker:❌
-  2. sender.send("action", [worker])   → trace:✅  watcher:❌  worker:✅
-  3. sender.send("noise", [])          → trace:✅  watcher:❌  worker:❌
-  4. sender.send("action", [watcher])  → trace:✅  watcher:❌  worker:❌
-                                        (定向到 watcher 但 watcher 只要广播)
-```
+**根因**：`handle_connect` 把 `MessageFilter` 存入 `NodeEntry.filter`，但消息循环在计算 `matching_nodes` 时直接用了 `online_nodes`（广播）或 `online_targets`（定向），从未查询 `NodeEntry.filter`。
 
-### 测试 9 详细：心跳超时 + 重连
+**修复**：`matching_nodes` 计算改为遍历 nodes map，用每个 entry 的 `filter.matches()` 精确计数：
 
-```
-1. zombie 连接，正常节点 observer 连接
-2. observer drain zombie 的 node_online
-3. zombie 停止 recv → 超时 → observer 收到 zombie 的 node_offline
-4. zombie2 用同 NodeId 重连 → observer 收到 zombie 的 node_online
-5. zombie2 正常收发
+```rust
+// Before
+let matching_nodes = if is_broadcast { online_nodes } else { online_targets };
+
+// After
+let matching_nodes = if is_broadcast {
+    let map = nodes.read().unwrap();
+    map.values()
+        .filter(|entry| entry.filter.matches(&msg, &entry.info.node_id))
+        .count()
+} else {
+    online_targets
+};
 ```
 
-### 测试 10 详细：disconnect 时消息还在缓冲区
+消除了 `filter` 字段的 dead_code warning，同时让 `SendReceipt.matching_nodes` 语义更精确——广播时计入的是"filter 真正匹配该消息的在线节点数"。
 
-```
-1. A, B 连接
-2. A send 消息 → 消息进入 broadcast ring buffer
-3. A disconnect → 消息循环先处理 send（广播），再处理 disconnect（node_offline）
-4. B 仍然收到 A 的消息（先于 node_offline）
+### 发现 4：Lag 恢复测试不通过（#5，待分析）
+
+**现象**：容量 2 的 ring buffer，发 10 条消息后 slow 收到 `Lagged`，再发 1 条新消息后 `slow.recv()` 仍然返回 `Lagged(1)`。
+
+**已尝试的修复**：
+1. 改用 `Bus::send()` 代替 NodeHandle（避免 sender 的 rx 干扰）→ 仍然失败
+2. 用 `try_recv()` 循环 drain 所有 Lagged + 缓冲消息 → 待验证
+3. lifecycle drain 修复（发现 2）→ 仍然失败
+
+**可能原因**：`broadcast::Receiver::recv()` 返回 `Lagged` 后，receiver 的 position 更新行为依赖 tokio 内部实现。可能不是跳到 tail，而是跳到 ring buffer 中最老的可读位置。如果慢消费者在 Lagged 后仍落后超过 capacity，后续 `recv()` 仍然返回 `Lagged`。
+
+当前 lag 测试代码使用 `try_recv()` 循环 drain：
+
+```rust
+loop {
+    match slow.try_recv() {
+        Err(TryRecvError::Lagged(_)) => { saw_lag = true; /* continue */ }
+        Err(TryRecvError::Empty) => break,
+        Ok(_) => {} // drain
+    }
+}
 ```
 
-消息循环串行保证：cmd 队列中 send 在 disconnect 前面 → 先广播消息，再执行 disconnect。
+然后发新消息验证能正常接收。
+
+---
+
+## 辅助工具
+
+### `drain_all()`
+
+```rust
+fn drain_all(handle: &mut NodeHandle) -> Vec<(String, String)> {
+    let mut msgs = Vec::new();
+    while let Ok(Some(m)) = handle.try_recv() {
+        msgs.push((m.msg_type, m.from.0));
+    }
+    msgs
+}
+```
+
+非阻塞清空所有可读消息。用于在测试断言前消除 `node_online`、`node_offline`、`heartbeat_request` 等生命周期消息的干扰。
+
+---
+
+## 相关代码变更（超出集成测试本身的修复）
+
+| 文件 | 变更 | 关联发现 |
+|------|------|---------|
+| `crates/arf-bus/src/lib.rs` | Connect/Disconnect/heartbeat_tick 后 drain dummy | 发现 2 |
+| `crates/arf-bus/src/lib.rs` | `matching_nodes` 用 `NodeEntry.filter` 精确计数 | 发现 3 |
+| `crates/arf-bus/tests/integration.rs` | 12 个集成测试 + `drain_all()` helper | 全部 |
+| `crates/arf-bus/Cargo.toml` | 新增 `[dev-dependencies] tokio` | 集成测试需要 |
 
 ---
 
 ## 小结
 
-- **12 个集成测试**：6 基础 + 6 corner
-- 覆盖时序、过滤、生命周期、资源四个维度的边界
-- 不与单元测试重复（单元测单组件，集成测多组件协作）
+- **12 个集成测试场景**：6 基础 + 6 corner
+- **11/12 通过**，1 个 Lag 恢复测试待分析（#5）
+- **3 个 bug 修复**源于集成测试发现，修改在 lib.rs 中
+- `drain_all()` 是集成测试核心 pattern——先 drain 生命周期消息，再断言应用消息

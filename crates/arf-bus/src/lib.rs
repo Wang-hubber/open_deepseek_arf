@@ -245,16 +245,22 @@ async fn run_message_loop(
 
                         let msg_id = msg.id;
                         let is_broadcast = msg.to.is_empty();
+
+                        // Count matching nodes using each entry's filter
+                        let matching_nodes = if is_broadcast {
+                            let map = nodes.read().unwrap();
+                            map.values()
+                                .filter(|entry| entry.filter.matches(&msg, &entry.info.node_id))
+                                .count()
+                        } else {
+                            online_targets
+                        };
+
+                        let online_nodes = nodes.read().unwrap().len();
                         let _ = broadcast_tx.send(msg);
                         message_count.fetch_add(1, Ordering::Relaxed);
                         while drain_rx.try_recv().is_ok() {}
 
-                        let online_nodes = nodes.read().unwrap().len();
-                        let matching_nodes = if is_broadcast {
-                            online_nodes
-                        } else {
-                            online_targets
-                        };
                         let receipt = SendReceipt {
                             message_id: msg_id,
                             online_nodes,
@@ -268,6 +274,7 @@ async fn run_message_loop(
                         respond_to,
                     }) => {
                         let result = handle_connect(&broadcast_tx, &nodes, info, filter);
+                        while drain_rx.try_recv().is_ok() {}
                         let _ = respond_to.send(result);
                     }
                     Some(BusCommand::Disconnect {
@@ -275,6 +282,7 @@ async fn run_message_loop(
                         respond_to,
                     }) => {
                         handle_disconnect(&broadcast_tx, &nodes, &node_id);
+                        while drain_rx.try_recv().is_ok() {}
                         let _ = respond_to.send(());
                     }
                     Some(BusCommand::HeartbeatAck { node_id }) => {
@@ -293,6 +301,7 @@ async fn run_message_loop(
             }
             _ = heartbeat_timer.tick() => {
                 heartbeat::handle_heartbeat_tick(&broadcast_tx, &nodes, heartbeat_timeout);
+                while drain_rx.try_recv().is_ok() {}
             }
         }
     }
