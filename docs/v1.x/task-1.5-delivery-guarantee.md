@@ -2,63 +2,148 @@
 
 > Phase 1 — Bus 消息总线第五项任务
 > 父文档：`docs/v1.x/phase1-bus-design.md`
-> 前置：任务 1.3 节点连接与断连（nodes map 已就绪）
+> 前置：任务 1.4 心跳检测
 
 ## 设计思路
 
-任务 1.5 实现 `send()` 的投递保证——定向消息目标不在线时拒绝发送（而非默默广播），以及 `SendReceipt.matching_nodes` 的精确计算。
+任务 1.5 实现 `send()` 的投递保证，分两部分：
 
-**两个变更**：
+**A. 核心类型变更**：`Message.to` 从单目标升级为多目标
 
-| 变更 | 位置 | 说明 |
-|------|------|------|
-| 定向消息目标验证 | 消息循环 `BusCommand::Send` | `to=Some(target)` 时检查 target 是否在 nodes map，不在则返回 `SendError::NodeOffline` |
-| `matching_nodes` 区分广播/定向 | 同上 | 广播 = online_nodes；定向 = 1（仅目标可能匹配） |
+| 字段 | Before | After | 语义 |
+|------|--------|-------|------|
+| `Message.to` | `Option<NodeId>` | `Vec<NodeId>` | 空 = 广播；非空 = 定向目标列表 |
+| `Message::is_broadcast()` | `self.to.is_none()` | `self.to.is_empty()` | |
+| `Message::is_for()` | `to == node_id` | `to.contains(node_id)` | |
+| `NodeHandle::send(to)` | `Option<NodeId>` | `Vec<NodeId>` | |
+| `Message::new(to)` | `Option<NodeId>` | `Vec<NodeId>` | |
+| `SendError::NodeOffline` | `(NodeId)` | `(Vec<NodeId>)` | 报告全部不在线目标 |
 
-**为什么定向目标不在线要拒绝？**
-
-CAN 模型下所有消息都在同一根"线"上广播，但定向消息的 `to` 字段表达了投递意图。如果目标不在线，广播出去白占带宽且无人处理。拒绝 + 返回 error 让发送方尽早知道投递失败，是防御性编程。
-
-**对比当前行为**：
+**B. 投递保证规则**：全部不在线才拒绝
 
 ```
-Before (1.3/1.4):
-  send(action, to=mcp/filesystem) → 无论 mcp/filesystem 是否在线，一律 broadcast
-  
-After (1.5):
-  send(action, to=mcp/filesystem) → 在线 → broadcast → SendReceipt { online_nodes: N, matching_nodes: 1 }
-                                   → 不在线 → Err(SendError::NodeOffline(mcp/filesystem))
+send(action, to=[mcp/fs, mcp/web]) → 至少一个在线 → broadcast → SendReceipt
+                                    → 全都不在线 → Err(SendError::NodeOffline([mcp/fs, mcp/web]))
 ```
+
+**为什么是多目标？**
+
+一个 ReAct step 可能涉及多个工具节点（如同时读文件 + 搜索），发送方需要指定多个目标接收者。单 `NodeId` 无法表达此意图。
+
+**为什么全部不在线才拒绝？**
+
+部分在线意味着消息有消费方，广播仍有意义。只有全部离线时广播才是纯浪费，应拒绝并让发送方尽早感知。
+
+**Trace 不在 `to` 里**：
+
+Trace 节点通过 `subscribe()` 监听全量广播——它在 CAN 总线上静默记录所有流量。Trace **不是** `to` 的目标，**不参与**在线性检查。否则只要有 Trace 在线，`NodeOffline` 永远不会触发，投递保证形同虚设。
 
 ---
 
 ## 代码实现
 
-### `crates/arf-bus/src/lib.rs` — 消息循环 Send 分支
+### 步骤 1：`crates/arf-core/src/lib.rs` — 类型变更
 
-在 `BusCommand::Send` 处理中，广播前增加目标在线性检查：
+#### `Message` 结构体
+
+```rust
+pub struct Message {
+    pub id: Uuid,
+    pub msg_type: String,
+    pub from: NodeId,
+    /// Receiver targets. Empty = broadcast to all.
+    pub to: Vec<NodeId>,
+    pub payload: serde_json::Value,
+    pub timestamp: u64,
+}
+```
+
+#### `Message::new()` 签名
+
+```rust
+pub fn new(
+    msg_type: impl Into<String>,
+    from: NodeId,
+    to: Vec<NodeId>,            // was Option<NodeId>
+    payload: serde_json::Value,
+) -> Self
+```
+
+#### `Message::is_broadcast()`
+
+```rust
+pub fn is_broadcast(&self) -> bool {
+    self.to.is_empty()          // was self.to.is_none()
+}
+```
+
+#### `Message::is_for()`
+
+```rust
+pub fn is_for(&self, node_id: &NodeId) -> bool {
+    self.to.contains(node_id)   // was self.to == Some(node_id)
+}
+```
+
+#### `SendError::NodeOffline`
+
+```rust
+pub enum SendError {
+    NodeOffline(Vec<NodeId>),   // was NodeOffline(NodeId)
+    BusFull,
+    BusClosed,
+}
+```
+
+#### `SendError::Display` 更新
+
+```rust
+Self::NodeOffline(ids) => {
+    let names: Vec<_> = ids.iter().map(|id| id.as_str()).collect();
+    write!(f, "target nodes offline: {}", names.join(", "))
+}
+```
+
+---
+
+### 步骤 2：`crates/arf-bus/src/lib.rs` — 投递检查
+
+消息循环 `BusCommand::Send` 分支：广播前检查定向目标是否全离线。
 
 ```rust
 Some(BusCommand::Send { msg, respond_to }) => {
-    // Validate target for directed messages
-    if let Some(ref target) = msg.to {
+    // Validate targets for directed messages
+    if !msg.to.is_empty() {
         let map = nodes.read().unwrap();
-        if !map.contains_key(target) {
-            let _ = respond_to.send(Err(SendError::NodeOffline(target.clone())));
-            continue; // skip to next loop iteration
+        let all_offline: Vec<NodeId> = msg.to.iter()
+            .filter(|target| !map.contains_key(target))
+            .cloned()
+            .collect();
+        if all_offline.len() == msg.to.len() {
+            // ALL targets offline — reject
+            let _ = respond_to.send(Err(SendError::NodeOffline(all_offline)));
+            continue;
         }
     }
 
     let msg_id = msg.id;
+    let is_broadcast = msg.to.is_empty();
     let _ = broadcast_tx.send(msg);
     message_count.fetch_add(1, Ordering::Relaxed);
     while drain_rx.try_recv().is_ok() {}
 
     let online_nodes = nodes.read().unwrap().len();
-    let matching_nodes = if msg.to.is_none() {
-        online_nodes  // broadcast: all online nodes could match
+    let matching_nodes = if is_broadcast {
+        online_nodes
     } else {
-        1             // directed: only the target is expected to match
+        // Count online targets (already verified at least one is online)
+        // We reuse the check: all targets that passed the offline check
+        // are online, so matching_nodes = to.len() - offline count
+        // But since we only reject when ALL offline, and we're here,
+        // at least one is online. For simplicity, matching_nodes stays
+        // as count of online targets.
+        let map = nodes.read().unwrap();
+        msg.to.iter().filter(|t| map.contains_key(t)).count()
     };
     let receipt = SendReceipt {
         message_id: msg_id,
@@ -69,80 +154,90 @@ Some(BusCommand::Send { msg, respond_to }) => {
 }
 ```
 
-逐行：
-- `if let Some(ref target) = msg.to` — 仅在定向消息时检查。`ref` 避免 move `msg.to`
-- `map.contains_key(target)` — O(1) 查找。`nodes.read()` 获取读锁，与并发 send/broadcast 共享
-- `continue` — 跳过广播，直接返回下一循环迭代。`respond_to` 已被消费（send error）
-- `matching_nodes` — 广播时仍为 `online_nodes`（1.6 实现 filter 匹配后精确到真正匹配 filter 的节点数）
+**注意**：`matching_nodes` 计算需要对 `to` 二次遍历（第一次在检查中）。但 `to` 通常只有 1-3 个目标，性能影响可忽略。如果担心，可以在第一次检查时记录 `online_count`。
 
-**注意**：检查发生在读锁作用域内。如果 target 存在，读锁在 `if` 块结束时释放，广播阶段不持锁。
+实际上 `msg.to` 在第一次检查后还在（我们只是 `iter()` borrow），第二次检查时 `msg.to` 还没被 move。但 `msg.to` 在 `broadcast_tx.send(msg)` 中被 move。需要把 `to` 的信息在 move 前提取出来。
 
-**注意**：后续消息循环中 `msg.to` 被 move 进 `broadcast_tx.send(msg)`。在检查阶段 `msg.to` 仅被 borrow，不 move。
+**简化方案**：在检查阶段同时计数在线目标数。
+
+```rust
+if !msg.to.is_empty() {
+    let map = nodes.read().unwrap();
+    let offline: Vec<NodeId> = msg.to.iter()
+        .filter(|t| !map.contains_key(t))
+        .cloned()
+        .collect();
+    if offline.len() == msg.to.len() {
+        let _ = respond_to.send(Err(SendError::NodeOffline(offline)));
+        continue;
+    }
+    // At least one target is online
+    directed_targets_online = msg.to.len() - offline.len();
+}
+```
+
+然后在 receipt 构造处用 `directed_targets_online`。
+
+---
+
+### 步骤 3：`crates/arf-bus/src/connection.rs` — NodeHandle::send() 签名
+
+```rust
+pub async fn send(
+    &self,
+    msg_type: &str,
+    to: Vec<NodeId>,              // was Option<NodeId>
+    payload: serde_json::Value,
+) -> Result<SendReceipt, SendError>
+```
+
+---
+
+### 步骤 4：所有内部消息构造处
+
+`handle_connect`、`handle_disconnect`、`handle_heartbeat_tick` 中的 `Message::new(..., None, ...)` → `Message::new(..., vec![], ...)`。
 
 ---
 
 ## 单元测试
 
-### `crates/arf-bus/src/lib.rs` tests 新增
+### arf-core 测试变更
+
+`Message` 相关测试 `to` 字段变更：
+
+| 原测试 | 变更 |
+|--------|------|
+| `message_is_broadcast_when_to_is_none` | → `message_is_broadcast_when_to_is_empty`：`to: vec![]` |
+| `message_is_not_broadcast_when_to_is_some` | → `message_is_not_broadcast_when_to_is_nonempty`：`to: vec![NodeId::new("b")]` |
+| `message_is_for_target` | `to: vec![target.clone()]`，`is_for(&target)` = true |
+| `message_is_for_wrong_target` | `to: vec![NodeId::new("target")]`，`is_for(&other)` = false |
+| `message_broadcast_is_not_for_anyone` | `to: vec![]`，`is_for(&any)` = false |
+| `message_directed_to_self` | `to: vec![self_id.clone()]` |
+| 序列化往返测试 | `"to": ["receiver"]` JSON 数组 |
+| `send_error_node_offline` | 改为 `NodeOffline(vec![NodeId::new("a")])` |
+
+### arf-bus 新增测试
 
 ```rust
-// ═══════════════════════════════════════════════════════════════
-// Send — 定向消息投递保证 (3 tests)
-// ═══════════════════════════════════════════════════════════════
-
-// [投递] 定向发送给在线节点 → 成功，matching_nodes=1
+// [投递] 定向多个目标全部在线 → 成功
 #[tokio::test]
-async fn directed_send_to_online_node_succeeds() {
-    let bus = test_bus();
-    let sender = bus.connect(test_node_info("s"), test_filter()).await.unwrap();
-    let _target = bus.connect(test_node_info("t"), test_filter()).await.unwrap();
+async fn directed_send_multi_target_all_online_succeeds() { }
 
-    let receipt = sender
-        .send("action", Some(NodeId::new("t")), serde_json::json!("hi"))
-        .await
-        .unwrap();
-    assert_eq!(receipt.online_nodes, 2);  // sender + target
-    assert_eq!(receipt.matching_nodes, 1); // directed: only target
-
-    sender.disconnect().await;
-    _target.disconnect().await;
-    bus.shutdown().await;
-}
-
-// [投递] 定向发送给不在线节点 → SendError::NodeOffline
+// [投递] 定向多个目标全部不在线 → NodeOffline([a, b])
 #[tokio::test]
-async fn directed_send_to_offline_node_fails() {
-    let bus = test_bus();
-    let sender = bus.connect(test_node_info("s"), test_filter()).await.unwrap();
-    // No target connected — "t" is offline
+async fn directed_send_all_targets_offline_fails() { }
 
-    let result = sender
-        .send("action", Some(NodeId::new("t")), serde_json::json!("hi"))
-        .await;
-    assert!(matches!(result, Err(SendError::NodeOffline(ref id)) if id.as_str() == "t"));
-
-    sender.disconnect().await;
-    bus.shutdown().await;
-}
-
-// [投递] 广播消息 matching_nodes=online_nodes（不变）
+// [投递] 定向多个目标部分在线 → 成功广播
 #[tokio::test]
-async fn broadcast_message_matching_nodes_equals_online_nodes() {
-    let bus = test_bus();
-    let sender = bus.connect(test_node_info("s"), test_filter()).await.unwrap();
-    let _n2 = bus.connect(test_node_info("n2"), test_filter()).await.unwrap();
+async fn directed_send_partial_targets_online_succeeds() { }
 
-    let receipt = sender
-        .send("action", None, serde_json::json!("all"))
-        .await
-        .unwrap();
-    assert_eq!(receipt.online_nodes, 2);
-    assert_eq!(receipt.matching_nodes, 2); // broadcast: everyone
+// [投递] 定向到在线节点 disconnect 后再发 → NodeOffline
+#[tokio::test]
+async fn directed_send_after_disconnect_fails() { }
 
-    sender.disconnect().await;
-    _n2.disconnect().await;
-    bus.shutdown().await;
-}
+// [投递] 广播消息 to=[] → 永远成功
+#[tokio::test]
+async fn broadcast_message_always_succeeds() { }
 ```
 
 ---
@@ -151,23 +246,32 @@ async fn broadcast_message_matching_nodes_equals_online_nodes() {
 
 | # | 角度 | 测试名 | 覆盖 |
 |---|------|--------|------|
-| 1 | `[投递]` | `directed_send_to_online_node_succeeds` | 定向在线 → OK，matching_nodes=1 |
-| 2 | `[投递]` | `directed_send_to_offline_node_fails` | 定向不在线 → NodeOffline |
-| 3 | `[投递]` | `broadcast_message_matching_nodes_equals_online_nodes` | 广播 matching_nodes=online_nodes |
+| 1 | `[投递]` | `directed_send_multi_target_all_online_succeeds` | 多目标全在线 → OK |
+| 2 | `[投递]` | `directed_send_all_targets_offline_fails` | 多目标全离线 → NodeOffline |
+| 3 | `[投递]` | `directed_send_partial_targets_online_succeeds` | 部分在线 → OK |
+| 4 | `[投递]` | `directed_send_after_disconnect_fails` | disconnect 后再发 → NodeOffline |
+| 5 | `[投递]` | `broadcast_message_always_succeeds` | 广播永不成 error |
 
 ---
 
-## 对已有测试的影响
+## 对已有测试的影响（变更范围）
 
-- `directed_message_broadcast_to_all`（1.2）：to=Some("mcp/filesystem") 但无节点注册 → 现在会返回 `NodeOffline`。需要修改：先 connect 目标节点，再发定向消息。
-- `node_handle_send_message_appears_on_bus`（1.3）：to=None → 无影响
-- 其他 send 测试均使用 to=None → 无影响
+| 文件 | 影响测试数 | 变更类型 |
+|------|-----------|---------|
+| `arf-core/src/lib.rs` | ~15 | `to: None` → `to: vec![]`；`to: Some(id)` → `to: vec![id]` |
+| `arf-bus/src/lib.rs` | ~8 | 同上 + helper 函数 `test_msg()` |
+| `arf-bus/src/connection.rs` | ~12 | `send(..., None, ...)` → `send(..., vec![], ...)` |
+| `arf-bus/src/heartbeat.rs` | ~2 | `Message::new(..., None, ...)` → `vec![]` |
+| `arf-bus/src/lib.rs` 内部构造 | ~4 | `handle_connect` / `handle_disconnect` / `handle_heartbeat_tick` |
+
+总计约 40+ 处引用需要从 `Option<NodeId>` 迁移到 `Vec<NodeId>`。
 
 ---
 
 ## 小结
 
-- **定向目标不在线** → `SendError::NodeOffline`，不广播，立即返回
-- **定向目标在线** → 正常广播，`matching_nodes=1`
-- **广播消息** → `matching_nodes=online_nodes`（1.6 精确到 filter 匹配数）
-- **3 个新测试**，1 个已有测试需修改
+- **`Message.to: Vec<NodeId>`** — 空 = 广播，非空 = 多目标定向
+- **全部不在线才拒绝** — 部分在线则成功广播
+- **Trace 不在 `to` 里** — Trace 通过 subscribe 监听，不参与在线性检查
+- **`SendError::NodeOffline(Vec<NodeId>)`** — 报告全部离线目标
+- **5 个新测试** + **~40 处已有引用适配**
