@@ -106,15 +106,11 @@ ARF 将 Agent 运行拆分为三层——Agent 持有状态，协调层 驱动�
 | **Resources** | `arf/resources/` | FileWatcher 热加载、三种 Provider、覆盖解析 |
 | **Memory** | `arf/memory/` | FileMemoryStore、异步 LLM 提取/检索 |
 | **Compaction** | `arf/compaction/` | SlidingWindowCompactor、Tool Output Externalization |
-| **Routing** | `arf/routing/` | TwoTierRouter 快慢模型调度 |
 | **Guardrails** | `arf/guardrails/` | PathCheckToolGuard、ToolPermissionChecker |
 | **Sandbox** | `arf/sandbox/` | PathSandbox 路径合法性校验 |
 | **Communication** | `arf/communication/` | AgentBus、PeerAgent、Supervisor |
-| **Human Loop** | `arf/human_loop/` | ApprovalPoint、ConsoleChannel 审批流 |
-| **Observability** | `arf/observability/` | TracePlugin JSONL 写入/读取 |
 | **Streaming** | `arf/streaming/` | SSE 事件流适配与序列化 |
 | **Evaluation** | `arf/evaluation/` | EvalRunner、BenchmarkBuilder、EvalComparator |
-| **Concurrency** | `arf/concurrency/` | SequentialScheduler |
 | **Skills** | `arf/skills/` | SkillPipeline 工具依赖执行时序 |
 
 ### 插件系统
@@ -190,7 +186,7 @@ session  >  round  >  turn
 
 v0.x 的核心教训是耦合——Engine 直接持有 MCP、Plugin、AgentBus 的引用，Park 散落在三层，A2A 消息注入时机嵌在 Engine 实现中。新架构只认一个原则：**一切通过 Bus，一切公开可见。**
 
-### v2 六要素
+### V1.x 六要素
 
 | 要素 | 职责 |
 |------|------|
