@@ -6,7 +6,7 @@ Three-layer enforcement:
 
 1. deny_patterns   — regex on serialized params (always enforced)
 2. deny list        — tool name blacklist (always enforced)
-3. sandbox_check    — path traversal scan (always enforced, configurable)
+3. path_check    — path traversal scan (always enforced, configurable)
 4. mode + allow/ask — mode-dependent allow/ask/unknown handling
 
 Unified permission model:
@@ -49,7 +49,7 @@ class ToolGuardPlugin(Plugin):
         self._ask: set[str] = set(self.config.get("ask", []))
         self._allow: set[str] = set(self.config.get("allow", []))
         self._deny_patterns: list[str] = self.config.get("deny_patterns", [])
-        self._sandbox_check: bool = self.config.get("sandbox_check", True)
+        self._path_check: bool = self.config.get("path_check", True)
 
     async def handle(self, event_name: str, ctx: PluginContext) -> None:
         if event_name == "pre_action":
@@ -114,7 +114,7 @@ class ToolGuardPlugin(Plugin):
 
                 # ── Layer 3: sandbox path check (always enforced when enabled) ──
                 sandbox_blocked = False
-                if self._sandbox_check:
+                if self._path_check:
                     allow_paths: list[str] = ctx.hook_data.get("_allow_paths", [])
                     if not allow_paths:
                         logger.warning(
