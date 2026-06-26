@@ -10,7 +10,7 @@
 
 <br/>
 
-<p align="center"><em>一份关于 Agent 基础设施的工程答卷</em></p>
+<p align="center"><a href="./resume.html"><em>一份关于 Agent 基础设施的工程答卷</em></a></p>
 
 <br/>
 
