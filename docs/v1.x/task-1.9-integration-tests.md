@@ -154,11 +154,16 @@ slow.recv() → 阻塞 / 空  ← buffer 空
 
 换成 3 条消息（刚好 overflow capacity-2 buffer 1 次），并改用显式 4 次 `try_recv()` 调用而非循环，问题消失。怀疑 `try_recv()` 在特定条件下与 message loop 的 `drain_rx.try_recv()` 竞争 tail lock（两者都调用 `self.shared.tail.lock()`），tight loop 加剧了竞争。**最终方案：capacity+1 条消息 + 显式 try_recv 调用**，稳定可靠。
 
-#### 弯路 4：`try_recv()` 返回值类型误判
+#### 弯路 4：`try_recv()` 返回值类型误判（查了底层忘了自己的 wrapper）
 
-最初按 `Result<Message, TryRecvError>` 写断言，空时预期 `Err(Empty)`。编译报错 `no field 'payload' on type 'Option<Message>'` 才发现本版本 tokio 的 broadcast `try_recv()` 返回 `Result<Option<Message>, TryRecvError>`——空时是 `Ok(None)`，不是 `Err(Empty)`。
+最初按 `Result<Message, TryRecvError>` 写断言，空时预期 `Err(Empty)`。编译报错 `no field 'payload' on type 'Option<Message>'` 才发现类型不对。**不是 tokio 版本差异**——是 `NodeHandle::try_recv()` 自己包装了一层：
 
-修正 `drain_all()` 和 lag 测试的 match 分支即可。
+| 层级 | 返回类型 | 空队列 |
+|------|---------|--------|
+| `broadcast::Receiver::try_recv()` (tokio 1.52.3) | `Result<Message, TryRecvError>` | `Err(Empty)` |
+| **`NodeHandle::try_recv()` (connection.rs:96)** | **`Result<Option<Message>, TryRecvError>`** | **`Ok(None)`** |
+
+`NodeHandle` 把 `Err(Empty)` 转成 `Ok(None)`，因为"当前无消息"对应用层不是错误。查 bug 时去翻了 tokio 源码 `Receiver::try_recv()`，看到返回 `Result<T, TryRecvError>`，想当然以为自己的 `NodeHandle::try_recv()` 也一样——**典型的查了底层文档，忘了自己的 wrapper 签名**。
 
 #### 最终方案
 
@@ -187,7 +192,7 @@ assert_eq!(slow.recv().await.unwrap().payload, json!("fresh"));
 **教训**：
 1. tokio broadcast `send()` 不阻塞，buffer 满时覆盖旧消息——不要和 mpsc 混淆
 2. `Lagged` 后 receiver 跳到"最老保留"，不是 tail——残留消息必须 drain
-3. 不同 tokio 版本 `try_recv()` 返回类型可能不同——先确认再写断言
+3. 查底层 API 文档时，别忘了自己的 wrapper 可能改了返回类型——先看自己的代码
 4. tight loop `try_recv()` 可能与发送方竞争 tail lock——必要时用显式调用代替循环
 
 ---
