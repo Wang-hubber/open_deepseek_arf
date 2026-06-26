@@ -364,7 +364,7 @@
   <!-- ═══════════ HEADER ═══════════ -->
   <header class="header">
     <div class="header-name">王协</div>
-    <div class="header-role">AI Agent 架构师 · 开源框架 ARF 作者 · <em>Harness 工程师</em></div>
+    <div class="header-role">AI Infra 工程师 · 开源框架 ARF 作者 · <em>一份关于 Agent 基础设施的工程答卷</em></div>
     <div class="header-meta">
       <span>[REDACTED]</span>
       <span>997793170@qq.com</span>
@@ -376,38 +376,24 @@
 
   <!-- ═══════════ 我在做什么 ═══════════ -->
   <section class="section">
-    <div class="section-title">我在做什么：探索并验证 Harness 与大模型的能力边界与分工</div>
+    <div class="section-title">我在做什么：探索 Agent 基础设施的能力边界与分工</div>
 
     <div class="section-intro">
-      <p>这几年做 Agent 应用，我发现一个普遍现象——<strong>Harness 在膨胀</strong>。RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理……这些本该由模型承载的认知功能，正一块块往协调层里塞。每次模型能力不够，就在外面打一个补丁。</p>
+      <p>这几年做 Agent 应用，我发现一个普遍现象——<strong>协调层在膨胀</strong>。RAG 知识注入、系统提示词身份赋予、上下文摘要、外部记忆管理……这些能力正一块块往 Harness 里塞。每次模型能力不够，就在外面打一个补丁。</p>
 
       <p>这不是哪个框架的问题。它指向一个更底层的疑问：<strong>Harness 到底该做什么，不该做什么？</strong></p>
     </div>
 
     <div class="highlight-box">
-      我目前的假设：<strong>大模型是大脑，Harness 是脑干、脊椎与身体。</strong>
-    </div>
-
-    <div class="hypothesis">
-      <div class="hypothesis-label">分工模型</div>
-      <div class="hypothesis-item">
-        <strong>大模型·大脑</strong>（条件反射·中枢）— 接收编码后的感知，输出行为指令。知识、身份、长期记忆的固化，应该是模型后训练要解决的事，不该在 Harness 里用 prompt 和 RAG 凑合。
-      </div>
-      <div class="hypothesis-item">
-        <strong>Harness·脑干脊椎与躯体</strong>（非条件反射·系统）— 固定感知编码、可靠行动执行、硬连线安全反射。它不思考，不追问，不澄清。它只是本能地编码、执行、门控。
-      </div>
+      核心假设：<strong>模型负责认知与推理，Harness 负责固定的感知编码、可靠的行动执行、硬连线的安全门控。Harness 不思考，不追问，不澄清——它只是本能地编码、执行、门控。</strong>
     </div>
 
     <p style="font-size:14px; color: var(--text); margin-top: 12px;">
-      这不是一个观点——它是一个<strong>可验证的假设</strong>。我的计划很明确：把它做出来，然后做实验去验证。为此我写了论文框架来理清思路，搭建了 ARF 框架来作为实验"台架"，写了 11 单元教学课程来让这个思路对其他人也可理解、可复现。
+      这不是一个观点——它是一个<strong>可验证的假设</strong>。为此我搭建了 ARF 框架作为实验台架，写了 14 单元教学课程让这个思路对其他人也可理解、可复现。
     </p>
 
     <p style="font-size:14px; color: var(--text); margin-top: 6px;">
       接下来是实验——固定状态接口 vs 传统提示、零认知 Harness 基准测试、在线 LoRA 记忆保持、后训练身份鲁棒性、内部上下文压缩。每一项都在这个台架上跑。
-    </p>
-
-    <p class="link" style="font-size:13px; margin-top: 6px;">
-      详细研究框架：https://gitee.com/dalaydata/open_deepseek_arf/blob/main/docs/paper/framework.md
     </p>
   </section>
 
@@ -415,39 +401,38 @@
 
   <!-- ═══════════ 开源作品 ═══════════ -->
   <section class="section">
-    <div class="section-title">开源作品 <span class="light">2025.05 – 至今</span></div>
+    <div class="section-title">开源作品 <span class="light">2025.05 – 2026.06</span></div>
 
     <div class="project">
       <div class="project-header">
         <span class="project-name">ARF — Agent Resources & Runtime Framework</span>
       </div>
-      <div class="project-url">https://gitee.com/dalaydata/open_deepseek_arf</div>
-      <div class="project-tagline">Harness 实验台架 · 验证"大脑-脊椎-身体"分工假设的工程工具</div>
+      <div class="project-url">https://github.com/Wang-hubber/open_deepseek_arf</div>
+      <div class="project-tagline">Agent 运行时框架 · 从具体业务问题到形而上学抽象，再回归工程落地的完整实践</div>
       <div class="project-desc">
-        ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。
+        ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。v0.8.0，1,492 次提交。
       </div>
       <ul class="bullet-list">
-        <li><strong>6 骨架架构</strong>：Prompt 组装、资源注册（MCP）、权限控制、安全审核、沙箱执行器、控制平面——每个骨架对应一个 Protocol，依赖注入组装。框架无 Plugin 也能运行完整 Agent Loop。</li>
-        <li><strong>三层机械层</strong>：感知编码器·传递任务与环境信息（ResourceRegistry + SystemPromptProvider）→ 行动执行器·把决策落地（SandboxManager + FunctionBackend rollback）→ 非条件反射层·提供必要的安全防护（PathCheckToolGuard + PermissionRegistry + RoundManager undo）——对应研究框架中第 5 节设计准则的完整工程实现。</li>
-        <li><strong>Plugin 体系</strong>：9 个 Hook 挂载点。Memory、Compaction、Trace 等作为"反射弧"挂载——智能来自模型调用，Plugin 不做认知判断。</li>
-        <li><strong>全链路可观测 + 安全三道防线</strong>：JSONL Trace / Token 统计 / 离线评估回放。deny_patterns 正则 &gt; deny/ask/allow 列表 &gt; PathCheckToolGuard 路径扫描——纯 YAML 声明式，模型不可绕过。</li>
-        <li><strong>代码规模</strong>：框架核心 11,314 行（147 文件 · 22 模块）· 测试 9,866 行（574 tests）· 框架设计文档 5,349 行（15 篇）</li>
+        <li><strong>三层架构</strong>：Agent（消息状态机）→ Harness（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。</li>
+        <li><strong>Hook 生命周期</strong>：10 个检查点 × 2 种模式（blocking/side），插件按需注册，引擎不做硬编码限制。覆盖 session_start 到 session_end 的完整 Agent 生命周期。</li>
+        <li><strong>Agent-to-Agent 通讯</strong>：Subagents（父子委派，一次性用完即焚）+ Teammates（对等队友，Park/Wake 协作循环）。AgentBus 消息总线 + JRPC 结构化通讯。</li>
+        <li><strong>全链路可观测 + Eval 评测</strong>：JSONL Trace / Token 统计 / 离线评估回放。EvalRunner + BenchmarkBuilder + LLM Judge 自动标注 + 版本化存档。</li>
+        <li><strong>代码规模</strong>：框架核心 ~18,000 行（180+ 文件 · 16 模块）· 测试 ~12,500 行（723 tests）· 配套教学项目 arf_app 14 单元</li>
       </ul>
-      <div class="tech-tags">Python 3.11+ · FastAPI · asyncio · Pydantic · Protocol 接口隔离 · MCP 协议</div>
+      <div class="tech-tags">Python 3.11+ · asyncio · Pydantic · Protocol 接口隔离 · DI · SSE 流式</div>
     </div>
 
     <div class="project" style="margin-top: 22px;">
       <div class="project-header">
         <span class="project-name">ARF App 教学项目</span>
       </div>
-      <div class="project-url">https://gitee.com/dalaydata/arf_app_021</div>
-      <div class="project-tagline">从 0 到 1 构建 ARF 应用的 11 单元渐进式教程</div>
+      <div class="project-url">https://github.com/Wang-hubber/arf_app</div>
+      <div class="project-tagline">从 0 到 1 构建 ARF 应用的 14 单元渐进式教程</div>
       <ul class="bullet-list">
-        <li>单元 1-11 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优 → Trace 可观测 → Eval 测评 → LLM-as-Judge → 版本持久化</li>
+        <li>单元 1-14 覆盖完整 Agent 开发链路：Hello ARF → 会话管理 → 工具系统 → 工具审批 → Guardrails 安全 → 长期记忆 → Agent 调优 → Trace 可观测 → Eval 测评 → LLM-as-Judge → 版本持久化 → 子 Agent 委派 → Agent Team 协作 → Skill 领域知识编码</li>
         <li>每个单元包含完整可运行代码快照，严格"本单元只讲本单元"的边界约束</li>
         <li>用"良子与焖子"的叙事串联安全概念——把枯燥的权限控制变成故事</li>
         <li>同时作为 ARF 框架的用户验收测试，在真实使用中验证 API 设计的完备性</li>
-        <li><strong>代码规模</strong>：App 代码 5,124 行（43 文件）· 单元文档 6,494 行</li>
       </ul>
     </div>
   </section>
@@ -538,9 +523,9 @@
 
       <p>做数据分析时，我关心的是怎么从海量车联网数据中提取有价值的信息。做电池健康度预测时，我关心的是怎么用 Transformer 从时序信号中学习到更好的表征。做大模型 Agent 时，我关心的是怎么让模型和工具之间的信息流动更高效、更可靠、更安全。</p>
 
-      <p>Harness 就是这个问题的终极形式——它不是某一个 Agent 的具体业务逻辑，而是所有 Agent 共享的信息基础设施。就像操作系统不是任何一个应用程序，但没有操作系统，就没有应用程序。</p>
+      <p>Harness 就是这个问题的终极形式——它不是某一个 Agent 的具体业务逻辑，而是所有 Agent 共享的基础设施。框架提供 mechanism，应用决定 behavior。</p>
 
-      <p class="closing">如果你也在思考 Agent 系统的边界问题，或者正在寻找一个真正理解 Harness 本质的工程师——我们可以聊聊。</p>
+      <p class="closing">如果你也在思考 Agent 基础设施的边界问题，或者正在寻找一个真正动手造过轮子的工程师——我们可以聊聊。</p>
     </div>
   </section>
 
