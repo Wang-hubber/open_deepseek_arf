@@ -56,42 +56,40 @@ ARF 将 Agent 的运行抽象为操作系统的三层结构：
 
 ### 核心模块
 
-| 模块 | 目录 | 完成度 | 说明 |
-|------|------|--------|------|
-| **Engine** | `arf/engine/` | ✅ 稳定 | ReAct 主循环、HandoffManager、park/resume、cancel/undo |
-| **Agent** | `arf/agent/` | ✅ 稳定 | BaseAgent DI 组装、PrimitiveAgent 状态机、AgentConfig 配置模型 |
-| **Core** | `arf/core/` | ✅ 稳定 | Protocol 定义、ModelAdapter（OpenAI/DeepSeek 格式适配）、配置基类 |
-| **Resources** | `arf/resources/` | ✅ 稳定 | FileWatcher 热加载、三种 Provider、ResourceResolver 覆盖 |
-| **Memory** | `arf/memory/` | ✅ 稳定 | FileMemoryStore、LLMMemoryWriter（异步提取）、LLMMemoryRetriever |
-| **Compaction** | `arf/compaction/` | ✅ 稳定 | SlidingWindowCompactor、token 感知窗口、Tool Output Externalization |
-| **Routing** | `arf/routing/` | ✅ 稳定 | TwoTierRouter 快慢模型调度 |
-| **Guardrails** | `arf/guardrails/` | ✅ 稳定 | PathCheckToolGuard、ToolPermissionChecker |
-| **Hooks** | `arf/hooks/` | ✅ 稳定 | 7 个生命周期事件、InProcess/Subprocess 两种 Runner |
-| **Sandbox** | `arf/sandbox/` | ✅ 稳定 | PathSandbox 路径合法性校验、DirectoryBoundary |
-| **Communication** | `arf/communication/` | ⚠️ 需改进 | AgentBus、PeerAgent、Supervisor、Lock、Consensus — 详见下文 |
-| **Human Loop** | `arf/human_loop/` | ✅ 稳定 | ApprovalPoint、ConsoleChannel、park/resume 审批流 |
-| **Observability** | `arf/observability/` | ✅ 稳定 | TracePlugin JSONL 写入/读取 |
-| **Streaming** | `arf/streaming/` | ✅ 稳定 | SSE 事件流适配与序列化 |
-| **Evaluation** | `arf/evaluation/` | ✅ 稳定 | EvalRunner、BenchmarkBuilder、EvalComparator、版本化存档 |
-| **Concurrency** | `arf/concurrency/` | ✅ 稳定 | SequentialScheduler |
-| **Skills** | `arf/skills/` | ✅ 稳定 | SkillPipeline 工具依赖执行时序 |
+| 模块 | 目录 | 说明 |
+|------|------|------|
+| **Engine** | `arf/engine/` | ReAct 主循环、HandoffManager、park/resume、cancel/undo |
+| **Agent** | `arf/agent/` | BaseAgent DI 组装、PrimitiveAgent 状态机、AgentConfig 配置模型 |
+| **Core** | `arf/core/` | Protocol 定义、ModelAdapter（OpenAI/DeepSeek 格式适配）、配置基类 |
+| **Resources** | `arf/resources/` | FileWatcher 热加载、三种 Provider、ResourceResolver 覆盖 |
+| **Memory** | `arf/memory/` | FileMemoryStore、LLMMemoryWriter（异步提取）、LLMMemoryRetriever |
+| **Compaction** | `arf/compaction/` | SlidingWindowCompactor、token 感知窗口、Tool Output Externalization |
+| **Routing** | `arf/routing/` | TwoTierRouter 快慢模型调度 |
+| **Guardrails** | `arf/guardrails/` | PathCheckToolGuard、ToolPermissionChecker |
+| **Hooks** | `arf/hooks/` | 7 个生命周期事件、InProcess/Subprocess 两种 Runner |
+| **Sandbox** | `arf/sandbox/` | PathSandbox 路径合法性校验、DirectoryBoundary |
+| **Communication** | `arf/communication/` | AgentBus、PeerAgent、Supervisor、Lock、Consensus |
+| **Human Loop** | `arf/human_loop/` | ApprovalPoint、ConsoleChannel、park/resume 审批流 |
+| **Observability** | `arf/observability/` | TracePlugin JSONL 写入/读取 |
+| **Streaming** | `arf/streaming/` | SSE 事件流适配与序列化 |
+| **Evaluation** | `arf/evaluation/` | EvalRunner、BenchmarkBuilder、EvalComparator、版本化存档 |
+| **Concurrency** | `arf/concurrency/` | SequentialScheduler |
+| **Skills** | `arf/skills/` | SkillPipeline 工具依赖执行时序 |
 
 ### 插件系统
 
-| 插件 | 目录 | 完成度 | 说明 |
-|------|------|--------|------|
-| `filesystem` | `arf/plugins/filesystem/` | ✅ | 文件读写删工具 |
-| `memory` | `arf/plugins/memory/` | ✅ | LLM 记忆提取/检索 |
-| `compaction` | `arf/plugins/compaction/` | ✅ | 渐进式上下文压缩 |
-| `approval` | `arf/plugins/approval/` | ✅ | 人机审批流转 |
-| `tool_guard` | `arf/plugins/tool_guard/` | ✅ | 工具权限校验（deny/allow/ask） |
-| `error_handler` | `arf/plugins/error_handler/` | ✅ | 错误恢复与降级 |
-| `a2a_subagents` | `arf/plugins/a2a_subagents/` | ⚠️ | 一次性子代理委托 |
-| `a2a_teammates` | `arf/plugins/a2a_teammates/` | ⚠️ | 持久化对等队友通讯 |
-| `eval` | `arf/plugins/eval/` | ✅ | 评测运行器、判定器、自动标注 |
-| `trace` | `arf/plugins/trace/` | ✅ | Hook-mounted JSONL 事件追踪 |
-
-> **图例：** ✅ 稳定 &nbsp;·&nbsp; ⚠️ 功能可用，抽象需改进 &nbsp;·&nbsp; 🔧 开发中 &nbsp;·&nbsp; 📋 规划中
+| 插件 | 目录 | 说明 |
+|------|------|------|
+| `filesystem` | `arf/plugins/filesystem/` | 文件读写删工具 |
+| `memory` | `arf/plugins/memory/` | LLM 记忆提取/检索 |
+| `compaction` | `arf/plugins/compaction/` | 渐进式上下文压缩 |
+| `approval` | `arf/plugins/approval/` | 人机审批流转 |
+| `tool_guard` | `arf/plugins/tool_guard/` | 工具权限校验（deny/allow/ask） |
+| `error_handler` | `arf/plugins/error_handler/` | 错误恢复与降级 |
+| `a2a_subagents` | `arf/plugins/a2a_subagents/` | 一次性子代理委托 |
+| `a2a_teammates` | `arf/plugins/a2a_teammates/` | 持久化对等队友通讯 |
+| `eval` | `arf/plugins/eval/` | 评测运行器、判定器、自动标注 |
+| `trace` | `arf/plugins/trace/` | Hook-mounted JSONL 事件追踪 |
 
 ---
 
