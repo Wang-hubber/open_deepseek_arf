@@ -10,9 +10,8 @@
 
 <br/>
 
-<h3 align="center">Harness = OS 内核 &nbsp;·&nbsp; Model = CPU &nbsp;·&nbsp; Agent = 进程</h3>
-<p align="center">Token 是指令，Agent 会话是进程，工具调用是系统调用。</p>
-<p align="center">一套以操作系统理念构建的 Agent 运行时框架——依赖注入组装所有能力，Protocol 定义接口隔离，插件系统贯穿全部生命周期。</p>
+<h3 align="center">一套 Agent 运行时框架——依赖注入组装能力，Protocol 隔离接口</h3>
+<p align="center">引擎驱动 ReAct 主循环，插件系统贯穿 10 个生命周期检查点，文件系统即资源注册中心。</p>
 
 <br/>
 
@@ -20,26 +19,26 @@
 
 ## 架构概览
 
-ARF 将 Agent 的运行抽象为操作系统的三层结构：
+ARF 将 Agent 运行拆分为三层：
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                  🧠 Agent（大脑）                      │
+│                    Agent                             │
 │  name + system_prompt + models                       │
 │  被动的消息状态机，由 Harness 驱动执行                   │
 │  input() / model_call() / wait() / finish_wait()     │
 └────────────────────────┬─────────────────────────────┘
                          │ 依赖注入（DI）
 ┌────────────────────────┴─────────────────────────────┐
-│                  ⚙️ Harness（脊椎）                    │
+│                    Harness                           │
 │  GraphEngine — ReAct 主循环 + HandoffManager          │
-│  Plugin 调度 — 7 个生命周期 Hook 事件                   │
-│  park / resume — 进程级阻塞/唤醒                        │
+│  Plugin 调度 — 10 个生命周期检查点                      │
+│  park / resume — 等待/唤醒                             │
 │  Trace 落盘 — JSONL 事件流                             │
 └────────────────────────┬─────────────────────────────┘
                          │ 文件系统 + 资源发现
 ┌────────────────────────┴─────────────────────────────┐
-│                  📦 Resources（身体）                  │
+│                    Resources                         │
 │  tools/ · skills/ · models/ · hooks/                 │
 │  FileWatcher 热加载 · ResourceResolver 覆盖解析        │
 │  Sandbox 安全边界 · Guardrails 权限校验                 │
@@ -158,9 +157,9 @@ ARF 提供两种 A2A 通讯机制，覆盖不同的协作场景：
 | **并发** | 多个子 agent 并行 | N 个 agent 各自独立 harness |
 | **park** | 父等子（dispatch + before_model park） | 全体在 after_round park，peer/user 唤醒 |
 
-### 5. Park/Resume — 进程级阻塞与唤醒
+### 5. Park/Resume — 等待与唤醒
 
-借鉴操作系统的进程阻塞语义：Agent 在等待外部输入（用户审批、peer 回复、子 agent 完成）时挂起（park），事件到达时唤醒（resume）。`WaitItem` 记录等待原因和 `resume_key`，支持 session 恢复时重建等待状态。
+Agent 在等待外部输入（用户审批、peer 回复、子 agent 完成）时挂起（park），事件到达时唤醒（resume）。`WaitItem` 记录等待原因和 `resume_key`，支持 session 恢复时重建等待状态。
 
 ```
 agent.wait(reason="waiting_for_approval", resume_key="approval_123")
@@ -195,7 +194,7 @@ session  >  round  >  turn
 
 ### 从 0 到 1
 
-我最近尝试从 0 到 1 搭建了一套 Agent 框架，涵盖 Agent 运行时、State 管理、Trace 和 Eval、Peer Agents 和 Subagents、上下文压缩、Memory。这是我近两年来在 AI 应用工程落地领域遇到的共性问题——每做一个 AI 应用都要重新发明这些基础设施。ARF 是对这些共性问题的形而上抽象：如果 Agent 是一个操作系统里的进程，那么它需要 CPU（Model）、内存（Memory）、文件系统（Tools）、IPC（A2A 通讯）、中断（Park/Resume）、调度器（Routing）——框架就是那个 OS 内核。
+我最近尝试从 0 到 1 搭建了一套 Agent 框架，涵盖 Agent 运行时、State 管理、Trace 和 Eval、Peer Agents 和 Subagents、上下文压缩、Memory。这是我近两年来在 AI 应用工程落地领域遇到的共性问题——每做一个 AI 应用都要重新发明这些基础设施。ARF 是对这些共性问题的形而上抽象——将 Agent 运行所需的全部基础设施（模型调用、状态管理、工具执行、A2A 通讯、等待唤醒、上下文压缩、可观测性）统一到一个框架中，通过依赖注入和插件系统组装。
 
 随着开发的深入，我对 Agent 的理解也在不断加深。目前框架的能力模块已经基本完善——18,000 行代码，12,500 行测试，723 个测试用例。最小可行 App（`arf_app` 教学项目）也已跑通，覆盖了单 Agent、Subagents 委派、Teammates 协作、Eval 评测等场景。作为一个玩具，它合格了。
 
@@ -205,7 +204,7 @@ session  >  round  >  turn
 
 **Engine 是修复密度最高的模块（50 次 fix）。** ReAct 主循环的正确性比预期更难保证。`break` 语句让 turn loop 不可达——这行代码通过了所有测试，但在特定消息序列下整个 turn 被跳过。park/resume 统一后连续三次回归：消息注入后再次触发 park 导致死循环、partial wakeup 时消息丢失、cancel_event 未清理导致跨 round 污染。**状态机的正确性不取决于 happy path 的测试覆盖率，而取决于对隐式副作用（break/cancel/park/message injection）的穷举建模。** 这些副作用交织在一起时，组合爆炸远超直觉预期。
 
-**A2A + Teammates 是打补丁最多的领域（36 次 fix）。** 死锁、race condition、消息消费归属混乱。最典型的是 park 位置的选择——在 `before_model`、`after_round`、`before_round` 之间反复迁移了至少 5 次。每次迁移修复一个问题，又引入一个新问题。根本原因在于：**Agent 和 Harness 的边界不够干净。** Park 应该是一个明确的"进程状态切换"，但实际实现中它散落在引擎的多个检查点，每个插件还要各自注册 wait。当多个 Agent 同时运行时，这些分散的 park 逻辑互相交织，形成了难以推理的全局状态。
+**A2A + Teammates 是打补丁最多的领域（36 次 fix）。** 死锁、race condition、消息消费归属混乱。最典型的是 park 位置的选择——在 `before_model`、`after_round`、`before_round` 之间反复迁移了至少 5 次。每次迁移修复一个问题，又引入一个新问题。根本原因在于：**Agent 和 Harness 的边界不够干净。** Park 应该是一个明确的等待状态切换，但实际实现中它散落在引擎的多个检查点，每个插件还要各自注册 wait。当多个 Agent 同时运行时，这些分散的 park 逻辑互相交织，形成了难以推理的全局状态。
 
 **路径处理问题是文件系统注册模型的固有复杂性。** 多次出现 double-join（`abspath` + `join` 双重拼接）、相对路径在沙箱白名单中匹配失败等 bug。文件路径作为全局命名空间时，相对/绝对路径的转换、规范化、边界检查每一步都可能产生静默错误——不同于 API 调用（报错即失败），路径问题往往表现为"看起来能工作，但在特定目录下崩溃"。
 
@@ -220,14 +219,14 @@ session  >  round  >  turn
 目前 Agent 和 Harness 的抽象还不够干净。特别是在从单 Agent 扩展到 Agent Teams 的过程中，多 Agent 之间的通讯、挂起、信息透传消耗了大量时间，并给框架反复打了很多补丁。这些补丁的本质是：**Harness 承担了太多它不该承担的责任。**
 
 具体来说：
-- **Park/Resume 散落在多个层级。** Engine 的 checkpoint、Plugin 的 wait 注册、Agent 的 wait() 调用——三个层级各自管理等待状态的一部分，没有统一的"进程状态"抽象。
-- **A2A 消息传递与 Harness 耦合过深。** 消息的注入时机（before_round vs before_model）、消费归属（谁该 drain）、reply 的组装——这些逻辑嵌在 Engine 和 Plugin 的具体实现中，而非一个独立的 "IPC 层"。
-- **Agent 的边界模糊。** PrimitiveAgent 理论上"只知道消息和模型调用"，但 `wait()` 和 `finish_wait()` 暴露了阻塞语义给上层。真正纯净的"进程"抽象应该由运行时统一管理阻塞，Agent 自身不感知 park/resume。
+- **Park/Resume 散落在多个层级。** Engine 的 checkpoint、Plugin 的 wait 注册、Agent 的 wait() 调用——三个层级各自管理等待状态的一部分，没有统一的等待状态抽象。
+- **A2A 消息传递与 Harness 耦合过深。** 消息的注入时机（before_round vs before_model）、消费归属（谁该 drain）、reply 的组装——这些逻辑嵌在 Engine 和 Plugin 的具体实现中，而非一个独立的通讯层。
+- **Agent 的边界模糊。** PrimitiveAgent 理论上"只知道消息和模型调用"，但 `wait()` 和 `finish_wait()` 暴露了阻塞语义给上层。真正纯净的设计应该由运行时统一管理阻塞，Agent 自身不感知 park/resume。
 
 现在是时候进行第二轮的形而上思考设计了。这次我会尝试：
 
-1. **更彻底的抽象**——Agent 就是进程，Harness 就是内核。进程不感知自己被挂起，内核统一管理调度。IPC（AgentBus）从 Harness 中剥离为独立层。
-2. **更干净的分离**——每个模块只做一件事。Engine 只管"取消息→调模型→执行工具→写结果"这一个循环。Park/Resume 是调度器的事。A2A 是 IPC 层的事。Trace 是可观测层的事。
+1. **更彻底的抽象**——Agent 不感知自己被挂起，Harness 统一管理调度。AgentBus 从 Harness 中剥离为独立层。
+2. **更干净的分离**——每个模块只做一件事。Engine 只管"取消息→调模型→执行工具→写结果"这一个循环。Park/Resume 是调度器的事。A2A 是通讯层的事。Trace 是可观测层的事。
 3. **更通用更易扩展的设计**——当前的两级路由（TwoTierRouter）和两种 A2A（Subagents/Teammates）是具体实现，应该抽象为"模型调度策略"和"Agent 通讯拓扑"的通用接口，允许用户自定义策略。
 4. **用 Rust 实现核心**——Engine 主循环、Park/Resume 调度器、AgentBus 消息传递这三个性能敏感且正确性要求极高的模块，用 Rust 重写。Python 通过 PyO3 绑定调用。Rust 的类型系统和所有权模型天然适合状态机验证，很多 Python 中"靠测试和代码审查来保证"的正确性问题，在 Rust 中是编译期错误。
 
