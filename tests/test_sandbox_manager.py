@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 import pytest
-from arf.sandbox.sandbox_manager import SandboxManager, SandboxDiff, FileChange
+from arf.guardrails.sandbox_manager import SandboxManager, SandboxDiff, FileChange
 
 
 class TestSandboxManager:

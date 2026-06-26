@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from arf.sandbox.sandbox_manager import SandboxManager
+from arf.guardrails.sandbox_manager import SandboxManager
 
 
 class TestPersistPathTraversal:

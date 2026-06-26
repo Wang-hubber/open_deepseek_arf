@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import os
 import pytest
-from arf.sandbox.directory_boundary import DirectoryBoundary
+from arf.guardrails.directory_boundary import DirectoryBoundary
 
 
 @pytest.fixture

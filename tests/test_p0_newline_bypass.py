@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from arf.guardrails.path_check import PathCheckToolGuard, ResourceQuota
-from arf.sandbox.directory_boundary import DirectoryBoundary
+from arf.guardrails.directory_boundary import DirectoryBoundary
 
 
 class TestNewlineBypassPathTraversal:
