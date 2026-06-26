@@ -10,6 +10,16 @@
 
 <br/>
 
+<p align="center">
+  <strong>纸上得来终觉浅，绝知此事要躬行。 What I cannot create, I do not understand.</strong>
+  <br/>
+  从解决具体的业务问题到形而上学的抽象探索，再从抽象探索回归工程落地。
+  <br/>
+  本项目是一次关于 Agent 的完整的从具体到抽象再到具体的一次实践。
+</p>
+
+<br/>
+
 <h3 align="center">一套 Agent 运行时框架——依赖注入组装能力，Protocol 隔离接口</h3>
 <p align="center">引擎驱动 ReAct 主循环，插件系统贯穿 10 个生命周期检查点，文件系统即资源注册中心。</p>
 
