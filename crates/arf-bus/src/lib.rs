@@ -4,11 +4,48 @@
 //! handles node lifecycle (online/offline/heartbeat), and routes messages
 //! (broadcast when `to` is empty, directed otherwise).
 
-use arf_core::{Message, SendError};
+use arf_core::{Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+// ═══════════════════════════════════════════════════════════════════
+// ConnectError
+// ═══════════════════════════════════════════════════════════════════
+
+/// Errors that can occur when connecting to the Bus.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// A node with this NodeId is already connected.
+    AlreadyConnected(NodeId),
+    /// Bus has been shut down.
+    BusClosed,
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyConnected(id) => write!(f, "node already connected: {id}"),
+            Self::BusClosed => write!(f, "bus closed"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+// ═══════════════════════════════════════════════════════════════════
+// NodeEntry
+// ═══════════════════════════════════════════════════════════════════
+
+/// Internal per-node state stored in the Bus nodes map.
+pub(crate) struct NodeEntry {
+    pub info: NodeInfo,
+    /// Last heartbeat ack received. Used in task 1.4.
+    pub last_ack: Instant,
+    pub filter: MessageFilter,
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Bus
@@ -27,9 +64,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 /// dummy (which never reads) would block all senders.
 pub struct Bus {
     /// Send commands into the bus message loop.
-    cmd_tx: mpsc::Sender<BusCommand>,
+    pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
     /// Clone of the broadcast sender, used by `subscribe()`.
-    broadcast_tx: broadcast::Sender<Message>,
+    pub(crate) broadcast_tx: broadcast::Sender<Message>,
+    /// Online nodes registry — shared with message loop.
+    pub(crate) nodes: Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     /// Total messages broadcast since start.
     message_count: Arc<AtomicU64>,
     /// When the bus was created.
@@ -39,11 +78,22 @@ pub struct Bus {
 }
 
 /// Internal commands sent to the bus message loop.
-enum BusCommand {
+pub(crate) enum BusCommand {
     /// Send a message to be broadcast.
     Send {
         msg: Message,
-        respond_to: oneshot::Sender<Result<(), SendError>>,
+        respond_to: oneshot::Sender<Result<SendReceipt, SendError>>,
+    },
+    /// Connect a node to the bus.
+    Connect {
+        info: NodeInfo,
+        filter: MessageFilter,
+        respond_to: oneshot::Sender<Result<(), ConnectError>>,
+    },
+    /// Disconnect a node from the bus.
+    Disconnect {
+        node_id: NodeId,
+        respond_to: oneshot::Sender<()>,
     },
     /// Shut down the bus.
     Shutdown {
@@ -67,16 +117,26 @@ impl Bus {
         let (broadcast_tx, drain_rx) = broadcast::channel(channel_capacity);
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let message_count = Arc::new(AtomicU64::new(0));
+        let nodes = Arc::new(RwLock::new(HashMap::new()));
 
         let broadcast_tx_clone = broadcast_tx.clone();
         let count_clone = message_count.clone();
+        let nodes_clone = nodes.clone();
         let loop_handle = tokio::spawn(async move {
-            run_message_loop(cmd_rx, broadcast_tx_clone, drain_rx, count_clone).await;
+            run_message_loop(
+                cmd_rx,
+                broadcast_tx_clone,
+                drain_rx,
+                count_clone,
+                nodes_clone,
+            )
+            .await;
         });
 
         Self {
             cmd_tx,
             broadcast_tx,
+            nodes,
             message_count,
             start_time: Instant::now(),
             _loop_handle: loop_handle,
@@ -85,9 +145,9 @@ impl Bus {
 
     /// Send a message to be broadcast on the bus.
     ///
-    /// Returns `Ok(())` if the message was successfully broadcast.
+    /// Returns `Ok(SendReceipt)` with online node counts.
     /// Returns `Err(SendError::BusClosed)` if the bus has been shut down.
-    pub async fn send(&self, msg: Message) -> Result<(), SendError> {
+    pub async fn send(&self, msg: Message) -> Result<SendReceipt, SendError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(BusCommand::Send {
@@ -147,20 +207,38 @@ async fn run_message_loop(
     broadcast_tx: broadcast::Sender<Message>,
     mut drain_rx: broadcast::Receiver<Message>,
     message_count: Arc<AtomicU64>,
+    nodes: Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BusCommand::Send { msg, respond_to } => {
-                // Broadcast to all subscribers.
-                // If no application receivers exist, drain_rx still keeps the
-                // channel alive. send() returns Ok(n) where n includes drain_rx.
+                let msg_id = msg.id;
                 let _ = broadcast_tx.send(msg);
                 message_count.fetch_add(1, Ordering::Relaxed);
-                // Drain the dummy receiver immediately to free ring buffer space.
-                // This prevents the dummy from accumulating lag and blocking
-                // real senders. Only real slow receivers cause backpressure.
                 while drain_rx.try_recv().is_ok() {}
-                let _ = respond_to.send(Ok(()));
+
+                let online_nodes = nodes.read().unwrap().len();
+                let receipt = SendReceipt {
+                    message_id: msg_id,
+                    online_nodes,
+                    matching_nodes: online_nodes, // TODO: filter matching in 1.6
+                };
+                let _ = respond_to.send(Ok(receipt));
+            }
+            BusCommand::Connect {
+                info,
+                filter,
+                respond_to,
+            } => {
+                let result = handle_connect(&broadcast_tx, &nodes, info, filter);
+                let _ = respond_to.send(result);
+            }
+            BusCommand::Disconnect {
+                node_id,
+                respond_to,
+            } => {
+                handle_disconnect(&broadcast_tx, &nodes, &node_id);
+                let _ = respond_to.send(());
             }
             BusCommand::Shutdown { respond_to } => {
                 let _ = respond_to.send(());
@@ -169,6 +247,76 @@ async fn run_message_loop(
         }
     }
 }
+
+/// Register a node and broadcast `node_online`.
+fn handle_connect(
+    broadcast_tx: &broadcast::Sender<Message>,
+    nodes: &Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
+    info: NodeInfo,
+    filter: MessageFilter,
+) -> Result<(), ConnectError> {
+    let node_id = info.node_id.clone();
+
+    // Check for duplicate
+    {
+        let map = nodes.read().unwrap();
+        if map.contains_key(&node_id) {
+            return Err(ConnectError::AlreadyConnected(node_id));
+        }
+    }
+
+    // Register entry
+    {
+        let mut map = nodes.write().unwrap();
+        map.insert(
+            node_id.clone(),
+            NodeEntry {
+                info: info.clone(),
+                last_ack: Instant::now(),
+                filter,
+            },
+        );
+    }
+
+    // Broadcast node_online
+    let online_msg = Message::new(
+        "node_online",
+        node_id,
+        None,
+        serde_json::to_value(&info).unwrap_or_default(),
+    );
+    let _ = broadcast_tx.send(online_msg);
+
+    Ok(())
+}
+
+/// Remove a node and broadcast `node_offline`.
+fn handle_disconnect(
+    broadcast_tx: &broadcast::Sender<Message>,
+    nodes: &Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
+    node_id: &NodeId,
+) {
+    {
+        let mut map = nodes.write().unwrap();
+        map.remove(node_id);
+    }
+
+    // Broadcast node_offline
+    let offline_msg = Message::new(
+        "node_offline",
+        node_id.clone(),
+        None,
+        serde_json::json!({}),
+    );
+    let _ = broadcast_tx.send(offline_msg);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Modules
+// ═══════════════════════════════════════════════════════════════════
+
+mod connection;
+pub use connection::NodeHandle;
 
 // ═══════════════════════════════════════════════════════════════════
 // Tests
