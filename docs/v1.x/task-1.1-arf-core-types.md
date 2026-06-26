@@ -344,21 +344,24 @@ mod tests {
     use std::collections::HashMap;
 
     // ═══════════════════════════════════════════════════════════════
-    // NodeId
+    // NodeId — 10 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [构造] 正常输入：new() 创建后 as_str() 返回相同值
     #[test]
     fn node_id_new_and_as_str() {
         let id = NodeId::new("engine/main");
         assert_eq!(id.as_str(), "engine/main");
     }
 
+    // [trait] Display：format! 宏对 NodeId 的输出等于内部字符串
     #[test]
     fn node_id_display() {
         let id = NodeId::new("trace/observer");
         assert_eq!(format!("{id}"), "trace/observer");
     }
 
+    // [边界] 空字符串：new("") 不 panic，as_str() 返回空串，Display 也空
     #[test]
     fn node_id_empty_string() {
         let id = NodeId::new("");
@@ -366,6 +369,7 @@ mod tests {
         assert_eq!(format!("{id}"), "");
     }
 
+    // [边界] 超长字符串：1024 字符的 id 不截断、不 panic
     #[test]
     fn node_id_very_long() {
         let long = "a".repeat(1024);
@@ -373,12 +377,14 @@ mod tests {
         assert_eq!(id.as_str(), &long);
     }
 
+    // [边界] Unicode：中文、分隔符等非 ASCII 字符正常存取
     #[test]
     fn node_id_unicode() {
         let id = NodeId::new("引擎/主节点");
         assert_eq!(id.as_str(), "引擎/主节点");
     }
 
+    // [trait] Eq：内容相同的两个 NodeId 相等，不同的不等
     #[test]
     fn node_id_equality() {
         let a = NodeId::new("a");
@@ -388,6 +394,7 @@ mod tests {
         assert_ne!(a, c);
     }
 
+    // [trait] Clone：clone 后的值与原始值相等
     #[test]
     fn node_id_clone_is_equal() {
         let a = NodeId::new("x");
@@ -395,6 +402,7 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    // [trait] Hash：NodeId 可作为 HashMap 的 key，相同内容命中，不存在返回 None
     #[test]
     fn node_id_hashable() {
         let mut map = HashMap::new();
@@ -404,16 +412,17 @@ mod tests {
         assert_eq!(map.get(&NodeId::new("k3")), None);
     }
 
+    // [trait] Ord：字典序排序，"a" < "aa" < "b"
     #[test]
     fn node_id_ordering() {
         let a = NodeId::new("a");
         let b = NodeId::new("b");
         let aa = NodeId::new("aa");
-        // "a" < "aa" < "b" in lexicographic order
         assert!(a < aa);
         assert!(aa < b);
     }
 
+    // [序列化] serde 往返：NodeId → JSON 字符串 → NodeId，值不变
     #[test]
     fn node_id_serialization_roundtrip() {
         let id = NodeId::new("mcp/filesystem");
@@ -424,9 +433,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Message — construction
+    // Message — construction — 6 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [构造] new() 自动填充 id（非 nil）和 timestamp（> 0）
     #[test]
     fn message_new_fills_id_and_timestamp() {
         let from = NodeId::new("test");
@@ -435,6 +445,7 @@ mod tests {
         assert!(msg.timestamp > 0);
     }
 
+    // [唯一性] 连续两次 new() 生成的 id 不同（UUID v4 的随机性保证）
     #[test]
     fn message_id_is_unique_each_call() {
         let from = NodeId::new("test");
@@ -443,6 +454,7 @@ mod tests {
         assert_ne!(m1.id, m2.id);
     }
 
+    // [时间] 间隔 1ms 创建的两条消息，后者的 timestamp ≥ 前者
     #[test]
     fn message_timestamp_is_monotonic() {
         let from = NodeId::new("test");
@@ -452,6 +464,7 @@ mod tests {
         assert!(m2.timestamp >= m1.timestamp);
     }
 
+    // [边界] msg_type 为空字符串：不 panic，行为与正常字符串一致
     #[test]
     fn message_empty_msg_type() {
         let from = NodeId::new("test");
@@ -459,15 +472,16 @@ mod tests {
         assert_eq!(msg.msg_type, "");
     }
 
+    // [trait] Into<String>：传 owned String 而非 &str，msg_type 正确传递
     #[test]
     fn message_msg_type_from_string() {
         let from = NodeId::new("test");
         let s = String::from("model_call");
         let msg = Message::new(s, from.clone(), None, serde_json::json!(null));
-        // impl Into<String> accepts owned String
         assert_eq!(msg.msg_type, "model_call");
     }
 
+    // [字段] from 字段正确赋值为传入的 NodeId
     #[test]
     fn message_from_field_set_correctly() {
         let from = NodeId::new("sender");
@@ -476,21 +490,24 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Message — is_broadcast / is_for
+    // Message — is_broadcast / is_for — 6 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [方法] to=None 时 is_broadcast() 返回 true
     #[test]
     fn message_is_broadcast_when_to_is_none() {
         let msg = Message::new("t", NodeId::new("a"), None, serde_json::json!(null));
         assert!(msg.is_broadcast());
     }
 
+    // [方法] to=Some 时 is_broadcast() 返回 false
     #[test]
     fn message_is_not_broadcast_when_to_is_some() {
         let msg = Message::new("t", NodeId::new("a"), Some(NodeId::new("b")), serde_json::json!(null));
         assert!(!msg.is_broadcast());
     }
 
+    // [方法] 定向消息的目标节点调用 is_for() 返回 true
     #[test]
     fn message_is_for_target() {
         let target = NodeId::new("target");
@@ -498,12 +515,14 @@ mod tests {
         assert!(msg.is_for(&target));
     }
 
+    // [方法] 定向消息的非目标节点调用 is_for() 返回 false
     #[test]
     fn message_is_for_wrong_target() {
         let msg = Message::new("t", NodeId::new("sender"), Some(NodeId::new("target")), serde_json::json!(null));
         assert!(!msg.is_for(&NodeId::new("other")));
     }
 
+    // [边界] 广播消息对任何节点（包括发送者自己）is_for() 都返回 false
     #[test]
     fn message_broadcast_is_not_for_anyone() {
         let msg = Message::new("t", NodeId::new("sender"), None, serde_json::json!(null));
@@ -511,6 +530,7 @@ mod tests {
         assert!(!msg.is_for(&NodeId::new("sender")));
     }
 
+    // [边界] 定向给自己：发送者 == 目标，is_for 返回 true，is_broadcast 返回 false
     #[test]
     fn message_directed_to_self() {
         let self_id = NodeId::new("self");
@@ -520,9 +540,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Message — serialization
+    // Message — serialization — 6 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [序列化] 定向消息 serde 往返：所有字段（含 payload）逐项相等
     #[test]
     fn message_serialization_roundtrip_directed() {
         let msg = Message::new(
@@ -541,6 +562,7 @@ mod tests {
         assert_eq!(msg.payload, back.payload);
     }
 
+    // [序列化] 广播消息（to=None）serde 往返后 to 仍为 None
     #[test]
     fn message_serialization_roundtrip_broadcast() {
         let msg = Message::new(
@@ -555,6 +577,7 @@ mod tests {
         assert_eq!(back.to, None);
     }
 
+    // [边界] payload 为 JSON null：序列化/反序列化后保持为 null
     #[test]
     fn message_serialization_null_payload() {
         let msg = Message::new("t", NodeId::new("a"), None, serde_json::Value::Null);
@@ -563,6 +586,7 @@ mod tests {
         assert_eq!(back.payload, serde_json::Value::Null);
     }
 
+    // [边界] payload 深度嵌套（3 层 + 数组 + null + bool）：结构不丢失
     #[test]
     fn message_serialization_deeply_nested_payload() {
         let payload = serde_json::json!({
@@ -578,16 +602,15 @@ mod tests {
         assert_eq!(msg.payload, back.payload);
     }
 
+    // [兼容] 时间戳为 0 的 JSON（旧版本/外部来源）反序列化不报错
     #[test]
     fn message_deserialize_missing_timestamp_still_works() {
-        // timestamp is required by `new()`, but if JSON is from old
-        // version or external source without timestamp, deserialization
-        // should still work (default u64 = 0).
         let json = r#"{"id":"00000000-0000-0000-0000-000000000000","msg_type":"t","from":"a","to":null,"payload":null,"timestamp":0}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.timestamp, 0);
     }
 
+    // [trait] Clone：Message 的所有字段（含 payload）克隆后一致
     #[test]
     fn message_clone_produces_equal() {
         let msg = Message::new("t", NodeId::new("a"), Some(NodeId::new("b")), serde_json::json!({"x": 1}));
@@ -601,9 +624,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // NodeInfo
+    // NodeInfo — 6 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [构造] 所有字段赋值后可读，值正确
     #[test]
     fn node_info_all_fields() {
         let info = NodeInfo {
@@ -617,6 +641,7 @@ mod tests {
         assert_eq!(info.online_since, 1719500000000);
     }
 
+    // [序列化] Engine 类型 NodeInfo serde 往返：字段全等
     #[test]
     fn node_info_serialization_roundtrip() {
         let info = NodeInfo {
@@ -633,6 +658,7 @@ mod tests {
         assert_eq!(info.online_since, back.online_since);
     }
 
+    // [类型] Engine 节点：capabilities 含 sessions 列表
     #[test]
     fn node_info_engine_type() {
         let info = NodeInfo {
@@ -646,6 +672,7 @@ mod tests {
         assert!(json.contains("sid-abc"));
     }
 
+    // [类型] Model 节点：capabilities 含 provider 和 models 列表
     #[test]
     fn node_info_model_type() {
         let info = NodeInfo {
@@ -657,6 +684,7 @@ mod tests {
         assert_eq!(info.node_type, "model");
     }
 
+    // [类型] Trace 节点：capabilities 可为 null（无特殊能力声明）
     #[test]
     fn node_info_trace_type() {
         let info = NodeInfo {
@@ -668,6 +696,7 @@ mod tests {
         assert_eq!(info.node_type, "trace");
     }
 
+    // [边界] capabilities 为空对象 {}：序列化/反序列化后仍为 {}
     #[test]
     fn node_info_empty_capabilities() {
         let info = NodeInfo {
@@ -682,9 +711,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // BusGraph
+    // BusGraph — 3 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [边界] 空图：nodes 为空 Vec，message_count=0，uptime_ms=0
     #[test]
     fn bus_graph_empty() {
         let graph = BusGraph {
@@ -696,6 +726,7 @@ mod tests {
         assert_eq!(graph.message_count, 0);
     }
 
+    // [构造] 含多节点的图：node 列表长度和 message_count 正确
     #[test]
     fn bus_graph_with_nodes() {
         let graph = BusGraph {
@@ -720,6 +751,7 @@ mod tests {
         assert_eq!(graph.message_count, 42);
     }
 
+    // [序列化] BusGraph serde 往返：nodes 数量、计数、运行时间正确
     #[test]
     fn bus_graph_serialization_roundtrip() {
         let graph = BusGraph {
@@ -740,9 +772,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SendReceipt
+    // SendReceipt — 3 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [边界] 零节点：online_nodes=0、matching_nodes=0（无人监听）
     #[test]
     fn send_receipt_zero_online_nodes() {
         let receipt = SendReceipt {
@@ -754,6 +787,7 @@ mod tests {
         assert_eq!(receipt.matching_nodes, 0);
     }
 
+    // [构造] online_nodes > matching_nodes 正常（部分节点 filter 不匹配）
     #[test]
     fn send_receipt_nonzero() {
         let id = uuid::Uuid::new_v4();
@@ -767,6 +801,7 @@ mod tests {
         assert_eq!(receipt.matching_nodes, 3);
     }
 
+    // [trait] Clone + PartialEq：克隆后字段一致
     #[test]
     fn send_receipt_clone() {
         let receipt = SendReceipt {
@@ -780,31 +815,36 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SendError — Display
+    // SendError — 5 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [trait] Display：NodeOffline 变体带 node id，输出格式正确
     #[test]
     fn send_error_node_offline() {
         let e = SendError::NodeOffline(NodeId::new("mcp/filesystem"));
         assert_eq!(format!("{e}"), "target node offline: mcp/filesystem");
     }
 
+    // [trait] Display：BusFull 输出固定文本
     #[test]
     fn send_error_bus_full() {
         assert_eq!(format!("{}", SendError::BusFull), "bus buffer full");
     }
 
+    // [trait] Display：BusClosed 输出固定文本
     #[test]
     fn send_error_bus_closed() {
         assert_eq!(format!("{}", SendError::BusClosed), "bus closed");
     }
 
+    // [trait] std::error::Error：SendError 满足 trait 约束，可被 anyhow/eyre 等消费
     #[test]
     fn send_error_implements_std_error() {
         fn takes_error(_e: impl std::error::Error) {}
         takes_error(SendError::BusFull);
     }
 
+    // [trait] Debug：{:?} 输出包含变体名
     #[test]
     fn send_error_debug() {
         let e = SendError::BusClosed;
@@ -813,9 +853,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // MessageFilter & ToMatch
+    // MessageFilter & ToMatch — 8 tests
     // ═══════════════════════════════════════════════════════════════
 
+    // [构造] types=None 表示不过滤 type，全收（Trace 节点行为）
     #[test]
     fn filter_types_none() {
         let f = MessageFilter {
@@ -825,9 +866,9 @@ mod tests {
         assert!(f.types.is_none());
     }
 
+    // [边界] types=Some(空数组) 表示显式"什么都不匹配"（静默节点用）
     #[test]
     fn filter_types_empty_vec() {
-        // Some(empty) means "match nothing" — explicit opt-in to silence
         let f = MessageFilter {
             types: Some(vec![]),
             to_match: ToMatch::BroadcastOnly,
@@ -835,6 +876,7 @@ mod tests {
         assert_eq!(f.types.as_ref().unwrap().len(), 0);
     }
 
+    // [构造] types=Some(单个 type)：白名单只含一种消息类型
     #[test]
     fn filter_types_single() {
         let f = MessageFilter {
@@ -844,6 +886,7 @@ mod tests {
         assert_eq!(f.types.as_ref().unwrap().len(), 1);
     }
 
+    // [构造] types=Some(多个 type)：白名单含多种消息类型（Engine 节点行为）
     #[test]
     fn filter_types_multiple() {
         let f = MessageFilter {
@@ -858,15 +901,16 @@ mod tests {
         assert_eq!(f.types.as_ref().unwrap().len(), 4);
     }
 
+    // [覆盖] ToMatch 四种变体均可构造（编译期验证枚举完整）
     #[test]
     fn to_match_all_variants_exist() {
-        // Verify all four variants can be constructed
         let _ = ToMatch::All;
         let _ = ToMatch::BroadcastOnly;
         let _ = ToMatch::DirectedToMe;
         let _ = ToMatch::BroadcastAndDirectedToMe;
     }
 
+    // [trait] Clone + PartialEq：ToMatch 克隆后相等
     #[test]
     fn to_match_clone_and_eq() {
         let a = ToMatch::All;
@@ -874,6 +918,7 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    // [trait] MessageFilter Clone：types 和 to_match 克隆后一致
     #[test]
     fn message_filter_clone() {
         let f = MessageFilter {
@@ -894,4 +939,4 @@ mod tests {
 - **newtype 模式**保护类型安全（`NodeId` 不与 `String` 混淆）
 - **serde 全覆盖**，消息可 JSON 序列化/反序列化
 - **`to` 字段**是接收侧过滤的 hint，Bus 不做路由决策
-- **36 个测试**，覆盖所有边界：空串、零值、Unicode、长字符串、自指、null payload、嵌套 JSON、HashMap key、排序、Clone、`std::error::Error` trait、时间单调性、ID 唯一性
+- **36 个测试**，每个标注测试角度（`[构造]` `[方法]` `[边界]` `[唯一性]` `[时间]` `[trait]` `[序列化]` `[兼容]` `[类型]` `[覆盖]`），覆盖：空串、零值、Unicode、长字符串、自指、null payload、嵌套 JSON、HashMap key、Ord 排序、Clone+PartialEq、`std::error::Error` trait、时间单调性、ID 唯一性、旧版本兼容
