@@ -110,19 +110,27 @@ agent = BaseAgent(
 )
 ```
 
-### 2. Hook 生命周期（7 个事件）
+### 2. Hook 生命周期（10 个检查点）
 
-插件不修改引擎代码。引擎在 7 个检查点触发 Hook 事件，插件订阅响应。`blocking` 模式可注入/拦截，`side` 模式并行执行。
+插件不修改引擎代码。引擎在 10 个检查点触发事件，每个检查点均支持 `blocking` 和 `side` 两种模式——插件按需声明，引擎不做硬编码限制。
 
-| 事件 | 模式 | 触发时机 |
-|------|------|---------|
-| `session_start` | side | 会话开始 |
-| `before_round` | blocking | 每轮 `chat()` 入口，park 在此 |
-| `before_model` | side | 模型调用前 |
-| `after_tools` | blocking | 工具执行后、结果 commit 前（externalization 在此） |
-| `after_model` | side | 模型响应后 |
-| `before_break` | blocking | 引擎 break 前（task_complete 校验在此） |
-| `session_end` | side | 会话结束，cleanup |
+| 检查点 | 触发时机 |
+|--------|---------|
+| `session_start` | 会话开始 / resume 恢复 |
+| `before_round` | 每轮 `chat()` 入口，park 在此 |
+| `before_model` | 模型调用前 |
+| `after_model` | 模型响应后 |
+| `before_tools` | 工具执行前 |
+| `after_tools` | 工具执行后、结果 commit 前（externalization 在此） |
+| `after_round` | 本轮结束 |
+| `before_break` | 引擎 break 前（task_complete 校验在此） |
+| `on_error` | 异常发生时 |
+| `session_end` | 会话结束，cleanup |
+
+- **blocking** — 顺序执行，可修改 ctx 注入数据或中断流程（park、approval 等）
+- **side** — `asyncio.create_task` 并发执行，fire-and-forget（trace、metrics 等）
+
+每个插件在其 `plugin.yaml` 的 `hooks` 字段声明自己要订阅的检查点和模式：`{before_round: blocking, after_model: side}`。
 
 ### 3. 文件系统即注册中心
 
