@@ -88,6 +88,28 @@ impl NodeId {
 
 逐行：
 - `id: impl Into<String>` — 接受 `&str`、`String`、`&String`，内部调用 `.into()` 转成 `String`。比写死 `&str` 更灵活
+
+三种 str 的区别：
+
+| 类型 | 含义 | 内存 | 例子 |
+|------|------|------|------|
+| `&str` | 借用的字符串**切片**（引用） | 不拥有数据，指向别人的内存 | `"hello"` 字面量 |
+| `String` | **拥有**堆上数据的字符串 | 在堆上分配，可增删改 | `String::from("hello")` |
+| `&String` | 对 `String` 的引用 | 双层间接，编译器自动解引用成 `&str` | `&my_string` |
+
+关键：`&String` 通过 Rust 的 `Deref` trait 自动变成 `&str`，所以实际场景中你永远不会手动传 `&String`——传 `&my_string` 时编译器直接理解为 `&str`。
+
+`impl Into<String>` 的好处：
+
+```rust
+// 调用方传什么都行
+NodeId::new("字面量");          // &str → Into<String> → String::from
+NodeId::new(owned_string);     // String → Into<String> → 零拷贝直接转移所有权
+NodeId::new(&owned_string);    // &String → Deref → &str → Into<String>
+```
+
+如果写死 `&str`，调用方有 `String` 时得多写一个 `.as_str()`；写 `impl Into<String>` 三种全收，一次到位。
+
 - `as_str()` — 读内部值，避免每次都写 `id.0.as_str()`
 
 ```rust
