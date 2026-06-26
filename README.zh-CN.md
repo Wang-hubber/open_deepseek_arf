@@ -56,7 +56,7 @@ ARF 将 Agent 运行拆分为三层——Agent 持有状态，协调层 驱动�
 │                    Resources                         │
 │  tools/ · skills/ · models/ · hooks/                 │
 │  FileWatcher 热加载 · ResourceResolver 覆盖解析        │
-│  Sandbox 安全边界 · Guardrails 权限校验                 │
+│  Guardrails 路径安全 · path_check 权限校验               │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -106,7 +106,7 @@ ARF 将 Agent 运行拆分为三层——Agent 持有状态，协调层 驱动�
 | **Resources** | `arf/resources/` | FileWatcher 热加载、三种 Provider、覆盖解析 |
 | **Memory** | `arf/memory/` | FileMemoryStore、异步 LLM 提取/检索 |
 | **Compaction** | `arf/compaction/` | SlidingWindowCompactor、Tool Output Externalization |
-| **Guardrails + Sandbox** | `arf/guardrails/` `arf/sandbox/` | PathCheckToolGuard 参数校验 + PathSandbox 边界执行，路径安全两道防线 |
+| **Guardrails** | `arf/guardrails/` | PathCheckToolGuard 参数校验 + PathSandbox 边界执行，路径安全两道防线 |
 | **Communication** | `arf/communication/` | AgentBus、PeerAgent、Supervisor |
 | **Streaming** | `arf/streaming/` | SSE 事件流适配与序列化 |
 | **Evaluation** | `arf/evaluation/` | EvalRunner、BenchmarkBuilder、EvalComparator |
@@ -204,7 +204,7 @@ v0.x 的核心教训是耦合——Engine 直接持有 MCP、Plugin、AgentBus �
 
 Bus / Engine / State / AgentBus 四个性能敏感且正确性要求极高的模块用 Rust 实现，Python 通过 PyO3 绑定。Python 原型证明了什么是对的，Rust 的类型系统和所有权模型会让它无法是错的。
 
-完整设计见：**[docs/v2-design.md](docs/v2-design.md)**
+完整设计见：**[docs/v1.x-design.md](docs/v1.x-design.md)**
 
 ---
 
@@ -212,7 +212,7 @@ Bus / Engine / State / AgentBus 四个性能敏感且正确性要求极高的模
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/v2-design.md`](docs/v2-design.md) | **v2 架构设计** — Bus + Engine + Agent + State + MCP + ModelAdapter |
+| [`docs/v1.x-design.md`](docs/v1.x-design.md) | **v2 架构设计** — Bus + Engine + Agent + State + MCP + ModelAdapter |
 | [`docs/agent.md`](docs/agent.md) | Agent 配置、组装、模型适配器、工具执行 |
 | [`docs/a2a-communication.md`](docs/a2a-communication.md) | Subagents vs Teammates 机制对比与案例 |
 | [`docs/park-resume.md`](docs/park-resume.md) | Park/Resume 等待唤醒机制 |
