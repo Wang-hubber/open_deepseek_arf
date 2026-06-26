@@ -46,8 +46,8 @@ pub struct Message {
     pub msg_type: String,
     /// Sender node ID.
     pub from: NodeId,
-    /// Receiver hint. `None` = broadcast to all.
-    pub to: Option<NodeId>,
+    /// Receiver targets. Empty = broadcast to all.
+    pub to: Vec<NodeId>,
     /// Arbitrary JSON payload.
     pub payload: serde_json::Value,
     /// Unix timestamp in milliseconds.
@@ -59,7 +59,7 @@ impl Message {
     pub fn new(
         msg_type: impl Into<String>,
         from: NodeId,
-        to: Option<NodeId>,
+        to: Vec<NodeId>,
         payload: serde_json::Value,
     ) -> Self {
         Self {
@@ -72,17 +72,14 @@ impl Message {
         }
     }
 
-    /// Returns true if this is a broadcast message.
+    /// Returns true if this is a broadcast message (no specific targets).
     pub fn is_broadcast(&self) -> bool {
-        self.to.is_none()
+        self.to.is_empty()
     }
 
     /// Returns true if this message is directed at the given node.
     pub fn is_for(&self, node_id: &NodeId) -> bool {
-        match &self.to {
-            Some(to) => to == node_id,
-            None => false,
-        }
+        self.to.contains(node_id)
     }
 }
 
@@ -150,7 +147,7 @@ pub struct MessageFilter {
 pub enum ToMatch {
     /// Receive all messages regardless of `to`.
     All,
-    /// Only receive messages with `to == None` (broadcast).
+    /// Only receive messages with `to` empty (broadcast).
     BroadcastOnly,
     /// Only receive messages directed specifically to this node.
     DirectedToMe,
@@ -163,8 +160,8 @@ pub enum ToMatch {
 /// Errors that can occur when sending a message.
 #[derive(Debug)]
 pub enum SendError {
-    /// Directed message target is not online.
-    NodeOffline(NodeId),
+    /// All directed message targets are offline.
+    NodeOffline(Vec<NodeId>),
     /// Bus ring buffer is full.
     BusFull,
     /// Bus has been shut down.
@@ -174,7 +171,10 @@ pub enum SendError {
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NodeOffline(id) => write!(f, "target node offline: {id}"),
+            Self::NodeOffline(ids) => {
+                let names: Vec<_> = ids.iter().map(|id| id.as_str()).collect();
+                write!(f, "target nodes offline: {}", names.join(", "))
+            }
             Self::BusFull => write!(f, "bus buffer full"),
             Self::BusClosed => write!(f, "bus closed"),
         }
@@ -290,7 +290,7 @@ mod tests {
         let msg = Message::new(
             "test_type",
             from.clone(),
-            None,
+            vec![],
             serde_json::json!({"k": "v"}),
         );
         assert!(!msg.id.is_nil());
@@ -301,8 +301,8 @@ mod tests {
     #[test]
     fn message_id_is_unique_each_call() {
         let from = NodeId::new("test");
-        let m1 = Message::new("t", from.clone(), None, serde_json::json!(null));
-        let m2 = Message::new("t", from.clone(), None, serde_json::json!(null));
+        let m1 = Message::new("t", from.clone(), vec![], serde_json::json!(null));
+        let m2 = Message::new("t", from.clone(), vec![], serde_json::json!(null));
         assert_ne!(m1.id, m2.id);
     }
 
@@ -310,9 +310,9 @@ mod tests {
     #[test]
     fn message_timestamp_is_monotonic() {
         let from = NodeId::new("test");
-        let m1 = Message::new("t", from.clone(), None, serde_json::json!(null));
+        let m1 = Message::new("t", from.clone(), vec![], serde_json::json!(null));
         std::thread::sleep(std::time::Duration::from_millis(1));
-        let m2 = Message::new("t", from.clone(), None, serde_json::json!(null));
+        let m2 = Message::new("t", from.clone(), vec![], serde_json::json!(null));
         assert!(m2.timestamp >= m1.timestamp);
     }
 
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn message_empty_msg_type() {
         let from = NodeId::new("test");
-        let msg = Message::new("", from.clone(), None, serde_json::json!(null));
+        let msg = Message::new("", from.clone(), vec![], serde_json::json!(null));
         assert_eq!(msg.msg_type, "");
     }
 
@@ -329,7 +329,7 @@ mod tests {
     fn message_msg_type_from_string() {
         let from = NodeId::new("test");
         let s = String::from("model_call");
-        let msg = Message::new(s, from.clone(), None, serde_json::json!(null));
+        let msg = Message::new(s, from.clone(), vec![], serde_json::json!(null));
         assert_eq!(msg.msg_type, "model_call");
     }
 
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn message_from_field_set_correctly() {
         let from = NodeId::new("sender");
-        let msg = Message::new("t", from.clone(), None, serde_json::json!(null));
+        let msg = Message::new("t", from.clone(), vec![], serde_json::json!(null));
         assert_eq!(msg.from, from);
     }
 
@@ -345,20 +345,20 @@ mod tests {
     // Message — is_broadcast / is_for — 6 tests
     // ═══════════════════════════════════════════════════════════════
 
-    // [方法] to=None 时 is_broadcast() 返回 true
+    // [方法] to=[] 时 is_broadcast() 返回 true
     #[test]
-    fn message_is_broadcast_when_to_is_none() {
-        let msg = Message::new("t", NodeId::new("a"), None, serde_json::json!(null));
+    fn message_is_broadcast_when_to_is_empty() {
+        let msg = Message::new("t", NodeId::new("a"), vec![], serde_json::json!(null));
         assert!(msg.is_broadcast());
     }
 
     // [方法] to=Some 时 is_broadcast() 返回 false
     #[test]
-    fn message_is_not_broadcast_when_to_is_some() {
+    fn message_is_not_broadcast_when_to_is_nonempty() {
         let msg = Message::new(
             "t",
             NodeId::new("a"),
-            Some(NodeId::new("b")),
+            vec![NodeId::new("b")],
             serde_json::json!(null),
         );
         assert!(!msg.is_broadcast());
@@ -371,7 +371,7 @@ mod tests {
         let msg = Message::new(
             "t",
             NodeId::new("sender"),
-            Some(target.clone()),
+            vec![target.clone()],
             serde_json::json!(null),
         );
         assert!(msg.is_for(&target));
@@ -383,7 +383,7 @@ mod tests {
         let msg = Message::new(
             "t",
             NodeId::new("sender"),
-            Some(NodeId::new("target")),
+            vec![NodeId::new("target")],
             serde_json::json!(null),
         );
         assert!(!msg.is_for(&NodeId::new("other")));
@@ -392,19 +392,19 @@ mod tests {
     // [边界] 广播消息对任何节点（包括发送者自己）is_for() 都返回 false
     #[test]
     fn message_broadcast_is_not_for_anyone() {
-        let msg = Message::new("t", NodeId::new("sender"), None, serde_json::json!(null));
+        let msg = Message::new("t", NodeId::new("sender"), vec![], serde_json::json!(null));
         assert!(!msg.is_for(&NodeId::new("anyone")));
         assert!(!msg.is_for(&NodeId::new("sender")));
     }
 
-    // [边界] 定向给自己：发送者 == 目标，is_for 返回 true，is_broadcast 返回 false
+    // [边界] 定向给自己：发送者也在 to 列表中，is_for 返回 true
     #[test]
     fn message_directed_to_self() {
         let self_id = NodeId::new("self");
         let msg = Message::new(
             "t",
             self_id.clone(),
-            Some(self_id.clone()),
+            vec![self_id.clone()],
             serde_json::json!(null),
         );
         assert!(msg.is_for(&self_id));
@@ -421,7 +421,7 @@ mod tests {
         let msg = Message::new(
             "test",
             NodeId::new("sender"),
-            Some(NodeId::new("receiver")),
+            vec![NodeId::new("receiver")],
             serde_json::json!({"key": [1, 2, 3]}),
         );
         let json = serde_json::to_string(&msg).unwrap();
@@ -434,25 +434,25 @@ mod tests {
         assert_eq!(msg.payload, back.payload);
     }
 
-    // [序列化] 广播消息（to=None）serde 往返后 to 仍为 None
+    // [序列化] 广播消息（to=[]）serde 往返后 to 仍为空
     #[test]
     fn message_serialization_roundtrip_broadcast() {
         let msg = Message::new(
             "node_online",
             NodeId::new("engine/main"),
-            None,
+            vec![],
             serde_json::json!({"node": "info"}),
         );
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg.to, None);
-        assert_eq!(back.to, None);
+        assert_eq!(msg.to, vec![]);
+        assert_eq!(back.to, vec![]);
     }
 
     // [边界] payload 为 JSON null：序列化/反序列化后保持为 null
     #[test]
     fn message_serialization_null_payload() {
-        let msg = Message::new("t", NodeId::new("a"), None, serde_json::Value::Null);
+        let msg = Message::new("t", NodeId::new("a"), vec![], serde_json::Value::Null);
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.payload, serde_json::Value::Null);
@@ -468,7 +468,7 @@ mod tests {
                 }
             }
         });
-        let msg = Message::new("t", NodeId::new("a"), None, payload);
+        let msg = Message::new("t", NodeId::new("a"), vec![], payload);
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(msg.payload, back.payload);
@@ -477,7 +477,7 @@ mod tests {
     // [兼容] 时间戳为 0 的 JSON（旧版本/外部来源）反序列化不报错
     #[test]
     fn message_deserialize_missing_timestamp_still_works() {
-        let json = r#"{"id":"00000000-0000-0000-0000-000000000000","msg_type":"t","from":"a","to":null,"payload":null,"timestamp":0}"#;
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000000","msg_type":"t","from":"a","to":[],"payload":null,"timestamp":0}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.timestamp, 0);
     }
@@ -488,7 +488,7 @@ mod tests {
         let msg = Message::new(
             "t",
             NodeId::new("a"),
-            Some(NodeId::new("b")),
+            vec![NodeId::new("b")],
             serde_json::json!({"x": 1}),
         );
         let cloned = msg.clone();
@@ -695,11 +695,11 @@ mod tests {
     // SendError — 5 tests
     // ═══════════════════════════════════════════════════════════════
 
-    // [trait] Display：NodeOffline 变体带 node id，输出格式正确
+    // [trait] Display：NodeOffline 变体带节点列表，输出格式正确
     #[test]
     fn send_error_node_offline() {
-        let e = SendError::NodeOffline(NodeId::new("mcp/filesystem"));
-        assert_eq!(format!("{e}"), "target node offline: mcp/filesystem");
+        let e = SendError::NodeOffline(vec![NodeId::new("mcp/filesystem")]);
+        assert_eq!(format!("{e}"), "target nodes offline: mcp/filesystem");
     }
 
     // [trait] Display：BusFull 输出固定文本

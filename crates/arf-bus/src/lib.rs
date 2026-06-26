@@ -227,18 +227,24 @@ async fn run_message_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(BusCommand::Send { msg, respond_to }) => {
-                        // Validate target for directed messages
-                        if let Some(ref target) = msg.to {
+                        // Validate targets for directed messages
+                        let mut online_targets = 0usize;
+                        if !msg.to.is_empty() {
                             let map = nodes.read().unwrap();
-                            if !map.contains_key(target) {
+                            let offline: Vec<NodeId> = msg.to.iter()
+                                .filter(|t| !map.contains_key(t))
+                                .cloned()
+                                .collect();
+                            if offline.len() == msg.to.len() {
                                 let _ = respond_to
-                                    .send(Err(SendError::NodeOffline(target.clone())));
+                                    .send(Err(SendError::NodeOffline(offline)));
                                 continue;
                             }
+                            online_targets = msg.to.len() - offline.len();
                         }
 
                         let msg_id = msg.id;
-                        let is_broadcast = msg.to.is_none();
+                        let is_broadcast = msg.to.is_empty();
                         let _ = broadcast_tx.send(msg);
                         message_count.fetch_add(1, Ordering::Relaxed);
                         while drain_rx.try_recv().is_ok() {}
@@ -247,7 +253,7 @@ async fn run_message_loop(
                         let matching_nodes = if is_broadcast {
                             online_nodes
                         } else {
-                            1
+                            online_targets
                         };
                         let receipt = SendReceipt {
                             message_id: msg_id,
@@ -326,7 +332,7 @@ fn handle_connect(
     let online_msg = Message::new(
         "node_online",
         node_id,
-        None,
+        vec![],
         serde_json::to_value(&info).unwrap_or_default(),
     );
     let _ = broadcast_tx.send(online_msg);
@@ -349,7 +355,7 @@ fn handle_disconnect(
     let offline_msg = Message::new(
         "node_offline",
         node_id.clone(),
-        None,
+        vec![],
         serde_json::json!({}),
     );
     let _ = broadcast_tx.send(offline_msg);
@@ -383,7 +389,7 @@ mod tests {
     }
 
     fn test_msg(payload: serde_json::Value) -> Message {
-        Message::new("test", NodeId::new("s"), None, payload)
+        Message::new("test", NodeId::new("s"), vec![], payload)
     }
 
     fn test_node_info(id: &str) -> NodeInfo {
@@ -531,7 +537,7 @@ mod tests {
         let msg = Message::new(
             "tool_call",
             NodeId::new("engine"),
-            Some(NodeId::new("mcp/filesystem")),
+            vec![NodeId::new("mcp/filesystem")],
             serde_json::json!("do_thing"),
         );
         bus.send(msg).await.unwrap();
@@ -562,7 +568,7 @@ mod tests {
             .unwrap();
 
         let receipt = sender
-            .send("action", Some(NodeId::new("t")), serde_json::json!("hi"))
+            .send("action", vec![NodeId::new("t")], serde_json::json!("hi"))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 2); // sender + target
@@ -583,10 +589,10 @@ mod tests {
             .unwrap();
 
         let result = sender
-            .send("action", Some(NodeId::new("ghost")), serde_json::json!("hi"))
+            .send("action", vec![NodeId::new("ghost")], serde_json::json!("hi"))
             .await;
         assert!(
-            matches!(result, Err(SendError::NodeOffline(ref id)) if id.as_str() == "ghost")
+            matches!(result, Err(SendError::NodeOffline(ref ids)) if ids.len() == 1 && ids[0].as_str() == "ghost")
         );
 
         sender.disconnect().await;
@@ -607,7 +613,7 @@ mod tests {
             .unwrap();
 
         let receipt = sender
-            .send("action", None, serde_json::json!("all"))
+            .send("action", vec![], serde_json::json!("all"))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 2);
@@ -615,6 +621,95 @@ mod tests {
 
         sender.disconnect().await;
         _n2.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [投递] 定向多个目标全部在线 → 成功
+    #[tokio::test]
+    async fn directed_send_multi_target_all_online_succeeds() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+        let _a = bus
+            .connect(test_node_info("a"), test_filter())
+            .await
+            .unwrap();
+        let _b = bus
+            .connect(test_node_info("b"), test_filter())
+            .await
+            .unwrap();
+
+        let receipt = sender
+            .send(
+                "action",
+                vec![NodeId::new("a"), NodeId::new("b")],
+                serde_json::json!("hi"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.online_nodes, 3); // sender + a + b
+        assert_eq!(receipt.matching_nodes, 2); // both targets online
+
+        sender.disconnect().await;
+        _a.disconnect().await;
+        _b.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [投递] 定向多个目标全部不在线 → NodeOffline([a, b])
+    #[tokio::test]
+    async fn directed_send_all_targets_offline_fails() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+        // Neither "x" nor "y" is connected
+
+        let result = sender
+            .send(
+                "action",
+                vec![NodeId::new("x"), NodeId::new("y")],
+                serde_json::json!("hi"),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(SendError::NodeOffline(ref ids)) if ids.len() == 2)
+        );
+
+        sender.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [投递] 定向多个目标部分在线 → 成功广播
+    #[tokio::test]
+    async fn directed_send_partial_targets_online_succeeds() {
+        let bus = test_bus();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
+        let _online = bus
+            .connect(test_node_info("online"), test_filter())
+            .await
+            .unwrap();
+        // "offline" is NOT connected
+
+        let receipt = sender
+            .send(
+                "action",
+                vec![NodeId::new("online"), NodeId::new("offline")],
+                serde_json::json!("hi"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.online_nodes, 2); // sender + online
+        assert_eq!(receipt.matching_nodes, 1); // only "online" is online
+
+        sender.disconnect().await;
+        _online.disconnect().await;
         bus.shutdown().await;
     }
 
@@ -892,7 +987,7 @@ mod tests {
                     let msg = Message::new(
                         "t",
                         NodeId::new("s"),
-                        None,
+                        vec![],
                         serde_json::json!(i),
                     );
                     bus.send(msg).await.unwrap();

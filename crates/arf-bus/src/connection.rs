@@ -38,7 +38,7 @@ impl NodeHandle {
     pub async fn send(
         &self,
         msg_type: &str,
-        to: Option<NodeId>,
+        to: Vec<NodeId>,
         payload: serde_json::Value,
     ) -> Result<SendReceipt, SendError> {
         let msg = Message::new(msg_type, self.info.node_id.clone(), to, payload);
@@ -303,7 +303,7 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let receipt = sender
-            .send("action", None, serde_json::json!({"cmd": "run"}))
+            .send("action", vec![], serde_json::json!({"cmd": "run"}))
             .await
             .unwrap();
 
@@ -328,7 +328,7 @@ mod tests {
 
         // Only sender is online (plus the sender itself = 1)
         let receipt = sender
-            .send("t", None, serde_json::json!(null))
+            .send("t", vec![], serde_json::json!(null))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 1);
@@ -339,7 +339,7 @@ mod tests {
             .await
             .unwrap();
         let receipt2 = sender
-            .send("t", None, serde_json::json!(null))
+            .send("t", vec![], serde_json::json!(null))
             .await
             .unwrap();
         assert_eq!(receipt2.online_nodes, 2);
@@ -363,7 +363,7 @@ mod tests {
             .unwrap();
 
         sender
-            .send("ping", None, serde_json::json!("hello"))
+            .send("ping", vec![], serde_json::json!("hello"))
             .await
             .unwrap();
 
@@ -415,7 +415,7 @@ mod tests {
 
         for i in 0..5 {
             sender
-                .send("seq", None, serde_json::json!(i))
+                .send("seq", vec![], serde_json::json!(i))
                 .await
                 .unwrap();
         }
@@ -488,7 +488,7 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let h2 = bus.connect(info, test_filter()).await.unwrap();
-        h2.send("after_reconnect", None, serde_json::json!("ok"))
+        h2.send("after_reconnect", vec![], serde_json::json!("ok"))
             .await
             .unwrap();
 
@@ -519,10 +519,10 @@ mod tests {
         assert_eq!(msg.msg_type, "node_online");
         assert_eq!(msg.from.as_str(), "B");
 
-        a.send("chat", None, serde_json::json!("from_a"))
+        a.send("chat", vec![], serde_json::json!("from_a"))
             .await
             .unwrap();
-        b.send("chat", None, serde_json::json!("from_b"))
+        b.send("chat", vec![], serde_json::json!("from_b"))
             .await
             .unwrap();
 
@@ -554,7 +554,7 @@ mod tests {
 
         // Send before late joiner connects
         early
-            .send("historical", None, serde_json::json!("ancient"))
+            .send("historical", vec![], serde_json::json!("ancient"))
             .await
             .unwrap();
 
@@ -566,7 +566,7 @@ mod tests {
         // late's rx was created AFTER both early's node_online AND "historical".
         // So late sees nothing from the past. Send a new message, late should see it.
         early
-            .send("current", None, serde_json::json!("now"))
+            .send("current", vec![], serde_json::json!("now"))
             .await
             .unwrap();
         let msg = late.recv().await.unwrap();
@@ -595,7 +595,7 @@ mod tests {
 
         // Survivor can still send
         let receipt = survivor
-            .send("still_here", None, serde_json::json!("ok"))
+            .send("still_here", vec![], serde_json::json!("ok"))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 1); // only survivor remains
@@ -629,7 +629,7 @@ mod tests {
         // Don't disconnect — just shutdown the bus
         bus.shutdown().await;
 
-        let result = handle.send("t", None, serde_json::json!(null)).await;
+        let result = handle.send("t", vec![], serde_json::json!(null)).await;
         assert!(matches!(result, Err(SendError::BusClosed)));
     }
 
@@ -649,7 +649,7 @@ mod tests {
                 tokio::spawn(async move {
                     let info = test_node_info(&format!("node-{i}"));
                     let h = bus.connect(info, test_filter()).await.unwrap();
-                    h.send("ping", None, serde_json::json!(i)).await.unwrap();
+                    h.send("ping", vec![], serde_json::json!(i)).await.unwrap();
                     h
                 })
             })

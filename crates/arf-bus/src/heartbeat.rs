@@ -28,7 +28,7 @@ pub(crate) fn handle_heartbeat_tick(
     let heartbeat_msg = Message::new(
         "heartbeat_request",
         NodeId::new("bus"),
-        None,
+        vec![],
         serde_json::json!({}),
     );
     let _ = broadcast_tx.send(heartbeat_msg);
@@ -52,7 +52,7 @@ pub(crate) fn handle_heartbeat_tick(
         let offline_msg = Message::new(
             "node_offline",
             node_id.clone(),
-            None,
+            vec![],
             serde_json::to_value(info).unwrap_or_default(),
         );
         let _ = broadcast_tx.send(offline_msg);
@@ -141,7 +141,7 @@ mod tests {
         // Node should still be connected (not timed out)
         // We verify by sending a message successfully
         let receipt = handle
-            .send("still_alive", None, serde_json::json!(null))
+            .send("still_alive", vec![], serde_json::json!(null))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 1);
