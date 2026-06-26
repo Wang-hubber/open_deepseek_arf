@@ -367,6 +367,7 @@ fn handle_disconnect(
 
 mod connection;
 mod filter;
+mod graph;
 mod heartbeat;
 pub use connection::NodeHandle;
 
