@@ -10,7 +10,7 @@
 
 <br/>
 
-<p align="center"><a href="./resume.html"><em>一份关于 Agent 基础设施的工程答卷</em></a></p>
+<p align="center"><a href="./resume.html"><em>对 Agent 理解的实践和思考</em></a></p>
 
 <br/>
 
