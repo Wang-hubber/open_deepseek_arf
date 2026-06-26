@@ -1,0 +1,11 @@
+[package]
+name = "arf-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF Agent: declarative config + passive state machine skeleton"
+
+[dependencies]
+arf-core = { path = "../arf-core" }
+arf-engine = { path = "../arf-engine" }

@@ -1,0 +1,10 @@
+[package]
+name = "arf-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF State: messages + tasks with lifecycle, bidirectional locks, cascade release"
+
+[dependencies]
+arf-core = { path = "../arf-core" }

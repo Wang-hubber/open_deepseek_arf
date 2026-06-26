@@ -1,0 +1,12 @@
+[package]
+name = "arf-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF Engine: ReAct loop — receive messages, call model, emit actions"
+
+[dependencies]
+arf-core = { path = "../arf-core" }
+arf-bus = { path = "../arf-bus" }
+arf-state = { path = "../arf-state" }

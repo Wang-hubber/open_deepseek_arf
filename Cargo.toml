@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/arf-core",
+    "crates/arf-bus",
+    "crates/arf-state",
+    "crates/arf-engine",
+    "crates/arf-agent",
+    "py-arf",
+]
+
+[workspace.package]
+version = "1.0.0-alpha.0"
+edition = "2024"
+license = "MIT"
+repository = "https://gitee.com/dalaydata/open_deepseek_arf"

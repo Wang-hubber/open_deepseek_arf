@@ -1,0 +1,10 @@
+[package]
+name = "arf-bus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF J-RPC broadcast bus: message routing, node lifecycle, online graph"
+
+[dependencies]
+arf-core = { path = "../arf-core" }

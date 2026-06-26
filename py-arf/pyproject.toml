@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "arf"
+version = "1.0.0-alpha.0"
+description = "ARF V1.x — AI Resources & Runtime Framework"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "arf._arf"
