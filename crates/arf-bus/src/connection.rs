@@ -61,29 +61,52 @@ impl NodeHandle {
         rx.await.map_err(|_| SendError::BusClosed)?
     }
 
-    /// Receive the next message from the Bus.
+    /// Receive the next application-visible message from the Bus.
     ///
-    /// Blocks until a message arrives. Returns `Err(Closed)` if the Bus
-    /// has shut down, or `Err(Lagged(n))` if messages were lost due to
-    /// slow consumption.
+    /// Heartbeat requests are intercepted and auto-acknowledged — they are
+    /// never returned to the caller. Blocks until a non-heartbeat message
+    /// arrives.
     ///
     /// MessageFilter filtering will be applied in task 1.6.
     pub async fn recv(&mut self) -> Result<Message, broadcast::error::RecvError> {
-        // TODO: apply self.filter in task 1.6
-        self.broadcast_rx.recv().await
+        loop {
+            let msg = self.broadcast_rx.recv().await?;
+            if msg.msg_type == "heartbeat_request" {
+                let _ = self
+                    .cmd_tx
+                    .send(BusCommand::HeartbeatAck {
+                        node_id: self.info.node_id.clone(),
+                    })
+                    .await;
+                continue;
+            }
+            return Ok(msg);
+        }
     }
 
     /// Try to receive a message without blocking.
     ///
-    /// Returns `Ok(Some(msg))` if a message is available,
+    /// Heartbeat requests are intercepted and auto-acknowledged (using
+    /// `try_send` since this is a synchronous method).
+    /// Returns `Ok(Some(msg))` if a non-heartbeat message is available,
     /// `Ok(None)` if no message is ready.
     pub fn try_recv(&mut self) -> Result<Option<Message>, broadcast::error::TryRecvError> {
-        match self.broadcast_rx.try_recv() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(broadcast::error::TryRecvError::Empty) => Ok(None),
-            Err(e @ broadcast::error::TryRecvError::Lagged(_)) => Err(e),
-            Err(broadcast::error::TryRecvError::Closed) => {
-                Err(broadcast::error::TryRecvError::Closed)
+        loop {
+            match self.broadcast_rx.try_recv() {
+                Ok(msg) => {
+                    if msg.msg_type == "heartbeat_request" {
+                        let _ = self.cmd_tx.try_send(BusCommand::HeartbeatAck {
+                            node_id: self.info.node_id.clone(),
+                        });
+                        continue;
+                    }
+                    return Ok(Some(msg));
+                }
+                Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
+                Err(e @ broadcast::error::TryRecvError::Lagged(_)) => return Err(e),
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    return Err(broadcast::error::TryRecvError::Closed)
+                }
             }
         }
     }

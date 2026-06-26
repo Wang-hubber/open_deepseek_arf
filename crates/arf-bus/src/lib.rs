@@ -95,6 +95,11 @@ pub(crate) enum BusCommand {
         node_id: NodeId,
         respond_to: oneshot::Sender<()>,
     },
+    /// Heartbeat acknowledgement from a node.
+    /// Sent automatically by NodeHandle when it intercepts a heartbeat_request.
+    HeartbeatAck {
+        node_id: NodeId,
+    },
     /// Shut down the bus.
     Shutdown {
         respond_to: oneshot::Sender<()>,
@@ -112,8 +117,6 @@ impl Bus {
         heartbeat_timeout: Duration,
         channel_capacity: usize,
     ) -> Self {
-        let _ = (heartbeat_interval, heartbeat_timeout); // used in task 1.4
-
         let (broadcast_tx, drain_rx) = broadcast::channel(channel_capacity);
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let message_count = Arc::new(AtomicU64::new(0));
@@ -129,6 +132,8 @@ impl Bus {
                 drain_rx,
                 count_clone,
                 nodes_clone,
+                heartbeat_interval,
+                heartbeat_timeout,
             )
             .await;
         });
@@ -197,52 +202,75 @@ impl Bus {
 /// Receives commands from `cmd_rx`, processes them, and broadcasts messages
 /// through `broadcast_tx`. Runs in a dedicated tokio task.
 ///
+/// Uses `tokio::select!` to multiplex between command processing and
+/// heartbeat timer ticks. The heartbeat timer periodically broadcasts
+/// `heartbeat_request` and checks for timed-out nodes.
+///
 /// `drain_rx` is the dummy receiver that keeps the broadcast channel alive
 /// (CAN's "wire is always powered"). It is **drained after every send** to
-/// prevent it from becoming a backpressure bottleneck — without draining,
-/// after `capacity` messages the dummy (which never reads via `recv()`)
-/// would block `broadcast_tx.send()`, blocking all senders.
+/// prevent it from becoming a backpressure bottleneck.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,
     mut drain_rx: broadcast::Receiver<Message>,
     message_count: Arc<AtomicU64>,
     nodes: Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
+    heartbeat_interval: Duration,
+    heartbeat_timeout: Duration,
 ) {
-    while let Some(cmd) = cmd_rx.recv().await {
-        match cmd {
-            BusCommand::Send { msg, respond_to } => {
-                let msg_id = msg.id;
-                let _ = broadcast_tx.send(msg);
-                message_count.fetch_add(1, Ordering::Relaxed);
-                while drain_rx.try_recv().is_ok() {}
+    let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
+    // Skip immediate first tick — give nodes time to connect
+    heartbeat_timer.tick().await;
 
-                let online_nodes = nodes.read().unwrap().len();
-                let receipt = SendReceipt {
-                    message_id: msg_id,
-                    online_nodes,
-                    matching_nodes: online_nodes, // TODO: filter matching in 1.6
-                };
-                let _ = respond_to.send(Ok(receipt));
+    loop {
+        tokio::select! {
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(BusCommand::Send { msg, respond_to }) => {
+                        let msg_id = msg.id;
+                        let _ = broadcast_tx.send(msg);
+                        message_count.fetch_add(1, Ordering::Relaxed);
+                        while drain_rx.try_recv().is_ok() {}
+
+                        let online_nodes = nodes.read().unwrap().len();
+                        let receipt = SendReceipt {
+                            message_id: msg_id,
+                            online_nodes,
+                            matching_nodes: online_nodes, // TODO: filter matching in 1.6
+                        };
+                        let _ = respond_to.send(Ok(receipt));
+                    }
+                    Some(BusCommand::Connect {
+                        info,
+                        filter,
+                        respond_to,
+                    }) => {
+                        let result = handle_connect(&broadcast_tx, &nodes, info, filter);
+                        let _ = respond_to.send(result);
+                    }
+                    Some(BusCommand::Disconnect {
+                        node_id,
+                        respond_to,
+                    }) => {
+                        handle_disconnect(&broadcast_tx, &nodes, &node_id);
+                        let _ = respond_to.send(());
+                    }
+                    Some(BusCommand::HeartbeatAck { node_id }) => {
+                        if let Ok(mut map) = nodes.write() {
+                            if let Some(entry) = map.get_mut(&node_id) {
+                                entry.last_ack = Instant::now();
+                            }
+                        }
+                    }
+                    Some(BusCommand::Shutdown { respond_to }) => {
+                        let _ = respond_to.send(());
+                        break;
+                    }
+                    None => break,
+                }
             }
-            BusCommand::Connect {
-                info,
-                filter,
-                respond_to,
-            } => {
-                let result = handle_connect(&broadcast_tx, &nodes, info, filter);
-                let _ = respond_to.send(result);
-            }
-            BusCommand::Disconnect {
-                node_id,
-                respond_to,
-            } => {
-                handle_disconnect(&broadcast_tx, &nodes, &node_id);
-                let _ = respond_to.send(());
-            }
-            BusCommand::Shutdown { respond_to } => {
-                let _ = respond_to.send(());
-                break;
+            _ = heartbeat_timer.tick() => {
+                heartbeat::handle_heartbeat_tick(&broadcast_tx, &nodes, heartbeat_timeout);
             }
         }
     }
@@ -316,6 +344,7 @@ fn handle_disconnect(
 // ═══════════════════════════════════════════════════════════════════
 
 mod connection;
+mod heartbeat;
 pub use connection::NodeHandle;
 
 // ═══════════════════════════════════════════════════════════════════
