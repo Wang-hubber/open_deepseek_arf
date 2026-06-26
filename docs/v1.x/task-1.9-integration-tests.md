@@ -20,7 +20,7 @@
 | 2 | 定向消息过滤 | DirectedToMe 只收定向到己，BroadcastOnly 只收广播 | ✅ |
 | 3 | 心跳超时 | 僵尸节点停止消费 → 超时 → node_offline 被其他节点看到 | ✅ |
 | 4 | Trace 全量消费 | ToMatch::All + types=None → 看到所有消息 | ✅ |
-| 5 | Lag 恢复 | 慢消费者 Lagged → 继续正常接收 | ❌ 待分析 |
+| 5 | Lag 恢复 | 慢消费者 Lagged → 继续正常接收 | ✅ |
 | 6 | 并发 connect/disconnect/send | 不丢消息不 panic | ✅ |
 
 ### Corner case (6 tests)
@@ -121,30 +121,42 @@ let matching_nodes = if is_broadcast {
 
 消除了 `filter` 字段的 dead_code warning，同时让 `SendReceipt.matching_nodes` 语义更精确——广播时计入的是"filter 真正匹配该消息的在线节点数"。
 
-### 发现 4：Lag 恢复测试不通过（#5，待分析）
+### 发现 4：`Lagged` 后 receiver 位置语义（#5 修复）
 
 **现象**：容量 2 的 ring buffer，发 10 条消息后 slow 收到 `Lagged`，再发 1 条新消息后 `slow.recv()` 仍然返回 `Lagged(1)`。
 
-**已尝试的修复**：
-1. 改用 `Bus::send()` 代替 NodeHandle（避免 sender 的 rx 干扰）→ 仍然失败
-2. 用 `try_recv()` 循环 drain 所有 Lagged + 缓冲消息 → 待验证
-3. lifecycle drain 修复（发现 2）→ 仍然失败
+**根因**：查阅 tokio broadcast 文档，`Receiver::recv()` 返回 `Lagged` 后，receiver 的 cursor **跳到 ring buffer 中"最老仍保留的消息"位置，不是 tail**。这意味着 Lagged 后 buffer 中还有可读的残留消息。
 
-**可能原因**：`broadcast::Receiver::recv()` 返回 `Lagged` 后，receiver 的 position 更新行为依赖 tokio 内部实现。可能不是跳到 tail，而是跳到 ring buffer 中最老的可读位置。如果慢消费者在 Lagged 后仍落后超过 capacity，后续 `recv()` 仍然返回 `Lagged`。
+```
+发 10 条消息，capacity=2:
+  msg 1-8 被覆盖（丢失）
+  msg 9, 10 保留在 ring buffer
 
-当前 lag 测试代码使用 `try_recv()` 循环 drain：
-
-```rust
-loop {
-    match slow.try_recv() {
-        Err(TryRecvError::Lagged(_)) => { saw_lag = true; /* continue */ }
-        Err(TryRecvError::Empty) => break,
-        Ok(_) => {} // drain
-    }
-}
+slow.recv() → Lagged(n)  ← cursor 跳到 msg 9（最老保留）
+slow.recv() → msg 9      ← 残留消息
+slow.recv() → msg 10     ← 残留消息
+slow.recv() → 阻塞       ← buffer 空
 ```
 
-然后发新消息验证能正常接收。
+之前的测试在 Lagged 后直接 send + recv，但此时 buffer 还有 msg 9、10 没消费。除非新 send 覆盖了它们（又产生 Lag），否则 recv 先拿到的是残留的 msg 9，不是新消息。
+
+**修复**：Lagged 后用 `try_recv()` 非阻塞循环 drain 所有残留消息，再发新消息验证恢复：
+
+```rust
+let mut saw_lag = false;
+loop {
+    match slow.try_recv() {
+        Err(TryRecvError::Lagged(_)) => { saw_lag = true; }
+        Err(TryRecvError::Empty) => break,
+        Ok(_) => {} // drain buffered messages
+    }
+}
+assert!(saw_lag, "should have seen Lagged after overflow");
+
+// Now buffer is clean, new message arrives normally
+bus.send(msg).await.unwrap();
+assert_eq!(slow.recv().await.unwrap().payload, "fresh");
+```
 
 ---
 

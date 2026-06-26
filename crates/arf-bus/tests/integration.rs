@@ -45,10 +45,14 @@ fn fast_bus() -> Bus {
 /// Call this before making assertions about specific messages.
 fn drain_all(handle: &mut arf_bus::NodeHandle) -> Vec<(String, String)> {
     let mut msgs = Vec::new();
-    while let Ok(Some(m)) = handle.try_recv() {
-        msgs.push((m.msg_type, m.from.0));
+    loop {
+        match handle.try_recv() {
+            Ok(Some(m)) => msgs.push((m.msg_type, m.from.0)),
+            Ok(None) => return msgs,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {} // continue draining
+            Err(_) => return msgs, // Closed
+        }
     }
-    msgs
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -194,28 +198,27 @@ async fn slow_consumer_lagged_then_recovers() {
     let bus = Bus::new(Duration::from_secs(10), Duration::from_secs(30), 2);
     let mut slow = bus.connect(node("slow"), all_filter()).await.unwrap();
 
-    // Flood tiny buffer — sends succeed (drain_rx prevents backpressure)
-    for i in 0..10 {
+    // Send capacity+1 to overflow: msg0+msg1 fill buffer, msg2 causes Lagged
+    for i in 0..3 {
         let msg = arf_core::Message::new("msg", NodeId::new("sys"), vec![], serde_json::json!(i));
         bus.send(msg).await.unwrap();
     }
 
-    // Drain until we stop getting Lagged (try_recv to avoid blocking)
-    let mut saw_lag = false;
-    loop {
-        match slow.try_recv() {
-            Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                saw_lag = true;
-                // Position updated, continue draining
-            }
-            Err(broadcast::error::TryRecvError::Empty) => break,
-            Err(broadcast::error::TryRecvError::Closed) => break,
-            Ok(_) => {} // drain
-        }
-    }
-    assert!(saw_lag, "should have seen Lagged after overflow");
+    // After overflow: try_recv → Lagged, then 2 buffered msgs, then None/Empty
+    let r1 = slow.try_recv(); // Lagged(1) — 1 overwritten
+    let r2 = slow.try_recv(); // msg1 (oldest retained)
+    let r3 = slow.try_recv(); // msg2
+    let r4 = slow.try_recv(); // no more messages
 
-    // After catching up, new messages arrive normally
+    assert!(matches!(r1, Err(broadcast::error::TryRecvError::Lagged(_))),
+        "expected Lagged, got {r1:?}");
+    assert!(matches!(r2, Ok(Some(_))), "expected buffered msg, got {r2:?}");
+    assert!(matches!(r3, Ok(Some(_))), "expected buffered msg, got {r3:?}");
+    // After drain, no messages — Ok(None) means empty queue
+    assert!(matches!(r4, Ok(None)),
+        "expected no more messages, got {r4:?}");
+
+    // After catching up, new message arrives normally
     let msg = arf_core::Message::new("msg", NodeId::new("sys"), vec![], serde_json::json!("fresh"));
     bus.send(msg).await.unwrap();
     assert_eq!(slow.recv().await.unwrap().payload, serde_json::json!("fresh"));
