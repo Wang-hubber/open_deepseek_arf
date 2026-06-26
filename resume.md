@@ -28,13 +28,13 @@ https://github.com/Wang-hubber/open_deepseek_arf
 
 **Agent 运行时框架 · 从具体业务问题到形而上学抽象，再回归工程落地的完整实践**
 
-ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。v0.8.0，1,492 次提交。
+ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Claude Code 协作完成（我只做设计审核，未手写代码）。
 
 - **三层架构**：Agent（消息状态机）→ Harness（ReAct 引擎 + 10 检查点 Plugin 调度 + Park/Resume 等待唤醒）→ Resources（文件系统注册中心 + FileWatcher 热加载）。依赖注入组装，Protocol 接口隔离。
 - **Hook 生命周期**：10 个检查点 × 2 种模式（blocking/side），插件按需注册，引擎不做硬编码限制。
 - **Agent-to-Agent 通讯**：Subagents（父子委派，一次性）+ Teammates（对等队友，Park/Wake 协作循环）。AgentBus 消息总线 + JRPC 结构化通讯。
 - **全链路可观测 + Eval 评测**：JSONL Trace / Token 统计 / 离线评估回放。EvalRunner + BenchmarkBuilder + LLM Judge + 版本化存档。
-- **代码规模**：框架核心 ~18,000 行（180+ 文件 · 16 模块）· 测试 ~12,500 行（723 tests）
+- **代码规模**：框架核心 16 模块 · 完整的测试覆盖
 
 `Python 3.11+` · `asyncio` · `Pydantic` · `Protocol 接口隔离` · `DI` · `SSE 流式`
 

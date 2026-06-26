@@ -94,7 +94,7 @@ ARF 将 Agent 运行拆分为三层——Agent 持有状态，Harness 驱动执�
 
 ## 回归：工程落地
 
-> 截至 2026 年 6 月，v0.8.0 — 1,492 次提交，~18,000 行框架代码，~12,500 行测试（723 个测试用例）
+> 框架代码完整，测试覆盖充分，配套教学项目 14 单元全部跑通
 
 ### 核心模块
 
@@ -168,11 +168,11 @@ session  >  round  >  turn
 
 ## 躬行方知：踩过的坑
 
-1,492 次提交中，418 次 bug fix（28%），156 次重构（10%）。这个数字本身就是故事——**边写边踩坑，边踩坑边打补丁。** 几个最深的：
+提交历史中，近三成是 bug fix。这个比例本身就是故事——**边写边踩坑，边踩坑边打补丁。** 几个最深的：
 
-**Engine — 50 次 fix。** ReAct 主循环的正确性比预期更难保证。`break` 语句让 turn loop 不可达——通过了所有测试，但在特定消息序列下整个 turn 被静默跳过。park/resume 统一后连续三次回归：消息注入后再次触发 park 导致死循环、partial wakeup 时消息丢失、cancel_event 未清理导致跨 round 污染。**状态机的正确性不取决于 happy path 的测试覆盖率，而取决于对隐式副作用（break/cancel/park/message injection）的穷举建模。**
+**Engine — 修复密度最高的模块。** ReAct 主循环的正确性比预期更难保证。`break` 语句让 turn loop 不可达——通过了所有测试，但在特定消息序列下整个 turn 被静默跳过。park/resume 统一后连续三次回归：消息注入后再次触发 park 导致死循环、partial wakeup 时消息丢失、cancel_event 未清理导致跨 round 污染。**状态机的正确性不取决于 happy path 的测试覆盖率，而取决于对隐式副作用（break/cancel/park/message injection）的穷举建模。**
 
-**A2A + Teammates — 36 次 fix。** 死锁、race condition、消息消费归属混乱。park 位置在 `before_model`、`after_round`、`before_round` 之间反复迁移至少 5 次——每次修一个 bug，引入一个新 bug。根因只有一个：**Agent 和 Harness 的边界不够干净。** Park 散落在引擎、插件、Agent 三个层级，多 Agent 并发时相互交织，无法推理全局状态。
+**A2A + Teammates — 打补丁最多的领域。** 死锁、race condition、消息消费归属混乱。park 位置在 `before_model`、`after_round`、`before_round` 之间反复迁移——每次修一个 bug，引入一个新 bug。根因只有一个：**Agent 和 Harness 的边界不够干净。** Park 散落在引擎、插件、Agent 三个层级，多 Agent 并发时相互交织，无法推理全局状态。
 
 **路径处理。** double-join（`abspath` + `join`）静默产生错误路径，相对路径在沙箱白名单中匹配失败。文件路径不同于 API 调用——不是报错即失败，而是"看起来能工作，换个目录就崩"。
 
@@ -186,7 +186,7 @@ session  >  round  >  turn
 
 ## 第二轮：从具体回归抽象
 
-第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。现在站在代码的废墟上（418 个 fix 的伤疤还热着），进入第二个循环。核心矛盾很清晰：**Harness 承担了太多不该它承担的责任。**
+第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。现在站在踩过的坑上，进入第二个循环。核心矛盾很清晰：**Harness 承担了太多不该它承担的责任。**
 
 - **Park/Resume 散落三级。** Engine checkpoint → Plugin wait 注册 → Agent wait() 调用，没有统一的等待状态抽象。
 - **A2A 与 Harness 耦合过深。** 消息注入时机、消费归属、reply 组装——嵌在 Engine 和 Plugin 实现中，而非独立通讯层。
