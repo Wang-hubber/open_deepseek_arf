@@ -106,8 +106,7 @@ ARF 将 Agent 运行拆分为三层——Agent 持有状态，协调层 驱动�
 | **Resources** | `arf/resources/` | FileWatcher 热加载、三种 Provider、覆盖解析 |
 | **Memory** | `arf/memory/` | FileMemoryStore、异步 LLM 提取/检索 |
 | **Compaction** | `arf/compaction/` | SlidingWindowCompactor、Tool Output Externalization |
-| **Guardrails** | `arf/guardrails/` | PathCheckToolGuard、ToolPermissionChecker |
-| **Sandbox** | `arf/sandbox/` | PathSandbox 路径合法性校验 |
+| **Guardrails + Sandbox** | `arf/guardrails/` `arf/sandbox/` | PathCheckToolGuard 参数校验 + PathSandbox 边界执行，路径安全两道防线 |
 | **Communication** | `arf/communication/` | AgentBus、PeerAgent、Supervisor |
 | **Streaming** | `arf/streaming/` | SSE 事件流适配与序列化 |
 | **Evaluation** | `arf/evaluation/` | EvalRunner、BenchmarkBuilder、EvalComparator |
