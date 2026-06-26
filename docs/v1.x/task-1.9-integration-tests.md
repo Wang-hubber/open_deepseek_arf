@@ -195,6 +195,53 @@ assert_eq!(slow.recv().await.unwrap().payload, json!("fresh"));
 3. 查底层 API 文档时，别忘了自己的 wrapper 可能改了返回类型——先看自己的代码
 4. tight loop `try_recv()` 可能与发送方竞争 tail lock——必要时用显式调用代替循环
 
+#### 修复前后对比
+
+**Before — tight loop，两个问题**：
+
+```rust
+// 问题 1: 10 条消息 flood，ring buffer 绕回多次，状态不可预测
+for i in 0..10 {
+    bus.send(Message::new("msg", ..., vec![], json!(i))).await.unwrap();
+}
+
+// 问题 2: tight loop drain，try_recv() 反复竞争 tail.lock → hang
+let mut saw_lag = false;
+loop {
+    match slow.try_recv() {
+        Err(TryRecvError::Lagged(_)) => { saw_lag = true; }
+        Err(TryRecvError::Empty) => break,     // ← 永远不会到这里
+        Err(TryRecvError::Closed) => break,
+        Ok(_) => {}
+    }
+}
+```
+
+**After — 显式调用，两个修复**：
+
+```rust
+// 修复 1: 3 条消息，刚好 overflow capacity=2 一次
+for i in 0..3 {
+    bus.send(Message::new("msg", ..., vec![], json!(i))).await.unwrap();
+}
+
+// 修复 2: 显式逐次调用，try_recv() 之间有自然指令间隔，不竞争 tail.lock
+let r1 = slow.try_recv(); // Lagged(1)
+let r2 = slow.try_recv(); // msg1（最老保留）
+let r3 = slow.try_recv(); // msg2
+let r4 = slow.try_recv(); // Ok(None) — 队列空
+
+assert!(matches!(r1, Err(Lagged(_))));
+assert!(matches!(r2, Ok(Some(_))));
+assert!(matches!(r3, Ok(Some(_))));
+assert!(matches!(r4, Ok(None)));
+```
+
+变更要点：
+1. **消息数 10→3**：capacity=2，3 条刚好绕回 1 次，确定产生 1 次 Lagged + 2 条残留。10 条绕回 5 次，drain_rx 和 slow 的位置关系变得不可预测
+2. **loop→显式调用**：tight loop 中 `try_recv()` → `recv_ref(None)` → `slot.lock()` → drop → `tail.lock()`，每次循环都在争锁。显式 4 次调用之间有编译器的自然指令间隔，不形成 hot contention
+3. **消息数可推导**：capacity+1 条消息 → 确定有 Lagged(1) + capacity 条残留，断言可以精确到个数
+
 ---
 
 ## 辅助工具
