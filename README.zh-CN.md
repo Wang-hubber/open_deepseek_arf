@@ -222,13 +222,16 @@ session  >  round  >  turn
 - **Park/Resume 散落在多个层级。** Engine 的 checkpoint、Plugin 的 wait 注册、Agent 的 wait() 调用——三个层级各自管理等待状态的一部分，没有统一的等待状态抽象。
 - **A2A 消息传递与 Harness 耦合过深。** 消息的注入时机（before_round vs before_model）、消费归属（谁该 drain）、reply 的组装——这些逻辑嵌在 Engine 和 Plugin 的具体实现中，而非一个独立的通讯层。
 - **Agent 的边界模糊。** PrimitiveAgent 理论上"只知道消息和模型调用"，但 `wait()` 和 `finish_wait()` 暴露了阻塞语义给上层。真正纯净的设计应该由运行时统一管理阻塞，Agent 自身不感知 park/resume。
+- **State 抽象不够鲁棒。** 当前 state 只是一个消息列表 + waiting 字典的序列化快照。作为状态机的状态摘要，它缺少对状态转换的显式建模——无法回答"当前处于什么阶段""上一次状态变更的原因是什么""哪些副作用已被处理"。新一轮设计需要将 state 提升为一等公民，具备结构化的阶段标记和转换历史。
+- **Trace 只覆盖了 Agent，没有覆盖调度器。** Trace 目前记录的是 agent 视角的事件（model call、tool execution、round end），但 Harness 自身的调度决策——为什么 park、为什么 wake、消息注入的时机和来源——对排查 A2A 问题至关重要却不可见。Trace 需要扩展为双视角：Agent 视角（业务行为）和 Scheduler 视角（调度决策），二者共同构成 Eval 的完整基准。
+- **Log 的系统性缺失。** 418 个 fix 中相当一部分的排查时间花在了"不知道发生了什么"上。框架没有统一的 debug 粒度日志——关键路径（park/wake、消息注入、状态落盘、checkpoint 触发）的入参和决策要么不可见，要么散落在零散的 `logger.debug()` 中。需要一个系统性的 Log 层，按模块分层、按事件类型标记、在关键决策点强制记录。
 
 现在是时候进行第二轮的形而上思考设计了。这次我会尝试：
 
-1. **更彻底的抽象**——Agent 不感知自己被挂起，Harness 统一管理调度。AgentBus 从 Harness 中剥离为独立层。
-2. **更干净的分离**——每个模块只做一件事。Engine 只管"取消息→调模型→执行工具→写结果"这一个循环。Park/Resume 是调度器的事。A2A 是通讯层的事。Trace 是可观测层的事。
+1. **更彻底的抽象**——Agent 不感知自己被挂起，Harness 统一管理调度。AgentBus 从 Harness 中剥离为独立层。State 从消息快照提升为状态机摘要，显式建模阶段转换。
+2. **更干净的分离**——每个模块只做一件事。Engine 只管"取消息→调模型→执行工具→写结果"这一个循环。Park/Resume 是调度器的事。A2A 是通讯层的事。Trace 是双视角可观测层的事（Agent + Scheduler）。Log 是独立的基础设施层。
 3. **更通用更易扩展的设计**——当前的两级路由（TwoTierRouter）和两种 A2A（Subagents/Teammates）是具体实现，应该抽象为"模型调度策略"和"Agent 通讯拓扑"的通用接口，允许用户自定义策略。
-4. **用 Rust 实现核心**——Engine 主循环、Park/Resume 调度器、AgentBus 消息传递这三个性能敏感且正确性要求极高的模块，用 Rust 重写。Python 通过 PyO3 绑定调用。Rust 的类型系统和所有权模型天然适合状态机验证，很多 Python 中"靠测试和代码审查来保证"的正确性问题，在 Rust 中是编译期错误。
+4. **用 Rust 实现核心**——Engine 主循环、State 状态机、Park/Resume 调度器、AgentBus 消息传递这四个性能敏感且正确性要求极高的模块，用 Rust 重写。Python 通过 PyO3 绑定调用。Rust 的类型系统和所有权模型天然适合状态机验证，很多 Python 中"靠测试和代码审查来保证"的正确性问题，在 Rust 中是编译期错误。系统性的 Log 层也将在 Rust 侧统一实现，确保关键路径零遗漏。
 
 这不是一个重写计划——框架的整体架构和设计理念已经验证了可行性。这是一个 **"把已验证的设计翻译成更严格的语言"** 的计划。Python 原型证明了什么是对的，Rust 会让它无法是错的。
 
