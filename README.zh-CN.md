@@ -34,18 +34,18 @@
 
 ## 抽象：Agent 运行时的三层模型
 
-ARF 将 Agent 运行拆分为三层——Agent 持有状态，Harness 驱动执行，Resources 提供能力：
+ARF 将 Agent 运行拆分为三层——Agent 持有状态，协调层 驱动执行，Resources 提供能力：
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                    Agent                             │
+│                      Agent                             │
 │  name + system_prompt + models                       │
-│  被动的消息状态机，由 Harness 驱动执行                   │
+│  被动的消息状态机，由 协调层 驱动执行                   │
 │  input() / model_call() / wait() / finish_wait()     │
 └────────────────────────┬─────────────────────────────┘
                          │ 依赖注入（DI）
 ┌────────────────────────┴─────────────────────────────┐
-│                    Harness                           │
+│                       协调层                           │
 │  Engine — ReAct 主循环                                │
 │  Plugin 调度 — 10 个生命周期检查点                      │
 │  Park/Resume — 等待/唤醒                               │
@@ -172,7 +172,7 @@ session  >  round  >  turn
 
 **Engine — 修复密度最高的模块。** ReAct 主循环的正确性比预期更难保证。`break` 语句让 turn loop 不可达——通过了所有测试，但在特定消息序列下整个 turn 被静默跳过。park/resume 统一后连续三次回归：消息注入后再次触发 park 导致死循环、partial wakeup 时消息丢失、cancel_event 未清理导致跨 round 污染。**状态机的正确性不取决于 happy path 的测试覆盖率，而取决于对隐式副作用（break/cancel/park/message injection）的穷举建模。**
 
-**A2A + Teammates — 打补丁最多的领域。** 死锁、race condition、消息消费归属混乱。park 位置在 `before_model`、`after_round`、`before_round` 之间反复迁移——每次修一个 bug，引入一个新 bug。根因只有一个：**Agent 和 Harness 的边界不够干净。** Park 散落在引擎、插件、Agent 三个层级，多 Agent 并发时相互交织，无法推理全局状态。
+**A2A + Teammates — 打补丁最多的领域。** 死锁、race condition、消息消费归属混乱。park 位置在 `before_model`、`after_round`、`before_round` 之间反复迁移——每次修一个 bug，引入一个新 bug。根因只有一个：**Agent 和 协调层 的边界不够干净。** Park 散落在引擎、插件、Agent 三个层级，多 Agent 并发时相互交织，无法推理全局状态。
 
 **路径处理。** double-join（`abspath` + `join`）静默产生错误路径，相对路径在沙箱白名单中匹配失败。文件路径不同于 API 调用——不是报错即失败，而是"看起来能工作，换个目录就崩"。
 
@@ -186,18 +186,18 @@ session  >  round  >  turn
 
 ## 第二轮：从具体回归抽象
 
-第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。现在站在踩过的坑上，进入第二个循环。核心矛盾很清晰：**Harness 承担了太多不该它承担的责任。**
+第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。现在站在踩过的坑上，进入第二个循环。核心矛盾很清晰：**协调层 承担了太多不该它承担的责任。**
 
 - **Park/Resume 散落三级。** Engine checkpoint → Plugin wait 注册 → Agent wait() 调用，没有统一的等待状态抽象。
-- **A2A 与 Harness 耦合过深。** 消息注入时机、消费归属、reply 组装——嵌在 Engine 和 Plugin 实现中，而非独立通讯层。
+- **A2A 与 协调层 耦合过深。** 消息注入时机、消费归属、reply 组装——嵌在 Engine 和 Plugin 实现中，而非独立通讯层。
 - **Agent 边界模糊。** PrimitiveAgent 对外暴露了 `wait()` / `finish_wait()`——Agent 本不该知道自己被挂起。
 - **State 不够鲁棒。** 当前只是消息列表 + waiting 字典的序列化快照。缺少对状态转换的显式建模——无法回答"当前处于什么阶段""为什么进入这个状态""哪些副作用已处理"。
-- **Trace 只监控 Agent，不监控调度器。** Harness 自身的调度决策——为什么 park、消息何时注入——对排查 A2A 问题至关重要却不可见。
+- **Trace 只监控 Agent，不监控调度器。** 协调层 自身的调度决策——为什么 park、消息何时注入——对排查 A2A 问题至关重要却不可见。
 - **Log 系统性缺失。** 大量排查时间花在"不知道发生了什么"上。关键路径（park/wake、消息注入、状态落盘）没有统一的 debug 粒度日志。
 
 下一轮的方向：
 
-1. **更彻底的抽象。** Agent 不感知挂起，Harness 统一调度。AgentBus 独立为通讯层。State 从消息快照提升为状态机摘要。
+1. **更彻底的抽象。** Agent 不感知挂起，协调层 统一调度。AgentBus 独立为通讯层。State 从消息快照提升为状态机摘要。
 2. **更干净的分离。** Engine 只做"取消息→调模型→执行工具→写结果"。Park/Resume 是调度器的事。A2A 是通讯层的事。Trace 双视角覆盖 Agent + Scheduler。Log 是独立基础设施。
 3. **更通用可扩展。** 模型调度策略、Agent 通讯拓扑——从具体实现抽象为可插拔接口。
 4. **Rust 重写核心。** Engine 主循环、State 状态机、Park/Resume 调度器、AgentBus 消息传递——这四个性能敏感且正确性要求极高的模块，用 Rust 重写，Python 通过 PyO3 绑定。Rust 的类型系统和所有权模型天然适合状态机验证——Python 原型证明了什么是对的，Rust 会让它无法是错的。系统性的 Log 层也在 Rust 侧统一实现，确保关键路径零遗漏。
