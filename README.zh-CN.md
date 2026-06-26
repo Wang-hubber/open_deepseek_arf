@@ -10,7 +10,7 @@
 
 <br/>
 
-<p align="center"><a href="./resume.html"><em>对 Agent 理解的实践和思考（关于作者）</em></a></p>
+<p align="center"><a href="./resume.md"><em>对 Agent 理解的实践和思考（关于作者）</em></a></p>
 
 <br/>
 
