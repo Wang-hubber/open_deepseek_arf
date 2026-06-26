@@ -212,7 +212,7 @@ Bus / Engine / State / AgentBus 四个性能敏感且正确性要求极高的模
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/v1.x-design.md`](docs/v1.x-design.md) | **v2 架构设计** — Bus + Engine + Agent + State + MCP + ModelAdapter |
+| [`docs/v1.x-design.md`](docs/v1.x-design.md) | **v1.x 架构设计** — Bus + Engine + Agent + State + MCP + ModelAdapter |
 | [`docs/agent.md`](docs/agent.md) | Agent 配置、组装、模型适配器、工具执行 |
 | [`docs/a2a-communication.md`](docs/a2a-communication.md) | Subagents vs Teammates 机制对比与案例 |
 | [`docs/park-resume.md`](docs/park-resume.md) | Park/Resume 等待唤醒机制 |
