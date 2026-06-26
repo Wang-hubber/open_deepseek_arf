@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from arf.core.results import GuardResult
-from arf.sandbox.directory_boundary import DirectoryBoundary
+from arf.guardrails.directory_boundary import DirectoryBoundary
 
 
 @dataclass

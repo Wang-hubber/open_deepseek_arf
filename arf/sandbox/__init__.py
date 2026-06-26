@@ -1,5 +1,6 @@
-"""ARF Sandbox — tool execution boundaries."""
-from arf.sandbox.path_sandbox import PathSandbox
-from arf.sandbox.sandbox_manager import FileChange, SandboxDiff, SandboxManager
+"""Sandbox module — merged into arf.guardrails. Re-exports for backward compatibility."""
+from arf.guardrails.directory_boundary import DirectoryBoundary
+from arf.guardrails.path_sandbox import PathSandbox
+from arf.guardrails.sandbox_manager import FileChange, SandboxDiff, SandboxManager
 
-__all__ = ["PathSandbox", "SandboxManager", "SandboxDiff", "FileChange"]
+__all__ = ["DirectoryBoundary", "PathSandbox", "SandboxManager", "SandboxDiff", "FileChange"]
