@@ -62,7 +62,7 @@ C 连接: handle_connect 注册 C → broadcast C 的 node_online → A.rx 收�
 
 ### 发现 2：lifecycle 消息不 drain dummy receiver
 
-**现象**：无直接测试失败，但潜在 bug：长时间运行后 ring buffer 被生命周期消息（node_online、node_offline、heartbeat_request）填满，导致 `broadcast_tx.send()` 阻塞。
+**现象**：无直接测试失败。但长时间运行后，drain_rx 累积大量 lifecycle 消息（node_online、node_offline、heartbeat_request），占用 ring buffer 有效容量。应用消息的可用空间减少，慢消费者更容易 Lag。
 
 **根因**：消息循环中只有 `BusCommand::Send` 分支在广播后调用了 `while drain_rx.try_recv().is_ok() {}`。`Connect`、`Disconnect`、`heartbeat_tick` 三个分支都通过 `broadcast_tx.send()` 广播了消息，但**没有 drain**。
 
@@ -73,9 +73,9 @@ Disconnect 分支:  broadcast → ❌ 没有 drain
 heartbeat_tick:   broadcast → ❌ 没有 drain
 ```
 
-每次 lifecycle 事件，drain_rx 累积 1 条未读消息。`capacity` 次之后 ring buffer 满，所有 send 阻塞。
+drain_rx 是 ring buffer 中的一个消费者。如果它不消费，buffer 里就一直有这些过时消息占位。broadcast 不会阻塞（`send()` 是同步方法，从不等待），但会覆盖旧消息、给慢 receiver 发 Lagged。drain 的目的是**释放已被所有应用 receiver 消费过的 slot**，保持有效容量。
 
-**修复**：在三个 lifecycle 分支的 `select!` arm 中广播后添加 `while drain_rx.try_recv().is_ok() {}`：
+**修复**：在三个 lifecycle 分支的 `select!` arm 中广播后添加 `while drain_rx.try_recv().is_ok() {}`。
 
 ```rust
 // lib.rs 消息循环
