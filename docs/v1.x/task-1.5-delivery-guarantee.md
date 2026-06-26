@@ -22,13 +22,13 @@
 **B. 投递保证规则**：全部不在线才拒绝
 
 ```
-send(action, to=[mcp/fs, mcp/web]) → 至少一个在线 → broadcast → SendReceipt
-                                    → 全都不在线 → Err(SendError::NodeOffline([mcp/fs, mcp/web]))
+send(action, to=[agent/search, agent/code]) → 至少一个在线 → broadcast → SendReceipt
+                                             → 全都不在线 → Err(SendError::NodeOffline([agent/search, agent/code]))
 ```
 
 **为什么是多目标？**
 
-一个 ReAct step 可能涉及多个工具节点（如同时读文件 + 搜索），发送方需要指定多个目标接收者。单 `NodeId` 无法表达此意图。
+一个 supervisor agent 可能需要同时向多个 subagent 分发任务（如并行调用 agent/search + agent/code），发送方需要指定多个目标接收者。单 `NodeId` 无法表达此意图。
 
 **为什么全部不在线才拒绝？**
 
