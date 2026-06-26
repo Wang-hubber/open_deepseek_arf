@@ -186,23 +186,30 @@ session  >  round  >  turn
 
 ## 第二轮：从具体回归抽象
 
-第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。现在站在踩过的坑上，进入第二个循环。核心矛盾很清晰：**协调层 承担了太多不该它承担的责任。**
+第一个循环完成了——从业务痛点出发，抽象出框架，落地为代码。站在踩过的坑上，第二个循环的核心思路已经清晰：**用一条消息总线解耦一切。**
 
-- **Park/Resume 散落三级。** Engine checkpoint → Plugin wait 注册 → Agent wait() 调用，没有统一的等待状态抽象。
-- **A2A 与 协调层 耦合过深。** 消息注入时机、消费归属、reply 组装——嵌在 Engine 和 Plugin 实现中，而非独立通讯层。
-- **Agent 边界模糊。** PrimitiveAgent 对外暴露了 `wait()` / `finish_wait()`——Agent 本不该知道自己被挂起。
-- **State 不够鲁棒。** 当前只是消息列表 + waiting 字典的序列化快照。缺少对状态转换的显式建模——无法回答"当前处于什么阶段""为什么进入这个状态""哪些副作用已处理"。
-- **Trace 只监控 Agent，不监控调度器。** 协调层 自身的调度决策——为什么 park、消息何时注入——对排查 A2A 问题至关重要却不可见。
-- **Log 系统性缺失。** 大量排查时间花在"不知道发生了什么"上。关键路径（park/wake、消息注入、状态落盘）没有统一的 debug 粒度日志。
+v0.x 的核心教训是耦合——Engine 直接持有 MCP、Plugin、AgentBus 的引用，Park 散落在三层，A2A 消息注入时机嵌在 Engine 实现中。新架构只认一个原则：**一切通过 Bus，一切公开可见。**
 
-下一轮的方向：
+### v2 六要素
 
-1. **更彻底的抽象。** Agent 不感知挂起，协调层 统一调度。AgentBus 独立为通讯层。State 从消息快照提升为状态机摘要。
-2. **更干净的分离。** Engine 只做"取消息→调模型→执行工具→写结果"。Park/Resume 是调度器的事。A2A 是通讯层的事。Trace 双视角覆盖 Agent + Scheduler。Log 是独立基础设施。
-3. **更通用可扩展。** 模型调度策略、Agent 通讯拓扑——从具体实现抽象为可插拔接口。
-4. **Rust 重写核心。** Engine 主循环、State 状态机、Park/Resume 调度器、AgentBus 消息传递——这四个性能敏感且正确性要求极高的模块，用 Rust 重写，Python 通过 PyO3 绑定。Rust 的类型系统和所有权模型天然适合状态机验证——Python 原型证明了什么是对的，Rust 会让它无法是错的。系统性的 Log 层也在 Rust 侧统一实现，确保关键路径零遗漏。
+| 要素 | 职责 |
+|------|------|
+| **Bus** | J-RPC 广播，维护在线节点图，心跳/上线/下线报文 |
+| **Engine** | 收消息 → 调模型 → 得 action → 发消息。不直接调任何组件 |
+| **Agent** | 状态机骨架。不知道 Bus/MCP/其他 Agent 的存在 |
+| **State** | `messages` + `tasks`，task 含双向锁（blocked_by / blocking），沿依赖链级联释放 |
+| **MCP** | 监听 tool_call 消息，执行后发 result。上线广播工具列表 |
+| **ModelAdapter** | 框架消息 ↔ 外部 API 格式。监听 model_call 消息 |
 
-这不是重写计划，这是 **"把已验证的设计翻译成更严格的语言"。**
+### 架构约束：零黑障
+
+对开发者和调试者，**一切都是透明的，有迹可循的。** 节点上下线、task 创建/阻塞/唤醒/失败、model call 发出/返回、tool 请求/结果——全部以消息形式流经 Bus，天然可 trace、可 debug、可回放。没有隐式状态转换，没有静默失败。
+
+### Rust 重写核心
+
+Bus / Engine / State / AgentBus 四个性能敏感且正确性要求极高的模块用 Rust 实现，Python 通过 PyO3 绑定。Python 原型证明了什么是对的，Rust 的类型系统和所有权模型会让它无法是错的。
+
+完整设计见：**[docs/v2-design.md](docs/v2-design.md)**
 
 ---
 
@@ -210,6 +217,7 @@ session  >  round  >  turn
 
 | 文档 | 内容 |
 |------|------|
+| [`docs/v2-design.md`](docs/v2-design.md) | **v2 架构设计** — Bus + Engine + Agent + State + MCP + ModelAdapter |
 | [`docs/agent.md`](docs/agent.md) | Agent 配置、组装、模型适配器、工具执行 |
 | [`docs/a2a-communication.md`](docs/a2a-communication.md) | Subagents vs Teammates 机制对比与案例 |
 | [`docs/park-resume.md`](docs/park-resume.md) | Park/Resume 等待唤醒机制 |

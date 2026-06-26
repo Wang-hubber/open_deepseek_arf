@@ -1,0 +1,166 @@
+# ARF v2 架构设计
+
+> 从第一轮"具体→抽象→具体"的踩坑中提炼的更干净抽象。
+> 当前状态：设计草案，尚未实现。
+
+---
+
+## 架构约束：零黑障
+
+对开发者和调试者，**一切都是透明的，有迹可循的**。Bus 上发生的一切公开可见——没有隐式状态转换，没有静默失败，没有"不知道发生了什么"。
+
+以下事件全部以消息形式流经 Bus，天然可 trace、可 debug、可回放：
+
+- 节点上线/下线/心跳
+- task 创建/阻塞/唤醒/失败/级联释放
+- model_call 发出/返回
+- tool call 请求/result 返回
+- peer message 发送/接收
+
+---
+
+## 六要素
+
+```
+┌─────────┐  ┌─────────┐  ┌─────────┐
+│ Agent A │  │ Agent B │  │ Agent C │
+│ Engine  │  │ Engine  │  │ Engine  │
+│ State   │  │ State   │  │ State   │
+└────┬────┘  └────┬────┘  └────┬────┘
+     │            │            │
+     └────────────┼────────────┘
+                  │  J-RPC / CAN 广播模式
+     ┌────────────┼────────────┐
+     │            │            │
+┌────┴────┐  ┌────┴────┐  ┌────┴────┐
+│  MCP    │  │ Model   │  │ 其他     │
+│  资源    │  │ Adapter │  │ Consumer │
+│  管理器  │  │         │  │          │
+└─────────┘  └─────────┘  └─────────┘
+```
+
+一条 Bus + 五类节点。Engine 不知道 MCP 的存在，MCP 不知道 Agent 的存在——全部通过消息契约耦合。
+
+---
+
+### 1. Bus — 消息总线
+
+**J-RPC 广播模式**，所有节点挂在同一条总线上。
+
+**消息格式：**
+```
+{id, type, from, to?, payload}
+```
+- `to` 为空 = 广播
+- `to` 指定 = 定向（指定消费者消费后 drain）
+
+**在线节点图：** Bus 自身维护一张当前在线节点图，节点通过以下报文交互：
+
+- `node_online{type, capabilities...}` — 上线广播，携带节点类型和能力声明
+- `node_offline` — 下线广播
+- `heartbeat` — 周期性心跳，超时未回复自动标记 offline
+
+其他节点随时通过听广播 + 查看在线节点图，知道当前有哪些节点在线、各自有什么能力。节点的 discover 不是主动查询，是**听广播 + 看图**，零延迟。
+
+**节点离线处理：** 某节点离线 → Bus 自动沿该节点相关的 task 依赖链级联释放，Agent 会收到显式的"节点离线，task 无法继续"通知，而非静默挂起。
+
+---
+
+### 2. Engine — 运行引擎
+
+**职责：收消息 → 调模型 → 得 action → 发消息。** 这是 Engine 唯一做的事。
+
+- 监听 Bus 上的消息，按 Agent 的 session_id 过滤归属
+- 调用 ModelAdapter（通过 Bus 发 `model_call` 消息）
+- 收到模型返回的 action 决策后，通过 Bus 发 `action` 消息
+- **不直接调用 MCP**，不直接调用工具——所有执行指令都通过 Bus
+- 不直接调用 ModelAdapter——只通过 Bus 发消息
+
+**中断与恢复：**
+- 收到 `interrupt` 消息 → park，State 持久化
+- 收到 `resume` 消息 → 从 State 恢复，继续运行
+- Engine 不感知"为什么被中断"——只响应消息
+
+**State 管理：**
+- State 持久化、加载、恢复由 Engine 统一管理
+- Agent 不感知持久化细节
+
+---
+
+### 3. Agent — 状态机骨架
+
+**声明式配置，被动状态机。**
+
+Agent 本身只是一份配置 + 一个状态机骨架：
+
+- **运行路径** — 可读写的本地目录
+- **可操作路径** — 沙箱允许的路径白名单
+- **model** — 使用的模型定义
+- **工作模式** — ask / plan / auto
+- **可用资源** — 可调用的工具/技能列表
+
+Agent **不知道** Bus 的存在，不知道 MCP 的存在，不知道其他 Agent 的存在。它只是一个消息状态机——Engine 把消息喂给它，它产生 action 决策，Engine 把决策发到 Bus 上。
+
+---
+
+### 4. State — 状态机状态
+
+**`messages` + `tasks`**，完整描述状态机当前所处的一切。
+
+**messages：** 完整消息流，状态机恢复的原材料。
+
+**tasks：** 结构化任务，有独立生命周期：
+
+```
+created → in_progress → blocked → resolved / failed / cancelled
+```
+
+**双向锁：**
+- `blocked_by` — 谁在阻塞我（我依赖谁）
+- `blocking` — 我在阻塞谁（谁依赖我）
+- 父 task 等子 task = 父 blocked_by 子，子 blocking 父
+
+**级联释放：**
+- task 完成 → 沿 `blocking` 链唤醒所有被阻塞的 task
+- task 取消 → 沿 `blocked_by` 链级联取消所有依赖 task
+- 节点离线 → 该节点相关的所有 task 级联释放，Engine 注入显式的失败通知消息
+- 释放通知不是静默的——Agent 会收到一条不可忽略的系统消息，知道自己等不到了
+
+---
+
+### 5. MCP — 集中式资源管理器
+
+**职责：资源发现 / 注册 / 执行。**
+
+- 监听 Bus 上的工具调用消息，执行后发出 result 消息
+- 上线时广播 `node_online{type=mcp, tools=[...]}`，Engine 收到后更新自身工具注册表
+- MCP 不感知 Agent——只认 `{type: "tool_call", tool_name, params}` 消息格式
+- 工具执行结果回到 Bus，Engine 按 session_id 过滤收走
+- **MCP 自己是可替换的**——换一个 MCP 实现，只要接口消息格式不变，整个系统无感
+
+---
+
+### 6. ModelAdapter — 模型格式适配
+
+**职责：框架内部消息 ↔ 外部 API 格式。**
+
+- 监听 Bus 上的 `model_call` 消息
+- 将框架内部标准消息格式转换为各供应商 API 格式（OpenAI / DeepSeek / Anthropic 等）
+- 发出 `model_response` 消息回到 Bus
+- **LLM / VLM 统一适配**——对话模型和多模态模型走同一套消息格式，Adapter 负责差异
+- 可插拔——新增供应商只需新增一个 Adapter，不影响任何其他组件
+
+---
+
+## 与 v0.x 的关键差异
+
+| | v0.x（当前） | v2（设计） |
+|---|---|---|
+| **耦合方式** | Engine 直接持有 MCP/Memory/Plugin 引用 | 全部通过 Bus 消息解耦 |
+| **Agent 感知** | Agent 暴露 `wait()` / `finish_wait()` | Agent 不知道 park/resume，Engine 管理 |
+| **State** | `messages: list` + `waiting: dict` 扁平结构 | `messages` + `tasks` 有生命周期 + 双向锁 |
+| **A2A** | Subagents + Teammates 两套独立模式 | 统一 Bus，peer message = `to=sid` 的定向消息 |
+| **可观测性** | TracePlugin 插桩，事后 JSONL | Bus 上一切消息天然 trace，实时可见 |
+| **错误通知** | 静默挂起，pending 无反馈 | 级联释放时 Engine 注入显式通知消息 |
+| **资源发现** | FileWatcher 轮询文件系统 | Bus 广播 `node_online`，零延迟 push |
+| **实现语言** | Python | 核心（Bus / Engine / State / AgentBus）用 Rust，Python PyO3 绑定 |
