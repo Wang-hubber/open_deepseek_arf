@@ -180,7 +180,7 @@ impl Bus {
 ```
 
 逐行：
-- `broadcast::channel(channel_capacity)` — 创建广播通道，capacity 即环形缓冲区大小（spec 默认 1024）。返回的 `drain_rx` 是 dummy 接收者，移入消息循环用于保持 channel 存活 + 定期 drain
+- `broadcast::channel(channel_capacity)` — 创建广播通道，capacity 即环形缓冲区大小（spec 默认 1024）。**tokio broadcast 不允许 capacity=0，最小值为 1**。返回的 `drain_rx` 是 dummy 接收者，移入消息循环用于保持 channel 存活 + 定期 drain
 - `mpsc::channel(256)` — 命令通道 buffer 256 条，足够缓冲高并发写入
 - `broadcast_tx.clone()` — `broadcast::Sender` 是 `Clone` 的，clone 一份给消息循环。Bus 自己保留原始 copy 用于 `subscribe()`
 - `count_clone = message_count.clone()` — `Arc::clone()` 增加引用计数，消息循环和 Bus 共享同一个 `AtomicU64`
@@ -771,6 +771,19 @@ mod tests {
 | 心跳超时 → `node_offline` 广播 | 需要心跳检测机制 | 1.4 |
 | `SendReceipt.matching_nodes` 计算 | 需要 filter 匹配逻辑 | 1.6 |
 | 发送方阻塞超时（timeout send） | 需讨论是否引入 send timeout API | 后续讨论 |
+
+---
+
+## 实现修正
+
+以下测试在设计文档基础上做了调整，反映实际 tokio broadcast 行为：
+
+| 原设计测试 | 实际测试 | 原因 |
+|-----------|---------|------|
+| `bus_with_zero_capacity` | `bus_with_minimal_capacity_works` | tokio `broadcast::channel(0)` panic，最小值 1 |
+| `send_after_shutdown_returns_bus_closed` | `receiver_returns_closed_after_shutdown` | `shutdown(self)` 消费 Bus，无法再 send，改为验证 receiver 收到 `Closed` |
+| `slow_receiver_backpressures_sender` | `slow_receiver_lagged_not_backpressured` | drain receiver 拉高了 channel 最慢位置，慢消费者不会阻塞发送方，只会 Lagged |
+| `receiver_recovers_after_lag` (单次 recv) | 改用 `try_recv()` 循环 drain 所有 lag + 缓冲消息后再验证 | Lagged 后缓冲区可能仍有未消费消息，需先 drain 净 |
 
 ---
 
