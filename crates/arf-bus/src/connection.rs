@@ -80,6 +80,9 @@ impl NodeHandle {
                     .await;
                 continue;
             }
+            if !self.filter.matches(&msg, &self.info.node_id) {
+                continue;
+            }
             return Ok(msg);
         }
     }
@@ -98,6 +101,9 @@ impl NodeHandle {
                         let _ = self.cmd_tx.try_send(BusCommand::HeartbeatAck {
                             node_id: self.info.node_id.clone(),
                         });
+                        continue;
+                    }
+                    if !self.filter.matches(&msg, &self.info.node_id) {
                         continue;
                     }
                     return Ok(Some(msg));
@@ -679,6 +685,47 @@ mod tests {
         }
 
         let bus = Arc::into_inner(bus).unwrap();
+        bus.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // recv — filter 端到端 (1 test)
+    // ═══════════════════════════════════════════════════════════════
+
+    // [过滤] recv() 只返回通过 filter 的消息
+    #[tokio::test]
+    async fn recv_respects_message_filter() {
+        let bus = test_bus();
+        let filter = MessageFilter {
+            types: Some(vec!["action".into()]),
+            to_match: ToMatch::BroadcastOnly,
+        };
+        let mut receiver = bus.connect(test_node_info("r"), filter).await.unwrap();
+        let sender = bus.connect(test_node_info("s"), test_filter()).await.unwrap();
+
+        // sender's node_online has type "node_online" → filtered out by types
+        // Send non-matching type → filtered
+        sender
+            .send("noise", vec![], serde_json::json!(null))
+            .await
+            .unwrap();
+        // Send matching type but directed (not broadcast) → filtered by to_match
+        sender
+            .send("action", vec![NodeId::new("r")], serde_json::json!("directed"))
+            .await
+            .unwrap();
+        // Send matching (action + broadcast) → should be the only one received
+        sender
+            .send("action", vec![], serde_json::json!("run"))
+            .await
+            .unwrap();
+
+        let msg = receiver.recv().await.unwrap();
+        assert_eq!(msg.msg_type, "action");
+        assert_eq!(msg.payload, serde_json::json!("run"));
+
+        receiver.disconnect().await;
+        sender.disconnect().await;
         bus.shutdown().await;
     }
 }

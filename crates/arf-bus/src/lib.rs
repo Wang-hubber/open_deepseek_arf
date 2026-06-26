@@ -366,6 +366,7 @@ fn handle_disconnect(
 // ═══════════════════════════════════════════════════════════════════
 
 mod connection;
+mod filter;
 mod heartbeat;
 pub use connection::NodeHandle;
 

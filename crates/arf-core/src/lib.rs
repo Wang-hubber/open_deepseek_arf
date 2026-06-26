@@ -155,6 +155,31 @@ pub enum ToMatch {
     BroadcastAndDirectedToMe,
 }
 
+impl MessageFilter {
+    /// Returns true if the message passes this filter.
+    ///
+    /// - `types`: if `Some`, the message's `msg_type` must be in the list.
+    /// - `to_match`: controls how `msg.to` is matched against `node_id`.
+    pub fn matches(&self, msg: &Message, node_id: &NodeId) -> bool {
+        // 1. Type filter
+        if let Some(ref types) = self.types {
+            if !types.contains(&msg.msg_type) {
+                return false;
+            }
+        }
+
+        // 2. Target filter
+        match self.to_match {
+            ToMatch::All => true,
+            ToMatch::BroadcastOnly => msg.to.is_empty(),
+            ToMatch::DirectedToMe => msg.to.contains(node_id),
+            ToMatch::BroadcastAndDirectedToMe => {
+                msg.to.is_empty() || msg.to.contains(node_id)
+            }
+        }
+    }
+}
+
 // ── SendError ─────────────────────────────────────────────────────────
 
 /// Errors that can occur when sending a message.
