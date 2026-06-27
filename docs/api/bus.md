@@ -990,7 +990,7 @@ async def session_affinity():
 async def tracing():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=1024)
 
-    # Trace 节点 — 全量消费
+    # Trace 节点 — 全量消费，第一个上线
     trace = await bus.connect(
         NodeInfo("trace/obs", "trace", {}),
         MessageFilter(types=None, to_match=ToMatch.All),
@@ -1005,25 +1005,38 @@ async def tracing():
         MessageFilter(types=["tool_call"]),
     )
 
+    # Trace 看到 engine 和 worker 的 node_online（全量消费的设计意图）
+    for _ in range(2):
+        msg = await trace.recv()
+        print(f"[trace] {msg.msg_type} from {msg.sender}")
+
     # Engine 广播任务
     await engine.send("job", [], {"task": "compress"})
 
-    # Trace 看到了（ToMatch.All）
+    # Trace 看到 job（ToMatch.All），worker 看不到（types=["tool_call"] 过滤）
     trace_msg = await trace.recv()
     print(f"[trace] {trace_msg.msg_type} from {trace_msg.sender}")
-    # → [trace] job from engine/main
 
     # Engine 发送定向 tool_call
     await engine.send("tool_call", [NodeId("mcp/fs")], {"tool": "read"})
 
-    # Trace 和 worker 都收到定向消息
-    # （trace 有 ToMatch.All，worker 的 filter 匹配 "tool_call"）
+    # Worker 收到（filter 匹配 "tool_call"），Trace 也看到（ToMatch.All）
     worker_msg = await worker.recv()
     trace_msg2 = await trace.recv()
-    print(f"[worker] 收到 {worker_msg.msg_type}")
-    print(f"[trace]  看到 {trace_msg2.msg_type} (定向给 {trace_msg2.to})")
+    print(f"[worker] {worker_msg.msg_type} payload={worker_msg.payload}")
+    print(f"[trace] {trace_msg2.msg_type} 定向给 {trace_msg2.to}")
 
     await bus.shutdown()
+```
+
+**运行输出：**（耗时 <1ms）
+
+```
+[trace] node_online from engine/main
+[trace] node_online from mcp/fs
+[trace] job from engine/main
+[worker] tool_call payload={'tool': 'read'}
+[trace] tool_call 定向给 [NodeId('mcp/fs')]
 ```
 
 ### 快消费者代理 / Fan-out
