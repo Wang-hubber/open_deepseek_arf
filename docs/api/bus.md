@@ -613,6 +613,20 @@ new_handle = await bus.connect(
     如果让 NodeHandle 出作用域而不 `await disconnect()`，节点会变成 **zombie entry**，
     阻塞同 NodeId 重连直到心跳超时清理。**始终显式调用 `await disconnect()`** 做受控下线。
 
+    ```python
+    # ❌ 错误：handle 出作用域，未调用 disconnect → zombie entry
+    async def bad():
+        h = await bus.connect(NodeInfo("worker/1", "worker", {}), MessageFilter())
+        # h 在此处被 GC，未 disconnect
+    await bad()
+
+    # ✅ 正确：显式 disconnect 后出作用域 — 立即从 nodes map 移除
+    async def good():
+        h = await bus.connect(NodeInfo("worker/1", "worker", {}), MessageFilter())
+        await h.disconnect()  # 广播 node_offline，清理 entry
+    await good()
+    ```
+
 ---
 
 #### `NodeHandle.node_info()`
