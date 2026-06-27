@@ -115,33 +115,42 @@ asyncio.run(main())
 Bus 的定向消息天然支持点对点通信。加上 `req_id` 关联和调用方专用的消息类型，就能实现 RPC 式的请求-响应：
 
 ```python
-# A 调用 B
-a = await bus.connect(
-    info=NodeInfo(node_id="node/a", node_type="test", capabilities={}),
-    filter=MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
-)
-b = await bus.connect(
-    info=NodeInfo(node_id="node/b", node_type="test", capabilities={}),
-    filter=MessageFilter(types=["tool_call"], to_match=ToMatch.DirectedToMe),
-)
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
 
-# A → B tool_call
-await a.send(
-    msg_type="tool_call",
-    to=[NodeId(id="node/b")],
-    payload={"tool": "add", "params": [3, 4], "req_id": "r1"},
-)
-# B 侧解包并完成运算，返回结果
-req = await b.recv()
-a_val, b_val = req.payload["params"]
-result = a_val + b_val
-await b.send(
-    msg_type="tool_call_result",
-    to=[NodeId(id="node/a")],
-    payload={"result": result, "req_id": req.payload["req_id"]},
-)
-resp = await a.recv()
-print(f"3+4={resp.payload['result']}")
+async def main():
+    bus = Bus()
+
+    a = await bus.connect(
+        info=NodeInfo(node_id="node/a", node_type="test", capabilities={}),
+        filter=MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
+    )
+    b = await bus.connect(
+        info=NodeInfo(node_id="node/b", node_type="test", capabilities={}),
+        filter=MessageFilter(types=["tool_call"], to_match=ToMatch.DirectedToMe),
+    )
+
+    # A → B tool_call
+    await a.send(
+        msg_type="tool_call",
+        to=[NodeId(id="node/b")],
+        payload={"tool": "add", "params": [3, 4], "req_id": "r1"},
+    )
+    # B 侧解包并完成运算，返回结果
+    req = await b.recv()
+    a_val, b_val = req.payload["params"]
+    result = a_val + b_val
+    await b.send(
+        msg_type="tool_call_result",
+        to=[NodeId(id="node/a")],
+        payload={"result": result, "req_id": req.payload["req_id"]},
+    )
+    resp = await a.recv()
+    print(f"3+4={resp.payload['result']}")
+
+    await bus.shutdown()
+
+asyncio.run(main())
 ```
 
 **运行输出：**（耗时 <1ms）
@@ -157,32 +166,56 @@ print(f"3+4={resp.payload['result']}")
 外挂一个 `ToMatch.All` 的节点，将全量消息写入本地文件（或 Redis、数据库）：
 
 ```python
-import json
+import asyncio, json, os, tempfile
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
 
-persister = await bus.connect(
-    info=NodeInfo(node_id="persist/store", node_type="persist", capabilities={}),
-    filter=MessageFilter(types=None, to_match=ToMatch.All),
-)
+async def main():
+    bus = Bus()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
+    tmp.close()
 
-async def persist_loop(handle, path):
-    with open(path, "a") as f:
-        while True:
-            try:
-                msg = await handle.recv()
-                if msg.msg_type == "node_online":
-                    continue
-                f.write(json.dumps({
-                    "type": msg.msg_type,
-                    "sender": str(msg.sender),
-                    "payload": msg.payload,
-                }) + "\n")
-            except Exception:
-                break
+    # 持久化节点：ToMatch.All，写入文件
+    persister = await bus.connect(
+        info=NodeInfo(node_id="persist/store", node_type="persist", capabilities={}),
+        filter=MessageFilter(types=None, to_match=ToMatch.All),
+    )
 
-asyncio.ensure_future(persist_loop(persister, "/tmp/bus_log.jsonl"))
+    async def persist_loop(handle, path):
+        with open(path, "a") as f:
+            while True:
+                try:
+                    msg = await handle.recv()
+                    if msg.msg_type == "node_online":
+                        continue
+                    f.write(json.dumps({
+                        "type": msg.msg_type,
+                        "sender": str(msg.sender),
+                        "payload": msg.payload,
+                    }) + "\n")
+                    f.flush()
+                except Exception:
+                    break
 
-await a.send(msg_type="job", to=[], payload={"task": "train"})
-await a.send(msg_type="job", to=[], payload={"task": "eval"})
+    asyncio.ensure_future(persist_loop(persister, tmp.name))
+
+    # 业务节点发送消息
+    a = await bus.connect(
+        info=NodeInfo(node_id="node/a", node_type="test", capabilities={}),
+        filter=MessageFilter(),
+    )
+    await a.send(msg_type="job", to=[], payload={"task": "train"})
+    await a.send(msg_type="job", to=[], payload={"task": "eval"})
+
+    await asyncio.sleep(0.05)
+    await bus.shutdown()
+
+    # 读取持久化文件
+    with open(tmp.name) as f:
+        for line in f:
+            print(f"持久化: {line.strip()}")
+    os.unlink(tmp.name)
+
+asyncio.run(main())
 ```
 
 **运行输出：**（`/tmp/bus_log.jsonl` 内容）
@@ -197,30 +230,50 @@ await a.send(msg_type="job", to=[], payload={"task": "eval"})
 在 payload 中携带幂等键，接收方本地去重。即使发送方因超时重试导致同一条消息被投递多次，接收方也只处理一次：
 
 ```python
-seen = set()  # 幂等去重表
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
 
-async def recv_loop(handle):
-    while True:
-        try:
-            msg = await handle.recv()
-            idem = msg.payload["idem_key"]
-            if idem in seen:
-                print(f"重复消息已跳过: idem_key={idem}")
-                continue
-            seen.add(idem)
-            print(f"处理: idem_key={idem}, data={msg.payload['data']}")
-        except Exception:
-            break
+async def main():
+    bus = Bus()
 
-asyncio.ensure_future(recv_loop(receiver))
-
-# 模拟重试——同一订单发了 3 次
-for _ in range(3):
-    await sender.send(
-        msg_type="order",
-        to=[NodeId(id="receiver")],
-        payload={"idem_key": "order-42", "data": "buy 100 shares"},
+    sender = await bus.connect(
+        info=NodeInfo(node_id="sender", node_type="test", capabilities={}),
+        filter=MessageFilter(),
     )
+    receiver = await bus.connect(
+        info=NodeInfo(node_id="receiver", node_type="test", capabilities={}),
+        filter=MessageFilter(types=["order"], to_match=ToMatch.DirectedToMe),
+    )
+
+    seen = set()  # 幂等去重表
+
+    async def recv_loop(handle):
+        while True:
+            try:
+                msg = await handle.recv()
+                idem = msg.payload["idem_key"]
+                if idem in seen:
+                    print(f"重复消息已跳过: idem_key={idem}")
+                    continue
+                seen.add(idem)
+                print(f"处理: idem_key={idem}, data={msg.payload['data']}")
+            except Exception:
+                break
+
+    asyncio.ensure_future(recv_loop(receiver))
+
+    # 模拟重试——同一订单发了 3 次
+    for _ in range(3):
+        await sender.send(
+            msg_type="order",
+            to=[NodeId(id="receiver")],
+            payload={"idem_key": "order-42", "data": "buy 100 shares"},
+        )
+
+    await asyncio.sleep(0.05)
+    await bus.shutdown()
+
+asyncio.run(main())
 ```
 
 **运行输出：**（第一条被处理，后两条被跳过）
@@ -1043,6 +1096,9 @@ assert g.uptime_ms >= 0
 多个同类型 worker 全收每一条广播，应用层决定由哪个 worker 处理（如一致性哈希、轮询）。
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
+
 async def worker_pool():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=128)
 
@@ -1088,6 +1144,9 @@ worker-3 收到: type=infer, payload={'prompt': 'hello'}
 通过定向发送将同一 session 的消息始终路由到同一个 worker。
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
+
 async def session_affinity():
     bus = Bus()
 
@@ -1121,6 +1180,9 @@ async def session_affinity():
 设置一个 `ToMatch.All` 的 trace 节点，监控 Bus 上所有消息。
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
+
 async def tracing():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=1024)
 
@@ -1178,6 +1240,9 @@ async def tracing():
 当某个消费者处理逻辑过重导致频繁 `Lagged(n)`，且无法对单节点做效率优化时（例如需要调用慢速外部 API、做大规模计算、或数据本身倾斜），可以接入一个**快消费者代理**——它用最小开销捕获消息，立即 drain，然后转发到慢消费者或分布式消费池。
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
+
 async def fast_consumer_fanout():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=256)
 
@@ -1242,6 +1307,9 @@ async def fast_consumer_fanout():
 ### 优雅关闭
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
+
 async def graceful_shutdown():
     bus = Bus()
     h1 = await bus.connect(
@@ -1268,6 +1336,9 @@ async def graceful_shutdown():
 或者在节点仍在线的场景下 shutdown（注意多节点时缓冲区可能有残留 `node_online`）：
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
+
 async def shutdown_with_nodes_online():
     bus = Bus()
     h = await bus.connect(
@@ -1308,6 +1379,9 @@ direct shutdown -> drained=0, recv raises: Exception
 ### 崩溃后重连
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
+
 async def reconnect_after_crash():
     bus = Bus(heartbeat_interval_ms=100, heartbeat_timeout_ms=300, channel_capacity=32)
 
@@ -1356,6 +1430,9 @@ zombie 清理后重连成功
 `node_online` 广播可以用来做服务发现——节点上线后感知已在线的 peer，获取其 capabilities。但常见需求是：**B 需要在 A 发消息之前完成初始化**。这需要控制连接顺序 + 就绪信号。
 
 ```python
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
+
 async def service_discovery_and_ready_signal():
     bus = Bus()
 
