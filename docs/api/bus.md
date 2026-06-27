@@ -571,7 +571,7 @@ drained=0, recv raised: recv error: channel closed
 >
 > 上例中 `drained=0` 是因为该节点是唯一节点，看不到自己的 `node_online`。多节点场景下 drain 计数会 >0。
 >
-> **内存不会泄漏：** Bus 内部持有一个 dummy receiver（`drain_rx`），用于保持 broadcast channel 持续存活（类比 CAN 总线的"线缆始终有电"）。该 dummy 在每次 send / connect / disconnect / 心跳 tick 后被清空，防止其自身造成背压。所有在线节点的 receiver 消费完毕后，环形缓冲区自动释放；已 disconnect 的节点其 `broadcast_rx` 已被 drop，不持有缓冲区引用。最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
+> **内存不会泄漏：** Bus 内部持有一个 dummy receiver（`drain_rx`），用于保持 broadcast channel 持续存活（类比 CAN 总线的"线缆始终有电"）。该 dummy 在每次 send / connect / disconnect / 心跳 tick 后都会 drain 掉其缓冲区内积压的消息，防止 dummy 自身因从不读取而造成背压。所有在线节点的 receiver 消费完毕后，环形缓冲区自动释放；已 disconnect 的节点其 `broadcast_rx` 已被 drop，不持有缓冲区引用。最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
 
 ---
 
