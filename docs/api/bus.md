@@ -351,8 +351,7 @@ MessageFilter(types=None, to_match=ToMatch.All)
 
 `try_recv()` 逻辑相同但不阻塞——无消息时返回 `None`。
 
-!!! warning "并发 recv"
-    同一 NodeHandle 同时只能有一个 `recv()` 或 `try_recv()` 在执行。并发调用抛 `RuntimeError("concurrent recv in progress")`。
+> **警告：** 同一 NodeHandle 同时只能有一个 `recv()` 或 `try_recv()` 在执行。并发调用抛 `RuntimeError("concurrent recv in progress")`。
 
 ### `recv()` vs `try_recv()` 详解
 
@@ -508,8 +507,7 @@ engine = await bus.connect(
 )
 ```
 
-!!! note "broadcast_rx 创建时机"
-    节点的 broadcast receiver 在 `node_online` 广播**之后**创建。因此节点看不到自己的 `node_online`，但能看到之后连接的其他节点的 `node_online`。
+> **注意：** 节点的 broadcast receiver 在 `node_online` 广播**之后**创建。因此节点看不到自己的 `node_online`，但能看到之后连接的其他节点的 `node_online`。
 
 ---
 
@@ -564,19 +562,16 @@ asyncio.run(main())
 drained=0, recv raised: recv error: channel closed
 ```
 
-!!! warning "shutdown 后缓冲区仍有残留消息"
-    `shutdown()` 调用 `signal_shutdown`，关闭 broadcast channel 的**发送端**——此后不再有新消息进入。但 channel 的**接收端**仍然存活，环形缓冲区中的已发送消息尚未被消费。此时 `recv()` 的行为取决于缓冲区状态：
-
-    | 缓冲区状态 | `recv()` 行为 |
-    |-----------|-------------|
-    | 有未读消息 | 逐条返回缓冲消息（FIFO 顺序） |
-    | 缓冲区为空 | 返回 `Closed` 错误 |
-
-    上例中 `drained=0` 是因为该节点是唯一节点，看不到自己的 `node_online`。多节点场景下 drain 计数会 >0。
-
-    **内存不会泄漏：** 环形缓冲区在线节点全部消费完毕（或 receiver 被 drop）后自动释放。
-    即使某些消费者已 `disconnect()`，其 `broadcast_rx` 已被 drop，不再持有缓冲区引用，不会阻碍回收。
-    最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
+> **警告：** `shutdown()` 调用 `signal_shutdown`，关闭 broadcast channel 的**发送端**——此后不再有新消息进入。但 channel 的**接收端**仍然存活，环形缓冲区中的已发送消息尚未被消费。此时 `recv()` 的行为取决于缓冲区状态：
+>
+> | 缓冲区状态 | `recv()` 行为 |
+> |-----------|-------------|
+> | 有未读消息 | 逐条返回缓冲消息（FIFO 顺序） |
+> | 缓冲区为空 | 返回 `Closed` 错误 |
+>
+> 上例中 `drained=0` 是因为该节点是唯一节点，看不到自己的 `node_online`。多节点场景下 drain 计数会 >0。
+>
+> **内存不会泄漏：** 环形缓冲区在线节点全部消费完毕（或 receiver 被 drop）后自动释放。即使某些消费者已 `disconnect()`，其 `broadcast_rx` 已被 drop，不再持有缓冲区引用，不会阻碍回收。最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
 
 ---
 
@@ -725,27 +720,26 @@ print(msg.payload)         # {'task': 'train'}
 print(msg.is_broadcast())  # True
 ```
 
-!!! note "recv() 与 lifecycle 消息"
-    `node_online` 和 `node_offline` 是 Bus 自动广播的 lifecycle 消息（`msg_type` 为 `"node_online"` / `"node_offline"`），
-    节点**可以选择消费或忽略**，完全由 `MessageFilter` 决定：
-
-    | Filter 配置 | 是否收到 lifecycle |
-    |------------|------------------|
-    | `types=None`（默认） | ✅ 收到——`"node_online"` 不在过滤白名单中，类型检查通过 |
-    | `types=["action", "job"]` | ❌ 收不到——`"node_online"` 不在白名单中，被 filter 过滤 |
-    | `to_match=ToMatch.All` | ✅ 收到——且能看到定向给其他节点的消息 |
-
-    - **不关心 lifecycle**：用 `types=["your_type"]` 过滤掉，`recv()` 只返回应用消息。
-    - **需要服务发现**：保留默认 filter，消费 `node_online` 来感知新节点上线（获取其 `node_id`、`node_type`、`capabilities`）。
-    - **需要完整的上下线日志**：用 `ToMatch.All`，trace 节点可用。
-
-    如果你收到了不需要的 lifecycle 消息，在开始消费应用消息前 drain 即可：
-    ```python
-    while True:
-        msg = await handle.recv()
-        if msg.msg_type not in ("node_online", "node_offline"):
-            break  # 第一条应用消息
-    ```
+> **注意：** `node_online` 和 `node_offline` 是 Bus 自动广播的 lifecycle 消息（`msg_type` 为 `"node_online"` / `"node_offline"`），节点**可以选择消费或忽略**，完全由 `MessageFilter` 决定：
+>
+> | Filter 配置 | 是否收到 lifecycle |
+> |------------|------------------|
+> | `types=None`（默认） | ✅ 收到——`"node_online"` 不在过滤白名单中，类型检查通过 |
+> | `types=["action", "job"]` | ❌ 收不到——`"node_online"` 不在白名单中，被 filter 过滤 |
+> | `to_match=ToMatch.All` | ✅ 收到——且能看到定向给其他节点的消息 |
+>
+> - **不关心 lifecycle**：用 `types=["your_type"]` 过滤掉，`recv()` 只返回应用消息
+> - **需要服务发现**：保留默认 filter，消费 `node_online` 来感知新节点上线（获取其 `node_id`、`node_type`、`capabilities`）
+> - **需要完整的上下线日志**：用 `ToMatch.All`，trace 节点可用
+>
+> 如果你收到了不需要的 lifecycle 消息，在开始消费应用消息前 drain 即可：
+>
+> ```python
+> while True:
+>     msg = await handle.recv()
+>     if msg.msg_type not in ("node_online", "node_offline"):
+>         break  # 第一条应用消息
+> ```
 
 ---
 
@@ -813,29 +807,27 @@ new_handle = await bus.connect(
 )
 ```
 
-!!! warning "Disconnect vs Drop"
-    如果让 NodeHandle 出作用域而不 `await disconnect()`，节点会变成 **zombie entry**，
-    阻塞同 NodeId 重连直到心跳超时清理。**始终显式调用 `await disconnect()`** 做受控下线。
-
-    ```python
-    # ❌ 错误：handle 出作用域，未调用 disconnect → zombie entry
-    async def bad():
-        h = await bus.connect(
-            info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
-            filter=MessageFilter(),
-        )
-        # h 在此处被 GC，未 disconnect
-    await bad()
-
-    # ✅ 正确：显式 disconnect 后出作用域 — 立即从 nodes map 移除
-    async def good():
-        h = await bus.connect(
-            info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
-            filter=MessageFilter(),
-        )
-        await h.disconnect()  # 广播 node_offline，清理 entry
-    await good()
-    ```
+> **警告：** 如果让 NodeHandle 出作用域而不 `await disconnect()`，节点会变成 **zombie entry**，阻塞同 NodeId 重连直到心跳超时清理。**始终显式调用 `await disconnect()`** 做受控下线。
+>
+> ```python
+> # ❌ 错误：handle 出作用域，未调用 disconnect → zombie entry
+> async def bad():
+>     h = await bus.connect(
+>         info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
+>         filter=MessageFilter(),
+>     )
+>     # h 在此处被 GC，未 disconnect
+> await bad()
+>
+> # ✅ 正确：显式 disconnect 后出作用域 — 立即从 nodes map 移除
+> async def good():
+>     h = await bus.connect(
+>         info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
+>         filter=MessageFilter(),
+>     )
+>     await h.disconnect()  # 广播 node_offline，清理 entry
+> await good()
+> ```
 
 ---
 
@@ -1040,12 +1032,12 @@ class ToMatch:
 
 目标匹配策略。四个单例实例，通过类属性访问。
 
-!!! note "ToMatch 不是 Enum"
-    `ToMatch` 值是单例实例，不是 Python `Enum` 成员。用 `==` 比较：
-    ```python
-    assert ToMatch.All != ToMatch.BroadcastOnly
-    assert f.to_match == ToMatch.BroadcastAndDirectedToMe
-    ```
+> **注意：** `ToMatch` 值是单例实例，不是 Python `Enum` 成员。用 `==` 比较：
+>
+> ```python
+> assert ToMatch.All != ToMatch.BroadcastOnly
+> assert f.to_match == ToMatch.BroadcastAndDirectedToMe
+> ```
 
 **示例：**
 
@@ -1078,8 +1070,7 @@ class SendReceipt:
 | `.online_nodes` | `int` | 发送时在线节点总数（含自己） |
 | `.matching_nodes` | `int` | filter 可能匹配此消息的在线节点数 |
 
-!!! note "matching_nodes 是下限估计"
-    `matching_nodes` 统计 `MessageFilter.types` 包含此消息 `msg_type`（或为 `None`）的节点。它**不考虑** `to_match` 策略——即使某节点设置了 `DirectedToMe`，广播消息也会将其计入 `matching_nodes`。
+> **注意：** `matching_nodes` 统计 `MessageFilter.types` 包含此消息 `msg_type`（或为 `None`）的节点。它**不考虑** `to_match` 策略——即使某节点设置了 `DirectedToMe`，广播消息也会将其计入 `matching_nodes`。
 
 ---
 
@@ -1159,8 +1150,7 @@ worker-2 收到: type=infer, payload={'prompt': 'hello'}
 worker-3 收到: type=infer, payload={'prompt': 'hello'}
 ```
 
-!!! note "Bus 不做负载均衡"
-    Bus 向所有匹配节点广播。如果每条任务只需要一个 worker 处理，在应用层实现选择逻辑（轮询、一致性哈希、或通过 `DirectedToMe` 实现会话粘性）。
+> **注意：** Bus 向所有匹配节点广播。如果每条任务只需要一个 worker 处理，在应用层实现选择逻辑（轮询、一致性哈希、或通过 `DirectedToMe` 实现会话粘性）。
 
 ### 会话粘性
 
