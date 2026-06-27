@@ -57,25 +57,26 @@ pub(crate) struct NodeEntry {
 /// - `cmd_tx` (mpsc): nodes send commands to the bus (send, connect, heartbeat ack)
 /// - `broadcast_tx` (broadcast): bus broadcasts messages to all subscribers
 ///
-/// # Backstop consumer (`drain_rx`)
+/// # drain_rx — eliminating the SendError path
 ///
-/// The Bus holds a dummy `broadcast::Receiver` (inside the message loop) that
-/// serves as the **backstop consumer**:
+/// `tokio::sync::broadcast::send()` returns `Err(SendError)` when
+/// `receiver_count() == 0`. The message loop has four branches that all call
+/// `broadcast_tx.send()` unconditionally:
 ///
-/// - **Keeps the channel alive** when no application subscribers exist
-///   (CAN's "the wire is always powered").
-/// - **Prevents sender blocking**: tokio broadcast blocks `send()` when the
-///   slowest receiver lags by > `channel_capacity`. `drain_rx` is drained after
-///   every event (send / connect / disconnect / heartbeat tick), so it is
-///   always the fastest receiver — never the bottleneck.
-/// - **Absorbs unconsumed lifecycle messages**: `node_online`, `node_offline`,
-///   and `heartbeat_request` often have zero application consumers. Without
-///   `drain_rx`, these would fill the ring buffer and block all senders.
+/// - `BusCommand::Send` → `broadcast_tx.send(msg)`
+/// - `BusCommand::Connect` → `broadcast_tx.send(node_online)`
+/// - `BusCommand::Disconnect` → `broadcast_tx.send(node_offline)`
+/// - heartbeat tick → `broadcast_tx.send(heartbeat_request)`
 ///
-/// The drain is `while drain_rx.try_recv().is_ok() {}` — non-blocking, runs
-/// synchronously in the message loop. Each application receiver holds its own
-/// independent `broadcast::Receiver` with its own read position; the dummy
-/// drain does not affect their message delivery.
+/// Without drain_rx, each of these would need a `if receiver_count() > 0` guard.
+/// drain_rx is the single `broadcast::Receiver` returned by `broadcast::channel()`,
+/// held permanently inside the message loop. It guarantees `receiver_count() >= 1`
+/// forever, so all four send points remain unconditional.
+///
+/// The drain — `while drain_rx.try_recv().is_ok() {}` after every event — is
+/// one line of code. It replaces four conditional checks and a runtime invariant
+/// ("is anyone listening?"). Slow-consumer backpressure is handled by tokio's
+/// built-in `Lagged` mechanism; drain_rx does not participate in that.
 ///
 /// # Design tradeoff: racing mode
 ///
@@ -251,18 +252,23 @@ impl Bus {
 /// heartbeat timer ticks. The heartbeat timer periodically broadcasts
 /// `heartbeat_request` and checks for timed-out nodes.
 ///
-/// # drain_rx — backstop consumer
+/// # drain_rx — eliminating the SendError path
 ///
-/// `drain_rx` is the dummy receiver that keeps the broadcast channel alive
-/// (CAN's "wire is always powered"). It is drained after every branch that
-/// writes to `broadcast_tx` (send / connect / disconnect / heartbeat tick).
+/// `drain_rx` is the `Receiver` returned by `broadcast::channel()`, held
+/// permanently inside the message loop. Its sole purpose: guarantee
+/// `receiver_count() >= 1` so that all four unconditional `broadcast_tx.send()`
+/// calls (send / connect / disconnect / heartbeat tick) succeed without
+/// checking "is anyone listening?".
 ///
-/// Why every branch? Each produces messages that may have **zero application
-/// consumers** — e.g. `heartbeat_request` is intercepted inside `recv()` and
-/// never surfaced to the caller, and `node_offline` may fire when no nodes
-/// are online. Without drain, these messages accumulate in the ring buffer
-/// and eventually block `broadcast_tx.send()`. drain_rx is the backstop that
-/// absorbs them, guaranteeing `send()` never blocks.
+/// The drain after every branch — `while drain_rx.try_recv().is_ok() {}` —
+/// advances drain_rx to the sender's position, preventing it from becoming
+/// the oldest non-lagged receiver. Without drain, drain_rx would lag and
+/// eventually block `broadcast_tx.send()` as the slowest receiver. This is
+/// not about lifecycle message semantics — it's purely about keeping the
+/// dummy from being the bottleneck it was meant to prevent.
+///
+/// Slow-consumer backpressure is handled by tokio's built-in `Lagged`
+/// mechanism. drain_rx does not participate in that.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,

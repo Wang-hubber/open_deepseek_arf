@@ -27,13 +27,11 @@ Node ──send()──→ cmd_tx (mpsc) ──→ 消息循环 ──→ broadc
 
 **为什么 Bus 自己持有一个 receiver？**
 
-`tokio::sync::broadcast` 有两个特性驱动了这个设计：
+`tokio::sync::broadcast` 有一个基本约束：当 `receiver_count() == 0` 时，`send()` 返回 `Err(SendError)`。Bus 的消息循环有四个分支都要无条件调 `broadcast_tx.send()`——应用消息、`node_online`、`node_offline`、`heartbeat_request`。没有 drain_rx 的话，每个分支前面都要加 `if broadcast_tx.receiver_count() > 0`。
 
-1. **零接收者 → `send()` 报错**。如果所有 `Receiver` 都被 drop，`send()` 返回 `SendError`。Bus 持有一个 dummy receiver（`drain_rx`），保证 broadcast channel 永远存活——对应 CAN 模型中"线缆永远有电"。节点可以自由上下线，Bus 不受影响。
+drain_rx 的设计意图：**用一行 `while drain_rx.try_recv().is_ok() {}` 换掉四处条件判断**。它保证 `receiver_count() >= 1` 永远成立，让消息循环的所有 send 无条件执行。
 
-2. **最慢接收者 → `send()` 阻塞**。broadcast 是固定容量环形缓冲。当最慢的接收者落后超过 `channel_capacity` 条消息时，`send()` 会阻塞等待该接收者追上——这是 tokio 内置的背压机制。`drain_rx` 在每次事件后被立即 drain，保证它始终是最快（而非最慢）的接收者，从而 `send()` 永不阻塞。
-
-`drain_rx` 的关键角色是**兜底消费者**。lifecycle 消息（`node_online`、`node_offline`、`heartbeat_request`）常常没有任何应用节点在消费——worker 用 `types=["job"]` 过滤掉它们，trace 节点记录了但不等于从环形缓冲中"消费"了 slot。没有 drain_rx 的话，这些无人消费的消息会填满 buffer，导致 `send()` 阻塞。drain_rx 在每次 send/connect/disconnect/心跳 tick 后立即清空自己的 buffer，释放环形缓冲的 slot，保证 ​​`send()` 永不阻塞。
+慢消费者的背压由 tokio 原生的 `Lagged` 机制处理——drain_rx 不参与这一层。drain_rx 自己每次事件后被立即 drain，仅仅是为了不让它自身成为瓶颈（一个从不读取的 receiver 会拖慢 sender）。
 
 **任务 1.2 的范围：**
 
@@ -264,22 +262,17 @@ impl Bus {
 /// Receives commands from `cmd_rx`, processes them, and broadcasts messages
 /// through `broadcast_tx`. Runs in a dedicated tokio task.
 ///
-/// `drain_rx` is the dummy receiver that serves as the **backstop consumer**:
-/// - It keeps the broadcast channel alive when no application subscribers exist
-///   (CAN's "wire is always powered").
-/// - It is **drained after every event** (send / connect / disconnect / heartbeat
-///   tick) to guarantee the sender never blocks. tokio broadcast blocks `send()`
-///   when the slowest receiver lags by > `channel_capacity`. drain_rx is always
-///   pushed to the latest position, so the slowest receiver is never the dummy.
+/// `drain_rx` guarantees `receiver_count() >= 1` forever, so all four
+/// unconditional `broadcast_tx.send()` calls (send / connect / disconnect /
+/// heartbeat tick) succeed without checking "is anyone listening?".
 ///
-/// Key insight: lifecycle messages (node_online, node_offline, heartbeat_request)
-/// often have zero application consumers. Without drain_rx, these unconsumed
-/// messages would fill the ring buffer and block all senders. drain_rx absorbs
-/// them silently.
+/// The drain after every event — `while drain_rx.try_recv().is_ok() {}` —
+/// prevents drain_rx itself from becoming the slowest receiver and blocking
+/// the sender. Without drain, the dummy would accumulate lag and after
+/// `capacity` messages would block `broadcast_tx.send()`.
 ///
-/// Design tradeoff — racing mode: the Bus guarantees `send()` never blocks.
-/// Consumers that keep up stay live; slow consumers get `Lagged(n)` alone
-/// and never backpressure the sender or other fast consumers.
+/// Slow-consumer backpressure is handled by tokio's built-in `Lagged`
+/// mechanism. drain_rx does not participate in that.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,
@@ -808,6 +801,6 @@ mod tests {
 
 - **两条 channel**：`mpsc` 接收命令 + `broadcast` 广播消息
 - **消息循环**：收 cmd → 广播 → drain dummy → 计数，运行在独立 tokio task 中
-- **Dummy drain**：消息循环持有 drain receiver，每次 send 后立即 `try_recv()` 清空，防止 dummy 成为背压源。真正的背压只来自真实慢消费者
+- **Dummy drain**：消息循环持有 drain receiver，保证 `receiver_count() >= 1`，所有 `broadcast_tx.send()` 无条件执行。drain 防止 dummy 自身成为背压源；慢消费者背压由 tokio `Lagged` 处理
 - **shutdown**：发 Shutdown 命令 → 消息循环退出 → Bus 被 consume
 - **20 个测试**：3 构造 + 5 基本路径 + 2 shutdown + 3 容量边界 + 6 收发健康 + 1 并发

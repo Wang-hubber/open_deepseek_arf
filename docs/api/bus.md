@@ -33,20 +33,34 @@
 | 帧级 ACK（至少有人收到） | `SendReceipt` — 返回在线节点数 + 匹配节点数 |
 | 错误帧全体丢弃 | `Lagged(n)` — 慢消费者自己兜底，不反压发送方 |
 | 无中心路由 | Bus 只负责广播，不感知谁该收到什么 |
-| 总线始终有电，终端电阻消纳信号 | Bus 内部持有一个 dummy receiver（`drain_rx`），每次事件后自动 drain，作为**兜底消费者**防止环形缓冲区满→发送方阻塞 |
+| 总线始终有电，终端电阻消纳信号 | Bus 持有一个 dummy receiver（`drain_rx`），保证 `broadcast_tx.send()` 永远不因"零接收者"而报错——消息循环的四处 send 全部无条件执行，无需检查"有没有人在听" |
 
-**tokio broadcast 的默认行为：** `tokio::sync::broadcast` 是一个固定容量的环形缓冲区。当**最慢的接收者**落后超过 `channel_capacity` 条消息时，`send()` 会**阻塞**等待该接收者追上——这是 tokio 内置的背压机制。换句话说，只要有一个接收者不消费，缓冲区终将填满，所有发送方被卡住。
+**设计意图——为什么需要 drain_rx？**
 
-**drain_rx 兜底策略：** Bus 在创建 broadcast channel 时获取一个常驻 receiver（`drain_rx`），并保证它在以下每个事件后立即清空：
+`tokio::sync::broadcast` 有一个基本约束：当 `receiver_count() == 0` 时，`send()` 返回 `Err(SendError)`。慢消费者的背压问题已由 tokio 原生的 `Lagged` 机制解决——无需 drain_rx 参与。
 
-| 事件 | 产生的消息 | 被谁消费？ |
-|------|----------|----------|
-| `NodeHandle.send()` | 应用消息（`job`、`tool_call` 等） | 匹配 filter 的节点 + trace（如果配置了） |
-| `Bus.connect()` | `node_online` | 已在线节点（如果它们的 filter 不过滤） + trace |
-| `NodeHandle.disconnect()` | `node_offline` | 已在线节点（同上） + trace |
-| 心跳 tick | `heartbeat_request` + 可能的 `node_offline` | **无人消费**——heartbeat 由 `recv()` 内部自动 ACK，不返回给应用；timeout 产生的 `node_offline` 可能没有任何节点在线 |
+drain_rx 解决的是一行代码的问题。消息循环有四个分支都要调 `broadcast_tx.send()`：
 
-关键洞察：**lifecycle 消息常常无人消费**。一个配置了 `types=["job"]` 的 worker 收不到 `node_online`；心跳只在 `recv()` 内部处理不掉 buffer 里的消息；trace 节点虽然可能用 `ToMatch.All` 全量记录，但它消费速度可能跟不上——而且记录不等于从缓冲区"消耗"，tokio broadcast 中每个 receiver 都有自己的消费位置。**`drain_rx` 是最终的兜底：它的消费位置在每次事件后被推到最新，保证无论是否有应用节点在消费，环形缓冲区永不满，`send()` 永不阻塞。**
+```rust
+// 消息循环的四个 send 点（简化）：
+loop { tokio::select! {
+    BusCommand::Send { msg, .. }    => { broadcast_tx.send(msg);             }  // ①
+    BusCommand::Connect { .. }      => { broadcast_tx.send(node_online);     }  // ②
+    BusCommand::Disconnect { .. }   => { broadcast_tx.send(node_offline);    }  // ③
+    heartbeat_tick => {               broadcast_tx.send(heartbeat_request);    }  // ④
+} }
+```
+
+没有 drain_rx 的话，每个 send 前面都要加 `if broadcast_tx.receiver_count() > 0`——四个条件判断 + 一个需要持续维护的不变式（"是否有人在听"）。`drain_rx` 用一行 `while drain_rx.try_recv().is_ok() {}` 消除了这四处错误路径，让消息循环的所有 send 保持无条件。
+
+| 消息循环分支 | 产生消息 | 触发时机 | 可能零接收者？ |
+|-------------|---------|---------|-------------|
+| `BusCommand::Send` | 应用消息 | 任意 node 调 `send()` | ✅ 无 app 订阅者时 |
+| `BusCommand::Connect` | `node_online` | 新 node 上线 | ✅ 第一个 node connect 时 |
+| `BusCommand::Disconnect` | `node_offline` | 任意 node 下线 | ✅ 最后一个 node disconnect 时 |
+| 心跳 tick | `heartbeat_request` | 定时触发 | ✅ 无 node 在线时 |
+
+四个分支全都有"零接收者"窗口。drain_rx 不是为了防止 buffer 满阻塞（tokio 的 Lagged 已解决），而是**保证 `receiver_count()` 永远 ≥ 1，从而所有 `broadcast_tx.send()` 无条件成立**。
 
 **drain_rx 如何消费消息？—— 位置指针滚动图解**
 
@@ -200,18 +214,17 @@ ARF Bus:
 
 **差异总结：**
 
-tokio broadcast 原生的 `Lagged` 语义已经保护了"慢消费者不反压发送方"这个特性。ARF Bus 的 `drain_rx` 在此之上解决的是两个更基本的问题：
+tokio broadcast 原生的 `Lagged` 语义已经解决了慢消费者背压问题——这不是 drain_rx 的职责。drain_rx 解决的是一个更基础的问题：
 
-| 场景 | 原生 tokio broadcast | ARF Bus (竞速模式) |
-|------|---------------------|-------------------|
+| 场景 | 原生 tokio broadcast | ARF Bus (有 drain_rx) |
+|------|---------------------|----------------------|
 | 零接收者 | `send()` → `Err(SendError)` | `send()` → `Ok(SendReceipt)` |
-| 全部 app 退出后继续发消息 | `Err(SendError)` — channel 死 | `Ok` — drain_rx 是"常驻市民" |
-| 慢消费者落后 < capacity | 不阻塞 | 不阻塞 (同左) |
-| 慢消费者落后 ≥ capacity | 被 Lagged, sender 继续 | 被 Lagged, sender 继续 (drain_rx 兜底) |
-| lifecycle 消息无人消费 | buffer 滚动覆盖 | drain_rx 逐条消费, 释放 slot |
-| 设计承诺 | 隐式 — 行为取决于 receiver 数量/状态 | **显式 — send() 永不阻塞, 竞速模式** |
+| 全部 app 退出后心跳 | `Err(SendError)` — channel 死 | `Ok` — drain_rx 保底一个接收者 |
+| 消息循环四处 send | 每处需 `if receiver_count > 0` | 全部无条件 send, 一行 drain |
+| 慢消费者落后 | Lagged 处理 (与原生存为一致) | 同左 |
+| 慢消费者阻塞发送方 | 不会 (tokio 的 Lagged) | 不会 (理由同上) |
 
-核心结论：**`drain_rx` 不是改造 tokio 的 Lagged 机制，而是在它之下铺了一层"永远不死"的兜底**——保证 broadcast channel 始终有一个活着的消费者，从而 `send()` 既不会因零接收者报错，也不会因唯一接收者卡住而阻塞。
+核心结论：**`drain_rx` 的价值不是对抗背压，而是消除一类错误路径**——用一行 `while drain_rx.try_recv().is_ok() {}` 换掉消息循环四处 `if receiver_count() > 0` 的条件判断。它保证 `broadcast_tx.send()` 永远有一个接收者，从机制上消灭了"零接收者→SendError"的可能性。
 
 这个机制完全透明——每个在线节点独立持有自己的 `broadcast::Receiver`，各自维护消费位置，不受 `drain_rx` 的 drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
 
