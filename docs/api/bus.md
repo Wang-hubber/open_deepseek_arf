@@ -33,9 +33,24 @@
 | 帧级 ACK（至少有人收到） | `SendReceipt` — 返回在线节点数 + 匹配节点数 |
 | 错误帧全体丢弃 | `Lagged(n)` — 慢消费者自己兜底，不反压发送方 |
 | 无中心路由 | Bus 只负责广播，不感知谁该收到什么 |
-| 总线始终有电，终端电阻消纳信号 | Bus 内部持有一个 dummy receiver，每次事件后自动 drain，确保通道永不因"无人消费"而阻塞 |
+| 总线始终有电，终端电阻消纳信号 | Bus 内部持有一个 dummy receiver（`drain_rx`），每次事件后自动 drain，作为**兜底消费者**防止环形缓冲区满→发送方阻塞 |
 
-**对用户意味着什么：** dummy receiver 作为 broadcast channel 的常驻接收方，会收到**所有消息**（`node_online` / `node_offline` / `heartbeat_request` 等 lifecycle 消息，以及 `job` / `tool_call` 等应用消息），并在每次事件后被立即 drain，保证通道不会因累积而阻塞。这个机制完全透明——每个在线节点仍然独立收到自己的消息副本，不受 dummy drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
+**tokio broadcast 的默认行为：** `tokio::sync::broadcast` 是一个固定容量的环形缓冲区。当**最慢的接收者**落后超过 `channel_capacity` 条消息时，`send()` 会**阻塞**等待该接收者追上——这是 tokio 内置的背压机制。换句话说，只要有一个接收者不消费，缓冲区终将填满，所有发送方被卡住。
+
+**drain_rx 兜底策略：** Bus 在创建 broadcast channel 时获取一个常驻 receiver（`drain_rx`），并保证它在以下每个事件后立即清空：
+
+| 事件 | 产生的消息 | 被谁消费？ |
+|------|---------------------|
+| `NodeHandle.send()` | 应用消息（`job`、`tool_call` 等） | 匹配 filter 的节点 + trace（如果配置了） |
+| `Bus.connect()` | `node_online` | 已在线节点（如果它们的 filter 不过滤） + trace |
+| `NodeHandle.disconnect()` | `node_offline` | 已在线节点（同上） + trace |
+| 心跳 tick | `heartbeat_request` + 可能的 `node_offline` | **无人消费**——heartbeat 由 `recv()` 内部自动 ACK，不返回给应用；timeout 产生的 `node_offline` 可能没有任何节点在线 |
+
+关键洞察：**lifecycle 消息常常无人消费**。一个配置了 `types=["job"]` 的 worker 收不到 `node_online`；心跳只在 `recv()` 内部处理不掉 buffer 里的消息；trace 节点虽然可能用 `ToMatch.All` 全量记录，但它消费速度可能跟不上——而且记录不等于从缓冲区"消耗"，tokio broadcast 中每个 receiver 都有自己的消费位置。**`drain_rx` 是最终的兜底：它的消费位置在每次事件后被推到最新，保证无论是否有应用节点在消费，环形缓冲区永不满，`send()` 永不阻塞。**
+
+这个机制完全透明——每个在线节点独立持有自己的 `broadcast::Receiver`，各自维护消费位置，不受 `drain_rx` 的 drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
+
+**设计取舍：竞速模式。** Bus 的核心承诺是**消息一定会被发出**——`send()` 永不阻塞发送方。消费端的规则是：**跟得上就能一直 live，跟不上也不会影响别人**。慢消费者独自承受 `Lagged(n)` 丢消息的代价，不会反压发送方或拖慢其他快消费者。如果你需要保证每个消息都被处理，在应用层做持久化 + 重试——Bus 层只管传输，不做反压。
 
 ### 适用场景
 
@@ -574,7 +589,7 @@ drained=0, recv raised: recv error: channel closed
 >
 > 上例中 `drained=0` 是因为该节点是唯一节点，看不到自己的 `node_online`。多节点场景下 drain 计数会 >0。
 >
-> **内存不会泄漏：** Bus 内部持有一个 dummy receiver（`drain_rx`），用于保持 broadcast channel 持续存活（类比 CAN 总线的"线缆始终有电"）。该 dummy 在每次 send / connect / disconnect / 心跳 tick 后都会 drain 掉其缓冲区内积压的消息，防止 dummy 自身因从不读取而造成背压。所有在线节点的 receiver 消费完毕后，环形缓冲区自动释放；已 disconnect 的节点其 `broadcast_rx` 已被 drop，不持有缓冲区引用。最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
+> **内存不会泄漏：** Bus 内部持有一个 dummy receiver（`drain_rx`），用于保持 broadcast channel 持续存活（类比 CAN 总线的"线缆始终有电"）。该 dummy 在每次 send / connect / disconnect / 心跳 tick 后都会 drain 掉其缓冲区内积压的消息。**这不是内存管理问题，而是背压兜底**——tokio broadcast 环形缓冲区在有慢消费者时，`send()` 会阻塞等待最慢者追上。`drain_rx` 确保最慢的消费位置始终被推到最新，从而 `send()` 永不阻塞。所有在线节点的 receiver 消费完毕后，环形缓冲区自动释放；已 disconnect 的节点其 `broadcast_rx` 已被 drop，不持有缓冲区引用。最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
 
 ---
 

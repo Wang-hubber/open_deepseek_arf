@@ -57,11 +57,33 @@ pub(crate) struct NodeEntry {
 /// - `cmd_tx` (mpsc): nodes send commands to the bus (send, connect, heartbeat ack)
 /// - `broadcast_tx` (broadcast): bus broadcasts messages to all subscribers
 ///
-/// The Bus holds a dummy `broadcast::Receiver` (inside the message loop) to
-/// keep the channel alive, mirroring CAN's "the wire is always powered."
-/// The dummy receiver is **drained after every send** to prevent it from
-/// causing backpressure — without draining, after `capacity` messages the
-/// dummy (which never reads) would block all senders.
+/// # Backstop consumer (`drain_rx`)
+///
+/// The Bus holds a dummy `broadcast::Receiver` (inside the message loop) that
+/// serves as the **backstop consumer**:
+///
+/// - **Keeps the channel alive** when no application subscribers exist
+///   (CAN's "the wire is always powered").
+/// - **Prevents sender blocking**: tokio broadcast blocks `send()` when the
+///   slowest receiver lags by > `channel_capacity`. `drain_rx` is drained after
+///   every event (send / connect / disconnect / heartbeat tick), so it is
+///   always the fastest receiver — never the bottleneck.
+/// - **Absorbs unconsumed lifecycle messages**: `node_online`, `node_offline`,
+///   and `heartbeat_request` often have zero application consumers. Without
+///   `drain_rx`, these would fill the ring buffer and block all senders.
+///
+/// The drain is `while drain_rx.try_recv().is_ok() {}` — non-blocking, runs
+/// synchronously in the message loop. Each application receiver holds its own
+/// independent `broadcast::Receiver` with its own read position; the dummy
+/// drain does not affect their message delivery.
+///
+/// # Design tradeoff: racing mode
+///
+/// The Bus guarantees `send()` never blocks. Consumers that keep up stay live;
+/// slow consumers get `Lagged(n)` alone and never backpressure the sender or
+/// other fast consumers. If you need per-message delivery guarantees, build
+/// them at the application layer (persistence + retry) — the Bus layer handles
+/// transport only.
 pub struct Bus {
     /// Send commands into the bus message loop.
     pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
@@ -229,9 +251,18 @@ impl Bus {
 /// heartbeat timer ticks. The heartbeat timer periodically broadcasts
 /// `heartbeat_request` and checks for timed-out nodes.
 ///
+/// # drain_rx — backstop consumer
+///
 /// `drain_rx` is the dummy receiver that keeps the broadcast channel alive
-/// (CAN's "wire is always powered"). It is **drained after every send** to
-/// prevent it from becoming a backpressure bottleneck.
+/// (CAN's "wire is always powered"). It is drained after every branch that
+/// writes to `broadcast_tx` (send / connect / disconnect / heartbeat tick).
+///
+/// Why every branch? Each produces messages that may have **zero application
+/// consumers** — e.g. `heartbeat_request` is intercepted inside `recv()` and
+/// never surfaced to the caller, and `node_offline` may fire when no nodes
+/// are online. Without drain, these messages accumulate in the ring buffer
+/// and eventually block `broadcast_tx.send()`. drain_rx is the backstop that
+/// absorbs them, guaranteeing `send()` never blocks.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,

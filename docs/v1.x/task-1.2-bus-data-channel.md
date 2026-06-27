@@ -27,7 +27,13 @@ Node ──send()──→ cmd_tx (mpsc) ──→ 消息循环 ──→ broadc
 
 **为什么 Bus 自己持有一个 receiver？**
 
-`tokio::sync::broadcast` 的 `send()` 在所有 receiver 都 drop 时会返回 error。Bus 持有一个 dummy receiver（`_bus_rx`），保证 broadcast channel 永远存活——对应 CAN 模型中"线缆永远有电"。节点可以自由上下线，Bus 不受影响。
+`tokio::sync::broadcast` 有两个特性驱动了这个设计：
+
+1. **零接收者 → `send()` 报错**。如果所有 `Receiver` 都被 drop，`send()` 返回 `SendError`。Bus 持有一个 dummy receiver（`drain_rx`），保证 broadcast channel 永远存活——对应 CAN 模型中"线缆永远有电"。节点可以自由上下线，Bus 不受影响。
+
+2. **最慢接收者 → `send()` 阻塞**。broadcast 是固定容量环形缓冲。当最慢的接收者落后超过 `channel_capacity` 条消息时，`send()` 会阻塞等待该接收者追上——这是 tokio 内置的背压机制。`drain_rx` 在每次事件后被立即 drain，保证它始终是最快（而非最慢）的接收者，从而 `send()` 永不阻塞。
+
+`drain_rx` 的关键角色是**兜底消费者**。lifecycle 消息（`node_online`、`node_offline`、`heartbeat_request`）常常没有任何应用节点在消费——worker 用 `types=["job"]` 过滤掉它们，trace 节点记录了但不等于从环形缓冲中"消费"了 slot。没有 drain_rx 的话，这些无人消费的消息会填满 buffer，导致 `send()` 阻塞。drain_rx 在每次 send/connect/disconnect/心跳 tick 后立即清空自己的 buffer，释放环形缓冲的 slot，保证 ​​`send()` 永不阻塞。
 
 **任务 1.2 的范围：**
 
@@ -258,11 +264,22 @@ impl Bus {
 /// Receives commands from `cmd_rx`, processes them, and broadcasts messages
 /// through `broadcast_tx`. Runs in a dedicated tokio task.
 ///
-/// `drain_rx` is the dummy receiver that keeps the broadcast channel alive
-/// (CAN's "wire is always powered"). It is **drained after every send** to
-/// prevent it from becoming a backpressure bottleneck — without draining,
-/// after `capacity` messages the dummy (which never reads via `recv()`)
-/// would block `broadcast_tx.send()`, blocking all senders.
+/// `drain_rx` is the dummy receiver that serves as the **backstop consumer**:
+/// - It keeps the broadcast channel alive when no application subscribers exist
+///   (CAN's "wire is always powered").
+/// - It is **drained after every event** (send / connect / disconnect / heartbeat
+///   tick) to guarantee the sender never blocks. tokio broadcast blocks `send()`
+///   when the slowest receiver lags by > `channel_capacity`. drain_rx is always
+///   pushed to the latest position, so the slowest receiver is never the dummy.
+///
+/// Key insight: lifecycle messages (node_online, node_offline, heartbeat_request)
+/// often have zero application consumers. Without drain_rx, these unconsumed
+/// messages would fill the ring buffer and block all senders. drain_rx absorbs
+/// them silently.
+///
+/// Design tradeoff — racing mode: the Bus guarantees `send()` never blocks.
+/// Consumers that keep up stay live; slow consumers get `Lagged(n)` alone
+/// and never backpressure the sender or other fast consumers.
 async fn run_message_loop(
     mut cmd_rx: mpsc::Receiver<BusCommand>,
     broadcast_tx: broadcast::Sender<Message>,
