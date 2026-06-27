@@ -1,7 +1,7 @@
 # 任务 1.4：心跳检测
 
 > Phase 1 — Bus 消息总线第四项任务
-> 父文档：`docs/v1.x/phase1-bus-design.md`
+> 父文档：`docs/v1.x/phase1/phase1-bus-design.md`
 > 前置：任务 1.3 节点连接与断连
 
 ## 设计思路

@@ -1,7 +1,7 @@
 # 任务 1.6：接收侧过滤
 
 > Phase 1 — Bus 消息总线第六项任务
-> 父文档：`docs/v1.x/phase1-bus-design.md`
+> 父文档：`docs/v1.x/phase1/phase1-bus-design.md`
 > 前置：任务 1.3 NodeHandle、任务 1.5 多目标 to
 
 ## 设计思路

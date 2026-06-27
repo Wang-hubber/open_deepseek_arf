@@ -1,7 +1,7 @@
 # 任务 1.10：PyO3 绑定
 
 > Phase 1 — Bus 消息总线第十项任务
-> 父文档：`docs/v1.x/phase1-bus-design.md`
+> 父文档：`docs/v1.x/phase1/phase1-bus-design.md`
 > 前置：任务 1.9 集成测试通过
 
 ## 设计思路

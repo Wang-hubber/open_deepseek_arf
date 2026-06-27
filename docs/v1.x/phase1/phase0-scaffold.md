@@ -65,7 +65,7 @@ py-arf  — PyO3 桥，依赖所有 Rust crate
 | 文件 | 作用 |
 |------|------|
 | `Makefile` | `make lint`（fmt + clippy）、`make test`（cargo + pytest）、`make ci`（lint + test） |
-| `docs/v1.x/phase0-scaffold.md` | 本文档 |
+| `docs/v1.x/phase1/phase0-scaffold.md` | 本文档 |
 
 ## 环境配置
 

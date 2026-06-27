@@ -304,5 +304,5 @@ handle.disconnect()
 | 1.9 | 集成测试 | 多节点场景：上线/下线广播、定向消息过滤、心跳超时检测、trace 全量消费、lag 处理 | `crates/arf-bus/tests/integration.rs` |
 | 1.10 | PyO3 绑定 | `py-arf/src/lib.rs` 暴露 `Bus`, `NodeInfo`, `MessageFilter`, `NodeHandle` 到 Python | `py-arf/src/lib.rs` + `py-arf/python/arf/__init__.py` |
 | 1.11 | Python 测试 | pytest 验证 Python API：创建 Bus、连接、收发、图查询、断连 | `py-arf/tests/test_bus.py` |
-| 1.12 | 文档与示例 | Phase 1 设计文档 + 教学示例 `phase1_bus_hello.py` | `docs/v1.x/phase1-bus-design.md` + `py-arf/python/arf/examples/phase1_bus_hello.py` |
+| 1.12 | 文档与示例 | Phase 1 设计文档 + 教学示例 `phase1_bus_hello.py` | `docs/v1.x/phase1/phase1-bus-design.md` + `py-arf/python/arf/examples/phase1_bus_hello.py` |
 | 1.13 | CI 验证 | `make ci`（cargo fmt + clippy + test + pytest）通过 | CI 绿灯 |

@@ -1569,5 +1569,5 @@ B 处理: {'data': 42, 'task': 'process'}
 
 ## 参考
 
-- [Phase 1 Bus 架构设计](../v1.x/phase1-bus-design.md) — Rust 侧架构和设计决策
-- [Task 1.11 — Python 测试记录](../v1.x/task-1.11-python-tests.md) — 66 测试套件及其行为发现
+- [Phase 1 Bus 架构设计](../v1.x/phase1/phase1-bus-design.md) — Rust 侧架构和设计决策
+- [Task 1.11 — Python 测试记录](../v1.x/phase1/task-1.11-python-tests.md) — 66 测试套件及其行为发现

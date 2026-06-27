@@ -15,7 +15,7 @@ Phase spec (宏观设计)
 
 ### 1. Doc before code
 
-- **先写 task 文档**（`docs/v1.x/task-X.Y-<name>.md`），包含完整代码 + 逐行解释 + 所有测试
+- **先写 task 文档**（`docs/v1.x/phase1/task-X.Y-<name>.md`），包含完整代码 + 逐行解释 + 所有测试
 - 用户审核通过后，代码只是文档的翻译——不再构思，只做机械转录
 - 文档永远比代码先 push，让用户在 Gitee 上精校
 

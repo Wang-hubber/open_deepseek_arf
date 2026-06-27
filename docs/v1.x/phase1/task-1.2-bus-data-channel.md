@@ -1,7 +1,7 @@
 # 任务 1.2：Bus 数据通道
 
 > Phase 1 — Bus 消息总线第二项任务
-> 父文档：`docs/v1.x/phase1-bus-design.md`
+> 父文档：`docs/v1.x/phase1/phase1-bus-design.md`
 > 前置：任务 1.1 `arf-core` 共享类型
 
 ## 设计思路
