@@ -107,20 +107,20 @@ Bus 的定向消息天然支持点对点通信。加上 `req_id` 关联和调用
 # A 调用 B：1 + 2 = ?
 a = await bus.connect(
     NodeInfo("node/a", "test", {}),
-    MessageFilter(types=["add_result"], to_match=ToMatch.DirectedToMe),
+    MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
 )
 b = await bus.connect(
     NodeInfo("node/b", "test", {}),
-    MessageFilter(types=["add"], to_match=ToMatch.DirectedToMe),
+    MessageFilter(types=["tool_call"], to_match=ToMatch.DirectedToMe),
 )
 
-# A → B
-await a.send("add", [NodeId("node/b")], {"a": 1, "b": 2, "req_id": "r1"})
+# A → B tool_call
+await a.send("tool_call", [NodeId("node/b")], {"a": 1, "b": 2, "req_id": "r1"})
 req = await b.recv()
 result = req.payload["a"] + req.payload["b"]
 
-# B → A
-await b.send("add_result", [NodeId("node/a")], {"result": result, "req_id": req.payload["req_id"]})
+# B → A tool_call_result
+await b.send("tool_call_result", [NodeId("node/a")], {"result": result, "req_id": req.payload["req_id"]})
 resp = await a.recv()
 print(f"1+2={resp.payload['result']}")
 ```
