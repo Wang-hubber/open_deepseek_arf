@@ -971,9 +971,15 @@ async def session_affinity():
     await engine.send("tool_call", [target], {"tool": "read", "path": "/data/s1"})
 
     msg = await worker_s1.recv()
-    print(msg.payload)  # {'tool': 'read', 'path': '/data/s1'}
+    print(msg.payload)
 
     await bus.shutdown()
+```
+
+**运行输出：**（耗时 <1ms）
+
+```
+{'path': '/data/s1', 'tool': 'read'}
 ```
 
 ### 可观测性 / Tracing
