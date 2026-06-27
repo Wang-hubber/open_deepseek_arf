@@ -104,7 +104,7 @@ asyncio.run(main())
 Bus 的定向消息天然支持点对点通信。加上 `req_id` 关联和调用方专用的消息类型，就能实现 RPC 式的请求-响应：
 
 ```python
-# A 调用 B：1 + 2 = ?
+# A 调用 B
 a = await bus.connect(
     NodeInfo("node/a", "test", {}),
     MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
@@ -115,20 +115,25 @@ b = await bus.connect(
 )
 
 # A → B tool_call
-await a.send("tool_call", [NodeId("node/b")], {"a": 1, "b": 2, "req_id": "r1"})
+await a.send("tool_call", [NodeId("node/b")], {
+    "tool": "add", "params": [3, 4], "req_id": "r1",
+})
 req = await b.recv()
-result = req.payload["a"] + req.payload["b"]
+a_val, b_val = req.payload["params"]
+result = a_val + b_val                      # ← 运算在 B 侧完成
 
 # B → A tool_call_result
-await b.send("tool_call_result", [NodeId("node/a")], {"result": result, "req_id": req.payload["req_id"]})
+await b.send("tool_call_result", [NodeId("node/a")], {
+    "result": result, "req_id": req.payload["req_id"],
+})
 resp = await a.recv()
-print(f"1+2={resp.payload['result']}")
+print(f"3+4={resp.payload['result']}")
 ```
 
 **运行输出：**（耗时 <1ms）
 
 ```
-1+2=3
+3+4=7
 ```
 
 `jrpc` 在此基础上补全了超时、重试、类型契约——但核心传输完全由 Bus 完成。
