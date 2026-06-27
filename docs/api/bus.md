@@ -503,8 +503,8 @@ async def connect(
 
 ```python
 engine = await bus.connect(
-    NodeInfo("engine/main", "engine", {"session": "s1", "role": "orchestrator"}),
-    MessageFilter(types=None, to_match=ToMatch.BroadcastAndDirectedToMe),
+    info=NodeInfo(node_id="engine/main", node_type="engine", capabilities={"session": "s1", "role": "orchestrator"}),
+    filter=MessageFilter(types=None, to_match=ToMatch.BroadcastAndDirectedToMe),
 )
 ```
 
@@ -663,16 +663,16 @@ async def send(
 
 ```python
 # 广播 — 所有 filter 匹配的节点都能收到
-receipt = await handle.send("job", [], {"task": "train"})
+receipt = await handle.send(msg_type="job", to=[], payload={"task": "train"})
 
 # 定向 — 仅指定节点能收到（前提是它们的 filter 匹配）
-target = NodeId("mcp/fs")
-receipt = await handle.send("tool_call", [target], {"tool": "read", "path": "/tmp/x"})
+target = NodeId(id="mcp/fs")
+receipt = await handle.send(msg_type="tool_call", to=[target], payload={"tool": "read", "path": "/tmp/x"})
 
 # 查看回执
-print(receipt.message_id)      # "550e8400-e29b-41d4-a716-446655440000"
-print(receipt.online_nodes)    # 5
-print(receipt.matching_nodes)  # 3
+print(receipt.message_id)      # e.g. "550e8400-e29b-41d4-a716-446655440000"
+print(receipt.online_nodes)    # e.g. 5
+print(receipt.matching_nodes)  # e.g. 3
 ```
 
 ---
@@ -791,8 +791,8 @@ await handle.disconnect()
 
 # 同 NodeId 可立即用新 handle 重连
 new_handle = await bus.connect(
-    NodeInfo("worker/1", "worker", {}),
-    MessageFilter(),
+    info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
+    filter=MessageFilter(),
 )
 ```
 
@@ -803,13 +803,19 @@ new_handle = await bus.connect(
     ```python
     # ❌ 错误：handle 出作用域，未调用 disconnect → zombie entry
     async def bad():
-        h = await bus.connect(NodeInfo("worker/1", "worker", {}), MessageFilter())
+        h = await bus.connect(
+            info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
+            filter=MessageFilter(),
+        )
         # h 在此处被 GC，未 disconnect
     await bad()
 
     # ✅ 正确：显式 disconnect 后出作用域 — 立即从 nodes map 移除
     async def good():
-        h = await bus.connect(NodeInfo("worker/1", "worker", {}), MessageFilter())
+        h = await bus.connect(
+            info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={}),
+            filter=MessageFilter(),
+        )
         await h.disconnect()  # 广播 node_offline，清理 entry
     await good()
     ```
@@ -860,8 +866,8 @@ class NodeId:
 **示例：**
 
 ```python
-a = NodeId("engine/main")
-b = NodeId("engine/main")
+a = NodeId(id="engine/main")
+b = NodeId(id="engine/main")
 assert a == b
 assert hash(a) == hash(b)
 assert str(a) == "engine/main"
