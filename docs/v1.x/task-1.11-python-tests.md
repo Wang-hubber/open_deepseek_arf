@@ -22,7 +22,7 @@
 | L6 | `repeated_connect_disconnect_no_accumulation` | ✅ | 同 NodeId 断连-重连 20 轮，nodes map 不累积 |
 | L7 | `nodes_map_empty_after_all_disconnected` | ✅ | 5 节点全部 disconnect 后 nodes map 为空 |
 
-### Bug #1: `signal_shutdown` 未关闭 broadcast channel
+### Bug #1: `signal_shutdown` 未关闭 broadcast channel（已修复）
 
 **严重程度**：中 — 仅影响 Python 绑定和任何使用 `signal_shutdown` 的调用方。
 
@@ -36,9 +36,18 @@ Bus 被消费 → broadcast_tx drop          Bus 保持 &self → broadcast_tx �
 → 所有 Receiver 收到 Closed             → recv() 永久阻塞！
 ```
 
-`PyBus.shutdown()` 调用的是 `signal_shutdown()`（因为 `Bus` 包裹在 `Arc` 中，无法调用 `shutdown(self)`），导致 Python 侧 shutdown 后 `handle.recv()` 永远挂起。
+**修复**：094f03a `fix(bus): signal_shutdown now closes broadcast channel`
 
-**修复方向**：用 `Mutex<Option<Sender>>` 包裹 `broadcast_tx`，让 `signal_shutdown` 可以 `take()` 并 drop 它。
+将 `broadcast_tx: broadcast::Sender<Message>` 改为 `broadcast_tx: Mutex<Option<broadcast::Sender<Message>>>`，`signal_shutdown` 调用 `take()` drop Sender。改动 4 处：
+
+| 位置 | 改动 |
+|------|------|
+| `lib.rs` struct 定义 | `broadcast::Sender<Message>` → `Mutex<Option<Sender>>` |
+| `lib.rs::new()` | 用 `Mutex::new(Some(tx))` 包裹 |
+| `lib.rs::subscribe()` + `connection.rs::connect()` | `.lock().unwrap().as_ref().unwrap().subscribe()` |
+| `lib.rs::signal_shutdown()` | `.lock().unwrap().take()` drop sender，关闭 channel |
+
+**验证**：`signal_shutdown_closes_broadcast_channel` 测试（原 `signal_shutdown_leaves_receiver_hanging`）从 FAILED → PASSED，确认 `recv()` 返回 `Closed`。workspace 全量 142 tests，0 failures。
 
 ### 非 Bug（设计确认）
 

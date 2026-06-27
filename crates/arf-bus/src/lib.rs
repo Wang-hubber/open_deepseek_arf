@@ -7,7 +7,7 @@
 use arf_core::{Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -66,7 +66,9 @@ pub struct Bus {
     /// Send commands into the bus message loop.
     pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
     /// Clone of the broadcast sender, used by `subscribe()`.
-    pub(crate) broadcast_tx: broadcast::Sender<Message>,
+    /// Wrapped in Option so `signal_shutdown` can `take()` and drop it,
+    /// closing the broadcast channel and unblocking all receivers.
+    pub(crate) broadcast_tx: Mutex<Option<broadcast::Sender<Message>>>,
     /// Online nodes registry — shared with message loop.
     pub(crate) nodes: Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     /// Total messages broadcast since start.
@@ -140,7 +142,7 @@ impl Bus {
 
         Self {
             cmd_tx,
-            broadcast_tx,
+            broadcast_tx: Mutex::new(Some(broadcast_tx)),
             nodes,
             message_count,
             start_time: Instant::now(),
@@ -169,7 +171,12 @@ impl Bus {
     /// Returns a `broadcast::Receiver` that receives every message
     /// broadcast on the bus. In task 1.3, this will be wrapped in `NodeHandle`.
     pub fn subscribe(&self) -> broadcast::Receiver<Message> {
-        self.broadcast_tx.subscribe()
+        self.broadcast_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("broadcast_tx should exist until shutdown")
+            .subscribe()
     }
 
     /// Total number of messages broadcast since the bus started.
@@ -196,9 +203,15 @@ impl Bus {
     ///
     /// Python bindings use this because Bus is Arc-wrapped and
     /// `shutdown(self)` cannot be called on Arc<Bus>.
+    ///
+    /// Also drops the broadcast sender to close the broadcast channel,
+    /// so that all `NodeHandle::recv()` calls unblock with `Closed`.
     pub fn signal_shutdown(&self) {
         let (tx, _rx) = oneshot::channel();
         let _ = self.cmd_tx.try_send(BusCommand::Shutdown { respond_to: tx });
+        // Drop the broadcast sender to close the channel.
+        // After this, all broadcast::Receiver instances will get Closed.
+        self.broadcast_tx.lock().unwrap().take();
     }
 }
 
@@ -1163,9 +1176,9 @@ mod tests {
         bus.shutdown().await;
     }
 
-    // [泄漏] signal_shutdown 后 recv 永远阻塞 — broadcast channel 未关闭
+    // [清理] signal_shutdown 后 broadcast channel 关闭 → recv 返回 Closed
     #[tokio::test]
-    async fn signal_shutdown_leaves_receiver_hanging() {
+    async fn signal_shutdown_closes_broadcast_channel() {
         let bus = Arc::new(Bus::new(
             Duration::from_secs(1),
             Duration::from_secs(3),
@@ -1176,29 +1189,22 @@ mod tests {
             .await
             .unwrap();
 
-        // 用 signal_shutdown（模拟 Python 侧 bus.shutdown() 的行为）
+        // 用 signal_shutdown（Python 侧 bus.shutdown() 的实际行为）
         bus.signal_shutdown();
 
-        // recv 应该返回 Closed（shutdown 语义），而不是永远阻塞
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), handle.recv()).await;
+        // recv 应立即返回 Closed（broadcast channel 已关闭），不应阻塞
+        let result = handle.recv().await;
+        assert!(
+            matches!(result, Err(broadcast::error::RecvError::Closed)),
+            "BUG: signal_shutdown should close broadcast channel, got {result:?}"
+        );
 
-        match result {
-            Ok(Err(broadcast::error::RecvError::Closed)) => {
-                // 正确行为：channel 关闭了（如果 signal_shutdown 正确 drop 了 sender）
-            }
-            Ok(other) => {
-                panic!(
-                    "BUG: signal_shutdown should close broadcast channel, but recv returned {other:?}"
-                );
-            }
-            Err(_elapsed) => {
-                panic!(
-                    "BUG: signal_shutdown did NOT close broadcast channel — recv() hangs forever! \
-                     Bus.broadcast_tx is still alive, keeping the channel open."
-                );
-            }
-        }
+        // send 也应返回 BusClosed
+        let send_result = handle.send("t", vec![], serde_json::json!(null)).await;
+        assert!(
+            matches!(send_result, Err(SendError::BusClosed)),
+            "BUG: send after signal_shutdown should return BusClosed"
+        );
     }
 
     // [清理] 正常 disconnect → NodeEntry 立即从 map 移除

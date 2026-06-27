@@ -180,7 +180,13 @@ impl Bus {
 
         // Create the broadcast receiver AFTER registration,
         // so the node doesn't see its own node_online message.
-        let broadcast_rx = self.broadcast_tx.subscribe();
+        let broadcast_rx = self
+            .broadcast_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("broadcast_tx should exist until shutdown")
+            .subscribe();
 
         Ok(NodeHandle {
             cmd_tx: self.cmd_tx.clone(),
