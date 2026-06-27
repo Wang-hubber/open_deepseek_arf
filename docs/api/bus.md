@@ -1047,21 +1047,21 @@ async def worker_pool():
 
     # 调度器发送任务
     dispatcher = await bus.connect(
-        NodeInfo("engine/dispatcher", "engine", {}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/dispatcher", node_type="engine", capabilities={}),
+        filter=MessageFilter(),
     )
 
     # 4 个 GPU worker，filter 完全相同
     workers = []
     for i in range(4):
         w = await bus.connect(
-            NodeInfo(f"model/gpu-{i}", "model", {"gpu": i}),
-            MessageFilter(types=["infer"]),
+            info=NodeInfo(node_id=f"model/gpu-{i}", node_type="model", capabilities={"gpu": i}),
+            filter=MessageFilter(types=["infer"]),
         )
         workers.append(w)
 
     # 广播一条推理任务 — 4 个 worker 全部收到
-    await dispatcher.send("infer", [], {"prompt": "hello"})
+    await dispatcher.send(msg_type="infer", to=[], payload={"prompt": "hello"})
 
     for w in workers:
         msg = await w.recv()
@@ -1091,17 +1091,17 @@ async def session_affinity():
     bus = Bus()
 
     engine = await bus.connect(
-        NodeInfo("engine/main", "engine", {}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/main", node_type="engine", capabilities={}),
+        filter=MessageFilter(),
     )
     worker_s1 = await bus.connect(
-        NodeInfo("worker/session-1", "worker", {"session": "s1"}),
-        MessageFilter(to_match=ToMatch.DirectedToMe),
+        info=NodeInfo(node_id="worker/session-1", node_type="worker", capabilities={"session": "s1"}),
+        filter=MessageFilter(to_match=ToMatch.DirectedToMe),
     )
 
     # 专门发送给 session-1 的 worker
-    target = NodeId("worker/session-1")
-    await engine.send("tool_call", [target], {"tool": "read", "path": "/data/s1"})
+    target = NodeId(id="worker/session-1")
+    await engine.send(msg_type="tool_call", to=[target], payload={"tool": "read", "path": "/data/s1"})
 
     msg = await worker_s1.recv()
     print(msg.payload)
@@ -1125,17 +1125,17 @@ async def tracing():
 
     # Trace 节点 — 全量消费，第一个上线
     trace = await bus.connect(
-        NodeInfo("trace/obs", "trace", {}),
-        MessageFilter(types=None, to_match=ToMatch.All),
+        info=NodeInfo(node_id="trace/obs", node_type="trace", capabilities={}),
+        filter=MessageFilter(types=None, to_match=ToMatch.All),
     )
 
     engine = await bus.connect(
-        NodeInfo("engine/main", "engine", {}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/main", node_type="engine", capabilities={}),
+        filter=MessageFilter(),
     )
     worker = await bus.connect(
-        NodeInfo("mcp/fs", "mcp", {}),
-        MessageFilter(types=["tool_call"]),
+        info=NodeInfo(node_id="mcp/fs", node_type="mcp", capabilities={}),
+        filter=MessageFilter(types=["tool_call"]),
     )
 
     # Trace 看到 engine 和 worker 的 node_online（全量消费的设计意图）
@@ -1144,14 +1144,14 @@ async def tracing():
         print(f"[trace] {msg.msg_type} from {msg.sender}")
 
     # Engine 广播任务
-    await engine.send("job", [], {"task": "compress"})
+    await engine.send(msg_type="job", to=[], payload={"task": "compress"})
 
     # Trace 看到 job（ToMatch.All），worker 看不到（types=["tool_call"] 过滤）
     trace_msg = await trace.recv()
     print(f"[trace] {trace_msg.msg_type} from {trace_msg.sender}")
 
     # Engine 发送定向 tool_call
-    await engine.send("tool_call", [NodeId("mcp/fs")], {"tool": "read"})
+    await engine.send(msg_type="tool_call", to=[NodeId(id="mcp/fs")], payload={"tool": "read"})
 
     # Worker 收到（filter 匹配 "tool_call"），Trace 也看到（ToMatch.All）
     worker_msg = await worker.recv()
@@ -1182,8 +1182,8 @@ async def fast_consumer_fanout():
 
     # 生产者
     producer = await bus.connect(
-        NodeInfo("engine/producer", "engine", {}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/producer", node_type="engine", capabilities={}),
+        filter=MessageFilter(),
     )
 
     # 快消费者代理：ToMatch.All，每条消息只做 enqueue，永不 Lagged
@@ -1200,8 +1200,8 @@ async def fast_consumer_fanout():
                 break  # Bus 关闭
 
     fast_agent = await bus.connect(
-        NodeInfo("agent/fast-drain", "agent", {}),
-        MessageFilter(types=None, to_match=ToMatch.All),
+        info=NodeInfo(node_id="agent/fast-drain", node_type="agent", capabilities={}),
+        filter=MessageFilter(types=None, to_match=ToMatch.All),
     )
     asyncio.ensure_future(fast_drain(fast_agent))
 
@@ -1218,7 +1218,7 @@ async def fast_consumer_fanout():
 
     # 生产者高速发送
     for i in range(5):
-        await producer.send("job", [], {"seq": i})
+        await producer.send(msg_type="job", to=[], payload={"seq": i})
 
     await asyncio.sleep(0.3)  # 等待消费
     print(f"队列剩余: {queue.qsize()}")
@@ -1243,12 +1243,18 @@ async def fast_consumer_fanout():
 ```python
 async def graceful_shutdown():
     bus = Bus()
-    h1 = await bus.connect(NodeInfo("node-1", "test", {}), MessageFilter())
-    h2 = await bus.connect(NodeInfo("node-2", "test", {}), MessageFilter())
+    h1 = await bus.connect(
+        info=NodeInfo(node_id="node-1", node_type="test", capabilities={}),
+        filter=MessageFilter(),
+    )
+    h2 = await bus.connect(
+        info=NodeInfo(node_id="node-2", node_type="test", capabilities={}),
+        filter=MessageFilter(),
+    )
 
     # 发送一些消息
-    await h1.send("msg", [], {"n": 1})
-    await h1.send("msg", [], {"n": 2})
+    await h1.send(msg_type="msg", to=[], payload={"n": 1})
+    await h1.send(msg_type="msg", to=[], payload={"n": 2})
 
     # 1. 先断开所有节点
     await h1.disconnect()
@@ -1263,7 +1269,10 @@ async def graceful_shutdown():
 ```python
 async def shutdown_with_nodes_online():
     bus = Bus()
-    h = await bus.connect(NodeInfo("node-1", "test", {}), MessageFilter())
+    h = await bus.connect(
+        info=NodeInfo(node_id="node-1", node_type="test", capabilities={}),
+        filter=MessageFilter(),
+    )
 
     await bus.shutdown()
 
@@ -1304,8 +1313,8 @@ async def reconnect_after_crash():
     # 主 worker 连接后崩溃（未调用 disconnect）
     async def crash():
         w = await bus.connect(
-            NodeInfo("worker/main", "worker", {}),
-            MessageFilter(),
+            info=NodeInfo(node_id="worker/main", node_type="worker", capabilities={}),
+            filter=MessageFilter(),
         )
         # 模拟崩溃 — 不调用 disconnect()
 
@@ -1314,8 +1323,8 @@ async def reconnect_after_crash():
     # 立即重连会失败 — zombie entry 仍然存在
     try:
         await bus.connect(
-            NodeInfo("worker/main", "worker", {}),
-            MessageFilter(),
+            info=NodeInfo(node_id="worker/main", node_type="worker", capabilities={}),
+            filter=MessageFilter(),
         )
     except Exception as e:
         print(f"重连被拒: {e}")
@@ -1325,8 +1334,8 @@ async def reconnect_after_crash():
 
     # 现在可以重连了
     w2 = await bus.connect(
-        NodeInfo("worker/main", "worker", {}),
-        MessageFilter(),
+        info=NodeInfo(node_id="worker/main", node_type="worker", capabilities={}),
+        filter=MessageFilter(),
     )
     print("zombie 清理后重连成功")
 
@@ -1351,14 +1360,14 @@ async def service_discovery_and_ready_signal():
 
     # 1. B 先 connect —— 保证 A 上线时 B 已经在监听
     b = await bus.connect(
-        NodeInfo("worker/b", "worker", {"ready": False}),
-        MessageFilter(),
+        info=NodeInfo(node_id="worker/b", node_type="worker", capabilities={"ready": False}),
+        filter=MessageFilter(),
     )
 
     # 2. A connect —— 此时 B 已经在线，B 的 recv() 会收到 A 的 node_online
     a = await bus.connect(
-        NodeInfo("engine/a", "engine", {"role": "producer"}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/a", node_type="engine", capabilities={"role": "producer"}),
+        filter=MessageFilter(),
     )
 
     # 3. B 通过 node_online 感知 A 已上线，完成初始化
@@ -1370,13 +1379,13 @@ async def service_discovery_and_ready_signal():
             break
 
     # 4. B 初始化完毕，发送就绪信号给 A
-    a_id = NodeId("engine/a")
-    await b.send("ready", [a_id], {"worker": "worker/b", "status": "ready"})
+    a_id = NodeId(id="engine/a")
+    await b.send(msg_type="ready", to=[a_id], payload={"worker": "worker/b", "status": "ready"})
 
     # 5. A 收到就绪信号后才开始发送应用消息
     ready_msg = await a.recv()
     print(f"A 收到: type={ready_msg.msg_type}")
-    await a.send("job", [], {"task": "process", "data": 42})
+    await a.send(msg_type="job", to=[], payload={"task": "process", "data": 42})
 
     # 6. B 消费应用消息（此时已经初始化完毕，不会再收到 node_online）
     while True:
