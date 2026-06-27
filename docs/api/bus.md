@@ -382,6 +382,8 @@ async def send(
 
 向 Bus 发送一条消息。`from` 字段自动填充为本节点的 `node_id`。
 
+`send()` **从不阻塞发送方**。Bus 使用 CAN 总线模型的 Lagged 语义：消息进入环形缓冲区后立即返回 `SendReceipt`。如果某个消费者处理过慢导致落后超过一圈，tokio broadcast channel 不会反压发送方，而是让该慢消费者收到 `Lagged(n)`。应用层负责监控慢消费者并做负载均衡或效率优化。
+
 **参数：**
 
 | 参数 | 类型 | 说明 |
@@ -398,7 +400,6 @@ async def send(
 |-----------|-----------|---------|
 | `Exception` | `"target nodes offline"` | 定向发送时所有目标均离线（广播不会触发此异常） |
 | `Exception` | `"bus closed"` | Bus 已 shutdown |
-| `Exception` | `"bus buffer full"` | 环形缓冲区已满 |
 | `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
 
 **示例：**
@@ -992,7 +993,6 @@ async def reconnect_after_crash():
 | `Exception` | `"already connected"` | 重复 `NodeId` 或 zombie entry 尚未清理 |
 | `Exception` | `"bus closed"` | `shutdown()` 后调用 `connect()` 或 `send()` |
 | `Exception` | `"target nodes offline"` | 定向发送时所有目标均离线 |
-| `Exception` | `"bus buffer full"` | 环形缓冲区耗尽；增大 `channel_capacity` 或降低发送速率 |
 | `Exception` | `"recv error: Closed"` | `shutdown()` 后缓冲区为空时调用 `recv()` |
 | `Exception` | `"try_recv error"` | `try_recv()` 内部异常（罕见） |
 | `RuntimeError` | `"already disconnected"` | 对已 disconnect 的 `NodeHandle` 调用任何方法 |

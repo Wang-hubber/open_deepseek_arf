@@ -181,12 +181,14 @@ impl MessageFilter {
 // ── SendError ─────────────────────────────────────────────────────────
 
 /// Errors that can occur when sending a message.
+///
+/// Note: there is no "buffer full" variant. The bus uses a `tokio::sync::broadcast`
+/// channel with CAN-bus semantics — a slow consumer receives `Lagged(n)` rather than
+/// blocking the sender. The sender never waits and never sees backpressure.
 #[derive(Debug)]
 pub enum SendError {
     /// All directed message targets are offline.
     NodeOffline(Vec<NodeId>),
-    /// Bus ring buffer is full.
-    BusFull,
     /// Bus has been shut down.
     BusClosed,
 }
@@ -198,7 +200,6 @@ impl std::fmt::Display for SendError {
                 let names: Vec<_> = ids.iter().map(|id| id.as_str()).collect();
                 write!(f, "target nodes offline: {}", names.join(", "))
             }
-            Self::BusFull => write!(f, "bus buffer full"),
             Self::BusClosed => write!(f, "bus closed"),
         }
     }
@@ -725,12 +726,6 @@ mod tests {
         assert_eq!(format!("{e}"), "target nodes offline: mcp/filesystem");
     }
 
-    // [trait] Display：BusFull 输出固定文本
-    #[test]
-    fn send_error_bus_full() {
-        assert_eq!(format!("{}", SendError::BusFull), "bus buffer full");
-    }
-
     // [trait] Display：BusClosed 输出固定文本
     #[test]
     fn send_error_bus_closed() {
@@ -741,7 +736,7 @@ mod tests {
     #[test]
     fn send_error_implements_std_error() {
         fn takes_error(_e: impl std::error::Error) {}
-        takes_error(SendError::BusFull);
+        takes_error(SendError::BusClosed);
     }
 
     // [trait] Debug：{:?} 输出包含变体名

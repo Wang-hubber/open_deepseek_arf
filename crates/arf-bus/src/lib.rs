@@ -280,6 +280,10 @@ async fn run_message_loop(
                         };
 
                         let online_nodes = nodes.read().unwrap().len();
+                        // CAN-bus Lagged semantics: sender never blocks. If all receivers
+                        // have lagged past the ring buffer, tokio drops the message and
+                        // returns an error here — we discard it. Slow consumers get
+                        // Lagged(n) instead of backpressuring the sender.
                         let _ = broadcast_tx.send(msg);
                         message_count.fetch_add(1, Ordering::Relaxed);
                         while drain_rx.try_recv().is_ok() {}
