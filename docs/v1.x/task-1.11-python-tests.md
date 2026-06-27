@@ -4,9 +4,51 @@
 > 父文档：`docs/v1.x/phase1-bus-design.md`
 > 前置：任务 1.10 PyO3 绑定完成
 
-## 设计思路
+---
 
-pytest 验证 Python API 的完整生命周期。测试使用 `pytest-asyncio` 支持 `async def` 测试函数。
+## 前置审查：内存/资源泄漏检测
+
+在编写 Python 测试前，先在 Rust 侧写 7 个泄漏检测测试（已合入 `crates/arf-bus/src/lib.rs`）。
+
+### 审查结果
+
+| # | 测试 | 结果 | 发现 |
+|---|------|------|------|
+| L1 | `handle_drop_without_disconnect_leaves_zombie_entry` | ✅ | NodeHandle drop 不调用 disconnect → NodeEntry 残留在 nodes map，同 NodeId 重连被 `AlreadyConnected` 拒绝 |
+| L2 | `zombie_entry_cleaned_by_heartbeat_timeout` | ✅ | 心跳超时后僵尸被清理，node_offline 正确广播，重连成功 |
+| L3 | `signal_shutdown_leaves_receiver_hanging` | ❌ **Bug** | `signal_shutdown(&self)` 无法 drop `broadcast_tx`，recv() 永久挂起 |
+| L4 | `disconnect_immediately_removes_entry` | ✅ | 正常 disconnect → 立即从 map 移除，同 ID 可立即重连 |
+| L5 | `bus_drop_without_shutdown_task_exits` | ✅ | Bus drop 未经 shutdown → spawned task 正常退出，无 hang |
+| L6 | `repeated_connect_disconnect_no_accumulation` | ✅ | 同 NodeId 断连-重连 20 轮，nodes map 不累积 |
+| L7 | `nodes_map_empty_after_all_disconnected` | ✅ | 5 节点全部 disconnect 后 nodes map 为空 |
+
+### Bug #1: `signal_shutdown` 未关闭 broadcast channel
+
+**严重程度**：中 — 仅影响 Python 绑定和任何使用 `signal_shutdown` 的调用方。
+
+**根因**：
+
+```
+        shutdown(self)                          signal_shutdown(&self)
+        ─────────────                           ──────────────────────
+Bus 被消费 → broadcast_tx drop          Bus 保持 &self → broadcast_tx 存活
+→ broadcast Sender 数: 0                → broadcast Sender 数: 1 (Bus 仍持有)
+→ 所有 Receiver 收到 Closed             → recv() 永久阻塞！
+```
+
+`PyBus.shutdown()` 调用的是 `signal_shutdown()`（因为 `Bus` 包裹在 `Arc` 中，无法调用 `shutdown(self)`），导致 Python 侧 shutdown 后 `handle.recv()` 永远挂起。
+
+**修复方向**：用 `Mutex<Option<Sender>>` 包裹 `broadcast_tx`，让 `signal_shutdown` 可以 `take()` 并 drop 它。
+
+### 非 Bug（设计确认）
+
+1. **NodeHandle drop 不调用 disconnect**：NodeEntry 残留在 nodes map，由心跳超时 GC。这不是泄漏，是分布式系统中"崩溃检测"的标准模式。`NodeEntry` 体积小（~几百字节），超时后回收。
+
+2. **Arc 循环引用**：无。`Bus → Arc<RwLock<HashMap>> → NodeEntry` 是单向的，`NodeEntry` 不含 Arc 回指。
+
+3. **Bus drop 无 shutdown**：`cmd_tx` drop → message loop 退出 → 所有 Arc clone 释放 → broadcast Sender 数归零 → Receiver 收到 Closed。路径干净。
+
+---
 
 **覆盖策略**：不做低价值单字段 getter 测试（已在 Rust 单测验证），聚焦 Python 集成行为和多节点协作场景——名称冲突、同类型多节点竞争、广播多消费、重连周期、负载均衡基础。
 
