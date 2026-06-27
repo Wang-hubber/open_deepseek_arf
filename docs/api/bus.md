@@ -451,8 +451,27 @@ print(msg.payload)         # {'task': 'train'}
 print(msg.is_broadcast())  # True
 ```
 
-!!! note "recv() 与 node_online"
-    当你的节点在**其他节点之后**才 connect 时，`recv()` 可能先收到先连接节点的 `node_online` 消息。请先 drain 这些 lifecycle 消息，再消费应用消息。
+!!! note "recv() 与 lifecycle 消息"
+    `node_online` 和 `node_offline` 是 Bus 自动广播的 lifecycle 消息（`msg_type` 为 `"node_online"` / `"node_offline"`），
+    节点**可以选择消费或忽略**，完全由 `MessageFilter` 决定：
+
+    | Filter 配置 | 是否收到 lifecycle |
+    |------------|------------------|
+    | `types=None`（默认） | ✅ 收到——`"node_online"` 不在过滤白名单中，类型检查通过 |
+    | `types=["action", "job"]` | ❌ 收不到——`"node_online"` 不在白名单中，被 filter 过滤 |
+    | `to_match=ToMatch.All` | ✅ 收到——且能看到定向给其他节点的消息 |
+
+    - **不关心 lifecycle**：用 `types=["your_type"]` 过滤掉，`recv()` 只返回应用消息。
+    - **需要服务发现**：保留默认 filter，消费 `node_online` 来感知新节点上线（获取其 `node_id`、`node_type`、`capabilities`）。
+    - **需要完整的上下线日志**：用 `ToMatch.All`，trace 节点可用。
+
+    如果你收到了不需要的 lifecycle 消息，在开始消费应用消息前 drain 即可：
+    ```python
+    while True:
+        msg = await handle.recv()
+        if msg.msg_type not in ("node_online", "node_offline"):
+            break  # 第一条应用消息
+    ```
 
 ---
 
@@ -1038,6 +1057,60 @@ async def reconnect_after_crash():
     await w2.disconnect()
     await bus.shutdown()
 ```
+
+### 服务发现与初始化时序
+
+`node_online` 广播可以用来做服务发现——节点上线后感知已在线的 peer，获取其 capabilities。但常见需求是：**B 需要在 A 发消息之前完成初始化**。这需要控制连接顺序 + 就绪信号。
+
+```python
+async def service_discovery_and_ready_signal():
+    bus = Bus()
+
+    # 1. B 先 connect —— 保证 A 上线时 B 已经在监听
+    b = await bus.connect(
+        NodeInfo("worker/b", "worker", {"ready": False}),
+        MessageFilter(),
+    )
+
+    # 2. A connect —— 此时 B 已经在线，B 的 recv() 会收到 A 的 node_online
+    a = await bus.connect(
+        NodeInfo("engine/a", "engine", {"role": "producer"}),
+        MessageFilter(),
+    )
+
+    # 3. B 通过 node_online 感知 A 已上线，完成初始化
+    while True:
+        msg = await b.recv()
+        if msg.msg_type == "node_online" and str(msg.sender) == "engine/a":
+            caps = msg.payload["node_info"]["capabilities"]
+            print(f"B 发现 A 上线: role={caps['role']}")
+            break
+
+    # 4. B 初始化完毕，发送就绪信号给 A
+    a_id = NodeId("engine/a")
+    await b.send("ready", [a_id], {"worker": "worker/b", "status": "ready"})
+
+    # 5. A 收到就绪信号后才开始发送应用消息
+    ready_msg = await a.recv()
+    assert ready_msg.msg_type == "ready"
+    await a.send("job", [], {"task": "process", "data": 42})
+
+    # 6. B 消费应用消息（此时已经初始化完毕，不会再收到 node_online）
+    while True:
+        msg = await b.recv()
+        if msg.msg_type == "job":
+            print(f"B 处理: {msg.payload}")
+            break
+
+    await a.disconnect()
+    await b.disconnect()
+    await bus.shutdown()
+```
+
+**关键时序：**
+1. 消费者先 connect → 生产者后 connect → 消费者一定能收到生产者的 `node_online`（rx 创建时机保证）
+2. 消费者初始化完毕 → 定向 `ready` 信号 → 生产者收到后才开始业务发送
+3. 如果不需要感知上线，直接用 `types=["job"]` 过滤掉 `node_online`，完全忽略 lifecycle
 
 ---
 
