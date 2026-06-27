@@ -384,6 +384,8 @@ async def send(
 
 `send()` **从不阻塞发送方**。Bus 使用 CAN 总线模型的 Lagged 语义：消息进入环形缓冲区后立即返回 `SendReceipt`。如果某个消费者处理过慢导致落后超过一圈，tokio broadcast channel 不会反压发送方，而是让该慢消费者收到 `Lagged(n)`。应用层负责监控慢消费者并做负载均衡或效率优化。
 
+> **Hint for slow consumers:** 如果数据倾斜严重或单节点无法优化到足够快，可以接入一个**快消费者代理**——用 `ToMatch.All` + 最小处理逻辑（写入本地队列或直接 drain），然后转发到慢消费者或分布式消费池并行处理。参见下方 [常见模式](#快消费者代理--fan-out)。
+
 **参数：**
 
 | 参数 | 类型 | 说明 |
@@ -903,6 +905,59 @@ async def tracing():
 
     await bus.shutdown()
 ```
+
+### 快消费者代理 / Fan-out
+
+当某个消费者处理逻辑过重导致频繁 `Lagged(n)`，且无法对单节点做效率优化时（例如需要调用慢速外部 API、做大规模计算、或数据本身倾斜），可以接入一个**快消费者代理**——它用最小开销捕获消息，立即 drain，然后转发到慢消费者或分布式消费池。
+
+```python
+async def fast_consumer_fanout():
+    bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=256)
+
+    # 生产者
+    producer = await bus.connect(
+        NodeInfo("engine/producer", "engine", {}),
+        MessageFilter(),
+    )
+
+    # 快消费者代理：ToMatch.All，每条消息只做 enqueue，永不 Lagged
+    queue: asyncio.Queue = asyncio.Queue()
+    async def fast_drain(handle):
+        """快速从 Bus 拉取消息放入本地队列，永远不阻塞 Bus 环形缓冲区。"""
+        while True:
+            try:
+                msg = await handle.recv()          # 快：只做网络层拉取
+                await queue.put(msg)                # 快：入队即返回
+            except Exception:
+                break  # Bus 关闭
+
+    fast_agent = await bus.connect(
+        NodeInfo("agent/fast-drain", "agent", {}),
+        MessageFilter(types=None, to_match=ToMatch.All),
+    )
+    asyncio.ensure_future(fast_drain(fast_agent))
+
+    # 慢消费者池：从本地队列取消息，可以并行处理
+    async def slow_worker(worker_id: int):
+        while True:
+            msg = await queue.get()
+            # 这里可以是耗时的外部 API 调用、GPU 推理、数据库写入等
+            print(f"[worker-{worker_id}] 处理 type={msg.msg_type} payload={msg.payload}")
+            await asyncio.sleep(0.1)  # 模拟慢处理
+            queue.task_done()
+
+    # 启动 4 个慢消费者并行处理
+    workers = [asyncio.ensure_future(slow_worker(i)) for i in range(4)]
+
+    # 生产者高速发送
+    for i in range(100):
+        await producer.send("job", [], {"seq": i})
+
+    await asyncio.sleep(0.5)  # 等待消费
+    await bus.shutdown()
+```
+
+核心思路：**Bus 环形缓冲区只负责高速分发，不做背压**。快代理把消息卸到应用层队列后，缓冲区的 slot 立即释放。慢处理逻辑完全与 Bus 解耦，可以自由伸缩 worker 数量、使用进程池、甚至转发到外部消息队列。
 
 ### 优雅关闭
 
