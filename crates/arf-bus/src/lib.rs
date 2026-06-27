@@ -191,6 +191,15 @@ impl Bus {
         let _ = self.cmd_tx.send(BusCommand::Shutdown { respond_to: tx }).await;
         let _ = rx.await;
     }
+
+    /// Send shutdown signal via try_send — usable from &self.
+    ///
+    /// Python bindings use this because Bus is Arc-wrapped and
+    /// `shutdown(self)` cannot be called on Arc<Bus>.
+    pub fn signal_shutdown(&self) {
+        let (tx, _rx) = oneshot::channel();
+        let _ = self.cmd_tx.try_send(BusCommand::Shutdown { respond_to: tx });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
