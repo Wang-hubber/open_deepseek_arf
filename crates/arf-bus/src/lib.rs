@@ -99,13 +99,9 @@ pub(crate) enum BusCommand {
     },
     /// Heartbeat acknowledgement from a node.
     /// Sent automatically by NodeHandle when it intercepts a heartbeat_request.
-    HeartbeatAck {
-        node_id: NodeId,
-    },
+    HeartbeatAck { node_id: NodeId },
     /// Shut down the bus.
-    Shutdown {
-        respond_to: oneshot::Sender<()>,
-    },
+    Shutdown { respond_to: oneshot::Sender<()> },
 }
 
 impl Bus {
@@ -195,7 +191,10 @@ impl Bus {
     /// causing all subsequent `send()` calls to return `BusClosed`.
     pub async fn shutdown(self) {
         let (tx, rx) = oneshot::channel();
-        let _ = self.cmd_tx.send(BusCommand::Shutdown { respond_to: tx }).await;
+        let _ = self
+            .cmd_tx
+            .send(BusCommand::Shutdown { respond_to: tx })
+            .await;
         let _ = rx.await;
     }
 
@@ -208,7 +207,9 @@ impl Bus {
     /// so that all `NodeHandle::recv()` calls unblock with `Closed`.
     pub fn signal_shutdown(&self) {
         let (tx, _rx) = oneshot::channel();
-        let _ = self.cmd_tx.try_send(BusCommand::Shutdown { respond_to: tx });
+        let _ = self
+            .cmd_tx
+            .try_send(BusCommand::Shutdown { respond_to: tx });
         // Drop the broadcast sender to close the channel.
         // After this, all broadcast::Receiver instances will get Closed.
         self.broadcast_tx.lock().unwrap().take();
@@ -308,10 +309,10 @@ async fn run_message_loop(
                         let _ = respond_to.send(());
                     }
                     Some(BusCommand::HeartbeatAck { node_id }) => {
-                        if let Ok(mut map) = nodes.write() {
-                            if let Some(entry) = map.get_mut(&node_id) {
-                                entry.last_ack = Instant::now();
-                            }
+                        if let Ok(mut map) = nodes.write()
+                            && let Some(entry) = map.get_mut(&node_id)
+                        {
+                            entry.last_ack = Instant::now();
                         }
                     }
                     Some(BusCommand::Shutdown { respond_to }) => {
@@ -414,11 +415,7 @@ mod tests {
 
     // Helper to create a bus with default test parameters
     fn test_bus() -> Bus {
-        Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            16,
-        )
+        Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16)
     }
 
     fn test_msg(payload: serde_json::Value) -> Message {
@@ -622,7 +619,11 @@ mod tests {
             .unwrap();
 
         let result = sender
-            .send("action", vec![NodeId::new("ghost")], serde_json::json!("hi"))
+            .send(
+                "action",
+                vec![NodeId::new("ghost")],
+                serde_json::json!("hi"),
+            )
             .await;
         assert!(
             matches!(result, Err(SendError::NodeOffline(ref ids)) if ids.len() == 1 && ids[0].as_str() == "ghost")
@@ -708,9 +709,7 @@ mod tests {
                 serde_json::json!("hi"),
             )
             .await;
-        assert!(
-            matches!(result, Err(SendError::NodeOffline(ref ids)) if ids.len() == 2)
-        );
+        assert!(matches!(result, Err(SendError::NodeOffline(ref ids)) if ids.len() == 2));
 
         sender.disconnect().await;
         bus.shutdown().await;
@@ -757,7 +756,9 @@ mod tests {
         let mut rx = bus.subscribe();
 
         // Send a message to confirm it works
-        bus.send(test_msg(serde_json::json!("pre_shutdown"))).await.unwrap();
+        bus.send(test_msg(serde_json::json!("pre_shutdown")))
+            .await
+            .unwrap();
         assert!(rx.recv().await.is_ok());
 
         // Shutdown — consumes bus, broadcast channel closes
@@ -787,11 +788,7 @@ mod tests {
     // [边界] channel_capacity=1 仍可正常收发（最小合法值）
     #[tokio::test]
     async fn bus_with_minimal_capacity() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            1,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 1);
         let mut rx = bus.subscribe();
 
         bus.send(test_msg(serde_json::json!("x"))).await.unwrap();
@@ -803,11 +800,7 @@ mod tests {
     // [边界] slow receiver 导致 Lagged——环形缓冲区满，慢消费者丢消息
     #[tokio::test]
     async fn slow_receiver_gets_lagged_error() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            2,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 2);
         let mut rx = bus.subscribe();
 
         // Send 3 msgs — ring buffer holds 2, first one gets overwritten
@@ -830,11 +823,7 @@ mod tests {
     // [边界] channel_capacity=1 是最小合法值；tokio broadcast channel 不允许 capacity=0
     #[tokio::test]
     async fn bus_with_minimal_capacity_works() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            1,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 1);
         assert_eq!(bus.message_count(), 0);
         bus.shutdown().await;
     }
@@ -846,11 +835,7 @@ mod tests {
     // [健康] 无应用订阅者时 send 仍成功（drain receiver 保活 + 不阻塞）
     #[tokio::test]
     async fn send_succeeds_with_no_application_subscribers() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            4,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 4);
         // No bus.subscribe() — only the drain receiver exists
 
         // Multiple sends should all succeed
@@ -870,7 +855,9 @@ mod tests {
         let mut rx2 = bus.subscribe();
 
         // Send initial message that both see
-        bus.send(test_msg(serde_json::json!("before"))).await.unwrap();
+        bus.send(test_msg(serde_json::json!("before")))
+            .await
+            .unwrap();
         assert!(rx1.recv().await.is_ok());
         assert!(rx2.recv().await.is_ok());
 
@@ -878,11 +865,21 @@ mod tests {
         drop(rx1);
 
         // Send more messages — rx2 should still receive them
-        bus.send(test_msg(serde_json::json!("after1"))).await.unwrap();
-        bus.send(test_msg(serde_json::json!("after2"))).await.unwrap();
+        bus.send(test_msg(serde_json::json!("after1")))
+            .await
+            .unwrap();
+        bus.send(test_msg(serde_json::json!("after2")))
+            .await
+            .unwrap();
 
-        assert_eq!(rx2.recv().await.unwrap().payload, serde_json::json!("after1"));
-        assert_eq!(rx2.recv().await.unwrap().payload, serde_json::json!("after2"));
+        assert_eq!(
+            rx2.recv().await.unwrap().payload,
+            serde_json::json!("after1")
+        );
+        assert_eq!(
+            rx2.recv().await.unwrap().payload,
+            serde_json::json!("after2")
+        );
 
         bus.shutdown().await;
     }
@@ -892,11 +889,7 @@ mod tests {
     // 慢消费者不会造成背压——它只会收到 Lagged 通知。
     #[tokio::test]
     async fn slow_receiver_lagged_not_backpressured() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            2,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 2);
         let _slow_rx = bus.subscribe(); // subscribe but never read
 
         // Send many messages — should all succeed (no blocking)
@@ -911,11 +904,7 @@ mod tests {
     // [健康] 快消费者不被慢消费者阻挡（直到缓冲区绕回）
     #[tokio::test]
     async fn fast_receiver_not_blocked_by_slow_one() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            8,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 8);
         let _slow_rx = bus.subscribe(); // never reads
         let mut fast_rx = bus.subscribe(); // reads promptly
 
@@ -925,10 +914,7 @@ mod tests {
         }
 
         for i in 0..5 {
-            assert_eq!(
-                fast_rx.recv().await.unwrap().payload,
-                serde_json::json!(i)
-            );
+            assert_eq!(fast_rx.recv().await.unwrap().payload, serde_json::json!(i));
         }
 
         bus.shutdown().await;
@@ -937,11 +923,7 @@ mod tests {
     // [健康] Lagged 后 receiver 可恢复接收新消息——跳过 lag，继续消费
     #[tokio::test]
     async fn receiver_recovers_after_lag() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            2,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 2);
         let mut rx = bus.subscribe();
 
         // Cause lag by sending without reading
@@ -972,7 +954,9 @@ mod tests {
         assert!(lag_count > 0, "should have lagged by at least 1 message");
 
         // After catch-up, new messages arrive normally
-        bus.send(test_msg(serde_json::json!("after_lag"))).await.unwrap();
+        bus.send(test_msg(serde_json::json!("after_lag")))
+            .await
+            .unwrap();
         // recv should return the newly sent message (not a leftover)
         let recovered = rx.recv().await.unwrap();
         assert_eq!(recovered.payload, serde_json::json!("after_lag"));
@@ -1017,12 +1001,7 @@ mod tests {
             .map(|i| {
                 let bus = bus.clone();
                 tokio::spawn(async move {
-                    let msg = Message::new(
-                        "t",
-                        NodeId::new("s"),
-                        vec![],
-                        serde_json::json!(i),
-                    );
+                    let msg = Message::new("t", NodeId::new("s"), vec![], serde_json::json!(i));
                     bus.send(msg).await.unwrap();
                 })
             })
@@ -1043,8 +1022,8 @@ mod tests {
         assert_eq!(received, (0..10).collect::<Vec<_>>());
 
         // All spawned tasks completed — only our Arc reference remains
-        let bus = std::sync::Arc::into_inner(bus)
-            .expect("all other Arc references should be dropped");
+        let bus =
+            std::sync::Arc::into_inner(bus).expect("all other Arc references should be dropped");
         bus.shutdown().await;
     }
 
@@ -1068,7 +1047,10 @@ mod tests {
 
         // NodeEntry 仍然在 nodes map 中（graph 可见）
         let g = bus.graph();
-        let zombie = g.nodes.iter().find(|n| n.node_id.as_str() == "crash-victim");
+        let zombie = g
+            .nodes
+            .iter()
+            .find(|n| n.node_id.as_str() == "crash-victim");
         assert!(
             zombie.is_some(),
             "BUG: dropped handle was immediately removed — zombie entry should persist until heartbeat timeout"
@@ -1090,8 +1072,8 @@ mod tests {
     #[tokio::test]
     async fn zombie_entry_cleaned_by_heartbeat_timeout() {
         let bus = Bus::new(
-            Duration::from_millis(20),   // fast heartbeat
-            Duration::from_millis(60),   // short timeout
+            Duration::from_millis(20), // fast heartbeat
+            Duration::from_millis(60), // short timeout
             16,
         );
 
@@ -1136,12 +1118,10 @@ mod tests {
         // 经过 3 个 tick（20ms×3=60ms）+ timeout 判定（>60ms）
         // → 第四个 tick（~80ms）时 node_offline 被广播。
         // 使用单一长超时让 recv() 持续等待（内部循环会过滤 heartbeat_request）。
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), watcher.recv()).await;
+        let result = tokio::time::timeout(Duration::from_millis(500), watcher.recv()).await;
         let mut saw_offline = false;
         if let Ok(Ok(msg)) = result {
-            saw_offline =
-                msg.msg_type == "node_offline" && msg.from.as_str() == "zombie";
+            saw_offline = msg.msg_type == "node_offline" && msg.from.as_str() == "zombie";
         }
 
         assert!(
@@ -1152,7 +1132,10 @@ mod tests {
         // graph 不再包含 zombie
         let g = bus.graph();
         let zombie = g.nodes.iter().find(|n| n.node_id.as_str() == "zombie");
-        assert!(zombie.is_none(), "BUG: zombie entry not cleaned from nodes map");
+        assert!(
+            zombie.is_none(),
+            "BUG: zombie entry not cleaned from nodes map"
+        );
 
         // zombie 被清理后，同 NodeId 可重连
         let h = bus
@@ -1179,11 +1162,7 @@ mod tests {
     // [清理] signal_shutdown 后 broadcast channel 关闭 → recv 返回 Closed
     #[tokio::test]
     async fn signal_shutdown_closes_broadcast_channel() {
-        let bus = Arc::new(Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            16,
-        ));
+        let bus = Arc::new(Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16));
         let mut handle = bus
             .connect(test_node_info("victim"), test_filter())
             .await
@@ -1232,7 +1211,10 @@ mod tests {
         let h2 = bus
             .connect(test_node_info("clean-exit"), test_filter())
             .await;
-        assert!(h2.is_ok(), "BUG: should reconnect immediately after disconnect");
+        assert!(
+            h2.is_ok(),
+            "BUG: should reconnect immediately after disconnect"
+        );
 
         h2.unwrap().disconnect().await;
         bus.shutdown().await;
@@ -1241,11 +1223,7 @@ mod tests {
     // [泄漏] Bus drop 不调用 shutdown → spawned task 正常退出
     #[tokio::test]
     async fn bus_drop_without_shutdown_task_exits() {
-        let bus = Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            16,
-        );
+        let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
 
         // Connect a node to create some internal state
         let handle = bus
