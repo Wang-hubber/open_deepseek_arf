@@ -154,9 +154,9 @@ impl std::fmt::Display for TaskStatus {
 
 /// A single message in the model conversation history.
 ///
-/// Phase 2 includes the structurally essential fields. Optional fields
-/// (`tool_call_id`, `name`) are None for user/assistant/system messages
-/// and serialized only when Some. Phase 5 (ModelAdapter) will add
+/// `extra` carries provider-specific opaque data (e.g., DeepSeek
+/// `reasoning_content`). State stores it as-is; ModelAdapter reads/writes
+/// it — no other component interprets it. Phase 5 (ModelAdapter) will add
 /// `tool_calls: Vec<ToolCall>` for assistant parallel tool invocations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMessage {
@@ -170,6 +170,10 @@ pub struct ModelMessage {
     /// Optional display name (e.g., function name for tool role, author for user).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Provider-specific opaque data. Managed entirely by ModelAdapter.
+    /// State stores it without interpretation. Default to `Value::Null`.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub extra: serde_json::Value,
 }
 ```
 
@@ -178,20 +182,22 @@ pub struct ModelMessage {
 - `content: String` — 消息正文，纯文本（Phase 5 可能扩展为 `Vec<ContentBlock>` 支持多模态）
 - `tool_call_id: Option<String>` — tool role 必需关联到 assistant 的 tool_call；其余角色为 `None`，不序列化输出
 - `name: Option<String>` — 可选显示名，如 tool 的函数名或 user 的发送者名；`None` 时不序列化
-- `#[serde(skip_serializing_if = "Option::is_none")]` — 保证 user/assistant/system 消息的 JSON 不含空字段，只有 role=tool 时显式写入
+- `extra: serde_json::Value` — 供应商特有数据黑洞。State 只存不读，ModelAdapter 全权管理。DeepSeek 塞 `{"reasoning_content":"..."}`，Anthropic 塞它的东西，OpenAI 就是 `null`。`serde(default)` 保证反序列化旧数据（无此字段）时不报错，`skip_serializing_if` 保证 `null` 时不输出
+- `#[serde(skip_serializing_if)]` — 两个 Option 字段在 `None` 时跳过，`extra` 在 `null` 时跳过，保证 user/assistant/system 消息 JSON 干净
 
 ```rust
 impl ModelMessage {
     /// Create a ModelMessage with role and content.
     ///
-    /// `tool_call_id` and `name` default to None; set them after construction
-    /// or via the builder-style methods below.
+    /// `tool_call_id`, `name`, and `extra` default to None/Null;
+    /// set them via the builder-style methods below.
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
             content: content.into(),
             tool_call_id: None,
             name: None,
+            extra: serde_json::Value::Null,
         }
     }
 
@@ -206,13 +212,19 @@ impl ModelMessage {
         self.name = Some(name.into());
         self
     }
+
+    /// Set `extra` (builder style). Managed by ModelAdapter.
+    pub fn with_extra(mut self, extra: serde_json::Value) -> Self {
+        self.extra = extra;
+        self
+    }
 }
 ```
 
 逐行：
-- `new(role, content)` — 最小构造，`tool_call_id` 和 `name` 默认 `None`
-- `with_tool_call_id(id)` / `with_name(name)` — builder 风格，调用方按需链式设置可选字段
-- 风格与 Rust 生态惯用 builder pattern 一致，无需引入额外 crate
+- `new(role, content)` — 最小构造，可选字段默认 `None`/`Null`
+- `with_tool_call_id(id)` / `with_name(name)` / `with_extra(value)` — builder 风格链式设置
+- `with_extra` 接受 `serde_json::Value`，ModelAdapter 构造好后传入，State 不关心内部结构
 
 ---
 
@@ -402,14 +414,14 @@ fn task_status_serialization_roundtrip() {
 
 ---
 
-### ModelMessage — 12 tests
+### ModelMessage — 15 tests
 
 ```rust
 // ═══════════════════════════════════════════════════════════════
-// ModelMessage — 12 tests
+// ModelMessage — 15 tests
 // ═══════════════════════════════════════════════════════════════
 
-// [构造] new() 正确赋值 role 和 content，可选字段默认为 None
+// [构造] new() 正确赋值 role 和 content，可选字段默认为 None/Null
 #[test]
 fn model_message_new_sets_fields() {
     let msg = ModelMessage::new("user", "hello world");
@@ -417,6 +429,7 @@ fn model_message_new_sets_fields() {
     assert_eq!(msg.content, "hello world");
     assert_eq!(msg.tool_call_id, None);
     assert_eq!(msg.name, None);
+    assert_eq!(msg.extra, serde_json::Value::Null);
 }
 
 // [构造] new() 接受 owned String（Into<String> trait）
@@ -446,14 +459,16 @@ fn model_message_with_name() {
     assert_eq!(msg.name, Some("read_file".into()));
 }
 
-// [构造] builder: 链式调用同时设置两个可选字段
+// [构造] builder: 链式调用同时设置三个可选字段
 #[test]
 fn model_message_builder_chained() {
     let msg = ModelMessage::new("tool", r#"{"status": "ok"}"#)
         .with_tool_call_id("call_xyz")
-        .with_name("search");
+        .with_name("search")
+        .with_extra(serde_json::json!({"reasoning_content": "let me think..."}));
     assert_eq!(msg.tool_call_id, Some("call_xyz".into()));
     assert_eq!(msg.name, Some("search".into()));
+    assert_eq!(msg.extra["reasoning_content"], "let me think...");
 }
 
 // [边界] role 为空字符串：不 panic
@@ -491,11 +506,12 @@ fn model_message_equality() {
 fn model_message_clone() {
     let msg = ModelMessage::new("tool", "reply")
         .with_tool_call_id("call_1")
-        .with_name("run");
+        .with_name("run")
+        .with_extra(serde_json::json!({"key": "value"}));
     assert_eq!(msg, msg.clone());
 }
 
-// [序列化] user 消息：可选字段为 None 时不输出到 JSON
+// [序列化] user 消息：可选字段为 None/Null 时不输出到 JSON
 #[test]
 fn model_message_serialization_user_skips_optionals() {
     let msg = ModelMessage::new("user", "hello");
@@ -504,6 +520,7 @@ fn model_message_serialization_user_skips_optionals() {
     assert_eq!(msg, back);
     assert!(!json.contains("tool_call_id"));
     assert!(!json.contains("\"name\""));
+    assert!(!json.contains("\"extra\""));
 }
 
 // [序列化] tool 消息：可选字段有值时输出到 JSON
@@ -521,6 +538,27 @@ fn model_message_serialization_tool_with_options() {
     assert!(json.contains("search"));
 }
 
+// [序列化] tool 消息带 extra：extra 非 null 时输出到 JSON
+#[test]
+fn model_message_serialization_with_extra() {
+    let msg = ModelMessage::new("assistant", "answer")
+        .with_extra(serde_json::json!({"reasoning_content": "step 1: ..."}));
+    let json = serde_json::to_string(&msg).unwrap();
+    let back: ModelMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(msg, back);
+    assert!(json.contains("\"extra\""));
+    assert!(json.contains("reasoning_content"));
+}
+
+// [兼容] 旧数据无 extra 字段：反序列化不报错，extra 为 Null
+#[test]
+fn model_message_deserialize_missing_extra() {
+    let json = r#"{"role":"user","content":"hello"}"#;
+    let msg: ModelMessage = serde_json::from_str(json).unwrap();
+    assert_eq!(msg.role, "user");
+    assert_eq!(msg.extra, serde_json::Value::Null);
+}
+
 // [边界] tool_call_id 为空字符串：序列化往返后仍为空字符串
 #[test]
 fn model_message_tool_call_id_empty_string() {
@@ -528,6 +566,21 @@ fn model_message_tool_call_id_empty_string() {
     let json = serde_json::to_string(&msg).unwrap();
     let back: ModelMessage = serde_json::from_str(&json).unwrap();
     assert_eq!(back.tool_call_id, Some("".into()));
+}
+
+// [序列化] extra 嵌套对象（2层 + 数组 + null）：结构不丢失
+#[test]
+fn model_message_extra_deeply_nested() {
+    let extra = serde_json::json!({
+        "reasoning_content": "think",
+        "meta": {"tokens": 42, "tags": ["a", null, "b"]}
+    });
+    let msg = ModelMessage::new("assistant", "ok").with_extra(extra);
+    let json = serde_json::to_string(&msg).unwrap();
+    let back: ModelMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(msg.extra, back.extra);
+    assert_eq!(back.extra["meta"]["tokens"], 42);
+    assert_eq!(back.extra["meta"]["tags"][1], serde_json::Value::Null);
 }
 ```
 
@@ -539,8 +592,8 @@ fn model_message_tool_call_id_empty_string() {
 |------|--------|---------|
 | TaskId | 8 | 构造、唯一性、Display、边界(空owner)、Eq、Clone、Hash、序列化 |
 | TaskStatus | 9 | 覆盖(6变体)、is_terminal(×5)、Eq、Display(×6)、Clone、序列化(×6) |
-| ModelMessage | 12 | 构造(×2)、builder(×3)、边界(×2)、Eq、Clone、序列化user(跳过optionals)、序列化tool、边界(tool_call_id空串) |
-| **合计** | **29** | |
+| ModelMessage | 15 | 构造(×2)、builder(×3)、边界(×2)、Eq、Clone、序列化user(跳过所有可选)、序列化tool、序列化extra、兼容(旧数据无extra)、边界(tool_call_id空)、边界(extra深层嵌套) |
+| **合计** | **32** | |
 
 ---
 
@@ -555,7 +608,7 @@ fn model_message_tool_call_id_empty_string() {
 
 ## 交付标准
 
-- `cargo test --workspace` 全部通过（含已有 60+ tests + 新增 29 tests）
+- `cargo test --workspace` 全部通过（含已有 60+ tests + 新增 32 tests）
 - `cargo fmt --check` + `cargo clippy` 无警告
 - TaskId / TaskStatus / ModelMessage 可序列化往返
 - TaskStatus 终态判断逻辑正确
