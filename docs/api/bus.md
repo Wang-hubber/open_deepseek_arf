@@ -280,7 +280,14 @@ with pytest.raises(Exception):
 ```
 
 !!! warning "shutdown 后缓冲区仍有残留消息"
-    `shutdown()` 后，`recv()` 可能先返回环形缓冲区中已存在的消息。应先 drain 缓冲消息，再验证 `Closed`：
+    `shutdown()` 调用 `signal_shutdown`，关闭 broadcast channel 的**发送端**——此后不再有新消息进入。但 channel 的**接收端**仍然存活，环形缓冲区中的已发送消息尚未被消费。此时 `recv()` 的行为取决于缓冲区状态：
+
+    | 缓冲区状态 | `recv()` 行为 |
+    |-----------|-------------|
+    | 有未读消息 | 逐条返回缓冲消息（FIFO 顺序） |
+    | 缓冲区为空 | 返回 `Closed` 错误 |
+
+    因此，`shutdown()` 后如果需要验证 `Closed`，应先排空缓冲区：
 
     ```python
     await bus.shutdown()
@@ -290,11 +297,14 @@ with pytest.raises(Exception):
             if m is None:
                 break
         except Exception:
-            break
-    # 现在 recv 应该抛异常
+            break  # channel 已关闭
     with pytest.raises(Exception):
-        await handle.recv()
+        await handle.recv()  # 此时缓冲区空，返回 Closed
     ```
+
+    **内存不会泄漏：** 环形缓冲区在线节点全部消费完毕（或 receiver 被 drop）后自动释放。
+    即使某些消费者已 `disconnect()`，其 `broadcast_rx` 已被 drop，不再持有缓冲区引用，不会阻碍回收。
+    最坏情况下（shutdown 后既未 drain 也未 disconnect），内存也会在 `Bus` 对象被 Python GC 时随整个 channel 一起释放——不会有永久残留。
 
 ---
 
