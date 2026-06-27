@@ -1232,7 +1232,7 @@ async def service_discovery_and_ready_signal():
     while True:
         msg = await b.recv()
         if msg.msg_type == "node_online" and str(msg.sender) == "engine/a":
-            caps = msg.payload["node_info"]["capabilities"]
+            caps = msg.payload["capabilities"]
             print(f"B 发现 A 上线: role={caps['role']}")
             break
 
@@ -1242,7 +1242,7 @@ async def service_discovery_and_ready_signal():
 
     # 5. A 收到就绪信号后才开始发送应用消息
     ready_msg = await a.recv()
-    assert ready_msg.msg_type == "ready"
+    print(f"A 收到: type={ready_msg.msg_type}")
     await a.send("job", [], {"task": "process", "data": 42})
 
     # 6. B 消费应用消息（此时已经初始化完毕，不会再收到 node_online）
@@ -1255,6 +1255,14 @@ async def service_discovery_and_ready_signal():
     await a.disconnect()
     await b.disconnect()
     await bus.shutdown()
+```
+
+**运行输出：**（耗时 <1ms）
+
+```
+B 发现 A 上线: role=producer
+A 收到: type=ready
+B 处理: {'data': 42, 'task': 'process'}
 ```
 
 **关键时序：**
