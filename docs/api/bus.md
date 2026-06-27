@@ -118,12 +118,12 @@ b = await bus.connect(
 await a.send("tool_call", [NodeId("node/b")], {
     "tool": "add", "params": [3, 4], "req_id": "r1",
 })
+# B 侧解包并完成运算，返回结果
 req = await b.recv()
 a_val, b_val = req.payload["params"]
-
-# B 侧完成运算，返回结果
+result = a_val + b_val
 await b.send("tool_call_result", [NodeId("node/a")], {
-    "result": a_val + b_val, "req_id": req.payload["req_id"],
+    "result": result, "req_id": req.payload["req_id"],
 })
 resp = await a.recv()
 print(f"3+4={resp.payload['result']}")
