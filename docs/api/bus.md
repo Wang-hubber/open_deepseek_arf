@@ -35,7 +35,7 @@
 | 无中心路由 | Bus 只负责广播，不感知谁该收到什么 |
 | 总线始终有电，终端电阻消纳信号 | Bus 内部持有一个 dummy receiver，每次事件后自动 drain，确保通道永不因"无人消费"而阻塞 |
 
-**对用户意味着什么：** Bus 会自动清理内部消息积压，你不需要担心"`node_online` 没人收会不会堵塞通道"——dummy receiver 已经把这事干了。这个机制完全透明，无论有多少节点在线、是否 disconnect、filter 怎么配置，广播通道始终保持畅通。
+**对用户意味着什么：** dummy receiver 作为 broadcast channel 的常驻接收方，会收到**所有消息**（`node_online` / `node_offline` / `heartbeat_request` 等 lifecycle 消息，以及 `job` / `tool_call` 等应用消息），并在每次事件后被立即 drain，保证通道不会因累积而阻塞。这个机制完全透明——每个在线节点仍然独立收到自己的消息副本，不受 dummy drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
 
 ### 适用场景
 
