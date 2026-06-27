@@ -120,6 +120,99 @@ NodeHandle.send()               消息循环 (独立 tokio task)             环
 
 如果去掉 drain_rx，第一个无人消费的 `heartbeat_request`（无应用节点在线时）就会卡在环形缓冲区里——因为没人读它，它的位置永远不会被越过。`capacity` 条消息后，buffer 满，下一个 `send()` 永久阻塞。drain_rx 就是那个"总是读的人"。
 
+**原生 tokio broadcast vs ARF Bus 竞速模式：行为对比**
+
+以下用可运行的 Rust 代码展示原生 tokio broadcast 与 ARF Bus 在不同场景下的表现差异。原生 tokio 代码可独立运行（`tokio = { features = ["sync", "rt-multi-thread", "macros", "time"] }`）。
+
+```
+实验1: 零接收者时 send()
+────────────────────────────────────────────────────
+原生 tokio:
+  let (tx, rx0) = broadcast::channel::<String>(4);
+  drop(rx0);
+  tx.send("hello".into())
+  → Err(SendError("hello"))
+  → 没有接收者 → channel 死了
+
+ARF Bus:
+  bus.send(msg).await
+  → Ok(SendReceipt { ... })
+  → drain_rx 是 broadcast::channel() 的原始返回值，永不 drop
+  → 即使零 app 订阅者，send() 也不报错
+────────────────────────────────────────────────────
+
+实验2: capacity=2, 仅一个从不读的消费者
+────────────────────────────────────────────────────
+原生 tokio:
+  let (tx, _rx_only) = broadcast::channel::<String>(2);
+  tx.send("msg0".into()); // Ok
+  tx.send("msg1".into()); // Ok (sender=2, rx=0, diff=2=capacity)
+  tx.send("msg2".into()); // Ok — rx 落后 ≥ capacity, tokio 标记 Lagged, sender 继续
+  → 原生 tokio 的 Lagged 机制也保护了发送方，慢消费者不阻塞 sender
+
+ARF Bus (capacity=2, 同样的慢消费者):
+  bus.send(msg0).await; // Ok
+  bus.send(msg1).await; // Ok
+  ...连续 10 次全部 Ok (见 arf-bus 测试 slow_receiver_lagged_not_backpressured)
+  → drain_rx 在每次 send 后立即推到最新位置
+  → 即使慢消费者未 Lagged,cursor=0,sender 也不阻塞(因为 drain_rx 更快)
+  → 这个是纯兜底——原生 tokio 也能处理慢消费者,但 drain_rx 保证
+    即使慢消费者是"唯一"的,也永远不会成为瓶颈
+────────────────────────────────────────────────────
+
+实验3: 全部 Receiver drop — 模拟 app 全部 disconnect + 心跳继续
+────────────────────────────────────────────────────
+原生 tokio:
+  let (tx, rx0) = broadcast::channel::<String>(4);
+  let app1 = tx.subscribe();
+  let app2 = tx.subscribe();
+  tx.send("job".into()).unwrap();  // Ok, app1/app2 正常通信
+  app1.recv(); app2.recv();
+  drop(app1); drop(app2); drop(rx0); // 全部退出
+
+  tx.send("heartbeat_request".into())
+  → Err(SendError("heartbeat_request"))
+  → 零接收者 → Bus 死了，心跳无法发送
+
+ARF Bus (同样场景):
+  所有 app 节点 disconnect → drain_rx 仍在
+  bus.send("heartbeat_request").await
+  → Ok(SendReceipt { ... })
+  → drain_rx 永不被 drop → Bus 照常运转
+  → 心跳/生命周期消息始终有"人"收
+────────────────────────────────────────────────────
+
+实验4: capacity=4, 快+慢混合 — 慢的是否拖累快的?
+────────────────────────────────────────────────────
+原生 tokio:
+  let (tx, mut rx_fast) = broadcast::channel::<String>(4);
+  let _rx_slow = tx.subscribe(); // 从不读
+  for i in 0..6 { tx.send(format!("msg{i}")).unwrap(); } // 全部 Ok
+  rx_fast.recv().await → Lagged(2)  // 快消费者落后了,收到 Lagged 通知
+  继续 recv → 后续消息正常
+  → tokio 的 Lagged 语义保护: 慢的不拖累快的,快的也不救助慢的
+
+ARF Bus:
+  行为相同 — Lagged 语义保持不变
+  drain_rx 额外保证: 至少有一个"超快消费者"始终在最新位置
+  这意味着最慢非 Lagged 接收者的光标永远 ≥ drain_rx 的位置
+```
+
+**差异总结：**
+
+tokio broadcast 原生的 `Lagged` 语义已经保护了"慢消费者不反压发送方"这个特性。ARF Bus 的 `drain_rx` 在此之上解决的是两个更基本的问题：
+
+| 场景 | 原生 tokio broadcast | ARF Bus (竞速模式) |
+|------|---------------------|-------------------|
+| 零接收者 | `send()` → `Err(SendError)` | `send()` → `Ok(SendReceipt)` |
+| 全部 app 退出后继续发消息 | `Err(SendError)` — channel 死 | `Ok` — drain_rx 是"常驻市民" |
+| 慢消费者落后 < capacity | 不阻塞 | 不阻塞 (同左) |
+| 慢消费者落后 ≥ capacity | 被 Lagged, sender 继续 | 被 Lagged, sender 继续 (drain_rx 兜底) |
+| lifecycle 消息无人消费 | buffer 滚动覆盖 | drain_rx 逐条消费, 释放 slot |
+| 设计承诺 | 隐式 — 行为取决于 receiver 数量/状态 | **显式 — send() 永不阻塞, 竞速模式** |
+
+核心结论：**`drain_rx` 不是改造 tokio 的 Lagged 机制，而是在它之下铺了一层"永远不死"的兜底**——保证 broadcast channel 始终有一个活着的消费者，从而 `send()` 既不会因零接收者报错，也不会因唯一接收者卡住而阻塞。
+
 这个机制完全透明——每个在线节点独立持有自己的 `broadcast::Receiver`，各自维护消费位置，不受 `drain_rx` 的 drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
 
 **设计取舍：竞速模式。** Bus 的核心承诺是**消息一定会被发出**——`send()` 永不阻塞发送方。消费端的规则是：**跟得上就能一直 live，跟不上也不会影响别人**。慢消费者独自承受 `Lagged(n)` 丢消息的代价，不会反压发送方或拖慢其他快消费者。如果你需要保证每个消息都被处理，在应用层做持久化 + 重试——Bus 层只管传输，不做反压。
