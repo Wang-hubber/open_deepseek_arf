@@ -59,6 +59,107 @@ Bus 被消费 → broadcast_tx drop          Bus 保持 &self → broadcast_tx �
 
 ---
 
+## Python 测试实现记录
+
+### 首轮运行：43/53 passed，10 failed
+
+2026-06-27 首轮 pytest 结果。10 个失败分为 6 类根因，分析如下：
+
+#### 失败 #1: `message_count` 不计数 lifecycle 消息 (2 tests)
+
+**失败**：`test_connect_multiple_nodes` (`0 >= 3`), `test_connect_duplicate_node_id_rejected` (`0 == 1`)
+
+**根因**：`Bus.message_count` 仅在 `BusCommand::Send` 分支中 `fetch_add`，`handle_connect`/`handle_disconnect`/`handle_heartbeat_tick` 中广播的 lifecycle 消息（`node_online`、`node_offline`、`heartbeat_request`）均不计数。这是**设计行为**——`message_count` 统计的是应用消息，不是协议消息。
+
+**修复**：测试断言从 `message_count >= 3` 改为 `message_count == 0`。
+
+#### 失败 #2: node_online 顺序残留 (3 tests)
+
+**失败**：`test_broadcast_received_by_all_peers`（r1 收到 `node_online` 而非 `job`）、`test_concurrent_recv_no_cross_interference`（`KeyError: 'id'`，payload 是 NodeInfo）、`test_message_not_consumed_after_one_recv`（msg_a.payload 是 NodeInfo）
+
+**根因**：节点 `broadcast_rx` 创建时机导致的 node_online 可见性差异：
+
+```
+sender 连接 → sender.rx 创建
+r1 连接   → sender 看到 r1 的 node_online, r1.rx 创建
+r2 连接   → sender, r1 看到 r2 的 node_online. r2.rx 创建
+r3 连接   → sender, r1, r2 看到 r3 的 node_online. r3.rx 创建
+```
+
+结果：r1 有 2 条 node_online 在 `job` 消息前面，r2 有 1 条，r3 有 0 条。测试必须在发送应用消息前 drain 掉 node_online 残留。
+
+**修复**：在 `sender.send("job", ...)` 之前，每个需要收应用消息的节点按顺序 drain 对应数量的 `node_online`。
+
+#### 失败 #3: `SendError::NodeOffline` 错误消息格式 (1 test)
+
+**失败**：`test_send_to_all_offline_targets_raises` —— `match="NodeOffline"` 不匹配实际消息 `"target nodes offline: ghost/node"`
+
+**根因**：PyO3 绑定 `send_error_to_py` 调用 `err.to_string()`。`SendError::NodeOffline` 的 `Display` 实现输出 `"target nodes offline: {ids}"`，不含 `"NodeOffline"` 字样。Rust 端是枚举变体名，Python 端只有 `Display` 文本。
+
+**修复**：改为 `match="target nodes offline"`。
+
+#### 失败 #4: 定向消息到离线目标全部失败 (1 test)
+
+**失败**：`test_filter_all_trace_node` —— `a.send("directed", [NodeId("engine/bogus")], ...)` 抛错
+
+**根因**：定向发送时，若**所有**目标均离线（`offline.len() == msg.to.len()`），Rust 侧返回 `SendError::NodeOffline`。单目标+离线 = 全部离线 → 抛错。测试中 `engine/bogus` 不存在。
+
+**修复**：改为定向到已在线节点 `NodeId("trace/obs")`。定向消息仍然会被 `ToMatch::All` 的 trace 节点收到。
+
+#### 失败 #5: `asyncio.create_task` 不接受 Future (1 test)
+
+**失败**：`test_try_recv_during_recv_lock_conflict` —— `TypeError: a coroutine was expected, got <Future>`
+
+**根因**：PyO3 `future_into_py` 将 Rust async fn 转为 Python **`Future`** 对象，不是 **coroutine**。`asyncio.create_task()` 只接受 coroutine。这是 PyO3 异步桥接的核心设计——async 方法返回 Future，不能用 `create_task` 包装。
+
+**修复**：直接用 `h.recv()` 返回的 Future + `asyncio.ensure_future()`。
+
+#### 失败 #6: shutdown 后 recv 先返回缓冲消息 (1 test)
+
+**失败**：`test_shutdown_with_online_nodes_no_hang` —— `DID NOT RAISE Exception`
+
+**根因**：`signal_shutdown` 关闭 broadcast channel（修复 #1 后生效），但 `recv()` 的内部循环会**先返回缓冲区中已有的消息**。发送了 2 条 `msg`，在 shutdown 后它们仍在 ring buffer 中。`recv()` 返回这些缓冲消息，消耗完后才返回 `Closed`。
+
+**修复**：shutdown 后先 drain 所有已缓冲的应用消息（`try_recv` 循环），然后验证下一次 `recv()` 抛异常。
+
+#### 失败 #7: channel_capacity=64 但 100 条 message + node_online (1 test)
+
+**失败**：`test_channel_capacity_stress_100_messages` —— `recv error: channel lagged by 36`
+
+**根因**：100 条 `stress` 消息 + 至少 2 条（node_online）在 ring buffer 中。消费者（trace 节点）读取 100 条时 buffer 已覆盖旧消息，导致 `Lagged(36)`。
+
+**修复**：增大 `channel_capacity` 到 256（> 100），或在发送前先 drain node_online 减少 buffer 占用。
+
+---
+
+### 修复结果：53/53 passed
+
+全部修复实施后，pytest 全量通过。修复汇总：
+
+| # | 失败测试 | 根因类别 | 修复方式 |
+|---|---------|---------|---------|
+| 1-2 | message_count 断言错误 | `message_count` 不计 lifecycle 消息 | 断言改为 `== 0` |
+| 3-5 | node_online 残留 | rx 创建时机决定可见性 | `drain_all()` 工具函数 |
+| 6 | match="NodeOffline" 不匹配 | PyO3 Display vs enum variant | `match="target nodes offline"` |
+| 7 | offline 全部目标抛错 | 单目标+离线=全部离线 | 改为定向到在线节点 |
+| 8 | create_task(Future) | future_into_py 返回 Future 非 coroutine | `ensure_future()` |
+| 9 | shutdown 后 recv 不抛 | ring buffer 残留 | drain 后验证 |
+| 10 | capacity=64 导致 Lag | 100+lifecycle > 64 | 独立 Bus capacity=256 |
+
+### 发现的设计知识点
+
+通过 Python 测试发现并确认的框架行为，已记录在测试注释中：
+
+1. **`message_count` 只计应用消息**：`node_online`/`node_offline`/`heartbeat_request` 不计入
+2. **`broadcast_rx` 创建时机**：在 `node_online` 广播**之后**创建，节点看不到自己的 `node_online`，但能看到后续节点的
+3. **`future_into_py` 返回 Future**：PyO3 的 async 方法返回 `Future`，不能用 `asyncio.create_task()`，需用 `ensure_future()`
+4. **shutdown 后 ring buffer 仍有残留消息**：需 drain 后才能收到 Closed
+5. **`SendError::NodeOffline` Display 消息**：`"target nodes offline: {ids}"`，不含枚举变体名
+
+---
+
+## 测试场景
+
 **覆盖策略**：不做低价值单字段 getter 测试（已在 Rust 单测验证），聚焦 Python 集成行为和多节点协作场景——名称冲突、同类型多节点竞争、广播多消费、重连周期、负载均衡基础。
 
 Python API 预览：

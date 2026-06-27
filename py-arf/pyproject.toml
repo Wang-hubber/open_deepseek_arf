@@ -9,6 +9,16 @@ description = "ARF V1.x — AI Resources & Runtime Framework"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "python"
