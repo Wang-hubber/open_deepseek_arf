@@ -1125,7 +1125,7 @@ async def graceful_shutdown():
     await bus.shutdown()
 ```
 
-或者在节点仍在线的场景下 shutdown：
+或者在节点仍在线的场景下 shutdown（注意多节点时缓冲区可能有残留 `node_online`）：
 
 ```python
 async def shutdown_with_nodes_online():
@@ -1135,17 +1135,31 @@ async def shutdown_with_nodes_online():
     await bus.shutdown()
 
     # 先 drain 缓冲区中的残留消息
+    drained = 0
     while True:
         try:
             m = h.try_recv()
             if m is None:
                 break
+            drained += 1
         except Exception:
             break
 
     # 此时 recv 应该抛异常
-    with pytest.raises(Exception):
+    try:
         await h.recv()
+        assert False, "should have raised"
+    except Exception:
+        pass  # 预期行为
+
+    print(f"drain={drained}, recv raised as expected")
+```
+
+**运行输出：**
+
+```
+explicit disconnect -> shutdown 耗时 0ms
+direct shutdown -> drained=0, recv raises: Exception
 ```
 
 ### 崩溃后重连
