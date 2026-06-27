@@ -99,6 +99,118 @@ asyncio.run(main())
 收到 ← type=job, payload={'lr': 0.001, 'task': 'train'}
 ```
 
+### 点对点 RPC
+
+Bus 的定向消息天然支持点对点通信。加上 `req_id` 关联和调用方专用的消息类型，就能实现 RPC 式的请求-响应：
+
+```python
+# A 调用 B：1 + 2 = ?
+a = await bus.connect(
+    NodeInfo("node/a", "test", {}),
+    MessageFilter(types=["add_result"], to_match=ToMatch.DirectedToMe),
+)
+b = await bus.connect(
+    NodeInfo("node/b", "test", {}),
+    MessageFilter(types=["add"], to_match=ToMatch.DirectedToMe),
+)
+
+# A → B
+await a.send("add", [NodeId("node/b")], {"a": 1, "b": 2, "req_id": "r1"})
+req = await b.recv()
+result = req.payload["a"] + req.payload["b"]
+
+# B → A
+await b.send("add_result", [NodeId("node/a")], {"result": result, "req_id": req.payload["req_id"]})
+resp = await a.recv()
+print(f"1+2={resp.payload['result']}")
+```
+
+**运行输出：**（耗时 <1ms）
+
+```
+1+2=3
+```
+
+`jrpc` 在此基础上补全了超时、重试、类型契约——但核心传输完全由 Bus 完成。
+
+### 持久化
+
+外挂一个 `ToMatch.All` 的节点，将全量消息写入本地文件（或 Redis、数据库）：
+
+```python
+import json
+
+persister = await bus.connect(
+    NodeInfo("persist/store", "persist", {}),
+    MessageFilter(types=None, to_match=ToMatch.All),
+)
+
+async def persist_loop(handle, path):
+    with open(path, "a") as f:
+        while True:
+            try:
+                msg = await handle.recv()
+                if msg.msg_type == "node_online":
+                    continue
+                f.write(json.dumps({
+                    "type": msg.msg_type,
+                    "sender": str(msg.sender),
+                    "payload": msg.payload,
+                }) + "\n")
+            except Exception:
+                break
+
+asyncio.ensure_future(persist_loop(persister, "/tmp/bus_log.jsonl"))
+
+await a.send("job", [], {"task": "train"})
+await a.send("job", [], {"task": "eval"})
+```
+
+**运行输出：**（`/tmp/bus_log.jsonl` 内容）
+
+```
+{"type": "job", "sender": "node/a", "payload": {"task": "train"}}
+{"type": "job", "sender": "node/a", "payload": {"task": "eval"}}
+```
+
+### Exactly-Once
+
+在 payload 中携带幂等键，接收方本地去重。即使发送方因超时重试导致同一条消息被投递多次，接收方也只处理一次：
+
+```python
+seen = set()  # 幂等去重表
+
+async def recv_loop(handle):
+    while True:
+        try:
+            msg = await handle.recv()
+            idem = msg.payload["idem_key"]
+            if idem in seen:
+                print(f"重复消息已跳过: idem_key={idem}")
+                continue
+            seen.add(idem)
+            print(f"处理: idem_key={idem}, data={msg.payload['data']}")
+        except Exception:
+            break
+
+asyncio.ensure_future(recv_loop(receiver))
+
+# 模拟重试——同一订单发了 3 次
+for _ in range(3):
+    await sender.send("order", [NodeId("receiver")], {
+        "idem_key": "order-42",
+        "data": "buy 100 shares",
+    })
+```
+
+**运行输出：**（第一条被处理，后两条被跳过）
+
+```
+处理: idem_key=order-42, data=buy 100 shares
+重复消息已跳过: idem_key=order-42
+重复消息已跳过: idem_key=order-42
+```
+
 ### 安装
 
 ```bash
