@@ -93,8 +93,8 @@ mod tests {
     #[tokio::test]
     async fn recv_filters_out_heartbeat_request() {
         let bus = Bus::new(
-            Duration::from_millis(5),  // fast heartbeat for test
-            Duration::from_secs(10),   // long timeout
+            Duration::from_millis(5), // fast heartbeat for test
+            Duration::from_secs(10),  // long timeout
             16,
         );
         let mut handle = bus
@@ -120,11 +120,7 @@ mod tests {
     // [心跳] NodeHandle.try_recv() 过滤 heartbeat 并自动 ACK
     #[tokio::test]
     async fn try_recv_filters_heartbeat_and_acks() {
-        let bus = Bus::new(
-            Duration::from_millis(5),
-            Duration::from_secs(10),
-            16,
-        );
+        let bus = Bus::new(Duration::from_millis(5), Duration::from_secs(10), 16);
         let mut handle = bus
             .connect(test_node_info("n"), test_filter())
             .await
@@ -153,11 +149,7 @@ mod tests {
     // [心跳] heartbeat_request 被 raw subscribe() 可见（CAN 模型）
     #[tokio::test]
     async fn heartbeat_request_visible_on_raw_subscribe() {
-        let bus = Bus::new(
-            Duration::from_millis(10),
-            Duration::from_secs(10),
-            16,
-        );
+        let bus = Bus::new(Duration::from_millis(10), Duration::from_secs(10), 16);
         let mut rx = bus.subscribe();
 
         // Raw subscriber sees heartbeat_request (after first tick is consumed)
@@ -176,8 +168,8 @@ mod tests {
     #[tokio::test]
     async fn node_without_ack_times_out() {
         let bus = Bus::new(
-            Duration::from_millis(20),   // heartbeat interval
-            Duration::from_millis(40),   // short timeout for test
+            Duration::from_millis(20), // heartbeat interval
+            Duration::from_millis(40), // short timeout for test
             16,
         );
         let mut rx = bus.subscribe();
@@ -218,7 +210,7 @@ mod tests {
     async fn heartbeat_ack_prevents_timeout() {
         let bus = Bus::new(
             Duration::from_millis(20),
-            Duration::from_millis(100),   // longer timeout to avoid race
+            Duration::from_millis(100), // longer timeout to avoid race
             16,
         );
         let mut rx = bus.subscribe();
@@ -267,11 +259,7 @@ mod tests {
     // [边界] heartbeat_interval=0 不 panic（立即 tick）
     #[tokio::test]
     async fn zero_heartbeat_interval_does_not_panic() {
-        let bus = Bus::new(
-            Duration::from_millis(0),
-            Duration::from_millis(10),
-            16,
-        );
+        let bus = Bus::new(Duration::from_millis(0), Duration::from_millis(10), 16);
         // Should not panic — just rapid ticks
         tokio::time::sleep(Duration::from_millis(10)).await;
         bus.shutdown().await;
@@ -280,11 +268,7 @@ mod tests {
     // [边界] shutdown 期间 heartbeat tick 不 panic
     #[tokio::test]
     async fn heartbeat_shutdown_no_panic() {
-        let bus = Bus::new(
-            Duration::from_millis(10),
-            Duration::from_secs(10),
-            16,
-        );
+        let bus = Bus::new(Duration::from_millis(10), Duration::from_secs(10), 16);
         // Connect a node and shutdown immediately
         let handle = bus
             .connect(test_node_info("n"), test_filter())
@@ -298,4 +282,3 @@ mod tests {
             .expect("shutdown should complete quickly");
     }
 }
-

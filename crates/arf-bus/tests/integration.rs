@@ -18,23 +18,38 @@ fn node(id: &str) -> NodeInfo {
 }
 
 fn all_filter() -> MessageFilter {
-    MessageFilter { types: None, to_match: ToMatch::All }
+    MessageFilter {
+        types: None,
+        to_match: ToMatch::All,
+    }
 }
 
 fn directed_filter() -> MessageFilter {
-    MessageFilter { types: None, to_match: ToMatch::DirectedToMe }
+    MessageFilter {
+        types: None,
+        to_match: ToMatch::DirectedToMe,
+    }
 }
 
 fn broadcast_filter() -> MessageFilter {
-    MessageFilter { types: None, to_match: ToMatch::BroadcastOnly }
+    MessageFilter {
+        types: None,
+        to_match: ToMatch::BroadcastOnly,
+    }
 }
 
 fn action_directed_filter() -> MessageFilter {
-    MessageFilter { types: Some(vec!["action".into()]), to_match: ToMatch::DirectedToMe }
+    MessageFilter {
+        types: Some(vec!["action".into()]),
+        to_match: ToMatch::DirectedToMe,
+    }
 }
 
 fn action_broadcast_filter() -> MessageFilter {
-    MessageFilter { types: Some(vec!["action".into()]), to_match: ToMatch::BroadcastOnly }
+    MessageFilter {
+        types: Some(vec!["action".into()]),
+        to_match: ToMatch::BroadcastOnly,
+    }
 }
 
 fn fast_bus() -> Bus {
@@ -50,7 +65,7 @@ fn drain_all(handle: &mut arf_bus::NodeHandle) -> Vec<(String, String)> {
             Ok(Some(m)) => msgs.push((m.msg_type, m.from.0)),
             Ok(None) => return msgs,
             Err(broadcast::error::TryRecvError::Lagged(_)) => {} // continue draining
-            Err(_) => return msgs, // Closed
+            Err(_) => return msgs,                               // Closed
         }
     }
 }
@@ -70,8 +85,12 @@ async fn online_offline_broadcast_three_nodes() {
     // B connected second → sees C node_online only (1 msg)
     // C connected last → sees nothing (rx created after all node_online)
     let a_msgs = drain_all(&mut a);
-    let online_a: Vec<_> = a_msgs.iter().filter(|(t,_)| t=="node_online").collect();
-    assert_eq!(online_a.len(), 2, "A should see B and C online, got {a_msgs:?}");
+    let online_a: Vec<_> = a_msgs.iter().filter(|(t, _)| t == "node_online").collect();
+    assert_eq!(
+        online_a.len(),
+        2,
+        "A should see B and C online, got {a_msgs:?}"
+    );
 
     // B drains C's node_online
     drain_all(&mut b);
@@ -80,12 +99,20 @@ async fn online_offline_broadcast_three_nodes() {
     c.disconnect().await;
 
     // A should now see node_offline
-    assert!(drain_all(&mut a).iter().any(|(t,f)| t=="node_offline" && f=="C"),
-        "A should see C node_offline");
+    assert!(
+        drain_all(&mut a)
+            .iter()
+            .any(|(t, f)| t == "node_offline" && f == "C"),
+        "A should see C node_offline"
+    );
 
     // B should now see node_offline
-    assert!(drain_all(&mut b).iter().any(|(t,f)| t=="node_offline" && f=="C"),
-        "B should see C node_offline");
+    assert!(
+        drain_all(&mut b)
+            .iter()
+            .any(|(t, f)| t == "node_offline" && f == "C"),
+        "B should see C node_offline"
+    );
 
     a.disconnect().await;
     b.disconnect().await;
@@ -102,27 +129,45 @@ async fn directed_and_broadcast_filters_work_end_to_end() {
     let sender = bus.connect(node("sender"), all_filter()).await.unwrap();
 
     // worker: DirectedToMe → node_online (broadcast) is filtered out
-    let mut worker = bus.connect(node("worker"), directed_filter()).await.unwrap();
+    let mut worker = bus
+        .connect(node("worker"), directed_filter())
+        .await
+        .unwrap();
     // watcher: BroadcastOnly → node_online (broadcast) passes
-    let mut watcher = bus.connect(node("watcher"), broadcast_filter()).await.unwrap();
+    let mut watcher = bus
+        .connect(node("watcher"), broadcast_filter())
+        .await
+        .unwrap();
 
     // Drain watcher's node_online ×2 (sender + worker)
     drain_all(&mut watcher);
     // worker has nothing to drain (node_online filtered by DirectedToMe)
 
     // Send directed to worker
-    sender.send("task", vec![NodeId::new("worker")], serde_json::json!("do")).await.unwrap();
+    sender
+        .send("task", vec![NodeId::new("worker")], serde_json::json!("do"))
+        .await
+        .unwrap();
     // Send broadcast
-    sender.send("task", vec![], serde_json::json!("all")).await.unwrap();
+    sender
+        .send("task", vec![], serde_json::json!("all"))
+        .await
+        .unwrap();
 
     // Worker (DirectedToMe) sees the directed, not the broadcast
     let w_msgs = drain_all(&mut worker);
-    assert!(w_msgs.iter().any(|(t,_)| t=="task"), "worker should see directed task");
+    assert!(
+        w_msgs.iter().any(|(t, _)| t == "task"),
+        "worker should see directed task"
+    );
     assert_eq!(w_msgs.len(), 1, "worker should see exactly 1 message");
 
     // Watcher (BroadcastOnly) sees the broadcast, not the directed
     let w2_msgs = drain_all(&mut watcher);
-    assert!(w2_msgs.iter().any(|(t,_)| t=="task"), "watcher should see broadcast task");
+    assert!(
+        w2_msgs.iter().any(|(t, _)| t == "task"),
+        "watcher should see broadcast task"
+    );
     assert_eq!(w2_msgs.len(), 1, "watcher should see exactly 1 message");
 
     worker.disconnect().await;
@@ -149,8 +194,11 @@ async fn heartbeat_timeout_zombie_node_offline() {
 
     // Observer should see node_offline for zombie
     let msgs = drain_all(&mut observer);
-    assert!(msgs.iter().any(|(t,f)| t=="node_offline" && f=="zombie"),
-        "observer should see zombie offline, got {msgs:?}");
+    assert!(
+        msgs.iter()
+            .any(|(t, f)| t == "node_offline" && f == "zombie"),
+        "observer should see zombie offline, got {msgs:?}"
+    );
 
     // Graph should not list zombie
     let g = bus.graph();
@@ -176,12 +224,22 @@ async fn trace_node_sees_everything() {
     // Drain node_online messages from trace (2: A and B)
     drain_all(&mut trace);
 
-    a.send("chat", vec![], serde_json::json!("hello")).await.unwrap();
-    b.send("reply", vec![NodeId::new("A")], serde_json::json!("hi")).await.unwrap();
+    a.send("chat", vec![], serde_json::json!("hello"))
+        .await
+        .unwrap();
+    b.send("reply", vec![NodeId::new("A")], serde_json::json!("hi"))
+        .await
+        .unwrap();
 
     let msgs = drain_all(&mut trace);
-    assert!(msgs.iter().any(|(t,_)| t=="chat"), "trace should see chat, got {msgs:?}");
-    assert!(msgs.iter().any(|(t,_)| t=="reply"), "trace should see reply, got {msgs:?}");
+    assert!(
+        msgs.iter().any(|(t, _)| t == "chat"),
+        "trace should see chat, got {msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|(t, _)| t == "reply"),
+        "trace should see reply, got {msgs:?}"
+    );
 
     a.disconnect().await;
     b.disconnect().await;
@@ -210,18 +268,36 @@ async fn slow_consumer_lagged_then_recovers() {
     let r3 = slow.try_recv(); // msg2
     let r4 = slow.try_recv(); // no more messages
 
-    assert!(matches!(r1, Err(broadcast::error::TryRecvError::Lagged(_))),
-        "expected Lagged, got {r1:?}");
-    assert!(matches!(r2, Ok(Some(_))), "expected buffered msg, got {r2:?}");
-    assert!(matches!(r3, Ok(Some(_))), "expected buffered msg, got {r3:?}");
+    assert!(
+        matches!(r1, Err(broadcast::error::TryRecvError::Lagged(_))),
+        "expected Lagged, got {r1:?}"
+    );
+    assert!(
+        matches!(r2, Ok(Some(_))),
+        "expected buffered msg, got {r2:?}"
+    );
+    assert!(
+        matches!(r3, Ok(Some(_))),
+        "expected buffered msg, got {r3:?}"
+    );
     // After drain, no messages — Ok(None) means empty queue
-    assert!(matches!(r4, Ok(None)),
-        "expected no more messages, got {r4:?}");
+    assert!(
+        matches!(r4, Ok(None)),
+        "expected no more messages, got {r4:?}"
+    );
 
     // After catching up, new message arrives normally
-    let msg = arf_core::Message::new("msg", NodeId::new("sys"), vec![], serde_json::json!("fresh"));
+    let msg = arf_core::Message::new(
+        "msg",
+        NodeId::new("sys"),
+        vec![],
+        serde_json::json!("fresh"),
+    );
     bus.send(msg).await.unwrap();
-    assert_eq!(slow.recv().await.unwrap().payload, serde_json::json!("fresh"));
+    assert_eq!(
+        slow.recv().await.unwrap().payload,
+        serde_json::json!("fresh")
+    );
 
     slow.disconnect().await;
     bus.shutdown().await;
@@ -233,7 +309,11 @@ async fn slow_consumer_lagged_then_recovers() {
 
 #[tokio::test]
 async fn concurrent_connect_disconnect_send_no_panic() {
-    let bus = Arc::new(Bus::new(Duration::from_secs(10), Duration::from_secs(30), 256));
+    let bus = Arc::new(Bus::new(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        256,
+    ));
 
     let mut handles = Vec::new();
     for i in 0..10 {
@@ -293,9 +373,15 @@ async fn multi_filter_different_subsets() {
     // trace: sees everything (All, types=None)
     let mut trace = bus.connect(node("trace"), all_filter()).await.unwrap();
     // worker: only "action" directed to self
-    let mut worker = bus.connect(node("worker"), action_directed_filter()).await.unwrap();
+    let mut worker = bus
+        .connect(node("worker"), action_directed_filter())
+        .await
+        .unwrap();
     // watcher: only "action" broadcast
-    let mut watcher = bus.connect(node("watcher"), action_broadcast_filter()).await.unwrap();
+    let mut watcher = bus
+        .connect(node("watcher"), action_broadcast_filter())
+        .await
+        .unwrap();
 
     // Drain: trace sees all node_online ×2 (worker+watcher), watcher sees them too (broadcast passes),
     // worker sees none (DirectedToMe filters broadcast node_online)
@@ -303,24 +389,51 @@ async fn multi_filter_different_subsets() {
     drain_all(&mut watcher);
 
     // Send 4 messages:
-    sender.send("action", vec![], serde_json::json!(1)).await.unwrap();              // #1 broadcast
-    sender.send("action", vec![NodeId::new("worker")], serde_json::json!(2)).await.unwrap(); // #2 directed worker
-    sender.send("noise", vec![], serde_json::json!(3)).await.unwrap();               // #3 noise broadcast
-    sender.send("action", vec![NodeId::new("watcher")], serde_json::json!(4)).await.unwrap(); // #4 directed watcher
+    sender
+        .send("action", vec![], serde_json::json!(1))
+        .await
+        .unwrap(); // #1 broadcast
+    sender
+        .send("action", vec![NodeId::new("worker")], serde_json::json!(2))
+        .await
+        .unwrap(); // #2 directed worker
+    sender
+        .send("noise", vec![], serde_json::json!(3))
+        .await
+        .unwrap(); // #3 noise broadcast
+    sender
+        .send("action", vec![NodeId::new("watcher")], serde_json::json!(4))
+        .await
+        .unwrap(); // #4 directed watcher
 
     // trace: sees all 4 (All filter)
     let trace_msgs = drain_all(&mut trace);
-    let app_msgs: Vec<_> = trace_msgs.iter().filter(|(t,_)| t!="node_offline").collect();
-    assert_eq!(app_msgs.len(), 4, "trace should see all 4 app messages, got {trace_msgs:?}");
+    let app_msgs: Vec<_> = trace_msgs
+        .iter()
+        .filter(|(t, _)| t != "node_offline")
+        .collect();
+    assert_eq!(
+        app_msgs.len(),
+        4,
+        "trace should see all 4 app messages, got {trace_msgs:?}"
+    );
 
     // worker: sees only #2 (action directed to worker)
     let worker_msgs = drain_all(&mut worker);
-    assert_eq!(worker_msgs.len(), 1, "worker should see 1 msg, got {worker_msgs:?}");
+    assert_eq!(
+        worker_msgs.len(),
+        1,
+        "worker should see 1 msg, got {worker_msgs:?}"
+    );
     assert_eq!(worker_msgs[0].0, "action");
 
     // watcher: sees only #1 (action broadcast)
     let watcher_msgs = drain_all(&mut watcher);
-    assert_eq!(watcher_msgs.len(), 1, "watcher should see 1 msg, got {watcher_msgs:?}");
+    assert_eq!(
+        watcher_msgs.len(),
+        1,
+        "watcher should see 1 msg, got {watcher_msgs:?}"
+    );
     assert_eq!(watcher_msgs[0].0, "action");
 
     sender.disconnect().await;
@@ -347,8 +460,11 @@ async fn heartbeat_timeout_then_reconnect_same_id() {
 
     // Observer should see node_offline for zombie
     let msgs = drain_all(&mut observer);
-    assert!(msgs.iter().any(|(t,f)| t=="node_offline" && f=="zombie"),
-        "should see zombie offline, got {msgs:?}");
+    assert!(
+        msgs.iter()
+            .any(|(t, f)| t == "node_offline" && f == "zombie"),
+        "should see zombie offline, got {msgs:?}"
+    );
 
     zombie1.disconnect().await;
 
@@ -356,10 +472,15 @@ async fn heartbeat_timeout_then_reconnect_same_id() {
     let zombie2 = bus.connect(node("zombie"), all_filter()).await.unwrap();
     drain_all(&mut observer); // drain zombie2 node_online
 
-    zombie2.send("alive", vec![], serde_json::json!("back")).await.unwrap();
+    zombie2
+        .send("alive", vec![], serde_json::json!("back"))
+        .await
+        .unwrap();
     let msgs2 = drain_all(&mut observer);
-    assert!(msgs2.iter().any(|(t,f)| t=="alive" && f=="zombie"),
-        "zombie2 should be able to send, got {msgs2:?}");
+    assert!(
+        msgs2.iter().any(|(t, f)| t == "alive" && f == "zombie"),
+        "zombie2 should be able to send, got {msgs2:?}"
+    );
 
     zombie2.disconnect().await;
     observer.disconnect().await;
@@ -379,16 +500,30 @@ async fn message_delivered_before_node_offline_after_disconnect() {
     drain_all(&mut receiver); // drain sender node_online
 
     // Sender sends a message then disconnects
-    sender.send("last_words", vec![], serde_json::json!("goodbye")).await.unwrap();
+    sender
+        .send("last_words", vec![], serde_json::json!("goodbye"))
+        .await
+        .unwrap();
     sender.disconnect().await;
 
     // Receiver should see: the message FIRST, then node_offline
     let msgs = drain_all(&mut receiver);
-    let last_words_pos = msgs.iter().position(|(t,_)| t=="last_words");
-    let offline_pos = msgs.iter().position(|(t,f)| t=="node_offline" && f=="sender");
-    assert!(last_words_pos.is_some(), "receiver should see last_words, got {msgs:?}");
-    assert!(offline_pos.is_some(), "receiver should see node_offline, got {msgs:?}");
-    assert!(last_words_pos < offline_pos, "message must arrive before node_offline");
+    let last_words_pos = msgs.iter().position(|(t, _)| t == "last_words");
+    let offline_pos = msgs
+        .iter()
+        .position(|(t, f)| t == "node_offline" && f == "sender");
+    assert!(
+        last_words_pos.is_some(),
+        "receiver should see last_words, got {msgs:?}"
+    );
+    assert!(
+        offline_pos.is_some(),
+        "receiver should see node_offline, got {msgs:?}"
+    );
+    assert!(
+        last_words_pos < offline_pos,
+        "message must arrive before node_offline"
+    );
 
     receiver.disconnect().await;
     bus.shutdown().await;
@@ -403,7 +538,10 @@ async fn rapid_connect_disconnect_cycle_no_leak() {
     let bus = fast_bus();
 
     for i in 0..10 {
-        let h = bus.connect(node(&format!("n-{i}")), all_filter()).await.unwrap();
+        let h = bus
+            .connect(node(&format!("n-{i}")), all_filter())
+            .await
+            .unwrap();
         h.disconnect().await;
     }
 
@@ -428,9 +566,14 @@ async fn shutdown_with_online_nodes_closes_receivers() {
 
     bus.shutdown().await;
 
-    assert!(matches!(handle.recv().await, Err(broadcast::error::RecvError::Closed)));
     assert!(matches!(
-        handle.send("after_shutdown", vec![], serde_json::json!(null)).await,
+        handle.recv().await,
+        Err(broadcast::error::RecvError::Closed)
+    ));
+    assert!(matches!(
+        handle
+            .send("after_shutdown", vec![], serde_json::json!(null))
+            .await,
         Err(SendError::BusClosed)
     ));
 }

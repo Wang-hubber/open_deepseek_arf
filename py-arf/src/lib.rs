@@ -7,11 +7,9 @@ use std::sync::{Arc, OnceLock};
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use arf_core::{
-    BusGraph, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt, ToMatch,
-};
-use arf_core::Message as CoreMessage;
 use arf_bus::{Bus, ConnectError, NodeHandle};
+use arf_core::Message as CoreMessage;
+use arf_core::{BusGraph, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt, ToMatch};
 
 // ═══════════════════════════════════════════════════════════════════
 // Global tokio runtime
@@ -27,8 +25,8 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 // ═══════════════════════════════════════════════════════════════════
 
 fn json_value_to_py(value: &serde_json::Value, py: Python<'_>) -> PyResult<Py<PyAny>> {
-    let json_str =
-        serde_json::to_string(value).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let json_str = serde_json::to_string(value)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     let result = py.import("json")?.call_method1("loads", (json_str,))?;
     Ok(result.into())
 }
@@ -482,9 +480,7 @@ impl PyNodeHandle {
         future_into_py(py, async move {
             let guard = handle_arc.lock().await;
             let handle = guard.as_ref().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "node already disconnected",
-                )
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("node already disconnected")
             })?;
 
             handle
@@ -500,9 +496,7 @@ impl PyNodeHandle {
         future_into_py(py, async move {
             let mut guard = handle_arc.lock().await;
             let handle = guard.as_mut().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "node already disconnected",
-                )
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("node already disconnected")
             })?;
 
             handle

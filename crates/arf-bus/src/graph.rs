@@ -48,11 +48,7 @@ mod tests {
     }
 
     fn test_bus() -> Bus {
-        Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            16,
-        )
+        Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16)
     }
 
     // [构造] 空 Bus → graph 返回空节点列表

@@ -111,7 +111,7 @@ impl NodeHandle {
                 Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
                 Err(e @ broadcast::error::TryRecvError::Lagged(_)) => return Err(e),
                 Err(broadcast::error::TryRecvError::Closed) => {
-                    return Err(broadcast::error::TryRecvError::Closed)
+                    return Err(broadcast::error::TryRecvError::Closed);
                 }
             }
         }
@@ -225,11 +225,7 @@ mod tests {
     }
 
     fn test_bus() -> Bus {
-        Bus::new(
-            Duration::from_secs(1),
-            Duration::from_secs(3),
-            16,
-        )
+        Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -276,7 +272,10 @@ mod tests {
             types: Some(vec!["model_call".into()]),
             to_match: ToMatch::DirectedToMe,
         };
-        let handle = bus.connect(test_node_info("n1"), filter.clone()).await.unwrap();
+        let handle = bus
+            .connect(test_node_info("n1"), filter.clone())
+            .await
+            .unwrap();
         assert_eq!(handle.filter_config().types, filter.types);
         handle.disconnect().await;
         bus.shutdown().await;
@@ -399,7 +398,10 @@ mod tests {
     #[tokio::test]
     async fn try_recv_returns_none_when_empty() {
         let bus = test_bus();
-        let mut handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        let mut handle = bus
+            .connect(test_node_info("n"), test_filter())
+            .await
+            .unwrap();
 
         // Should be empty initially (broadcast_rx created after node_online)
         let result = handle.try_recv().unwrap();
@@ -521,9 +523,15 @@ mod tests {
     #[tokio::test]
     async fn two_nodes_can_exchange_messages() {
         let bus = test_bus();
-        let mut a = bus.connect(test_node_info("A"), test_filter()).await.unwrap();
+        let mut a = bus
+            .connect(test_node_info("A"), test_filter())
+            .await
+            .unwrap();
         // A's rx created after A's node_online, so A doesn't see its own
-        let mut b = bus.connect(test_node_info("B"), test_filter()).await.unwrap();
+        let mut b = bus
+            .connect(test_node_info("B"), test_filter())
+            .await
+            .unwrap();
         // B's rx created after both node_online, so B sees nothing from history
 
         // Only A sees B's node_online (A's rx was created before B connected)
@@ -624,7 +632,10 @@ mod tests {
     #[tokio::test]
     async fn node_handle_recv_returns_closed_after_shutdown() {
         let bus = test_bus();
-        let mut handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        let mut handle = bus
+            .connect(test_node_info("n"), test_filter())
+            .await
+            .unwrap();
 
         bus.shutdown().await;
 
@@ -636,7 +647,10 @@ mod tests {
     #[tokio::test]
     async fn node_handle_send_after_shutdown_returns_bus_closed() {
         let bus = test_bus();
-        let handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        let handle = bus
+            .connect(test_node_info("n"), test_filter())
+            .await
+            .unwrap();
 
         // Don't disconnect — just shutdown the bus
         bus.shutdown().await;
@@ -707,7 +721,10 @@ mod tests {
             to_match: ToMatch::BroadcastOnly,
         };
         let mut receiver = bus.connect(test_node_info("r"), filter).await.unwrap();
-        let sender = bus.connect(test_node_info("s"), test_filter()).await.unwrap();
+        let sender = bus
+            .connect(test_node_info("s"), test_filter())
+            .await
+            .unwrap();
 
         // sender's node_online has type "node_online" → filtered out by types
         // Send non-matching type → filtered
@@ -717,7 +734,11 @@ mod tests {
             .unwrap();
         // Send matching type but directed (not broadcast) → filtered by to_match
         sender
-            .send("action", vec![NodeId::new("r")], serde_json::json!("directed"))
+            .send(
+                "action",
+                vec![NodeId::new("r")],
+                serde_json::json!("directed"),
+            )
             .await
             .unwrap();
         // Send matching (action + broadcast) → should be the only one received

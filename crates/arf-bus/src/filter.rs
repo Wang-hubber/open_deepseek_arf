@@ -98,10 +98,7 @@ mod tests {
         assert!(filter.matches(&msg_action(vec![me.clone()]), &me));
         assert!(filter.matches(&msg_action(vec![other.clone()]), &me));
         assert!(filter.matches(&msg_action(vec![me.clone(), other.clone()]), &me));
-        assert!(filter.matches(
-            &msg_action(vec![other.clone(), NodeId::new("x")]),
-            &me,
-        ));
+        assert!(filter.matches(&msg_action(vec![other.clone(), NodeId::new("x")]), &me,));
     }
 
     // [过滤] BroadcastOnly — 只收广播
@@ -117,10 +114,7 @@ mod tests {
         assert!(!filter.matches(&msg_action(vec![me.clone()]), &me));
         assert!(!filter.matches(&msg_action(vec![other.clone()]), &me));
         assert!(!filter.matches(&msg_action(vec![me.clone(), other.clone()]), &me));
-        assert!(!filter.matches(
-            &msg_action(vec![other.clone(), NodeId::new("x")]),
-            &me,
-        ));
+        assert!(!filter.matches(&msg_action(vec![other.clone(), NodeId::new("x")]), &me,));
     }
 
     // [过滤] DirectedToMe — 只收定向到自己的
@@ -136,10 +130,7 @@ mod tests {
         assert!(filter.matches(&msg_action(vec![me.clone()]), &me));
         assert!(!filter.matches(&msg_action(vec![other.clone()]), &me));
         assert!(filter.matches(&msg_action(vec![me.clone(), other.clone()]), &me));
-        assert!(!filter.matches(
-            &msg_action(vec![other.clone(), NodeId::new("x")]),
-            &me,
-        ));
+        assert!(!filter.matches(&msg_action(vec![other.clone(), NodeId::new("x")]), &me,));
     }
 
     // [过滤] BroadcastAndDirectedToMe — 广播 + 定向到自己的
@@ -155,10 +146,7 @@ mod tests {
         assert!(filter.matches(&msg_action(vec![me.clone()]), &me));
         assert!(!filter.matches(&msg_action(vec![other.clone()]), &me));
         assert!(filter.matches(&msg_action(vec![me.clone(), other.clone()]), &me));
-        assert!(!filter.matches(
-            &msg_action(vec![other.clone(), NodeId::new("x")]),
-            &me,
-        ));
+        assert!(!filter.matches(&msg_action(vec![other.clone(), NodeId::new("x")]), &me,));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -185,7 +173,12 @@ mod tests {
             to_match: ToMatch::All,
         };
         let me = NodeId::new("me");
-        let noise = Message::new("noise", NodeId::new("a"), vec![me.clone()], serde_json::json!(null));
+        let noise = Message::new(
+            "noise",
+            NodeId::new("a"),
+            vec![me.clone()],
+            serde_json::json!(null),
+        );
         // to_match passes (All), but "noise" type doesn't match
         assert!(!filter.matches(&noise, &me));
     }
