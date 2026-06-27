@@ -40,7 +40,7 @@
 **drain_rx 兜底策略：** Bus 在创建 broadcast channel 时获取一个常驻 receiver（`drain_rx`），并保证它在以下每个事件后立即清空：
 
 | 事件 | 产生的消息 | 被谁消费？ |
-|------|---------------------|
+|------|----------|----------|
 | `NodeHandle.send()` | 应用消息（`job`、`tool_call` 等） | 匹配 filter 的节点 + trace（如果配置了） |
 | `Bus.connect()` | `node_online` | 已在线节点（如果它们的 filter 不过滤） + trace |
 | `NodeHandle.disconnect()` | `node_offline` | 已在线节点（同上） + trace |
