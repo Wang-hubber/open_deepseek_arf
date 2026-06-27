@@ -499,6 +499,8 @@ async def recv(self) -> Message:
 
 接收下一条匹配当前节点 filter 的消息。**阻塞**直到有匹配消息到达或 channel 关闭。
 
+> 与 `try_recv()` 的对比和用法选择见 [recv() vs try_recv() 详解](#recv-vs-try_recv-详解)。
+
 **返回：** `Message` — 接收到的消息。`heartbeat_request` 永远不会返回给调用方（内部自动过滤并应答）。
 
 **异常：**
@@ -551,6 +553,8 @@ def try_recv(self) -> Message | None:
 ```
 
 **同步、非阻塞。** 与 `recv()` 逻辑相同，但无可用消息时立即返回 `None`。
+
+> 与 `recv()` 的对比和用法选择见 [recv() vs try_recv() 详解](#recv-vs-try_recv-详解)。
 
 **返回：** 有匹配消息返回 `Message`，否则返回 `None`。
 
