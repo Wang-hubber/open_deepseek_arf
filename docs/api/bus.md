@@ -527,11 +527,41 @@ async def shutdown(self) -> None:
 **示例：**
 
 ```python
-await bus.shutdown()
+import asyncio
+from arf import Bus, NodeId, NodeInfo, MessageFilter
 
-# shutdown 后所有 handle 均不可用
-with pytest.raises(Exception):
-    await handle.recv()
+async def main():
+    bus = Bus()
+    handle = await bus.connect(
+        info=NodeInfo(node_id="node-1", node_type="test", capabilities={}),
+        filter=MessageFilter(),
+    )
+    await bus.shutdown()
+
+    # 排空缓冲区中的残留消息
+    drained = 0
+    while True:
+        try:
+            m = handle.try_recv()
+            if m is None:
+                break
+            drained += 1
+        except Exception:
+            break  # channel 已关闭
+
+    # 此时缓冲区空，recv() 抛异常
+    try:
+        await handle.recv()
+    except Exception as e:
+        print(f"drained={drained}, recv raised: {e}")
+
+asyncio.run(main())
+```
+
+**运行输出：**（耗时 <1ms）
+
+```
+drained=0, recv raised: recv error: channel closed
 ```
 
 !!! warning "shutdown 后缓冲区仍有残留消息"
@@ -542,20 +572,7 @@ with pytest.raises(Exception):
     | 有未读消息 | 逐条返回缓冲消息（FIFO 顺序） |
     | 缓冲区为空 | 返回 `Closed` 错误 |
 
-    因此，`shutdown()` 后如果需要验证 `Closed`，应先排空缓冲区：
-
-    ```python
-    await bus.shutdown()
-    while True:
-        try:
-            m = handle.try_recv()
-            if m is None:
-                break
-        except Exception:
-            break  # channel 已关闭
-    with pytest.raises(Exception):
-        await handle.recv()  # 此时缓冲区空，返回 Closed
-    ```
+    上例中 `drained=0` 是因为该节点是唯一节点，看不到自己的 `node_online`。多节点场景下 drain 计数会 >0。
 
     **内存不会泄漏：** 环形缓冲区在线节点全部消费完毕（或 receiver 被 drop）后自动释放。
     即使某些消费者已 `disconnect()`，其 `broadcast_rx` 已被 drop，不再持有缓冲区引用，不会阻碍回收。
