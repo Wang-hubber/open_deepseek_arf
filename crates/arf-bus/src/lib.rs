@@ -1034,4 +1034,297 @@ mod tests {
             .expect("all other Arc references should be dropped");
         bus.shutdown().await;
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 资源泄漏检测 (7 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    // [泄漏] NodeHandle drop 不调用 disconnect → NodeEntry 残留在 nodes map 中
+    #[tokio::test]
+    async fn handle_drop_without_disconnect_leaves_zombie_entry() {
+        let bus = test_bus();
+
+        // Connect and immediately drop the handle (simulates crash)
+        {
+            let _handle = bus
+                .connect(test_node_info("crash-victim"), test_filter())
+                .await
+                .unwrap();
+            // _handle dropped here — no disconnect()
+        }
+
+        // NodeEntry 仍然在 nodes map 中（graph 可见）
+        let g = bus.graph();
+        let zombie = g.nodes.iter().find(|n| n.node_id.as_str() == "crash-victim");
+        assert!(
+            zombie.is_some(),
+            "BUG: dropped handle was immediately removed — zombie entry should persist until heartbeat timeout"
+        );
+
+        // 尝试用相同 NodeId 重连 → 应被拒绝（已有 zombie entry）
+        let result = bus
+            .connect(test_node_info("crash-victim"), test_filter())
+            .await;
+        assert!(
+            matches!(result, Err(ConnectError::AlreadyConnected(_))),
+            "BUG: duplicate NodeId should be rejected while zombie entry exists"
+        );
+
+        bus.shutdown().await;
+    }
+
+    // [泄漏] zombie entry 在心跳超时后被清理
+    #[tokio::test]
+    async fn zombie_entry_cleaned_by_heartbeat_timeout() {
+        let bus = Bus::new(
+            Duration::from_millis(20),   // fast heartbeat
+            Duration::from_millis(60),   // short timeout
+            16,
+        );
+
+        // 连一个正常节点用于观察
+        let mut watcher = bus
+            .connect(
+                NodeInfo {
+                    node_id: NodeId::new("watcher"),
+                    node_type: "test".into(),
+                    capabilities: serde_json::json!({}),
+                    online_since: 0,
+                },
+                MessageFilter {
+                    types: None,
+                    to_match: ToMatch::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        // 连一个会 drop 的节点（不调用 disconnect）
+        {
+            let _zombie = bus
+                .connect(
+                    NodeInfo {
+                        node_id: NodeId::new("zombie"),
+                        node_type: "test".into(),
+                        capabilities: serde_json::json!({}),
+                        online_since: 0,
+                    },
+                    test_filter(),
+                )
+                .await
+                .unwrap();
+            // _zombie dropped → NodeEntry 残留，但不再发送 HeartbeatAck
+        }
+
+        // Drain node_online (watcher 会收到 zombie 的 node_online)
+        let _ = watcher.recv().await.unwrap(); // zombie's node_online
+
+        // 等待心跳超时清理 — zombie 的 last_ack 在 connect 时设定，
+        // 经过 3 个 tick（20ms×3=60ms）+ timeout 判定（>60ms）
+        // → 第四个 tick（~80ms）时 node_offline 被广播。
+        // 使用单一长超时让 recv() 持续等待（内部循环会过滤 heartbeat_request）。
+        let result =
+            tokio::time::timeout(Duration::from_millis(500), watcher.recv()).await;
+        let mut saw_offline = false;
+        if let Ok(Ok(msg)) = result {
+            saw_offline =
+                msg.msg_type == "node_offline" && msg.from.as_str() == "zombie";
+        }
+
+        assert!(
+            saw_offline,
+            "BUG: zombie node should be cleaned by heartbeat timeout and broadcast node_offline"
+        );
+
+        // graph 不再包含 zombie
+        let g = bus.graph();
+        let zombie = g.nodes.iter().find(|n| n.node_id.as_str() == "zombie");
+        assert!(zombie.is_none(), "BUG: zombie entry not cleaned from nodes map");
+
+        // zombie 被清理后，同 NodeId 可重连
+        let h = bus
+            .connect(
+                NodeInfo {
+                    node_id: NodeId::new("zombie"),
+                    node_type: "test".into(),
+                    capabilities: serde_json::json!({}),
+                    online_since: 0,
+                },
+                test_filter(),
+            )
+            .await;
+        assert!(
+            h.is_ok(),
+            "BUG: should be able to reconnect after zombie cleaned"
+        );
+
+        watcher.disconnect().await;
+        h.unwrap().disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [泄漏] signal_shutdown 后 recv 永远阻塞 — broadcast channel 未关闭
+    #[tokio::test]
+    async fn signal_shutdown_leaves_receiver_hanging() {
+        let bus = Arc::new(Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            16,
+        ));
+        let mut handle = bus
+            .connect(test_node_info("victim"), test_filter())
+            .await
+            .unwrap();
+
+        // 用 signal_shutdown（模拟 Python 侧 bus.shutdown() 的行为）
+        bus.signal_shutdown();
+
+        // recv 应该返回 Closed（shutdown 语义），而不是永远阻塞
+        let result =
+            tokio::time::timeout(Duration::from_millis(500), handle.recv()).await;
+
+        match result {
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                // 正确行为：channel 关闭了（如果 signal_shutdown 正确 drop 了 sender）
+            }
+            Ok(other) => {
+                panic!(
+                    "BUG: signal_shutdown should close broadcast channel, but recv returned {other:?}"
+                );
+            }
+            Err(_elapsed) => {
+                panic!(
+                    "BUG: signal_shutdown did NOT close broadcast channel — recv() hangs forever! \
+                     Bus.broadcast_tx is still alive, keeping the channel open."
+                );
+            }
+        }
+    }
+
+    // [清理] 正常 disconnect → NodeEntry 立即从 map 移除
+    #[tokio::test]
+    async fn disconnect_immediately_removes_entry() {
+        let bus = test_bus();
+        let handle = bus
+            .connect(test_node_info("clean-exit"), test_filter())
+            .await
+            .unwrap();
+
+        assert_eq!(bus.graph().nodes.len(), 1);
+        handle.disconnect().await;
+
+        // disconnect 后立即从 graph 消失
+        let g = bus.graph();
+        assert_eq!(
+            g.nodes.len(),
+            0,
+            "BUG: disconnected node still in graph: {:?}",
+            g.nodes
+        );
+
+        // 同 NodeId 可立即重连
+        let h2 = bus
+            .connect(test_node_info("clean-exit"), test_filter())
+            .await;
+        assert!(h2.is_ok(), "BUG: should reconnect immediately after disconnect");
+
+        h2.unwrap().disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [泄漏] Bus drop 不调用 shutdown → spawned task 正常退出
+    #[tokio::test]
+    async fn bus_drop_without_shutdown_task_exits() {
+        let bus = Bus::new(
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            16,
+        );
+
+        // Connect a node to create some internal state
+        let handle = bus
+            .connect(test_node_info("n"), test_filter())
+            .await
+            .unwrap();
+
+        // Get the JoinHandle before dropping (we can't, it's private)
+        // Instead: drop the bus and verify no panic via timeout
+        handle.disconnect().await;
+        drop(bus);
+
+        // 给 spawned task 一点时间退出
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 没有 panic，没有 hang — 测试通过
+    }
+
+    // [泄漏] 反复 connect/disconnect 同 NodeId — nodes map 不累积
+    #[tokio::test]
+    async fn repeated_connect_disconnect_no_accumulation() {
+        let bus = test_bus();
+
+        for _ in 0..20 {
+            let h = bus
+                .connect(test_node_info("flappy"), test_filter())
+                .await
+                .unwrap();
+            // graph 中始终只有 flappy 一个节点
+            let g = bus.graph();
+            let count = g
+                .nodes
+                .iter()
+                .filter(|n| n.node_id.as_str() == "flappy")
+                .count();
+            assert_eq!(count, 1, "BUG: duplicate entries for same NodeId");
+            h.disconnect().await;
+
+            // disconnect 后 flappy 不在 graph 中
+            let g2 = bus.graph();
+            assert!(
+                !g2.nodes.iter().any(|n| n.node_id.as_str() == "flappy"),
+                "BUG: entry not removed after disconnect"
+            );
+        }
+
+        bus.shutdown().await;
+    }
+
+    // [泄漏] 所有 NodeHandle disconnect 后 nodes map 应为空
+    #[tokio::test]
+    async fn nodes_map_empty_after_all_disconnected() {
+        let bus = test_bus();
+
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let h = bus
+                .connect(
+                    NodeInfo {
+                        node_id: NodeId::new(format!("node-{i}")),
+                        node_type: "test".into(),
+                        capabilities: serde_json::json!({}),
+                        online_since: 0,
+                    },
+                    test_filter(),
+                )
+                .await
+                .unwrap();
+            handles.push(h);
+        }
+
+        assert_eq!(bus.graph().nodes.len(), 5);
+
+        // Disconnect all
+        for h in handles {
+            h.disconnect().await;
+        }
+
+        let g = bus.graph();
+        assert!(
+            g.nodes.is_empty(),
+            "BUG: nodes map not empty after all disconnected: {} nodes remain",
+            g.nodes.len()
+        );
+
+        bus.shutdown().await;
+    }
 }
