@@ -169,7 +169,7 @@ MessageFilter(types=None, to_match=ToMatch.All)
 
 ### `recv()` vs `try_recv()` 详解
 
-两者执行**完全相同的内部逻辑**（heartbeat 过滤 → filter 匹配），区别只在调用方式和等待行为。
+两者执行**完全相同的内部逻辑**（heartbeat 过滤 → filter 匹配），区别只在调用方式和等待行为。详细 API 签名见 [`recv()`](#nodehandlerecv) 和 [`try_recv()`](#nodehandletry_recv)。
 
 | 维度 | `recv()` | `try_recv()` |
 |------|----------|--------------|
