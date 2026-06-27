@@ -120,11 +120,10 @@ await a.send("tool_call", [NodeId("node/b")], {
 })
 req = await b.recv()
 a_val, b_val = req.payload["params"]
-result = a_val + b_val                      # ← 运算在 B 侧完成
 
-# B → A tool_call_result
+# B 侧完成运算，返回结果
 await b.send("tool_call_result", [NodeId("node/a")], {
-    "result": result, "req_id": req.payload["req_id"],
+    "result": a_val + b_val, "req_id": req.payload["req_id"],
 })
 resp = await a.recv()
 print(f"3+4={resp.payload['result']}")
