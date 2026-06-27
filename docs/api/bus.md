@@ -1279,7 +1279,7 @@ B 处理: {'data': 42, 'task': 'process'}
 | `Exception` | `"already connected"` | 重复 `NodeId` 或 zombie entry 尚未清理 |
 | `Exception` | `"bus closed"` | `shutdown()` 后调用 `connect()` 或 `send()` |
 | `Exception` | `"target nodes offline"` | 定向发送时所有目标均离线 |
-| `Exception` | `"recv error: Closed"` | `shutdown()` 后缓冲区为空时调用 `recv()` |
+| `Exception` | `"recv error: channel closed"` | `shutdown()` 后缓冲区为空时调用 `recv()` |
 | `Exception` | `"try_recv error"` | `try_recv()` 内部异常（罕见） |
 | `RuntimeError` | `"already disconnected"` | 对已 disconnect 的 `NodeHandle` 调用任何方法 |
 | `RuntimeError` | `"concurrent recv in progress"` | 另一个 `recv()` 活跃时调用 `recv()` 或 `try_recv()` |
