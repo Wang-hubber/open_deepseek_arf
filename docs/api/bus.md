@@ -48,6 +48,78 @@
 
 关键洞察：**lifecycle 消息常常无人消费**。一个配置了 `types=["job"]` 的 worker 收不到 `node_online`；心跳只在 `recv()` 内部处理不掉 buffer 里的消息；trace 节点虽然可能用 `ToMatch.All` 全量记录，但它消费速度可能跟不上——而且记录不等于从缓冲区"消耗"，tokio broadcast 中每个 receiver 都有自己的消费位置。**`drain_rx` 是最终的兜底：它的消费位置在每次事件后被推到最新，保证无论是否有应用节点在消费，环形缓冲区永不满，`send()` 永不阻塞。**
 
+**drain_rx 如何消费消息？—— 位置指针滚动图解**
+
+tokio broadcast 用一个**单调递增的逻辑位置**追踪每个消费者，而非物理槽位引用计数。发送方每 `send()` 一次，位置 +1；接收方每 `recv()`/`try_recv()` 一次，自己的位置 +1。物理写入哪个 slot = `位置 % channel_capacity`。
+
+下面以 `channel_capacity=4` 为例，跟踪 sender、drain_rx 和一个永不读取的慢消费者 `app_a` 在三轮 send 中的位置变化：
+
+```
+capacity=4 (物理 slot: 0 1 2 3)
+
+█ 状态 A：bus 刚创建，所有光标在位置 0
+  逻辑位置  0              物理 slot
+  sender ·                    slot0  [______]
+  drain  ·                    slot1  [______]
+  app_a  ·                    slot2  [______]
+                              slot3  [______]
+
+█ 状态 B：消息循环收到 BusCommand::Send →
+          broadcast_tx.send(msg0) 写入 slot(0%4=0) →
+          sender 位置+1 →
+          while drain.try_recv().is_ok() {} 追上 sender
+  sender     · (位置1)        slot0  [msg0 ]
+  drain      · (位置1)        slot1  [______]  ← 环形缓冲区有 3 个空闲 slot
+  app_a  ·    (位置0)         slot2  [______]
+                              slot3  [______]
+  ── send() 返回 Ok ──       sender-drain=0，不阻塞
+
+█ 状态 C：4 轮 send 后（msg0~msg3 全部写入 + drain 全部追上）
+  sender              · (位置4)
+  drain               · (位置4)   slot0  [msg3*] ← 位置4%4=0，msg3 覆盖 msg0
+  app_a  ·             (位置0)    slot1  [msg1 ]
+                                  slot2  [msg2 ]
+                                  slot3  [msg3 ]
+  ── 关键：app_a 落后 4 = capacity，tokio 将其标记为 Lagged ──
+  ── 此后 sender 不再等待 app_a，以 drain 为"最慢非 Lagged 接收者" ──
+
+█ 状态 D：第 5 轮 send(msg4) — app_a 已 Lagged，sender 不等待它
+  sender                   · (位置5)
+  drain                    · (位置5)  slot0  [msg3*]
+  app_a  ·                  (位置0)   slot1  [msg4*] ← 位置5%4=1，msg4 覆盖 msg1
+                                      slot2  [msg2 ]
+                                      slot3  [msg3 ]
+  ── send() 返回 Ok ── 发送方永不阻塞
+```
+
+**三步协同机制：**
+
+```
+NodeHandle.send()               消息循环 (独立 tokio task)             环形缓冲区
+     │                              │                                    │
+     ├─1─→ cmd_tx.send(cmd) ──→  cmd_rx.recv().await                    │
+     │                              │                                    │
+     │                          broadcast_tx.send(msg) ──2──→ 写入 slot[位置%cap]
+     │                              │                            sender 位置+1
+     │                              │                                    │
+     │                          while drain_rx.try_recv().is_ok() {} ←─3─ 消费
+     │                              │  ↑ 非阻塞循环，逐条推 drain 位置
+     │                              │  ↑ 直到 drain 位置 = sender 位置
+     │                              │  ↑ try_recv() 返回 Empty → 循环退出
+     │                              │                                    │
+     │←4── oneshot 回复 Ok ────────┘                                    │
+     │                                                                   │
+  send() 返回                                                           │
+```
+
+**什么时候消息真正从环形缓冲区消失？**
+
+不是 drain_rx 读走的那一刻，而是**所有接收者都越过了该消息所在 slot** 的那个时刻。tokio broadcast 内部：当 sender 需要写入 `slot[N]` 时，检查是否还有接收者的位置 ≤ slot 的原始位置——如果全部越过，直接覆盖；如果有接收者还在那个位置上（且未 Lagged），`send()` 阻塞。drain_rx 的价值就是确保"全部越过"这个条件总是满足——因为它总是第一个越过。慢消费者 lag 超过 capacity 后被标记 Lagged，不再参与"是否越过"的检查。
+
+**没有 drain_rx 会怎样？**
+
+如果去掉 drain_rx，第一个无人消费的 `heartbeat_request`（无应用节点在线时）就会卡在环形缓冲区里——因为没人读它，它的位置永远不会被越过。`capacity` 条消息后，buffer 满，下一个 `send()` 永久阻塞。drain_rx 就是那个"总是读的人"。
+
 这个机制完全透明——每个在线节点独立持有自己的 `broadcast::Receiver`，各自维护消费位置，不受 `drain_rx` 的 drain 影响。你不需要担心"没人收消息会不会堵塞通道"。
 
 **设计取舍：竞速模式。** Bus 的核心承诺是**消息一定会被发出**——`send()` 永不阻塞发送方。消费端的规则是：**跟得上就能一直 live，跟不上也不会影响别人**。慢消费者独自承受 `Lagged(n)` 丢消息的代价，不会反压发送方或拖慢其他快消费者。如果你需要保证每个消息都被处理，在应用层做持久化 + 重试——Bus 层只管传输，不做反压。
