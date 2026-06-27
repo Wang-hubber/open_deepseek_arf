@@ -1,4 +1,4 @@
-VENV ?= .venv2
+VENV ?= .venv
 
 .PHONY: lint test ci
 
