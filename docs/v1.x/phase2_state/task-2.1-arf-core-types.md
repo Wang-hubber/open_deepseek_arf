@@ -154,37 +154,65 @@ impl std::fmt::Display for TaskStatus {
 
 /// A single message in the model conversation history.
 ///
-/// Minimal for Phase 2. Phase 5 (ModelAdapter) will extend with
-/// `tool_calls`, `tool_call_id`, `name`, and other provider-specific fields.
+/// Phase 2 includes the structurally essential fields. Optional fields
+/// (`tool_call_id`, `name`) are None for user/assistant/system messages
+/// and serialized only when Some. Phase 5 (ModelAdapter) will add
+/// `tool_calls: Vec<ToolCall>` for assistant parallel tool invocations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMessage {
     /// Role: `"user"`, `"assistant"`, `"system"`, or `"tool"`.
     pub role: String,
     /// Message content.
     pub content: String,
+    /// Required when role is "tool" — the ID of the tool call this result belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Optional display name (e.g., function name for tool role, author for user).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 ```
 
 逐行：
 - `role: String` — 四种标准角色，与 OpenAI/DeepSeek/Anthropic 对齐
 - `content: String` — 消息正文，纯文本（Phase 5 可能扩展为 `Vec<ContentBlock>` 支持多模态）
-- Phase 2 只是最小定义，`State.messages` 用它存储对话历史供 Engine 恢复上下文
+- `tool_call_id: Option<String>` — tool role 必需关联到 assistant 的 tool_call；其余角色为 `None`，不序列化输出
+- `name: Option<String>` — 可选显示名，如 tool 的函数名或 user 的发送者名；`None` 时不序列化
+- `#[serde(skip_serializing_if = "Option::is_none")]` — 保证 user/assistant/system 消息的 JSON 不含空字段，只有 role=tool 时显式写入
 
 ```rust
 impl ModelMessage {
-    /// Create a new ModelMessage.
+    /// Create a ModelMessage with role and content.
+    ///
+    /// `tool_call_id` and `name` default to None; set them after construction
+    /// or via the builder-style methods below.
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
             content: content.into(),
+            tool_call_id: None,
+            name: None,
         }
+    }
+
+    /// Set `tool_call_id` (builder style).
+    pub fn with_tool_call_id(mut self, id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(id.into());
+        self
+    }
+
+    /// Set `name` (builder style).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 ```
 
 逐行：
-- `new(role, content)` — 两个参数都用 `impl Into<String>`，调用方可传 `&str` 或 `String`
-- 与 `Message::new()` 风格一致
+- `new(role, content)` — 最小构造，`tool_call_id` 和 `name` 默认 `None`
+- `with_tool_call_id(id)` / `with_name(name)` — builder 风格，调用方按需链式设置可选字段
+- 风格与 Rust 生态惯用 builder pattern 一致，无需引入额外 crate
 
 ---
 
@@ -374,19 +402,21 @@ fn task_status_serialization_roundtrip() {
 
 ---
 
-### ModelMessage — 7 tests
+### ModelMessage — 12 tests
 
 ```rust
 // ═══════════════════════════════════════════════════════════════
-// ModelMessage — 7 tests
+// ModelMessage — 12 tests
 // ═══════════════════════════════════════════════════════════════
 
-// [构造] new() 正确赋值 role 和 content
+// [构造] new() 正确赋值 role 和 content，可选字段默认为 None
 #[test]
 fn model_message_new_sets_fields() {
     let msg = ModelMessage::new("user", "hello world");
     assert_eq!(msg.role, "user");
     assert_eq!(msg.content, "hello world");
+    assert_eq!(msg.tool_call_id, None);
+    assert_eq!(msg.name, None);
 }
 
 // [构造] new() 接受 owned String（Into<String> trait）
@@ -399,12 +429,38 @@ fn model_message_new_from_string() {
     assert_eq!(msg.content, "response");
 }
 
+// [构造] builder: with_tool_call_id() 设置 tool_call_id
+#[test]
+fn model_message_with_tool_call_id() {
+    let msg = ModelMessage::new("tool", "result")
+        .with_tool_call_id("call_abc123");
+    assert_eq!(msg.tool_call_id, Some("call_abc123".into()));
+    assert_eq!(msg.role, "tool");
+}
+
+// [构造] builder: with_name() 设置 name
+#[test]
+fn model_message_with_name() {
+    let msg = ModelMessage::new("tool", "result")
+        .with_name("read_file");
+    assert_eq!(msg.name, Some("read_file".into()));
+}
+
+// [构造] builder: 链式调用同时设置两个可选字段
+#[test]
+fn model_message_builder_chained() {
+    let msg = ModelMessage::new("tool", r#"{"status": "ok"}"#)
+        .with_tool_call_id("call_xyz")
+        .with_name("search");
+    assert_eq!(msg.tool_call_id, Some("call_xyz".into()));
+    assert_eq!(msg.name, Some("search".into()));
+}
+
 // [边界] role 为空字符串：不 panic
 #[test]
 fn model_message_empty_role() {
     let msg = ModelMessage::new("", "content");
     assert_eq!(msg.role, "");
-    assert_eq!(msg.content, "content");
 }
 
 // [边界] content 为空字符串：不 panic
@@ -415,32 +471,63 @@ fn model_message_empty_content() {
     assert_eq!(msg.content, "");
 }
 
-// [trait] PartialEq：相同字段相等，不同不等
+// [trait] PartialEq：相同字段相等，不同不等（含可选字段）
 #[test]
 fn model_message_equality() {
     let a = ModelMessage::new("user", "hello");
     let b = ModelMessage::new("user", "hello");
     let c = ModelMessage::new("user", "world");
+    let d = ModelMessage::new("tool", "hello").with_tool_call_id("id1");
+    let e = ModelMessage::new("tool", "hello").with_tool_call_id("id1");
+    let f = ModelMessage::new("tool", "hello").with_tool_call_id("id2");
     assert_eq!(a, b);
     assert_ne!(a, c);
+    assert_eq!(d, e);
+    assert_ne!(d, f);
 }
 
-// [trait] Clone：克隆后与原值相等
+// [trait] Clone：克隆后与原值相等（含可选字段）
 #[test]
 fn model_message_clone() {
-    let msg = ModelMessage::new("assistant", "reply");
+    let msg = ModelMessage::new("tool", "reply")
+        .with_tool_call_id("call_1")
+        .with_name("run");
     assert_eq!(msg, msg.clone());
 }
 
-// [序列化] serde 往返：role + content 一致性
+// [序列化] user 消息：可选字段为 None 时不输出到 JSON
 #[test]
-fn model_message_serialization_roundtrip() {
-    let msg = ModelMessage::new("tool", r#"{"result": "ok"}"#);
+fn model_message_serialization_user_skips_optionals() {
+    let msg = ModelMessage::new("user", "hello");
     let json = serde_json::to_string(&msg).unwrap();
     let back: ModelMessage = serde_json::from_str(&json).unwrap();
     assert_eq!(msg, back);
-    assert!(json.contains("\"role\""));
-    assert!(json.contains("\"content\""));
+    assert!(!json.contains("tool_call_id"));
+    assert!(!json.contains("\"name\""));
+}
+
+// [序列化] tool 消息：可选字段有值时输出到 JSON
+#[test]
+fn model_message_serialization_tool_with_options() {
+    let msg = ModelMessage::new("tool", r#"{"result": "ok"}"#)
+        .with_tool_call_id("call_abc")
+        .with_name("search");
+    let json = serde_json::to_string(&msg).unwrap();
+    let back: ModelMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(msg, back);
+    assert!(json.contains("tool_call_id"));
+    assert!(json.contains("call_abc"));
+    assert!(json.contains("\"name\""));
+    assert!(json.contains("search"));
+}
+
+// [边界] tool_call_id 为空字符串：序列化往返后仍为空字符串
+#[test]
+fn model_message_tool_call_id_empty_string() {
+    let msg = ModelMessage::new("tool", "x").with_tool_call_id("");
+    let json = serde_json::to_string(&msg).unwrap();
+    let back: ModelMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tool_call_id, Some("".into()));
 }
 ```
 
@@ -452,8 +539,8 @@ fn model_message_serialization_roundtrip() {
 |------|--------|---------|
 | TaskId | 8 | 构造、唯一性、Display、边界(空owner)、Eq、Clone、Hash、序列化 |
 | TaskStatus | 9 | 覆盖(6变体)、is_terminal(×5)、Eq、Display(×6)、Clone、序列化(×6) |
-| ModelMessage | 7 | 构造(×2)、边界(空role)、边界(空content)、Eq、Clone、序列化 |
-| **合计** | **24** | |
+| ModelMessage | 12 | 构造(×2)、builder(×3)、边界(×2)、Eq、Clone、序列化user(跳过optionals)、序列化tool、边界(tool_call_id空串) |
+| **合计** | **29** | |
 
 ---
 
@@ -468,7 +555,7 @@ fn model_message_serialization_roundtrip() {
 
 ## 交付标准
 
-- `cargo test --workspace` 全部通过（含已有 60+ tests + 新增 24 tests）
+- `cargo test --workspace` 全部通过（含已有 60+ tests + 新增 29 tests）
 - `cargo fmt --check` + `cargo clippy` 无警告
 - TaskId / TaskStatus / ModelMessage 可序列化往返
 - TaskStatus 终态判断逻辑正确
