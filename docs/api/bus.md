@@ -167,6 +167,74 @@ MessageFilter(types=None, to_match=ToMatch.All)
 !!! warning "并发 recv"
     同一 NodeHandle 同时只能有一个 `recv()` 或 `try_recv()` 在执行。并发调用抛 `RuntimeError("concurrent recv in progress")`。
 
+### `recv()` vs `try_recv()` 详解
+
+两者执行**完全相同的内部逻辑**（heartbeat 过滤 → filter 匹配），区别只在调用方式和等待行为。
+
+| 维度 | `recv()` | `try_recv()` |
+|------|----------|--------------|
+| 调用方式 | `async` — 必须 `await` | **同步** — 直接调用 |
+| 等待行为 | **阻塞**直到有匹配消息或 channel 关闭 | **立即返回**，无消息返回 `None` |
+| 返回值 | `Message` | `Message \| None` |
+| PyO3 实现 | Rust `async fn` → Python `Future` | Rust `fn` → Python 同步方法 |
+| 并发限制 | 同一 Handle 同时只能一个在执行 | 与 `recv()` 互斥，但 `try_recv()` 之间不互斥 |
+
+**`recv()` — 阻塞等待，适合主循环：**
+
+```python
+# 典型的主循环模式：一直等待，有消息就处理
+async def event_loop(handle):
+    while True:
+        try:
+            msg = await handle.recv()  # 阻塞，不消耗 CPU
+            await process(msg)
+        except Exception:
+            break  # channel 关闭或 disconnect
+```
+
+**`try_recv()` — 非阻塞轮询，适合周期性检查：**
+
+```python
+# 边干其他事边检查有没有新消息
+async def poll_and_work(handle):
+    while True:
+        msg = handle.try_recv()        # 不阻塞，立即返回
+        if msg is not None:
+            await process(msg)
+        else:
+            await do_other_work()       # 没消息时干别的事
+            await asyncio.sleep(0.1)
+```
+
+**`try_recv()` — drain 模式，一次性清空缓冲区：**
+
+```python
+# 一次性读取所有待处理消息（例如 shutdown 后、初始化完成时）
+def drain_all(handle):
+    messages = []
+    while True:
+        msg = handle.try_recv()
+        if msg is None:
+            break
+        messages.append(msg)
+    return messages
+
+msgs = drain_all(handle)
+print(f"缓冲区中有 {len(msgs)} 条待处理消息")
+```
+
+**选择指南：**
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| 主事件循环，消息驱动 | `recv()` | 阻塞等待不浪费 CPU，消息到来立即响应 |
+| 定时轮询，兼顾其他任务 | `try_recv()` | 无消息时可以做其他工作 |
+| shutdown 后清空缓冲区 | `try_recv()` | 同步、快速 drain，不阻塞 |
+| 初始化后跳过 lifecycle | `recv()` 或 `try_recv()` | 取决于是否需要等待第一条应用消息 |
+| 多路复用多个 Handle | `try_recv()` + `asyncio.sleep` | 轮流检查每个 Handle，简单但不如 `asyncio.wait` |
+
+**`try_recv()` 的并发优势：** `try_recv()` 之间不互斥——可以连续多次调用而不必等待上一次完成。`recv()` 会持有一个内部锁直到消息返回，所以同一时刻只能有一个在执行。
+
 ### `message_count` 语义
 
 `Bus.message_count` 和 `BusGraph.message_count` 只统计**应用消息**（通过 `NodeHandle.send()` 发送）。`node_online`、`node_offline`、`heartbeat_request` 等 lifecycle 消息不计入。
