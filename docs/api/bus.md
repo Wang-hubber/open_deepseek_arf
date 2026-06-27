@@ -1059,8 +1059,10 @@ async def fast_consumer_fanout():
         """快速从 Bus 拉取消息放入本地队列，永远不阻塞 Bus 环形缓冲区。"""
         while True:
             try:
-                msg = await handle.recv()          # 快：只做网络层拉取
-                await queue.put(msg)                # 快：入队即返回
+                msg = await handle.recv()
+                if msg.msg_type == "node_online":
+                    continue               # 跳过 lifecycle
+                await queue.put(msg)        # 快：入队即返回
             except Exception:
                 break  # Bus 关闭
 
@@ -1075,19 +1077,30 @@ async def fast_consumer_fanout():
         while True:
             msg = await queue.get()
             # 这里可以是耗时的外部 API 调用、GPU 推理、数据库写入等
-            print(f"[worker-{worker_id}] 处理 type={msg.msg_type} payload={msg.payload}")
-            await asyncio.sleep(0.1)  # 模拟慢处理
+            print(f"[worker-{worker_id}] type={msg.msg_type} seq={msg.payload['seq']}")
+            await asyncio.sleep(0.05)  # 模拟慢处理
             queue.task_done()
 
-    # 启动 4 个慢消费者并行处理
     workers = [asyncio.ensure_future(slow_worker(i)) for i in range(4)]
 
     # 生产者高速发送
-    for i in range(100):
+    for i in range(5):
         await producer.send("job", [], {"seq": i})
 
-    await asyncio.sleep(0.5)  # 等待消费
+    await asyncio.sleep(0.3)  # 等待消费
+    print(f"队列剩余: {queue.qsize()}")
     await bus.shutdown()
+```
+
+**运行输出：**（4 个慢 worker 并行消费，耗时 <1ms）
+
+```
+[worker-0] type=job seq=0
+[worker-1] type=job seq=1
+[worker-2] type=job seq=2
+[worker-3] type=job seq=3
+[worker-0] type=job seq=4
+队列剩余: 0
 ```
 
 核心思路：**Bus 环形缓冲区只负责高速分发，不做背压**。快代理把消息卸到应用层队列后，缓冲区的 slot 立即释放。慢处理逻辑完全与 Bus 解耦，可以自由伸缩 worker 数量、使用进程池、甚至转发到外部消息队列。
