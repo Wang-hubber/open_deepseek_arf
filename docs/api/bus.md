@@ -1,58 +1,62 @@
-# ARF Bus — Message Bus API Reference
+# ARF Bus — 消息总线 API 参考
 
-> **Phase 1** · CAN-bus model · Single-channel broadcast + receiver-side filtering
+> **Phase 1** · CAN 总线模型 · 单通道广播 + 接收侧过滤
 >
 > `pip install arf` · `from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch`
 
 ---
 
-## Overview
+## 概述
 
-`arf.Bus` 是 ARF 框架的消息总线，采用 CAN 总线模型：**单通道广播 + 接收侧过滤**。
+`arf.Bus` 是 ARF 框架的消息总线，采用 CAN 总线模型：**单通道广播 + 接收侧过滤**。所有消息通过一条 `tokio::sync::broadcast` 通道发送，每个节点根据自己的 `MessageFilter` 在本地决定接收哪些消息。Bus 本身不感知路由逻辑——谁该收到什么完全由接收侧决定。
 
 ```
                     ┌─────────────────────────────────┐
-                    │           Bus (broadcast)         │
+                    │           Bus (广播通道)          │
                     │  ┌─────────────────────────────┐ │
   engine/main ──────┼──┤  tokio broadcast channel    ├──┼────── trace/obs
-                    │  │  (ring buffer, N slots)     │  │
+                    │  │  (环形缓冲区, 可配容量)      │  │
   mcp/fs ───────────┼──┤                             ├──┼────── worker/1
                     │  └─────────────────────────────┘  │
   model/gpu-0 ──────┼───────────────────────────────────┼────── worker/2
-                    │   Node A sends → all receivers    │
-                    │   Each receiver filters locally   │
+                    │   节点 A 发出 → 全员收到            │
+                    │   每个节点自行过滤                  │
                     └─────────────────────────────────┘
 ```
 
-### CAN Bus Model
+### CAN 总线模型
 
 | CAN 物理层 | ARF Bus |
 |-----------|---------|
 | 单根线缆，所有节点并联 | 一条 `tokio::sync::broadcast` channel |
-| CAN ID Mask 硬件过滤 | `MessageFilter` — 接收侧按 `type` + `to` 过滤 |
-| 帧级 ACK（至少有人收到） | `SendReceipt` — 在线节点数 + 匹配节点数 |
-| 错误帧全体丢弃 | `Lagged(n)` — 慢消费者自己兜底 |
-| 无中心路由 | Bus 只广播，不感知谁该收到什么 |
+| CAN ID Mask 硬件过滤 | `MessageFilter` — 接收侧按 `type` + `to` 字段过滤 |
+| 帧级 ACK（至少有人收到） | `SendReceipt` — 返回在线节点数 + 匹配节点数 |
+| 错误帧全体丢弃 | `Lagged(n)` — 慢消费者自己兜底，不反压发送方 |
+| 无中心路由 | Bus 只负责广播，不感知谁该收到什么 |
 
-### When to Use Bus
+### 适用场景
 
-**适合**：多节点协作（engine + mcp + model + trace）、广播/定向混合通信、节点动态上下线、需要心跳存活检测。
+**适合**：多节点协作（engine + mcp + model + trace）、广播/定向混合通信、节点动态上下线、需要心跳存活检测、一对多消息分发。
 
-**不适合**：点对点 RPC（用 `jrpc`）、持久化消息队列（用外部 MQ）、需要精确一次投递保证的金融交易。
+**不适合**：点对点 RPC（用 `jrpc`）、持久化消息队列（用外部 MQ）、需要 Exactly-Once 投递保证的金融交易。
 
 ---
 
-## Quickstart
+## 快速上手
 
 ```python
 import asyncio
 from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
 
 async def main():
-    # 1. Create Bus
-    bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=64)
+    # 1. 创建 Bus
+    bus = Bus(
+        heartbeat_interval_ms=5000,   # 心跳间隔（毫秒）
+        heartbeat_timeout_ms=15000,   # 心跳超时（毫秒）
+        channel_capacity=64,          # 环形缓冲区容量
+    )
 
-    # 2. Connect nodes
+    # 2. 连接节点
     engine = await bus.connect(
         NodeInfo("engine/main", "engine", {"role": "orchestrator"}),
         MessageFilter(),
@@ -62,28 +66,28 @@ async def main():
         MessageFilter(types=["job"]),
     )
 
-    # 3. Send broadcast
+    # 3. 广播消息
     receipt = await engine.send("job", [], {"task": "train", "lr": 0.001})
-    print(f"sent → online={receipt.online_nodes}, matching={receipt.matching_nodes}")
+    print(f"已发送 → online={receipt.online_nodes}, matching={receipt.matching_nodes}")
 
-    # 4. Receive
+    # 4. 接收消息
     msg = await worker.recv()
-    print(f"recv ← type={msg.msg_type}, payload={msg.payload}")
+    print(f"收到 ← type={msg.msg_type}, payload={msg.payload}")
 
-    # 5. Shut down
+    # 5. 关闭 Bus
     await bus.shutdown()
 
 asyncio.run(main())
 ```
 
-**Expected output:**
+**预期输出：**
 
 ```
-sent → online=2, matching=2
-recv ← type=job, payload={'task': 'train', 'lr': 0.001}
+已发送 → online=2, matching=2
+收到 ← type=job, payload={'task': 'train', 'lr': 0.001}
 ```
 
-### Installation
+### 安装
 
 ```bash
 cd py-arf && ../.venv/bin/python -m maturin develop
@@ -96,23 +100,23 @@ print(__version__)  # "1.0.0-alpha.0"
 
 ---
 
-## Core Concepts
+## 核心概念
 
-### Node Lifecycle
+### 节点生命周期
 
 一个节点在 Bus 上的完整生命周期：
 
 ```
-connect() → online → [send/recv] → disconnect() → offline
+connect() → 在线 → [send/recv] → disconnect() → 下线
                 ↓                        ↓
-          heartbeat loop           node_offline broadcast
+           心跳循环              node_offline 广播
                 ↓
-          crash (no disconnect) → zombie entry → heartbeat timeout → evicted
+      崩溃 (未调用 disconnect) → zombie entry → 心跳超时 → 清理
 ```
 
-**Zombie entry**: 如果 NodeHandle 被 Python GC 回收时未调用 `disconnect()`（例如进程崩溃），NodeEntry 残留为 zombie。心跳超时后自动清理，清理前同 NodeId 无法重连。
+**Zombie entry（僵尸条目）**：如果 NodeHandle 在 Python 侧被 GC 回收时未调用 `disconnect()`（例如进程崩溃、忘记 await），NodeEntry 残留为 zombie。心跳超时后自动清理。清理前，同 NodeId 无法重连。
 
-### Message Flow
+### 消息流转
 
 ```
   sender.send("job", [], {...})
@@ -121,55 +125,55 @@ connect() → online → [send/recv] → disconnect() → offline
   Bus: serde_json → Message { id: UUID, from: "engine/s", ... }
        │
        ▼
-  broadcast_tx.send() ──→ ring buffer ──→ broadcast_rx (node A)
+  broadcast_tx.send() ──→ 环形缓冲区 ──→ broadcast_rx (node A)
                                        ├─→ broadcast_rx (node B)
                                        └─→ broadcast_rx (node C)
                                               │
                                     recv() → filter.matches()?
-                                              │ yes
+                                              │ 通过
                                               ▼
-                                         return Message
+                                         返回 Message
 ```
 
-### Filter Semantics
+### 过滤器语义
 
-`MessageFilter` 是 **接收侧过滤**——消息总是广播给所有人，各节点自行决定是否接收。
+`MessageFilter` 是**接收侧过滤**——消息总是全员广播，各节点自行决定是否接收。
 
 ```python
-# Default: receive all types, both broadcast and directed-to-me
+# 默认：接收所有类型，广播 + 定向到自己的都收
 MessageFilter()
 
-# Action-only worker
+# 只收 action 和 event 类型
 MessageFilter(types=["action", "event"])
 
-# Session-bound node — only receives messages directed specifically to it
+# 会话绑定节点 — 只接收专门定向给自己的消息
 MessageFilter(to_match=ToMatch.DirectedToMe)
 
-# Trace node — sees everything (including directed-to-others)
+# Trace 节点 — 全量消费（包括定向给别人的）
 MessageFilter(types=None, to_match=ToMatch.All)
 ```
 
-### `recv()` Execution Model
+### `recv()` 执行模型
 
-`recv()` 是 FIFO 阻塞接收，内部行为：
+`recv()` 是 FIFO 阻塞接收，内部流程如下：
 
 1. 调用 `broadcast_rx.recv()` 获取下一条消息
 2. 如果是 `heartbeat_request` → 自动回复 ACK，**不返回给调用方**，回到步骤 1
-3. 运行 `MessageFilter.matches(msg)` — 类型白名单 + to_match 检查
+3. 运行 `MessageFilter.matches(msg)` — 先检查类型白名单，再检查 to_match 策略
 4. 匹配 → 返回 `Message`；不匹配 → 回到步骤 1
 
 `try_recv()` 逻辑相同但不阻塞——无消息时返回 `None`。
 
-!!! warning "Concurrent recv"
+!!! warning "并发 recv"
     同一 NodeHandle 同时只能有一个 `recv()` 或 `try_recv()` 在执行。并发调用抛 `RuntimeError("concurrent recv in progress")`。
 
-### `message_count` Semantics
+### `message_count` 语义
 
 `Bus.message_count` 和 `BusGraph.message_count` 只统计**应用消息**（通过 `NodeHandle.send()` 发送）。`node_online`、`node_offline`、`heartbeat_request` 等 lifecycle 消息不计入。
 
 ---
 
-## API Reference
+## API 参考
 
 ### `Bus`
 
@@ -184,29 +188,28 @@ class Bus:
         ...
 ```
 
-A message bus based on CAN bus model. All messages are broadcast to all nodes;
-each node filters locally via `MessageFilter`.
+基于 CAN 模型的消息总线。所有消息全员广播，各节点通过 `MessageFilter` 本地过滤。
 
-**Args:**
+**参数：**
 
-| Parameter | Type | Default | Description |
+| 参数 | 类型 | 默认值 | 说明 |
 |-----------|------|---------|-------------|
-| `heartbeat_interval_ms` | `int` | `1000` | How often the Bus sends heartbeat requests (ms). Shorter = faster failure detection but more overhead. |
-| `heartbeat_timeout_ms` | `int` | `3000` | How long without ACK before a node is evicted (ms). Must be > `heartbeat_interval_ms` × 2 in practice. |
-| `channel_capacity` | `int` | `16` | Broadcast ring buffer size. Messages beyond this capacity cause `Lagged(n)` on slow consumers. For high-throughput scenarios, set to 256+. |
+| `heartbeat_interval_ms` | `int` | `1000` | Bus 发送心跳请求的间隔。越短故障检测越快，但系统开销越大。 |
+| `heartbeat_timeout_ms` | `int` | `3000` | 未收到 ACK 多久后节点被移出。实际使用中应 > `heartbeat_interval_ms` × 2。 |
+| `channel_capacity` | `int` | `16` | 广播环形缓冲区大小。超出容量会导致慢消费者出现 `Lagged(n)`。高吞吐场景建议 256 以上。 |
 
-**Raises:** None (constructor never fails).
+**异常：** 无（构造函数不会失败）。
 
-**Example:**
+**示例：**
 
 ```python
-# Default: suitable for most scenarios
+# 默认配置：适合大多数场景
 bus = Bus()
 
-# Low-latency: fast heartbeat, small buffer
+# 低延迟场景：快速心跳，小缓冲区
 bus = Bus(heartbeat_interval_ms=100, heartbeat_timeout_ms=300, channel_capacity=16)
 
-# High-throughput: large buffer for bursty traffic
+# 高吞吐场景：大缓冲区应对突发流量
 bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=1024)
 ```
 
@@ -223,26 +226,25 @@ async def connect(
     ...
 ```
 
-Register a node on the bus. Broadcasts `node_online` to all existing nodes,
-then creates the node's broadcast receiver.
+向 Bus 注册一个节点。广播 `node_online` 给所有已有节点，然后创建该节点的 broadcast receiver。
 
-**Args:**
+**参数：**
 
-| Parameter | Type | Description |
+| 参数 | 类型 | 说明 |
 |-----------|------|-------------|
-| `info` | `NodeInfo` | Node identity and capabilities. `node_id` must be unique among currently online nodes. |
-| `filter` | `MessageFilter` | Controls which messages this node receives. Default is `MessageFilter()` (all types, broadcast+directed). |
+| `info` | `NodeInfo` | 节点身份和能力。`node_id` 必须在当前在线节点中唯一。 |
+| `filter` | `MessageFilter` | 控制该节点接收哪些消息。默认为 `MessageFilter()`（所有类型 + 广播和定向）。 |
 
-**Returns:** `NodeHandle` — the node's handle for sending and receiving.
+**返回：** `NodeHandle` — 用于收发消息的节点句柄。
 
-**Raises:**
+**异常：**
 
-| Exception | Match text | Trigger |
+| 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
-| `Exception` | `"already connected"` | Duplicate `NodeId` (including zombie entries) |
-| `Exception` | `"bus closed"` | Bus has been shut down |
+| `Exception` | `"already connected"` | 重复 `NodeId`（含 zombie entry） |
+| `Exception` | `"bus closed"` | Bus 已 shutdown |
 
-**Example:**
+**示例：**
 
 ```python
 engine = await bus.connect(
@@ -251,10 +253,8 @@ engine = await bus.connect(
 )
 ```
 
-!!! note "broadcast_rx timing"
-    The node's broadcast receiver is created **after** its `node_online` broadcast.
-    This means a node never sees its own `node_online`, but sees subsequent nodes'
-    `node_online` messages.
+!!! note "broadcast_rx 创建时机"
+    节点的 broadcast receiver 在 `node_online` 广播**之后**创建。因此节点看不到自己的 `node_online`，但能看到之后连接的其他节点的 `node_online`。
 
 ---
 
@@ -265,24 +265,22 @@ async def shutdown(self) -> None:
     ...
 ```
 
-Shut down the bus. Closes the broadcast channel — all pending `recv()` calls
-unblock with `Closed`, all future `send()` calls raise `BusClosed`.
+关闭 Bus。关闭 broadcast channel——所有等待中的 `recv()` 以 `Closed` 解除阻塞，所有后续 `send()` 抛 `BusClosed`。
 
-**This method is idempotent** — calling it multiple times has no additional effect.
+**此方法幂等**——多次调用无额外效果。
 
-**Example:**
+**示例：**
 
 ```python
 await bus.shutdown()
 
-# After shutdown, all handles are broken
+# shutdown 后所有 handle 均不可用
 with pytest.raises(Exception):
     await handle.recv()
 ```
 
-!!! warning "Buffered messages after shutdown"
-    After `shutdown()`, `recv()` may still return messages that were already in the ring
-    buffer. Drain buffered messages first, then verify `Closed`:
+!!! warning "shutdown 后缓冲区仍有残留消息"
+    `shutdown()` 后，`recv()` 可能先返回环形缓冲区中已存在的消息。应先 drain 缓冲消息，再验证 `Closed`：
 
     ```python
     await bus.shutdown()
@@ -293,7 +291,7 @@ with pytest.raises(Exception):
                 break
         except Exception:
             break
-    # Now recv should raise
+    # 现在 recv 应该抛异常
     with pytest.raises(Exception):
         await handle.recv()
     ```
@@ -307,15 +305,15 @@ def graph(self) -> BusGraph:
     ...
 ```
 
-**Synchronous.** Returns a snapshot of the bus's current state.
+**同步方法。** 返回 Bus 当前状态的快照。
 
-**Returns:** `BusGraph` with `.nodes` (list of online `NodeInfo`), `.message_count` (application messages sent), `.uptime_ms`.
+**返回：** `BusGraph` 对象，含 `.nodes`（在线 `NodeInfo` 列表）、`.message_count`（已发送的应用消息数）、`.uptime_ms`（运行时间）。
 
-**Example:**
+**示例：**
 
 ```python
 g = bus.graph()
-print(f"{len(g.nodes)} nodes, {g.message_count} messages, {g.uptime_ms}ms")
+print(f"{len(g.nodes)} 个节点在线, {g.message_count} 条消息, 运行 {g.uptime_ms}ms")
 for node in g.nodes:
     print(f"  {node.node_id} ({node.node_type})")
 ```
@@ -330,8 +328,7 @@ def message_count(self) -> int:
     ...
 ```
 
-Total application messages sent since the bus was created. Lifecycle messages
-(`node_online`, `node_offline`, `heartbeat_request`) are **not** counted.
+Bus 创建以来发送的应用消息总数。lifecycle 消息（`node_online`、`node_offline`、`heartbeat_request`）**不计入**。
 
 ---
 
@@ -343,7 +340,7 @@ def uptime_ms(self) -> int:
     ...
 ```
 
-Milliseconds since the bus was created.
+Bus 创建以来经过的毫秒数。
 
 ---
 
@@ -351,13 +348,13 @@ Milliseconds since the bus was created.
 
 ```python
 class NodeHandle:
-    # No public constructor — obtained via Bus.connect()
+    # 无公共构造函数 — 通过 Bus.connect() 获取
     ...
 ```
 
-A node's handle for sending and receiving messages. Created by `Bus.connect()`.
+节点收发消息的句柄。由 `Bus.connect()` 创建并返回。
 
-**All methods raise `RuntimeError("already disconnected")` after `disconnect()` is called.**
+**所有方法在 `disconnect()` 之后均抛 `RuntimeError("already disconnected")`。**
 
 ---
 
@@ -373,38 +370,38 @@ async def send(
     ...
 ```
 
-Send a message onto the bus. The `from` field is automatically set to this node's `node_id`.
+向 Bus 发送一条消息。`from` 字段自动填充为本节点的 `node_id`。
 
-**Args:**
+**参数：**
 
-| Parameter | Type | Description |
+| 参数 | 类型 | 说明 |
 |-----------|------|-------------|
-| `msg_type` | `str` | Application-defined message type, e.g. `"action"`, `"job"`, `"tool_call"`. |
-| `to` | `list[NodeId]` | Empty list `[]` = broadcast to all. `[NodeId("a"), NodeId("b")]` = directed to specific nodes. |
-| `payload` | `Any` | JSON-serializable value (`dict`, `list`, `str`, `int`, `float`, `bool`, `None`). Non-serializable objects raise `ValueError`. |
+| `msg_type` | `str` | 应用定义的消息类型，如 `"action"`、`"job"`、`"tool_call"`。 |
+| `to` | `list[NodeId]` | 空列表 `[]` = 广播给所有人。`[NodeId("a"), NodeId("b")]` = 定向发送给指定节点。 |
+| `payload` | `Any` | JSON 可序列化的值（`dict`、`list`、`str`、`int`、`float`、`bool`、`None`）。非 JSON 兼容对象抛 `ValueError`。 |
 
-**Returns:** `SendReceipt` with `.message_id` (UUID), `.online_nodes` (total online at send time), `.matching_nodes` (nodes whose filter could match this message).
+**返回：** `SendReceipt`，含 `.message_id`（UUID）、`.online_nodes`（发送时在线节点总数）、`.matching_nodes`（filter 可能匹配此消息的节点数）。
 
-**Raises:**
+**异常：**
 
-| Exception | Match text | Trigger |
+| 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
-| `Exception` | `"target nodes offline"` | All specified targets are offline (directed send only; broadcast never triggers this) |
-| `Exception` | `"bus closed"` | Bus has been shut down |
-| `Exception` | `"bus buffer full"` | Broadcast ring buffer is full |
-| `RuntimeError` | `"already disconnected"` | Handle has been disconnected |
+| `Exception` | `"target nodes offline"` | 定向发送时所有目标均离线（广播不会触发此异常） |
+| `Exception` | `"bus closed"` | Bus 已 shutdown |
+| `Exception` | `"bus buffer full"` | 环形缓冲区已满 |
+| `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
 
-**Example:**
+**示例：**
 
 ```python
-# Broadcast — all nodes with matching filter receive it
+# 广播 — 所有 filter 匹配的节点都能收到
 receipt = await handle.send("job", [], {"task": "train"})
 
-# Directed — only specified nodes receive it (if their filter matches)
+# 定向 — 仅指定节点能收到（前提是它们的 filter 匹配）
 target = NodeId("mcp/fs")
 receipt = await handle.send("tool_call", [target], {"tool": "read", "path": "/tmp/x"})
 
-# Access receipt
+# 查看回执
 print(receipt.message_id)      # "550e8400-e29b-41d4-a716-446655440000"
 print(receipt.online_nodes)    # 5
 print(receipt.matching_nodes)  # 3
@@ -419,21 +416,19 @@ async def recv(self) -> Message:
     ...
 ```
 
-Receive the next message matching this node's filter. **Blocks** until a matching
-message arrives or the channel closes.
+接收下一条匹配当前节点 filter 的消息。**阻塞**直到有匹配消息到达或 channel 关闭。
 
-**Returns:** `Message` — the received message. Never returns `heartbeat_request`
-(these are filtered and auto-acknowledged internally).
+**返回：** `Message` — 接收到的消息。`heartbeat_request` 永远不会返回给调用方（内部自动过滤并应答）。
 
-**Raises:**
+**异常：**
 
-| Exception | Match text | Trigger |
+| 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
-| `RuntimeError` | `"already disconnected"` | Handle disconnected |
-| `Exception` | `"recv error: Closed"` | Bus shut down, all buffered messages drained |
-| `RuntimeError` | `"concurrent recv in progress"` | Another `recv()` or `try_recv()` is in progress |
+| `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
+| `Exception` | `"recv error: Closed"` | Bus 已 shutdown 且缓冲消息已全部 drain |
+| `RuntimeError` | `"concurrent recv in progress"` | 另一个 `recv()` 或 `try_recv()` 正在执行 |
 
-**Example:**
+**示例：**
 
 ```python
 msg = await handle.recv()
@@ -443,10 +438,8 @@ print(msg.payload)         # {'task': 'train'}
 print(msg.is_broadcast())  # True
 ```
 
-!!! note "recv() and node_online"
-    When your node connects **after** other nodes are already online, `recv()` may
-    first return `node_online` messages from nodes that connected before you.
-    Drain these before expecting application messages.
+!!! note "recv() 与 node_online"
+    当你的节点在**其他节点之后**才 connect 时，`recv()` 可能先收到先连接节点的 `node_online` 消息。请先 drain 这些 lifecycle 消息，再消费应用消息。
 
 ---
 
@@ -457,27 +450,26 @@ def try_recv(self) -> Message | None:
     ...
 ```
 
-**Synchronous, non-blocking.** Like `recv()` but returns `None` immediately if
-no matching message is available.
+**同步、非阻塞。** 与 `recv()` 逻辑相同，但无可用消息时立即返回 `None`。
 
-**Returns:** `Message` if available, `None` otherwise.
+**返回：** 有匹配消息返回 `Message`，否则返回 `None`。
 
-**Raises:**
+**异常：**
 
-| Exception | Match text | Trigger |
+| 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
-| `RuntimeError` | `"already disconnected"` | Handle disconnected |
-| `RuntimeError` | `"concurrent recv in progress"` | Another `recv()` is in progress |
-| `Exception` | `"try_recv error"` | Underlying broadcast receiver error |
+| `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
+| `RuntimeError` | `"concurrent recv in progress"` | 另一个 `recv()` 正在执行 |
+| `Exception` | `"try_recv error"` | 底层 broadcast receiver 异常（罕见） |
 
-**Example:**
+**示例：**
 
 ```python
-# Polling pattern
+# 轮询模式
 while True:
     msg = handle.try_recv()
     if msg is not None:
-        print(f"got: {msg.msg_type}")
+        print(f"收到: {msg.msg_type}")
         break
     await asyncio.sleep(0.01)
 ```
@@ -491,24 +483,22 @@ async def disconnect(self) -> None:
     ...
 ```
 
-Disconnect from the bus. Broadcasts `node_offline` to all online nodes, immediately
-removes the entry from the nodes map.
+从 Bus 断开。向所有在线节点广播 `node_offline`，从 nodes map 中立即移除。
 
-**After calling this method, the handle is consumed** — all subsequent method calls
-on this handle raise `RuntimeError("already disconnected")`.
+**调用此方法后，handle 即被消耗**——后续对该 handle 的所有方法调用均抛 `RuntimeError("already disconnected")`。
 
-**Raises:**
+**异常：**
 
-| Exception | Match text | Trigger |
+| 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
-| `RuntimeError` | `"already disconnected"` | Handle already disconnected |
+| `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
 
-**Example:**
+**示例：**
 
 ```python
 await handle.disconnect()
 
-# Same NodeId can reconnect immediately with a new handle
+# 同 NodeId 可立即用新 handle 重连
 new_handle = await bus.connect(
     NodeInfo("worker/1", "worker", {}),
     MessageFilter(),
@@ -516,10 +506,8 @@ new_handle = await bus.connect(
 ```
 
 !!! warning "Disconnect vs Drop"
-    If you let `NodeHandle` go out of scope without calling `await disconnect()`,
-    the node becomes a **zombie entry** in the bus. It blocks reconnection with the
-    same `NodeId` until the heartbeat timeout evicts it. Always call `await disconnect()`
-    explicitly for controlled shutdown.
+    如果让 NodeHandle 出作用域而不 `await disconnect()`，节点会变成 **zombie entry**，
+    阻塞同 NodeId 重连直到心跳超时清理。**始终显式调用 `await disconnect()`** 做受控下线。
 
 ---
 
@@ -530,7 +518,7 @@ def node_info(self) -> NodeInfo:
     ...
 ```
 
-**Synchronous.** Return the `NodeInfo` this handle was created with.
+**同步方法。** 返回此 handle 创建时使用的 `NodeInfo`。
 
 ---
 
@@ -541,7 +529,7 @@ def filter_config(self) -> MessageFilter:
     ...
 ```
 
-**Synchronous.** Return the `MessageFilter` this handle was created with.
+**同步方法。** 返回此 handle 创建时使用的 `MessageFilter`。
 
 ---
 
@@ -553,24 +541,18 @@ class NodeId:
         ...
 ```
 
-Unique node identifier. Wraps a string with equality and hashing support.
+节点的唯一标识符。内部包装一个字符串，支持相等比较和哈希。
 
-**Attributes:**
+**方法：**
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| (internal) | `str` | The raw node ID string |
-
-**Methods:**
-
-| Method | Signature | Description |
+| 方法 | 签名 | 说明 |
 |--------|-----------|-------------|
-| `__str__` | `() -> str` | Returns the raw node ID string, e.g. `"engine/main"` |
-| `__repr__` | `() -> str` | Returns `NodeId('engine/main')` |
-| `__eq__` | `(other: NodeId) -> bool` | String equality comparison |
-| `__hash__` | `() -> int` | Hash of the string; usable as `dict` key / `set` member |
+| `__str__` | `() -> str` | 返回节点 ID 字符串，如 `"engine/main"` |
+| `__repr__` | `() -> str` | 返回 `NodeId('engine/main')` |
+| `__eq__` | `(other: NodeId) -> bool` | 基于字符串内容比较相等性 |
+| `__hash__` | `() -> int` | 基于字符串内容的哈希，可作 `dict` key 和 `set` 成员 |
 
-**Example:**
+**示例：**
 
 ```python
 a = NodeId("engine/main")
@@ -579,8 +561,8 @@ assert a == b
 assert hash(a) == hash(b)
 assert str(a) == "engine/main"
 
-# Usable in dicts and sets
-registry = {a: "primary engine"}
+# 可以用在 dict 和 set 中
+registry = {a: "主引擎"}
 ```
 
 ---
@@ -599,27 +581,27 @@ class NodeInfo:
         ...
 ```
 
-Node identity and capabilities, registered with the bus at connect time.
+节点的身份和能力信息，在 connect 时注册到 Bus。
 
-**Args:**
+**参数：**
 
-| Parameter | Type | Default | Description |
+| 参数 | 类型 | 默认值 | 说明 |
 |-----------|------|---------|-------------|
-| `node_id` | `str` | (required) | Unique node identifier. Convention: `"type/name"`, e.g. `"engine/main"`, `"mcp/fs"`. |
-| `node_type` | `str` | (required) | Node category: `"engine"`, `"mcp"`, `"model"`, `"trace"`, `"worker"`, etc. |
-| `capabilities` | `Any` | (required) | Arbitrary JSON-serializable metadata: tools list, GPU info, session IDs, etc. |
-| `online_since` | `int` | `0` | Unix millisecond timestamp. Default `0` means "not specified". |
+| `node_id` | `str` | 必填 | 节点的唯一标识符。命名约定：`"类型/名称"`，如 `"engine/main"`、`"mcp/fs"`。 |
+| `node_type` | `str` | 必填 | 节点类别：`"engine"`、`"mcp"`、`"model"`、`"trace"`、`"worker"` 等。 |
+| `capabilities` | `Any` | 必填 | JSON 可序列化的任意元数据：工具列表、GPU 信息、session ID 等。 |
+| `online_since` | `int` | `0` | Unix 毫秒时间戳。默认 `0` 表示"未指定"。 |
 
-**Attributes (read-only):**
+**属性（只读）：**
 
-| Attribute | Type | Description |
+| 属性 | 类型 | 说明 |
 |-----------|------|-------------|
-| `.node_id` | `NodeId` | The node's unique identifier |
-| `.node_type` | `str` | The node's type category |
-| `.capabilities` | `Any` | The node's capabilities (JSON-deserialized Python object) |
-| `.online_since` | `int` | Unix millisecond timestamp |
+| `.node_id` | `NodeId` | 节点唯一标识符 |
+| `.node_type` | `str` | 节点类型类别 |
+| `.capabilities` | `Any` | 节点能力（JSON 反序列化后的 Python 对象） |
+| `.online_since` | `int` | Unix 毫秒时间戳 |
 
-**Example:**
+**示例：**
 
 ```python
 info = NodeInfo(
@@ -637,31 +619,31 @@ print(info.capabilities)   # {'tools': ['read', 'write', 'delete'], 'version': '
 
 ```python
 class Message:
-    # No public constructor — obtained via recv() / try_recv()
+    # 无公共构造函数 — 仅通过 recv() / try_recv() 获取
     ...
 ```
 
-A message received from the bus. Returned by `NodeHandle.recv()` and `NodeHandle.try_recv()`.
+从 Bus 接收到的消息。由 `NodeHandle.recv()` 和 `NodeHandle.try_recv()` 返回。
 
-**Attributes (read-only):**
+**属性（只读）：**
 
-| Attribute | Type | Description |
+| 属性 | 类型 | 说明 |
 |-----------|------|-------------|
-| `.id` | `str` | UUID v4 message identifier |
-| `.msg_type` | `str` | Application message type, e.g. `"job"`, `"action"` |
-| `.sender` | `NodeId` | Sender's node ID |
-| `.to` | `list[NodeId]` | Target node IDs (empty for broadcast) |
-| `.payload` | `Any` | JSON-deserialized message body |
-| `.timestamp` | `int` | Unix millisecond timestamp |
+| `.id` | `str` | UUID v4 消息唯一标识 |
+| `.msg_type` | `str` | 应用消息类型，如 `"job"`、`"action"` |
+| `.sender` | `NodeId` | 发送者的节点 ID |
+| `.to` | `list[NodeId]` | 目标节点 ID 列表（广播时为空） |
+| `.payload` | `Any` | JSON 反序列化后的消息体 |
+| `.timestamp` | `int` | Unix 毫秒时间戳 |
 
-**Methods:**
+**方法：**
 
-| Method | Signature | Description |
+| 方法 | 签名 | 说明 |
 |--------|-----------|-------------|
-| `.is_broadcast()` | `() -> bool` | Returns `True` if `to` is empty |
-| `.is_for(node_id)` | `(node_id: NodeId) -> bool` | Returns `True` if `node_id` is in `to` |
+| `.is_broadcast()` | `() -> bool` | `to` 为空返回 `True` |
+| `.is_for(node_id)` | `(node_id: NodeId) -> bool` | `node_id` 在 `to` 列表中返回 `True` |
 
-**Example:**
+**示例：**
 
 ```python
 msg = await handle.recv()
@@ -687,32 +669,32 @@ class MessageFilter:
         ...
 ```
 
-Controls which messages a `NodeHandle` receives. Applied **per-node, receiver-side**.
+控制 `NodeHandle` 接收哪些消息。**每个节点独立配置，接收侧生效。**
 
-**Args:**
+**参数：**
 
-| Parameter | Type | Default | Description |
+| 参数 | 类型 | 默认值 | 说明 |
 |-----------|------|---------|-------------|
-| `types` | `list[str] \| None` | `None` | Message type whitelist. `None` = accept all types. `["action", "job"]` = only those types. |
-| `to_match` | `ToMatch \| None` | `BroadcastAndDirectedToMe` | Target matching strategy. `None` defaults to `BroadcastAndDirectedToMe`. |
+| `types` | `list[str] \| None` | `None` | 消息类型白名单。`None` = 接受所有类型。`["action", "job"]` = 只接收这两种。 |
+| `to_match` | `ToMatch \| None` | `BroadcastAndDirectedToMe` | 目标匹配策略。`None` 默认 `BroadcastAndDirectedToMe`。 |
 
-**Attributes (read-only):**
+**属性（只读）：**
 
-| Attribute | Type | Description |
+| 属性 | 类型 | 说明 |
 |-----------|------|-------------|
-| `.types` | `list[str] \| None` | The type whitelist |
-| `.to_match` | `ToMatch` | The target matching strategy |
+| `.types` | `list[str] \| None` | 类型白名单 |
+| `.to_match` | `ToMatch` | 目标匹配策略 |
 
-**Example:**
+**示例：**
 
 ```python
-# Worker that handles "job" and "infer" broadcasts + directed-to-me
+# 处理 "job" 和 "infer" 的 worker 节点
 f = MessageFilter(types=["job", "infer"])
 
-# Trace node that sees EVERYTHING
+# Trace 节点 — 全量消费
 f = MessageFilter(types=None, to_match=ToMatch.All)
 
-# Service that only responds to direct calls (not broadcasts)
+# 只响应定向调用、不接收广播的服务节点
 f = MessageFilter(types=None, to_match=ToMatch.DirectedToMe)
 ```
 
@@ -722,31 +704,30 @@ f = MessageFilter(types=None, to_match=ToMatch.DirectedToMe)
 
 ```python
 class ToMatch:
-    All: ToMatch                       # Receive all messages (broadcast + directed to anyone)
-    BroadcastOnly: ToMatch             # Only broadcast messages (to=[])
-    DirectedToMe: ToMatch              # Only messages directed to this node
-    BroadcastAndDirectedToMe: ToMatch  # Default: broadcast + directed to this node
+    All: ToMatch                       # 接收所有消息（广播 + 定向给任何人）
+    BroadcastOnly: ToMatch             # 仅接收广播消息（to=[]）
+    DirectedToMe: ToMatch              # 仅接收定向给自己的消息
+    BroadcastAndDirectedToMe: ToMatch  # 默认：广播 + 定向给自己的都接收
 ```
 
-Target matching strategy. Four singleton instances accessed as class attributes.
+目标匹配策略。四个单例实例，通过类属性访问。
 
-!!! note "ToMatch is not an Enum"
-    `ToMatch` values are singleton instances, not Python `Enum` members. Compare with `==`:
+!!! note "ToMatch 不是 Enum"
+    `ToMatch` 值是单例实例，不是 Python `Enum` 成员。用 `==` 比较：
     ```python
     assert ToMatch.All != ToMatch.BroadcastOnly
     assert f.to_match == ToMatch.BroadcastAndDirectedToMe
     ```
 
-**Example:**
+**示例：**
 
 ```python
 from arf import ToMatch
 
-# All four variants
-ToMatch.All                       # "I see everything"
-ToMatch.BroadcastOnly             # "I only care about broadcasts"
-ToMatch.DirectedToMe              # "I only respond to direct calls"
-ToMatch.BroadcastAndDirectedToMe  # "Default — broadcasts + calls to me"
+ToMatch.All                       # 全量消费
+ToMatch.BroadcastOnly             # 只关心广播
+ToMatch.DirectedToMe              # 只响应定向调用
+ToMatch.BroadcastAndDirectedToMe  # 默认：广播 + 调用我的
 ```
 
 ---
@@ -755,25 +736,22 @@ ToMatch.BroadcastAndDirectedToMe  # "Default — broadcasts + calls to me"
 
 ```python
 class SendReceipt:
-    # No public constructor — returned by NodeHandle.send()
+    # 无公共构造函数 — 由 NodeHandle.send() 返回
     ...
 ```
 
-Acknowledgment returned by `NodeHandle.send()`. Confirms the message entered the
-broadcast channel, not that any specific node received it.
+`NodeHandle.send()` 返回的发送确认。仅确认消息已进入广播通道，不确认某个特定节点已收到。
 
-**Attributes (read-only):**
+**属性（只读）：**
 
-| Attribute | Type | Description |
+| 属性 | 类型 | 说明 |
 |-----------|------|-------------|
-| `.message_id` | `str` | UUID v4 of the sent message |
-| `.online_nodes` | `int` | Total online nodes at send time (including sender) |
-| `.matching_nodes` | `int` | Online nodes whose filter potentially matches this message |
+| `.message_id` | `str` | 已发送消息的 UUID v4 |
+| `.online_nodes` | `int` | 发送时在线节点总数（含自己） |
+| `.matching_nodes` | `int` | filter 可能匹配此消息的在线节点数 |
 
-!!! note "matching_nodes is a lower bound"
-    `matching_nodes` counts nodes whose `MessageFilter.types` includes the message's
-    `msg_type` (or is `None`). It does **not** account for `to_match` —
-    `DirectedToMe` nodes will still be counted even if the message is a broadcast.
+!!! note "matching_nodes 是下限估计"
+    `matching_nodes` 统计 `MessageFilter.types` 包含此消息 `msg_type`（或为 `None`）的节点。它**不考虑** `to_match` 策略——即使某节点设置了 `DirectedToMe`，广播消息也会将其计入 `matching_nodes`。
 
 ---
 
@@ -781,21 +759,21 @@ broadcast channel, not that any specific node received it.
 
 ```python
 class BusGraph:
-    # No public constructor — returned by Bus.graph()
+    # 无公共构造函数 — 由 Bus.graph() 返回
     ...
 ```
 
-A point-in-time snapshot of bus health.
+Bus 健康状态的即时快照。
 
-**Attributes (read-only):**
+**属性（只读）：**
 
-| Attribute | Type | Description |
+| 属性 | 类型 | 说明 |
 |-----------|------|-------------|
-| `.nodes` | `list[NodeInfo]` | Currently online nodes |
-| `.message_count` | `int` | Application messages sent since bus creation |
-| `.uptime_ms` | `int` | Milliseconds since bus creation |
+| `.nodes` | `list[NodeInfo]` | 当前在线节点 |
+| `.message_count` | `int` | Bus 创建以来的应用消息数 |
+| `.uptime_ms` | `int` | Bus 创建以来的毫秒数 |
 
-**Example:**
+**示例：**
 
 ```python
 g = bus.graph()
@@ -806,24 +784,23 @@ assert g.uptime_ms >= 0
 
 ---
 
-## Common Patterns
+## 常见模式
 
-### Worker Pool (Load Balancing at Application Layer)
+### Worker Pool（应用层负载均衡）
 
-Multiple workers of the same type all receive every broadcast. The application
-layer decides which worker processes the job (e.g., via consistent hashing).
+多个同类型 worker 全收每一条广播，应用层决定由哪个 worker 处理（如一致性哈希、轮询）。
 
 ```python
 async def worker_pool():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=128)
 
-    # Dispatcher sends jobs
+    # 调度器发送任务
     dispatcher = await bus.connect(
         NodeInfo("engine/dispatcher", "engine", {}),
         MessageFilter(),
     )
 
-    # 4 GPU workers, all with identical filters
+    # 4 个 GPU worker，filter 完全相同
     workers = []
     for i in range(4):
         w = await bus.connect(
@@ -832,7 +809,7 @@ async def worker_pool():
         )
         workers.append(w)
 
-    # Broadcast one inference job — all 4 workers see it
+    # 广播一条推理任务 — 4 个 worker 全部收到
     await dispatcher.send("infer", [], {"prompt": "hello"})
 
     for w in workers:
@@ -842,14 +819,12 @@ async def worker_pool():
     await bus.shutdown()
 ```
 
-!!! note "Bus does NOT load-balance"
-    The bus broadcasts to all matching nodes. If only one worker should handle each
-    job, implement application-level selection (round-robin, consistent hashing, or
-    session affinity via `DirectedToMe`).
+!!! note "Bus 不做负载均衡"
+    Bus 向所有匹配节点广播。如果每条任务只需要一个 worker 处理，在应用层实现选择逻辑（轮询、一致性哈希、或通过 `DirectedToMe` 实现会话粘性）。
 
-### Session Affinity
+### 会话粘性
 
-Route all messages for a specific session to the same worker using directed sends.
+通过定向发送将同一 session 的消息始终路由到同一个 worker。
 
 ```python
 async def session_affinity():
@@ -864,7 +839,7 @@ async def session_affinity():
         MessageFilter(to_match=ToMatch.DirectedToMe),
     )
 
-    # Send message specifically to session-1's worker
+    # 专门发送给 session-1 的 worker
     target = NodeId("worker/session-1")
     await engine.send("tool_call", [target], {"tool": "read", "path": "/data/s1"})
 
@@ -874,15 +849,15 @@ async def session_affinity():
     await bus.shutdown()
 ```
 
-### Tracing / Observability
+### 可观测性 / Tracing
 
-A trace node with `ToMatch.All` sees every message on the bus.
+设置一个 `ToMatch.All` 的 trace 节点，监控 Bus 上所有消息。
 
 ```python
 async def tracing():
     bus = Bus(heartbeat_interval_ms=5000, heartbeat_timeout_ms=15000, channel_capacity=1024)
 
-    # Trace node — sees everything
+    # Trace 节点 — 全量消费
     trace = await bus.connect(
         NodeInfo("trace/obs", "trace", {}),
         MessageFilter(types=None, to_match=ToMatch.All),
@@ -897,28 +872,28 @@ async def tracing():
         MessageFilter(types=["tool_call"]),
     )
 
-    # Engine broadcasts a job
+    # Engine 广播任务
     await engine.send("job", [], {"task": "compress"})
 
-    # Trace sees it (ToMatch.All)
+    # Trace 看到了（ToMatch.All）
     trace_msg = await trace.recv()
     print(f"[trace] {trace_msg.msg_type} from {trace_msg.sender}")
     # → [trace] job from engine/main
 
-    # Engine sends directed tool_call
+    # Engine 发送定向 tool_call
     await engine.send("tool_call", [NodeId("mcp/fs")], {"tool": "read"})
 
-    # Both trace AND worker see the directed message
-    # (trace has ToMatch.All, worker's filter matches "tool_call")
+    # Trace 和 worker 都收到定向消息
+    # （trace 有 ToMatch.All，worker 的 filter 匹配 "tool_call"）
     worker_msg = await worker.recv()
     trace_msg2 = await trace.recv()
-    print(f"[worker] got {worker_msg.msg_type}")
-    print(f"[trace]  got {trace_msg2.msg_type} (directed to {trace_msg2.to})")
+    print(f"[worker] 收到 {worker_msg.msg_type}")
+    print(f"[trace]  看到 {trace_msg2.msg_type} (定向给 {trace_msg2.to})")
 
     await bus.shutdown()
 ```
 
-### Graceful Shutdown
+### 优雅关闭
 
 ```python
 async def graceful_shutdown():
@@ -926,19 +901,19 @@ async def graceful_shutdown():
     h1 = await bus.connect(NodeInfo("node-1", "test", {}), MessageFilter())
     h2 = await bus.connect(NodeInfo("node-2", "test", {}), MessageFilter())
 
-    # Send some messages
+    # 发送一些消息
     await h1.send("msg", [], {"n": 1})
     await h1.send("msg", [], {"n": 2})
 
-    # 1. Disconnect all nodes first
+    # 1. 先断开所有节点
     await h1.disconnect()
     await h2.disconnect()
 
-    # 2. Then shutdown the bus
+    # 2. 再关闭 Bus
     await bus.shutdown()
 ```
 
-Or, if you need to shutdown with nodes still connected:
+或者在节点仍在线的场景下 shutdown：
 
 ```python
 async def shutdown_with_nodes_online():
@@ -947,7 +922,7 @@ async def shutdown_with_nodes_online():
 
     await bus.shutdown()
 
-    # Drain buffered messages, then recv raises
+    # 先 drain 缓冲区中的残留消息
     while True:
         try:
             m = h.try_recv()
@@ -956,42 +931,43 @@ async def shutdown_with_nodes_online():
         except Exception:
             break
 
+    # 此时 recv 应该抛异常
     with pytest.raises(Exception):
         await h.recv()
 ```
 
-### Reconnect After Crash
+### 崩溃后重连
 
 ```python
 async def reconnect_after_crash():
     bus = Bus(heartbeat_interval_ms=100, heartbeat_timeout_ms=300, channel_capacity=32)
 
-    # Primary worker connects and crashes (no disconnect)
+    # 主 worker 连接后崩溃（未调用 disconnect）
     async def crash():
         w = await bus.connect(
             NodeInfo("worker/main", "worker", {}),
             MessageFilter(),
         )
-        # Simulated crash — no disconnect()
+        # 模拟崩溃 — 不调用 disconnect()
 
     await crash()
 
-    # Reconnect immediately fails — zombie entry exists
+    # 立即重连会失败 — zombie entry 仍然存在
     with pytest.raises(Exception, match="already connected"):
         await bus.connect(
             NodeInfo("worker/main", "worker", {}),
             MessageFilter(),
         )
 
-    # Wait for heartbeat timeout to evict zombie (timeout_ms=300ms)
+    # 等待心跳超时清理 zombie（timeout_ms=300ms）
     await asyncio.sleep(0.5)
 
-    # Now reconnect succeeds
+    # 现在可以重连了
     w2 = await bus.connect(
         NodeInfo("worker/main", "worker", {}),
         MessageFilter(),
     )
-    print("reconnected after zombie eviction")
+    print("zombie 清理后重连成功")
 
     await w2.disconnect()
     await bus.shutdown()
@@ -999,39 +975,38 @@ async def reconnect_after_crash():
 
 ---
 
-## Error Reference
+## 异常速查表
 
-| Exception Type | Match Text | Typical Cause |
+| 异常类型 | match 文本 | 触发原因 |
 |---------------|-----------|---------------|
-| `Exception` | `"already connected"` | Duplicate `NodeId` or zombie entry not yet evicted |
-| `Exception` | `"bus closed"` | Calling `connect()` or `send()` after `shutdown()` |
-| `Exception` | `"target nodes offline"` | Directed send where all targets are offline |
-| `Exception` | `"bus buffer full"` | Ring buffer exhausted; increase `channel_capacity` or slow sender |
-| `Exception` | `"recv error: Closed"` | `recv()` after shutdown with empty buffer |
-| `Exception` | `"try_recv error"` | `try_recv()` internal error (rare) |
-| `RuntimeError` | `"already disconnected"` | Calling any method on a disconnected `NodeHandle` |
-| `RuntimeError` | `"concurrent recv in progress"` | Calling `recv()` or `try_recv()` while another `recv()` is active |
-| `RuntimeError` | `"concurrent access in progress"` | Concurrent `node_info()` / `filter_config()` calls |
-| `ValueError` | — | `payload` or `capabilities` is not JSON-serializable |
+| `Exception` | `"already connected"` | 重复 `NodeId` 或 zombie entry 尚未清理 |
+| `Exception` | `"bus closed"` | `shutdown()` 后调用 `connect()` 或 `send()` |
+| `Exception` | `"target nodes offline"` | 定向发送时所有目标均离线 |
+| `Exception` | `"bus buffer full"` | 环形缓冲区耗尽；增大 `channel_capacity` 或降低发送速率 |
+| `Exception` | `"recv error: Closed"` | `shutdown()` 后缓冲区为空时调用 `recv()` |
+| `Exception` | `"try_recv error"` | `try_recv()` 内部异常（罕见） |
+| `RuntimeError` | `"already disconnected"` | 对已 disconnect 的 `NodeHandle` 调用任何方法 |
+| `RuntimeError` | `"concurrent recv in progress"` | 另一个 `recv()` 活跃时调用 `recv()` 或 `try_recv()` |
+| `RuntimeError` | `"concurrent access in progress"` | 并发调用 `node_info()` / `filter_config()` |
+| `ValueError` | — | `payload` 或 `capabilities` 不是 JSON 可序列化对象 |
 
 ---
 
-## Python vs Rust API Differences
+## Python 与 Rust API 差异
 
-| Aspect | Rust (`arf-bus`) | Python (`arf.Bus`) |
+| 维度 | Rust (`arf-bus`) | Python (`arf.Bus`) |
 |--------|-----------------|-------------------|
-| `Bus::shutdown` | `async fn shutdown(self)` — consumes Bus | `async fn shutdown(&self)` — calls `signal_shutdown`, closes broadcast channel |
-| `send()` error type | `Result<SendReceipt, SendError>` enum | Python `Exception` with `Display` text |
-| `connect()` error type | `Result<NodeHandle, ConnectError>` enum | Python `Exception` with `Display` text |
-| `NodeHandle` after disconnect | Compile-time check (consumed by `disconnect`) | Runtime `RuntimeError` |
-| Payload type | `serde_json::Value` | `Any` (bridged via `json.dumps` / `json.loads`) |
-| Async return type | `impl Future<Output = T>` | Python `Future` (not coroutine — use `ensure_future()`, not `create_task()`) |
-| Weak references | N/A | Not supported (`TypeError: cannot create weak reference`) |
+| `Bus::shutdown` | `async fn shutdown(self)` — 消费 Bus | `async fn shutdown(&self)` — 调用 `signal_shutdown`，关闭 broadcast channel |
+| `send()` 错误类型 | `Result<SendReceipt, SendError>` 枚举 | Python `Exception`，消息文本为 Display 输出 |
+| `connect()` 错误类型 | `Result<NodeHandle, ConnectError>` 枚举 | Python `Exception`，消息文本为 Display 输出 |
+| `NodeHandle` disconnect 后 | 编译期检查（被 `disconnect` 消费） | 运行时 `RuntimeError` |
+| Payload 类型 | `serde_json::Value` | `Any`（通过 `json.dumps` / `json.loads` 桥接） |
+| 异步返回类型 | `impl Future<Output = T>` | Python `Future`（非 coroutine — 用 `ensure_future()` 而非 `create_task()`） |
+| 弱引用 | 不支持 | 不支持（`TypeError: cannot create weak reference`） |
 
 ---
 
-## See Also
+## 参考
 
-- [Phase 1 Bus Design](../v1.x/phase1-bus-design.md) — Rust architecture and design decisions
-- [Task 1.12 — Development Notes](../v1.x/task-1.12-docs-examples.md) — Full development task doc with all test code
-- [Task 1.11 — Python Tests](../v1.x/task-1.11-python-tests.md) — 66-test suite with behavioral discoveries
+- [Phase 1 Bus 架构设计](../v1.x/phase1-bus-design.md) — Rust 侧架构和设计决策
+- [Task 1.11 — Python 测试记录](../v1.x/task-1.11-python-tests.md) — 66 测试套件及其行为发现
