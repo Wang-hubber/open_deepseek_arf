@@ -80,11 +80,11 @@ async def main():
 asyncio.run(main())
 ```
 
-**预期输出：**
+**运行输出：**（耗时 <1ms）
 
 ```
 已发送 → online=2, matching=2
-收到 ← type=job, payload={'task': 'train', 'lr': 0.001}
+收到 ← type=job, payload={'lr': 0.001, 'task': 'train'}
 ```
 
 ### 安装
