@@ -69,7 +69,6 @@ serde_json = "1"
 
 use arf_core::{ModelMessage, TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ── Task ────────────────────────────────────────────────────────────
 
@@ -80,14 +79,18 @@ use std::collections::HashMap;
 /// - `blocking`: "who's waiting for me" (external tasks that depend on this task)
 ///
 /// Together they reconstruct the full dependency graph across agents.
+///
+/// Note: `blocked_by` and `blocking` use `Vec<(TaskId, Vec<TaskId>)>`
+/// rather than `HashMap` because JSON object keys must be strings and
+/// `TaskId` is a compound type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: TaskId,
     pub status: TaskStatus,
     /// Local task → list of external tasks it depends on.
-    pub blocked_by: HashMap<TaskId, Vec<TaskId>>,
+    pub blocked_by: Vec<(TaskId, Vec<TaskId>)>,
     /// Local task → list of external tasks that depend on it.
-    pub blocking: HashMap<TaskId, Vec<TaskId>>,
+    pub blocking: Vec<(TaskId, Vec<TaskId>)>,
     /// Arbitrary metadata attached to the task.
     pub metadata: serde_json::Value,
 }
@@ -95,11 +98,10 @@ pub struct Task {
 
 逐行：
 - `use arf_core::{ModelMessage, TaskId, TaskStatus}` — 从 2.1 定义的共享类型导入，不重复定义
-- `use std::collections::HashMap` — 双向锁的 key 是本地 task，value 是外部 task 列表
-- `blocked_by: HashMap<TaskId, Vec<TaskId>>` — key 是本地 task ID，value 是该 task 依赖的外部 task 列表
-- `blocking: HashMap<TaskId, Vec<TaskId>>` — key 是本地 task ID，value 是依赖该 task 的外部 task 列表
+- `blocked_by: Vec<(TaskId, Vec<TaskId>)>` — 每项是 (本地 task, 依赖的外部 task 列表)。用 `Vec` 而非 `HashMap` 因为 JSON object key 必须为字符串，`TaskId` 是复合类型无法直接做 key
+- `blocking: Vec<(TaskId, Vec<TaskId>)>` — 每项是 (本地 task, 依赖它的外部 task 列表)
 - `metadata: serde_json::Value` — 任意 JSON，业务方自定义
-- 不派生 `Hash`/`Eq` — `Task` 含 `HashMap`，`Eq` 要求 value 实现 `Eq`，`serde_json::Value` 不实现 `Eq`（因为 `f64` 的 NaN 语义）。用 `PartialEq` 足够
+- 不派生 `Hash`/`Eq` — `serde_json::Value` 含 `f64` 的 NaN 语义不满足 `Eq`，用 `PartialEq` 足够
 
 ```rust
 impl Task {
@@ -108,8 +110,8 @@ impl Task {
         Self {
             id,
             status: TaskStatus::Created,
-            blocked_by: HashMap::new(),
-            blocking: HashMap::new(),
+            blocked_by: Vec::new(),
+            blocking: Vec::new(),
             metadata: serde_json::Value::Null,
         }
     }
@@ -213,14 +215,14 @@ mod tests {
         assert_eq!(task.metadata, meta);
     }
 
-    // [边界] blocked_by 为空 HashMap：任务不依赖任何外部任务
+    // [边界] blocked_by 为空 Vec：任务不依赖任何外部任务
     #[test]
     fn task_empty_blocked_by() {
         let task = Task::new(TaskId::new(NodeId::new("a")));
         assert!(task.blocked_by.is_empty());
     }
 
-    // [边界] blocking 为空 HashMap：没有外部任务依赖此任务
+    // [边界] blocking 为空 Vec：没有外部任务依赖此任务
     #[test]
     fn task_empty_blocking() {
         let task = Task::new(TaskId::new(NodeId::new("a")));
@@ -236,13 +238,11 @@ mod tests {
         let task = Task {
             id: local.clone(),
             status: TaskStatus::Blocked,
-            blocked_by: HashMap::from([
-                (local.clone(), vec![ext1.clone(), ext2.clone()]),
-            ]),
-            blocking: HashMap::new(),
+            blocked_by: vec![(local.clone(), vec![ext1.clone(), ext2.clone()])],
+            blocking: vec![],
             metadata: serde_json::Value::Null,
         };
-        let deps = task.blocked_by.get(&local).unwrap();
+        let deps = &task.blocked_by[0].1;
         assert_eq!(deps.len(), 2);
         assert!(deps.contains(&ext1));
         assert!(deps.contains(&ext2));
@@ -257,13 +257,11 @@ mod tests {
         let task = Task {
             id: local.clone(),
             status: TaskStatus::InProgress,
-            blocked_by: HashMap::new(),
-            blocking: HashMap::from([
-                (local.clone(), vec![ext_a.clone(), ext_c.clone()]),
-            ]),
+            blocked_by: vec![],
+            blocking: vec![(local.clone(), vec![ext_a.clone(), ext_c.clone()])],
             metadata: serde_json::Value::Null,
         };
-        let waiters = task.blocking.get(&local).unwrap();
+        let waiters = &task.blocking[0].1;
         assert_eq!(waiters.len(), 2);
     }
 
@@ -282,10 +280,8 @@ mod tests {
         let task = Task {
             id: local.clone(),
             status: TaskStatus::Blocked,
-            blocked_by: HashMap::from([
-                (local.clone(), vec![ext.clone()]),
-            ]),
-            blocking: HashMap::new(),
+            blocked_by: vec![(local.clone(), vec![ext.clone()])],
+            blocking: vec![],
             metadata: serde_json::json!({"reason": "waiting for tool result"}),
         };
         let json = serde_json::to_string(&task).unwrap();
@@ -365,8 +361,8 @@ mod tests {
         let task = Task {
             id: local,
             status: TaskStatus::InProgress,
-            blocked_by: HashMap::new(),
-            blocking: HashMap::new(),
+            blocked_by: Vec::new(),
+            blocking: Vec::new(),
             metadata: serde_json::json!({"desc": "A2A task"}),
         };
         let state = State {
@@ -397,10 +393,8 @@ mod tests {
             tasks: vec![Task {
                 id: task_a.clone(),
                 status: TaskStatus::Blocked,
-                blocked_by: HashMap::from([
-                    (task_a.clone(), vec![task_b.clone()]),
-                ]),
-                blocking: HashMap::new(),
+                blocked_by: vec![(task_a.clone(), vec![task_b.clone()])],
+                blocking: vec![],
                 metadata: serde_json::Value::Null,
             }],
         };
@@ -409,7 +403,7 @@ mod tests {
         let back: State = serde_json::from_str(&json).unwrap();
         assert_eq!(a_state, back);
         assert_eq!(back.tasks[0].status, TaskStatus::Blocked);
-        let deps = back.tasks[0].blocked_by.get(&task_a).unwrap();
+        let deps = &back.tasks[0].blocked_by[0].1;
         assert_eq!(deps.len(), 1);
     }
 }
