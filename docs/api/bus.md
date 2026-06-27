@@ -1179,13 +1179,15 @@ async def reconnect_after_crash():
     await crash()
 
     # 立即重连会失败 — zombie entry 仍然存在
-    with pytest.raises(Exception, match="already connected"):
+    try:
         await bus.connect(
             NodeInfo("worker/main", "worker", {}),
             MessageFilter(),
         )
+    except Exception as e:
+        print(f"重连被拒: {e}")
 
-    # 等待心跳超时清理 zombie（timeout_ms=300ms）
+    # 等待心跳超时清理 zombie（timeout_ms=300ms，等 ~500ms 确保清理完成）
     await asyncio.sleep(0.5)
 
     # 现在可以重连了
@@ -1197,6 +1199,13 @@ async def reconnect_after_crash():
 
     await w2.disconnect()
     await bus.shutdown()
+```
+
+**运行输出：**（总耗时约 0.5s —— 大部分是心跳等待）
+
+```
+重连被拒: node already connected: worker/main
+zombie 清理后重连成功
 ```
 
 ### 服务发现与初始化时序
