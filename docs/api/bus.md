@@ -70,16 +70,16 @@ async def main():
 
     # 2. 连接节点
     engine = await bus.connect(
-        NodeInfo("engine/main", "engine", {"role": "orchestrator"}),
-        MessageFilter(),
+        info=NodeInfo(node_id="engine/main", node_type="engine", capabilities={"role": "orchestrator"}),
+        filter=MessageFilter(),
     )
     worker = await bus.connect(
-        NodeInfo("worker/1", "worker", {"gpu": 0}),
-        MessageFilter(types=["job"]),
+        info=NodeInfo(node_id="worker/1", node_type="worker", capabilities={"gpu": 0}),
+        filter=MessageFilter(types=["job"]),
     )
 
     # 3. 广播消息
-    receipt = await engine.send("job", [], {"task": "train", "lr": 0.001})
+    receipt = await engine.send(msg_type="job", to=[], payload={"task": "train", "lr": 0.001})
     print(f"已发送 → online={receipt.online_nodes}, matching={receipt.matching_nodes}")
 
     # 4. 接收消息
@@ -106,25 +106,29 @@ Bus 的定向消息天然支持点对点通信。加上 `req_id` 关联和调用
 ```python
 # A 调用 B
 a = await bus.connect(
-    NodeInfo("node/a", "test", {}),
-    MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
+    info=NodeInfo(node_id="node/a", node_type="test", capabilities={}),
+    filter=MessageFilter(types=["tool_call_result"], to_match=ToMatch.DirectedToMe),
 )
 b = await bus.connect(
-    NodeInfo("node/b", "test", {}),
-    MessageFilter(types=["tool_call"], to_match=ToMatch.DirectedToMe),
+    info=NodeInfo(node_id="node/b", node_type="test", capabilities={}),
+    filter=MessageFilter(types=["tool_call"], to_match=ToMatch.DirectedToMe),
 )
 
 # A → B tool_call
-await a.send("tool_call", [NodeId("node/b")], {
-    "tool": "add", "params": [3, 4], "req_id": "r1",
-})
+await a.send(
+    msg_type="tool_call",
+    to=[NodeId(id="node/b")],
+    payload={"tool": "add", "params": [3, 4], "req_id": "r1"},
+)
 # B 侧解包并完成运算，返回结果
 req = await b.recv()
 a_val, b_val = req.payload["params"]
 result = a_val + b_val
-await b.send("tool_call_result", [NodeId("node/a")], {
-    "result": result, "req_id": req.payload["req_id"],
-})
+await b.send(
+    msg_type="tool_call_result",
+    to=[NodeId(id="node/a")],
+    payload={"result": result, "req_id": req.payload["req_id"]},
+)
 resp = await a.recv()
 print(f"3+4={resp.payload['result']}")
 ```
@@ -145,8 +149,8 @@ print(f"3+4={resp.payload['result']}")
 import json
 
 persister = await bus.connect(
-    NodeInfo("persist/store", "persist", {}),
-    MessageFilter(types=None, to_match=ToMatch.All),
+    info=NodeInfo(node_id="persist/store", node_type="persist", capabilities={}),
+    filter=MessageFilter(types=None, to_match=ToMatch.All),
 )
 
 async def persist_loop(handle, path):
@@ -166,8 +170,8 @@ async def persist_loop(handle, path):
 
 asyncio.ensure_future(persist_loop(persister, "/tmp/bus_log.jsonl"))
 
-await a.send("job", [], {"task": "train"})
-await a.send("job", [], {"task": "eval"})
+await a.send(msg_type="job", to=[], payload={"task": "train"})
+await a.send(msg_type="job", to=[], payload={"task": "eval"})
 ```
 
 **运行输出：**（`/tmp/bus_log.jsonl` 内容）
@@ -201,10 +205,11 @@ asyncio.ensure_future(recv_loop(receiver))
 
 # 模拟重试——同一订单发了 3 次
 for _ in range(3):
-    await sender.send("order", [NodeId("receiver")], {
-        "idem_key": "order-42",
-        "data": "buy 100 shares",
-    })
+    await sender.send(
+        msg_type="order",
+        to=[NodeId(id="receiver")],
+        payload={"idem_key": "order-42", "data": "buy 100 shares"},
+    )
 ```
 
 **运行输出：**（第一条被处理，后两条被跳过）
