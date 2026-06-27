@@ -937,6 +937,15 @@ async def worker_pool():
     await bus.shutdown()
 ```
 
+**运行输出：**（4 个 worker 全部收到同一条广播，耗时 <1ms）
+
+```
+worker-0 收到: type=infer, payload={'prompt': 'hello'}
+worker-1 收到: type=infer, payload={'prompt': 'hello'}
+worker-2 收到: type=infer, payload={'prompt': 'hello'}
+worker-3 收到: type=infer, payload={'prompt': 'hello'}
+```
+
 !!! note "Bus 不做负载均衡"
     Bus 向所有匹配节点广播。如果每条任务只需要一个 worker 处理，在应用层实现选择逻辑（轮询、一致性哈希、或通过 `DirectedToMe` 实现会话粘性）。
 
