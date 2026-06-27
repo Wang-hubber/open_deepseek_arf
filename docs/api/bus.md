@@ -508,7 +508,7 @@ async def recv(self) -> Message:
 | 异常类型 | match 文本 | 触发场景 |
 |-----------|-----------|---------|
 | `RuntimeError` | `"already disconnected"` | Handle 已 disconnect |
-| `Exception` | `"recv error: Closed"` | Bus 已 shutdown 且缓冲消息已全部 drain |
+| `Exception` | `"recv error: channel closed"` | Bus 已 shutdown 且缓冲消息已全部 drain |
 | `RuntimeError` | `"concurrent recv in progress"` | 另一个 `recv()` 或 `try_recv()` 正在执行 |
 
 **示例：**
