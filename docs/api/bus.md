@@ -56,6 +56,17 @@ Bus 是 ARF 的**传输基础设施**——提供广播通道 + 过滤 + 心跳�
 
 ## 快速上手
 
+### 安装
+
+```bash
+cd py-arf && ../.venv/bin/python -m maturin develop
+```
+
+```python
+from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
+print(__version__)  # "1.0.0-alpha.0"
+```
+
 ```python
 import asyncio
 from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
@@ -220,16 +231,6 @@ for _ in range(3):
 重复消息已跳过: idem_key=order-42
 ```
 
-### 安装
-
-```bash
-cd py-arf && ../.venv/bin/python -m maturin develop
-```
-
-```python
-from arf import Bus, NodeId, NodeInfo, MessageFilter, ToMatch
-print(__version__)  # "1.0.0-alpha.0"
-```
 
 ---
 
