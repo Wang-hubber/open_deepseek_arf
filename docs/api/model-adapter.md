@@ -74,7 +74,7 @@ async def main():
     )
 
     # 2. 创建 Provider
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
     print(f"Provider: {provider.name}")          # Provider: deepseek
     print(f"Models: {provider.supported_models}") # Models: ['deepseek-v4-flash']
 
@@ -88,7 +88,12 @@ async def main():
     params = ModelParams(temperature=0.7, max_tokens=256)
 
     # 5. 调用模型
-    response = await provider.chat("deepseek-v4-flash", messages, [], params)
+    response = await provider.chat(
+        model_name="deepseek-v4-flash",
+        messages=messages,
+        tools=[],
+        params=params,
+    )
 
     # 6. 读取回复
     print(f"Response: {response.message.content}")
@@ -118,14 +123,17 @@ from arf import DeepSeekConfig, DeepSeekProvider, ModelMessage, ModelParams
 
 async def main():
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
     messages = [ModelMessage(role="user", content="Count from 1 to 5.")]
     params = ModelParams(temperature=0.7, max_tokens=128)
 
     # chat_stream 返回 (chunks, response) 元组
     chunks, response = await provider.chat_stream(
-        "deepseek-v4-flash", messages, [], params
+        model_name="deepseek-v4-flash",
+        messages=messages,
+        tools=[],
+        params=params,
     )
 
     for chunk in chunks:
@@ -157,7 +165,7 @@ from arf import DeepSeekConfig, DeepSeekProvider, ModelMessage, ModelParams, Too
 
 async def main():
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
     # 定义工具 —— JSON Schema 格式
     tools = [
@@ -177,7 +185,12 @@ async def main():
     messages = [ModelMessage(role="user", content="What's the weather in Beijing?")]
     params = ModelParams()
 
-    response = await provider.chat("deepseek-v4-flash", messages, tools, params)
+    response = await provider.chat(
+        model_name="deepseek-v4-flash",
+        messages=messages,
+        tools=tools,
+        params=params,
+    )
 
     print(f"Finish: {response.finish_reason}")
     if response.tool_calls:
@@ -209,7 +222,7 @@ from arf import DeepSeekConfig, DeepSeekProvider, ModelMessage, ModelParams, Too
 
 async def main():
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
     tools = [
         ToolDef(
@@ -225,7 +238,12 @@ async def main():
 
     # ── 第一轮：模型决定调用工具 ──
     msgs = [ModelMessage(role="user", content="What's the weather in Beijing?")]
-    r1 = await provider.chat("deepseek-v4-flash", msgs, tools, ModelParams())
+    r1 = await provider.chat(
+        model_name="deepseek-v4-flash",
+        messages=msgs,
+        tools=tools,
+        params=ModelParams(),
+    )
 
     print(f"第一轮 finish: {r1.finish_reason}")
     # 第一轮 finish: tool_calls
@@ -263,7 +281,12 @@ async def main():
     ]
 
     # ── 第二轮：模型基于工具结果回复 ──
-    r2 = await provider.chat("deepseek-v4-flash", msgs2, [], ModelParams())
+    r2 = await provider.chat(
+        model_name="deepseek-v4-flash",
+        messages=msgs2,
+        tools=[],
+        params=ModelParams(),
+    )
 
     print(f"第二轮 finish: {r2.finish_reason}")
     print(f"最终回复: {r2.message.content}")
@@ -300,9 +323,9 @@ async def main():
 
     # 2. 创建 Provider 并连接到 Bus
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
-    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+    node = await provider.connect_to_bus(bus=bus, node_id=NodeId(id="model/deepseek"))
     print(f"节点已连接: {node}")
 
     # 3. 创建 Engine 端 —— 模拟 Engine 发 model_call
@@ -315,10 +338,10 @@ async def main():
         types=["model_response", "model_response_chunk"],
         to_match=ToMatch.BroadcastAndDirectedToMe,
     )
-    engine = await bus.connect(engine_info, engine_flt)
+    engine = await bus.connect(info=engine_info, filter=engine_flt)
 
     # 4. Engine 发送 model_call → Bus → ModelAdapterNode → DeepSeek API
-    await engine.send("model_call", [NodeId("model/deepseek")], {
+    await engine.send(msg_type="model_call", to=[NodeId(id="model/deepseek")], payload={
         "messages": [
             {"role": "user", "content": "Say hello in one word."}
         ],
@@ -374,18 +397,18 @@ async def main():
 
     # 创建三个 Provider 并全部连接到 Bus
     ds = DeepSeekProvider(
-        DeepSeekConfig(api_key="sk-ds", models=["deepseek-v4-flash"])
+        config=DeepSeekConfig(api_key="sk-ds", models=["deepseek-v4-flash"])
     )
     oa = OpenAIProvider(
-        OpenAIConfig(api_key="sk-oa", models=["gpt-4o"])
+        config=OpenAIConfig(api_key="sk-oa", models=["gpt-4o"])
     )
     an = AnthropicProvider(
-        AnthropicConfig(api_key="sk-an", models=["claude-sonnet-4-6"])
+        config=AnthropicConfig(api_key="sk-an", models=["claude-sonnet-4-6"])
     )
 
-    node_ds = await ds.connect_to_bus(bus, NodeId("model/deepseek"))
-    node_oa = await oa.connect_to_bus(bus, NodeId("model/openai"))
-    node_an = await an.connect_to_bus(bus, NodeId("model/anthropic"))
+    node_ds = await ds.connect_to_bus(bus=bus, node_id=NodeId(id="model/deepseek"))
+    node_oa = await oa.connect_to_bus(bus=bus, node_id=NodeId(id="model/openai"))
+    node_an = await an.connect_to_bus(bus=bus, node_id=NodeId(id="model/anthropic"))
 
     # 查看 Bus 上的所有模型节点
     graph = bus.graph()
@@ -510,7 +533,12 @@ params = ModelParams(
     extra={"reasoning_effort": "high"},
 )
 
-response = await provider.chat("deepseek-v4-pro", messages, [], params)
+response = await provider.chat(
+    model_name="deepseek-v4-pro",
+    messages=messages,
+    tools=[],
+    params=params,
+)
 
 reasoning = response.message.extra.get("reasoning_content")
 if reasoning:
@@ -627,7 +655,7 @@ config = AnthropicConfig(
 from arf import DeepSeekConfig, DeepSeekProvider
 
 config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-provider = DeepSeekProvider(config)
+provider = DeepSeekProvider(config=config)
 ```
 
 **属性：**
@@ -669,7 +697,7 @@ print(response.message.content)
 print(response.usage.total_tokens)
 ```
 
-#### `await provider.chat_stream(model_name, messages, tools, params)`
+#### `await provider.chat_stream(model_name=model_name, messages=messages, tools=tools, params=params)`
 
 流式对话，返回 `(list[ModelResponseChunk], ModelResponsePayload)` 元组。
 
@@ -677,8 +705,10 @@ print(response.usage.total_tokens)
 
 ```python
 chunks, response = await provider.chat_stream(
-    "deepseek-v4-flash",
-    messages, tools, params,
+    model_name="deepseek-v4-flash",
+    messages=messages,
+    tools=tools,
+    params=params,
 )
 for c in chunks:
     if c.chunk_type == "text":
@@ -692,7 +722,7 @@ for c in chunks:
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `bus` | `Bus` | 目标 Bus 实例 |
-| `node_id` | `NodeId` | 节点 ID，如 `NodeId("model/deepseek")` |
+| `node_id` | `NodeId` | 节点 ID，如 `NodeId(id="model/deepseek")` |
 
 | 返回值 | 类型 | 说明 |
 |--------|------|------|
@@ -700,7 +730,7 @@ for c in chunks:
 
 ```python
 bus = Bus()
-node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+node = await provider.connect_to_bus(bus=bus, node_id=NodeId(id="model/deepseek"))
 # node 现在在后台运行
 
 # ... 通过 Bus 发送 model_call ...
@@ -831,7 +861,7 @@ print(tool.parameters["required"])  # ['city']
 | `model` | `str` | 实际使用的模型名 |
 
 ```python
-response = await provider.chat("deepseek-v4-flash", messages, [], params)
+response = await provider.chat(model_name="deepseek-v4-flash", messages=messages, tools=[], params=params)
 
 print(response.finish_reason)   # stop
 print(response.model)           # deepseek-v4-flash
@@ -896,7 +926,7 @@ if response.usage:
 | `usage` | `Usage` or `None` | Token 统计（`chunk_type="usage"`，流的最后一个 chunk） |
 
 ```python
-chunks, response = await provider.chat_stream(model, msgs, tools, params)
+chunks, response = await provider.chat_stream(model_name=model, messages=msgs, tools=tools, params=params)
 
 for c in chunks:
     match c.chunk_type:
@@ -942,7 +972,7 @@ for c in chunks:
 关闭后台监听循环，从 Bus 断开连接。**幂等性：** 第二次调用抛出 `RuntimeError("node already shut down")`。
 
 ```python
-node = await provider.connect_to_bus(bus, NodeId("model/test"))
+node = await provider.connect_to_bus(bus=bus, node_id=NodeId(id="model/test"))
 print(node.node_id)  # model/test
 
 await node.shutdown()
@@ -970,7 +1000,7 @@ async def safe_chat(provider, model, messages, max_attempts=3):
     """应用层兜底重试 —— 处理 Provider 内重试耗尽后的场景."""
     for attempt in range(1, max_attempts + 1):
         try:
-            return await provider.chat(model, messages, [], ModelParams())
+            return await provider.chat(model_name=model, messages=messages, tools=[], params=ModelParams())
         except Exception as e:
             error_msg = str(e)
             if "401" in error_msg or "403" in error_msg:
@@ -983,10 +1013,10 @@ async def safe_chat(provider, model, messages, max_attempts=3):
 
 async def main():
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
     msgs = [ModelMessage(role="user", content="Hello")]
-    response = await safe_chat(provider, "deepseek-v4-flash", msgs)
+    response = await safe_chat(provider=provider, model="deepseek-v4-flash", messages=msgs)
     print(response.message.content)
 
 asyncio.run(main())
@@ -1002,7 +1032,7 @@ from arf import DeepSeekConfig, DeepSeekProvider, ModelMessage, ModelParams
 
 async def main():
     config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash", "deepseek-v4-pro"])
-    provider = DeepSeekProvider(config)
+    provider = DeepSeekProvider(config=config)
 
     # 用 Pro 模型 + thinking enabled
     params = ModelParams(
@@ -1019,7 +1049,7 @@ async def main():
         )
     ]
 
-    response = await provider.chat("deepseek-v4-pro", msgs, [], params)
+    response = await provider.chat(model_name="deepseek-v4-pro", messages=msgs, tools=[], params=params)
 
     # 输出思考过程
     extra = response.message.extra
@@ -1081,7 +1111,7 @@ async def main():
         base_url="https://api.deepseek.com",
         api_path="/anthropic/messages",
     )
-    provider = AnthropicProvider(config)
+    provider = AnthropicProvider(config=config)
 
     # system 消息会被提取为顶层 system 参数
     messages = [
@@ -1133,17 +1163,17 @@ async def main():
 
     # 注册两个模型节点
     provider_flash = DeepSeekProvider(
-        DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
+        config=DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash"])
     )
     provider_pro = DeepSeekProvider(
-        DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-pro"])
+        config=DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-pro"])
     )
 
-    node_flash = await provider_flash.connect_to_bus(bus, NodeId("model/flash"))
-    node_pro = await provider_pro.connect_to_bus(bus, NodeId("model/pro"))
+    node_flash = await provider_flash.connect_to_bus(bus=bus, node_id=NodeId(id="model/flash"))
+    node_pro = await provider_pro.connect_to_bus(bus=bus, node_id=NodeId(id="model/pro"))
 
     # 根据模型名查找
-    target = await find_model_node(bus, "deepseek-v4-pro")
+    target = await find_model_node(bus=bus, model_name="deepseek-v4-pro")
     if target:
         print(f"Found node for deepseek-v4-pro: {target.node_id}")
         # engine.send("model_call", [target.node_id], payload)
@@ -1176,9 +1206,9 @@ async def main():
     nodes = []
     for i, model in enumerate(["deepseek-v4-flash", "deepseek-v4-pro"]):
         provider = DeepSeekProvider(
-            DeepSeekConfig(api_key="sk-xxx", models=[model])
+        config=DeepSeekConfig(api_key="sk-xxx", models=[model])
         )
-        node = await provider.connect_to_bus(bus, NodeId(f"model/{i}"))
+        node = await provider.connect_to_bus(bus=bus, node_id=NodeId(id=f"model/{i}"))
         nodes.append(node)
 
     print(f"在线节点: {len(bus.graph().nodes)}")
