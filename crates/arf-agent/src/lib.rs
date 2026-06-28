@@ -5,10 +5,12 @@
 //! names and knows nothing about the Bus, NodeIds, or resource availability.
 //! Engine (Phase 4) reads AgentConfig and resolves resources at runtime.
 
+mod config;
 mod model;
 mod resource;
 mod tool;
 
+pub use config::AgentConfig;
 pub use model::ModelSpec;
 pub use resource::ResourceSpec;
 pub use tool::{ToolPermission, ToolSpec};
