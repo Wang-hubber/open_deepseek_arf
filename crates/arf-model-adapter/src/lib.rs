@@ -8,10 +8,12 @@
 //! Multiple ModelAdapter nodes can run simultaneously, each serving a
 //! different model/provider.
 
+mod deepseek;
 mod error;
 mod provider;
 mod types;
 
+pub use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub use error::ProviderError;
 pub use provider::Provider;
 pub use types::{
