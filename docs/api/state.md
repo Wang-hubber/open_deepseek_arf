@@ -2,7 +2,7 @@
 
 > **Phase 2** · 纯数据结构 · `arf-core` + `arf-state` crate
 >
-> Rust-only，不暴露 Python API。Engine (Phase 3) 持有并操作 State。
+> Rust-only，不暴露 Python API。Engine (Phase 4) 持有并操作 State。
 
 ---
 
@@ -28,13 +28,17 @@ arf-state (aggregate, 仅依赖 arf-core + serde)
 ```
 Bus (实时流动)                   State (持久化)
   │                                │
-  ├─ model_call ──────────────→   messages (追加)
-  ├─ tool_call  ──────────────→   (实时, 不入 State)
+  ├─ model_call 请求              │
+  ├─ model_response               ├─→ messages (完整对话历史)
+  │   (含 text 或 tool_calls)     │     ├─ role: "user"
+  │                                │     ├─ role: "assistant" (+ tool_calls)
+  ├─ tool_call 请求               │     └─ role: "tool" (+ tool_call_id)
+  ├─ tool_result                  │
   │                                │
-  └─ A2A 协调消息 ────────────→   tasks (生命周期管理)
+  └─ A2A 协调消息 ──────────────→ tasks (生命周期管理)
 ```
 
-`messages` 管 ReAct 上下文恢复，`tasks` 管 A2A 协调。ReAct 循环消息（model_call/tool_call）在 Bus 上实时流动，不存入 State。
+`messages` 存储**模型的视角的完整对话**——每一条都是 `ModelMessage`，包括用户的输入、模型的文本/工具调用回复、以及工具执行结果。这与 Bus 上流动的请求/响应消息是不同的概念：Bus 上的 `model_call` 是 Engine 发给 ModelAdapter 的请求，`model_response` 是 ModelAdapter 返回的结果；而 `State.messages` 存储的是模型看到的对话上下文，用于下一轮 `model_call` 时拼接 prompt。
 
 ---
 
@@ -216,7 +220,7 @@ pub struct State {
 | `State::new()` | 空 messages + tasks |
 | `State::default()` | 等于 `new()` |
 
-纯数据结构。Engine (Phase 3) 持有 `State` 实例，负责创建 task、状态转换、级联传播、持久化读写。ModelAdapter (Phase 5) 负责 `messages` 中 `extra` 字段的读写。
+纯数据结构。Engine (Phase 4) 持有 `State` 实例，负责创建 task、状态转换、级联传播、持久化读写。ModelAdapter (Phase 5) 负责 `messages` 中 `extra` 字段的读写。
 
 ---
 
@@ -271,7 +275,7 @@ serde + serde_json
       │     │
       │     └── arf-state ─── Task, State
       │
-      └── (arf-bus, arf-engine, arf-agent — Phase 1/3/4)
+      └── (arf-bus, arf-agent, arf-engine — Phase 1/3/4)
 ```
 
 `arf-state` 不依赖 `arf-bus` 或其他 ARF crate。纯数据无 I/O。
