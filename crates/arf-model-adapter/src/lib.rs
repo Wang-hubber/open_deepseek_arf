@@ -12,6 +12,7 @@ mod anthropic;
 mod convert;
 mod deepseek;
 mod error;
+mod node;
 mod openai;
 mod provider;
 mod types;
@@ -19,6 +20,7 @@ mod types;
 pub use anthropic::{AnthropicConfig, AnthropicProvider};
 pub use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub use error::ProviderError;
+pub use node::ModelAdapterNode;
 pub use openai::{OpenAIConfig, OpenAIProvider};
 pub use provider::Provider;
 pub use types::{
