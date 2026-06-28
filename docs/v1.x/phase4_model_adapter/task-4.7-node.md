@@ -304,44 +304,112 @@ async fn send_error_response(
 
 ---
 
-## 测试
+## Bus 集成测试（真实 API）
+
+除 node.rs 的 3 个 mock 单元测试外，`tests/bus_integration.rs` 提供了 8 个完整的 Bus 集成测试——Engine → Bus → ModelAdapterNode → Provider → 真实 DeepSeek API 的全链路验证。
+
+### 测试架构
+
+```
+EngineStub              Bus                 ModelAdapterNode          DeepSeek API
+    │                    │                       │                      │
+    │── model_call ────→ │ ── model_call ──────→ │                      │
+    │                    │                       │── HTTP POST ────────→│
+    │                    │                       │←── response ─────────│
+    │←── model_response─ │ ←─ model_response ─── │                      │
+    │←── *chunks* ────── │ ←─ model_response_chunk (streaming)          │
+```
+
+`EngineStub` 是最小化的 Engine 模拟——连接 Bus、发送 model_call、收集 chunks + 最终 model_response。
+
+### 测试场景（8 个，全部通过）
+
+| # | 测试 | 场景 | 验证点 |
+|---|------|------|--------|
+| 1 | `basic_chat` | 基础对话 | model_call → model_response 闭环，content 非空，finish_reason="stop" |
+| 2 | `multi_round_chat` | 多轮对话 | 3 轮历史消息，模型正确理解上下文（返回名字"Alice"） |
+| 3 | `single_tool_call` | 工具调用 | finish_reason="tool_calls"，tool_calls[0].name 正确 |
+| 4 | `multi_tool_call_with_results` | 多工具 + 结果回传 | 2 个 tool_calls → 模拟结果 → 模型最终回复 |
+| 5 | `thinking_enabled` | 思考开启 | deepseek-v4-pro + thinking:{type:"enabled"} → reasoning_content |
+| 6 | `thinking_disabled` | 思考关闭 | thinking:{type:"disabled"} → has reasoning_content:false |
+| 7 | `streaming` | 流式响应 | model_response_chunk 逐个经 Bus 到达，chunks 非空，final content 拼接正确 |
+| 8 | `invalid_payload` | 错误处理 | 无效 JSON → error response 而非 panic |
+
+### 测试代码（核心结构）
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use arf_bus::Bus;
-    use std::time::Duration;
-    use crate::provider::Provider;
-    // Uses a mock provider (same as in provider.rs tests)
+// tests/bus_integration.rs
+
+/// 最小化 Engine 模拟 — 连接 Bus，发送 model_call，收集响应.
+struct EngineStub {
+    handle: arf_bus::NodeHandle,
+}
+
+impl EngineStub {
+    async fn new(bus: &Bus, name: &str) -> Self { /* ... */ }
+
+    /// 发送 model_call，如果是 streaming 则收集所有 chunk，
+    /// 最后返回 (final_model_response, chunks).
+    async fn call(
+        &mut self,
+        target: &NodeId,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDef>,
+        params: ModelParams,
+        stream: bool,
+    ) -> (serde_json::Value, Vec<serde_json::Value>) {
+        let payload = ModelCallPayload { messages, tools, model_params: params, stream };
+        self.handle.send("model_call", vec![target.clone()], serde_json::to_value(&payload).unwrap()).await.unwrap();
+
+        let mut chunks = Vec::new();
+        loop {
+            let msg = self.handle.recv().await.unwrap();
+            if msg.msg_type == "model_response_chunk" {
+                chunks.push(msg.payload);
+            } else if msg.msg_type == "model_response" {
+                return (msg.payload, chunks);
+            }
+        }
+    }
 }
 ```
 
-### node.rs — 3 tests
+### 测试样例：流式响应（通过 Bus）
 
-| 测试 | 覆盖 |
-|------|------|
-| node_connects_and_broadcasts | Bus::connect 成功，graph 可见 |
-| node_receives_model_call | 模拟 model_call → node 回复 model_response |
-| node_shutdown_cleanup | shutdown 后 graph 不再含此节点 |
+```
+[streaming] chunk count: 15
+[streaming] chunk[0]: Some("1")
+[streaming] chunk[1]: Some("...")
+...
+[streaming] full content: "1...  \n2...  \n3...  \n4...  \n5."
+```
 
-需要真实的 Bus 实例 + 定向消息发送。
+15 个 chunk 通过 Bus 逐个传输，最终 `model_response` 携带完整拼接内容。
+
+### 运行方式
+
+```bash
+export DEEPSEEK_API_KEY=sk-xxx
+cargo test --package arf-model-adapter --test bus_integration -- --ignored --nocapture
+```
 
 ---
 
 ## 测试汇总
 
-| 分类 | 测试数 |
-|------|--------|
-| node.rs | 3 |
-| **累计** (4.1–4.7) | **60** |
+| 分类 | 文件 | 测试数 |
+|------|------|--------|
+| node 单元测试 (mock) | `node.rs` | 3 |
+| Bus 集成测试 (真实 API) | `tests/bus_integration.rs` | 8 |
+| **累计** (4.1–4.7) | | **71** |
 
 ---
 
 ## 交付标准
 
-- `cargo test --workspace` 全部通过（295 + 3 = 298 tests）
-- ModelAdapterNode 正确收发 Bus 消息
-- 流式/非流式双路径正常工作
-- 错误处理正确（无效 payload → error response）
-- shutdown 清理干净（node_offline 广播）
+- [x] `cargo test --workspace` 全部通过（299 unit + 10 + 8 = 317 tests）
+- [x] ModelAdapterNode 正确收发 Bus 消息
+- [x] 流式/非流式双路径正常工作
+- [x] 错误处理正确（无效 payload → error response）
+- [x] shutdown 清理干净（node_offline 广播）
+- [x] 完整 Bus 链路验证：Engine → Bus → Node → API → Node → Bus → Engine

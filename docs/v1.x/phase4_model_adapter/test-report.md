@@ -15,7 +15,9 @@
 
 ## 测试结果总览
 
-**10/10 通过，0 失败。** 299 unit tests + 10 integration tests = 309 total。
+**18 个集成测试全部通过，0 失败。** 299 unit + 18 integration = 317 total。
+
+### Provider 直连测试（`deepseek_live.rs` — 10 tests）
 
 | # | 测试 | Provider | 格式 | 结果 |
 |---|------|----------|------|------|
@@ -521,6 +523,34 @@ mod anthropic_format {
 
 ---
 
+### Bus 集成测试（`bus_integration.rs` — 8 tests，全部通过）
+
+完整链路验证：Engine → Bus → ModelAdapterNode → Provider → HTTP API → Node → Bus → Engine。
+
+| # | 测试 | 场景 | 结果 |
+|---|------|------|------|
+| 1 | `basic_chat` | 基础对话 | ✅ |
+| 2 | `multi_round_chat` | 多轮对话 | ✅ |
+| 3 | `single_tool_call` | 工具调用 | ✅ |
+| 4 | `multi_tool_call_with_results` | 多工具 + 结果回传 | ✅ |
+| 5 | `thinking_enabled` | 思考开启 | ✅ |
+| 6 | `thinking_disabled` | 思考关闭 | ✅ |
+| 7 | `streaming` | 流式响应（chunk 经 Bus 传输） | ✅ |
+| 8 | `invalid_payload` | 错误处理 | ✅ |
+
+**Bus 流式输出：**
+```
+[streaming] chunk count: 15
+[streaming] full content: "1...  \n2...  \n3...  \n4...  \n5."
+```
+
+**错误处理：**
+```
+[error] response: {"error":"invalid payload: invalid type: ..."}
+```
+
+---
+
 ## 测试中发现的问题与修复
 
 ### 问题 1：Anthropic 端点 404
@@ -593,17 +623,18 @@ DeepSeek API 同时通过 OpenAI 和 Anthropic 两种格式的 10 个测试，�
 4. **工具调用链路完整** — tool_call → tool_result → 最终回复的完整闭环
 5. **思考模式正确** — `thinking_enabled` → `thinking` 显式开关 + `reasoning_effort` 顶层参数 + `reasoning_content` 提取
 6. **共享模块复用有效** — `convert.rs` 的 SSE 解析和重试逻辑被三个 Provider 共享
+7. **Bus 集成完整** — 8 个测试覆盖 Engine → Bus → Node → API → Node → Bus → Engine 全链路，流式 chunk 经 Bus 逐条传输到达
 
 ## 运行方式
 
 ```bash
-# 全部 10 个测试
+# Provider 直连测试（10 个）
 export DEEPSEEK_API_KEY=sk-xxx
 cargo test --package arf-model-adapter --test deepseek_live -- --ignored --nocapture
 
-# 仅 OpenAI 格式
-cargo test --package arf-model-adapter --test deepseek_live openai_format -- --ignored --nocapture
+# Bus 集成测试（8 个，完整链路 Engine→Bus→Node→API）
+cargo test --package arf-model-adapter --test bus_integration -- --ignored --nocapture
 
-# 仅 Anthropic 格式
-cargo test --package arf-model-adapter --test deepseek_live anthropic_format -- --ignored --nocapture
+# 全部 18 个集成测试
+cargo test --package arf-model-adapter --test deepseek_live --test bus_integration -- --ignored --nocapture
 ```
