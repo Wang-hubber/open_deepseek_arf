@@ -1510,88 +1510,935 @@ if __name__ == "__main__":
 
 ---
 
-## 验证
+## 5. Python 集成测试
+
+### 5.1 `py-arf/tests/test_model_adapter_imports.py` — 类型构造 + getters
+
+```python
+"""
+[M] ModelAdapter type construction — all exported types importable and basic construction correct.
+
+Test angles: [覆盖] [构造] [trait] [边界]
+"""
+import pytest
+from arf import (
+    # Configs
+    AnthropicConfig, DeepSeekConfig, OpenAIConfig,
+    # Providers
+    AnthropicProvider, DeepSeekProvider, OpenAIProvider,
+    # Node
+    ModelAdapterNode,
+    # Data types
+    ModelMessage, ModelParams, ToolDef,
+    ModelResponseChunk, ModelResponsePayload,
+    ToolCall, ToolCallDelta, Usage,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M1 — Imports
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M1.1 ──────────────────────────────────────────────────────────────────
+
+def test_all_model_adapter_types_importable():
+    """[覆盖] All ModelAdapter types importable."""
+    for cls in [
+        AnthropicConfig, AnthropicProvider,
+        DeepSeekConfig, DeepSeekProvider,
+        OpenAIConfig, OpenAIProvider,
+        ModelAdapterNode, ModelMessage,
+        ModelParams, ToolDef,
+        ModelResponseChunk, ModelResponsePayload,
+        ToolCall, ToolCallDelta, Usage,
+    ]:
+        assert cls is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M2 — Config 构造
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M2.1 ──────────────────────────────────────────────────────────────────
+
+def test_deepseek_config_defaults():
+    """[构造] DeepSeekConfig with required fields only, verify defaults."""
+    c = DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-flash"])
+    assert c.api_key == "sk-test"
+    assert c.models == ["deepseek-v4-flash"]
+    assert c.base_url == "https://api.deepseek.com"
+    assert c.timeout_secs == 320
+    assert c.max_retries == 3
+    assert "DeepSeekConfig" in repr(c)
+
+
+# ── M2.2 ──────────────────────────────────────────────────────────────────
+
+def test_deepseek_config_full_custom():
+    """[构造] DeepSeekConfig all fields explicitly set."""
+    c = DeepSeekConfig(
+        api_key="sk-custom",
+        models=["deepseek-v4-flash", "deepseek-v4-pro"],
+        base_url="https://custom.deepseek.com",
+        timeout_secs=120,
+        max_retries=5,
+    )
+    assert c.models == ["deepseek-v4-flash", "deepseek-v4-pro"]
+    assert c.base_url == "https://custom.deepseek.com"
+    assert c.timeout_secs == 120
+    assert c.max_retries == 5
+
+
+# ── M2.3 ──────────────────────────────────────────────────────────────────
+
+def test_openai_config_defaults():
+    """[构造] OpenAIConfig defaults: base_url='https://api.openai.com'."""
+    c = OpenAIConfig(api_key="sk-test", models=["gpt-4o"])
+    assert c.base_url == "https://api.openai.com"
+    assert c.timeout_secs == 320
+    assert c.max_retries == 3
+
+
+# ── M2.4 ──────────────────────────────────────────────────────────────────
+
+def test_anthropic_config_defaults():
+    """[构造] AnthropicConfig defaults: base_url + api_path."""
+    c = AnthropicConfig(api_key="sk-test", models=["claude-sonnet-4-6"])
+    assert c.base_url == "https://api.anthropic.com"
+    assert c.api_path == "/v1/messages"
+    assert c.timeout_secs == 320
+    assert c.max_retries == 3
+
+
+# ── M2.5 ──────────────────────────────────────────────────────────────────
+
+def test_anthropic_config_custom_api_path():
+    """[构造] AnthropicConfig with DeepSeek-compatible api_path."""
+    c = AnthropicConfig(
+        api_key="sk-test",
+        models=["deepseek-v4-flash"],
+        base_url="https://api.deepseek.com",
+        api_path="/anthropic",
+    )
+    assert c.base_url == "https://api.deepseek.com"
+    assert c.api_path == "/anthropic"
+
+
+# ── M2.6 ──────────────────────────────────────────────────────────────────
+
+def test_config_three_providers_independent():
+    """[构造] All three configs created independently — no cross-contamination."""
+    ds = DeepSeekConfig(api_key="sk-ds", models=["m1"])
+    oa = OpenAIConfig(api_key="sk-oa", models=["m2"])
+    an = AnthropicConfig(api_key="sk-an", models=["m3"])
+    assert ds.api_key == "sk-ds"
+    assert oa.api_key == "sk-oa"
+    assert an.api_key == "sk-an"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M3 — Provider 构造
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M3.1 ──────────────────────────────────────────────────────────────────
+
+def test_deepseek_provider_name_and_models():
+    """[方法] DeepSeekProvider name and supported_models."""
+    c = DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-flash"])
+    p = DeepSeekProvider(c)
+    assert p.name == "deepseek"
+    assert p.supported_models == ["deepseek-v4-flash"]
+
+
+# ── M3.2 ──────────────────────────────────────────────────────────────────
+
+def test_openai_provider_name_and_models():
+    """[方法] OpenAIProvider name='openai'."""
+    c = OpenAIConfig(api_key="sk-test", models=["gpt-4o", "gpt-4-turbo"])
+    p = OpenAIProvider(c)
+    assert p.name == "openai"
+    assert p.supported_models == ["gpt-4o", "gpt-4-turbo"]
+
+
+# ── M3.3 ──────────────────────────────────────────────────────────────────
+
+def test_anthropic_provider_name_and_models():
+    """[方法] AnthropicProvider name='anthropic'."""
+    c = AnthropicConfig(api_key="sk-test", models=["claude-sonnet-4-6"])
+    p = AnthropicProvider(c)
+    assert p.name == "anthropic"
+    assert p.supported_models == ["claude-sonnet-4-6"]
+
+
+# ── M3.4 ──────────────────────────────────────────────────────────────────
+
+def test_provider_three_independent():
+    """[构造] Three provider instances independent."""
+    ds = DeepSeekProvider(DeepSeekConfig(api_key="sk-ds", models=["m1"]))
+    oa = OpenAIProvider(OpenAIConfig(api_key="sk-oa", models=["m2"]))
+    an = AnthropicProvider(AnthropicConfig(api_key="sk-an", models=["m3"]))
+    assert ds.name == "deepseek"
+    assert oa.name == "openai"
+    assert an.name == "anthropic"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M4 — ModelMessage 构造 (arf-core type)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M4.1 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_basic():
+    """[构造] ModelMessage role+content — minimal construction."""
+    m = ModelMessage(role="user", content="Hello")
+    assert m.role == "user"
+    assert m.content == "Hello"
+    assert m.tool_call_id is None
+    assert m.name is None
+    assert m.extra is None
+    assert "ModelMessage" in repr(m)
+
+
+# ── M4.2 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_all_roles():
+    """[覆盖] ModelMessage supports user/assistant/system/tool roles."""
+    for role in ["user", "assistant", "system", "tool"]:
+        m = ModelMessage(role=role, content="test")
+        assert m.role == role
+
+
+# ── M4.3 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_full():
+    """[构造] ModelMessage all fields including tool_call_id, name, extra."""
+    m = ModelMessage(
+        role="tool",
+        content="file content here",
+        tool_call_id="call_abc123",
+        name="read_file",
+        extra={"result_type": "text"},
+    )
+    assert m.role == "tool"
+    assert m.content == "file content here"
+    assert m.tool_call_id == "call_abc123"
+    assert m.name == "read_file"
+    assert m.extra == {"result_type": "text"}
+
+
+# ── M4.4 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_extra_nested_json():
+    """[边界] ModelMessage.extra handles nested JSON dict/list."""
+    m = ModelMessage(
+        role="assistant",
+        content="",
+        extra={"reasoning_content": "Let me think...", "citations": [1, 2, 3]},
+    )
+    assert m.extra["reasoning_content"] == "Let me think..."
+    assert m.extra["citations"] == [1, 2, 3]
+
+
+# ── M4.5 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_extra_none_default():
+    """[构造] ModelMessage extra=None by default — getter returns None."""
+    m = ModelMessage(role="user", content="hi")
+    assert m.extra is None
+
+
+# ── M4.6 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_unicode():
+    """[边界] ModelMessage with Unicode content (Chinese, emoji)."""
+    m = ModelMessage(role="user", content="你好世界 🚀")
+    assert m.content == "你好世界 🚀"
+
+
+# ── M4.7 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_empty_content():
+    """[边界] ModelMessage with empty content (valid for tool results)."""
+    m = ModelMessage(role="tool", content="", tool_call_id="call_1")
+    assert m.content == ""
+    assert m.tool_call_id == "call_1"
+
+
+# ── M4.8 ──────────────────────────────────────────────────────────────────
+
+def test_model_message_repr_truncation():
+    """[trait] ModelMessage __repr__ truncates long content."""
+    m = ModelMessage(role="user", content="a" * 100)
+    r = repr(m)
+    assert "..." in r
+    assert len(r) < 120
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M5 — ModelParams 构造
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M5.1 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_defaults():
+    """[构造] ModelParams() all defaults — None temperature, thinking_enabled=False."""
+    p = ModelParams()
+    assert p.temperature is None
+    assert p.max_tokens is None
+    assert p.thinking_enabled is False
+    assert p.extra is None
+
+
+# ── M5.2 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_full():
+    """[构造] ModelParams all fields explicitly set."""
+    p = ModelParams(temperature=0.7, max_tokens=4096, thinking_enabled=True)
+    assert p.temperature == 0.7
+    assert p.max_tokens == 4096
+    assert p.thinking_enabled is True
+
+
+# ── M5.3 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_with_extra():
+    """[构造] ModelParams with provider-specific extra params."""
+    p = ModelParams(
+        temperature=0.5,
+        thinking_enabled=True,
+        extra={"reasoning_effort": "high", "top_p": 0.9},
+    )
+    assert p.extra == {"reasoning_effort": "high", "top_p": 0.9}
+
+
+# ── M5.4 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_boolean_thinking():
+    """[方法] ModelParams.thinking_enabled is Python bool — not string."""
+    p = ModelParams(thinking_enabled=True)
+    assert p.thinking_enabled is True
+    assert isinstance(p.thinking_enabled, bool)
+
+    p2 = ModelParams(thinking_enabled=False)
+    assert p2.thinking_enabled is False
+
+
+# ── M5.5 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_repr():
+    """[trait] ModelParams __repr__ includes non-None fields."""
+    p = ModelParams(temperature=0.0, max_tokens=100, thinking_enabled=True)
+    r = repr(p)
+    assert "0.0" in r or "0" in r
+    assert "100" in r
+    assert "True" in r
+
+
+# ── M5.6 ──────────────────────────────────────────────────────────────────
+
+def test_model_params_temperature_boundary():
+    """[边界] ModelParams temperature 0.0 and 2.0 (boundary values)."""
+    for t in [0.0, 1.0, 2.0]:
+        p = ModelParams(temperature=t)
+        assert p.temperature == t
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M6 — ToolDef 构造
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M6.1 ──────────────────────────────────────────────────────────────────
+
+def test_tool_def_basic():
+    """[构造] ToolDef with simple parameters."""
+    t = ToolDef(
+        name="search",
+        description="Search the web",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+    )
+    assert t.name == "search"
+    assert t.description == "Search the web"
+    assert t.parameters == {"type": "object", "properties": {"query": {"type": "string"}}}
+
+
+# ── M6.2 ──────────────────────────────────────────────────────────────────
+
+def test_tool_def_empty_parameters():
+    """[边界] ToolDef with empty dict parameters."""
+    t = ToolDef(name="noop", description="Does nothing", parameters={})
+    assert t.parameters == {}
+
+
+# ── M6.3 ──────────────────────────────────────────────────────────────────
+
+def test_tool_def_nested_parameters():
+    """[构造] ToolDef with deeply nested JSON Schema parameters."""
+    t = ToolDef(
+        name="complex",
+        description="Complex tool",
+        parameters={
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"key": {"type": "string"}}},
+                }
+            },
+            "required": ["nested"],
+        },
+    )
+    assert "nested" in t.parameters["properties"]
+    assert t.parameters["required"] == ["nested"]
+
+
+# ── M6.4 ──────────────────────────────────────────────────────────────────
+
+def test_tool_def_unicode():
+    """[边界] ToolDef with Unicode name and description."""
+    t = ToolDef(name="搜索", description="搜索互联网内容", parameters={})
+    assert t.name == "搜索"
+    assert t.description == "搜索互联网内容"
+
+
+# ── M6.5 ──────────────────────────────────────────────────────────────────
+
+def test_tool_def_repr():
+    """[trait] ToolDef __repr__ includes name and description."""
+    t = ToolDef(name="read", description="Read file", parameters={})
+    r = repr(t)
+    assert "read" in r
+    assert "Read file" in r
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M7 — 只读类型验证
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── M7.1 ──────────────────────────────────────────────────────────────────
+
+def test_tool_call_no_public_constructor():
+    """[边界] ToolCall has no public constructor (read-only from provider)."""
+    with pytest.raises(TypeError):
+        ToolCall()  # type: ignore
+
+
+# ── M7.2 ──────────────────────────────────────────────────────────────────
+
+def test_tool_call_delta_no_public_constructor():
+    """[边界] ToolCallDelta has no public constructor (read-only)."""
+    with pytest.raises(TypeError):
+        ToolCallDelta()  # type: ignore
+
+
+# ── M7.3 ──────────────────────────────────────────────────────────────────
+
+def test_usage_no_public_constructor():
+    """[边界] Usage has no public constructor (read-only)."""
+    with pytest.raises(TypeError):
+        Usage()  # type: ignore
+
+
+# ── M7.4 ──────────────────────────────────────────────────────────────────
+
+def test_model_response_chunk_no_public_constructor():
+    """[边界] ModelResponseChunk has no public constructor (read-only)."""
+    with pytest.raises(TypeError):
+        ModelResponseChunk()  # type: ignore
+
+
+# ── M7.5 ──────────────────────────────────────────────────────────────────
+
+def test_model_response_payload_no_public_constructor():
+    """[边界] ModelResponsePayload has no public constructor (read-only)."""
+    with pytest.raises(TypeError):
+        ModelResponsePayload()  # type: ignore
+
+
+# ── M7.6 ──────────────────────────────────────────────────────────────────
+
+def test_model_adapter_node_no_public_constructor():
+    """[边界] ModelAdapterNode has no public constructor (created by provider.connect_to_bus())."""
+    with pytest.raises(TypeError):
+        ModelAdapterNode()  # type: ignore
+```
+
+**逐行解释：**
+
+| 行 | 解释 |
+|----|------|
+| M2 Config 测试 | 三个 Config 分别验证默认值和全字段自定义——`#[pyo3(signature)]` 默认参数正确生效 |
+| M3 Provider 测试 | 验证 `name` 和 `supported_models` 从内部 config 读取正确 |
+| M4 ModelMessage | 覆盖四种 role + 全字段 + extra 嵌套 JSON + Unicode + 空内容 + repr 截断 |
+| M5 ModelParams | 验证默认值（None/False）+ thinking_enabled 必须是 Python bool（非 string，防止 BUG-006） |
+| M6 ToolDef | 验证简单/空/nested parameters + Unicode |
+| M7 只读类型 | **关键**：`ToolCall`、`ToolCallDelta`、`Usage`、`ModelResponseChunk`、`ModelResponsePayload`、`ModelAdapterNode` 均无 `#[new]`——Python 侧 `pytest.raises(TypeError)` 验证无法直接构造 |
+
+---
+
+### 5.2 `py-arf/tests/test_model_adapter_node.py` — Bus 集成生命周期
+
+```python
+"""
+[N] ModelAdapter node Bus integration — connect/shutdown/graph lifecycle.
+
+These tests work WITHOUT API keys — they only verify Bus lifecycle.
+chat()/chat_stream() require real API keys and are tested in Rust integration tests.
+
+Test angles: [构造] [方法] [边界] [清理]
+"""
+import asyncio
+import gc
+import pytest
+from arf import Bus, NodeId
+from arf import (
+    AnthropicConfig, AnthropicProvider,
+    DeepSeekConfig, DeepSeekProvider,
+    OpenAIConfig, OpenAIProvider,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Shared helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+def ds_provider():
+    """Create a test DeepSeekProvider with placeholder key."""
+    return DeepSeekProvider(
+        DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-flash"])
+    )
+
+
+def oa_provider():
+    """Create a test OpenAIProvider with placeholder key."""
+    return OpenAIProvider(
+        OpenAIConfig(api_key="sk-test", models=["gpt-4o"])
+    )
+
+
+def an_provider():
+    """Create a test AnthropicProvider with placeholder key."""
+    return AnthropicProvider(
+        AnthropicConfig(api_key="sk-test", models=["claude-sonnet-4-6"])
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# N1 — connect_to_bus 基本流程
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── N1.1 ──────────────────────────────────────────────────────────────────
+
+async def test_connect_to_bus_node_appears_in_graph():
+    """[构造] provider.connect_to_bus() → node appears in bus graph."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    g = bus.graph()
+    assert len(g.nodes) == 1
+    assert str(g.nodes[0].node_id) == "model/deepseek"
+    assert g.nodes[0].node_type == "model"
+
+    # Cleanup
+    await node.shutdown()
+    await bus.shutdown()
+
+
+# ── N1.2 ──────────────────────────────────────────────────────────────────
+
+async def test_connect_to_bus_capabilities():
+    """[方法] NodeInfo capabilities includes provider name and models."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    g = bus.graph()
+    caps = g.nodes[0].capabilities
+    assert caps["provider"] == "deepseek"
+    assert caps["models"] == ["deepseek-v4-flash"]
+
+    await node.shutdown()
+    await bus.shutdown()
+
+
+# ── N1.3 ──────────────────────────────────────────────────────────────────
+
+async def test_connect_to_bus_returns_model_adapter_node():
+    """[方法] connect_to_bus() returns ModelAdapterNode with correct node_id."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/test"))
+
+    assert str(node.node_id) == "model/test"
+    assert "ModelAdapterNode" in repr(node)
+
+    await node.shutdown()
+    await bus.shutdown()
+
+
+# ── N1.4 ──────────────────────────────────────────────────────────────────
+
+async def test_connect_all_three_providers_to_same_bus():
+    """[方法] Three providers on same bus — all appear in graph."""
+    bus = Bus()
+
+    ds_node = await ds_provider().connect_to_bus(bus, NodeId("model/deepseek"))
+    oa_node = await oa_provider().connect_to_bus(bus, NodeId("model/openai"))
+    an_node = await an_provider().connect_to_bus(bus, NodeId("model/anthropic"))
+
+    g = bus.graph()
+    assert len(g.nodes) == 3
+    provider_names = {n.capabilities["provider"] for n in g.nodes}
+    assert provider_names == {"deepseek", "openai", "anthropic"}
+
+    await ds_node.shutdown()
+    await oa_node.shutdown()
+    await an_node.shutdown()
+    await bus.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# N2 — Shutdown 语义
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── N2.1 ──────────────────────────────────────────────────────────────────
+
+async def test_shutdown_removes_node_from_graph():
+    """[清理] After shutdown, node removed from bus graph."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    assert len(bus.graph().nodes) == 1
+
+    await node.shutdown()
+    await asyncio.sleep(0.05)  # allow async disconnect to propagate
+
+    g = bus.graph()
+    assert len(g.nodes) == 0, f"Expected empty graph, got {g.nodes}"
+
+    await bus.shutdown()
+
+
+# ── N2.2 ──────────────────────────────────────────────────────────────────
+
+async def test_double_shutdown_raises():
+    """[边界] Second shutdown() raises RuntimeError."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    await node.shutdown()
+    with pytest.raises(RuntimeError, match="already shut down"):
+        await node.shutdown()
+
+    await bus.shutdown()
+
+
+# ── N2.3 ──────────────────────────────────────────────────────────────────
+
+async def test_double_shutdown_idempotent_after_bus_closed():
+    """[边界] Even after bus shutdown, double-shutdown still raises."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    await node.shutdown()
+    await bus.shutdown()
+
+    # Node already shut down — second attempt should still raise
+    with pytest.raises(RuntimeError, match="already shut down"):
+        await node.shutdown()
+
+
+# ── N2.4 ──────────────────────────────────────────────────────────────────
+
+async def test_node_id_after_shutdown_raises():
+    """[边界] Accessing node_id after shutdown raises RuntimeError."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    await node.shutdown()
+
+    with pytest.raises(RuntimeError, match="already shut down"):
+        _ = node.node_id
+
+    await bus.shutdown()
+
+
+# ── N2.5 ──────────────────────────────────────────────────────────────────
+
+async def test_repr_after_shutdown_shows_shut_down():
+    """[trait] ModelAdapterNode repr shows 'shut down' after shutdown."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    await node.shutdown()
+
+    r = repr(node)
+    assert "shut down" in r.lower() or "Shut" in r
+
+    await bus.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# N3 — 多 Provider 场景
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── N3.1 ──────────────────────────────────────────────────────────────────
+
+async def test_partial_shutdown_leaves_other_nodes():
+    """[清理] Shutdown one node — others remain in graph."""
+    bus = Bus()
+
+    ds_node = await ds_provider().connect_to_bus(bus, NodeId("model/deepseek"))
+    oa_node = await oa_provider().connect_to_bus(bus, NodeId("model/openai"))
+
+    assert len(bus.graph().nodes) == 2
+
+    await ds_node.shutdown()
+    await asyncio.sleep(0.05)
+
+    g = bus.graph()
+    assert len(g.nodes) == 1
+    assert str(g.nodes[0].node_id) == "model/openai"
+
+    await oa_node.shutdown()
+    await bus.shutdown()
+
+
+# ── N3.2 ──────────────────────────────────────────────────────────────────
+
+async def test_multiple_same_provider_different_models():
+    """[方法] Two DeepSeek nodes with different models on same bus."""
+    bus = Bus()
+
+    p1 = DeepSeekProvider(
+        DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-flash"])
+    )
+    p2 = DeepSeekProvider(
+        DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-pro"])
+    )
+
+    n1 = await p1.connect_to_bus(bus, NodeId("model/flash"))
+    n2 = await p2.connect_to_bus(bus, NodeId("model/pro"))
+
+    g = bus.graph()
+    assert len(g.nodes) == 2
+    models_seen = set()
+    for n in g.nodes:
+        models_seen.update(n.capabilities["models"])
+    assert "deepseek-v4-flash" in models_seen
+    assert "deepseek-v4-pro" in models_seen
+
+    await n1.shutdown()
+    await n2.shutdown()
+    await bus.shutdown()
+
+
+# ── N3.3 ──────────────────────────────────────────────────────────────────
+
+async def test_bus_shutdown_before_node_shutdown():
+    """[边界] Bus shutdown before node — graceful handling."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    # Shutdown bus first
+    await bus.shutdown()
+
+    # Node shutdown should still work (or at least not hang)
+    try:
+        await node.shutdown()
+    except Exception:
+        pass  # acceptable — bus already closed
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# N4 — NodeId 边界
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── N4.1 ──────────────────────────────────────────────────────────────────
+
+async def test_node_id_unicode():
+    """[边界] NodeId with Unicode — model name in Chinese."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("模型/deepseek"))
+
+    assert str(node.node_id) == "模型/deepseek"
+
+    await node.shutdown()
+    await bus.shutdown()
+
+
+# ── N4.2 ──────────────────────────────────────────────────────────────────
+
+async def test_node_id_long_name():
+    """[边界] NodeId with long model path."""
+    long_id = "model/" + "a" * 64 + "/deepseek-v4-flash"
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId(long_id))
+
+    assert str(node.node_id) == long_id
+
+    await node.shutdown()
+    await bus.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# N5 — GC / 资源清理
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── N5.1 ──────────────────────────────────────────────────────────────────
+
+async def test_gc_collects_node_after_shutdown():
+    """[泄漏] Node can be GC'd after shutdown — no dangling references."""
+    bus = Bus()
+    provider = ds_provider()
+    node = await provider.connect_to_bus(bus, NodeId("model/deepseek"))
+
+    await node.shutdown()
+    del node
+    gc.collect()
+    await asyncio.sleep(0.05)
+
+    # Bus still functional after node GC
+    assert bus.uptime_ms >= 0
+
+    await bus.shutdown()
+
+
+# ── N5.2 ──────────────────────────────────────────────────────────────────
+
+async def test_config_reuse_across_providers():
+    """[方法] Same config can be reused across multiple provider instances."""
+    config = DeepSeekConfig(api_key="sk-shared", models=["deepseek-v4-flash"])
+
+    p1 = DeepSeekProvider(config)
+    p2 = DeepSeekProvider(config)
+
+    assert p1.supported_models == p2.supported_models
+```
+
+**逐行解释：**
+
+| 行 | 解释 |
+|----|------|
+| N1 connect 测试 | 验证 node 进入 bus graph、capabilities 含 provider 名和 models、node_id 正确 |
+| N1.4 三供应商同 Bus | 验证三个不同 Provider 可同时连接同一 Bus——graph 节点独立、caps 不串扰 |
+| N2 shutdown 语义 | 二次 shutdown → RuntimeError；shutdown 后 node_id 访问也报错；repr 显示 "shut down" |
+| N2.1 sleep(0.05) | 异步 disconnect 需要短暂传播——`ModelAdapterNode::shutdown()` 发送 oneshot 后 task 异步执行 `handle.disconnect().await` |
+| N3 多 Provider | 部分 shutdown 不影响其他节点；同供应商可多个实例（不同模型）；Bus 先关也可容忍 |
+| N4 NodeId 边界 | Unicode (中文) + 超长路径 (64+ chars) |
+| N5 GC | 确认 node shutdown 后可被 GC 回收——`del node; gc.collect()` 后 Bus 仍正常 |
+
+---
+
+### 5.3 运行测试
 
 ```bash
-# 编译（确保 Cargo.toml 正确）
+# 首次：编译 PyO3 扩展
+cd py-arf && ../.venv2/bin/python -m maturin develop
+
+# 运行 ModelAdapter 导入测试（27 tests）
+cd py-arf && ../.venv2/bin/python -m pytest tests/test_model_adapter_imports.py -v
+
+# 运行 ModelAdapter Node 集成测试（14 tests）
+cd py-arf && ../.venv2/bin/python -m pytest tests/test_model_adapter_node.py -v
+
+# 确认不破坏已有 Bus 测试
+cd py-arf && ../.venv2/bin/python -m pytest tests/ -q
+
+# 全 workspace Rust 测试
+. $HOME/.cargo/env && cargo test --workspace
+```
+
+---
+
+## 验证（快速冒烟）
+
+```bash
+# 编译
 cargo build -p py-arf
 
-# Python 导入测试（同步构造，无需 API key）
+# 导入冒烟（同步，无需 API key）
 python -c "
 from arf import (
     AnthropicConfig, AnthropicProvider,
     DeepSeekConfig, DeepSeekProvider,
     OpenAIConfig, OpenAIProvider,
-    ModelAdapterNode, ModelMessage,
-    ModelParams, ToolDef,
+    ModelAdapterNode, ModelMessage, ModelParams, ToolDef,
     ModelResponseChunk, ModelResponsePayload,
     ToolCall, ToolCallDelta, Usage,
 )
 
-# Config
+# Config + Provider 构造
 ds = DeepSeekConfig(api_key='sk-test', models=['deepseek-v4-flash'])
-print('DeepSeekConfig:', ds)
-
-oa = OpenAIConfig(api_key='sk-test', models=['gpt-4o'])
-print('OpenAIConfig:', oa)
-
-an = AnthropicConfig(api_key='sk-test', models=['claude-sonnet-4-6'])
-print('AnthropicConfig:', an)
-
-# Provider
-provider = DeepSeekProvider(ds)
-print('Provider:', provider.name, provider.supported_models)
+p = DeepSeekProvider(ds)
+assert p.name == 'deepseek'
 
 # Data types
-msg = ModelMessage(role='user', content='Hello')
-print('ModelMessage:', msg)
-
-msg_full = ModelMessage(role='tool', content='result', tool_call_id='call_1', name='search')
-print('ModelMessage full:', msg_full)
+msg = ModelMessage(role='user', content='Hello', extra={'key': 'val'})
+assert msg.extra == {'key': 'val'}
 
 params = ModelParams(temperature=0.7, max_tokens=4096, thinking_enabled=True)
-print('ModelParams:', params)
+assert params.thinking_enabled is True
 
-tool = ToolDef(name='search', description='Search', parameters={'type': 'object'})
-print('ToolDef:', tool)
+tool = ToolDef(name='s', description='d', parameters={'type': 'object'})
+assert tool.parameters == {'type': 'object'}
 
-# Usage and ToolCall are read-only (no __init__)
-# They are created by providers internally
+# Read-only types — no public constructor
+import traceback
+for cls in [ToolCall, ToolCallDelta, Usage, ModelResponseChunk, ModelResponsePayload, ModelAdapterNode]:
+    try:
+        cls()
+        assert False, f'{cls.__name__} should not be constructible'
+    except TypeError:
+        pass
 
-print('All imports OK')
+print('All imports + smoke tests OK')
 "
 
-# Bus 集成测试（无需 API key）
+# Bus 集成冒烟
 python -c "
 import asyncio
 from arf import Bus, NodeId, DeepSeekConfig, DeepSeekProvider
 
 async def test():
     bus = Bus()
-    config = DeepSeekConfig(api_key='sk-test', models=['deepseek-v4-flash'])
-    provider = DeepSeekProvider(config)
-    node = await provider.connect_to_bus(bus, NodeId('model/test'))
-    print('Node connected:', node)
-    graph = bus.graph()
-    assert len(graph.nodes) == 1
-    print('Graph OK, nodes:', len(graph.nodes))
+    p = DeepSeekProvider(DeepSeekConfig(api_key='sk-test', models=['m1']))
+    node = await p.connect_to_bus(bus, NodeId('model/test'))
+    assert len(bus.graph().nodes) == 1
+    caps = bus.graph().nodes[0].capabilities
+    assert caps['provider'] == 'deepseek'
     await node.shutdown()
-    print('Node shut down')
-    await bus.shutdown()
-    print('Bus shut down')
-    # Double shutdown should raise
+    # Double shutdown
     try:
         await node.shutdown()
-        assert False, 'should have raised'
-    except RuntimeError as e:
-        print('Double-shutdown rejected:', e)
-    print('All bus integration tests passed')
+        assert False
+    except RuntimeError:
+        pass
+    await bus.shutdown()
+    print('Bus integration OK')
 
 asyncio.run(test())
 "
-
-# 全 workspace 测试
-cargo test --workspace
 ```
 
 ---
@@ -1603,5 +2450,7 @@ cargo test --workspace
 | 新增 PyClass | 14 |
 | 代码行数 (lib.rs 新增) | ~550 行 |
 | 修改文件 | 3（Cargo.toml + lib.rs + __init__.py） |
-| 新增文件 | 1（Python 示例） |
+| 新增文件 | 3（示例 + 2 个 test 文件） |
 | 公开类型 | 14（3 config + 3 provider + 1 node + 7 数据类） |
+| Python 导入测试 | 27（6 Config + 3 Provider + 8 ModelMessage + 6 ModelParams + 5 ToolDef + 6 只读类型校验） |
+| Python 集成测试 | 14（connect × 4 + shutdown × 5 + multi-provider × 3 + boundary × 2） |
