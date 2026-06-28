@@ -33,28 +33,31 @@ AgentConfig (WHAT)              Engine (HOW)                State (WHERE)
 
 ```
 AgentConfig
-├── system_prompt: String          # 系统提示词
-├── models: Vec<ModelSpec>         # 模型列表，按优先级排列
-│   ├── provider + model_name      # 逻辑标识
+├── system_prompt: String ★        # 系统提示词（必填）
+├── models: Vec<ModelSpec> ★       # 模型列表，按优先级排列（必填，≥1）
+│   ├── provider ★                # 供应商（必填）
+│   ├── model_name ★              # 模型名（必填）
 │   ├── thinking_enabled           # 是否开启思考
 │   ├── temperature                # 采样温度（可选）
 │   ├── max_output_tokens          # 输出上限（可选）
 │   └── extra                      # 供应商专属参数
-├── tools: Vec<ToolSpec>           # 工具列表
+├── tools: Vec<ToolSpec>           # 工具列表（可选）
 │   ├── name                      # 工具逻辑名
 │   ├── permission                # Allow / Ask / Deny
 │   ├── parameter_filter          # 参数约束（可选）
 │   ├── description               # 覆盖工具描述（可选）
 │   └── parameters                # 覆盖 JSON Schema（可选）
-├── allowed_paths: Vec<String>     # 沙箱路径白名单
-├── subagents: Vec<ResourceSpec>   # 可委托的 subagent
+├── allowed_paths: Vec<String> ★   # 沙箱路径白名单（必填；有tool时不可为空）
+├── subagents: Vec<ResourceSpec>   # 可委托的 subagent（可选）
 │   ├── name                      # Agent 起的别名
 │   ├── node_type                 # "agent/subagent"
 │   └── capabilities              # 能力匹配条件（可选）
-└── teammates: Vec<ResourceSpec>   # 可协作的 teammate
+└── teammates: Vec<ResourceSpec>   # 可协作的 teammate（可选）
     ├── name                      # Agent 起的别名
     ├── node_type                 # "agent/teammate"
     └── capabilities              # 能力匹配条件（可选）
+
+★ = 必填字段
 ```
 
 ---
@@ -63,23 +66,34 @@ AgentConfig
 
 ### AgentConfig
 
-顶层配置 struct。所有字段 `#[serde(default)]`，空对象 `{}` 反序列化为合法配置。
+顶层配置 struct。`system_prompt`、`models`、`allowed_paths` 为必填字段——JSON 反序列化时缺失将报错，`validate()` 检查内容非空。
 
 ```rust
 pub struct AgentConfig {
-    pub system_prompt: String,
-    pub models: Vec<ModelSpec>,
-    pub tools: Vec<ToolSpec>,
-    pub allowed_paths: Vec<String>,
-    pub subagents: Vec<ResourceSpec>,
-    pub teammates: Vec<ResourceSpec>,
+    pub system_prompt: String,          // 必填，不可为空
+    pub models: Vec<ModelSpec>,         // 必填，至少一个
+    pub tools: Vec<ToolSpec>,           // 可选，默认 []
+    pub allowed_paths: Vec<String>,     // 必填，有 tool 时不可为空
+    pub subagents: Vec<ResourceSpec>,   // 可选，默认 []
+    pub teammates: Vec<ResourceSpec>,   // 可选，默认 []
 }
 ```
 
 | 方法 | 说明 |
 |------|------|
-| `AgentConfig::new()` | 创建全空配置 |
+| `AgentConfig::new()` | 创建全空配置（用于代码逐步填充） |
 | `AgentConfig::default()` | 等价于 `new()` |
+| `config.validate() -> Result<(), Vec<ConfigError>>` | 检查所有约束；Engine 在 `init()` 入口调用，不合法配置直接拒绝 |
+
+`validate()` 检查的约束：
+
+| 错误变体 | 触发条件 |
+|---------|---------|
+| `ConfigError::SystemPromptEmpty` | `system_prompt` 为空字符串 |
+| `ConfigError::ModelsEmpty` | `models` 为空 Vec |
+| `ConfigError::AllowedPathsEmpty` | `tools` 非空但 `allowed_paths` 为空 |
+
+错误可累积——`validate()` 返回全部失败项，而非遇第一个就退出。
 
 **Engine 如何使用：**
 
@@ -270,23 +284,23 @@ let config = AgentConfig {
 };
 ```
 
-### 3. 空 AgentConfig（无模型、无工具）
+### 3. 空 AgentConfig（代码构造 + 逐步填充）
 
 ```rust
-let config = AgentConfig::default();
-// system_prompt = "", models = [], tools = [], ...
-// 合法但不可用 — Engine::init() 会因为没有模型而返回错误
+let config = AgentConfig::new();
+// system_prompt = "", models = [], ...
+// validate() 会失败 — 填充后再传 Engine
 ```
 
-### 4. JSON 部分覆盖
+### 4. JSON 最简配置
 
-只传需要改的字段，其余保持默认：
+必填字段必须全部出现：
 
 ```json
-{"system_prompt": "hello", "allowed_paths": ["/x"]}
+{"system_prompt": "hello", "models": [{"provider":"x","model_name":"y"}], "allowed_paths": []}
 ```
 
-反序列化后 `models`、`tools`、`subagents`、`teammates` 均为空。
+缺 `system_prompt`、`models`、`allowed_paths` 任一 → 反序列化直接报错。
 
 ---
 
@@ -325,7 +339,10 @@ Engine::init(bus, agent_config) → Engine
 
 | 场景 | Engine 行为 |
 |------|-----------|
-| `models` 为空 | `init()` 返回 `EngineError::NoModelConfigured` |
+| `system_prompt` 为空 | `validate()` → `ConfigError::SystemPromptEmpty` |
+| `models` 为空 | `validate()` → `ConfigError::ModelsEmpty` |
+| 有 tool 但 `allowed_paths` 为空 | `validate()` → `ConfigError::AllowedPathsEmpty` |
+| JSON 缺必填字段 | serde 反序列化直接报错 |
 | 所有 model node 离线 | `init()` 返回 `EngineError::NoModelAvailable` |
 | 配置的 tool 无对应 MCP 节点 | 运行时 `execute_tool()` 返回 `ToolError::ToolNotFound` |
 | `permission: Deny` 的工具被模型调用 | Engine 拒绝，注入 `ToolError::PermissionDenied` |
@@ -343,7 +360,7 @@ Engine::init(bus, agent_config) → Engine
 | ToolSpec | 8 | 构造、权限变体、可选字段跳过、Clone、序列化 |
 | ToolPermission | 6 | 三变体、Eq、Clone、序列化、未知变体拒绝 |
 | ResourceSpec | 9 | 构造、capabilities 跳过、最小JSON、Clone、PartialEq、序列化 |
-| AgentConfig | 9 | 构造、Default、全字段、Clone、PartialEq、序列化、空JSON兼容、缺字段兼容 |
-| **合计** | **43** | |
+| AgentConfig | 15 | 构造、Default、全字段、Clone、PartialEq、序列化、必填字段反序列化失败、validate（合法/三错误/多错累计/无工具时路径空合法） |
+| **合计** | **52** | |
 
-`cargo test --workspace` — 229 tests, 0 failed.
+`cargo test --workspace` — 238 tests, 0 failed.

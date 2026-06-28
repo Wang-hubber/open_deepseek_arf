@@ -10,7 +10,7 @@ mod model;
 mod resource;
 mod tool;
 
-pub use config::AgentConfig;
+pub use config::{AgentConfig, ConfigError};
 pub use model::ModelSpec;
 pub use resource::ResourceSpec;
 pub use tool::{ToolPermission, ToolSpec};
