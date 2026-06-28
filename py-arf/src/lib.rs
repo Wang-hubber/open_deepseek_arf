@@ -1,4 +1,4 @@
-//! PyO3 bindings for ARF V1.x — Bus, NodeHandle, core types.
+//! PyO3 bindings for ARF V1.x — Bus, ModelAdapter, core types.
 //!
 //! Async methods use pyo3-async-runtimes to bridge tokio → Python asyncio.
 
@@ -10,6 +10,17 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
 use arf_core::{BusGraph, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt, ToMatch};
+use arf_core::ModelMessage;
+use arf_model_adapter::{
+    AnthropicConfig, AnthropicProvider,
+    DeepSeekConfig, DeepSeekProvider,
+    ModelAdapterNode,
+    OpenAIConfig, OpenAIProvider,
+    ProviderError,
+    ModelParams, ModelResponseChunk, ModelResponsePayload,
+    ToolCall, ToolCallDelta, ToolDef, Usage,
+};
+use arf_model_adapter::Provider;
 
 // ═══════════════════════════════════════════════════════════════════
 // Global tokio runtime
@@ -49,6 +60,10 @@ fn connect_error_to_py(err: ConnectError) -> PyErr {
 }
 
 fn send_error_to_py(err: SendError) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyException, _>(err.to_string())
+}
+
+fn provider_error_to_py(err: ProviderError) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyException, _>(err.to_string())
 }
 
@@ -568,6 +583,967 @@ impl PyNodeHandle {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PyModelMessage
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelMessage — a single message in model conversation history.
+#[pyclass(name = "ModelMessage", from_py_object)]
+#[derive(Clone)]
+struct PyModelMessage {
+    inner: ModelMessage,
+}
+
+#[pymethods]
+impl PyModelMessage {
+    #[new]
+    #[pyo3(signature = (role, content, tool_call_id=None, name=None, extra=None))]
+    fn new(
+        py: Python<'_>,
+        role: String,
+        content: String,
+        tool_call_id: Option<String>,
+        name: Option<String>,
+        extra: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let extra_json = match extra {
+            Some(obj) => py_object_to_json(&obj, py)?,
+            None => serde_json::Value::Null,
+        };
+        Ok(Self {
+            inner: ModelMessage {
+                role,
+                content,
+                tool_call_id,
+                name,
+                extra: extra_json,
+            },
+        })
+    }
+
+    #[getter]
+    fn role(&self) -> String {
+        self.inner.role.clone()
+    }
+
+    #[getter]
+    fn content(&self) -> String {
+        self.inner.content.clone()
+    }
+
+    #[getter]
+    fn tool_call_id(&self) -> Option<String> {
+        self.inner.tool_call_id.clone()
+    }
+
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn extra(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(&self.inner.extra, py)
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner.tool_call_id {
+            Some(tc_id) => format!(
+                "ModelMessage(role='{}', content='{}...', tool_call_id='{}')",
+                self.inner.role,
+                &self.inner.content.chars().take(40).collect::<String>(),
+                tc_id
+            ),
+            None => format!(
+                "ModelMessage(role='{}', content='{}...')",
+                self.inner.role,
+                &self.inner.content.chars().take(40).collect::<String>(),
+            ),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyModelParams
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelParams — inference parameters for a model call.
+#[pyclass(name = "ModelParams", from_py_object)]
+#[derive(Clone)]
+struct PyModelParams {
+    inner: ModelParams,
+}
+
+#[pymethods]
+impl PyModelParams {
+    #[new]
+    #[pyo3(signature = (temperature=None, max_tokens=None, thinking_enabled=false, extra=None))]
+    fn new(
+        py: Python<'_>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        thinking_enabled: bool,
+        extra: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let extra_json = match extra {
+            Some(obj) => py_object_to_json(&obj, py)?,
+            None => serde_json::Value::Null,
+        };
+        Ok(Self {
+            inner: ModelParams {
+                temperature,
+                max_tokens,
+                thinking_enabled,
+                extra: extra_json,
+            },
+        })
+    }
+
+    #[getter]
+    fn temperature(&self) -> Option<f32> {
+        self.inner.temperature
+    }
+
+    #[getter]
+    fn max_tokens(&self) -> Option<u32> {
+        self.inner.max_tokens
+    }
+
+    #[getter]
+    fn thinking_enabled(&self) -> bool {
+        self.inner.thinking_enabled
+    }
+
+    #[getter]
+    fn extra(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(&self.inner.extra, py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ModelParams(temperature={:?}, max_tokens={:?}, thinking_enabled={})",
+            self.inner.temperature, self.inner.max_tokens, self.inner.thinking_enabled
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyToolDef
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ToolDef — tool/function definition for function calling.
+#[pyclass(name = "ToolDef", from_py_object)]
+#[derive(Clone)]
+struct PyToolDef {
+    inner: ToolDef,
+}
+
+#[pymethods]
+impl PyToolDef {
+    #[new]
+    #[pyo3(signature = (name, description, parameters))]
+    fn new(
+        py: Python<'_>,
+        name: String,
+        description: String,
+        parameters: Py<PyAny>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: ToolDef {
+                name,
+                description,
+                parameters: py_object_to_json(&parameters, py)?,
+            },
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description.clone()
+    }
+
+    #[getter]
+    fn parameters(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(&self.inner.parameters, py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ToolDef(name='{}', description='{}')",
+            self.inner.name, self.inner.description
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyToolCall
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ToolCall — a tool call request from the model (read-only).
+#[pyclass(name = "ToolCall")]
+struct PyToolCall {
+    inner: ToolCall,
+}
+
+#[pymethods]
+impl PyToolCall {
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn arguments(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(&self.inner.arguments, py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ToolCall(id='{}', name='{}')", self.inner.id, self.inner.name)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyToolCallDelta
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ToolCallDelta — incremental tool call update during streaming (read-only).
+#[pyclass(name = "ToolCallDelta")]
+struct PyToolCallDelta {
+    inner: ToolCallDelta,
+}
+
+#[pymethods]
+impl PyToolCallDelta {
+    #[getter]
+    fn index(&self) -> u32 {
+        self.inner.index
+    }
+
+    #[getter]
+    fn id(&self) -> Option<String> {
+        self.inner.id.clone()
+    }
+
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn arguments_delta(&self) -> Option<String> {
+        self.inner.arguments_delta.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ToolCallDelta(index={}, name={:?})",
+            self.inner.index, self.inner.name
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyUsage
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python Usage — token usage statistics (read-only).
+#[pyclass(name = "Usage")]
+struct PyUsage {
+    inner: Usage,
+}
+
+#[pymethods]
+impl PyUsage {
+    #[getter]
+    fn input_tokens(&self) -> u32 {
+        self.inner.input_tokens
+    }
+
+    #[getter]
+    fn output_tokens(&self) -> u32 {
+        self.inner.output_tokens
+    }
+
+    #[getter]
+    fn total_tokens(&self) -> u32 {
+        self.inner.total_tokens
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Usage(input={}, output={}, total={})",
+            self.inner.input_tokens, self.inner.output_tokens, self.inner.total_tokens
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyModelResponseChunk
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelResponseChunk — a single chunk in a streaming response (read-only).
+#[pyclass(name = "ModelResponseChunk")]
+struct PyModelResponseChunk {
+    inner: ModelResponseChunk,
+}
+
+#[pymethods]
+impl PyModelResponseChunk {
+    #[getter]
+    fn chunk_type(&self) -> String {
+        self.inner.chunk_type.clone()
+    }
+
+    #[getter]
+    fn content(&self) -> Option<String> {
+        self.inner.content.clone()
+    }
+
+    #[getter]
+    fn reasoning(&self) -> Option<String> {
+        self.inner.reasoning.clone()
+    }
+
+    #[getter]
+    fn tool_call(&self) -> Option<PyToolCallDelta> {
+        self.inner
+            .tool_call
+            .clone()
+            .map(|tc| PyToolCallDelta { inner: tc })
+    }
+
+    #[getter]
+    fn usage(&self) -> Option<PyUsage> {
+        self.inner.usage.as_ref().map(|u| PyUsage { inner: u.clone() })
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner.chunk_type.as_str() {
+            "text" => format!(
+                "ModelResponseChunk(type='text', content='{}...')",
+                self.inner
+                    .content
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(30)
+                    .collect::<String>()
+            ),
+            "reasoning" => format!(
+                "ModelResponseChunk(type='reasoning', len={})",
+                self.inner.reasoning.as_deref().map_or(0, |r| r.len())
+            ),
+            _ => format!("ModelResponseChunk(type='{}')", self.inner.chunk_type),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyModelResponsePayload
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelResponsePayload — complete model response (read-only).
+#[pyclass(name = "ModelResponsePayload")]
+struct PyModelResponsePayload {
+    inner: ModelResponsePayload,
+}
+
+#[pymethods]
+impl PyModelResponsePayload {
+    #[getter]
+    fn message(&self) -> PyModelMessage {
+        PyModelMessage {
+            inner: self.inner.message.clone(),
+        }
+    }
+
+    #[getter]
+    fn tool_calls(&self) -> Option<Vec<PyToolCall>> {
+        self.inner.tool_calls.as_ref().map(|tc_list| {
+            tc_list
+                .iter()
+                .map(|tc| PyToolCall { inner: tc.clone() })
+                .collect()
+        })
+    }
+
+    #[getter]
+    fn finish_reason(&self) -> String {
+        self.inner.finish_reason.clone()
+    }
+
+    #[getter]
+    fn usage(&self) -> Option<PyUsage> {
+        self.inner.usage.as_ref().map(|u| PyUsage { inner: u.clone() })
+    }
+
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+
+    #[getter]
+    fn model(&self) -> String {
+        self.inner.model.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ModelResponsePayload(finish_reason='{}', model='{}', usage={:?})",
+            self.inner.finish_reason,
+            self.inner.model,
+            self.inner.usage.as_ref().map(|u| u.total_tokens)
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyDeepSeekConfig
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python DeepSeekConfig — configuration for a DeepSeek provider.
+#[pyclass(name = "DeepSeekConfig", from_py_object)]
+#[derive(Clone)]
+struct PyDeepSeekConfig {
+    inner: DeepSeekConfig,
+}
+
+#[pymethods]
+impl PyDeepSeekConfig {
+    #[new]
+    #[pyo3(signature = (api_key, models, base_url="https://api.deepseek.com".into(), timeout_secs=320, max_retries=3))]
+    fn new(
+        api_key: String,
+        models: Vec<String>,
+        base_url: String,
+        timeout_secs: u64,
+        max_retries: u32,
+    ) -> Self {
+        Self {
+            inner: DeepSeekConfig {
+                base_url,
+                api_key,
+                models,
+                timeout_secs,
+                max_retries,
+            },
+        }
+    }
+
+    #[getter]
+    fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+    #[getter]
+    fn api_key(&self) -> String {
+        self.inner.api_key.clone()
+    }
+    #[getter]
+    fn models(&self) -> Vec<String> {
+        self.inner.models.clone()
+    }
+    #[getter]
+    fn timeout_secs(&self) -> u64 {
+        self.inner.timeout_secs
+    }
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.max_retries
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DeepSeekConfig(base_url='{}', models={:?})",
+            self.inner.base_url, self.inner.models
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyOpenAIConfig
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python OpenAIConfig — configuration for an OpenAI provider.
+#[pyclass(name = "OpenAIConfig", from_py_object)]
+#[derive(Clone)]
+struct PyOpenAIConfig {
+    inner: OpenAIConfig,
+}
+
+#[pymethods]
+impl PyOpenAIConfig {
+    #[new]
+    #[pyo3(signature = (api_key, models, base_url="https://api.openai.com".into(), timeout_secs=320, max_retries=3))]
+    fn new(
+        api_key: String,
+        models: Vec<String>,
+        base_url: String,
+        timeout_secs: u64,
+        max_retries: u32,
+    ) -> Self {
+        Self {
+            inner: OpenAIConfig {
+                base_url,
+                api_key,
+                models,
+                timeout_secs,
+                max_retries,
+            },
+        }
+    }
+
+    #[getter]
+    fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+    #[getter]
+    fn api_key(&self) -> String {
+        self.inner.api_key.clone()
+    }
+    #[getter]
+    fn models(&self) -> Vec<String> {
+        self.inner.models.clone()
+    }
+    #[getter]
+    fn timeout_secs(&self) -> u64 {
+        self.inner.timeout_secs
+    }
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.max_retries
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OpenAIConfig(base_url='{}', models={:?})",
+            self.inner.base_url, self.inner.models
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyAnthropicConfig
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python AnthropicConfig — configuration for an Anthropic provider.
+#[pyclass(name = "AnthropicConfig", from_py_object)]
+#[derive(Clone)]
+struct PyAnthropicConfig {
+    inner: AnthropicConfig,
+}
+
+#[pymethods]
+impl PyAnthropicConfig {
+    #[new]
+    #[pyo3(signature = (api_key, models, base_url="https://api.anthropic.com".into(), api_path="/v1/messages".into(), timeout_secs=320, max_retries=3))]
+    fn new(
+        api_key: String,
+        models: Vec<String>,
+        base_url: String,
+        api_path: String,
+        timeout_secs: u64,
+        max_retries: u32,
+    ) -> Self {
+        Self {
+            inner: AnthropicConfig {
+                base_url,
+                api_key,
+                models,
+                api_path,
+                timeout_secs,
+                max_retries,
+            },
+        }
+    }
+
+    #[getter]
+    fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+    #[getter]
+    fn api_key(&self) -> String {
+        self.inner.api_key.clone()
+    }
+    #[getter]
+    fn models(&self) -> Vec<String> {
+        self.inner.models.clone()
+    }
+    #[getter]
+    fn api_path(&self) -> String {
+        self.inner.api_path.clone()
+    }
+    #[getter]
+    fn timeout_secs(&self) -> u64 {
+        self.inner.timeout_secs
+    }
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.max_retries
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AnthropicConfig(base_url='{}', api_path='{}', models={:?})",
+            self.inner.base_url, self.inner.api_path, self.inner.models
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyDeepSeekProvider
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python DeepSeekProvider — DeepSeek API chat completions.
+#[pyclass(name = "DeepSeekProvider")]
+struct PyDeepSeekProvider {
+    inner: Arc<DeepSeekProvider>,
+}
+
+#[pymethods]
+impl PyDeepSeekProvider {
+    #[new]
+    fn new(config: &PyDeepSeekConfig) -> Self {
+        Self {
+            inner: Arc::new(DeepSeekProvider::new(config.inner.clone())),
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+
+    #[getter]
+    fn supported_models(&self) -> Vec<String> {
+        self.inner.supported_models().to_vec()
+    }
+
+    fn chat<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|resp| PyModelResponsePayload { inner: resp })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn chat_stream<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat_stream(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|(chunks, resp)| {
+                    let py_chunks: Vec<PyModelResponseChunk> = chunks
+                        .into_iter()
+                        .map(|c| PyModelResponseChunk { inner: c })
+                        .collect();
+                    (py_chunks, PyModelResponsePayload { inner: resp })
+                })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn connect_to_bus<'py>(
+        &self,
+        py: Python<'py>,
+        bus: &PyBus,
+        node_id: PyNodeId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider: Arc<dyn Provider> = self.inner.clone();
+        let bus_ref = bus.inner.clone();
+        let nid = node_id.inner;
+
+        future_into_py(py, async move {
+            ModelAdapterNode::new(provider, &bus_ref, nid)
+                .await
+                .map(|node| PyModelAdapterNode {
+                    inner: Some(node),
+                })
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
+                })
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyOpenAIProvider
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python OpenAIProvider — standard OpenAI-compatible chat completions.
+#[pyclass(name = "OpenAIProvider")]
+struct PyOpenAIProvider {
+    inner: Arc<OpenAIProvider>,
+}
+
+#[pymethods]
+impl PyOpenAIProvider {
+    #[new]
+    fn new(config: &PyOpenAIConfig) -> Self {
+        Self {
+            inner: Arc::new(OpenAIProvider::new(config.inner.clone())),
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    #[getter]
+    fn supported_models(&self) -> Vec<String> {
+        self.inner.supported_models().to_vec()
+    }
+
+    fn chat<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|resp| PyModelResponsePayload { inner: resp })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn chat_stream<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat_stream(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|(chunks, resp)| {
+                    let py_chunks: Vec<PyModelResponseChunk> = chunks
+                        .into_iter()
+                        .map(|c| PyModelResponseChunk { inner: c })
+                        .collect();
+                    (py_chunks, PyModelResponsePayload { inner: resp })
+                })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn connect_to_bus<'py>(
+        &self,
+        py: Python<'py>,
+        bus: &PyBus,
+        node_id: PyNodeId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider: Arc<dyn Provider> = self.inner.clone();
+        let bus_ref = bus.inner.clone();
+        let nid = node_id.inner;
+
+        future_into_py(py, async move {
+            ModelAdapterNode::new(provider, &bus_ref, nid)
+                .await
+                .map(|node| PyModelAdapterNode {
+                    inner: Some(node),
+                })
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
+                })
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyAnthropicProvider
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python AnthropicProvider — Anthropic Messages API.
+#[pyclass(name = "AnthropicProvider")]
+struct PyAnthropicProvider {
+    inner: Arc<AnthropicProvider>,
+}
+
+#[pymethods]
+impl PyAnthropicProvider {
+    #[new]
+    fn new(config: &PyAnthropicConfig) -> Self {
+        Self {
+            inner: Arc::new(AnthropicProvider::new(config.inner.clone())),
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "anthropic"
+    }
+
+    #[getter]
+    fn supported_models(&self) -> Vec<String> {
+        self.inner.supported_models().to_vec()
+    }
+
+    fn chat<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|resp| PyModelResponsePayload { inner: resp })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn chat_stream<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat_stream(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|(chunks, resp)| {
+                    let py_chunks: Vec<PyModelResponseChunk> = chunks
+                        .into_iter()
+                        .map(|c| PyModelResponseChunk { inner: c })
+                        .collect();
+                    (py_chunks, PyModelResponsePayload { inner: resp })
+                })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn connect_to_bus<'py>(
+        &self,
+        py: Python<'py>,
+        bus: &PyBus,
+        node_id: PyNodeId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider: Arc<dyn Provider> = self.inner.clone();
+        let bus_ref = bus.inner.clone();
+        let nid = node_id.inner;
+
+        future_into_py(py, async move {
+            ModelAdapterNode::new(provider, &bus_ref, nid)
+                .await
+                .map(|node| PyModelAdapterNode {
+                    inner: Some(node),
+                })
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
+                })
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyModelAdapterNode
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelAdapterNode — a model adapter connected to the Bus.
+///
+/// Created by Provider.connect_to_bus(), not constructed directly.
+#[pyclass(name = "ModelAdapterNode")]
+struct PyModelAdapterNode {
+    inner: Option<ModelAdapterNode>,
+}
+
+#[pymethods]
+impl PyModelAdapterNode {
+    #[getter]
+    fn node_id(&self) -> PyResult<PyNodeId> {
+        match &self.inner {
+            Some(node) => Ok(PyNodeId {
+                inner: node.node_id().clone(),
+            }),
+            None => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "node already shut down",
+            )),
+        }
+    }
+
+    fn shutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let node = self.inner.take().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("node already shut down")
+        })?;
+
+        future_into_py(py, async move {
+            node.shutdown().await;
+            Ok(())
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            Some(node) => format!("ModelAdapterNode(node_id='{}')", node.node_id().as_str()),
+            None => "ModelAdapterNode(shut down)".into(),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Module registration
 // ═══════════════════════════════════════════════════════════════════
 
@@ -575,6 +1551,7 @@ impl PyNodeHandle {
 fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", "1.0.0-alpha.0")?;
 
+    // Phase 1: Bus types
     m.add_class::<PyNodeId>()?;
     m.add_class::<PyMessage>()?;
     m.add_class::<PyNodeInfo>()?;
@@ -584,6 +1561,23 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBusGraph>()?;
     m.add_class::<PyBus>()?;
     m.add_class::<PyNodeHandle>()?;
+
+    // Phase 4: ModelAdapter types
+    m.add_class::<PyModelMessage>()?;
+    m.add_class::<PyModelParams>()?;
+    m.add_class::<PyToolDef>()?;
+    m.add_class::<PyToolCall>()?;
+    m.add_class::<PyToolCallDelta>()?;
+    m.add_class::<PyUsage>()?;
+    m.add_class::<PyModelResponseChunk>()?;
+    m.add_class::<PyModelResponsePayload>()?;
+    m.add_class::<PyDeepSeekConfig>()?;
+    m.add_class::<PyOpenAIConfig>()?;
+    m.add_class::<PyAnthropicConfig>()?;
+    m.add_class::<PyDeepSeekProvider>()?;
+    m.add_class::<PyOpenAIProvider>()?;
+    m.add_class::<PyAnthropicProvider>()?;
+    m.add_class::<PyModelAdapterNode>()?;
 
     Ok(())
 }

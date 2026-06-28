@@ -11,10 +11,27 @@ from arf._arf import (
     NodeInfo,
     SendReceipt,
     ToMatch,
+    # Phase 4: ModelAdapter
+    AnthropicConfig,
+    AnthropicProvider,
+    DeepSeekConfig,
+    DeepSeekProvider,
+    ModelAdapterNode,
+    ModelMessage,
+    ModelParams,
+    ModelResponseChunk,
+    ModelResponsePayload,
+    OpenAIConfig,
+    OpenAIProvider,
+    ToolCall,
+    ToolCallDelta,
+    ToolDef,
+    Usage,
 )
 
 __all__ = [
     "__version__",
+    # Phase 1: Bus
     "Bus",
     "BusGraph",
     "Message",
@@ -24,4 +41,20 @@ __all__ = [
     "NodeInfo",
     "SendReceipt",
     "ToMatch",
+    # Phase 4: ModelAdapter
+    "AnthropicConfig",
+    "AnthropicProvider",
+    "DeepSeekConfig",
+    "DeepSeekProvider",
+    "ModelAdapterNode",
+    "ModelMessage",
+    "ModelParams",
+    "ModelResponseChunk",
+    "ModelResponsePayload",
+    "OpenAIConfig",
+    "OpenAIProvider",
+    "ToolCall",
+    "ToolCallDelta",
+    "ToolDef",
+    "Usage",
 ]
