@@ -34,9 +34,48 @@ pub struct ModelCallPayload {
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<ToolDef>,
     pub model_params: ModelParams,
+    /// Whether to stream the response. Default true.
+    #[serde(default = "default_stream")]
+    pub stream: bool,
 }
 
-/// Payload of a `model_response` Bus message.
+fn default_stream() -> bool {
+    true
+}
+
+/// A single chunk in a streaming response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponseChunk {
+    /// Chunk type: "text", "reasoning", "tool_call", "usage".
+    pub chunk_type: String,
+    /// Text delta (for "text" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Reasoning delta (DeepSeek thinking mode, for "reasoning" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Tool call delta (for "tool_call" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<ToolCallDelta>,
+    /// Final usage stats (sent on "usage" chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+/// Incremental tool call update during streaming.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// JSON fragment — caller accumulates across chunks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_delta: Option<String>,
+}
+
+/// Payload of a `model_response` Bus message (sent after stream ends).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponsePayload {
     pub message: ModelMessage,
@@ -72,6 +111,7 @@ mod tests {
     // ModelParams — 2 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [构造] 所有字段显式赋值可读
     #[test]
     fn model_params_all_fields() {
         let p = ModelParams {
@@ -84,6 +124,7 @@ mod tests {
         assert!(p.thinking_enabled);
     }
 
+    // [序列化] None 和 false 正确往返
     #[test]
     fn model_params_serialization_roundtrip() {
         let p = ModelParams {
@@ -102,6 +143,7 @@ mod tests {
     // ToolDef — 2 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [序列化] ToolDef 含复杂 parameters JSON 往返
     #[test]
     fn tool_def_serialization_roundtrip() {
         let t = ToolDef {
@@ -115,6 +157,7 @@ mod tests {
         assert_eq!(back.description, "Read a file");
     }
 
+    // [trait] Clone 后值相等
     #[test]
     fn tool_def_clone() {
         let t = ToolDef {
@@ -126,9 +169,10 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ModelCallPayload — 2 tests
+    // ModelCallPayload — 3 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [序列化] 含 messages + params 往返
     #[test]
     fn model_call_payload_serialization_roundtrip() {
         let payload = ModelCallPayload {
@@ -140,13 +184,16 @@ mod tests {
                 thinking_enabled: false,
                 extra: serde_json::Value::Null,
             },
+            stream: false,
         };
         let json = serde_json::to_string(&payload).unwrap();
         let back: ModelCallPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(back.messages.len(), 1);
         assert_eq!(back.model_params.temperature, Some(0.5));
+        assert!(!back.stream);
     }
 
+    // [构造] tools 非空时正确存储
     #[test]
     fn model_call_payload_with_tools() {
         let payload = ModelCallPayload {
@@ -162,15 +209,80 @@ mod tests {
                 thinking_enabled: false,
                 extra: serde_json::Value::Null,
             },
+            stream: true,
         };
         assert_eq!(payload.tools.len(), 1);
-        assert_eq!(payload.tools[0].name, "search");
+        assert!(payload.stream);
+    }
+
+    // [边界] stream 字段默认 true（缺字段反序列化）
+    #[test]
+    fn model_call_payload_stream_defaults_true() {
+        let json = r#"{"messages":[],"tools":[],"model_params":{"thinking_enabled":false,"extra":null}}"#;
+        let payload: ModelCallPayload = serde_json::from_str(json).unwrap();
+        assert!(payload.stream);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ModelResponseChunk — 3 tests
+    // ═══════════════════════════════════════════════════════════
+
+    // [构造] text 类型 chunk
+    #[test]
+    fn chunk_text() {
+        let c = ModelResponseChunk {
+            chunk_type: "text".into(),
+            content: Some("Hello".into()),
+            reasoning: None,
+            tool_call: None,
+            usage: None,
+        };
+        assert_eq!(c.chunk_type, "text");
+        assert_eq!(c.content.unwrap(), "Hello");
+    }
+
+    // [构造] tool_call 类型 chunk
+    #[test]
+    fn chunk_tool_call() {
+        let c = ModelResponseChunk {
+            chunk_type: "tool_call".into(),
+            content: None,
+            reasoning: None,
+            tool_call: Some(ToolCallDelta {
+                index: 0,
+                id: Some("call_1".into()),
+                name: Some("search".into()),
+                arguments_delta: Some(r#"{"query":"rust"}"#.into()),
+            }),
+            usage: None,
+        };
+        assert_eq!(c.chunk_type, "tool_call");
+        let tc = c.tool_call.unwrap();
+        assert_eq!(tc.index, 0);
+        assert_eq!(tc.name.unwrap(), "search");
+    }
+
+    // [序列化] text chunk 不输出 None 字段
+    #[test]
+    fn chunk_text_serialization_skips_none() {
+        let c = ModelResponseChunk {
+            chunk_type: "text".into(),
+            content: Some("hi".into()),
+            reasoning: None,
+            tool_call: None,
+            usage: None,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("reasoning"));
+        assert!(!json.contains("tool_call"));
+        assert!(!json.contains("usage"));
     }
 
     // ═══════════════════════════════════════════════════════════
     // ModelResponsePayload — 2 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [构造] 纯文本回复：无 tool_calls，有 usage
     #[test]
     fn model_response_payload_text_only() {
         let payload = ModelResponsePayload {
@@ -190,6 +302,7 @@ mod tests {
         assert!(payload.tool_calls.is_none());
     }
 
+    // [构造] 工具调用回复：有 tool_calls，finish_reason="tool_calls"
     #[test]
     fn model_response_payload_with_tool_calls() {
         let payload = ModelResponsePayload {
@@ -214,6 +327,7 @@ mod tests {
     // ToolCall — 2 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [序列化] ToolCall 含嵌套 arguments JSON 往返
     #[test]
     fn tool_call_serialization_roundtrip() {
         let tc = ToolCall {
@@ -227,6 +341,7 @@ mod tests {
         assert_eq!(back.name, "search");
     }
 
+    // [trait] Clone 后值相等
     #[test]
     fn tool_call_clone() {
         let tc = ToolCall {
@@ -241,6 +356,7 @@ mod tests {
     // Usage — 2 tests
     // ═══════════════════════════════════════════════════════════
 
+    // [序列化] Usage 往返
     #[test]
     fn usage_serialization_roundtrip() {
         let u = Usage {
@@ -253,6 +369,7 @@ mod tests {
         assert_eq!(back.total_tokens, 150);
     }
 
+    // [边界] 零 token 合法（流式中间 chunk 或错误响应）
     #[test]
     fn usage_zero_tokens() {
         let u = Usage {

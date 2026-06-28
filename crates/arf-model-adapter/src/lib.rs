@@ -13,5 +13,6 @@ mod types;
 
 pub use error::ProviderError;
 pub use types::{
-    ModelCallPayload, ModelParams, ModelResponsePayload, ToolCall, ToolDef, Usage,
+    ModelCallPayload, ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall,
+    ToolCallDelta, ToolDef, Usage,
 };

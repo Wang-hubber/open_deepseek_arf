@@ -85,6 +85,77 @@ pub struct ModelCallPayload {
     pub tools: Vec<ToolDef>,
     /// Model inference parameters.
     pub model_params: ModelParams,
+    /// Whether to stream the response. Default true.
+    /// When true, ModelAdapter sends `model_response_chunk` messages
+    /// during generation, then a final `model_response` on completion.
+    #[serde(default = "default_stream")]
+    pub stream: bool,
+}
+
+fn default_stream() -> bool { true }
+```
+
+### ModelResponseChunk — model_response_chunk 消息 payload
+
+每个 chunk 是独立的 Bus 消息，Engine 收到后实时推送给用户。
+
+```rust
+/// A single chunk in a streaming response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponseChunk {
+    /// Chunk type: "text", "reasoning", "tool_call", "usage", "done".
+    pub chunk_type: String,
+    /// Text delta (for "text" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Reasoning delta (DeepSeek thinking mode, for "reasoning" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Tool call delta (for "tool_call" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<ToolCallDelta>,
+    /// Final usage stats (sent on "usage" or "done" chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    /// Finish reason (sent on "done" chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+/// Incremental tool call update during streaming.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// JSON fragment — caller accumulates across chunks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_delta: Option<String>,
+}
+```
+
+`chunk_type` 枚举：
+- `"text"` — 文本内容 delta，Engine 累积拼接为最终 `content`
+- `"reasoning"` — 推理过程 delta（DeepSeek `reasoning_content`），Engine 存入 `message.extra.reasoning_content`
+- `"tool_call"` — 工具调用增量，Engine 按 `index` 累积 `arguments_delta` 拼成完整 JSON
+- `"usage"` — Token 用量信息（通常出现在流末尾）
+- `"done"` — 流结束信号，携带 `finish_reason` 和最终 `usage`
+
+### ModelResponsePayload（流结束汇总）
+
+流结束后发送完整消息，与 chunk 累积结果一致，直接存入 State。
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponsePayload {
+    pub message: ModelMessage,
+    pub tool_calls: Option<Vec<ToolCall>>,
+    pub finish_reason: String,
+    pub usage: Option<Usage>,
+    pub id: String,
+    pub model: String,
 }
 ```
 
@@ -142,13 +213,9 @@ pub trait Provider: Send + Sync {
     /// Models this provider supports. Used for Bus node_online capabilities.
     fn supported_models(&self) -> &[String];
 
-    /// Send a chat completion request to the provider's API.
+    /// Send a non-streaming chat completion request.
     ///
-    /// Receives ARF-internal message format, returns ARF-internal response.
-    /// The provider is responsible for:
-    /// 1. Converting internal messages → provider API format
-    /// 2. Making the HTTP request
-    /// 3. Converting the API response → internal format
+    /// Returns the complete response at once. Used when `stream: false`.
     async fn chat(
         &self,
         model_name: &str,
@@ -156,10 +223,35 @@ pub trait Provider: Send + Sync {
         tools: Vec<ToolDef>,
         params: ModelParams,
     ) -> Result<ModelResponsePayload, ProviderError>;
+
+    /// Send a streaming chat completion request.
+    ///
+    /// Yields chunks as they arrive from the provider's SSE stream.
+    /// The caller (ModelAdapter node) sends each chunk as a Bus message,
+    /// then sends a final `ModelResponsePayload` on completion.
+    ///
+    /// Default implementation falls back to `chat()`: wraps the result
+    /// in a single-chunk stream. Providers SHOULD override for true SSE.
+    async fn chat_stream(
+        &self,
+        model_name: &str,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDef>,
+        params: ModelParams,
+    ) -> Result<
+        (Vec<ModelResponseChunk>, ModelResponsePayload),
+        ProviderError,
+    > {
+        let response = self
+            .chat(model_name, messages, tools, params)
+            .await?;
+        Ok((vec![], response))
+    }
 }
 ```
 
-`chat()` 的参数 `model_name` 由 ModelAdapter 节点从 `ModelCallPayload.model_params` 中传递给 Provider，允许一个 Provider 实例支持多个模型。
+`chat_stream()` 有默认实现（fallback 到非流式），新 Provider 可渐进支持 SSE。
+参数 `model_name` 允许一个 Provider 实例支持多个模型。
 
 ---
 
@@ -202,7 +294,7 @@ pub struct AnthropicConfig {
 
 ### model_call
 
-Engine → Bus → ModelAdapter。定向消息，`to` 指向目标 model 节点的 NodeId。
+Engine → Bus → ModelAdapter。定向消息。`stream: true`（默认）时 ModelAdapter 开启 SSE 流。
 
 ```json
 {
@@ -218,15 +310,65 @@ Engine → Bus → ModelAdapter。定向消息，`to` 指向目标 model 节点�
       "max_tokens": 4096,
       "thinking_enabled": true,
       "extra": {"reasoning_effort": "high"}
-    }
+    },
+    "stream": true
   },
   "timestamp": 1719500000000
 }
 ```
 
-### model_response
+### model_response_chunk（流式）
 
-ModelAdapter → Bus → Engine。定向消息，`to` 指向请求的 Engine 节点。
+ModelAdapter → Bus → Engine。每个 SSE chunk 作为一条独立 Bus 消息广播，Engine 实时消费推送给用户。
+
+```json
+// 文本 chunk
+{
+  "msg_type": "model_response_chunk",
+  "from": "model/deepseek-v4-flash",
+  "to": ["engine/session-1"],
+  "payload": {
+    "chunk_type": "text",
+    "content": "Hello"
+  }
+}
+
+// 推理 chunk（DeepSeek thinking）
+{
+  "msg_type": "model_response_chunk",
+  "payload": {
+    "chunk_type": "reasoning",
+    "reasoning": "Let me analyze the question..."
+  }
+}
+
+// 工具调用增量 chunk
+{
+  "msg_type": "model_response_chunk",
+  "payload": {
+    "chunk_type": "tool_call",
+    "tool_call": {
+      "index": 0,
+      "id": "call_abc",
+      "name": "read_file",
+      "arguments_delta": "{\"path\": \"/x\"}"
+    }
+  }
+}
+
+// 用量 chunk（通常为最后一个 chunk）
+{
+  "msg_type": "model_response_chunk",
+  "payload": {
+    "chunk_type": "usage",
+    "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+  }
+}
+```
+
+### model_response（流结束汇总）
+
+ModelAdapter → Bus → Engine。流结束后发送，携带完整消息供 Engine 存入 State。
 
 ```json
 {
@@ -235,8 +377,8 @@ ModelAdapter → Bus → Engine。定向消息，`to` 指向请求的 Engine 节
   "from": "model/deepseek-v4-flash",
   "to": ["engine/session-1"],
   "payload": {
-    "message": {"role": "assistant", "content": "...", "extra": {...}},
-    "tool_calls": [{"id": "call_1", "name": "read_file", "arguments": {...}}],
+    "message": {"role": "assistant", "content": "Hello! How can I help?", "extra": {...}},
+    "tool_calls": null,
     "finish_reason": "stop",
     "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
     "id": "chatcmpl-xxx",
@@ -245,6 +387,21 @@ ModelAdapter → Bus → Engine。定向消息，`to` 指向请求的 Engine 节
   "timestamp": 1719500001000
 }
 ```
+
+### 流式时序
+
+```
+Engine                        Bus                    ModelAdapter
+  │                            │                         │
+  │── model_call(stream:true)─→│─────────→───────────────│ 开启 SSE 流
+  │                            │                         │
+  │←─── model_response_chunk───│←────── chunk("Hello") ──│
+  │←─── model_response_chunk───│←────── chunk(" world")──│
+  │←─── model_response_chunk───│←────── usage({...}) ────│
+  │←─── model_response─────────│←────── 完整消息 ────────│ 存 State
+```
+
+`stream: false` 时跳过 chunk 阶段，直接返回 `model_response`（非流式模式仍支持）。
 
 ### node_online（ModelAdapter 注册）
 
@@ -279,16 +436,22 @@ ModelAdapterNode::new(config, bus)
     ├─ 1. connect to Bus → node_online 广播
     │
     ├─ 2. spawn listen loop:
-    │      tokio::select! {
-    │          msg = handle.recv() → if msg.msg_type == "model_call" && msg.is_for(me):
+    │      msg = handle.recv()
+    │      if msg.msg_type == "model_call" && msg.is_for(me):
+    │          payload = parse(msg.payload)
+    │          if payload.stream:
+    │              stream = provider.chat_stream(...)
+    │              for chunk in stream.chunks:
+    │                  handle.send("model_response_chunk", to=msg.from, payload=chunk)
+    │              handle.send("model_response", to=msg.from, payload=stream.response)
+    │          else:
     │              response = provider.chat(...).await
     │              handle.send("model_response", to=msg.from, payload=response)
-    │      }
     │
     └─ 3. on shutdown: disconnect → node_offline 广播
 ```
 
-ModelAdapter 不主动发送消息——只响应 `model_call`。不关心 Engine 是谁、几个 Engine 在线。
+ModelAdapter 不主动发送消息——只响应 `model_call`。
 
 ## 消息格式转换
 
@@ -407,15 +570,15 @@ crates/arf-model-adapter/
 
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
-| 4.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`error.rs`、`lib.rs` | `crates/arf-model-adapter/` |
-| 4.2 | Provider trait | trait 定义 + 文档 | `provider.rs` |
-| 4.3 | DeepSeek provider | HTTP 调用 + thinking 处理 + reasoning_content 透传 | `deepseek.rs` |
-| 4.4 | OpenAI provider | HTTP 调用 + 标准 OpenAI 格式转换 | `openai.rs` |
-| 4.5 | Anthropic provider | HTTP 调用 + system 顶层参数 + content blocks + stop_reason 映射 | `anthropic.rs` |
+| 4.1 | 脚手架 + 类型定义 ✅ | `Cargo.toml`、`types.rs`、`error.rs`、`lib.rs`，253 tests | `crates/arf-model-adapter/` |
+| 4.2 | Provider trait | trait 定义 + `chat()` + `chat_stream()` 默认实现 | `provider.rs` |
+| 4.3 | DeepSeek provider | HTTP 调用 + SSE 流 + thinking 处理 + reasoning_content 透传 | `deepseek.rs` |
+| 4.4 | OpenAI provider | HTTP 调用 + SSE 流 + 标准 OpenAI 格式转换 | `openai.rs` |
+| 4.5 | Anthropic provider | HTTP 调用 + SSE 流 + system 顶层参数 + content blocks + stop_reason 映射 | `anthropic.rs` |
 | 4.6 | 消息转换 | ARF ↔ Provider API 格式双向转换函数 + 测试 | `convert.rs` |
-| 4.7 | ModelAdapter node | Bus 节点生命周期 + listen loop | `node.rs` |
-| 4.8 | 集成测试 | ModelAdapter node + Bus + mock HTTP server | `tests/` |
-| 4.9 | workspace 注册 | 根 `Cargo.toml` 添加 `arf-model-adapter` | `Cargo.toml` |
+| 4.7 | ModelAdapter node | Bus 节点生命周期 + listen loop（流式/非流式分发） | `node.rs` |
+| 4.8 | 集成测试 | ModelAdapter node + Bus + mock HTTP server（含 SSE） | `tests/` |
+| 4.9 | workspace 注册 ✅ | 根 `Cargo.toml` 添加 `arf-model-adapter` | `Cargo.toml` |
 
 ---
 
