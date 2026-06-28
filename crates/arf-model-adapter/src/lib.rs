@@ -8,13 +8,16 @@
 //! Multiple ModelAdapter nodes can run simultaneously, each serving a
 //! different model/provider.
 
+mod convert;
 mod deepseek;
 mod error;
+mod openai;
 mod provider;
 mod types;
 
 pub use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub use error::ProviderError;
+pub use openai::{OpenAIConfig, OpenAIProvider};
 pub use provider::Provider;
 pub use types::{
     ModelCallPayload, ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall,

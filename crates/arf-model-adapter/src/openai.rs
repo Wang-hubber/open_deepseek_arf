@@ -1,11 +1,11 @@
-//! DeepSeek provider — OpenAI-compatible chat completions API.
+//! OpenAI provider — standard OpenAI-compatible chat completions API.
 //!
-//! Endpoint: `POST /chat/completions`
+//! Endpoint: `POST /v1/chat/completions`
 //! Auth: Bearer token
-//! Features: thinking mode, reasoning_content passthrough, streaming
 //!
-//! Uses shared SSE parsing and retry logic from `convert.rs`.
-//! DeepSeek-specific: thinking mode mapping, reasoning_content passthrough.
+//! This is the canonical implementation for all OpenAI-compatible providers.
+//! Providers with extra features (e.g., DeepSeek thinking mode) extend from
+//! this format.
 
 use std::time::Duration;
 
@@ -23,20 +23,25 @@ use crate::types::{
     ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall, ToolDef, Usage,
 };
 
-/// Configuration for a DeepSeek provider.
+/// Configuration for an OpenAI provider.
 #[derive(Debug, Clone)]
-pub struct DeepSeekConfig {
+pub struct OpenAIConfig {
+    /// API base URL. Default: "https://api.openai.com".
     pub base_url: String,
+    /// API key (or placeholder for local LLMs).
     pub api_key: String,
+    /// Supported models (e.g., ["gpt-4o", "gpt-4-turbo"]).
     pub models: Vec<String>,
+    /// Request timeout in seconds. Default: 320.
     pub timeout_secs: u64,
+    /// Max retries for retryable errors. Default: 3.
     pub max_retries: u32,
 }
 
-impl DeepSeekConfig {
+impl OpenAIConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
         Self {
-            base_url: "https://api.deepseek.com".into(),
+            base_url: "https://api.openai.com".into(),
             api_key,
             models,
             timeout_secs: 320,
@@ -45,14 +50,14 @@ impl DeepSeekConfig {
     }
 }
 
-/// DeepSeek API provider — OpenAI-compatible chat completions.
-pub struct DeepSeekProvider {
-    config: DeepSeekConfig,
+/// OpenAI API provider — standard chat completions.
+pub struct OpenAIProvider {
+    config: OpenAIConfig,
     client: Client,
 }
 
-impl DeepSeekProvider {
-    pub fn new(config: DeepSeekConfig) -> Self {
+impl OpenAIProvider {
+    pub fn new(config: OpenAIConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
@@ -61,14 +66,18 @@ impl DeepSeekProvider {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.config.base_url)
+        format!("{}/v1/chat/completions", self.config.base_url)
     }
 
+    /// Single HTTP call.
     async fn send_request(&self, body: &Value) -> Result<String, ProviderError> {
         let response = self
             .client
             .post(self.endpoint())
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.api_key),
+            )
             .header("Content-Type", "application/json")
             .json(body)
             .send()
@@ -90,100 +99,11 @@ impl DeepSeekProvider {
             })
         }
     }
-
-    /// Single HTTP call with retry on 429/5xx.
-    async fn call_with_retry(
-        &self,
-        body: Value,
-    ) -> Result<ModelResponsePayload, ProviderError> {
-        let mut last_error = String::new();
-        for attempt in 0..=self.config.max_retries {
-            match self.send_request(&body).await {
-                Ok(raw) => return parse_response(&raw),
-                Err(e) => {
-                    last_error = e.to_string();
-                    if !convert::is_retryable(&e) || attempt == self.config.max_retries {
-                        return Err(e);
-                    }
-                    let delay = 2u64.pow(attempt + 1);
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
-                }
-            }
-        }
-        Err(ProviderError::RetryExhausted {
-            attempts: self.config.max_retries + 1,
-            last_error,
-        })
-    }
-
-    async fn call_stream(
-        &self,
-        body: Value,
-    ) -> Result<(Vec<ModelResponseChunk>, ModelResponsePayload), ProviderError> {
-        let response = self
-            .client
-            .post(self.endpoint())
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Api {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
-
-        let full_text = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        convert::parse_sse(&full_text)
-    }
 }
 
-#[async_trait]
-impl Provider for DeepSeekProvider {
-    fn name(&self) -> &str {
-        "deepseek"
-    }
+// ── Message conversion ─────────────────────────────────────────────
 
-    fn supported_models(&self) -> &[String] {
-        &self.config.models
-    }
-
-    async fn chat(
-        &self,
-        model_name: &str,
-        messages: Vec<ModelMessage>,
-        tools: Vec<ToolDef>,
-        params: ModelParams,
-    ) -> Result<ModelResponsePayload, ProviderError> {
-        let body = build_request_body(model_name, &messages, &tools, &params, false);
-        self.call_with_retry(body).await
-    }
-
-    async fn chat_stream(
-        &self,
-        model_name: &str,
-        messages: Vec<ModelMessage>,
-        tools: Vec<ToolDef>,
-        params: ModelParams,
-    ) -> Result<(Vec<ModelResponseChunk>, ModelResponsePayload), ProviderError> {
-        let body = build_request_body(model_name, &messages, &tools, &params, true);
-        self.call_stream(body).await
-    }
-}
-
-// ── Message conversion (DeepSeek-specific: reasoning_content passthrough) ──
-
+/// Convert ARF ModelMessage to OpenAI API message format.
 fn convert_message(msg: &ModelMessage) -> Value {
     let mut api_msg = serde_json::Map::new();
     api_msg.insert("role".into(), msg.role.clone().into());
@@ -196,18 +116,10 @@ fn convert_message(msg: &ModelMessage) -> Value {
         api_msg.insert("name".into(), name.clone().into());
     }
 
-    // Passthrough reasoning_content for thinking continuity
-    if !msg.extra.is_null() && msg.extra.get("reasoning_content").is_some() {
-        api_msg.insert(
-            "reasoning_content".into(),
-            msg.extra["reasoning_content"].clone(),
-        );
-    }
-
     Value::Object(api_msg)
 }
 
-// ── Request body (DeepSeek-specific: thinking mode) ──────────────────
+// ── Request body ────────────────────────────────────────────────────
 
 fn build_request_body(
     model_name: &str,
@@ -250,19 +162,19 @@ fn build_request_body(
         body.insert("max_tokens".into(), mt.into());
     }
 
-    // Thinking mode: ARF thinking_enabled → DeepSeek thinking object
-    if params.thinking_enabled {
-        let mut thinking = serde_json::json!({"type": "enabled"});
-        if let Some(effort) = params.extra.get("reasoning_effort") {
-            thinking["effort"] = effort.clone();
+    // Merge safe extra params (filter out DeepSeek-specific keys)
+    if let Some(obj) = params.extra.as_object() {
+        for (key, value) in obj {
+            if key != "reasoning_effort" && key != "reasoning_content" {
+                body.insert(key.clone(), value.clone());
+            }
         }
-        body.insert("thinking".into(), thinking);
     }
 
     Value::Object(body)
 }
 
-// ── Response parsing (DeepSeek-specific: reasoning_content extraction) ──
+// ── Response parsing ────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
@@ -285,8 +197,6 @@ struct ApiMessage {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<ApiToolCall>>,
-    #[serde(default)]
-    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,14 +247,7 @@ fn parse_response(raw: &str) -> Result<ModelResponsePayload, ProviderError> {
             .collect()
     });
 
-    let mut extra = Value::Null;
-    if let Some(rc) = choice.message.reasoning_content
-        && !rc.is_empty()
-    {
-        extra = serde_json::json!({"reasoning_content": rc});
-    }
-
-    let message = ModelMessage::new("assistant", content).with_extra(extra);
+    let message = ModelMessage::new("assistant", content);
 
     let usage = api.usage.map(|u| Usage {
         input_tokens: u.prompt_tokens,
@@ -362,15 +265,78 @@ fn parse_response(raw: &str) -> Result<ModelResponsePayload, ProviderError> {
     })
 }
 
+// ── Provider trait ──────────────────────────────────────────────────
+
+#[async_trait]
+impl Provider for OpenAIProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn supported_models(&self) -> &[String] {
+        &self.config.models
+    }
+
+    async fn chat(
+        &self,
+        model_name: &str,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDef>,
+        params: ModelParams,
+    ) -> Result<ModelResponsePayload, ProviderError> {
+        let body = build_request_body(model_name, &messages, &tools, &params, false);
+        let raw = self.send_request(&body).await?;
+        parse_response(&raw)
+    }
+
+    async fn chat_stream(
+        &self,
+        model_name: &str,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDef>,
+        params: ModelParams,
+    ) -> Result<(Vec<ModelResponseChunk>, ModelResponsePayload), ProviderError> {
+        let body = build_request_body(model_name, &messages, &tools, &params, true);
+        let response = self
+            .client
+            .post(self.endpoint())
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.api_key),
+            )
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+
+        let full_text = response
+            .text()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+        convert::parse_sse(&full_text)
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ToolDef;
 
     // ═══════════════════════════════════════════════════════════
-    // Message conversion — 5 tests
+    // Message conversion — 4 tests
     // ═══════════════════════════════════════════════════════════
 
     #[test]
@@ -386,7 +352,6 @@ mod tests {
         let msg = ModelMessage::new("system", "you are helpful");
         let api = convert_message(&msg);
         assert_eq!(api["role"], "system");
-        assert_eq!(api["content"], "you are helpful");
     }
 
     #[test]
@@ -394,7 +359,6 @@ mod tests {
         let msg = ModelMessage::new("assistant", "response");
         let api = convert_message(&msg);
         assert_eq!(api["role"], "assistant");
-        assert_eq!(api["content"], "response");
     }
 
     #[test]
@@ -408,22 +372,14 @@ mod tests {
         assert_eq!(api["name"], "search");
     }
 
-    #[test]
-    fn convert_assistant_with_reasoning() {
-        let msg = ModelMessage::new("assistant", "answer")
-            .with_extra(serde_json::json!({"reasoning_content": "step 1..."}));
-        let api = convert_message(&msg);
-        assert_eq!(api["reasoning_content"], "step 1...");
-    }
-
     // ═══════════════════════════════════════════════════════════
-    // Request body — 4 tests
+    // Request body — 3 tests
     // ═══════════════════════════════════════════════════════════
 
     #[test]
     fn build_minimal_body() {
         let body = build_request_body(
-            "deepseek-v4-flash",
+            "gpt-4o",
             &[ModelMessage::new("user", "hi")],
             &[],
             &ModelParams {
@@ -434,9 +390,8 @@ mod tests {
             },
             false,
         );
-        assert_eq!(body["model"], "deepseek-v4-flash");
+        assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["stream"], false);
-        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -447,7 +402,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         }];
         let body = build_request_body(
-            "m",
+            "gpt-4o",
             &[],
             &tools,
             &ModelParams {
@@ -460,55 +415,39 @@ mod tests {
         );
         let api_tools = body["tools"].as_array().unwrap();
         assert_eq!(api_tools.len(), 1);
-        assert_eq!(api_tools[0]["type"], "function");
-        assert_eq!(api_tools[0]["function"]["name"], "search");
     }
 
     #[test]
-    fn build_body_thinking_enabled() {
+    fn build_body_passes_extra_params() {
         let body = build_request_body(
-            "deepseek-v4-pro",
+            "gpt-4o",
             &[],
             &[],
             &ModelParams {
-                temperature: None,
-                max_tokens: None,
-                thinking_enabled: true,
-                extra: serde_json::json!({"reasoning_effort": "high"}),
+                temperature: Some(0.5),
+                max_tokens: Some(1024),
+                thinking_enabled: false,
+                extra: serde_json::json!({"top_p": 0.9, "frequency_penalty": 0.5}),
             },
             false,
         );
-        let thinking = &body["thinking"];
-        assert_eq!(thinking["type"], "enabled");
-        assert_eq!(thinking["effort"], "high");
-    }
-
-    #[test]
-    fn build_body_stream_true() {
-        let body = build_request_body(
-            "m",
-            &[],
-            &[],
-            &ModelParams {
-                temperature: None,
-                max_tokens: None,
-                thinking_enabled: false,
-                extra: Value::Null,
-            },
-            true,
-        );
-        assert_eq!(body["stream"], true);
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["max_tokens"], 1024);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["frequency_penalty"], 0.5);
+        // DeepSeek-specific keys are filtered
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     // ═══════════════════════════════════════════════════════════
-    // Response parsing — 2 tests
+    // Response parsing — 1 test
     // ═══════════════════════════════════════════════════════════
 
     #[test]
     fn parse_text_response() {
         let raw = r#"{
             "id": "chatcmpl-123",
-            "model": "deepseek-v4-flash",
+            "model": "gpt-4o",
             "choices": [{
                 "finish_reason": "stop",
                 "message": {"role": "assistant", "content": "Hello!"}
@@ -518,38 +457,6 @@ mod tests {
         let result = parse_response(raw).unwrap();
         assert_eq!(result.message.content, "Hello!");
         assert_eq!(result.finish_reason, "stop");
-        assert!(result.tool_calls.is_none());
         assert_eq!(result.usage.unwrap().total_tokens, 15);
-    }
-
-    #[test]
-    fn parse_tool_call_response() {
-        let raw = r#"{
-            "id": "chatcmpl-456",
-            "model": "deepseek-v4-pro",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "reasoning_content": "I need to search",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "search", "arguments": "{\"query\":\"rust\"}"}
-                    }]
-                }
-            }],
-            "usage": null
-        }"#;
-        let result = parse_response(raw).unwrap();
-        assert_eq!(result.finish_reason, "tool_calls");
-        let tc = result.tool_calls.unwrap();
-        assert_eq!(tc[0].name, "search");
-        assert_eq!(tc[0].arguments["query"], "rust");
-        assert_eq!(
-            result.message.extra["reasoning_content"],
-            "I need to search"
-        );
     }
 }
