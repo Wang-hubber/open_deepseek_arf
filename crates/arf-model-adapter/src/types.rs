@@ -1,58 +1,22 @@
-# 任务 4.1：ModelAdapter 脚手架 + 类型定义
-
-> Phase 4 — ModelAdapter 第一项任务
-> 父文档：`docs/v1.x/phase4_model_adapter/phase4-model-adapter-design.md`
-> 依赖：Phase 1 (Bus) + Phase 2 (State) + Phase 3 (AgentConfig) — 已完成
-
-## 设计思路
-
-搭建 `arf-model-adapter` crate 骨架，定义所有共享类型。不写 Provider 实现——Provider trait 在 4.2，实现在 4.3–4.5。
-
-| 文件 | 内容 |
-|------|------|
-| `Cargo.toml` | 依赖 `arf-core` + `arf-bus` + `reqwest` + `tokio` + `serde` + `serde_json` |
-| `types.rs` | `ModelParams`, `ToolDef`, `ModelCallPayload`, `ModelResponsePayload`, `ToolCall`, `Usage` |
-| `error.rs` | `ProviderError` enum |
-| `lib.rs` | 模块声明 + 重新导出 |
-
-所有类型从 design spec 机械转录，`#[derive(Debug, Clone, Serialize, Deserialize)]`。
-
-## 代码实现
-
-### `crates/arf-model-adapter/Cargo.toml`
-
-```toml
-[package]
-name = "arf-model-adapter"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "ARF ModelAdapter: Bus node that translates ARF messages to provider APIs"
-
-[dependencies]
-arf-core = { path = "../arf-core" }
-arf-bus = { path = "../arf-bus" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["sync", "rt", "macros"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-```
-
-### `crates/arf-model-adapter/src/types.rs`
-
-```rust
 //! Shared types for ModelAdapter — payloads, params, tool defs, responses.
 
 use arf_core::ModelMessage;
 use serde::{Deserialize, Serialize};
 
 /// Model inference parameters extracted from ModelSpec.
+///
+/// These are ARF-standard params. Each Provider translates them to
+/// its native API format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
+    /// Sampling temperature (0.0–2.0). None = provider default.
     pub temperature: Option<f32>,
+    /// Hard limit on output tokens. None = provider default.
+    /// Note: Anthropic requires max_tokens — if None, provider uses a safe default.
     pub max_tokens: Option<u32>,
+    /// Whether thinking/reasoning is enabled.
     pub thinking_enabled: bool,
+    /// Provider-specific extra parameters (e.g., top_p, reasoning_effort).
     pub extra: serde_json::Value,
 }
 
@@ -98,88 +62,7 @@ pub struct Usage {
     pub output_tokens: u32,
     pub total_tokens: u32,
 }
-```
 
-### `crates/arf-model-adapter/src/error.rs`
-
-```rust
-//! Error types for ModelAdapter providers.
-
-/// Errors that can occur when calling a model provider's API.
-#[derive(Debug)]
-pub enum ProviderError {
-    /// HTTP transport error (connection refused, timeout, DNS).
-    Transport(String),
-    /// API returned a non-retryable error (400, 401, etc.).
-    Api { status: u16, message: String },
-    /// API returned a retryable error (429, 5xx) and retries exhausted.
-    RetryExhausted { attempts: u32, last_error: String },
-    /// Response parsing failed (unexpected format change).
-    Parse(String),
-}
-
-impl std::fmt::Display for ProviderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Transport(msg) => write!(f, "transport error: {msg}"),
-            Self::Api { status, message } => write!(f, "API error {status}: {message}"),
-            Self::RetryExhausted { attempts, last_error } => {
-                write!(f, "retry exhausted after {attempts} attempts: {last_error}")
-            }
-            Self::Parse(msg) => write!(f, "parse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
-```
-
-### `crates/arf-model-adapter/src/lib.rs`
-
-```rust
-//! ARF ModelAdapter — translate ARF messages to provider APIs.
-//!
-//! ModelAdapter is a passive Bus node. It listens for `model_call` messages,
-//! translates ARF-internal `ModelMessage` format to provider-specific API
-//! format, calls the model via HTTP, and returns `model_response` to the Bus.
-//!
-//! Providers (DeepSeek, OpenAI, Anthropic) implement the `Provider` trait.
-//! Multiple ModelAdapter nodes can run simultaneously, each serving a
-//! different model/provider.
-
-mod error;
-mod types;
-
-pub use error::ProviderError;
-pub use types::{
-    ModelCallPayload, ModelParams, ModelResponsePayload, ToolCall, ToolDef, Usage,
-};
-```
-
-### 根 `Cargo.toml` — workspace members 追加
-
-```toml
-[workspace]
-members = [
-    "crates/arf-core",
-    "crates/arf-bus",
-    "crates/arf-state",
-    "crates/arf-engine",
-    "crates/arf-agent",
-    "crates/arf-model-adapter",
-    "py-arf",
-]
-```
-
----
-
-## 测试
-
-脚手架阶段仅验证类型可构造、可序列化往返。
-
-### types.rs — 12 tests
-
-```rust
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +177,11 @@ mod tests {
             message: ModelMessage::new("assistant", "Hello!"),
             tool_calls: None,
             finish_reason: "stop".into(),
-            usage: Some(Usage { input_tokens: 10, output_tokens: 5, total_tokens: 15 }),
+            usage: Some(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+            }),
             id: "chatcmpl-123".into(),
             model: "deepseek-v4-flash".into(),
         };
@@ -356,7 +243,11 @@ mod tests {
 
     #[test]
     fn usage_serialization_roundtrip() {
-        let u = Usage { input_tokens: 100, output_tokens: 50, total_tokens: 150 };
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+        };
         let json = serde_json::to_string(&u).unwrap();
         let back: Usage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.total_tokens, 150);
@@ -364,59 +255,11 @@ mod tests {
 
     #[test]
     fn usage_zero_tokens() {
-        let u = Usage { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+        let u = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+        };
         assert_eq!(u.total_tokens, 0);
     }
 }
-```
-
-### error.rs — 3 tests
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn provider_error_display_transport() {
-        let e = ProviderError::Transport("connection refused".into());
-        assert!(format!("{e}").contains("connection refused"));
-    }
-
-    #[test]
-    fn provider_error_display_api() {
-        let e = ProviderError::Api { status: 401, message: "Unauthorized".into() };
-        assert!(format!("{e}").contains("401"));
-        assert!(format!("{e}").contains("Unauthorized"));
-    }
-
-    #[test]
-    fn provider_error_implements_std_error() {
-        fn takes_error(_e: impl std::error::Error) {}
-        takes_error(ProviderError::Parse("test".into()));
-    }
-}
-```
-
----
-
-## 测试汇总
-
-| 类型 | 测试数 |
-|------|--------|
-| ModelParams | 2 |
-| ToolDef | 2 |
-| ModelCallPayload | 2 |
-| ModelResponsePayload | 2 |
-| ToolCall | 2 |
-| Usage | 2 |
-| ProviderError | 3 |
-| **合计** | **15** |
-
----
-
-## 交付标准
-
-- `cargo test --workspace` 全部通过（238 + 15 = 253 tests）
-- `cargo fmt --check` + `cargo clippy` 无警告
-- 所有类型 serde 往返一致

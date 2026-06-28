@@ -1,0 +1,15 @@
+[package]
+name = "arf-model-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF ModelAdapter: Bus node that translates ARF messages to provider APIs"
+
+[dependencies]
+arf-core = { path = "../arf-core" }
+arf-bus = { path = "../arf-bus" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

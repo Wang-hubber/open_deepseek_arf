@@ -6,6 +6,7 @@ members = [
     "crates/arf-state",
     "crates/arf-engine",
     "crates/arf-agent",
+    "crates/arf-model-adapter",
     "py-arf",
 ]
 
