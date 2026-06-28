@@ -9,9 +9,11 @@
 //! different model/provider.
 
 mod error;
+mod provider;
 mod types;
 
 pub use error::ProviderError;
+pub use provider::Provider;
 pub use types::{
     ModelCallPayload, ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall,
     ToolCallDelta, ToolDef, Usage,
