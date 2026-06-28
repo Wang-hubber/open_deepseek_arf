@@ -115,7 +115,7 @@ pub struct State {
 
 | Phase | 如何使用 State |
 |-------|---------------|
-| Phase 3 Engine | 持有 `State`，负责创建 task、状态转换、级联传播、持久化读写 |
+| Phase 4 Engine | 持有 `State`，负责创建 task、状态转换、级联传播、持久化读写 |
 | Phase 5 ModelAdapter | 读写 `extra` 字段；后续可加 `tool_calls: Vec<ToolCall>` |
 
 ## 任务完成情况

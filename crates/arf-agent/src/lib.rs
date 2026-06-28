@@ -1,8 +1,9 @@
-//! ARF Agent — declarative configuration and passive state machine.
+//! ARF AgentConfig — declarative resource configuration skeleton.
 //!
-//! The Agent is a config + state machine skeleton. It does not know about
-//! the Bus, MCP, or other Agents. The Engine feeds it messages and it
-//! produces action decisions.
+//! AgentConfig is a pure data structure that declares WHAT an agent needs:
+//! models, tools, subagents, teammates, allowed paths. It uses only logical
+//! names and knows nothing about the Bus, NodeIds, or resource availability.
+//! Engine (Phase 4) reads AgentConfig and resolves resources at runtime.
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

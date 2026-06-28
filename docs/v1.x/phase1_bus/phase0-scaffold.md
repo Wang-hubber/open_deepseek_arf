@@ -25,11 +25,11 @@ ModelAdapter 和 MCP 这两个组件用纯 Python 实现——它们做的是 AP
 ```
 arf-core  ──── 零依赖，共享类型
     │
-    ├── arf-bus    (Phase 1)
-    ├── arf-state  (Phase 2)
+    ├── arf-bus    (Phase 1) — 依赖 core
+    ├── arf-state  (Phase 2) — 依赖 core
     │
-    ├── arf-engine (Phase 3) — 依赖 core + bus + state
-    └── arf-agent  (Phase 4) — 依赖 core + engine
+    ├── arf-agent  (Phase 3) — 仅依赖 serde，纯数据配置
+    └── arf-engine (Phase 4) — 依赖 core + bus + state + agent
 
 py-arf  — PyO3 桥，依赖所有 Rust crate
 ```
@@ -44,8 +44,8 @@ py-arf  — PyO3 桥，依赖所有 Rust crate
 | `crates/arf-core/Cargo.toml` + `src/lib.rs` | 共享类型：`Message`, `NodeId`, `SessionId` |
 | `crates/arf-bus/Cargo.toml` + `src/lib.rs` | Phase 1 主战场：消息总线 |
 | `crates/arf-state/Cargo.toml` + `src/lib.rs` | Phase 2 主战场：状态管理 |
-| `crates/arf-engine/Cargo.toml` + `src/lib.rs` | Phase 3 主战场：运行引擎 |
-| `crates/arf-agent/Cargo.toml` + `src/lib.rs` | Phase 4 主战场：Agent 骨架 |
+| `crates/arf-agent/Cargo.toml` + `src/lib.rs` | Phase 3 主战场：AgentConfig 纯数据配置骨架 |
+| `crates/arf-engine/Cargo.toml` + `src/lib.rs` | Phase 4 主战场：运行引擎 |
 
 每个 `lib.rs` 当前只有一个 `add(2, 2) → 4` 的占位测试，证明该 crate 可编译、可测试。Phase 开始后替换为真正的实现。
 

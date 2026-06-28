@@ -19,8 +19,8 @@
 | **0** | 脚手架 | Cargo workspace + maturin + Makefile CI + 文档框架 | — |
 | **1** | Bus | Rust J-RPC 广播总线：消息收发 + 节点生命周期 + 在线图 | 0 |
 | **2** | State | messages + tasks 生命周期 + 双向锁 + 级联释放 | 1 |
-| **3** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2 |
-| **4** | Agent | 声明式配置 + 被动状态机骨架 | 3 |
+| **3** | AgentConfig | 纯数据声明式配置骨架：models / tools / subagents / teammates | 1 |
+| **4** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2, 3 |
 | **5** | ModelAdapter | 内部格式 ↔ OpenAI/DeepSeek/Anthropic API | 1 |
 | **6** | MCP | 工具发现/注册/执行，资源广播 | 1 |
 | **7** | 集成 | E2E 测试 + 性能基准 + 完整文档 | 0-6 |
@@ -30,16 +30,18 @@
 ```
 Phase 0 ──→ Phase 1 (Bus) ──→ Phase 2 (State)
     │            │                  │
+    │            ├──────→ Phase 3 (AgentConfig)
+    │            │                  │
     │            ├──────→ Phase 5 (ModelAdapter)
     │            │                  │
     │            ├──────→ Phase 6 (MCP)
     │            │                  │
-    │            └──────→ Phase 3 (Engine) ──→ Phase 4 (Agent)
+    │            └──────→ Phase 4 (Engine) ── 依赖 Bus + State + AgentConfig
     │
     └─────────────────────────────────────→ Phase 7 (集成)
 ```
 
-Bus 是唯一地基。State/ModelAdapter/MCP 可在 Bus 完成后并行推进，Engine 需等 Bus+State，Agent 需等 Engine。
+Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并行推进，Engine 需等 Bus+State+AgentConfig。
 
 ---
 
@@ -47,7 +49,7 @@ Bus 是唯一地基。State/ModelAdapter/MCP 可在 Bus 完成后并行推进，
 
 ### Phase 0 — 项目脚手架
 
-- Cargo workspace：`arf-core`、`arf-bus`、`arf-state`、`arf-engine`、`arf-agent`
+- Cargo workspace：`arf-core`、`arf-bus`、`arf-state`、`arf-agent`、`arf-engine`
 - maturin 项目 `py-arf/`，PyO3 绑定
 - `Makefile`：`lint`（cargo fmt --check + cargo clippy）、`test`（cargo test + pytest）、`ci`（lint + test）
 - 文档目录 `docs/v1.x/`
@@ -67,19 +69,23 @@ Bus 是唯一地基。State/ModelAdapter/MCP 可在 Bus 完成后并行推进，
 - 双向锁：`blocked_by` + `blocking`
 - 级联释放：task 完成→沿 blocking 唤醒 / task 取消→沿 blocked_by 级联取消 / 节点离线→级联释放+注入通知
 
-### Phase 3 — Engine 运行引擎
+### Phase 3 — AgentConfig 声明式配置
+
+- `AgentConfig` 纯数据结构：声明 agent 需要哪些资源
+- `ModelSpec` / `ToolSpec` / `ResourceSpec` — 全部用逻辑名，不感知 Bus
+- `ToolPermission`: Allow / Ask / Deny 三级权限
+- 1:N 资源映射语义：一个 `ResourceSpec` 可匹配多个 Bus 节点，全部注册，Engine 运行时选第一个在线的
+- 支持 YAML/JSON 反序列化，支持代码构造，支持 Default
+- 依赖：仅 `serde` + `serde_json`，不依赖任何 ARF crate
+
+### Phase 4 — Engine 运行引擎
 
 - 监听 Bus 消息，按 session_id 过滤归属
+- 读取 `AgentConfig`，上 Bus 做 discovery，将逻辑 ResourceSpec 解析为 `ResolvedManifest`（逻辑名 → `Vec<NodeId>`）
 - model_call → Bus → ModelAdapter → model_response → Bus → Engine
 - action 决策通过 Bus 发出
 - Park/Resume：收到 interrupt/resume 消息 → 暂停/恢复
-- State 持久化由 Engine 管理，Agent 不感知
-
-### Phase 4 — Agent 状态机
-
-- 声明式配置：root / allow_paths / model / 工作模式 / 可用资源
-- 被动状态机：Engine 喂消息 → Agent 产生 action
-- Agent 不知道 Bus/MCP/其他 Agent 的存在
+- State 持久化由 Engine 管理
 
 ### Phase 5 — ModelAdapter
 

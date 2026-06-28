@@ -9,9 +9,9 @@ Phase 2 需要三个新类型，全部定义在 `arf-core`（零依赖 crate）�
 
 | 类型 | 用途 | 使用方 |
 |------|------|--------|
-| `TaskId` | A2A 任务标识，UUID + owner | State, Engine |
-| `TaskStatus` | 任务 6 状态枚举 + 终态判断 | State, Engine |
-| `ModelMessage` | 最小对话消息（Phase 5 扩展） | State, Engine, ModelAdapter |
+| `TaskId` | A2A 任务标识，UUID + owner | State, Engine (Phase 4) |
+| `TaskStatus` | 任务 6 状态枚举 + 终态判断 | State, Engine (Phase 4) |
+| `ModelMessage` | 最小对话消息（Phase 5 扩展） | State, Engine (Phase 4), ModelAdapter |
 
 现有依赖（`serde` + `serde_json` + `uuid`）已满足需求，`Cargo.toml` 无需修改。
 

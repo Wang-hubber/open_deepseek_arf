@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ARF Agent: declarative config + passive state machine skeleton"
+description = "ARF AgentConfig: declarative resource configuration skeleton — pure data"
 
 [dependencies]
-arf-core = { path = "../arf-core" }
-arf-engine = { path = "../arf-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

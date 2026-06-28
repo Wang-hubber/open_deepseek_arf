@@ -6,7 +6,7 @@
 
 ## 设计思路
 
-`arf-state` 是纯数据结构 crate，定义 `Task` 和 `State`，不包含业务方法。所有操作（状态转换、级联传播、持久化）由 Phase 3 Engine 负责。
+`arf-state` 是纯数据结构 crate，定义 `Task` 和 `State`，不包含业务方法。所有操作（状态转换、级联传播、持久化）由 Phase 4 Engine 负责。
 
 | 结构体 | 用途 | 字段 |
 |--------|------|------|
@@ -65,7 +65,7 @@ serde_json = "1"
 //! `Task` records A2A task state with bidirectional locking information.
 //! `State` is the agent-held aggregate: conversation messages + task list.
 //! This crate defines pure data structures — all operations (state transitions,
-//! cascade propagation, persistence) belong to Phase 3 Engine.
+//! cascade propagation, persistence) belong to Phase 4 Engine.
 
 use arf_core::{ModelMessage, TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,7 @@ impl Task {
 /// Agent-held state: conversation messages + A2A task list.
 ///
 /// `State` is the aggregate root for an agent session.
-/// Phase 3 Engine owns the `State` instance and manages all mutations,
+/// Phase 4 Engine owns the `State` instance and manages all mutations,
 /// persistence, and cascade propagation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
