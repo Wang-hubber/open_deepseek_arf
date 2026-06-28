@@ -374,8 +374,331 @@ impl EngineStub {
 }
 ```
 
-### 测试样例：流式响应（通过 Bus）
+### 公共基础设施：`EngineStub` + `setup`/`teardown`
 
+```rust
+/// 最小化 Engine 模拟 — 连接 Bus，发送 model_call，收集响应.
+struct EngineStub {
+    handle: arf_bus::NodeHandle,
+}
+
+impl EngineStub {
+    async fn new(bus: &Bus, name: &str) -> Self {
+        let info = NodeInfo {
+            node_id: NodeId::new(format!("engine/{name}")),
+            node_type: "engine".into(),
+            capabilities: serde_json::json!({}),
+            online_since: 0,
+        };
+        let filter = MessageFilter {
+            types: Some(vec!["model_response".into(), "model_response_chunk".into()]),
+            to_match: ToMatch::BroadcastAndDirectedToMe,
+        };
+        let handle = bus.connect(info, filter).await.unwrap();
+        Self { handle }
+    }
+
+    async fn call(
+        &mut self, target: &NodeId,
+        messages: Vec<ModelMessage>, tools: Vec<ToolDef>,
+        params: ModelParams, stream: bool,
+    ) -> (Value, Vec<Value>) {
+        let payload = ModelCallPayload { messages, tools, model_params: params, stream };
+        self.handle.send("model_call", vec![target.clone()],
+            serde_json::to_value(&payload).unwrap()).await.unwrap();
+        let mut chunks = Vec::new();
+        loop {
+            let msg = self.handle.recv().await.unwrap();
+            if msg.msg_type == "model_response_chunk" {
+                chunks.push(msg.payload);
+            } else if msg.msg_type == "model_response" {
+                return (msg.payload, chunks);
+            }
+        }
+    }
+}
+```
+
+逐行：
+- `EngineStub::new()` — 注册为 `engine/{name}` 节点，只接收 `model_response` 和 `model_response_chunk` 两类消息
+- `call()` — 发送 `model_call`，然后循环收消息：`model_response_chunk` 存入 chunks 列表，`model_response` 作为最终结果返回。这是 Engine 在 Phase 6 中的实际行为的最小复现
+
+```rust
+async fn setup(model_name: &str) -> (Bus, ModelAdapterNode, EngineStub, NodeId) {
+    let bus = test_bus();
+    let provider = Arc::new(DeepSeekProvider::new(DeepSeekConfig::new(
+        api_key(), vec![model_name.into(), "deepseek-v4-pro".into()],
+    )));
+    let node_id = NodeId::new(format!("model/{model_name}"));
+    let node = ModelAdapterNode::new(provider, &bus, node_id.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await; // let node_online propagate
+    let engine = EngineStub::new(&bus, "test-engine").await;
+    (bus, node, engine, node_id)
+}
+```
+
+逐行：
+- `setup()` — 创建 Bus → 创建 Provider + Node → 等 10ms 让 `node_online` 广播到达 → 创建 EngineStub。每个测试共享此 setup 逻辑
+- `teardown()` — engine.disconnect → node.shutdown → bus.shutdown，顺序清理
+
+---
+
+### 1. basic_chat — 基础对话
+
+**意图：** 验证最基础的 Bus 消息闭环 —— Engine 发 model_call，Node 收、调 API、回复 model_response，Engine 收到。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn basic_chat() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let msgs = vec![ModelMessage::new("user", "Say hello in one word.")];
+    let (response, chunks) = engine.call(&node_id, msgs, vec![], empty_params(), false).await;
+    assert!(chunks.is_empty(), "non-streaming should have no chunks");
+    assert_eq!(response["finish_reason"], "stop");
+    assert!(!response["message"]["content"].as_str().unwrap_or("").is_empty());
+    eprintln!("[basic_chat] content: {}", response["message"]["content"]);
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- `chunks.is_empty()` — 非流式请求不应有 `model_response_chunk` 消息
+- `finish_reason == "stop"` — 正常结束
+- `content` 非空 — 模型产生了有效回复
+- 消息路径：`handle.send("model_call")` → Bus → Node listen loop → `process_model_call()` → `provider.chat()` → HTTP → `handle.send("model_response")` → Bus → `engine.handle.recv()`
+
+**输出：**
+```
+[basic_chat] content: "Hello!"
+```
+
+---
+
+### 2. multi_round_chat — 多轮对话
+
+**意图：** 验证多轮历史消息通过 Bus 正确传递，模型理解上下文。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn multi_round_chat() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let msgs = vec![
+        ModelMessage::new("user", "My name is Alice."),
+        ModelMessage::new("assistant", "Nice to meet you, Alice!"),
+        ModelMessage::new("user", "What is my name?"),
+    ];
+    let (response, _) = engine.call(&node_id, msgs, vec![], empty_params(), false).await;
+    assert!(response["message"]["content"].as_str().unwrap_or("").to_lowercase().contains("alice"));
+    eprintln!("[multi_round] content: {}", response["message"]["content"]);
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- 3 条消息通过 Bus 的 `model_call` payload 发送，序列化为 JSON → Node 反序列化为 `ModelCallPayload` → Provider 转换后发给 API
+- `contains("alice")` — 模型从第 1 条消息中提取了名字
+
+**输出：**
+```
+[multi_round] content: "Your name is Alice, as you mentioned earlier! 😊"
+```
+
+---
+
+### 3. single_tool_call — 工具调用
+
+**意图：** 验证工具定义通过 Bus 传递，模型返回 tool_calls 经过 Bus 回到 Engine。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn single_tool_call() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let tools = vec![ToolDef {
+        name: "get_weather".into(),
+        description: "Get current weather for a city".into(),
+        parameters: serde_json::json!({
+            "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]
+        }),
+    }];
+    let msgs = vec![ModelMessage::new("user", "What is the weather in Beijing?")];
+    let (response, _) = engine.call(&node_id, msgs, tools, empty_params(), false).await;
+    assert_eq!(response["finish_reason"], "tool_calls");
+    let tc = response["tool_calls"].as_array().unwrap();
+    assert!(!tc.is_empty());
+    assert_eq!(tc[0]["name"], "get_weather");
+    eprintln!("[tool_call] name: {}, args: {}", tc[0]["name"], tc[0]["arguments"]);
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- `finish_reason == "tool_calls"` —— 模型识别到需要调用工具
+- `tc[0]["name"] == "get_weather"` —— 正确选择了工具
+- 验证 `ToolDef` 序列化为 Bus payload → Node 反序列化 → `build_request_body` 转为 OpenAI function calling 格式
+
+**输出：**
+```
+[tool_call] name: get_weather, args: {"city":"Beijing"}
+```
+
+---
+
+### 4. multi_tool_call_with_results — 多工具 + 结果回传
+
+**意图：** 验证完整的 tool call 闭环 —— 两个工具 → 两个 tool_calls → 模拟结果 → 第二轮请求 → 最终回复。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn multi_tool_call_with_results() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let tools = vec![
+        ToolDef { name: "get_weather".into(), description: "Get current weather".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}) },
+        ToolDef { name: "get_time".into(), description: "Get current time in a city".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}) },
+    ];
+    let msgs = vec![ModelMessage::new("user", "What is the weather AND time in Shanghai?")];
+    let (response, _) = engine.call(&node_id, msgs, tools, empty_params(), false).await;
+
+    if response["finish_reason"] == "tool_calls" {
+        let tc = response["tool_calls"].as_array().unwrap();
+        // Round 2: pass tool results back
+        let api_tool_calls: Vec<Value> = tc.iter().map(|t| serde_json::json!({
+            "id": t["id"], "type": "function",
+            "function": { "name": t["name"], "arguments": t["arguments"].to_string() }
+        })).collect();
+        let mut msgs2 = vec![
+            ModelMessage::new("user", "What is the weather AND time in Shanghai?"),
+            ModelMessage::new("assistant", "").with_extra(serde_json::json!({"tool_calls": api_tool_calls})),
+        ];
+        for t in tc {
+            let result_text = match t["name"].as_str().unwrap_or("") {
+                "get_weather" => "Sunny, 25°C", "get_time" => "14:30 CST", _ => "done",
+            };
+            msgs2.push(ModelMessage::new("tool", result_text)
+                .with_tool_call_id(t["id"].as_str().unwrap_or(""))
+                .with_name(t["name"].as_str().unwrap_or("")));
+        }
+        let (response2, _) = engine.call(&node_id, msgs2, vec![], empty_params(), false).await;
+        assert_eq!(response2["finish_reason"], "stop");
+    }
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- 第一轮 — 2 个 tool_calls 经 Bus 返回
+- `api_tool_calls` 构造 —— 注意 `arguments` 必须是 JSON 字符串且每项含 `type:"function"` 包装
+- 第二轮 — tool results 以 `role:"tool"` 回传 → `convert_message` 转为 API 格式 → 模型基于结果回复
+- 两轮请求走同一条 Bus 消息路径
+
+**输出：**
+```
+[multi_tool] finish_reason: "tool_calls"
+[multi_tool] tool_calls count: 2
+```
+
+---
+
+### 5. thinking_enabled — 思考模式开启
+
+**意图：** 验证 `thinking_enabled: true` + `reasoning_effort` 经 Bus 传递到 Provider，`reasoning_content` 经 Bus 返回。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn thinking_enabled() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-pro").await;
+    let params = ModelParams {
+        thinking_enabled: true, extra: serde_json::json!({"reasoning_effort": "high"}), ..empty_params()
+    };
+    let msgs = vec![ModelMessage::new("user", "Explain quantum computing in one paragraph.")];
+    let (response, _) = engine.call(&node_id, msgs, vec![], params, false).await;
+    let has_reasoning = !response["message"]["extra"].is_null()
+        && response["message"]["extra"].get("reasoning_content").is_some();
+    eprintln!("[thinking] has reasoning_content: {has_reasoning}");
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- `thinking_enabled: true` → `build_request_body` 发送 `thinking:{type:"enabled"}` + 顶层 `reasoning_effort:"high"`
+- `has_reasoning` — `parse_response` 从 API 响应提取 `reasoning_content` 存入 `ModelMessage.extra`，经 Bus 序列化/反序列化不丢失
+
+**输出：**
+```
+[thinking] has reasoning_content: true
+```
+
+---
+
+### 6. thinking_disabled — 思考模式关闭
+
+**意图：** 验证 `thinking_enabled: false` → `thinking:{type:"disabled"}` 显式发送到 API，不返回 reasoning_content。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn thinking_disabled() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let params = ModelParams { thinking_enabled: false, ..empty_params() };
+    let msgs = vec![ModelMessage::new("user", "Say hello.")];
+    let (response, _) = engine.call(&node_id, msgs, vec![], params, false).await;
+    assert_eq!(response["finish_reason"], "stop");
+    assert!(!response["message"]["content"].as_str().unwrap_or("").is_empty());
+    let has_reasoning = !response["message"]["extra"].is_null()
+        && response["message"]["extra"].get("reasoning_content").is_some();
+    eprintln!("[thinking_off] has reasoning_content: {has_reasoning}");
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- 发送 `thinking:{type:"disabled"}`，API 不返回 `reasoning_content`
+- 这是测试中发现的 bug #5：此前不传 thinking 参数时 API 默认开启
+
+**输出：**
+```
+[thinking_off] content: "Hello! How can I help you today?"
+[thinking_off] has reasoning_content: false
+```
+
+---
+
+### 7. streaming — 流式响应（经 Bus 逐 chunk 传输）
+
+**意图：** 验证 SSE 流的每个 chunk 作为独立 Bus 消息（`model_response_chunk`）到达 Engine，最终 `model_response` 携完整内容。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn streaming() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    let msgs = vec![ModelMessage::new("user", "Count from 1 to 5 slowly.")];
+    let (response, chunks) = engine.call(&node_id, msgs, vec![], empty_params(), true).await;
+    eprintln!("[streaming] chunk count: {}", chunks.len());
+    for (i, c) in chunks.iter().enumerate() {
+        if c["chunk_type"] == "text" {
+            eprintln!("[streaming] chunk[{i}]: {:?}", c["content"].as_str());
+        }
+    }
+    assert!(!chunks.is_empty(), "streaming should produce chunks");
+    assert!(!response["message"]["content"].as_str().unwrap_or("").is_empty());
+    eprintln!("[streaming] full content: {}", response["message"]["content"]);
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- `stream: true` → `call_stream()` → `convert::parse_sse()` 解析 SSE → 每个 chunk 通过 `handle.send("model_response_chunk")` 发到 Bus
+- `chunks` 非空 —— 验证 Bus 上确实收到了 `model_response_chunk` 消息
+- `response["message"]["content"]` 非空 —— 所有 chunk 拼接为完整回复
+
+**输出：**
 ```
 [streaming] chunk count: 15
 [streaming] chunk[0]: Some("1")
@@ -384,7 +707,40 @@ impl EngineStub {
 [streaming] full content: "1...  \n2...  \n3...  \n4...  \n5."
 ```
 
-15 个 chunk 通过 Bus 逐个传输，最终 `model_response` 携带完整拼接内容。
+15 个 chunk 逐个经 Bus 传输到达 EngineStub。
+
+---
+
+### 8. invalid_payload — 错误处理
+
+**意图：** 验证 Node 收到无效 payload 时返回 error 响应，不 panic 不崩溃。
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn invalid_payload() {
+    let (bus, node, mut engine, node_id) = setup("deepseek-v4-flash").await;
+    engine.handle.send("model_call", vec![node_id.clone()],
+        serde_json::json!("not a valid payload")).await.unwrap();
+    let msg = engine.handle.recv().await.unwrap();
+    assert_eq!(msg.msg_type, "model_response");
+    assert!(msg.payload["error"].as_str().unwrap_or("").contains("invalid payload"));
+    eprintln!("[error] response: {}", msg.payload);
+    teardown(bus, node, engine).await;
+}
+```
+
+逐测试：
+- 发送字符串 `"not a valid payload"` 而非 `ModelCallPayload` 结构体
+- `serde_json::from_value::<ModelCallPayload>` 失败 → `process_model_call` 的 error 分支 → `send_error_response` → Engine 收到含 `error` 字段的 `model_response`
+- 验证 Node 不会因无效输入 panic
+
+**输出：**
+```
+[error] response: {"error":"invalid payload: invalid type: string \"not a valid payload\", expected struct ModelCallPayload"}
+```
+
+---
 
 ### 运行方式
 
@@ -397,17 +753,17 @@ cargo test --package arf-model-adapter --test bus_integration -- --ignored --noc
 
 ## 测试汇总
 
-| 分类 | 文件 | 测试数 |
-|------|------|--------|
-| node 单元测试 (mock) | `node.rs` | 3 |
-| Bus 集成测试 (真实 API) | `tests/bus_integration.rs` | 8 |
-| **累计** (4.1–4.7) | | **71** |
+| 分类 | 文件 | 测试数 | 说明 |
+|------|------|--------|------|
+| node 单元测试 (mock) | `node.rs` | 3 | connect/disconnect 生命周期 |
+| Bus 集成测试 (真实 API) | `tests/bus_integration.rs` | 8 | 全链路 Engine→Bus→Node→API |
+| **累计** (4.1–4.7) | | **71** | |
 
 ---
 
 ## 交付标准
 
-- [x] `cargo test --workspace` 全部通过（299 unit + 10 + 8 = 317 tests）
+- [x] `cargo test --workspace` 全部通过（299 unit + 18 integration = 317 tests）
 - [x] ModelAdapterNode 正确收发 Bus 消息
 - [x] 流式/非流式双路径正常工作
 - [x] 错误处理正确（无效 payload → error response）
