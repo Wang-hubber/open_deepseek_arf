@@ -39,15 +39,25 @@ arf-model-adapter ─── depends on: arf-core + arf-bus + reqwest + tokio + s
 
 ```rust
 /// Model inference parameters extracted from ModelSpec.
+///
+/// These are ARF-standard params. Each Provider translates them to
+/// its native API format (see per-provider conversion notes).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
     /// Sampling temperature (0.0–2.0). None = provider default.
     pub temperature: Option<f32>,
     /// Hard limit on output tokens. None = provider default.
+    /// Note: Anthropic requires max_tokens — if None, provider uses a safe default.
     pub max_tokens: Option<u32>,
     /// Whether thinking/reasoning is enabled.
+    /// - DeepSeek: maps to `thinking: {type: "enabled"/"disabled"}`
+    /// - OpenAI: ignored (no native thinking support)
+    /// - Anthropic: maps to extended thinking budget
     pub thinking_enabled: bool,
-    /// Provider-specific extra parameters. ModelAdapter reads/writes this.
+    /// Provider-specific extra parameters (e.g., top_p, reasoning_effort).
+    /// ModelAdapter passes this through to the API as-is where safe,
+    /// or transforms it as needed (e.g., DeepSeek reads `reasoning_effort`
+    /// from extra and maps it into the `thinking` object).
     pub extra: serde_json::Value,
 }
 ```
@@ -155,7 +165,7 @@ pub trait Provider: Send + Sync {
 
 ## Provider Config
 
-### DeepSeekConfig / OpenAIConfig
+### Provider Configs
 
 ```rust
 /// Configuration for a DeepSeek provider.
@@ -164,14 +174,24 @@ pub struct DeepSeekConfig {
     pub base_url: String,
     /// API key.
     pub api_key: String,
-    /// Supported model names (e.g., ["deepseek-flash", "deepseek-reasoner"]).
+    /// Supported models (e.g., ["deepseek-v4-flash", "deepseek-v4-pro"]).
     pub models: Vec<String>,
 }
 
-/// Configuration for an OpenAI-compatible provider.
+/// Configuration for an OpenAI provider.
 pub struct OpenAIConfig {
     pub base_url: String,
     pub api_key: String,
+    pub models: Vec<String>,
+}
+
+/// Configuration for an Anthropic provider.
+pub struct AnthropicConfig {
+    /// API base URL. Default: "https://api.anthropic.com/v1".
+    pub base_url: String,
+    /// API key.
+    pub api_key: String,
+    /// Supported models (e.g., ["claude-sonnet-4-6", "claude-opus-4-7"]).
     pub models: Vec<String>,
 }
 ```
@@ -189,7 +209,7 @@ Engine → Bus → ModelAdapter。定向消息，`to` 指向目标 model 节点�
   "id": "uuid",
   "msg_type": "model_call",
   "from": "engine/session-1",
-  "to": ["model/deepseek-flash"],
+  "to": ["model/deepseek-v4-flash"],
   "payload": {
     "messages": [...],
     "tools": [...],
@@ -212,7 +232,7 @@ ModelAdapter → Bus → Engine。定向消息，`to` 指向请求的 Engine 节
 {
   "id": "uuid",
   "msg_type": "model_response",
-  "from": "model/deepseek-flash",
+  "from": "model/deepseek-v4-flash",
   "to": ["engine/session-1"],
   "payload": {
     "message": {"role": "assistant", "content": "...", "extra": {...}},
@@ -220,7 +240,7 @@ ModelAdapter → Bus → Engine。定向消息，`to` 指向请求的 Engine 节
     "finish_reason": "stop",
     "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
     "id": "chatcmpl-xxx",
-    "model": "deepseek-flash"
+    "model": "deepseek-v4-flash"
   },
   "timestamp": 1719500001000
 }
@@ -233,14 +253,14 @@ ModelAdapter 连接 Bus 时自动广播：
 ```json
 {
   "msg_type": "node_online",
-  "from": "model/deepseek-flash",
+  "from": "model/deepseek-v4-flash",
   "to": [],
   "payload": {
     "node_type": "model",
-    "node_id": "model/deepseek-flash",
+    "node_id": "model/deepseek-v4-flash",
     "capabilities": {
       "provider": "deepseek",
-      "models": ["deepseek-flash", "deepseek-reasoner"]
+      "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
     },
     "online_since": 1719500000000
   }
@@ -272,28 +292,72 @@ ModelAdapter 不主动发送消息——只响应 `model_call`。不关心 Engin
 
 ## 消息格式转换
 
-每个 `Provider::chat()` 负责将 `Vec<ModelMessage>` 转为供应商格式。
+每个 `Provider::chat()` 负责双向转换：ARF 内部格式 ↔ 供应商 API 格式。
 
-**DeepSeek / OpenAI（OpenAI 兼容）：**
+### DeepSeek / OpenAI（OpenAI 兼容格式）
 
-| ARF ModelMessage | API format |
-|-----------------|------------|
+两者共用 OpenAI-compatible `/v1/chat/completions` 协议。DeepSeek 额外支持 `thinking` 和 `reasoning_content`。
+
+**请求转换（ARF → API）：**
+
+| ARF `ModelMessage` | API `message` |
+|-------------------|---------------|
 | `role: "system"` | `{"role": "system", "content": "..."}` |
 | `role: "user"` | `{"role": "user", "content": "..."}` |
-| `role: "assistant"` + `content` | `{"role": "assistant", "content": "..."}` |
-| `role: "assistant"` + `tool_calls` in content | `{"role": "assistant", "tool_calls": [...]}` |
+| `role: "assistant"` + text | `{"role": "assistant", "content": "..."}` |
+| `role: "assistant"` + tool_calls | `{"role": "assistant", "content": null, "tool_calls": [...]}` |
 | `role: "tool"` + `tool_call_id` | `{"role": "tool", "tool_call_id": "...", "content": "..."}` |
-| `extra.reasoning_content` | DeepSeek: passthrough `reasoning_content` 字段 |
-| `thinking_enabled` | DeepSeek: `extra_body: {"thinking": {"type": "enabled"}}` |
 
-**Anthropic：**
+**DeepSeek 特殊处理：**
+- `thinking_enabled: true` → `extra_body: {"thinking": {"type": "enabled"}}`；若 `extra.reasoning_effort` 存在，合并到 thinking 对象
+- `extra.reasoning_content` → 下次请求中 passthrough，维持 thinking 模式连续性
+- API endpoint: `https://api.deepseek.com/chat/completions`
 
-| ARF ModelMessage | API format |
-|-----------------|------------|
-| `role: "system"` | `{"role": "user", "content": "<system>...</system>"}` (special handling) |
+**响应转换（API → ARF）：**
+
+| API field | ARF field |
+|-----------|----------|
+| `choices[0].message.content` | `ModelResponsePayload.message.content` |
+| `choices[0].message.tool_calls` | `ModelResponsePayload.tool_calls` |
+| `choices[0].message.reasoning_content` (DeepSeek) | `ModelResponsePayload.message.extra.reasoning_content` |
+| `choices[0].finish_reason` | `ModelResponsePayload.finish_reason` (normalized) |
+| `usage` | `ModelResponsePayload.usage` |
+| `id` | `ModelResponsePayload.id` |
+| `model` | `ModelResponsePayload.model` |
+
+### Anthropic（Messages API）
+
+使用 `/v1/messages` 端点，格式与 OpenAI 显著不同。
+
+**请求转换（ARF → API）：**
+
+| ARF | Anthropic API |
+|-----|---------------|
+| `role: "system"` 的第一条消息 | 顶层 `system` 参数（字符串） |
 | `role: "user"` | `{"role": "user", "content": "..."}` |
-| `role: "assistant"` | `{"role": "assistant", "content": [...]}` (content blocks) |
-| tool calls | `{"role": "assistant", "content": [{"type": "tool_use", ...}]}` |
+| `role: "assistant"` + text | `{"role": "assistant", "content": [{"type": "text", "text": "..."}]}` |
+| `role: "assistant"` + tool_calls | `{"role": "assistant", "content": [{"type": "tool_use", "id": "...", "name": "...", "input": {...}}]}` |
+| `role: "tool"` + result | `{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "...", "content": "..."}]}` |
+
+**关键差异：**
+- `system` 是顶层参数，不是 messages 数组的一项。Engine 传入的 `system_prompt` 由 Provider 提取并移至顶层
+- `max_tokens` 是**必填**参数；若 `ModelParams.max_tokens` 为 `None`，Provider 使用默认值 4096
+- 响应 `content` 是 content block 数组（`[{type: "text", text: "..."}, ...]`），Provider 需提取拼接为纯文本
+- `stop_reason` 字段名不同，需映射到 ARF 统一的 `finish_reason`
+
+**停止原因映射（API → ARF）：**
+
+| API | 原始值 | ARF `finish_reason` |
+|-----|--------|---------------------|
+| OpenAI/DeepSeek | `stop` | `"stop"` |
+| OpenAI/DeepSeek | `length` | `"length"` |
+| OpenAI/DeepSeek | `tool_calls` | `"tool_calls"` |
+| OpenAI/DeepSeek | `content_filter` | `"content_filter"` |
+| Anthropic | `end_turn` | `"stop"` |
+| Anthropic | `max_tokens` | `"length"` |
+| Anthropic | `stop_sequence` | `"stop"` |
+| Anthropic | `tool_use` | `"tool_calls"` |
+| All | error response | `"error"` |
 
 每个 Provider 封装自己的转换逻辑，外部不可见。
 
@@ -332,6 +396,7 @@ crates/arf-model-adapter/
     ├── provider.rs         # Provider trait
     ├── deepseek.rs         # DeepSeekProvider impl Provider
     ├── openai.rs           # OpenAIProvider impl Provider
+    ├── anthropic.rs        # AnthropicProvider impl Provider
     ├── node.rs             # ModelAdapterNode: Bus lifecycle + listen loop
     └── convert.rs          # Internal format ↔ provider API format helpers
 ```
@@ -344,12 +409,13 @@ crates/arf-model-adapter/
 |---|------|------|------|
 | 4.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`error.rs`、`lib.rs` | `crates/arf-model-adapter/` |
 | 4.2 | Provider trait | trait 定义 + 文档 | `provider.rs` |
-| 4.3 | DeepSeek provider | HTTP 调用 + 消息转换 + 测试 | `deepseek.rs` |
-| 4.4 | OpenAI provider | HTTP 调用 + 消息转换 + 测试 | `openai.rs` |
-| 4.5 | 消息转换 | ARF ↔ Provider API 格式转换函数 + 测试 | `convert.rs` |
-| 4.6 | ModelAdapter node | Bus 节点生命周期 + listen loop | `node.rs` |
-| 4.7 | 集成测试 | ModelAdapter node + Bus + mock HTTP server | `tests/` |
-| 4.8 | workspace 注册 | 根 `Cargo.toml` 添加 `arf-model-adapter` | `Cargo.toml` |
+| 4.3 | DeepSeek provider | HTTP 调用 + thinking 处理 + reasoning_content 透传 | `deepseek.rs` |
+| 4.4 | OpenAI provider | HTTP 调用 + 标准 OpenAI 格式转换 | `openai.rs` |
+| 4.5 | Anthropic provider | HTTP 调用 + system 顶层参数 + content blocks + stop_reason 映射 | `anthropic.rs` |
+| 4.6 | 消息转换 | ARF ↔ Provider API 格式双向转换函数 + 测试 | `convert.rs` |
+| 4.7 | ModelAdapter node | Bus 节点生命周期 + listen loop | `node.rs` |
+| 4.8 | 集成测试 | ModelAdapter node + Bus + mock HTTP server | `tests/` |
+| 4.9 | workspace 注册 | 根 `Cargo.toml` 添加 `arf-model-adapter` | `Cargo.toml` |
 
 ---
 
@@ -362,3 +428,59 @@ crates/arf-model-adapter/
 - [ ] 多个 Provider 可同时在线（一个 DeepSeek 节点 + 一个 OpenAI 节点）
 - [ ] Provider trait 可 mock（用于 Engine 单测）
 - [ ] HTTP 请求支持重试（429/5xx，指数退避）
+
+---
+
+## 附录：三家 API 对比
+
+> 来源：各供应商官方文档（2026/06）
+
+### 端点
+
+| 供应商 | Chat Completion 端点 |
+|--------|---------------------|
+| OpenAI | `POST /v1/chat/completions` |
+| DeepSeek | `POST /chat/completions`（OpenAI 兼容） |
+| Anthropic | `POST /v1/messages` |
+
+### 请求：关键差异
+
+| 特性 | OpenAI | DeepSeek | Anthropic |
+|------|--------|----------|-----------|
+| `system` 位置 | `messages[0]` (role=system) | `messages[0]` (role=system) | 顶层 `system` 参数 |
+| `max_tokens` | 可选 | 可选 | **必填** |
+| `thinking` / 推理 | 不支持 | `thinking: {type, effort}` | extended thinking |
+| `reasoning_effort` | — | `"high"` \| `"max"` | — |
+| `frequency_penalty` | ✅ | ❌ 已弃用 | ❌ |
+| `presence_penalty` | ✅ | ❌ 已弃用 | ❌ |
+| `logprobs` | ✅ | ✅ | ❌ |
+| `response_format` | ✅ | ✅ | ❌ |
+
+### 响应：关键差异
+
+| 特性 | OpenAI | DeepSeek | Anthropic |
+|------|--------|----------|-----------|
+| 消息格式 | `choices[0].message` | `choices[0].message` | `content: [{type, text}]` (blocks) |
+| 停止字段 | `finish_reason` | `finish_reason` | `stop_reason` |
+| 推理内容 | — | `reasoning_content` | — |
+| Token 用量 | `usage` | `usage` (含 cache 字段) | `usage` (不含 `total_tokens`) |
+
+### 停止原因映射（API → ARF）
+
+| 供应商 | API 字段值 | ARF `finish_reason` |
+|--------|-----------|---------------------|
+| OpenAI/DeepSeek | `stop` | `stop` |
+| OpenAI/DeepSeek | `length` | `length` |
+| OpenAI/DeepSeek | `tool_calls` | `tool_calls` |
+| OpenAI/DeepSeek | `content_filter` | `content_filter` |
+| Anthropic | `end_turn` | `stop` |
+| Anthropic | `max_tokens` | `length` |
+| Anthropic | `stop_sequence` | `stop` |
+| Anthropic | `tool_use` | `tool_calls` |
+
+### DeepSeek 模型名称迁移
+
+| 旧名称 | 新名称 | 弃用日期 |
+|--------|--------|---------|
+| `deepseek-chat` | `deepseek-v4-flash` | 2026/07/24 |
+| `deepseek-reasoner` | `deepseek-v4-pro` | 2026/07/24 |
