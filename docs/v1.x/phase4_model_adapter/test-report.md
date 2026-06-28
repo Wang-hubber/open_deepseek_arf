@@ -81,10 +81,10 @@
 
 ```
 [thinking_off] content: Hello! How can I assist you today?
-[thinking_off] has reasoning_content: true
+[thinking_off] has reasoning_content: false
 ```
 
-`thinking_enabled: false` 请求仍然返回了 `reasoning_content`——`deepseek-v4-flash` 默认开启轻度思考。这并非 Provider bug，而是 DeepSeek API 行为。
+`thinking_enabled: false` → `thinking: {type: "disabled"}` 显式发送到 API。思考模式正确关闭。
 
 ### 7. streaming (OpenAI)
 
@@ -188,13 +188,30 @@ Thinking { thinking: String },
 ```
 响应解析时将 `thinking` 内容存入 `ModelMessage.extra.reasoning_content`。
 
-### 问题 5：thinking_disabled 断言过严
+### 问题 5：thinking_enabled=false 未显式关闭思考
 
 **现象：** `deepseek-v4-flash` 在 `thinking_enabled: false` 时仍然返回 `reasoning_content`。
 
-**原因：** DeepSeek flash 模型默认启用轻度思考，不传 `thinking` 参数或不显式禁用时仍可能返回思考内容。这不是 Provider 的 bug。
+**原因：** `build_request_body` 只在 `thinking_enabled: true` 时发送 `thinking: {type: "enabled"}`，`false` 时不发送任何 thinking 参数。DeepSeek API 默认 `thinking` 开关为 `enabled`，不传 = 默认开启。
 
-**修复：** 将测试从严格断言（必须无 reasoning_content）改为信息性测试（仅验证请求成功、内容非空）。
+**修复：** 无论开关状态，始终显式发送 `thinking: {type: "enabled"/"disabled"}`。同时修正 `reasoning_effort` 的位置——它是**顶层参数**，不在 `thinking` 对象内部。
+
+参考文档：https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+
+```rust
+// 修复前
+if params.thinking_enabled {
+    let mut thinking = json!({"type": "enabled"});
+    if extra has reasoning_effort { thinking["effort"] = effort; }
+    body.insert("thinking", thinking);
+}
+
+// 修复后
+body.insert("thinking", json!({"type": if enabled { "enabled" } else { "disabled" }}));
+if enabled && extra has reasoning_effort {
+    body.insert("reasoning_effort", effort);  // 顶层参数
+}
+```
 
 ---
 

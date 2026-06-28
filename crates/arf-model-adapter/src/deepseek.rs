@@ -262,13 +262,18 @@ fn build_request_body(
         body.insert("max_tokens".into(), mt.into());
     }
 
-    // Thinking mode: ARF thinking_enabled → DeepSeek thinking object
+    // Thinking mode: ARF thinking_enabled → DeepSeek thinking + reasoning_effort
+    // Docs: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+    // - thinking: {type: "enabled"/"disabled"} — explicit switch
+    // - reasoning_effort: "high"/"max" — top-level param, NOT inside thinking object
+    body.insert(
+        "thinking".into(),
+        serde_json::json!({"type": if params.thinking_enabled { "enabled" } else { "disabled" }}),
+    );
     if params.thinking_enabled {
-        let mut thinking = serde_json::json!({"type": "enabled"});
-        if let Some(effort) = params.extra.get("reasoning_effort") {
-            thinking["effort"] = effort.clone();
+        if let Some(effort) = params.extra.get("reasoning_effort").and_then(|v| v.as_str()) {
+            body.insert("reasoning_effort".into(), effort.into());
         }
-        body.insert("thinking".into(), thinking);
     }
 
     Value::Object(body)
@@ -492,7 +497,26 @@ mod tests {
         );
         let thinking = &body["thinking"];
         assert_eq!(thinking["type"], "enabled");
-        assert_eq!(thinking["effort"], "high");
+        // reasoning_effort is top-level, not inside thinking
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn build_body_thinking_disabled() {
+        let body = build_request_body(
+            "deepseek-v4-flash",
+            &[],
+            &[],
+            &ModelParams {
+                temperature: None,
+                max_tokens: None,
+                thinking_enabled: false,
+                extra: Value::Null,
+            },
+            false,
+        );
+        let thinking = &body["thinking"];
+        assert_eq!(thinking["type"], "disabled");
     }
 
     #[test]
