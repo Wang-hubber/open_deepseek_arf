@@ -1,8 +1,8 @@
-# 任务 4.10：ModelAdapter PyO3 绑定
+# 任务 4.7：ModelAdapter PyO3 绑定
 
-> Phase 4 — ModelAdapter 第十项任务（收尾）
+> Phase 4 — ModelAdapter 第七项任务（收尾）
 > 父文档：`docs/v1.x/phase4_model_adapter/phase4-model-adapter-design.md`
-> 前置：任务 4.7 Node 实现完成、Bus 集成测试通过
+> 前置：任务 4.6 Node 实现完成、Bus 集成测试通过
 > 参照：`docs/v1.x/phase1_bus/task-1.10-pyo3-bindings.md`
 
 ## 设计思路
@@ -85,7 +85,7 @@ await bus.shutdown()
 | 修改 | `py-arf/Cargo.toml` | 新增 `arf-model-adapter` 依赖 |
 | 修改 | `py-arf/src/lib.rs` | 新增 ~13 个 PyClass |
 | 修改 | `py-arf/python/arf/__init__.py` | 导出新类型 |
-| 新增 | `py-arf/python/arf/examples/phase5_model_adapter.py` | Python 示例 |
+| 新增 | `py-arf/python/arf/examples/phase4_model_adapter.py` | Python 示例 |
 
 ---
 
@@ -1357,10 +1357,10 @@ __all__ = [
 
 ---
 
-## 4. `py-arf/python/arf/examples/phase5_model_adapter.py` — 示例
+## 4. `py-arf/python/arf/examples/phase4_model_adapter.py` — 示例
 
 ```python
-"""Phase 5 ModelAdapter — Python API usage examples.
+"""Phase 4 ModelAdapter — Python API usage examples.
 
 Demonstrates:
   1. Config + Provider construction

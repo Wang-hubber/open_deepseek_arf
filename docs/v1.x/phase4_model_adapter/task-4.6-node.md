@@ -1,4 +1,4 @@
-# 任务 4.7：ModelAdapter node — Bus 集成
+# 任务 4.6：ModelAdapter node — Bus 集成
 
 > Phase 4 — ModelAdapter 第六项任务
 > 父文档：`docs/v1.x/phase4_model_adapter/phase4-model-adapter-design.md`
@@ -757,7 +757,7 @@ cargo test --package arf-model-adapter --test bus_integration -- --ignored --noc
 |------|------|--------|------|
 | node 单元测试 (mock) | `node.rs` | 3 | connect/disconnect 生命周期 |
 | Bus 集成测试 (真实 API) | `tests/bus_integration.rs` | 8 | 全链路 Engine→Bus→Node→API |
-| **累计** (4.1–4.7) | | **71** | |
+| **累计** (4.1–4.6) | | **71** | |
 
 ---
 
