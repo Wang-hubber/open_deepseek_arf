@@ -107,7 +107,17 @@ impl OpenAIProvider {
 fn convert_message(msg: &ModelMessage) -> Value {
     let mut api_msg = serde_json::Map::new();
     api_msg.insert("role".into(), msg.role.clone().into());
-    api_msg.insert("content".into(), msg.content.clone().into());
+
+    // Handle assistant with tool_calls in extra
+    if msg.role == "assistant"
+        && let Some(tc_list) = msg.extra.get("tool_calls").and_then(|v| v.as_array())
+        && !tc_list.is_empty()
+    {
+        api_msg.insert("content".into(), Value::Null);
+        api_msg.insert("tool_calls".into(), Value::Array(tc_list.clone()));
+    } else {
+        api_msg.insert("content".into(), msg.content.clone().into());
+    }
 
     if let Some(tc_id) = &msg.tool_call_id {
         api_msg.insert("tool_call_id".into(), tc_id.clone().into());

@@ -30,6 +30,9 @@ pub struct AnthropicConfig {
     pub api_key: String,
     /// Supported models (e.g., ["claude-sonnet-4-6", "claude-opus-4-7"]).
     pub models: Vec<String>,
+    /// API path appended to base_url. Default: "/v1/messages".
+    /// Set to "/anthropic" for DeepSeek Anthropic-compatible endpoint.
+    pub api_path: String,
     pub timeout_secs: u64,
     pub max_retries: u32,
 }
@@ -40,6 +43,7 @@ impl AnthropicConfig {
             base_url: "https://api.anthropic.com".into(),
             api_key,
             models,
+            api_path: "/v1/messages".into(),
             timeout_secs: 320,
             max_retries: 3,
         }
@@ -62,7 +66,7 @@ impl AnthropicProvider {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/v1/messages", self.config.base_url)
+        format!("{}{}", self.config.base_url, self.config.api_path)
     }
 
     async fn send_request(&self, body: &Value) -> Result<String, ProviderError> {
@@ -338,7 +342,11 @@ enum ContentBlock {
         name: String,
         input: Value,
     },
-    // Other block types are ignored
+    /// DeepSeek thinking mode in Anthropic format
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -366,6 +374,7 @@ fn parse_response(raw: &str) -> Result<ModelResponsePayload, ProviderError> {
 
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut reasoning = String::new();
 
     for block in &api.content {
         match block {
@@ -377,12 +386,19 @@ fn parse_response(raw: &str) -> Result<ModelResponsePayload, ProviderError> {
                     arguments: input.clone(),
                 });
             }
+            ContentBlock::Thinking { thinking: th } => {
+                reasoning = th.clone();
+            }
             ContentBlock::Unknown => {}
         }
     }
 
     let content = text_parts.join("");
-    let message = ModelMessage::new("assistant", content);
+    let mut extra = Value::Null;
+    if !reasoning.is_empty() {
+        extra = serde_json::json!({"reasoning_content": reasoning});
+    }
+    let message = ModelMessage::new("assistant", content).with_extra(extra);
 
     let finish_reason = api
         .stop_reason
