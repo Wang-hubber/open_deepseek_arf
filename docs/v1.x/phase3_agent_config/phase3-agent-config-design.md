@@ -98,7 +98,7 @@ pub struct AgentConfig {
 pub struct ModelSpec {
     /// Provider identifier: "deepseek", "openai", "anthropic".
     pub provider: String,
-    /// Model name: "deepseek-chat", "gpt-4o", "claude-sonnet-4-6".
+    /// Model name: "deepseek-flash", "gpt-4o", "claude-sonnet-4-6".
     pub model_name: String,
     /// Whether thinking/reasoning is enabled.
     #[serde(default)]
@@ -185,7 +185,7 @@ let config = AgentConfig {
     system_prompt: "You are a helpful assistant.".into(),
     models: vec![ModelSpec {
         provider: "deepseek".into(),
-        model_name: "deepseek-chat".into(),
+        model_name: "deepseek-flash".into(),
         thinking_enabled: false,
         temperature: None,
         max_output_tokens: None,

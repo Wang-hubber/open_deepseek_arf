@@ -14,7 +14,7 @@
 | `ToolSpec` | 声明一个工具及权限 | name, permission, parameter_filter, description, parameters |
 | `ToolPermission` | 工具三级权限 | Allow / Ask / Deny |
 
-这三个类型完全自包含，不引用 `NodeId`、`TaskId` 等 ARF 类型。Agent 声明"我要用 deepseek-chat，温度 0.7"，不关心这个模型在 Bus 上的 NodeId 是什么——那是 Engine（Phase 4）的事。
+这三个类型完全自包含，不引用 `NodeId`、`TaskId` 等 ARF 类型。Agent 声明"我要用 deepseek-flash，温度 0.7"，不关心这个模型在 Bus 上的 NodeId 是什么——那是 Engine（Phase 4）的事。
 
 ## 代码实现
 
@@ -49,7 +49,7 @@ pub struct ModelSpec {
     /// Provider identifier: `"deepseek"`, `"openai"`, `"anthropic"`.
     pub provider: String,
 
-    /// Model name: `"deepseek-chat"`, `"gpt-4o"`, `"claude-sonnet-4-6"`.
+    /// Model name: `"deepseek-flash"`, `"gpt-4o"`, `"claude-sonnet-4-6"`.
     pub model_name: String,
 
     /// Whether thinking/reasoning is enabled for this model.
@@ -180,14 +180,14 @@ mod tests {
     fn model_spec_all_fields() {
         let spec = ModelSpec {
             provider: "deepseek".into(),
-            model_name: "deepseek-chat".into(),
+            model_name: "deepseek-flash".into(),
             thinking_enabled: true,
             temperature: Some(0.7),
             max_output_tokens: Some(4096),
             extra: serde_json::json!({"top_p": 0.9}),
         };
         assert_eq!(spec.provider, "deepseek");
-        assert_eq!(spec.model_name, "deepseek-chat");
+        assert_eq!(spec.model_name, "deepseek-flash");
         assert!(spec.thinking_enabled);
         assert_eq!(spec.temperature, Some(0.7));
         assert_eq!(spec.max_output_tokens, Some(4096));
@@ -222,7 +222,7 @@ mod tests {
     fn model_spec_max_tokens_none_skipped() {
         let spec = ModelSpec {
             provider: "deepseek".into(),
-            model_name: "deepseek-chat".into(),
+            model_name: "deepseek-flash".into(),
             thinking_enabled: false,
             temperature: Some(0.3),
             max_output_tokens: None,
@@ -237,7 +237,7 @@ mod tests {
     fn model_spec_extra_null_skipped() {
         let spec = ModelSpec {
             provider: "deepseek".into(),
-            model_name: "deepseek-chat".into(),
+            model_name: "deepseek-flash".into(),
             thinking_enabled: false,
             temperature: None,
             max_output_tokens: None,
@@ -265,7 +265,7 @@ mod tests {
     fn model_spec_clone() {
         let spec = ModelSpec {
             provider: "deepseek".into(),
-            model_name: "deepseek-chat".into(),
+            model_name: "deepseek-flash".into(),
             thinking_enabled: true,
             temperature: Some(0.5),
             max_output_tokens: Some(2048),
@@ -306,7 +306,7 @@ mod tests {
     fn model_spec_serialization_roundtrip_full() {
         let spec = ModelSpec {
             provider: "deepseek".into(),
-            model_name: "deepseek-chat".into(),
+            model_name: "deepseek-flash".into(),
             thinking_enabled: true,
             temperature: Some(0.7),
             max_output_tokens: Some(8192),
