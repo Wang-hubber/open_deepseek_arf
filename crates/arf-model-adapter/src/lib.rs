@@ -8,6 +8,7 @@
 //! Multiple ModelAdapter nodes can run simultaneously, each serving a
 //! different model/provider.
 
+mod anthropic;
 mod convert;
 mod deepseek;
 mod error;
@@ -15,6 +16,7 @@ mod openai;
 mod provider;
 mod types;
 
+pub use anthropic::{AnthropicConfig, AnthropicProvider};
 pub use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub use error::ProviderError;
 pub use openai::{OpenAIConfig, OpenAIProvider};
