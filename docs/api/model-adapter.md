@@ -98,13 +98,13 @@ async def main():
 asyncio.run(main())
 ```
 
-**运行输出：**（耗时 ~2s）
+**运行输出：**（耗时 ~1.5s）
 
 ```
 Provider: deepseek
 Models: ['deepseek-v4-flash']
-Response: 2+2 equals 4. It's a basic arithmetic fact.
-Tokens: 18 → 23
+Response: 2+2 equals 4.
+Tokens: 17 → 7
 Finish: stop
 ```
 
@@ -139,12 +139,12 @@ async def main():
 asyncio.run(main())
 ```
 
-**运行输出：**（逐字打印，耗时 ~3s）
+**运行输出：**（逐字打印，耗时 ~2s）
 
 ```
-1... 2... 3... 4... 5.
+1, 2, 3, 4, 5.
 
-Tokens: 45
+Tokens: 26
 ```
 
 ### 工具调用（Function Calling）
@@ -278,8 +278,8 @@ asyncio.run(main())
 第一轮 finish: tool_calls
 模型想调用: get_weather({'city': 'Beijing'})
 第二轮 finish: stop
-最终回复: The weather in Beijing is sunny with a temperature of 25°C
-           and humidity at 60%. Great day to go outside!
+最终回复: The weather in Beijing is currently sunny, with a temperature of 25°C
+           and a humidity level of 60%. It's a pleasant day.
 总 Token: 145
 ```
 
@@ -352,7 +352,7 @@ asyncio.run(main())
 ```
 节点已连接: ModelAdapterNode(node_id='model/deepseek')
 Finish: stop
-Content: Hello
+Content: Hello!
 Done.
 ```
 
@@ -406,11 +406,11 @@ async def main():
 asyncio.run(main())
 ```
 
-**运行输出：**（耗时 <10ms）
+**运行输出：**（耗时 <10ms，节点顺序取决于 Bus 内部 HashMap 迭代，不固定）
 
 ```
-  model/deepseek → deepseek : ['deepseek-v4-flash']
   model/openai → openai : ['gpt-4o']
+  model/deepseek → deepseek : ['deepseek-v4-flash']
   model/anthropic → anthropic : ['claude-sonnet-4-6']
 
 在线模型节点: 3
@@ -1041,21 +1041,28 @@ asyncio.run(main())
 ```
 === 模型思考过程 ===
 We are asked: "A bat and a ball cost $1.10 in total. The bat costs $1.00
-more than the ball. How much does the ball cost?"
-
-Let the ball cost x dollars. Then the bat costs x + 1.00 dollars.
-Together: x + (x + 1.00) = 1.10 → 2x + 1.00 = 1.10 → 2x = 0.10 → x = 0.05
-
-The common mistake is to say $0.10, but that would make the bat $1.10,
-totaling $1.20.
+more than the ball. How much does the ball cost?" This is a classic trick
+question. Many people quickly say 10 cents, but if the ball costs $0.10
+and the bat costs $1.00 more, the bat would be $1.10, and total would be
+$1.20. The correct answer is 5 cents: ball = $0.05, bat = $1.05,
+total = $1.10. The answer should be $0.05. I'll provide the reasoning
+step by step.
 
 === 最终回复 ===
-The ball costs $0.05 (5 cents).
+The ball costs **$0.05**.
 
-Let me check: if the ball costs 5 cents, the bat costs $1.05 (since it's
-$1.00 more). Together: $0.05 + $1.05 = $1.10. ✓
+Let \( b \) be the cost of the ball. The bat costs $1.00 more than the
+ball, so the bat costs \( b + 1.00 \).
+The total cost is $1.10, giving the equation:
 
-Token: 52 + 245 = 297
+\[ b + (b + 1.00) = 1.10 \]
+\[ 2b + 1.00 = 1.10 \]
+\[ 2b = 0.10 \]
+\[ b = 0.05 \]
+
+So the ball is $0.05, and the bat is $1.05—together they sum to $1.10.
+
+Token: 36 + 280 = 316
 ```
 
 ### Anthropic 格式调用 DeepSeek
@@ -1098,7 +1105,7 @@ asyncio.run(main())
 ```
 Finish: stop
 Content: The capital of France is Paris.
-Usage: Usage(input=15, output=9, total=24)
+Usage: Usage(input=16, output=29, total=45)
 ```
 
 ### 服务发现：根据模型名路由请求
