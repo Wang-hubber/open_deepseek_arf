@@ -2,7 +2,7 @@
 
 > 父文档：`docs/v1.x/2026-06-26-arfv1-roadmap.md`
 > 依赖：Phase 1 (Bus) + Phase 2 (State) — 已完成
-> 状态：📝 设计中
+> 状态：✅ 已完成（任务 3.1–3.6）
 
 ## 定位
 
@@ -209,7 +209,7 @@ let config = AgentConfig::default()
 
 | Phase | 如何使用 AgentConfig |
 |-------|---------------------|
-| Phase 4 Engine | 读取 AgentConfig，上 Bus 做 discovery，将 ResourceSpec 解析为 `ResolvedManifest`（逻辑名 → `Vec<NodeId>`），驱动 ReAct 循环 |
+| Phase 4 Engine | 读取 AgentConfig，调用 `bus.graph()` 获取在线节点表，按 `node_type` + `capabilities` 过滤匹配，将 ResourceSpec 解析为 `ResolvedManifest`（逻辑名 → `Vec<NodeId>`），订阅后续 `node_online`/`node_offline` 事件动态更新 |
 | Phase 5 ModelAdapter | 根据 `ModelSpec.provider` + `model_name` 选择适配器，使用 `temperature`/`max_output_tokens`/`extra`/`thinking_enabled` 构造 API 请求 |
 | Phase 6 MCP | MCP 节点上线时广播 `node_online{type=mcp, capabilities}`，Engine 用 `ResourceSpec.capabilities` 做匹配过滤 |
 
@@ -217,18 +217,18 @@ let config = AgentConfig::default()
 
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
-| 3.1 | `ModelSpec` + `ToolSpec` + `ToolPermission` | 纯数据 struct + serde + 测试 | `crates/arf-agent/src/model.rs`, `crates/arf-agent/src/tool.rs` |
-| 3.2 | `ResourceSpec` | 纯数据 struct + 1:N 语义文档 + 测试 | `crates/arf-agent/src/resource.rs` |
-| 3.3 | `AgentConfig` | 聚合 struct + Default + serde + 测试 | `crates/arf-agent/src/config.rs` |
-| 3.4 | `arf-agent` 依赖修正 | 移除 `arf-engine` 依赖，添加 `serde` | `crates/arf-agent/Cargo.toml` |
-| 3.5 | `lib.rs` 公开接口 | 重新导出核心类型 + module docstring | `crates/arf-agent/src/lib.rs` |
-| 3.6 | 序列化兼容测试 | YAML/JSON 往返 + 缺字段反序列化 + extra 嵌套 | `#[cfg(test)]` |
+| 3.1 | `ModelSpec` + `ToolSpec` + `ToolPermission` ✅ | 纯数据 struct + serde + 25 tests | `crates/arf-agent/src/model.rs`, `crates/arf-agent/src/tool.rs` |
+| 3.2 | `ResourceSpec` ✅ | 纯数据 struct + 1:N 语义 + 9 tests | `crates/arf-agent/src/resource.rs` |
+| 3.3 | `AgentConfig` ✅ | 聚合 struct + Default + serde + 9 tests | `crates/arf-agent/src/config.rs` |
+| 3.4 | `arf-agent` 依赖修正 ✅ | 移除 `arf-engine` 依赖，添加 `serde` | `crates/arf-agent/Cargo.toml` |
+| 3.5 | `lib.rs` 公开接口 ✅ | 重新导出核心类型 + module docstring | `crates/arf-agent/src/lib.rs` |
+| 3.6 | 序列化兼容测试 ✅ | JSON 往返 + 缺字段反序列化 + extra 嵌套，43 tests | `#[cfg(test)]` |
 
 ## 交付标准
 
-- [ ] `cargo test --workspace` 全部通过
-- [ ] `arf-agent` 不再依赖 `arf-engine`，仅依赖 `serde` + `serde_json`
-- [ ] `AgentConfig` / `ModelSpec` / `ToolSpec` / `ResourceSpec` serde 往返一致
-- [ ] 空 `AgentConfig::default()` 合法，所有字段为空 Vec/String
-- [ ] JSON 缺字段反序列化不报错（`#[serde(default)]`）
-- [ ] `ResourceSpec` 的 1:N 语义在文档和测试中体现（一个 spec → 多个 nodes 的预留）
+- [x] `cargo test --workspace` 全部通过（230 tests）
+- [x] `arf-agent` 不再依赖 `arf-engine`，仅依赖 `serde` + `serde_json`
+- [x] `AgentConfig` / `ModelSpec` / `ToolSpec` / `ResourceSpec` serde 往返一致
+- [x] 空 `AgentConfig::default()` 合法，所有字段为空 Vec/String
+- [x] JSON 缺字段反序列化不报错（`#[serde(default)]`）
+- [x] `ResourceSpec` 的 1:N 语义在文档和测试中体现（一个 spec → 多个 nodes 的预留）

@@ -1008,8 +1008,8 @@ mod tests {
         let owner = NodeId::new("a");
         let a = TaskId::new(owner.clone());
         let b = TaskId::new(owner.clone());
-        assert_eq!(a, a);       // 同一个
-        assert_ne!(a, b);       // 不同 UUID
+        assert_eq!(a, a); // 同一个
+        assert_ne!(a, b); // 不同 UUID
     }
 
     // [trait] Clone：克隆后与原值相等
@@ -1157,8 +1157,7 @@ mod tests {
     // [构造] builder: with_tool_call_id() 设置 tool_call_id
     #[test]
     fn model_message_with_tool_call_id() {
-        let msg = ModelMessage::new("tool", "result")
-            .with_tool_call_id("call_abc123");
+        let msg = ModelMessage::new("tool", "result").with_tool_call_id("call_abc123");
         assert_eq!(msg.tool_call_id, Some("call_abc123".into()));
         assert_eq!(msg.role, "tool");
     }
@@ -1166,8 +1165,7 @@ mod tests {
     // [构造] builder: with_name() 设置 name
     #[test]
     fn model_message_with_name() {
-        let msg = ModelMessage::new("tool", "result")
-            .with_name("read_file");
+        let msg = ModelMessage::new("tool", "result").with_name("read_file");
         assert_eq!(msg.name, Some("read_file".into()));
     }
 

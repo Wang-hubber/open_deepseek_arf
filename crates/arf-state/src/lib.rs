@@ -281,9 +281,7 @@ mod tests {
             messages: vec![
                 ModelMessage::new("user", "delegate task"),
                 ModelMessage::new("assistant", "delegating to B")
-                    .with_extra(
-                        serde_json::json!({"reasoning_content": "need B's help"}),
-                    ),
+                    .with_extra(serde_json::json!({"reasoning_content": "need B's help"})),
             ],
             tasks: vec![Task {
                 id: task_a.clone(),
