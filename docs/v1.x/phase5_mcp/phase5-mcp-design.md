@@ -85,7 +85,11 @@ LocalMcpNode / RemoteMcpNode (Bus NodeHandle)
 
 ## 节点结构
 
-### 两种节点，统一接口
+### 唯一节点类型 — McpNode
+
+> **本地和远程只是通信方式不同。** 对 Bus 上其余节点，它们看到一个 MCP，提供一组能力。差异下沉到两个 backend trait：`DiscoveryBackend`（FsDiscovery | HttpDiscovery）和 `RuntimeModule`（LocalRuntime | RemoteRuntime）。
+>
+> 详见 [McpNode 统一架构设计](./mcp-node-unified-design.md)。
 
 ```
                ┌──────────────────────┐
@@ -134,70 +138,43 @@ pub enum McpError {
 ```
 
 ```
-                    LocalMcpNode                         RemoteMcpNode
-                    ─────────────                        ─────────────
-new()              scan(root_dir) + 自检                仅创建 struct，不联网
-                   失败 → McpError::Discovery
+                    McpNode::local()                     McpNode::remote()
+                    ────────────────                     ────────────────
+构造                FsDiscovery::scan(root)             HttpDiscovery::connect(config)
+                    失败 → Discovery                    失败 → RemoteUnreachable | RemoteRejected
 
-connect(bus)       bus.connect() +                     HTTP initialize
-                   广播 node_online                     → tools/list
-                   失败 → McpError::BusConnect          → bus.connect()
-                                                         → 广播 node_online
-                                                        失败 → McpError::Remote*
+connect(bus)       bus.connect() + node_online          bus.connect() + node_online
+                    失败 → BusConnect                    失败 → BusConnect
 
-运行时             tool_call_set → executor             tool_call_set → HTTP proxy
-                    ↓                                    ↓
-                   ToolResultItem                       ToolResultItem
-                   { status: "success"                  { status: "success"
-                   | "error"                            | "error"
-                   | "cancelled",                       | "cancelled",
-                     error: Option<String> }              error: Option<String> }
-                                                        + use_skill → skill_error
+运行时              executor(tool_map)                   executor(tool_map)
+                    → ToolResultSet                      → ToolResultSet
 ```
 
-> **Engine 视角**：连接成功 → 收到 `node_online` → 发 `tool_call_set` → 收 `tool_result_set`。不管本地还是远程，运行时错误统一为 `ToolResultItem.error: String`。零认知负担。
+> **Engine 视角**：构造 → `connect()` → `node_online` → `tool_call_set` → `tool_result_set`。零认知负担。
 
-### LocalMcpNode
+### McpNode 结构
 
 ```rust
-/// A local MCP node — discovers tools and skills from the filesystem.
-///
-/// RuntimeModule is a trait object bound at construction time:
-/// - Default: `LocalRuntime` — spawns subprocesses directly on the host
-/// - Custom:  `SandboxRuntime` — forwards execution to a sandbox Bus node
-pub struct LocalMcpNode {
+/// The single MCP node type — local and remote differ only in backend.
+pub struct McpNode {
     pub namespace: String,
     pub node_id: NodeId,
-    root_dir: PathBuf,
-    discovery: DiscoveryModule,
+    discovery: Box<dyn DiscoveryBackend>,
     runtime: Box<dyn RuntimeModule>,
+    handle: Mutex<Option<NodeHandle>>,
 }
 
-impl LocalMcpNode {
-    /// Scan the filesystem with the default local runtime.
-    /// Returns Err(McpError::Discovery) if the root_dir doesn't exist
-    /// or contains no valid tools/skills.
-    pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Result<Self, McpError> {
-        todo!()
-    }
+impl McpNode {
+    /// Local MCP — filesystem scan + LocalRuntime
+    pub fn local(namespace: impl Into<String>, root: PathBuf) -> Result<Arc<Self>, McpError>;
 
-    /// Scan the filesystem with a custom RuntimeModule (e.g. Docker sandbox).
-    /// The runtime is bound at construction — its execution strategy is fixed
-    /// before the node goes online.
-    pub fn with_runtime(
-        namespace: impl Into<String>,
-        root_dir: PathBuf,
-        runtime: Box<dyn RuntimeModule>,
-    ) -> Result<Self, McpError> {
-        todo!()
-    }
+    /// Remote MCP — HTTP discovery + RemoteRuntime
+    pub async fn remote(namespace: impl Into<String>, config: RemoteConfig) -> Result<Arc<Self>, McpError>;
 
-    /// Connect to the Bus and broadcast node_online.
-    /// The node_online payload includes runtime.capabilities() so Engine
-    /// can see execution characteristics (local vs sandbox, image, etc.).
-    pub async fn connect(&self, bus: &Bus) -> Result<(), McpError> {
-        todo!()
-    }
+    /// Local MCP + custom RuntimeModule
+    pub fn local_with_runtime(ns: impl Into<String>, root: PathBuf, rt: Box<dyn RuntimeModule>) -> Result<Arc<Self>, McpError>;
+
+    pub async fn connect(self: &Arc<Self>, bus: &Bus) -> Result<(), McpError>;
 }
 ```
 
@@ -363,71 +340,24 @@ runtime = DockerSandbox(image="python:3.11-slim", bus=bus)
 mcp = LocalMcpNode.with_runtime("filesystem", "/root", runtime)
 ```
 
-### RemoteMcpNode
+### RemoteConfig + RetryConfig
 
 ```rust
-/// Streamable HTTP transport configuration for a remote MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
-    /// Transport protocol: `"streamable-http"`.
     pub transport: String,
-    /// Base URL of the remote MCP server.
     pub url: String,
-    /// HTTP request timeout in seconds. `None` = no timeout (the default).
-    /// Set this when the remote service has known latency characteristics.
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    /// Optional HTTP headers injected into every request.
-    /// Common use: Authorization, X-API-Key, custom tenant IDs.
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-    /// Optional path to a custom CA certificate bundle (PEM format).
-    /// For internal deployments with self-signed certificates.
-    #[serde(default)]
-    pub tls_ca_cert: Option<PathBuf>,
-    /// Retry configuration for transient failures. `None` = no retry.
-    #[serde(default)]
-    pub retry: Option<RetryConfig>,
+    #[serde(default)] pub timeout_secs: Option<u64>,
+    #[serde(default)] pub headers: HashMap<String, String>,
+    #[serde(default)] pub tls_ca_cert: Option<PathBuf>,
+    #[serde(default)] pub retry: Option<RetryConfig>,
 }
 
-/// Retry policy for transient HTTP failures during tools/call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
-    /// Maximum retry attempts. Default = 3.
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-    /// Initial backoff in milliseconds. Default = 1000.
-    #[serde(default = "default_initial_backoff_ms")]
-    pub initial_backoff_ms: u64,
-    /// Maximum backoff in milliseconds. Default = 30000.
-    #[serde(default = "default_max_backoff_ms")]
-    pub max_backoff_ms: u64,
-}
-
-fn default_max_retries() -> u32 { 3 }
-fn default_initial_backoff_ms() -> u64 { 1000 }
-fn default_max_backoff_ms() -> u64 { 30000 }
-
-/// A remote MCP node — discovers tools via HTTP, proxies execution.
-pub struct RemoteMcpNode {
-    pub namespace: String,
-    pub node_id: NodeId,
-    config: RemoteConfig,
-    http_client: reqwest::Client,
-    known_tools: HashMap<String, RemoteToolDef>,
-}
-
-impl RemoteMcpNode {
-    /// Create the node struct without networking. Always succeeds.
-    pub fn new(namespace: impl Into<String>, config: RemoteConfig) -> Self {
-        todo!()
-    }
-
-    /// HTTP initialize → tools/list → Bus connect → broadcast node_online.
-    /// Returns Err(McpError::RemoteUnreachable|RemoteRejected|BusConnect).
-    pub async fn connect(&self, bus: &Bus) -> Result<(), McpError> {
-        todo!()
-    }
+    #[serde(default = "default_max_retries")] pub max_retries: u32,
+    #[serde(default = "default_initial_backoff_ms")] pub initial_backoff_ms: u64,
+    #[serde(default = "default_max_backoff_ms")] pub max_backoff_ms: u64,
 }
 ```
 
@@ -1665,10 +1595,10 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.2 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时/取消 kill） | `config.rs`, `script.rs` |
 | 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3 含工具 description+params_schema，来自 `tools/{name}/tool.toml`)、`load_tool_config`、`run_tool`（复用 ScriptTool subprocess）。Skill 工具不注册为全局 Tool，通过独立的 `run_skill_script` / `skill_script_result` 消息执行。`skills/{name}/tools/` 与顶层 `tools/` 结构统一（每工具独立目录 + tool.toml） | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
-| 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
-| 5.7 | RuntimeModule | `RuntimeModule` trait（`capabilities()` 自描述 + `execute()` / `run_single()`）+ `LocalRuntime` 默认实现（宿主机直接 spawn ScriptTool subprocess）。trait 对象在 `LocalMcpNode` 构造时绑定，执行方式在定义阶段固定。Python 用户可实现 `RuntimeModule` 子类注入自定义执行后端（如 `SandboxRuntime` → Bus → sandbox node） | `runtime.rs` |
-| 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RetryConfig` + `RemoteMcpNode` JSON-RPC 握手/发现/代理执行/重连 + headers 注入 + 自定义 TLS CA + `node_online` 广播 | `remote.rs` |
+| 5.5 | McpNode | 统一节点 `McpNode`：三种构造 `local()` / `remote()` / `local_with_runtime()` + `connect(bus)` + 内部 `msg_type` 分发。合并原 `LocalMcpNode` + `RemoteMcpNode` 的重复逻辑 | `node.rs` |
+| 5.6 | DiscoveryBackend | `DiscoveryBackend` trait + `FsDiscovery` 实现（扫描 `tools/*/tool.toml` + `skills/*/SKILL.md`）。所有 skill 方法有默认空实现，`HttpDiscovery`（Task 5.8）只覆盖 tool 相关方法 | `discovery.rs` |
+| 5.7 | RuntimeModule | `RuntimeModule` trait + `LocalRuntime` 默认实现 + `RemoteRuntime`（空 struct，默认 execute() 委托 executor，HttpProxyTool 在 tool 层处理 HTTP）。Python 用户可子类化注入自定义执行后端 | `runtime.rs` |
+| 5.8 | RemoteBackend | `HttpDiscovery`（HTTP `initialize` + `tools/list`）+ `HttpProxyTool`（包装远端 tool 为 `Tool` trait → executor 可调度）+ MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ SSE 解析 + headers + TLS CA + `RetryConfig` + `RemoteConfig` 扩展 | `remote.rs` |
 | 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` + `RemoteConfig` + `RetryConfig` 暴露给 Python | `py-arf/src/mcp/` |
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
