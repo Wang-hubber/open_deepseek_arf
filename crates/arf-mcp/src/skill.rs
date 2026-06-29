@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::config::ScriptRuntime;
+use crate::config::ToolConfig;
 use crate::script::ScriptTool;
 use crate::tool::Tool;
 
@@ -34,31 +34,23 @@ pub struct SkillEntry {
 /// File manifest for a skill's resource directories.
 #[derive(Debug, Clone)]
 pub struct SkillResources {
-    pub scripts: Vec<String>,
+    /// Tool names under tools/ (e.g. ["generate-component", "validate"]).
+    pub tools: Vec<String>,
+    /// Files under references/ (e.g. ["api-guide.md"]).
     pub references: Vec<String>,
+    /// Files under assets/ (e.g. ["template.tsx"]).
     pub assets: Vec<String>,
-}
-
-// ── ScriptMeta ─────────────────────────────────────────────────────
-
-/// Parsed `scripts/{name}.toml` — same fields as `ToolConfig` minus name/entrypoint.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ScriptMeta {
-    pub description: String,
-    pub runtime: ScriptRuntime,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub params_schema: serde_json::Value,
 }
 
 // ── LoadedResource ──────────────────────────────────────────────────
 
-/// Result of `load_resource_file()` — content + optional script metadata.
+/// Result of `load_resource_file()` — content + optional tool metadata.
 #[derive(Debug, Clone)]
 pub struct LoadedResource {
     pub content: String,
+    /// Present for tools/ files with a tool.toml.
     pub description: Option<String>,
+    /// Present for tools/ files with a tool.toml.
     pub params_schema: Option<serde_json::Value>,
 }
 
@@ -145,7 +137,7 @@ impl SkillIndex {
     pub fn load_resources(&self, name: &str) -> Option<SkillResources> {
         let entry = self.entries.get(name)?;
         Some(SkillResources {
-            scripts: list_files(&entry.source_dir.join("scripts")),
+            tools: list_dirs(&entry.source_dir.join("tools")),
             references: list_files(&entry.source_dir.join("references")),
             assets: list_files(&entry.source_dir.join("assets")),
         })
@@ -162,9 +154,15 @@ impl SkillIndex {
         let content =
             fs::read_to_string(&full_path).map_err(|e| format!("read error: {e}"))?;
 
-        let (description, params_schema) = if resource_path.starts_with("scripts/") {
-            if let Some(meta) = load_script_meta_from_path(resource_path, &entry.source_dir) {
-                (Some(meta.description), Some(meta.params_schema))
+        let (description, params_schema) = if resource_path.starts_with("tools/") {
+            // Derive tool name from path: "tools/gen/main.py" → "gen"
+            let tool_name = resource_path
+                .trim_start_matches("tools/")
+                .split('/')
+                .next()
+                .unwrap_or("");
+            if let Some(config) = load_tool_config_from_dir(&entry.source_dir, tool_name) {
+                (Some(config.description), Some(config.params_schema))
             } else {
                 (None, None)
             }
@@ -179,42 +177,37 @@ impl SkillIndex {
         })
     }
 
-    pub fn load_script_meta(&self, skill_name: &str, script_path: &str) -> Option<ScriptMeta> {
+    /// Read `tools/{tool_name}/tool.toml` and return a standard `ToolConfig`.
+    pub fn load_tool_config(&self, skill_name: &str, tool_name: &str) -> Option<ToolConfig> {
         let entry = self.entries.get(skill_name)?;
-        load_script_meta_from_path(script_path, &entry.source_dir)
+        load_tool_config_from_dir(&entry.source_dir, tool_name)
     }
 
-    pub async fn run_script(
+    /// Execute a skill tool via the ScriptTool subprocess mechanism.
+    pub async fn run_tool(
         &self,
         skill_name: &str,
-        script_path: &str,
+        tool_name: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let entry = self
             .entries
             .get(skill_name)
             .ok_or_else(|| format!("skill not found: {skill_name}"))?;
-        let _full_path = resolve_safe_path(&entry.source_dir, script_path)?;
 
-        let meta = load_script_meta_from_path(script_path, &entry.source_dir).unwrap_or_else(
-            || ScriptMeta {
-                description: format!("Skill script: {script_path}"),
-                runtime: infer_runtime(script_path),
-                timeout_ms: None,
-                params_schema: serde_json::Value::Null,
-            },
-        );
+        let tool_dir = entry.source_dir.join("tools").join(tool_name);
+        if !tool_dir.is_dir() {
+            return Err(format!("tool not found: {skill_name}/{tool_name}"));
+        }
 
-        let tool_config = crate::config::ToolConfig {
-            name: format!("{skill_name}/{script_path}"),
-            description: meta.description,
-            runtime: meta.runtime,
-            entrypoint: script_path.to_string(),
-            timeout_ms: meta.timeout_ms,
-            params_schema: meta.params_schema,
-        };
+        let mut config = load_tool_config_from_dir(&entry.source_dir, tool_name)
+            .or_else(|| infer_tool_defaults(&tool_dir, tool_name))
+            .ok_or_else(|| format!("tool not found: {skill_name}/{tool_name}"))?;
 
-        let script_tool = ScriptTool::new(tool_config, entry.source_dir.clone());
+        // Override name for skill-scoped identity
+        config.name = format!("{skill_name}/{tool_name}");
+
+        let script_tool = ScriptTool::new(config, tool_dir);
 
         script_tool
             .execute(params)
@@ -255,17 +248,52 @@ fn list_files(dir: &Path) -> Vec<String> {
     files
 }
 
-fn load_script_meta_from_path(script_path: &str, source_dir: &Path) -> Option<ScriptMeta> {
-    let toml_name = if let Some(stem) = Path::new(script_path).file_stem().and_then(|s| s.to_str())
-    {
-        format!("scripts/{stem}.toml")
-    } else {
-        return None;
-    };
+fn list_dirs(dir: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Ok(iter) = fs::read_dir(dir) {
+        for entry in iter.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(name) = entry.file_name().to_str() {
+                    dirs.push(name.to_string());
+                }
+            }
+        }
+    }
+    dirs.sort();
+    dirs
+}
 
-    let toml_path = source_dir.join(&toml_name);
+fn load_tool_config_from_dir(source_dir: &Path, tool_name: &str) -> Option<ToolConfig> {
+    let toml_path = source_dir.join("tools").join(tool_name).join("tool.toml");
     let content = fs::read_to_string(&toml_path).ok()?;
-    toml::from_str::<ScriptMeta>(&content).ok()
+    toml::from_str::<ToolConfig>(&content).ok()
+}
+
+/// Auto-detect tool config from a directory without tool.toml.
+/// Looks for a script file (main.py > main.sh > main) and infers runtime.
+fn infer_tool_defaults(tool_dir: &Path, tool_name: &str) -> Option<ToolConfig> {
+    let candidates = ["main.py", "main.sh", "main"];
+    for candidate in &candidates {
+        let path = tool_dir.join(candidate);
+        if path.is_file() {
+            let runtime = if candidate.ends_with(".py") {
+                crate::config::ScriptRuntime::Python
+            } else if candidate.ends_with(".sh") {
+                crate::config::ScriptRuntime::Bash
+            } else {
+                crate::config::ScriptRuntime::Bash
+            };
+            return Some(ToolConfig {
+                name: tool_name.into(),
+                description: format!("Skill tool: {tool_name}"),
+                runtime,
+                entrypoint: candidate.to_string(),
+                timeout_ms: None,
+                params_schema: serde_json::Value::Null,
+            });
+        }
+    }
+    None
 }
 
 fn resolve_safe_path(source_dir: &Path, resource_path: &str) -> Result<PathBuf, String> {
@@ -276,13 +304,13 @@ fn resolve_safe_path(source_dir: &Path, resource_path: &str) -> Result<PathBuf, 
         return Err("absolute path rejected".into());
     }
 
-    let valid_prefixes = ["scripts/", "references/", "assets/"];
+    let valid_prefixes = ["tools/", "references/", "assets/"];
     let allowed = valid_prefixes
         .iter()
         .any(|prefix| resource_path.starts_with(prefix));
     if !allowed {
         return Err(format!(
-            "resource path must start with scripts/, references/, or assets/. Got: {resource_path}"
+            "resource path must start with tools/, references/, or assets/. Got: {resource_path}"
         ));
     }
 
@@ -295,16 +323,4 @@ fn resolve_safe_path(source_dir: &Path, resource_path: &str) -> Result<PathBuf, 
     }
 
     Ok(canonical)
-}
-
-fn infer_runtime(script_path: &str) -> ScriptRuntime {
-    if script_path.ends_with(".py") {
-        ScriptRuntime::Python
-    } else if script_path.ends_with(".sh") || script_path.ends_with(".bash") {
-        ScriptRuntime::Bash
-    } else if script_path.ends_with(".rs") {
-        ScriptRuntime::Rust
-    } else {
-        ScriptRuntime::Bash
-    }
 }

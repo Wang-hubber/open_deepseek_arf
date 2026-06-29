@@ -3,7 +3,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use crate::config::ScriptRuntime;
 use crate::skill::SkillIndex;
 
 /// Create a temp skills directory structure for testing.
@@ -19,7 +18,7 @@ fn setup_skills_dir(skills: &[(&str, &str)]) -> (PathBuf, Cleanup) {
     for (name, frontmatter_and_body) in skills {
         let skill_dir = skills_dir.join(name);
         fs::create_dir_all(&skill_dir).unwrap();
-        fs::create_dir_all(skill_dir.join("scripts")).ok();
+        fs::create_dir_all(skill_dir.join("tools")).ok();
         fs::create_dir_all(skill_dir.join("references")).ok();
         fs::create_dir_all(skill_dir.join("assets")).ok();
         let mut file = fs::File::create(skill_dir.join("SKILL.md")).unwrap();
@@ -42,6 +41,22 @@ fn minimal_skill(name: &str, description: &str) -> String {
     format!(
         "---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nSome body content.\n"
     )
+}
+
+/// Create a tool under skills/{skill}/tools/{tool_name}/ with tool.toml + entry script.
+fn setup_tool(root: &PathBuf, skill_name: &str, tool_name: &str, toml_content: &str, script: &str) {
+    let tool_dir = root
+        .join("skills")
+        .join(skill_name)
+        .join("tools")
+        .join(tool_name);
+    fs::create_dir_all(&tool_dir).unwrap();
+    fs::write(tool_dir.join("tool.toml"), toml_content).unwrap();
+    fs::write(
+        tool_dir.join("main.py"),
+        script,
+    )
+    .unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -136,70 +151,58 @@ fn scan_body_contains_dashes() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ScriptMeta + load_script_meta — 4 tests
+// load_tool_config — 4 tests
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
-fn load_script_meta_with_toml() {
-    let skill_md = minimal_skill("s", "S");
-    let (root, _cleanup) = setup_skills_dir(&[("s", &skill_md)]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
-    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
-    fs::write(
-        script_dir.join("gen.toml"),
-        r#"description = "Generate code"
+fn load_tool_config_present() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    setup_tool(
+        &root,
+        "s",
+        "gen",
+        r#"name = "gen"
+description = "Generate code"
 runtime = "python"
+entrypoint = "main.py"
 timeout_ms = 10000
 
 [params_schema]
 type = "object"
-required = ["name"]
-
-[params_schema.properties.name]
-type = "string"
 "#,
-    )
-    .unwrap();
+        "print('hi')",
+    );
 
     let index = SkillIndex::scan(root);
-    let meta = index.load_script_meta("s", "scripts/gen.py").unwrap();
-    assert_eq!(meta.description, "Generate code");
-    assert_eq!(meta.runtime, ScriptRuntime::Python);
-    assert_eq!(meta.timeout_ms, Some(10000));
-    assert_eq!(meta.params_schema["type"], "object");
+    let config = index.load_tool_config("s", "gen").unwrap();
+    assert_eq!(config.name, "gen");
+    assert_eq!(config.description, "Generate code");
+    assert_eq!(config.runtime, crate::config::ScriptRuntime::Python);
+    assert_eq!(config.entrypoint, "main.py");
+    assert_eq!(config.timeout_ms, Some(10000));
+    assert_eq!(config.params_schema["type"], "object");
 }
 
 #[test]
-fn load_script_meta_without_toml() {
+fn load_tool_config_missing() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
-    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
-
     let index = SkillIndex::scan(root);
-    assert!(index.load_script_meta("s", "scripts/gen.py").is_none());
+    assert!(index.load_tool_config("s", "ghost").is_none());
 }
 
 #[test]
-fn load_script_meta_skill_not_found() {
+fn load_tool_config_skill_not_found() {
     let (root, _cleanup) = setup_skills_dir(&[]);
     let index = SkillIndex::scan(root);
-    assert!(index
-        .load_script_meta("ghost", "scripts/x.py")
-        .is_none());
+    assert!(index.load_tool_config("ghost", "x").is_none());
 }
 
 #[test]
-fn load_script_meta_invalid_toml() {
+fn load_tool_config_invalid_toml() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
-    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
-    fs::write(script_dir.join("gen.toml"), "not valid toml {{{").unwrap();
-
+    setup_tool(&root, "s", "bad", "not valid toml {{{", "print('hi')");
     let index = SkillIndex::scan(root);
-    assert!(index.load_script_meta("s", "scripts/gen.py").is_none());
+    assert!(index.load_tool_config("s", "bad").is_none());
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -256,16 +259,26 @@ fn load_body_nonexistent() {
 }
 
 #[test]
-fn load_resources_lists_files() {
+fn load_resources_lists_tools_and_files() {
     let (root, _cleanup) = setup_skills_dir(&[("rich", &minimal_skill("rich", "Rich skill"))]);
+    setup_tool(
+        &root,
+        "rich",
+        "gen",
+        r#"name = "gen"
+description = "Generate"
+runtime = "python"
+entrypoint = "main.py"
+"#,
+        "print('hi')",
+    );
     let skill_dir = root.join("skills").join("rich");
-    fs::write(skill_dir.join("scripts").join("gen.py"), "print('hi')").unwrap();
     fs::write(skill_dir.join("references").join("api.md"), "# API").unwrap();
     fs::write(skill_dir.join("assets").join("template.tsx"), "// template").unwrap();
 
     let index = SkillIndex::scan(root);
     let resources = index.load_resources("rich").unwrap();
-    assert_eq!(resources.scripts, vec!["gen.py"]);
+    assert_eq!(resources.tools, vec!["gen"]);
     assert_eq!(resources.references, vec!["api.md"]);
     assert_eq!(resources.assets, vec!["template.tsx"]);
 }
@@ -284,38 +297,25 @@ fn load_resources_nonexistent() {
 #[test]
 fn load_resource_file_success() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_path = root.join("skills").join("s").join("scripts").join("run.py");
-    fs::create_dir_all(script_path.parent().unwrap()).unwrap();
-    fs::write(&script_path, "print('hello')").unwrap();
-
-    let index = SkillIndex::scan(root);
-    let res = index.load_resource_file("s", "scripts/run.py").unwrap();
-    assert_eq!(res.content, "print('hello')");
-    assert!(res.description.is_none());
-    assert!(res.params_schema.is_none());
-}
-
-#[test]
-fn load_resource_file_with_script_meta() {
-    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
-    fs::write(script_dir.join("gen.py"), "print(1)").unwrap();
-    fs::write(
-        script_dir.join("gen.toml"),
-        r#"description = "Generate"
+    setup_tool(
+        &root,
+        "s",
+        "echo",
+        r#"name = "echo"
+description = "Echo"
 runtime = "python"
-[params_schema]
-type = "object"
+entrypoint = "main.py"
 "#,
-    )
-    .unwrap();
+        "print('hello')",
+    );
 
     let index = SkillIndex::scan(root);
-    let res = index.load_resource_file("s", "scripts/gen.py").unwrap();
-    assert_eq!(res.content, "print(1)");
-    assert_eq!(res.description.unwrap(), "Generate");
-    assert_eq!(res.params_schema.unwrap()["type"], "object");
+    let res = index
+        .load_resource_file("s", "tools/echo/main.py")
+        .unwrap();
+    assert_eq!(res.content, "print('hello')");
+    assert_eq!(res.description.as_deref(), Some("Echo"));
+    assert_eq!(res.params_schema.unwrap(), serde_json::Value::Null);
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn load_resource_file_reference_no_metadata() {
 fn load_resource_file_rejects_parent_traversal() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
     let index = SkillIndex::scan(root);
-    let result = index.load_resource_file("s", "scripts/../../etc/passwd");
+    let result = index.load_resource_file("s", "tools/../../etc/passwd");
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("path traversal"));
 }
@@ -361,48 +361,80 @@ fn load_resource_file_rejects_invalid_prefix() {
 fn load_resource_file_not_found() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
     let index = SkillIndex::scan(root);
-    let result = index.load_resource_file("s", "scripts/ghost.py");
+    let result = index.load_resource_file("s", "tools/ghost/main.py");
     assert!(result.is_err());
 }
 
+#[test]
+fn load_resource_file_tool_without_toml() {
+    // Create a tool dir without tool.toml
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let tool_dir = root.join("skills").join("s").join("tools").join("bare");
+    fs::create_dir_all(&tool_dir).unwrap();
+    fs::write(tool_dir.join("main.py"), "print(1)").unwrap();
+    // no tool.toml
+
+    let index = SkillIndex::scan(root);
+    let res = index
+        .load_resource_file("s", "tools/bare/main.py")
+        .unwrap();
+    assert_eq!(res.content, "print(1)");
+    assert!(res.description.is_none()); // no tool.toml → no metadata
+}
+
 // ═══════════════════════════════════════════════════════════════
-// run_script — 2 tests
+// run_tool — 3 tests
 // ═══════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn run_script_python_echo() {
+async fn run_tool_python_echo() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
-    fs::write(
-        script_dir.join("echo.py"),
+    setup_tool(
+        &root,
+        "s",
+        "echo",
+        r#"name = "echo"
+description = "Echo tool"
+runtime = "python"
+entrypoint = "main.py"
+"#,
         "import sys, json\nparams = json.loads(sys.stdin.read())\nprint(json.dumps(params))\n",
-    )
-    .unwrap();
+    );
 
     let index = SkillIndex::scan(root);
     let result = index
-        .run_script("s", "scripts/echo.py", serde_json::json!({"x": 1}))
+        .run_tool("s", "echo", serde_json::json!({"x": 1}))
         .await
         .unwrap();
     assert_eq!(result["x"], 1);
 }
 
 #[tokio::test]
-async fn run_script_without_toml_defaults() {
+async fn run_tool_without_toml_uses_defaults() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
-    let script_dir = root.join("skills").join("s").join("scripts");
-    fs::create_dir_all(&script_dir).unwrap();
+    let tool_dir = root.join("skills").join("s").join("tools").join("bare");
+    fs::create_dir_all(&tool_dir).unwrap();
     fs::write(
-        script_dir.join("echo.py"),
+        tool_dir.join("main.py"),
         "import sys, json\nprint(json.dumps({'ok': True}))\n",
     )
     .unwrap();
+    // no tool.toml — uses defaults (auto-detect runtime from extension)
 
     let index = SkillIndex::scan(root);
     let result = index
-        .run_script("s", "scripts/echo.py", serde_json::json!({}))
+        .run_tool("s", "bare", serde_json::json!({}))
         .await
         .unwrap();
     assert_eq!(result["ok"], true);
+}
+
+#[tokio::test]
+async fn run_tool_nonexistent_skill() {
+    let (root, _cleanup) = setup_skills_dir(&[]);
+    let index = SkillIndex::scan(root);
+    let result = index
+        .run_tool("ghost", "x", serde_json::json!({}))
+        .await;
+    assert!(result.is_err());
 }
