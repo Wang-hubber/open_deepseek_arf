@@ -1,518 +1,283 @@
 # Phase 6 — Engine 设计
 
-> 父文档：`docs/v1.x/2026-06-26-arfv1-roadmap.md`
-> 依赖：Phase 1 (Bus), Phase 4 (ModelAdapter), Phase 5 (MCP), arf-state (FileStateStore)
-> 状态：设计大纲
+> 依赖：Phase 1 (Bus), Phase 4 (ModelAdapter), Phase 5 (MCP), arf-state
+> 状态：设计
 
-## 1. 架构定位
+## 1. 核心思想
 
-### 1.1 设计哲学：Engine 是纯编排器
+Engine 做减法。它是 Bus 上的一个 Actor：维护 AgentConfig + SessionState，在 ReAct 循环中收发消息，维护等待队列。
 
-Engine 不"做"任何事——它只**编排**。所有实际工作由注入的依赖完成：
-
-```
-Engine. chat(user_input)
- │
- ├─ 状态:    StateStore.load/save         ← 注入，Engine 决定调用时机
- ├─ 推理:    Provider.chat()              ← 注入，Engine 只传消息、收结果
- ├─ 工具:    Bus.send("tool_call_set")    ← MCP 节点执行，Engine 不碰脚本
- ├─ Hook:    Bus.send("hook")             ← 消费者响应，Engine 不等逻辑结果
- └─ 超时:    tokio::time::timeout         ← Engine 设置上限，不重试
-```
-
-**核心原则**：Engine 是唯一知道"下一步该干什么"的地方，但它不知道"怎么干"。所有"怎么干"通过 trait 注入。
-
-### 1.2 组件全景图
+**所有外部交互走 Bus，没有例外。** Engine 不直接调 Provider、不直接调 HookRunner、不直接调 MCP。一切通过统一消息协议。
 
 ```
-                        ┌──────────────────────────────┐
-                        │          AgentConfig          │
-                        │  (system_prompt, max_turns,   │
-                        │   tool_timeout, mcp_ns...)    │
-                        └──────────────┬───────────────┘
-                                       │ 构造时注入
-                                       ▼
-┌─ Engine ─────────────────────────────────────────────────────────────┐
-│                                                                       │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────────┐  │
-│  │ SessionManager│   │  McpRegistry │   │     HookRunner           │  │
-│  │              │   │              │   │                          │  │
-│  │ create/      │   │ namespace→   │   │ 10 checkpoints           │  │
-│  │ restore/     │   │ (node_id,    │   │ → Bus 消息               │  │
-│  │ persist      │   │  tools[],    │   │ → block/side 等待        │  │
-│  │              │   │  skills[])   │   │                          │  │
-│  └──────┬───────┘   └──────┬───────┘   └────────────┬─────────────┘  │
-│         │                  │                        │                │
-│         ▼                  ▼                        ▼                │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                    ReAct Loop (状态机)                        │    │
-│  │                                                              │    │
-│  │  idle → running → waiting_tools → running → done             │    │
-│  │            │                      │                          │    │
-│  │            └── parked ←→ resume ──┘                          │    │
-│  └──────────────────────────┬───────────────────────────────────┘    │
-│                             │                                       │
-└─────────────────────────────┼───────────────────────────────────────┘
-                              │ 全部外部交互走 Bus
-                              ▼
-        ┌─────────────────────Bus─────────────────────────┐
-        │          │              │              │         │
-        ▼          ▼              ▼              ▼         ▼
-   ┌────────┐ ┌────────┐  ┌──────────┐  ┌─────────┐ ┌──────────┐
-   │  MCP   │ │  MCP   │  │ModelAdapter│ │ State   │ │  Hook    │
-   │  (fs)  │ │(remote)│  │(Provider) │  │ Store   │ │consumers │
-   └────────┘ └────────┘  └──────────┘  └─────────┘ └──────────┘
+┌──────────────────────────────────────┐
+│  Engine (Actor)                      │
+│                                      │
+│  AgentConfig  +  SessionState        │
+│                                      │
+│  inbox: PriorityQueue                │
+│    Cancel > UserInput > others       │
+│         │                            │
+│         ▼                            │
+│  ┌─────────────┐  4 状态:            │
+│  │   state     │  idle/processing/   │
+│  │   machine   │  waiting/stopped    │
+│  └──────┬──────┘                     │
+│         │                            │
+│  ┌──────┴──────┐  waiting queue     │
+│  │  PendingWait │  持久化 + 重发     │
+│  └──────┬──────┘                     │
+│         │                            │
+│         ▼                            │
+│       Bus                             │
+└──────────────────────────────────────┘
 ```
 
-Engine 自身不持有 Tokio reactor、不做 HTTP 调用、不碰文件系统。所有 I/O 通过 Bus 消息或注入的 trait 完成。
+**依赖方向（单向，无循环）：**
 
-### 1.3 边界合约
+```
+                  arf-core (纯数据)
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+    arf-bus       arf-state      arf-mcp
+        │              │              │
+        └──────────────┼──────────────┘
+                       ▼
+                 arf-engine
+                       │
+                       ▼
+                   arf-agent (Phase 7 DI 装配)
+```
 
-Engine 对每个依赖有明确的输入/输出约定——不关心实现，只关心契约：
+## 2. 消息协议
 
-#### Engine → StateStore
-
-| Engine 调用 | 期望返回 | 失败行为 |
-|------------|---------|---------|
-| `state_store.load(sid)` | `Option<SessionState>` | 无历史 → 创建新会话 |
-| `state_store.save(sid, state)` | `()` | 记录 warning，不阻断循环 |
+Engine 与外部的一切交互走统一协议。Engine 发的每条消息：
 
 ```rust
-/// Engine 不关心存哪里、什么格式——只要 load/save 语义正确。
-trait StateStore: Send + Sync {
-    async fn load(&self, session_id: &str) -> Result<Option<SessionState>>;
-    async fn save(&self, session_id: &str, state: &SessionState) -> Result<()>;
+struct OutgoingMessage {
+    correlation_id: String,     // 唯一 ID，响应匹配
+    msg_type: MessageType,      // 六种之一
+    payload: Value,             // 消息体
+}
+
+enum MessageType {
+    ModelCall,      // → ModelAdapter
+    ToolExec,       // → MCP（经 Auth/Sandbox 拦截）
+    Memory,         // → MemoryNode
+    Compact,        // → CompactionNode
+    Subagent,       // → SubagentNode
+    Peer,           // → 另一 Engine 的 inbox
 }
 ```
 
-#### Engine → Provider (ModelAdapter)
-
-| Engine 调用 | 期望返回 | 失败行为 |
-|------------|---------|---------|
-| `provider.chat(messages)` | `ModelResponse { content, tool_calls }` | 透传错误给 LLM（追加 error context → 下一轮 model_call）或向上抛 |
+对方响应：
 
 ```rust
-/// Engine 不关心是 DeepSeek 还是 OpenAI——只要输入消息、返回响应。
-trait Provider: Send + Sync {
-    async fn chat(&self, messages: &[ModelMessage]) -> Result<ModelResponse>;
+struct Response {
+    correlation_id: String,     // 匹配发出的消息
+    ack: Ack,                   // done | wait
+    result: Option<Value>,      // ack=done 时携带
+}
+
+enum Ack {
+    Done,    // fire-and-forget，移出队列
+    Wait,    // 等最终结果，保留在队列
 }
 ```
 
-#### Engine → Bus → MCP
+不带 `correlation_id` 的消息（UserInput、Cancel）→ 入 inbox，按优先级处理。
 
-| Engine 发送 | 期望回复 | 失败行为 |
-|------------|---------|---------|
-| `tool_call_set` → `mcp/{ns}` | `tool_result_set { results[] }` | result 含 error → 注入 LLM 上下文，继续循环 |
-| `use_skill` → `mcp/{ns}` | `skill_loaded { body, resources }` | 返回 skill_error → 通知 LLM |
-| `run_skill_script` → `mcp/{ns}` | `skill_script_result` | 同上 |
+## 3. ReAct 循环（固定，不可配置）
 
-```rust
-/// Engine 不关心工具是本地脚本还是远程 HTTP——它只看到 namespace + tool name。
-/// 路由逻辑：tool_name → 查 mcp_registry → 得到 namespace → 发到 mcp/{namespace}
+```
+idle → inbox 收到消息 → processing
+
+  INPUT   → 消息写入 conversation
+  THINK   → 发 ModelCall 到 Bus，入等待队列
+  ACT     → 有 tool_calls 时发 ToolExec 到 Bus，入等待队列
+  OBSERVE → 还有 tool_calls? → THINK
+            没有? → OUTPUT → idle
 ```
 
-#### Engine → Bus → Hook 消费者
+Engine 只认识 `ModelCall` 和 `ToolExec` 两种消息。`Memory`、`Compact`、`Subagent`、`Peer` 由 AgentConfig 检查点声明。
 
-| Engine 发送 | 消费者回复 | Engine 行为 |
-|------------|-----------|-----------|
-| `hook { checkpoint: "before_model", mode: "blocking" }` | `{ action: "proceed" }` 或 `{ action: "modify", messages: [...] }` | 等待所有 blocking 回复后继续；modify 则替换消息列表 |
-| `hook { checkpoint: "after_tools", mode: "side" }` | (不等待) | 直接继续 |
+### 3.1 四状态
+
+| 状态 | 含义 |
+|------|------|
+| `idle` | inbox 空，队列空 |
+| `processing` | 正在执行 ReAct 循环 |
+| `waiting` | 发过消息且对方回 `ack: Wait`，等最终结果 |
+| `stopped` | 收到 stop 信号，终结 |
+
+### 3.2 终止条件
+
+| 条件 | 触发 |
+|------|------|
+| 模型返回纯文本 | LLM 不再调用 tool |
+| `task_complete` | LLM 调用了 kernel tool |
+| `max_turns` 超限 | `turn_count >= max_turns` |
+| cancel | 外部 `cancel_session` |
+| error | 不可恢复错误 |
+
+## 4. 等待队列
 
 ```rust
-/// Engine 不关心谁消费 hook、怎么处理——它只在检查点发消息。
-/// blocking: 等所有注册消费者回复（或超时）
-/// side: 发完即走
-trait HookRunner: Send + Sync {
-    async fn run_hooks(&self, checkpoint: HookCheckpoint, ctx: &HookContext) -> Vec<HookResponse>;
+struct PendingWait {
+    correlation_id: String,
+    msg_type: MessageType,      // Bus 路由靠这个
+    message_payload: Value,     // 完整原始消息，Bus 重启后重发
+    sent_at: Instant,
+    status: WaitStatus,         // AwaitingAck | Waiting | Cancelled
+    expect_response: bool,      // 对方回 Wait 就为 true
 }
 ```
 
-### 1.4 关键消息流
-
-#### 正常 ReAct：单轮 tool call
+生命周期：
 
 ```
-时间轴 →
-
-Engine                    Bus                    MCP(fs)           ModelAdapter
-  │                        │                       │                   │
-  │─ chat(user_input)      │                       │                   │
-  │─ before_round hook     │                       │                   │
-  │─ before_model hook     │                       │                   │
-  │──────────────────────────────────────────────────────────────────→ provider.chat()
-  │←────────────────────────────────────────────────────────────────── ModelResponse {
-  │                                                                    tool_calls: [read_file]
-  │                                                                   }
-  │─ after_model hook      │                       │                   │
-  │                        │                       │                   │
-  │─ tool_call_set ───────→│── tool_call_set ──────→│                   │
-  │                        │←─ tool_result_set ────│                   │
-  │←─ tool_result_set ─────│                       │                   │
-  │                        │                       │                   │
-  │─ after_tools hook      │                       │                   │
-  │─ tool_result → ModelMessage("tool")             │                   │
-  │──────────────────────────────────────────────────────────────────→ provider.chat()
-  │←────────────────────────────────────────────────────────────────── ModelResponse {
-  │                                                                    content: "文件内容是..."
-  │                                                                   }
-  │─ after_round hook      │                       │                   │
-  │─ state_store.save()    │                       │                   │
-  │                        │                       │                   │
-  return "文件内容是..."    │                       │                   │
+Engine 发消息 → AwaitingAck
+  ├─ ack: Done  → 处理 result，移出队列
+  ├─ ack: Wait  → status=Waiting，等最终结果
+  │     ├─ 最终结果到 → 处理 result，移出队列
+  │     └─ Cancel 到 → status=Cancelled，通知对方，移出队列
+  └─ Bus 重启 → 取 message_payload 重新 publish
 ```
 
-#### Park/Resume
+等待队列随 SessionState 一起序列化。Engine resume 时重放所有非 Cancelled 条目。
 
-```
-Engine                        Bus                  ParkCoordinator
-  │                            │                       │
-  │─ before_round hook ───────→│── hook ──────────────→│
-  │                            │←─ { action: "park" }──│
-  │←─ hook response ──────────│                       │
-  │                            │                       │
-  │ state_store.save()         │                       │
-  │ status → parked            │                       │
-  │ return ParkToken           │                       │
-  │                            │                       │
-  │ ... (外部等待, 可能跨进程) ...                      │
-  │                            │                       │
-  │ resume(sid, token)         │                       │
-  │ state_store.load()         │                       │
-  │ status → running           │                       │
-  │ 重新进入 round 循环         │                       │
-```
+## 5. State 变更
 
-### 1.5 Engine 拥有 vs 委托
+Engine 的 SessionState 私有，外部节点不直接写入。
 
-| Engine 拥有 | Engine 委托 |
-|------------|-----------|
-| Session 状态机（idle/running/parked/done） | 模型怎么调 → `Provider` trait |
-| ReAct 循环的**流程**（先调模型、再调工具、再调模型...） | 工具怎么执行 → MCP（`RuntimeModule` trait） |
-| 检查点**时机**（什么时候发 hook） | Hook 怎么响应 → `HookRunner` trait |
-| 持久化**时机**（什么时候 save） | 存哪里、什么格式 → `StateStore` trait |
-| 终止条件**判断**（无 tool / max_turns / task_complete） | 为什么终止 → LLM 决定（task_complete 是 kernel tool） |
-| System prompt **组装**（模板 + tools + skills L1） | Tool 的 params_schema → MCP 提供 |
-| Turn/Round **计数** | 计数的存储 → StateStore |
+1. Engine 发消息时带上 state 片段（如 messages 副本）
+2. 外部节点处理后返回结果
+3. 如需修改 state，结果中包含 `replacement_messages` 字段
+4. Engine：备份旧 messages → 替换 → 继续
 
-### 1.6 依赖方向（单向，无循环）
+Engine 不解析 memory/compact 的语义，只执行备份和替换。
 
-```
-                    arf-core (纯数据)
-                         │
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-      arf-bus       arf-state      arf-mcp
-          │              │              │
-          └──────────────┼──────────────┘
-                         ▼
-                   arf-engine
-                         │
-                         ▼
-              arf-model-adapter (通过 Provider trait)
-                         │
-                         ▼
-                     arf-agent (Phase 7 DI 装配)
-```
-
-`arf-engine` 依赖 `arf-core` + `arf-bus` + `arf-state` + `arf-mcp`，通过 `Provider` trait 依赖 `arf-model-adapter`。所有依赖是 trait 或纯数据结构——Engine 不依赖任何具体实现。
-
----
-
-## 2. Engine 核心类型
-
-### 2.1 AgentConfig
-
-Agent 配置——定义 Engine 的行为边界。由外部 YAML/TOML 文件解析后注入。
+## 6. AgentConfig
 
 ```rust
 pub struct AgentConfig {
-    /// Agent 唯一标识
     pub agent_id: String,
-
-    /// System prompt 模板（含 {{tools}} / {{skills}} 占位符）
-    pub system_prompt_template: String,
-
-    /// 模型配置
-    pub model: ModelConfig,
-
-    /// 单轮最大 ReAct 步数
+    pub model: ModelConfig,             // 模型名、api_base、context_window
+    pub system_prompt_template: String,  // {{tools}} / {{skills}} 占位符
     pub max_turns: u32,
-
-    /// 工具调用超时（Engine 传给 MCP executor）
     pub tool_timeout_ms: Option<u64>,
-
-    /// 需要连接的 MCP namespace 列表
-    /// None = 自动发现全部 MCP 节点
     pub mcp_namespaces: Option<Vec<String>>,
+    pub session_mode: SessionMode,       // Auto | Ask | Plan
+    pub permissions: PermissionConfig,   // 权限审批配置
+    pub allow_paths: Vec<String>,        // 沙箱路径白名单
+    pub checkpoints: HashMap<Checkpoint, Vec<CheckpointAction>>,  // 兜底型消息
+}
 
-    /// Hook 配置
-    pub hooks: HookConfig,
+pub struct CheckpointAction {
+    pub msg_type: MessageType,           // Memory | Compact | Subagent | Peer
+    pub condition: String,               // 模板表达式
+    pub payload: Value,                  // 消息体模板
 }
 ```
 
-### 2.2 Engine
+检查点声明（仅兜底型消息，ModelCall/ToolExec 不声明）：
 
-```rust
-pub struct Engine {
-    config: AgentConfig,
-    bus: Bus,
-    handle: NodeHandle,           // engine/{agent_id} — Bus 连接
-    provider: Box<dyn Provider>,  // ModelAdapter
-    state_store: Box<dyn StateStore>,
-    hook_runner: Box<dyn HookRunner>,
+```yaml
+checkpoints:
+  before_think:
+    - type: Memory
+      condition: "round_count > 1"
+      payload:
+        action: "retrieve"
+        query: "{{last_user_message}}"
 
-    // 运行时状态
-    mcp_registry: McpRegistry,    // namespace → (node_id, tools, skills)
-    sessions: SessionManager,     // session_id → SessionState
-}
+  after_tools:
+    - type: Compact
+      condition: "turn_count % 10 == 0"
+      payload:
+        action: "summarize"
+        messages: "{{all_messages}}"
+
+  after_round:
+    - type: Memory
+      condition: "round_count > 0"
+      payload:
+        action: "extract"
+        messages: "{{all_messages}}"
 ```
 
-### 2.3 Session 状态机
+### 6.1 可用检查点
 
 ```
-                    ┌──────────┐
-          init ────→│   idle   │
-                    └────┬─────┘
-                         │ chat(user_input)
-                         ▼
-                    ┌──────────┐
-              ┌────→│ running  │←──────────┐
-              │     └────┬─────┘           │
-              │          │ tool_calls       │ park_message
-              │          ▼                  │
-              │     ┌──────────────┐   ┌────┴─────┐
-              │     │ waiting_tools│   │  parked  │
-              │     └──────┬───────┘   └────┬─────┘
-              │          │ tool_results     │ resume
-              │          │ (继续循环)        │
-              │          │                  │
-              │     no tool_calls / task_complete / max_turns / cancel
-              │          │                  │
-              │          ▼                  │
-              │     ┌──────────┐            │
-              └─────│  done    │◄───────────┘ (cancel from parked)
-                    └──────────┘
+before_input  → 收消息前
+after_input   → 消息写入后
+before_think  → 发 ModelCall 前
+after_think   → 模型响应后
+before_act    → 发 ToolExec 前
+after_act     → 工具结果写入后
+before_observe→ 判断前
+round_end     → 本轮结束
+turn_end      → 每 turn 结束
 ```
 
-### 2.4 SessionState
+## 7. Bus 节点
 
-```rust
-pub struct SessionState {
-    pub session_id: String,
-    pub status: SessionStatus,    // idle | running | waiting_tools | parked | done
-    pub conversation: Conversation, // Vec<ModelMessage> — 完整对话历史
-    pub turn_count: u32,          // 当前 session 内 ReAct 步数
-    pub round_count: u32,         // 当前 session 内 chat() 次数
-    pub mcp_registry_snapshot: McpRegistrySnapshot, // 会话开始时的 MCP 能力快照
-    pub metadata: Value,          // 扩展元数据
-}
-```
+Engine 不直接调用任何节点，只发消息。节点按消息类型订阅。
 
----
+### 7.1 拦截型（Engine 无感）
 
-## 3. 会话生命周期
-
-### 3.1 初始化
-
-```
-Engine::new(config, bus, provider, state_store, hook_runner)
-  │
-  ├─ 连接 Bus → handle = engine/{agent_id}
-  ├─ 订阅消息: node_online, node_offline
-  ├─ 启动 MCP 发现循环 → 填充 mcp_registry
-  └─ 返回 Engine 实例
-
-Engine::chat(session_id, user_input)
-  │
-  ├─ SessionManager.get_or_create(session_id)
-  │   ├─ state_store.load(session_id)  → 恢复历史
-  │   └─ 新会话: 构建初始 SessionState
-  │
-  ├─ 验证 MCP registry (节点掉线？新节点上线？)
-  ├─ 组装 system prompt (template + tools + skills L1)
-  ├─ 进入 ReAct 主循环
-  └─ 返回 final_output
-```
-
-### 3.2 持久化时机
-
-| 时机 | 操作 |
-|------|------|
-| `chat()` 开始时 | `state_store.load(sid)` — 恢复 |
-| 每轮 `after_round` 后 | `state_store.save(sid, state)` — 增量持久化 |
-| `session_end` hook 后 | `state_store.save(sid, final_state)` — 最终落盘 |
-
----
-
-## 4. ReAct 主循环
-
-### 4.1 循环逻辑
-
-```
-chat(session_id, user_input)
-  │
-  ├─ 1. 恢复/创建 session
-  ├─ 2. 触发 before_session_start hook
-  ├─ 3. 构建 system prompt (注入 tool 描述 + skill L1)
-  ├─ 4. 追加 user_input 为 ModelMessage(role="user")
-  │
-  ├─ 5. round 循环:
-  │     ├─ before_round hook
-  │     ├─ before_model hook
-  │     ├─ model_call → provider.chat(conversation)
-  │     ├─ after_model hook
-  │     │
-  │     ├─ 模型返回 tool_calls?
-  │     │   ├─ Yes:
-  │     │   │   ├─ 追加 assistant 消息 (含 tool_calls)
-  │     │   │   ├─ 按 namespace 拆分 tool_calls
-  │     │   │   ├─ before_tools hook
-  │     │   │   ├─ tool_call_set → mcp/{namespace}
-  │     │   │   ├─ ← tool_result_set
-  │     │   │   ├─ tool_result_to_model_message → 追加 tool 消息
-  │     │   │   ├─ after_tools hook
-  │     │   │   └─ 回到 5 (下一轮 model_call)
-  │     │   │
-  │     │   └─ No: → 6 (结束)
-  │     │
-  │     ├─ turn_count >= max_turns? → before_break → 6
-  │     └─ 收到 park? → 暂停循环 → after_round → parked
-  │
-  ├─ 6. 提取 final_output
-  ├─ 7. after_round hook
-  ├─ 8. session_end hook (如果是最后一轮)
-  └─ 9. 持久化 → 返回
-```
-
-### 4.2 终止条件
-
-| 条件 | 触发 | Hook |
+| 节点 | 订阅 | 行为 |
 |------|------|------|
-| 模型返回纯文本 | LLM 不再调用 tool | — |
-| `task_complete` | LLM 调用了 kernel tool `task_complete` | `before_break` |
-| `max_turns` 超限 | `turn_count >= max_turns` | `before_break` |
-| cancel | 外部 `cancel_session` | `before_break` |
-| error | 不可恢复错误 | `on_error` |
+| AuthNode | `ToolExec` | 读 AgentConfig → 放行/询问/拒绝 |
+| SandboxNode | `ToolExec` | 读 allow_paths → 路径检查 |
 
----
+拦截型节点在 Engine → MCP 的通道上。
 
-## 5. Hook/Park 事件系统
+### 7.2 处理型（Engine 等待响应）
 
-### 5.1 10 个检查点
+| 节点 | 订阅 | 行为 |
+|------|------|------|
+| ModelAdapter | `ModelCall` | LLM API 调用 |
+| MCPClientManager | `ToolExec` | 工具执行（Routing 到具体 namespace） |
+| MemoryNode | `Memory` | 检索（等）/ 抽取（不等） |
+| CompactionNode | `Compact` | 上下文压缩，返回 replacement_messages |
+| SubagentNode | `Subagent` | 委派子 Agent |
 
-每个检查点 Engine 发一条 Bus 消息（`hook` msg_type），携带 `{ session_id, checkpoint, round, turn, context }`。消费者按 `blocking` 或 `side` 模式响应。
+### 7.3 纯观测（Engine 无感，不响应）
 
-| 检查点 | 触发时机 | HookRunner 行为 |
-|--------|---------|----------------|
-| `session_start` | 会话创建/恢复后 | Hook 消息 → 等 `blocking` 响应 |
-| `before_round` | 每轮开始 | Hook 消息 → 等 `blocking` 响应 |
-| `before_model` | 模型调用前 | Hook 消息 → 等 `blocking` 响应 |
-| `after_model` | 模型响应后 | Hook 消息 + 模型响应 payload |
-| `before_tools` | 工具执行前 | Hook 消息 → 等 `blocking` 响应 |
-| `after_tools` | 工具执行后 | Hook 消息 + 工具结果 payload |
-| `after_round` | 每轮结束 | Hook 消息（side 模式） |
-| `before_break` | 循环终止前 | Hook 消息 → 等 `blocking` 响应 |
-| `on_error` | 异常发生 | Hook 消息 + error payload |
-| `session_end` | 会话结束 | Hook 消息（side 模式） |
+| 节点 | 行为 |
+|------|------|
+| TraceWriter | 落盘 JSONL |
+| Logger | 日志输出 |
 
-### 5.2 blocking vs side
+## 8. Engine 拥有 vs 委托
 
-```
-blocking: Engine 发消息 → 等待所有 blocking 消费者回复 → 继续
-          适用于: compaction(外部化工具输出), approval(人工审批)
+| Engine 拥有 | Engine 委托（发 Bus 消息） |
+|------------|--------------------------|
+| Session 状态机（idle/processing/waiting/stopped） | 模型推理 → `ModelCall` |
+| ReAct 循环流程 | 工具执行 → `ToolExec` |
+| 终止条件判断 | 记忆/压缩/子Agent/Peer → 各自消息类型 |
+| 等待队列 + 持久化时机 | 授权/沙箱 → Bus 拦截节点 |
+| System prompt 组装 | 观测 → 纯消费节点 |
+| Turn/Round 计数 | MCP 节点发现 |
 
-side:     Engine 发消息 → 不等待 → 继续
-          适用于: trace(记录日志), memory(异步写长期记忆)
-```
+## 9. 任务拆解（草案）
 
-### 5.3 Park/Resume
+| # | 任务 | 内容 |
+|---|------|------|
+| 6.1 | Engine 脚手架 | `Engine` struct、`AgentConfig`、Bus 连接、inbox |
+| 6.2 | Session 管理 | `SessionState`、`Conversation`、StateStore 集成 |
+| 6.3 | ReAct 主循环 | `chat()`、INPUT→THINK→ACT→OBSERVE、终止判断、system prompt 组装 |
+| 6.4 | 消息协议 + 等待队列 | 统一消息类型、PendingWait、重发、持久化 |
+| 6.5 | 检查点系统 | AgentConfig 声明解析、模板渲染、消息发送 |
+| 6.6 | Park/Resume | ack:Wait 等待、状态转移 processing↔waiting、inbox 优先级 |
+| 6.7 | Tool 路由 + Skill 集成 | namespace 路由、use_skill / run_skill_script |
+| 6.8 | 错误处理 + 边界 | LLM 错误透传、tool 错误注入、MCP 掉线、max_turns |
+| 6.9 | Python API | PyO3 绑定 Engine + AgentConfig |
+| 6.10 | 集成测试 | 全链路 ReAct: fixtures + CodeTidy + ModelAdapter |
 
-Park 本质是 `before_round` 检查点的一种特殊 blocking 响应：
-
-```
-before_round hook
-  ├─ 消费者(如 ParkCoordinator) 回复: { action: "park", reason: "waiting_user" }
-  ├─ Engine: 持久化当前状态 → 状态转移 running → parked
-  ├─ Engine: 返回 park_token 给调用方
-  │
-  └─ (外部等待...)
-  │
-resume(session_id, park_token)
-  ├─ Engine: 状态转移 parked → running
-  ├─ 重新从 round 开始（或从断点继续）
-  └─ 进入正常 ReAct 循环
-```
-
----
-
-## 6. MCP 集成
-
-### 6.1 节点发现
-
-```
-Engine 启动:
-  ├─ bus.graph() → 获取当前所有在线 MCP 节点
-  └─ 订阅 node_online / node_offline → 动态更新 mcp_registry
-
-mcp_registry: HashMap<String, McpNodeInfo>
-  "filesystem" → { node_id: "mcp/filesystem", tools: [...], skills: [...] }
-  "codetidy"   → { node_id: "mcp/codetidy", tools: [...], skills: [] }
-```
-
-### 6.2 System Prompt 组装
-
-```
-AgentConfig.system_prompt_template
-  "You are a helpful assistant. Available tools:\n{{tools}}\n\nSkills:\n{{skills}}"
-    │
-    ├─ {{tools}} → 遍历 mcp_registry，展开每个 tool 的 name + description + params_schema
-    └─ {{skills}} → 遍历每个 skill 的 name + description (L1)
-```
-
-### 6.3 Tool 路由
-
-```
-LLM 返回 tool_calls: [
-  { name: "read_file", args: {path: "/x"} },
-  { name: "codetidy_base64_encode", args: {input: "hello"} },
-]
-
-Engine 按 name 查 mcp_registry:
-  "read_file"           → mcp/filesystem
-  "codetidy_base64_encode" → mcp/codetidy
-
-组装 ToolCallSet → 发送到对应 namespace
-```
-
-### 6.4 Skill 加载
-
-```
-LLM 决定使用 skill "react-component"
-  → Engine 发送 use_skill → mcp/{ns}
-  → 收到 skill_loaded { body, resources }
-  → 注入 LLM 上下文
-  → LLM 调用 skill 内工具 → run_skill_script
-```
-
----
-
-## 7. 任务拆解（草案）
-
-| # | 任务 | 内容 | 产出 |
-|---|------|------|------|
-| 6.1 | Engine 脚手架 | `Engine` struct、`AgentConfig`、构造函数、Bus 连接、MCP registry 基础 | `crates/arf-engine/src/engine.rs` |
-| 6.2 | Session 管理 | `SessionManager`、`SessionState`、`Conversation`、StateStore 集成 | `crates/arf-engine/src/session.rs` |
-| 6.3 | ReAct 主循环 | `chat()`、model_call ↔ tool_calls 循环、终止条件判断、system prompt 组装 | `crates/arf-engine/src/loop.rs` |
-| 6.4 | Tool 路由 + Skill 集成 | namespace 路由、ToolCallSet 组装、skill_loaded / run_skill_script | 并入 loop.rs |
-| 6.5 | Hook 事件系统 | `HookRunner` trait、10 检查点发送、blocking/side 模式 | `crates/arf-engine/src/hooks.rs` |
-| 6.6 | Park/Resume | ParkCoordinator 集成、park 消息处理、状态转移 | `crates/arf-engine/src/park.rs` |
-| 6.7 | 错误处理 + 边界 | LLM 错误透传、tool 错误注入上下文、MCP 掉线处理、max_turns 超限 | 逐任务补充 |
-| 6.8 | Python API | PyO3 绑定 `Engine` + `AgentConfig` 暴露给 Python | `py-arf/src/engine.rs` |
-| 6.9 | 集成测试 | 全链路 ReAct: fixtures + CodeTidy + ModelAdapter + 真实 LLM | `tests/` |
-
----
-
-## 8. Python API 展望
+## 10. Python API 展望
 
 ```python
 from arf import Engine, AgentConfig
@@ -521,30 +286,15 @@ config = AgentConfig(
     agent_id="assistant",
     system_prompt_template="You are a helpful assistant.\n\nTools:\n{{tools}}",
     max_turns=10,
-    tool_timeout_ms=30000,
+    checkpoints={
+        "after_round": [
+            {"type": "Memory", "condition": "round_count > 0",
+             "payload": {"action": "extract", "messages": "{{all_messages}}"}}
+        ]
+    }
 )
 
-engine = Engine(
-    config=config,
-    bus=bus,
-    provider=deepseek_provider,      # ModelAdapter
-    state_store=file_state_store,     # 持久化
-    hooks=[memory_plugin, trace_plugin],
-)
+engine = Engine(config=config, bus=bus)
 
-# 单轮对话
 output = await engine.chat(session_id="s1", user_input="Read /etc/hostname")
-print(output)  # "The file contains: iZbp1hzrvnradlsiut7vanZ"
-
-# 同一 session 继续对话
-output = await engine.chat(session_id="s1", user_input="Write 'hello' to /tmp/x.txt")
 ```
-
----
-
-## 9. 待明确的问题
-
-1. **Conversation 的上下文窗口管理** — 超长对话是否需要 compaction？compaction 是否应该在 Engine 内调用，还是作为 hook 消费者在 `before_model` 处触发？
-2. **多 Agent / Subagent** — `HandoffManager` 是否应该属于 Phase 6，还是独立 Phase？
-3. **`BaseAgent` 装配层** — Phase 6 的 Engine 是直接给开发者用，还是再包一层 `BaseAgent` 做 DI 组装？
-4. **流式响应** — Engine 是否在 Phase 6 支持 streaming（SSE），还是留到后续？
