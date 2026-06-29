@@ -307,7 +307,7 @@ connect(bus):
 arf-core: NodeId, Message, NodeInfo, ModelMessage
     ↑                   ↑
     │                   │
-arf-bus: Bus,     arf-mcp ─── depends on: arf-core + serde + serde_json + tokio + toml + reqwest
+arf-bus: Bus,     arf-mcp ─── depends on: arf-core + arf-bus + serde + serde_json + tokio + toml + reqwest
 NodeHandle,             ↑
 MessageFilter           │
     ↑           arf-model-adapter ─── depends on: arf-core + arf-bus + arf-mcp + reqwest
@@ -1387,7 +1387,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
 | 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
 | 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RetryConfig` + `RemoteMcpNode` JSON-RPC 握手/发现/代理执行/重连 + headers 注入 + 自定义 TLS CA + `node_online` 广播 | `remote.rs` |
-| 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` 暴露给 Python，支持 `with_remote()` builder 方法 | `py-arf/src/mcp/` |
+| 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` + `RemoteConfig` + `RetryConfig` 暴露给 Python | `py-arf/src/mcp/` |
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
 | 5.12 | 集成测试 | LocalMcpNode + RemoteMcpNode + 多 namespace 隔离 + Bus + mock Engine E2E (用 5.10 fixtures 验证本地链路; mock HTTP server 验证远程链路) | `tests/` |
@@ -1418,7 +1418,6 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
 - [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
 - [ ] Python API：`from py_arf.mcp import LocalMcpNode, RemoteMcpNode` 可正常 import 并使用
-- [ ] Python `RemoteMcpNode` 支持 `with_remote()` builder 方法注册外部 MCP
 - [ ] 内部去重：同一 namespace 内 tool/skill name 冲突 → panic
 - [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`），Engine 只需按 NodeId 路由
 - [ ] RuntimeModule 是 ScriptTool sandbox 的清晰接入点（subprocess 管理集中在此）
