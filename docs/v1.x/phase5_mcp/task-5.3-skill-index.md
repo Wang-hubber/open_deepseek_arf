@@ -8,7 +8,9 @@
 
 **Skill 是纯数据——"给 AI 的工作手册"。** 不包含可执行逻辑，不自带 Tool trait。LLM 读取 body 后自己决定调什么工具、用什么资源。MCP 只负责存储、索引和按需出货。
 
-`SkillIndex` 扫描 `{root}/skills/*/SKILL.md`，解析 YAML frontmatter 构建 L1 索引，按需加载 L2（全文）和 L3（单个资源文件）。自检校验 kebab-case 命名和资源文件存在性——warning 不阻断。
+`SkillIndex` 扫描 `{root}/skills/*/SKILL.md`，解析 YAML frontmatter 构建 L1 索引，按需加载 L2（全文）和 L3（单个资源文件）。脚本执行通过独立的 `run_skill_script` / `skill_script_result` 消息通道——不注册为全局 Tool，执行权归属 skill 所属 MCP。自检校验 kebab-case 命名和资源文件存在性——warning 不阻断。
+
+**Skill 脚本元数据**：`scripts/` 下可放置 `{name}.toml`，格式与 `tool.toml` 一致（`description`、`runtime`、`timeout_ms`、`params_schema`），`name` 和 `entrypoint` 从文件名自动推导。LLM 通过 `load_skill_resource` 获取脚本的 description + params_schema，据此决定是否调用。
 
 三层渐进式披露：
 
@@ -16,12 +18,13 @@
 |------|------|------|------|
 | L1 | Agent 启动 | `{name, description}` | `scan()` → `list_index()` |
 | L2 | LLM 决定使用 | body 全文 + 资源文件清单 | `load_body()` + `load_resources()` |
-| L3 | LLM 需要具体文件 | 单个资源文件内容 | `load_resource_file()` |
+| L3 | LLM 需要具体文件 | 脚本：content + description + params_schema；普通文件：content | `load_resource_file()` → `LoadedResource` |
+| 执行 | LLM 决定调用脚本 | 与 ToolResultItem 同 shape | `run_script()` → `(status, result, error)` |
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
 | `Cargo.toml` | 更新 | 添加 `serde_yaml` |
-| `skill.rs` | 新建 | `SkillEntry`、`SkillResources`、`SkillIndex` + 实现 |
+| `skill.rs` | 新建 | `SkillEntry`、`SkillResources`、`ScriptMeta`、`LoadedResource`、`SkillIndex` + 实现 |
 | `lib.rs` | 更新 | `pub mod skill;` |
 
 ---
@@ -41,9 +44,9 @@ serde_yaml = "0.9"
 ```rust
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ── SkillFrontmatter (internal, not pub) ────────────────────────────
 
@@ -85,6 +88,31 @@ pub struct SkillResources {
     pub references: Vec<String>,
     /// Files under assets/ (e.g. ["template.tsx"]).
     pub assets: Vec<String>,
+}
+
+// ── ScriptMeta ─────────────────────────────────────────────────────
+
+/// Parsed `scripts/{name}.toml` — same fields as `ToolConfig` minus name/entrypoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScriptMeta {
+    pub description: String,
+    pub runtime: crate::config::ScriptRuntime,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub params_schema: serde_json::Value,
+}
+
+// ── LoadedResource ──────────────────────────────────────────────────
+
+/// Result of `load_resource_file()` — content + optional script metadata.
+#[derive(Debug, Clone)]
+pub struct LoadedResource {
+    pub content: String,
+    /// Present only for scripts/ files that have a {name}.toml.
+    pub description: Option<String>,
+    /// Present only for scripts/ files that have a {name}.toml.
+    pub params_schema: Option<serde_json::Value>,
 }
 
 // ── SkillIndex ──────────────────────────────────────────────────────
@@ -190,36 +218,159 @@ impl SkillIndex {
 
     /// Load a single resource file (L3).
     ///
-    /// Security: rejects `../` and absolute paths. Only files within
-    /// scripts/, references/, or assets/ are accessible.
-    pub fn load_resource_file(&self, name: &str, resource_path: &str) -> Result<String, String> {
-        // Path safety checks
-        if resource_path.contains("..") {
-            return Err("path traversal rejected: '..' not allowed".into());
-        }
-        if resource_path.starts_with('/') {
-            return Err("absolute path rejected".into());
-        }
-
-        // Must be under one of the three allowed subdirectories
-        let valid_prefixes = ["scripts/", "references/", "assets/"];
-        let allowed = valid_prefixes.iter().any(|prefix| resource_path.starts_with(prefix));
-        if !allowed {
-            return Err(format!(
-                "resource path must start with scripts/, references/, or assets/. Got: {resource_path}"
-            ));
-        }
-
+    /// Returns content + optional script metadata. For `scripts/` files
+    /// with a matching `{name}.toml`, the description and params_schema
+    /// are loaded from the TOML so LLM can understand the script's purpose.
+    ///
+    /// Security: rejects `../` and absolute paths.
+    pub fn load_resource_file(
+        &self,
+        name: &str,
+        resource_path: &str,
+    ) -> Result<LoadedResource, String> {
         let entry = self.entries.get(name).ok_or("skill not found")?;
-        let full_path = entry.source_dir.join(resource_path);
+        let full_path = resolve_safe_path(&entry.source_dir, resource_path)?;
 
-        // Canonicalize and verify we're still under the skill dir
-        let canonical = full_path.canonicalize().map_err(|e| format!("file not found: {e}"))?;
-        if !canonical.starts_with(&entry.source_dir) {
-            return Err("path traversal rejected".into());
-        }
+        let content =
+            fs::read_to_string(&full_path).map_err(|e| format!("read error: {e}"))?;
 
-        fs::read_to_string(&canonical).map_err(|e| format!("read error: {e}"))
+        // Load script metadata if this is a scripts/ file with a .toml
+        let (description, params_schema) = if resource_path.starts_with("scripts/") {
+            if let Some(meta) = self.load_script_meta_from_path(resource_path, &entry.source_dir) {
+                (Some(meta.description), Some(meta.params_schema))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        Ok(LoadedResource {
+            content,
+            description,
+            params_schema,
+        })
+    }
+
+    /// Load script metadata from `scripts/{name}.toml`.
+    ///
+    /// The TOML file uses the same format as `tool.toml` — `name` and `entrypoint`
+    /// fields are optional (auto-derived from the script filename when executed).
+    pub fn load_script_meta(&self, skill_name: &str, script_path: &str) -> Option<ScriptMeta> {
+        let entry = self.entries.get(skill_name)?;
+        self.load_script_meta_from_path(script_path, &entry.source_dir)
+    }
+
+    /// Execute a skill script via the ScriptTool subprocess mechanism.
+    ///
+    /// Creates a temporary ScriptTool from the script metadata, then calls
+    /// `tool.execute(params)`. The script inherits the MCP's RuntimeModule
+    /// (host or sandbox).
+    pub async fn run_script(
+        &self,
+        skill_name: &str,
+        script_path: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let entry = self
+            .entries
+            .get(skill_name)
+            .ok_or_else(|| format!("skill not found: {skill_name}"))?;
+        let full_path = resolve_safe_path(&entry.source_dir, script_path)?;
+
+        let meta = self
+            .load_script_meta_from_path(script_path, &entry.source_dir)
+            .unwrap_or_else(|| ScriptMeta {
+                description: format!("Skill script: {script_path}"),
+                runtime: infer_runtime(script_path),
+                timeout_ms: None,
+                params_schema: serde_json::Value::Null,
+            });
+
+        let tool_config = crate::config::ToolConfig {
+            name: format!("{skill_name}/{script_path}"),
+            description: meta.description,
+            runtime: meta.runtime,
+            entrypoint: full_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            timeout_ms: meta.timeout_ms,
+            params_schema: meta.params_schema,
+        };
+
+        let tool_dir = full_path.parent().unwrap_or(&entry.source_dir).to_path_buf();
+        let script_tool = crate::script::ScriptTool::new(tool_config, tool_dir);
+
+        script_tool
+            .execute(params)
+            .await
+            .map_err(|e| e.message)
+    }
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────
+
+fn load_script_meta_from_path(
+    script_path: &str,
+    source_dir: &PathBuf,
+) -> Option<ScriptMeta> {
+    // Derive .toml path: "scripts/gen.py" → "scripts/gen.toml"
+    let toml_name = if let Some(stem) = std::path::Path::new(script_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+    {
+        format!("scripts/{stem}.toml")
+    } else {
+        return None;
+    };
+
+    let toml_path = source_dir.join(&toml_name);
+    let content = fs::read_to_string(&toml_path).ok()?;
+    toml::from_str::<ScriptMeta>(&content).ok()
+}
+
+/// Resolve a resource path under the skill directory with path safety checks.
+fn resolve_safe_path(source_dir: &PathBuf, resource_path: &str) -> Result<PathBuf, String> {
+    if resource_path.contains("..") {
+        return Err("path traversal rejected: '..' not allowed".into());
+    }
+    if resource_path.starts_with('/') {
+        return Err("absolute path rejected".into());
+    }
+
+    let valid_prefixes = ["scripts/", "references/", "assets/"];
+    let allowed = valid_prefixes
+        .iter()
+        .any(|prefix| resource_path.starts_with(prefix));
+    if !allowed {
+        return Err(format!(
+            "resource path must start with scripts/, references/, or assets/. Got: {resource_path}"
+        ));
+    }
+
+    let full_path = source_dir.join(resource_path);
+    let canonical = full_path
+        .canonicalize()
+        .map_err(|e| format!("file not found: {e}"))?;
+    if !canonical.starts_with(source_dir) {
+        return Err("path traversal rejected after canonicalize".into());
+    }
+
+    Ok(canonical)
+}
+
+/// Infer the runtime from a script's file extension.
+fn infer_runtime(script_path: &str) -> crate::config::ScriptRuntime {
+    if script_path.ends_with(".py") {
+        crate::config::ScriptRuntime::Python
+    } else if script_path.ends_with(".sh") || script_path.ends_with(".bash") {
+        crate::config::ScriptRuntime::Bash
+    } else if script_path.ends_with(".rs") {
+        crate::config::ScriptRuntime::Rust
+    } else {
+        crate::config::ScriptRuntime::Bash // fallback
     }
 }
 
@@ -454,6 +605,78 @@ fn scan_body_contains_dashes() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ScriptMeta + load_script_meta — 4 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [方法] 有 script.toml → 返回 metadata
+#[test]
+fn load_script_meta_with_toml() {
+    let skill_md = minimal_skill("s", "S");
+    let (root, _cleanup) = setup_skills_dir(&[("s", &skill_md)]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
+    fs::write(
+        script_dir.join("gen.toml"),
+        r#"description = "Generate code"
+runtime = "python"
+timeout_ms = 10000
+
+[params_schema]
+type = "object"
+required = ["name"]
+
+[params_schema.properties.name]
+type = "string"
+"#,
+    )
+    .unwrap();
+
+    let index = SkillIndex::scan(root);
+    let meta = index.load_script_meta("s", "scripts/gen.py").unwrap();
+    assert_eq!(meta.description, "Generate code");
+    assert_eq!(meta.runtime, ScriptRuntime::Python);
+    assert_eq!(meta.timeout_ms, Some(10000));
+    assert_eq!(meta.params_schema["type"], "object");
+}
+
+// [方法] 无 script.toml → None
+#[test]
+fn load_script_meta_without_toml() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
+    // no gen.toml
+
+    let index = SkillIndex::scan(root);
+    assert!(index.load_script_meta("s", "scripts/gen.py").is_none());
+}
+
+// [方法] skill 不存在 → None
+#[test]
+fn load_script_meta_skill_not_found() {
+    let (root, _cleanup) = setup_skills_dir(&[]);
+    let index = SkillIndex::scan(root);
+    assert!(index
+        .load_script_meta("ghost", "scripts/x.py")
+        .is_none());
+}
+
+// [方法] 无效 toml → None
+#[test]
+fn load_script_meta_invalid_toml() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(script_dir.join("gen.py"), "print('hi')").unwrap();
+    fs::write(script_dir.join("gen.toml"), "not valid toml {{{").unwrap();
+
+    let index = SkillIndex::scan(root);
+    assert!(index.load_script_meta("s", "scripts/gen.py").is_none());
+}
+
+// ═══════════════════════════════════════════════════════════════
 // resolve + list_index — 3 tests
 // ═══════════════════════════════════════════════════════════════
 
@@ -536,10 +759,10 @@ fn load_resources_nonexistent() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// L3: load_resource_file — 5 tests
+// L3: load_resource_file — 7 tests
 // ═══════════════════════════════════════════════════════════════
 
-// [方法] 读取存在的资源文件
+// [方法] 读取普通文件 → LoadedResource (description/params_schema = None)
 #[test]
 fn load_resource_file_success() {
     let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
@@ -548,8 +771,48 @@ fn load_resource_file_success() {
     fs::write(&script_path, "print('hello')").unwrap();
 
     let index = SkillIndex::scan(root);
-    let content = index.load_resource_file("s", "scripts/run.py").unwrap();
-    assert_eq!(content, "print('hello')");
+    let res = index.load_resource_file("s", "scripts/run.py").unwrap();
+    assert_eq!(res.content, "print('hello')");
+    assert!(res.description.is_none());
+    assert!(res.params_schema.is_none());
+}
+
+// [方法] 脚本有 script.toml → LoadedResource 含 description + params_schema
+#[test]
+fn load_resource_file_with_script_meta() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(script_dir.join("gen.py"), "print(1)").unwrap();
+    fs::write(
+        script_dir.join("gen.toml"),
+        r#"description = "Generate"
+runtime = "python"
+[params_schema]
+type = "object"
+"#,
+    )
+    .unwrap();
+
+    let index = SkillIndex::scan(root);
+    let res = index.load_resource_file("s", "scripts/gen.py").unwrap();
+    assert_eq!(res.content, "print(1)");
+    assert_eq!(res.description.unwrap(), "Generate");
+    assert_eq!(res.params_schema.unwrap()["type"], "object");
+}
+
+// [方法] references/ 文件无 metadata
+#[test]
+fn load_resource_file_reference_no_metadata() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let ref_dir = root.join("skills").join("s").join("references");
+    fs::create_dir_all(&ref_dir).unwrap();
+    fs::write(ref_dir.join("api.md"), "# API").unwrap();
+
+    let index = SkillIndex::scan(root);
+    let res = index.load_resource_file("s", "references/api.md").unwrap();
+    assert_eq!(res.content, "# API");
+    assert!(res.description.is_none()); // references never have .toml metadata
 }
 
 // [边界] path traversal (..) 被拒绝
@@ -588,6 +851,51 @@ fn load_resource_file_not_found() {
     let index = SkillIndex::scan(root);
     let result = index.load_resource_file("s", "scripts/ghost.py");
     assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+// run_script — 2 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [方法] 执行 Python 脚本 → 返回 JSON result
+#[tokio::test]
+async fn run_script_python_echo() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(
+        script_dir.join("echo.py"),
+        "import sys, json\nparams = json.loads(sys.stdin.read())\nprint(json.dumps(params))\n",
+    )
+    .unwrap();
+
+    let index = SkillIndex::scan(root);
+    let result = index
+        .run_script("s", "scripts/echo.py", serde_json::json!({"x": 1}))
+        .await
+        .unwrap();
+    assert_eq!(result["x"], 1);
+}
+
+// [方法] 无 .toml 时用自动推断的 runtime + 默认 description
+#[tokio::test]
+async fn run_script_without_toml_defaults() {
+    let (root, _cleanup) = setup_skills_dir(&[("s", &minimal_skill("s", "S"))]);
+    let script_dir = root.join("skills").join("s").join("scripts");
+    fs::create_dir_all(&script_dir).unwrap();
+    fs::write(
+        script_dir.join("echo.py"),
+        "import sys, json\nprint(json.dumps({'ok': True}))\n",
+    )
+    .unwrap();
+    // no echo.toml — will use defaults
+
+    let index = SkillIndex::scan(root);
+    let result = index
+        .run_script("s", "scripts/echo.py", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], true);
 }
 ```
 
@@ -638,5 +946,5 @@ mod types_tests;
 
 | 文件 | 新增测试 | 覆盖角度 |
 |------|---------|---------|
-| `skill_tests.rs` | 21 | `[构造][边界][方法]` — scan(9)、resolve/list_index(3)、L2 load(4)、L3 load(5) |
-| **合计** | **21** | 累计 arf-mcp: 97 + 21 = **118 tests** |
+| `skill_tests.rs` | 29 | `[构造][边界][方法]` — scan(9)、script_meta(4)、resolve/list(3)、L2 load(4)、L3 load(7)、run_script(2) |
+| **合计** | **29** | 累计 arf-mcp: 97 + 29 = **126 tests** |
