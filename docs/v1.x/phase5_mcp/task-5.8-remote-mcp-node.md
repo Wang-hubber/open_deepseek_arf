@@ -1,5 +1,6 @@
-# 任务 5.8：RemoteMcpNode
+# 任务 5.8：HttpDiscovery + HttpProxyTool（原 RemoteMcpNode）
 
+> **订正**：此文档中的类型名已被 [McpNode 统一重构](./mcp-node-unified-design.md) 更新。当前实现以代码为准。
 > Phase 5 — MCP 第八项任务
 > 父文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
 > 依赖：Task 5.1 (类型定义), Phase 1 (Bus)

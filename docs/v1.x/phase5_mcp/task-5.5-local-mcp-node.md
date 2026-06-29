@@ -1,12 +1,13 @@
-# 任务 5.5：LocalMcpNode
+# 任务 5.5：McpNode（原 LocalMcpNode）
 
+> **订正**：此文档中的类型名已被 [McpNode 统一重构](./mcp-node-unified-design.md) 更新。当前实现以代码为准。
 > Phase 5 — MCP 第五项任务
 > 父文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
-> 依赖：Task 5.6 (DiscoveryModule), Task 5.7 (RuntimeModule), Phase 1 (Bus)
+> 依赖：Task 5.6 (DiscoveryBackend + FsDiscovery), Task 5.7 (RuntimeModule), Phase 1 (Bus)
 
 ## 设计思路
 
-`LocalMcpNode` 是本地 MCP 的集成点——把 DiscoveryModule + RuntimeModule + Bus 接在一起。构造时扫描文件系统，`connect()` 时上线 Bus 并广播 `node_online`，内部消息循环按 `msg_type` 分派请求。
+`LocalMcpNode` 是本地 MCP 的集成点——把 DiscoveryBackend + RuntimeModule + Bus 接在一起。构造时扫描文件系统，`connect()` 时上线 Bus 并广播 `node_online`，内部消息循环按 `msg_type` 分派请求。
 
 **Engine 如何发现 MCP 节点**——两步走，覆盖全部时序：
 
@@ -23,16 +24,16 @@ Step 1 覆盖"Engine 启动晚于 MCP"的场景——engine 上线时 MCP 可能
 | msg_type | → 组件 | → 响应 |
 |----------|--------|--------|
 | `tool_call_set` | RuntimeModule.execute() | `tool_result_set` |
-| `use_skill` | DiscoveryModule | `skill_loaded` |
-| `load_skill_resource` | DiscoveryModule | `skill_resource_loaded` |
-| `run_skill_script` | DiscoveryModule.run_skill_tool() | `skill_script_result` |
+| `use_skill` | DiscoveryBackend | `skill_loaded` |
+| `load_skill_resource` | DiscoveryBackend | `skill_resource_loaded` |
+| `run_skill_script` | DiscoveryBackend.run_skill_tool() | `skill_script_result` |
 
 **所有权模型**：`connect(self: &Arc<Self>, bus)` 需要 `Arc`——消息循环在 `tokio::spawn` 中持有 Arc 引用以保持节点存活。`NodeHandle` 用 `tokio::sync::Mutex` 保护——`recv()` 持锁跨 await，响应发送时短暂获取锁。
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
 | `Cargo.toml` | 更新 | 添加 `arf-bus` 依赖 |
-| `node.rs` | 新建 | `LocalMcpNode` + Bus 生命周期 + 消息分派 |
+| `node.rs` | 新建 | `McpNode` + Bus 生命周期 + 消息分派 |
 
 ---
 

@@ -1,5 +1,6 @@
-# 任务 5.6：DiscoveryModule
+# 任务 5.6：DiscoveryBackend + FsDiscovery（原 DiscoveryModule）
 
+> **订正**：此文档中的类型名已被 [McpNode 统一重构](./mcp-node-unified-design.md) 更新。当前实现以代码为准。
 > Phase 5 — MCP 第六项任务
 > 父文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
 > 依赖：Task 5.2 (ScriptTool), Task 5.3 (SkillIndex)
