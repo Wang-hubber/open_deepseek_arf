@@ -252,9 +252,9 @@ pub struct ToolCallSet {
 pub struct ToolResultItem {
     /// Matches `ToolCallItem.id`.
     pub call_id: String,
-    /// Tool name — matches `ToolCallItem.tool`. Carried so ModelAdapter
-    /// can construct `ModelMessage { name }` without Engine maintaining
-    /// a separate call_id → tool_name lookup table.
+    /// Tool name — matches `ToolCallItem.tool`. Executor backfills from the
+    /// original request. Carried so ModelAdapter (Phase 5, arf-model-adapter)
+    /// can construct the tool-result message without a call_id→name lookup.
     pub name: String,
     /// `"success"` or `"error"` or `"cancelled"`.
     pub status: String,
@@ -265,40 +265,10 @@ pub struct ToolResultItem {
     pub error: Option<String>,
 }
 
-impl ToolResultItem {
-    /// Convert this tool result into a `ModelMessage` for the LLM conversation.
-    ///
-    /// This is the integration point between MCP and ModelAdapter:
-    ///   - `status = "success"` → `content = result.to_string()`
-    ///   - `status = "error"`   → `content = {"error": message}`
-    ///   - `status = "cancelled"` → `content = {"error": "cancelled: ..."}`
-    ///
-    /// All variants produce `role = "tool"`, `tool_call_id = call_id`,
-    /// `name = self.name`. ModelAdapter passes this directly to the model API.
-    pub fn to_model_message(&self) -> arf_core::ModelMessage {
-        let content = match self.status.as_str() {
-            "success" => self.result.to_string(),
-            "error" => serde_json::json!({
-                "error": self.error.as_deref().unwrap_or("unknown error")
-            })
-            .to_string(),
-            "cancelled" => serde_json::json!({
-                "error": self.error.as_deref().unwrap_or("cancelled")
-            })
-            .to_string(),
-            other => serde_json::json!({"error": format!("unknown status: {other}")}).to_string(),
-        };
-        arf_core::ModelMessage::new("tool", content)
-            .with_tool_call_id(&self.call_id)
-            .with_name(&self.name)
-    }
-}
 ```
 
 逐行解释：
-- `name` — 新增字段，executor 从 `ToolCallItem.tool` 回填。MCP 内部已知 tool 名称，写入结果避免 Engine 再查表
-- `to_model_message()` — MCP → ModelAdapter 的唯一转换入口。根据 status 决定 content 格式：success 直接输出 result JSON 字符串；error/cancelled 包装为 `{"error": "..."}` JSON 对象，ModelAdapter 透明传递
-- `from arf_core::ModelMessage` — arf-mcp 已依赖 arf-core，直接引用类型，无需类型桥接
+- `name` — executor 从 `ToolCallItem.tool` 回填。MCP 只产出数据，不负责转换为 ModelMessage——该职责属于 ModelAdapter（Phase 5 同步配套，`arf-model-adapter/src/convert.rs`）
 
 ```rust
 
@@ -852,7 +822,7 @@ fn tool_call_set_empty_session_id() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ToolResultItem — 19 tests
+// ToolResultItem — 10 tests
 // ═══════════════════════════════════════════════════════════════
 
 fn make_result_item(
@@ -971,110 +941,6 @@ fn tool_result_item_deeply_nested_result() {
     let json = serde_json::to_string(&item).unwrap();
     let back: ToolResultItem = serde_json::from_str(&json).unwrap();
     assert_eq!(back.result, result);
-}
-
-// ── to_model_message — 9 tests ──
-
-// [方法] success → ModelMessage { role="tool", tool_call_id, name, content=result_str }
-#[test]
-fn to_model_message_success() {
-    let item = make_result_item("call_0", "read_file", "success", serde_json::json!({"ok": true, "bytes": 42}), None);
-    let mm = item.to_model_message();
-    assert_eq!(mm.role, "tool");
-    assert_eq!(mm.tool_call_id, Some("call_0".into()));
-    assert_eq!(mm.name, Some("read_file".into()));
-    // content should be the JSON string of the result
-    let content: Value = serde_json::from_str(&mm.content).unwrap();
-    assert_eq!(content["ok"], true);
-    assert_eq!(content["bytes"], 42);
-}
-
-// [方法] success 带字符串 result → content 即为 JSON 字符串
-#[test]
-fn to_model_message_success_string_result() {
-    let item = make_result_item("call_1", "read_file", "success", serde_json::Value::String("file contents\nline 2".into()), None);
-    let mm = item.to_model_message();
-    assert_eq!(mm.role, "tool");
-    assert_eq!(mm.content, "\"file contents\\nline 2\""); // JSON string
-}
-
-// [方法] error → ModelMessage content 含 error 包装
-#[test]
-fn to_model_message_error() {
-    let item = make_result_item("call_1", "search", "error", Value::Null, Some("file not found"));
-    let mm = item.to_model_message();
-    assert_eq!(mm.role, "tool");
-    assert_eq!(mm.tool_call_id, Some("call_1".into()));
-    assert_eq!(mm.name, Some("search".into()));
-    let content: Value = serde_json::from_str(&mm.content).unwrap();
-    assert_eq!(content["error"], "file not found");
-}
-
-// [方法] cancelled → ModelMessage content 含 cancelled 原因
-#[test]
-fn to_model_message_cancelled() {
-    let item = make_result_item("call_2", "write_file", "cancelled", Value::Null, Some("cancelled: dependency call_1 failed"));
-    let mm = item.to_model_message();
-    assert_eq!(mm.role, "tool");
-    let content: Value = serde_json::from_str(&mm.content).unwrap();
-    assert!(content["error"].as_str().unwrap().contains("cancelled"));
-}
-
-// [方法] error 的 error=None → content 含 "unknown error"
-#[test]
-fn to_model_message_error_without_message() {
-    let item = ToolResultItem {
-        call_id: "call_3".into(),
-        name: "t".into(),
-        status: "error".into(),
-        result: Value::Null,
-        error: None,
-    };
-    let mm = item.to_model_message();
-    let content: Value = serde_json::from_str(&mm.content).unwrap();
-    assert_eq!(content["error"], "unknown error");
-}
-
-// [方法] cancelled 的 error=None → content 含 "cancelled"
-#[test]
-fn to_model_message_cancelled_without_message() {
-    let item = ToolResultItem {
-        call_id: "call_4".into(),
-        name: "t".into(),
-        status: "cancelled".into(),
-        result: Value::Null,
-        error: None,
-    };
-    let mm = item.to_model_message();
-    let content: Value = serde_json::from_str(&mm.content).unwrap();
-    assert_eq!(content["error"], "cancelled");
-}
-
-// [边界] 超大 result（100KB JSON）→ content 完整保留
-#[test]
-fn to_model_message_large_result() {
-    let large_str = "x".repeat(100_000);
-    let item = make_result_item("call_0", "read_file", "success", serde_json::Value::String(large_str.clone()), None);
-    let mm = item.to_model_message();
-    // content should be the JSON-encoded string (quotes + escaped)
-    let expected = serde_json::Value::String(large_str).to_string();
-    assert_eq!(mm.content, expected);
-}
-
-// [边界] name 为空字符串 → ModelMessage.name = Some("")
-#[test]
-fn to_model_message_empty_name() {
-    let item = make_result_item("call_0", "", "success", serde_json::json!({"x": 1}), None);
-    let mm = item.to_model_message();
-    assert_eq!(mm.name, Some("".into()));
-}
-
-// [边界] call_id 为空字符串 → ModelMessage.tool_call_id = Some("")
-#[test]
-fn to_model_message_empty_call_id() {
-    let item = make_result_item("", "t", "success", serde_json::json!({"x": 1}), None);
-    let mm = item.to_model_message();
-    assert_eq!(mm.tool_call_id, Some("".into()));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1514,6 +1380,6 @@ mod tests;
 | 文件 | 测试数 | 覆盖角度 |
 |------|--------|---------|
 | `tool_tests.rs` | 8 | `[构造][方法][边界][类型][覆盖]` |
-| `types_tests.rs` | 49 | `[构造][边界][序列化][trait][兼容][方法]` |
+| `types_tests.rs` | 40 | `[构造][边界][序列化][trait][兼容]` |
 | `config_tests.rs` | 21 | `[覆盖][序列化][构造][边界][兼容][trait]` |
-| **合计** | **78** | |
+| **合计** | **69** | |
