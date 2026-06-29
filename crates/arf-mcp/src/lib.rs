@@ -16,5 +16,8 @@ pub mod skill;
 pub mod tool;
 pub mod types;
 
+// Re-export main types for integration tests
+pub use node::McpNode;
+
 #[cfg(test)]
 mod tests;

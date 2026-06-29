@@ -60,3 +60,16 @@ impl RuntimeModule for LocalRuntime {
         serde_json::json!({"runtime": "local", "concurrency": "layer-parallel"})
     }
 }
+
+// ── RemoteRuntime ──────────────────────────────────────────────────
+
+/// Remote RuntimeModule — tools are HttpProxyTool instances.
+/// Uses the default execute() which delegates to executor (DAG-compatible).
+pub struct RemoteRuntime;
+
+#[async_trait::async_trait]
+impl RuntimeModule for RemoteRuntime {
+    fn capabilities(&self) -> Value {
+        serde_json::json!({"runtime": "remote"})
+    }
+}

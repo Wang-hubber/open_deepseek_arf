@@ -1,9 +1,10 @@
+use crate::discovery::DiscoveryBackend;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use crate::discovery::DiscoveryModule;
+use crate::discovery::FsDiscovery;
 
 fn setup_root(
     tools: &[(&str, &str, &str)],
@@ -62,13 +63,13 @@ fn minimal_skill(name: &str, desc: &str) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// DiscoveryModule::scan — 8 tests
+// FsDiscovery::scan — 8 tests
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn scan_empty_root() {
     let (root, _cleanup) = setup_root(&[], &[]);
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 0);
     assert_eq!(dm.list_skills().len(), 0);
 }
@@ -76,7 +77,7 @@ fn scan_empty_root() {
 #[test]
 fn scan_single_tool() {
     let (root, _cleanup) = setup_root(&[("echo", &echo_toml("echo", "python"), echo_script())], &[]);
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 1);
     assert_eq!(dm.list_tools()[0].name, "echo");
     assert_eq!(dm.list_tools()[0].description, "Echo tool");
@@ -92,7 +93,7 @@ fn scan_multiple_tools() {
         ],
         &[],
     );
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 2);
     assert!(dm.resolve_tool("t1").is_some());
     assert!(dm.resolve_tool("t2").is_some());
@@ -101,7 +102,7 @@ fn scan_multiple_tools() {
 #[test]
 fn scan_single_skill() {
     let (root, _cleanup) = setup_root(&[], &[("react", &minimal_skill("react", "React skill"))]);
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_skills().len(), 1);
     assert_eq!(dm.list_skills()[0].name, "react");
     assert!(dm.resolve_skill("react").is_some());
@@ -113,7 +114,7 @@ fn scan_tools_and_skills_coexist() {
         &[("echo", &echo_toml("echo", "python"), echo_script())],
         &[("react", &minimal_skill("react", "React skill"))],
     );
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 1);
     assert_eq!(dm.list_skills().len(), 1);
 }
@@ -127,7 +128,7 @@ fn scan_invalid_tool_toml_skipped() {
         ],
         &[],
     );
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 1); // only "good"
     assert!(dm.resolve_tool("good").is_some());
 }
@@ -143,7 +144,7 @@ fn scan_directory_without_toml_skipped() {
     fs::create_dir_all(&not_a_tool).unwrap();
     fs::write(not_a_tool.join("main.py"), echo_script()).unwrap();
 
-    let dm = DiscoveryModule::scan(root).unwrap();
+    let dm = FsDiscovery::scan(root).unwrap();
     assert_eq!(dm.list_tools().len(), 1); // "not-a-tool" skipped
 }
 
@@ -151,7 +152,7 @@ fn scan_directory_without_toml_skipped() {
 fn scan_root_not_exists_returns_error() {
     let root = PathBuf::from("/tmp/arf_mcp_nonexistent_root_xyz");
     let _ = fs::remove_dir_all(&root);
-    let result = DiscoveryModule::scan(root);
+    let result = FsDiscovery::scan(root);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, crate::error::McpError::Discovery { .. }));

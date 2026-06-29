@@ -6,7 +6,7 @@ use std::time::Duration;
 use arf_bus::Bus;
 use arf_core::{MessageFilter, NodeId, NodeInfo};
 
-use crate::node::LocalMcpNode;
+use crate::node::McpNode;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ async fn node_online_contains_capabilities() {
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
 
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
 
     // Read raw subscription for node_online (broadcast, no engine needed)
@@ -101,7 +101,7 @@ async fn bus_graph_includes_connected_node() {
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
 
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     // drain node_online
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
@@ -123,7 +123,7 @@ async fn single_tool_success() {
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
 
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -149,7 +149,7 @@ async fn tool_not_found_returns_error() {
     let root = setup_root(&[tool("echo", ECHO_TOML, ECHO_PY)]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -173,7 +173,7 @@ async fn two_independent_concurrent_calls() {
     let root = setup_root(&[tool("echo", ECHO_TOML, ECHO_PY)]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -199,7 +199,7 @@ async fn dependency_chain_serialized() {
     let root = setup_root(&[tool("echo", ECHO_TOML, ECHO_PY)]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -224,7 +224,7 @@ async fn cascade_cancel_on_error() {
     ]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -254,7 +254,7 @@ async fn invalid_payload_returns_error_not_panic() {
     let root = setup_root(&[tool("echo", ECHO_TOML, ECHO_PY)]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 
@@ -272,7 +272,7 @@ async fn empty_call_set_returns_empty_result() {
     let root = setup_root(&[tool("echo", ECHO_TOML, ECHO_PY)]);
     let bus = Bus::new(Duration::from_secs(1), Duration::from_secs(3), 16);
     let mut rx = bus.subscribe();
-    let node = Arc::new(LocalMcpNode::new("test", root).unwrap());
+    let node = Arc::new(McpNode::local("test", root).unwrap());
     node.connect(&bus).await.unwrap();
     loop { let m = rx.recv().await.unwrap(); if m.msg_type == "node_online" { break; } }
 

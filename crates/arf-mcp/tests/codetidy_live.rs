@@ -15,7 +15,7 @@ use arf_core::MessageFilter;
 use arf_core::NodeId;
 use arf_core::NodeInfo;
 use arf_mcp::config::RemoteConfig;
-use arf_mcp::remote::RemoteMcpNode;
+use arf_mcp::McpNode;
 
 const CODETIDY_URL: &str = "https://mcp.codetidy.dev";
 
@@ -64,7 +64,7 @@ async fn connect_engine(bus: &Bus, id: &str) -> arf_bus::NodeHandle {
 #[tokio::test]
 async fn codetidy_connect_discovers_all_62_tools() {
     let bus = test_bus();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
 
     let graph = bus.graph();
@@ -81,7 +81,7 @@ async fn codetidy_connect_discovers_all_62_tools() {
 #[tokio::test]
 async fn codetidy_tool_names_are_well_formed() {
     let bus = test_bus();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
 
     let graph = bus.graph();
@@ -109,7 +109,7 @@ async fn codetidy_tool_names_are_well_formed() {
 async fn uuid_generate_with_defaults() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     // drain node_online
     loop {
@@ -147,7 +147,7 @@ async fn uuid_generate_with_defaults() {
 async fn base64_encode_decode_roundtrip() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -183,7 +183,7 @@ async fn base64_encode_decode_roundtrip() {
 async fn uppercase_transform() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -216,7 +216,7 @@ async fn uppercase_transform() {
 async fn url_parse_decomposes_url() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -253,7 +253,7 @@ async fn url_parse_decomposes_url() {
 async fn hash_generate_with_algorithm() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -289,7 +289,7 @@ async fn hash_generate_with_algorithm() {
 async fn password_generate_with_params() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -329,7 +329,7 @@ async fn password_generate_with_params() {
 async fn nonexistent_tool_returns_error() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -360,7 +360,7 @@ async fn nonexistent_tool_returns_error() {
 async fn json_validate_reports_syntax_errors() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -400,7 +400,7 @@ async fn json_validate_reports_syntax_errors() {
 async fn skill_messages_return_error() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
@@ -425,7 +425,7 @@ async fn skill_messages_return_error() {
         .payload["error"]
         .as_str()
         .unwrap()
-        .contains("not supported"));
+        .contains("not found"));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -436,7 +436,7 @@ async fn skill_messages_return_error() {
 async fn batch_five_different_tools() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let node = Arc::new(RemoteMcpNode::new("codetidy", codetidy_config()));
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
     node.connect(&bus).await.unwrap();
     loop {
         let m = rx.recv().await.unwrap();
