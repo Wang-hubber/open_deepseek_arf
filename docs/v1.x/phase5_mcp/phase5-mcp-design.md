@@ -1,4 +1,4 @@
-# Phase 6 — MCP 设计
+# Phase 5 — MCP 设计
 
 > 父文档：`docs/v1.x/2026-06-26-arfv1-roadmap.md`
 > 依赖：Phase 1 (Bus) — 已完成
@@ -566,13 +566,13 @@ crates/arf-mcp/
 
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
-| 6.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`tool.rs`、`lib.rs` | `crates/arf-mcp/` |
-| 6.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
-| 6.3 | SkillIndex | 扫描 skill 目录、resolve、load_body | `skill.rs` |
-| 6.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 6.5 | LocalMcpNode | Bus 节点生命周期 + listen loop（`tool_call_set` / `use_skill` 消息处理） | `node.rs` |
-| 6.6 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
-| 6.7 | 集成测试 | LocalMcpNode + Bus + mock Engine 消息收发 | `tests/` |
+| 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`tool.rs`、`lib.rs` | `crates/arf-mcp/` |
+| 5.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
+| 5.3 | SkillIndex | 扫描 skill 目录、resolve、load_body | `skill.rs` |
+| 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
+| 5.5 | LocalMcpNode | Bus 节点生命周期 + listen loop（`tool_call_set` / `use_skill` 消息处理） | `node.rs` |
+| 5.6 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
+| 5.7 | 集成测试 | LocalMcpNode + Bus + mock Engine 消息收发 | `tests/` |
 
 ## 交付标准
 
@@ -594,6 +594,6 @@ crates/arf-mcp/
 
 | Phase | 如何使用 MCP |
 |-------|-------------|
-| Phase 5 Engine | 监听 `node_online` 发现 MCP 节点 → AgentConfig 匹配工具/技能 → 发 `tool_call_set` → 收 `tool_result_set` → 注入消息流 |
+| Phase 6 Engine | 监听 `node_online` 发现 MCP 节点 → AgentConfig 匹配工具/技能 → 发 `tool_call_set` → 收 `tool_result_set` → 注入消息流 |
 | Phase 7 集成 | E2E：Engine + ModelAdapter + MCP 完整 ReAct 循环 |
 | 未来 RemoteMCP | 同消息格式，只是工具执行转发到外部进程 |

@@ -23,11 +23,11 @@
 | **2** | State | messages + tasks 生命周期 + 双向锁 + 级联释放 | 1 | ✅ 完成 |
 | **3** | AgentConfig | 纯数据声明式配置骨架：models / tools / subagents / teammates | 1 | ✅ 完成 |
 | **4** | ModelAdapter | 内部格式 ↔ DeepSeek/OpenAI/Anthropic API + Bus 节点 + PyO3 绑定 | 1 | ✅ 完成 |
-| **5** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2, 3 | 🔲 待实施 |
-| **6** | MCP | 工具发现/注册/执行，资源广播 | 1 | 📝 设计中 |
+| **5** | MCP | 工具发现/注册/执行，资源广播 | 1 | 📝 设计中 |
+| **6** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2, 3 | 🔲 待实施 |
 | **7** | 集成 | E2E 测试 + 性能基准 + 完整文档 | 0-6 | 🔲 待实施 |
 
-> **订正说明**：原路线图 Phase 4 为 Engine、Phase 5 为 ModelAdapter。实际实施中 ModelAdapter 提前到 Phase 4（因 Engine 依赖 State + AgentConfig 均已完成，但 Engine 复杂度最高，先做 ModelAdapter 可提前验证 Provider 架构并积累 PyO3 绑定经验）。Engine 顺延至 Phase 5。
+> **订正说明**：原路线图 Phase 4 为 Engine、Phase 5 为 ModelAdapter。实际实施中 ModelAdapter 提前到 Phase 4（因 Engine 依赖 State + AgentConfig 均已完成，但 Engine 复杂度最高，先做 ModelAdapter 可提前验证 Provider 架构并积累 PyO3 绑定经验）。Engine 顺延至 Phase 6。MCP 提前到 Phase 5（与 Engine 并行推进，先夯实工具层）。
 
 ## 依赖关系
 
@@ -38,14 +38,14 @@ Phase 0 ──→ Phase 1 (Bus) ──→ Phase 2 (State)
     │            │                  │
     │            ├──────→ Phase 4 (ModelAdapter) ✅
     │            │                  │
-    │            ├──────→ Phase 6 (MCP)
+    │            ├──────→ Phase 5 (MCP)
     │            │                  │
-    │            └──────→ Phase 5 (Engine) ── 依赖 Bus + State + AgentConfig
+    │            └──────→ Phase 6 (Engine) ── 依赖 Bus + State + AgentConfig
     │
     └─────────────────────────────────────→ Phase 7 (集成)
 ```
 
-Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并行推进。Engine 需等 Bus+State+AgentConfig——顺序上 Phase 5 必须在 Phase 2 和 Phase 3 之后。
+Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并行推进。Engine 需等 Bus+State+AgentConfig——顺序上 Phase 6 必须在 Phase 2 和 Phase 3 之后。
 
 ---
 
@@ -113,7 +113,15 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 
 **测试**：Rust 299 (61 unit + 18 integration) + Python 59 (27 imports + 14 node + 18 live) = 358 tests
 
-### Phase 5 — Engine 运行引擎 🔲
+### Phase 5 — MCP 资源管理 📝
+
+- 监听 Bus 上的 `tool_call_set` 消息，DAG 拓扑排序后并发执行
+- 上线时广播 `node_online{type=mcp, tools=[...], skills=[...]}`
+- 内置 tool/skill 注册与执行，`use_skill` 延迟加载
+- 工具执行结果回到 Bus，Engine 按 session_id 收走
+- 设计文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
+
+### Phase 6 — Engine 运行引擎 🔲
 
 - 监听 Bus 消息，按 session_id 过滤归属
 - 读取 `AgentConfig`，上 Bus 做 discovery，将逻辑 ResourceSpec 解析为 `ResolvedManifest`
@@ -121,12 +129,6 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 - action 决策通过 Bus 发出
 - Park/Resume：收到 interrupt/resume 消息 → 暂停/恢复
 - State 持久化由 Engine 管理
-
-### Phase 6 — MCP 资源管理 🔲
-
-- 监听 Bus 上的 tool_call 消息，执行后发 result
-- 上线时广播 `node_online{type=mcp, tools=[...]}`
-- 工具执行结果回到 Bus，Engine 按 session_id 收走
 
 ### Phase 7 — 集成与收尾 🔲
 
