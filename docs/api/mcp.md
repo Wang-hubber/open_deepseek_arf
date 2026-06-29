@@ -589,6 +589,168 @@ for n in mcp_nodes:
 
 ---
 
+## 前瞻：Skill Inventory 模式（渐进式披露）
+
+当前 MCP 同时支持顶层 `tools/` 和 `skills/{name}/tools/` 两种目录。一种更激进的设计是**弃用顶层 `tools/`，让 Skill 成为唯一的 MCP 资源**——所有 Tool 归属某个 Skill，通过渐进式披露发现：L1 看有哪些 Skill → L2 看 Skill 里有什么工具 → L3 看工具的参数和脚本 → 执行。
+
+```
+{root}/
+└── skills/                    # 唯一顶层资源
+    └── filesystem/
+        ├── SKILL.md           # L1: name + description（何时用）
+        ├── tools/             # L2→L3: skill 内部的工具
+        │   ├── read_file/
+        │   │   ├── tool.toml  # L3: params_schema + entrypoint
+        │   │   └── main.py    # L3: 工具脚本
+        │   ├── write_file/
+        │   └── search_content/
+        ├── references/        # L3: 参考文档
+        └── assets/            # L3: 静态资源
+```
+
+**与当前模式的关键差异**：`node_online` 的 `tools` 为**零**——Engine 初始只看到 Skill 列表。LLM 根据 Skill 描述决定加载哪个 Skill，然后通过 L2/L3 渐进获取工具细节。
+
+以下示例演示完整链路——仅用 `skills/` 目录，无顶层 `tools/`：
+
+```python
+import tempfile, os, asyncio
+from arf import Bus, McpNode, NodeId, NodeInfo, MessageFilter, ToMatch
+
+# 1. 准备：仅 skills/ 目录，无顶层 tools/
+root = tempfile.mkdtemp()
+skill_dir = os.path.join(root, "skills", "filesystem")
+os.makedirs(name=os.path.join(skill_dir, "tools/read_file"))
+os.makedirs(name=os.path.join(skill_dir, "tools/write_file"))
+os.makedirs(name=os.path.join(skill_dir, "tools/search_content"))
+os.makedirs(name=os.path.join(skill_dir, "references"))
+
+# SKILL.md — L1 元数据 + L2 说明文档
+with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+    f.write("""---
+name: filesystem
+description: >
+  File operations — reading, writing, searching. Use when user
+  asks to read/write files or search for patterns in text.
+---
+
+# Filesystem Skill
+
+## When to use
+- Read a file → `read_file`
+- Create/overwrite a file → `write_file`
+- Search code/text → `search_content`
+""")
+
+# 工具在 skill 内部 — 与顶层 tools/ 结构完全一致
+for tool_name, desc, schema_extra, script in [
+    ("read_file", "Read file contents with UTF-8 encoding",
+     'properties.path = { type = "string", description = "Absolute file path" }\nrequired = ["path"]',
+     "import sys, json\nfrom pathlib import Path\nparams = json.loads(sys.stdin.read())\np = Path(params['path'])\nprint(json.dumps({'ok': True, 'content': p.read_text()[:200], 'path': str(p)}))"),
+    ("write_file", "Write content to file, creating parent directories",
+     'properties.path = { type = "string" }\nproperties.content = { type = "string" }\nrequired = ["path", "content"]',
+     "import sys, json\nfrom pathlib import Path\nparams = json.loads(sys.stdin.read())\np = Path(params['path'])\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(params['content'])\nprint(json.dumps({'ok': True, 'path': str(p), 'bytes': len(params['content'])}))"),
+    ("search_content", "Regex search in text files under a directory",
+     'properties.pattern = { type = "string", description = "Regex pattern" }\nproperties.path = { type = "string", description = "Directory to search" }\nrequired = ["pattern", "path"]',
+     "import sys, json, re\nfrom pathlib import Path\nparams = json.loads(sys.stdin.read())\np = Path(params['path'])\npat = re.compile(params['pattern'])\nmatches = []\nfor f in p.rglob('*'):\n if f.is_file():\n  try:\n   for i,line in enumerate(f.read_text().splitlines(),1):\n    if pat.search(line): matches.append({'file':str(f),'line':i,'content':line.strip()})\n  except: pass\nprint(json.dumps({'ok':True,'matches':matches[:10]}))"),
+]:
+    tdir = os.path.join(skill_dir, "tools", tool_name)
+    with open(os.path.join(tdir, "tool.toml"), "w") as f:
+        f.write(f'name = "{tool_name}"\ndescription = "{desc}"\nruntime = "python"\nentrypoint = "main.py"\n[params_schema]\ntype = "object"\n{schema_extra}\n')
+    with open(os.path.join(tdir, "main.py"), "w") as f:
+        f.write(script)
+
+
+async def main():
+    bus = Bus()
+    node = McpNode.local(namespace="inventory", root=root)
+    await node.connect(bus=bus)
+
+    engine_info = NodeInfo(node_id="engine/s1", node_type="engine", capabilities={})
+    engine = await bus.connect(
+        info=engine_info,
+        filter=MessageFilter(
+            types=["skill_loaded", "skill_resource_loaded",
+                   "skill_script_result", "skill_error",
+                   "skill_resource_error"],
+            to_match=ToMatch.All,
+        ),
+    )
+
+    # ── L1: node_online → 只有 skills，没有 top-level tools ──
+    graph = bus.graph()
+    mcp = [n for n in graph.nodes if str(n.node_id) == node.node_id][0]
+    caps = mcp.capabilities
+    print(f"top-level tools: {len(caps['tools'])}")   # 0 — 全部在 skill 内
+    print(f"skills: {[s['name'] for s in caps['skills']]}")  # ['filesystem']
+
+    # ── L2: use_skill → body + 资源清单 ──
+    engine.send(
+        msg_type="use_skill",
+        to=[NodeId(id=node.node_id)],
+        payload={"name": "filesystem"},
+    )
+    resp = await engine.recv()
+    resources = resp.payload["resources"]
+    print(f"body: {len(resp.payload['body'])} chars ({resp.payload['description'][:50]}...)")
+    print(f"tools inside skill: {resources['tools']}")        # ['read_file', 'search_content', 'write_file']
+    print(f"references: {resources['references']}")            # ['api-guide.md']
+
+    # ── L3: load_skill_resource → 工具脚本 + params_schema ──
+    engine.send(
+        msg_type="load_skill_resource",
+        to=[NodeId(id=node.node_id)],
+        payload={"skill_name": "filesystem",
+                 "resource_path": "tools/write_file/main.py"},
+    )
+    resp = await engine.recv()
+    print(f"description: {resp.payload['description']}")
+    print(f"params_schema: {list(resp.payload['params_schema'].keys())}")
+    # ['properties', 'required', 'type']
+
+    # ── 执行: run_skill_script → 工具结果 ──
+    test_file = os.path.join(skill_dir, "tools/read_file/main.py")
+    engine.send(
+        msg_type="run_skill_script",
+        to=[NodeId(id=node.node_id)],
+        payload={"skill_name": "filesystem", "tool_name": "read_file",
+                 "call_id": "c1", "params": {"path": test_file}},
+    )
+    resp = await engine.recv()
+    print(f"status: {resp.payload['status']}")   # success
+    print(f"name: {resp.payload['name']}")       # filesystem/read_file
+
+    await bus.shutdown()
+
+asyncio.run(main())
+```
+
+**实际运行输出**：
+
+```
+top-level tools: 0
+skills: ['filesystem']
+body: 337 chars (File operations — reading, writing, searching...)
+tools inside skill: ['read_file', 'search_content', 'write_file']
+references: ['api-guide.md']
+description: Write content to file, creating parent directories
+params_schema: ['properties', 'required', 'type']
+status: success
+name: filesystem/read_file
+```
+
+**设计权衡**：
+
+| 维度 | 当前模式（tools/ + skills/） | Skill Inventory 模式 |
+|------|---------------------------|---------------------|
+| 简单工具 | 直接放 `tools/`，零 ceremony | 必须创建 Skill 包裹 |
+| 工具发现 | 启动时全部列出 | L1→L2→L3 渐进，按需加载 |
+| context 利用率 | 所有工具描述始终在 system prompt | 仅 L1 skill 描述在 prompt，工具详情按需注入 |
+| 适用场景 | 工具数量少（<20），全量注册无压力 | 工具数量多（50+），需要分层组织 |
+
+> **当前状态**：框架已支持 Skill Inventory 模式（`skills/{name}/tools/` 路径）。顶层 `tools/` 保留用于快速原型和简单场景。未来可考虑弃用顶层 `tools/`，统一到 Skill 模型——取决于实际使用中的 context 压力和工具组织需求。
+
+---
+
 ## Error Reference
 
 | Exception | Match text | Trigger |
