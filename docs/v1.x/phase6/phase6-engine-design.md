@@ -6,43 +6,215 @@
 
 ## 1. 架构定位
 
-Engine 是 ARF 框架的运行时核心——它不执行模型调用、不执行工具、不处理错误恢复，只做三件事：
+### 1.1 设计哲学：Engine 是纯编排器
+
+Engine 不"做"任何事——它只**编排**。所有实际工作由注入的依赖完成：
 
 ```
-┌─ Engine ───────────────────────────────────────────────────┐
-│                                                             │
-│  ① 会话生命周期                                              │
-│     AgentConfig → MCP 发现 → StateStore 初始化/恢复          │
-│     → 每轮结束自动持久化 → session_end 最终落盘               │
-│                                                             │
-│  ② ReAct 主循环（状态机）                                    │
-│     idle → running → waiting_tools → running → done         │
-│     running → parked (Park/Resume)                          │
-│     system prompt 组装 + model_call ↔ tool_calls 循环        │
-│     终止条件: 无 tool_calls / task_complete / max_turns     │
-│                                                             │
-│  ③ Hook/Park 事件管理                                        │
-│     10 检查点 → 发 Bus 消息 → block(同步等) / side(异步)      │
-│     Park = 发 park 消息 + block + 唤醒 + 继续/重开            │
-│     外部消费者: memory, compaction, subagent, teammate       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+Engine. chat(user_input)
+ │
+ ├─ 状态:    StateStore.load/save         ← 注入，Engine 决定调用时机
+ ├─ 推理:    Provider.chat()              ← 注入，Engine 只传消息、收结果
+ ├─ 工具:    Bus.send("tool_call_set")    ← MCP 节点执行，Engine 不碰脚本
+ ├─ Hook:    Bus.send("hook")             ← 消费者响应，Engine 不等逻辑结果
+ └─ 超时:    tokio::time::timeout         ← Engine 设置上限，不重试
 ```
 
-**不是 Engine 的**：模型调用（ModelAdapter）、工具执行（MCP）、错误处理（各层自处理，Engine 透传）、消息投递（Bus）、Hook 响应逻辑（外部消费者）、存储实现（StateStore trait，可插拔）。
+**核心原则**：Engine 是唯一知道"下一步该干什么"的地方，但它不知道"怎么干"。所有"怎么干"通过 trait 注入。
 
-### 1.1 依赖关系
+### 1.2 组件全景图
 
 ```
-arf-engine
-  ├── arf-core        (ModelMessage, NodeId, NodeInfo, Message)
-  ├── arf-bus         (Bus, NodeHandle, MessageFilter)
-  ├── arf-mcp         (McpNode, ToolCallSet, ToolResultSet, ToolResultItem)
-  ├── arf-model-adapter (Provider trait, tool_result_to_model_message)
-  └── arf-state       (StateStore trait, FileStateStore)
+                        ┌──────────────────────────────┐
+                        │          AgentConfig          │
+                        │  (system_prompt, max_turns,   │
+                        │   tool_timeout, mcp_ns...)    │
+                        └──────────────┬───────────────┘
+                                       │ 构造时注入
+                                       ▼
+┌─ Engine ─────────────────────────────────────────────────────────────┐
+│                                                                       │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────────┐  │
+│  │ SessionManager│   │  McpRegistry │   │     HookRunner           │  │
+│  │              │   │              │   │                          │  │
+│  │ create/      │   │ namespace→   │   │ 10 checkpoints           │  │
+│  │ restore/     │   │ (node_id,    │   │ → Bus 消息               │  │
+│  │ persist      │   │  tools[],    │   │ → block/side 等待        │  │
+│  │              │   │  skills[])   │   │                          │  │
+│  └──────┬───────┘   └──────┬───────┘   └────────────┬─────────────┘  │
+│         │                  │                        │                │
+│         ▼                  ▼                        ▼                │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                    ReAct Loop (状态机)                        │    │
+│  │                                                              │    │
+│  │  idle → running → waiting_tools → running → done             │    │
+│  │            │                      │                          │    │
+│  │            └── parked ←→ resume ──┘                          │    │
+│  └──────────────────────────┬───────────────────────────────────┘    │
+│                             │                                       │
+└─────────────────────────────┼───────────────────────────────────────┘
+                              │ 全部外部交互走 Bus
+                              ▼
+        ┌─────────────────────Bus─────────────────────────┐
+        │          │              │              │         │
+        ▼          ▼              ▼              ▼         ▼
+   ┌────────┐ ┌────────┐  ┌──────────┐  ┌─────────┐ ┌──────────┐
+   │  MCP   │ │  MCP   │  │ModelAdapter│ │ State   │ │  Hook    │
+   │  (fs)  │ │(remote)│  │(Provider) │  │ Store   │ │consumers │
+   └────────┘ └────────┘  └──────────┘  └─────────┘ └──────────┘
 ```
 
-`arf-engine` **不**依赖 `arf-agent`（Agent 是 Engine + ModelAdapter + MCP 的装配层）。
+Engine 自身不持有 Tokio reactor、不做 HTTP 调用、不碰文件系统。所有 I/O 通过 Bus 消息或注入的 trait 完成。
+
+### 1.3 边界合约
+
+Engine 对每个依赖有明确的输入/输出约定——不关心实现，只关心契约：
+
+#### Engine → StateStore
+
+| Engine 调用 | 期望返回 | 失败行为 |
+|------------|---------|---------|
+| `state_store.load(sid)` | `Option<SessionState>` | 无历史 → 创建新会话 |
+| `state_store.save(sid, state)` | `()` | 记录 warning，不阻断循环 |
+
+```rust
+/// Engine 不关心存哪里、什么格式——只要 load/save 语义正确。
+trait StateStore: Send + Sync {
+    async fn load(&self, session_id: &str) -> Result<Option<SessionState>>;
+    async fn save(&self, session_id: &str, state: &SessionState) -> Result<()>;
+}
+```
+
+#### Engine → Provider (ModelAdapter)
+
+| Engine 调用 | 期望返回 | 失败行为 |
+|------------|---------|---------|
+| `provider.chat(messages)` | `ModelResponse { content, tool_calls }` | 透传错误给 LLM（追加 error context → 下一轮 model_call）或向上抛 |
+
+```rust
+/// Engine 不关心是 DeepSeek 还是 OpenAI——只要输入消息、返回响应。
+trait Provider: Send + Sync {
+    async fn chat(&self, messages: &[ModelMessage]) -> Result<ModelResponse>;
+}
+```
+
+#### Engine → Bus → MCP
+
+| Engine 发送 | 期望回复 | 失败行为 |
+|------------|---------|---------|
+| `tool_call_set` → `mcp/{ns}` | `tool_result_set { results[] }` | result 含 error → 注入 LLM 上下文，继续循环 |
+| `use_skill` → `mcp/{ns}` | `skill_loaded { body, resources }` | 返回 skill_error → 通知 LLM |
+| `run_skill_script` → `mcp/{ns}` | `skill_script_result` | 同上 |
+
+```rust
+/// Engine 不关心工具是本地脚本还是远程 HTTP——它只看到 namespace + tool name。
+/// 路由逻辑：tool_name → 查 mcp_registry → 得到 namespace → 发到 mcp/{namespace}
+```
+
+#### Engine → Bus → Hook 消费者
+
+| Engine 发送 | 消费者回复 | Engine 行为 |
+|------------|-----------|-----------|
+| `hook { checkpoint: "before_model", mode: "blocking" }` | `{ action: "proceed" }` 或 `{ action: "modify", messages: [...] }` | 等待所有 blocking 回复后继续；modify 则替换消息列表 |
+| `hook { checkpoint: "after_tools", mode: "side" }` | (不等待) | 直接继续 |
+
+```rust
+/// Engine 不关心谁消费 hook、怎么处理——它只在检查点发消息。
+/// blocking: 等所有注册消费者回复（或超时）
+/// side: 发完即走
+trait HookRunner: Send + Sync {
+    async fn run_hooks(&self, checkpoint: HookCheckpoint, ctx: &HookContext) -> Vec<HookResponse>;
+}
+```
+
+### 1.4 关键消息流
+
+#### 正常 ReAct：单轮 tool call
+
+```
+时间轴 →
+
+Engine                    Bus                    MCP(fs)           ModelAdapter
+  │                        │                       │                   │
+  │─ chat(user_input)      │                       │                   │
+  │─ before_round hook     │                       │                   │
+  │─ before_model hook     │                       │                   │
+  │──────────────────────────────────────────────────────────────────→ provider.chat()
+  │←────────────────────────────────────────────────────────────────── ModelResponse {
+  │                                                                    tool_calls: [read_file]
+  │                                                                   }
+  │─ after_model hook      │                       │                   │
+  │                        │                       │                   │
+  │─ tool_call_set ───────→│── tool_call_set ──────→│                   │
+  │                        │←─ tool_result_set ────│                   │
+  │←─ tool_result_set ─────│                       │                   │
+  │                        │                       │                   │
+  │─ after_tools hook      │                       │                   │
+  │─ tool_result → ModelMessage("tool")             │                   │
+  │──────────────────────────────────────────────────────────────────→ provider.chat()
+  │←────────────────────────────────────────────────────────────────── ModelResponse {
+  │                                                                    content: "文件内容是..."
+  │                                                                   }
+  │─ after_round hook      │                       │                   │
+  │─ state_store.save()    │                       │                   │
+  │                        │                       │                   │
+  return "文件内容是..."    │                       │                   │
+```
+
+#### Park/Resume
+
+```
+Engine                        Bus                  ParkCoordinator
+  │                            │                       │
+  │─ before_round hook ───────→│── hook ──────────────→│
+  │                            │←─ { action: "park" }──│
+  │←─ hook response ──────────│                       │
+  │                            │                       │
+  │ state_store.save()         │                       │
+  │ status → parked            │                       │
+  │ return ParkToken           │                       │
+  │                            │                       │
+  │ ... (外部等待, 可能跨进程) ...                      │
+  │                            │                       │
+  │ resume(sid, token)         │                       │
+  │ state_store.load()         │                       │
+  │ status → running           │                       │
+  │ 重新进入 round 循环         │                       │
+```
+
+### 1.5 Engine 拥有 vs 委托
+
+| Engine 拥有 | Engine 委托 |
+|------------|-----------|
+| Session 状态机（idle/running/parked/done） | 模型怎么调 → `Provider` trait |
+| ReAct 循环的**流程**（先调模型、再调工具、再调模型...） | 工具怎么执行 → MCP（`RuntimeModule` trait） |
+| 检查点**时机**（什么时候发 hook） | Hook 怎么响应 → `HookRunner` trait |
+| 持久化**时机**（什么时候 save） | 存哪里、什么格式 → `StateStore` trait |
+| 终止条件**判断**（无 tool / max_turns / task_complete） | 为什么终止 → LLM 决定（task_complete 是 kernel tool） |
+| System prompt **组装**（模板 + tools + skills L1） | Tool 的 params_schema → MCP 提供 |
+| Turn/Round **计数** | 计数的存储 → StateStore |
+
+### 1.6 依赖方向（单向，无循环）
+
+```
+                    arf-core (纯数据)
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+      arf-bus       arf-state      arf-mcp
+          │              │              │
+          └──────────────┼──────────────┘
+                         ▼
+                   arf-engine
+                         │
+                         ▼
+              arf-model-adapter (通过 Provider trait)
+                         │
+                         ▼
+                     arf-agent (Phase 7 DI 装配)
+```
+
+`arf-engine` 依赖 `arf-core` + `arf-bus` + `arf-state` + `arf-mcp`，通过 `Provider` trait 依赖 `arf-model-adapter`。所有依赖是 trait 或纯数据结构——Engine 不依赖任何具体实现。
 
 ---
 
