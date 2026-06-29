@@ -563,9 +563,11 @@ for n in mcp_nodes:
 # mcp/codetidy: 62 tools
 ```
 
-### 模式四：三种 Runtime 编写指南
+### 工具编写示例
 
 同一个 `read_file` 工具，用 Python、Bash、Rust 分别实现。三个版本共享相同的 `tool.toml` 结构（仅 `runtime` 和 `entrypoint` 不同），输出完全一致的 JSON。
+
+> **runtime 选择建议**：性能不敏感的工具优先使用 **Python** 或 **Bash**——JSON 支持好、即时启动、无编译延迟。Rust 仅用于计算密集或输入极其简单的场景（手写 JSON 解析有维护成本，`rustc` 编译有首次延迟）。
 
 **文件结构**：
 
@@ -829,7 +831,7 @@ $ echo '{"path":"/nonexistent"}' | ./main
 | JSON 支持 | 原生 `json` 模块 | python3 胶水 (~3 行/处) | 手写提取器 (~40 行) |
 | 首次延迟 | 即时 | 即时 | rustc ~1-3s（后续缓存） |
 | 正则 | `re` 模块 | `grep -rnI` | 无（仅 `str::contains`） |
-| 最佳场景 | 通用，复杂 JSON | 文件/系统操作为主 | 计算密集，输入简单 |
+| 推荐场景 | **首选**——通用工具，复杂 JSON | **首选**——文件/系统操作为主 | 仅计算密集且输入简单的场景 |
 
 ---
 
