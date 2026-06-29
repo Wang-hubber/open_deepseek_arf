@@ -24,7 +24,7 @@
 | **3** | AgentConfig | 纯数据声明式配置骨架：models / tools / subagents / teammates | 1 | ✅ 完成 |
 | **4** | ModelAdapter | 内部格式 ↔ DeepSeek/OpenAI/Anthropic API + Bus 节点 + PyO3 绑定 | 1 | ✅ 完成 |
 | **5** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2, 3 | 🔲 待实施 |
-| **6** | MCP | 工具发现/注册/执行，资源广播 | 1 | 🔲 待实施 |
+| **6** | MCP | 工具发现/注册/执行，资源广播 | 1 | 📝 设计中 |
 | **7** | 集成 | E2E 测试 + 性能基准 + 完整文档 | 0-6 | 🔲 待实施 |
 
 > **订正说明**：原路线图 Phase 4 为 Engine、Phase 5 为 ModelAdapter。实际实施中 ModelAdapter 提前到 Phase 4（因 Engine 依赖 State + AgentConfig 均已完成，但 Engine 复杂度最高，先做 ModelAdapter 可提前验证 Provider 架构并积累 PyO3 绑定经验）。Engine 顺延至 Phase 5。
