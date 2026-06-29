@@ -248,20 +248,23 @@ fn codetidy_config() -> arf_mcp::config::RemoteConfig {
 }
 
 /// Subscribe to Bus, drain all messages until `node_online` for a given
-/// namespace, return the tools array from its payload.
+/// namespace. Namespace is NOT a field in the payload — it is embedded in
+/// `node_id` as `mcp/{namespace}`. Match by `node_id` prefix.
 async fn wait_for_node_online(
-    rx: &mut arf_bus::Receiver,
+    rx: &mut tokio::sync::broadcast::Receiver<arf_core::Message>,
     namespace: &str,
-) -> (NodeId, Vec<MiniEngineMcpToolInfo>) {
+) -> (NodeId, Vec<McpToolInfo>) {
+    let expected_prefix = format!("mcp/{namespace}");
     loop {
         let m = rx.recv().await.unwrap();
-        if m.msg_type == "node_online" && m.payload["namespace"].as_str() == Some(namespace) {
-            let node_id = NodeId::new(m.payload["node_id"].as_str().unwrap());
-            let tools: Vec<MiniEngineMcpToolInfo> = m.payload["capabilities"]["tools"]
+        let payload_node_id = m.payload["node_id"].as_str().unwrap_or("");
+        if m.msg_type == "node_online" && payload_node_id == expected_prefix {
+            let node_id = NodeId::new(payload_node_id);
+            let tools: Vec<McpToolInfo> = m.payload["capabilities"]["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|t| MiniEngineMcpToolInfo {
+                .map(|t| McpToolInfo {
                     name: t["name"].as_str().unwrap().into(),
                     description: t["description"].as_str().unwrap_or("").into(),
                 })
@@ -1051,13 +1054,15 @@ pub struct NodeInfo {
 }
 ```
 
-**修复**：改为匹配 `node_id` 前缀：
+**修复**：改为匹配 `node_id` 前缀（`node_id` 格式为 `mcp/{namespace}`）：
 ```rust
-// 错误
+// 错误 — NodeInfo 无 namespace 字段
 m.payload["namespace"].as_str() == Some(namespace)
 
-// 正确
-m.payload["node_id"].as_str() == Some("mcp/{namespace}")
+// 正确 — 从 node_id 提取 namespace
+let expected = format!("mcp/{namespace}");
+let id = m.payload["node_id"].as_str().unwrap_or("");
+m.msg_type == "node_online" && id == expected
 ```
 
 ### 3. CodeTidy 输出含推广 footer → base64 往返失败

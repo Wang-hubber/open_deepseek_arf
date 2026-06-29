@@ -1057,15 +1057,16 @@ pub struct LoadedResource {
 
 MCP 节点上线时广播一个 `node_online`，携带本 namespace 的全部能力——tools（含描述，供 LLM）+ skills（L1 元数据）。Engine 据此构建 system prompt 并路由后续请求。
 
+> **namespace 的来源**：`node_online.payload` 由 `NodeInfo` 序列化而来，不含 `namespace` 字段。Engine 从 `node_id` 中提取 namespace：`node_id` 格式为 `mcp/{namespace}`（如 `mcp/filesystem`），取 `/` 后部分即为 namespace。`from` 字段同样为 `mcp/{namespace}`，也可用于提取。
+
 ```json
 {
   "msg_type": "node_online",
   "from": "mcp/filesystem",
   "to": [],
   "payload": {
-    "node_type": "mcp",
     "node_id": "mcp/filesystem",
-    "namespace": "filesystem",
+    "node_type": "mcp",
     "capabilities": {
       "runtime": {"runtime": "local", "concurrency": "layer-parallel"},
       "tools": [
@@ -1088,7 +1089,7 @@ MCP 节点上线时广播一个 `node_online`，携带本 namespace 的全部能
 > **Engine 发现逻辑**：
 > 1. 启动时 `bus.graph()` 主动获取当前所有在线 MCP 节点（覆盖 MCP 先于 Engine 上线的时序）
 > 2. 订阅 `node_online` / `node_offline` ——感知运行期间的动态增删
-> 3. 工具描述 + skill L1 注入 system prompt
+> 3. 从 `node_id`（格式 `mcp/{namespace}`）提取 namespace；工具描述 + skill L1 注入 system prompt
 > 4. 所有后续请求都发给 `mcp/{namespace}`——MCP 内部按 `msg_type` 分派，Engine 不知道细节
 
 ### tool_call_set — Engine → MCP
@@ -1624,7 +1625,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] 重连成功后自动重新握手 + 重新广播 `node_online`（工具列表可能变更）
 - [ ] `RemoteConfig.retry = None` 时不重试，网络故障直接返回 error
 - [ ] `McpError` 统一 LocalMcpNode 和 RemoteMcpNode 的错误类型
-- [ ] `LocalMcpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
+- [ ] `LocalMcpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1；namespace 通过 `node_id` 为 `mcp/{ns}` 体现）
 - [ ] `LocalMcpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
 - [ ] `LocalMcpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
 - [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
