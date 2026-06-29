@@ -1,12 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::config::{ScriptRuntime, ToolConfig};
 use crate::script::ScriptTool;
 use crate::tool::Tool;
-
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Create a temp directory, write a script file into it, return (tool_dir, config).
 /// Each invocation gets a unique directory (counter-based) to avoid races
@@ -17,7 +15,7 @@ fn setup_script_tool(
     script_content: &str,
     timeout_ms: Option<u64>,
 ) -> (ScriptTool, PathBuf) {
-    let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = super::TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = std::env::temp_dir().join(format!("arf_mcp_test_{name}_{id}"));
     let _ = fs::remove_dir_all(&temp);
     fs::create_dir_all(&temp).unwrap();

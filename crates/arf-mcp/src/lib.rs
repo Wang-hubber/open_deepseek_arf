@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod script;
+pub mod skill;
 pub mod tool;
 pub mod types;
 
