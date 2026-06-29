@@ -159,10 +159,12 @@ Engine 只看到三个节点，各 namespace 独立，同名 tool 不冲突。�
 │   └── write_file/
 │       ├── tool.toml
 │       └── main.py
-├── skills/                 # Skill 目录（Phase 5 预留）
+├── skills/                 # Skill 目录
 │   └── react-component/
-│       ├── SKILL.md
-│       └── references/
+│       ├── SKILL.md         # YAML frontmatter + Markdown body（L1→L2→L3 渐进披露）
+│       ├── tools/           # (可选) skill 专属工具，与顶层 tools/ 结构统一
+│       ├── references/      # (可选) 参考文档
+│       └── assets/          # (可选) 静态资源
 ```
 
 `tool.toml` 格式：
