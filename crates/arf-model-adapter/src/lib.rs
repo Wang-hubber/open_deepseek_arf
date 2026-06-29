@@ -9,7 +9,7 @@
 //! different model/provider.
 
 mod anthropic;
-mod convert;
+pub mod convert;
 mod deepseek;
 mod error;
 mod node;
