@@ -1,4 +1,6 @@
-use crate::config::{RemoteConfig, ScriptRuntime, ToolConfig};
+use std::collections::HashMap;
+
+use crate::config::{RemoteConfig, RetryConfig, ScriptRuntime, ToolConfig};
 
 // ═══════════════════════════════════════════════════════════════
 // ScriptRuntime — 8 tests
@@ -224,6 +226,10 @@ fn remote_config_all_fields() {
     let config = RemoteConfig {
         transport: "streamable-http".into(),
         url: "https://mcp.codetidy.dev".into(),
+        timeout_secs: None,
+        headers: HashMap::new(),
+        tls_ca_cert: None,
+        retry: None,
     };
     assert_eq!(config.transport, "streamable-http");
     assert_eq!(config.url, "https://mcp.codetidy.dev");
@@ -235,6 +241,7 @@ fn remote_config_serialization_roundtrip() {
     let config = RemoteConfig {
         transport: "streamable-http".into(),
         url: "https://mcp.example.com".into(),
+        timeout_secs: None, headers: HashMap::new(), tls_ca_cert: None, retry: None,
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: RemoteConfig = serde_json::from_str(&json).unwrap();
@@ -248,6 +255,7 @@ fn remote_config_clone() {
     let config = RemoteConfig {
         transport: "streamable-http".into(),
         url: "https://example.com".into(),
+        timeout_secs: None, headers: HashMap::new(), tls_ca_cert: None, retry: None,
     };
     let cloned = config.clone();
     assert_eq!(config.transport, cloned.transport);
@@ -260,6 +268,7 @@ fn remote_config_empty_url() {
     let config = RemoteConfig {
         transport: "streamable-http".into(),
         url: "".into(),
+        timeout_secs: None, headers: HashMap::new(), tls_ca_cert: None, retry: None,
     };
     assert_eq!(config.url, "");
 }
@@ -270,6 +279,7 @@ fn remote_config_debug() {
     let config = RemoteConfig {
         transport: "streamable-http".into(),
         url: "https://mcp.example.com".into(),
+        timeout_secs: None, headers: HashMap::new(), tls_ca_cert: None, retry: None,
     };
     let debug = format!("{config:?}");
     assert!(debug.contains("streamable-http"));
@@ -403,4 +413,67 @@ default = 10
     assert_eq!(schema["properties"]["query"]["type"], "string");
     assert_eq!(schema["properties"]["max_results"]["type"], "integer");
     assert_eq!(schema["properties"]["max_results"]["default"], 10);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RetryConfig — 3 tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn retry_config_defaults() {
+    let config: RetryConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(config.max_retries, 3);
+    assert_eq!(config.initial_backoff_ms, 1000);
+    assert_eq!(config.max_backoff_ms, 30000);
+}
+
+#[test]
+fn retry_config_custom() {
+    let json = r#"{"max_retries":5,"initial_backoff_ms":500,"max_backoff_ms":10000}"#;
+    let config: RetryConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.max_retries, 5);
+    assert_eq!(config.initial_backoff_ms, 500);
+    assert_eq!(config.max_backoff_ms, 10000);
+}
+
+#[test]
+fn retry_config_serialization_roundtrip() {
+    let config = RetryConfig {
+        max_retries: 3,
+        initial_backoff_ms: 1000,
+        max_backoff_ms: 30000,
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    let back: RetryConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.max_retries, 3);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RemoteConfig 扩展字段 — 2 tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn remote_config_with_retry_and_headers() {
+    let json = r#"{
+        "transport":"streamable-http",
+        "url":"https://mcp.example.com",
+        "headers":{"Authorization":"Bearer sk-xxx"},
+        "retry":{"max_retries":5}
+    }"#;
+    let config: RemoteConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.transport, "streamable-http");
+    assert_eq!(config.headers.get("Authorization").unwrap(), "Bearer sk-xxx");
+    assert!(config.retry.is_some());
+    assert_eq!(config.retry.unwrap().max_retries, 5);
+    assert!(config.timeout_secs.is_none());
+}
+
+#[test]
+fn remote_config_minimal_no_extensions() {
+    let json = r#"{"transport":"streamable-http","url":"https://mcp.example.com"}"#;
+    let config: RemoteConfig = serde_json::from_str(json).unwrap();
+    assert!(config.timeout_secs.is_none());
+    assert!(config.headers.is_empty());
+    assert!(config.tls_ca_cert.is_none());
+    assert!(config.retry.is_none());
 }

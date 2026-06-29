@@ -6,6 +6,7 @@ mod config_tests;
 mod discovery_tests;
 mod executor_tests;
 mod node_tests;
+mod remote_tests;
 mod runtime_tests;
 mod script_tests;
 mod skill_tests;

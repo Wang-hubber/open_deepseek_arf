@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod error;
 pub mod executor;
 pub mod node;
+pub mod remote;
 pub mod runtime;
 pub mod script;
 pub mod skill;
