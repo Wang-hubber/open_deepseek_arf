@@ -291,10 +291,6 @@ print(json.dumps({"ok": True, "deleted": 42}))
 - Skill 数量级最多几十个，不需要查询引擎
 - 如果未来有全文搜索需求，在内存中建 `HashMap<String, SkillEntry>` 索引即可
 
-### API 注册 + 持久化
-
-不在 Phase 5 范围。属于未来 Remote MCP / Registry 场景。当前设计保持简单。
-
 ---
 
 ## 数据结构
@@ -1213,7 +1209,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
 - [ ] LocalMcpNode + RemoteMcpNode 多实例并存（不同 namespace），各自独立广播 `node_online`
 - [ ] `DiscoveryModule::scan()` 合并两个来源：`tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry，统一通过 `node_online` 广播
-- [ ] 文件夹约定是本地 MCP 唯一发现机制；API 注册 + 持久化不在 Phase 5 范围
+- [ ] 文件夹约定是本地 MCP 唯一资源定义机制——文件系统即注册中心、即持久化
 - [ ] 全链路集成：Engine 发现 MCP 节点 → 构建 system prompt（含 tool 描述 + skill L1）→ LLM 决定 tool call → `tool_call_set` 正确路由到目标 namespace
 - [ ] 全链路集成：MCP 执行结果通过 `tool_result_set` 返回 → Engine 注入 LLM 上下文 → LLM 继续推理 → ReAct 闭环
 - [ ] 全链路集成：Skill 加载链路 — `use_skill` → `skill_loaded` → LLM 根据 body 决定工具调用 → 执行 → 结果
