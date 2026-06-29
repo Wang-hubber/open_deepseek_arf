@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -36,8 +38,11 @@ pub struct ScriptTool {
     timeout_ms: Option<u64>,
     /// JSON Schema for parameters.
     params_schema: Value,
-    /// Cancellation sender — set during execute(), cleared on completion.
-    cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Per-invocation cancellation senders. Each execute() call registers
+    /// a sender; cancel() drains all senders to signal all running invocations.
+    /// Keyed by a monotonic ID for safe concurrent removal.
+    cancel_txs: Mutex<HashMap<u64, oneshot::Sender<()>>>,
+    next_cancel_id: AtomicU64,
 }
 
 impl ScriptTool {
@@ -51,7 +56,8 @@ impl ScriptTool {
             entrypoint: config.entrypoint,
             timeout_ms: config.timeout_ms,
             params_schema: config.params_schema,
-            cancel_tx: Mutex::new(None),
+            cancel_txs: Mutex::new(HashMap::new()),
+            next_cancel_id: AtomicU64::new(0),
         }
     }
 
@@ -169,9 +175,10 @@ impl Tool for ScriptTool {
                 .map_err(|e| ToolError::from(format!("close stdin error: {e}")))?;
         }
 
-        // 3. Setup cancellation channel
+        // 3. Setup cancellation channel — register in the shared map
+        let cancel_id = self.next_cancel_id.fetch_add(1, Ordering::Relaxed);
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        *self.cancel_tx.lock().unwrap() = Some(cancel_tx);
+        self.cancel_txs.lock().unwrap().insert(cancel_id, cancel_tx);
 
         // 4. Wait for child with optional timeout and cancellation.
         //    child is inside Arc<Mutex<Option>> so both the wait_fut
@@ -222,8 +229,8 @@ impl Tool for ScriptTool {
             }
         };
 
-        // 5. Clear cancellation sender
-        *self.cancel_tx.lock().unwrap() = None;
+        // 5. Remove this invocation's cancellation sender
+        self.cancel_txs.lock().unwrap().remove(&cancel_id);
 
         let output = output.map_err(|e| ToolError::from(format!("process error: {e}")))?;
 
@@ -244,7 +251,14 @@ impl Tool for ScriptTool {
     }
 
     async fn cancel(&self) {
-        if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
+        let txs: Vec<_> = self
+            .cancel_txs
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, tx)| tx)
+            .collect();
+        for tx in txs {
             let _ = tx.send(());
         }
     }
