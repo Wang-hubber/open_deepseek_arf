@@ -1,0 +1,817 @@
+# 任务 5.2：ScriptTool + tool.toml 解析
+
+> Phase 5 — MCP 第二项任务
+> 父文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
+> 依赖：Task 5.1 (类型定义)
+
+## 设计思路
+
+`ScriptTool` 是框架中唯一的本地 Tool 实现——实现 `Tool` trait，包裹外部脚本，通过 **stdin/stdout JSON 协议** 执行。`ToolConfig::from_toml_str()` 将 `tool.toml` 文件内容解析为结构化配置。
+
+**核心设计决策**：
+
+- **所有本地 Tool 都是 ScriptTool**——不区分"内置"和"脚本"，`DiscoveryModule`（Task 5.6）扫描 `{root}/tools/*/tool.toml` 统一发现
+- **取消机制**：`ScriptTool` 持有 `Mutex<Option<oneshot::Sender>>`，`execute()` 内部创建 oneshot channel，`cancel()` 触发 sender → `execute()` 的 `tokio::select!` 收到信号 → `child.start_kill()` 终止子进程
+- **超时**：通过 `tokio::select!` 的 `timeout` 分支实现，超时后 `start_kill()` 终止子进程
+- **Rust runtime**：entrypoint 是预编译二进制，直接执行，不负责编译
+
+| 文件 | 操作 | 内容 |
+|------|------|------|
+| `Cargo.toml` | 更新 | 添加 `toml`、`tokio`（process/time/sync）依赖 |
+| `config.rs` | 更新 | `ToolConfig::from_toml_str()` |
+| `script.rs` | 新建 | `ScriptTool` struct + `Tool` trait 实现 |
+| `lib.rs` | 更新 | `pub mod script;` |
+
+---
+
+## 代码实现
+
+### `crates/arf-mcp/Cargo.toml` 更新
+
+在 `[dependencies]` 中添加 `toml` 和 `tokio`：
+
+```toml
+[dependencies]
+arf-core = { path = "../arf-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+toml = "0.8"
+tokio = { version = "1", features = ["process", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+```
+
+逐行解释：
+- `toml = "0.8"` — TOML 反序列化，`ToolConfig::from_toml_str()` 用
+- `tokio` features `process` — `tokio::process::Command` 异步子进程管理
+- `tokio` features `time` — `tokio::time::sleep` 超时控制
+- `tokio` features `sync` — `tokio::sync::oneshot` 取消信号
+- `[dev-dependencies]` tokio 仅需 `rt` + `macros`（`#[tokio::test]`），`process/time/sync` 从主依赖继承
+
+---
+
+### `crates/arf-mcp/src/config.rs` 更新
+
+在现有 `ToolConfig` 的 `impl` 块中添加：
+
+```rust
+impl ToolConfig {
+    /// Parse a `tool.toml` file content into a `ToolConfig`.
+    ///
+    /// The TOML format uses lowercase runtime names ("python", "bash", "rust")
+    /// matching `ScriptRuntime`'s `#[serde(rename_all = "lowercase")]`.
+    ///
+    /// `params_schema` can be specified as inline TOML table syntax:
+    /// ```toml
+    /// [params_schema]
+    /// type = "object"
+    /// properties.path.type = "string"
+    /// ```
+    /// The TOML table deserializes into `serde_json::Value::Object`.
+    pub fn from_toml_str(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| format!("invalid tool.toml: {e}"))
+    }
+}
+```
+
+逐行解释：
+- `toml::from_str(content)` — TOML crate 通过 serde 直接将 TOML 字符串反序列化为 `ToolConfig`
+- `params_schema: serde_json::Value` — `serde_json::Value` 实现了通用的 `Deserialize`，TOML table 会反序列化为 `Value::Object`，TOML array 会反序列化为 `Value::Array`
+- 错误映射为 `String` — `DiscoveryModule`（Task 5.6）负责错误聚合
+
+---
+
+### `crates/arf-mcp/src/script.rs` — 新建
+
+```rust
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use serde_json::Value;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use tokio::sync::oneshot;
+
+use crate::config::{ScriptRuntime, ToolConfig};
+use crate::tool::Tool;
+use crate::types::ToolError;
+
+/// A Tool implementation that wraps an external script.
+///
+/// ScriptTool implements the Tool trait, so it works with the standard
+/// DAG executor — no special path. The `execute()` method:
+/// 1. Starts a child process (python3 / bash / compiled binary)
+/// 2. Writes params as JSON to stdin
+/// 3. Reads result as JSON from stdout
+/// 4. Captures stderr for error reporting
+/// 5. Kills the process on timeout or cancel
+pub struct ScriptTool {
+    /// Tool name from tool.toml.
+    name: String,
+    /// Tool description from tool.toml.
+    description: String,
+    /// Which runtime to use.
+    runtime: ScriptRuntime,
+    /// Path to the tool directory (contains entrypoint script).
+    tool_dir: PathBuf,
+    /// Entry point filename (e.g. "main.sh").
+    entrypoint: String,
+    /// Per-call timeout. None = no timeout.
+    timeout_ms: Option<u64>,
+    /// JSON Schema for parameters.
+    params_schema: Value,
+    /// Cancellation sender — set during execute(), cleared on completion.
+    /// `cancel()` takes the sender and fires it, causing `execute()` to
+    /// abort via `tokio::select!`.
+    cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl ScriptTool {
+    /// Create a ScriptTool from a parsed ToolConfig and its directory.
+    ///
+    /// The `tool_dir` is the directory containing `tool.toml` and the
+    /// entrypoint script. `entrypoint` is relative to `tool_dir`.
+    pub fn new(config: ToolConfig, tool_dir: PathBuf) -> Self {
+        Self {
+            name: config.name,
+            description: config.description,
+            runtime: config.runtime,
+            tool_dir,
+            entrypoint: config.entrypoint,
+            timeout_ms: config.timeout_ms,
+            params_schema: config.params_schema,
+            cancel_tx: Mutex::new(None),
+        }
+    }
+
+    /// Build the platform command for this tool's runtime.
+    fn build_command(&self) -> Command {
+        let entrypoint_path = self.tool_dir.join(&self.entrypoint);
+        match self.runtime {
+            ScriptRuntime::Python => {
+                let mut cmd = Command::new("python3");
+                cmd.arg(&entrypoint_path);
+                cmd
+            }
+            ScriptRuntime::Bash => {
+                let mut cmd = Command::new("bash");
+                cmd.arg(&entrypoint_path);
+                cmd
+            }
+            ScriptRuntime::Rust => {
+                // Pre-compiled binary — run directly
+                Command::new(&entrypoint_path)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ScriptTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Value {
+        self.params_schema.clone()
+    }
+
+    async fn execute(&self, params: Value) -> Result<Value, ToolError> {
+        // 1. Spawn child process
+        let mut child = self
+            .build_command()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| ToolError::from(format!("failed to spawn process: {e}")))?;
+
+        // 2. Write params JSON to stdin, then close the pipe
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| ToolError::from("failed to open stdin"))?;
+            let params_json = serde_json::to_string(&params)
+                .map_err(|e| ToolError::from(format!("json encode error: {e}")))?;
+            stdin
+                .write_all(params_json.as_bytes())
+                .await
+                .map_err(|e| ToolError::from(format!("write stdin error: {e}")))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| ToolError::from(format!("close stdin error: {e}")))?;
+            // stdin dropped here — pipe closed
+        }
+
+        // 3. Setup cancellation channel
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+        *self.cancel_tx.lock().unwrap() = Some(cancel_tx);
+
+        // 4. Wait for child with optional timeout and cancellation
+        let wait_fut = child.wait_with_output();
+        tokio::pin!(wait_fut);
+
+        let output = if let Some(ms) = self.timeout_ms {
+            let timeout = tokio::time::sleep(std::time::Duration::from_millis(ms));
+            tokio::pin!(timeout);
+
+            tokio::select! {
+                result = &mut wait_fut => {
+                    // Normal completion
+                    result
+                }
+                _ = &mut cancel_rx => {
+                    // Cancelled — child killed by kill_on_drop
+                    child.start_kill().ok();
+                    return Err(ToolError::from("cancelled"));
+                }
+                _ = &mut timeout => {
+                    // Timeout — kill child
+                    child.start_kill().ok();
+                    return Err(ToolError::from("timeout"));
+                }
+            }
+        } else {
+            tokio::select! {
+                result = &mut wait_fut => {
+                    result
+                }
+                _ = &mut cancel_rx => {
+                    child.start_kill().ok();
+                    return Err(ToolError::from("cancelled"));
+                }
+            }
+        };
+
+        // 5. Clear cancellation sender
+        *self.cancel_tx.lock().unwrap() = None;
+
+        let output = output.map_err(|e| ToolError::from(format!("process error: {e}")))?;
+
+        // 6. Check exit status
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let code = output.status.code().unwrap_or(-1);
+            return Err(ToolError::from(format!(
+                "exit code {code}: {}",
+                stderr.trim()
+            )));
+        }
+
+        // 7. Parse stdout as JSON
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        serde_json::from_str(&stdout)
+            .map_err(|e| ToolError::from(format!("invalid JSON from script: {e}")))
+    }
+
+    async fn cancel(&self) {
+        if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+    }
+}
+```
+
+逐行解释：
+- `kill_on_drop(true)` — 确保 `ScriptTool` 被 drop 时子进程被 kill（防止僵尸进程）
+- `stdin.take()` — 获取子进程 stdin 写入端的所有权，写完 JSON 后 drop 关闭管道，脚本读到 EOF
+- `oneshot::channel()` — 一次性信号通道。`execute()` 持有 `receiver`，`cancel()` 持有 `sender`。`cancel()` 调用 `tx.send(())` → `execute()` 的 `tokio::select!` 收到信号 → `start_kill()` + 返回 `"cancelled"`
+- `tokio::pin!` — 对 `wait_fut` 和 `timeout` 做堆 pin，使其可用于 `tokio::select!` 的 `&mut` 分支引用
+- `select!` 分支语义：正常完成走 `wait_fut`，cancel 和 timeout 走各自分支并主动 `start_kill()`
+- `start_kill()` — 发送 SIGKILL（Unix）或 TerminateProcess（Windows），不等子进程退出直接返回
+- `Mutex<Option<oneshot::Sender>>` — `execute(&self)` 和 `cancel(&self)` 都借 `&self`，需要 `Mutex` 做内部可变性；`Option` 表示"是否正在执行"
+
+**stdin/stdout JSON 协议**：脚本从 stdin 读 JSON params，往 stdout 写 JSON result。stderr 用于错误诊断——脚本 exit code 非 0 时 stderr 作为 error message 返回。
+
+---
+
+### `crates/arf-mcp/src/lib.rs` 更新
+
+```rust
+pub mod config;
+pub mod script;
+pub mod tool;
+pub mod types;
+
+#[cfg(test)]
+mod tests;
+```
+
+---
+
+## 测试
+
+### 测试结构
+
+```
+crates/arf-mcp/src/tests/
+├── mod.rs               # 添加 script_tests
+├── config_tests.rs       # 追加 TOML 解析测试
+├── script_tests.rs       # 新建
+├── tool_tests.rs
+└── types_tests.rs
+```
+
+### `crates/arf-mcp/src/tests/mod.rs` 更新
+
+```rust
+mod config_tests;
+mod script_tests;
+mod tool_tests;
+mod types_tests;
+```
+
+---
+
+### `crates/arf-mcp/src/tests/config_tests.rs` 追加 TOML 解析测试
+
+在现有测试末尾追加：
+
+```rust
+// ═══════════════════════════════════════════════════════════════
+// ToolConfig::from_toml_str — 8 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [构造] 完整 tool.toml 解析成功
+#[test]
+fn tool_config_from_toml_full() {
+    let toml_content = r#"
+name = "cleanup_logs"
+description = "Delete log files older than N days"
+runtime = "bash"
+entrypoint = "main.sh"
+timeout_ms = 30000
+
+[params_schema]
+type = "object"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.name, "cleanup_logs");
+    assert_eq!(config.description, "Delete log files older than N days");
+    assert_eq!(config.runtime, ScriptRuntime::Bash);
+    assert_eq!(config.entrypoint, "main.sh");
+    assert_eq!(config.timeout_ms, Some(30000));
+    assert_eq!(config.params_schema["type"], "object");
+}
+
+// [构造] 最小 tool.toml（仅必填字段）
+#[test]
+fn tool_config_from_toml_minimal() {
+    let toml_content = r#"
+name = "hello"
+description = "Say hello"
+runtime = "python"
+entrypoint = "hello.py"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.name, "hello");
+    assert_eq!(config.runtime, ScriptRuntime::Python);
+    assert_eq!(config.timeout_ms, None);
+    assert_eq!(config.params_schema, serde_json::Value::Null);
+}
+
+// [构造] Python runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_python() {
+    let config = ToolConfig::from_toml_str(
+        r#"name="t" description="d" runtime="python" entrypoint="e.py""#,
+    )
+    .unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Python);
+}
+
+// [构造] Bash runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_bash() {
+    let config = ToolConfig::from_toml_str(
+        r#"name="t" description="d" runtime="bash" entrypoint="e.sh""#,
+    )
+    .unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Bash);
+}
+
+// [构造] Rust runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_rust() {
+    let config = ToolConfig::from_toml_str(
+        r#"name="t" description="d" runtime="rust" entrypoint="t""#,
+    )
+    .unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Rust);
+}
+
+// [边界] 无效 runtime 字符串 → 报错
+#[test]
+fn tool_config_from_toml_invalid_runtime() {
+    let result = ToolConfig::from_toml_str(
+        r#"name="t" description="d" runtime="javascript" entrypoint="x""#,
+    );
+    assert!(result.is_err());
+}
+
+// [边界] 缺少必填字段 name → 报错
+#[test]
+fn tool_config_from_toml_missing_name() {
+    let result = ToolConfig::from_toml_str(
+        r#"description="d" runtime="python" entrypoint="x""#,
+    );
+    assert!(result.is_err());
+}
+
+// [边界] params_schema 为嵌套 TOML table
+#[test]
+fn tool_config_from_toml_nested_params_schema() {
+    let toml_content = r#"
+name = "search"
+description = "Full-text search"
+runtime = "python"
+entrypoint = "search.py"
+
+[params_schema]
+type = "object"
+
+[params_schema.properties.query]
+type = "string"
+description = "Search query"
+
+[params_schema.properties.max_results]
+type = "integer"
+default = 10
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    let schema = &config.params_schema;
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["properties"]["query"]["type"], "string");
+    assert_eq!(schema["properties"]["max_results"]["type"], "integer");
+    assert_eq!(schema["properties"]["max_results"]["default"], 10);
+}
+```
+
+---
+
+### `crates/arf-mcp/src/tests/script_tests.rs` — 新建
+
+测试策略：
+- 使用临时目录 + 写入真实脚本文件来测试 `ScriptTool.execute()`
+- Python 和 Bash 用真实子进程，Rust 跳过（需要预编译二进制）
+- 每个测试创建独立 temp dir，测试结束后自动清理
+
+```rust
+use std::fs;
+use std::path::PathBuf;
+
+use crate::config::{ScriptRuntime, ToolConfig};
+use crate::script::ScriptTool;
+use crate::tool::Tool;
+use serde_json::Value;
+
+/// Create a temp directory, write a script file into it, return (tool_dir, config).
+fn setup_script_tool(
+    name: &str,
+    runtime: ScriptRuntime,
+    script_content: &str,
+    timeout_ms: Option<u64>,
+) -> (ScriptTool, PathBuf) {
+    let temp = std::env::temp_dir().join(format!("arf_mcp_test_{name}"));
+    let _ = fs::remove_dir_all(&temp); // clean up previous run
+    fs::create_dir_all(&temp).unwrap();
+
+    let (entrypoint, _script_path) = match runtime {
+        ScriptRuntime::Python => {
+            let p = temp.join("main.py");
+            fs::write(&p, script_content).unwrap();
+            ("main.py".to_string(), p)
+        }
+        ScriptRuntime::Bash => {
+            let p = temp.join("main.sh");
+            fs::write(&p, script_content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            ("main.sh".to_string(), p)
+        }
+        ScriptRuntime::Rust => {
+            let p = temp.join("main");
+            fs::write(&p, script_content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            ("main".to_string(), p)
+        }
+    };
+
+    let config = ToolConfig {
+        name: name.into(),
+        description: format!("Test tool: {name}"),
+        runtime,
+        entrypoint,
+        timeout_ms,
+        params_schema: serde_json::json!({"type": "object"}),
+    };
+
+    (ScriptTool::new(config, temp.clone()), temp)
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+// Helper so that temp dirs get cleaned up.
+// ScriptTool tests return (ScriptTool, PathBuf) — wrap the PathBuf in Cleanup.
+struct Cleanup(PathBuf);
+
+/// Shortcut: Python echo script that returns params as-is.
+fn python_echo_tool() -> (ScriptTool, Cleanup) {
+    let (tool, dir) = setup_script_tool(
+        "echo_py",
+        ScriptRuntime::Python,
+        "import sys, json\nparams = json.loads(sys.stdin.read())\nprint(json.dumps(params))\n",
+        Some(5000),
+    );
+    (tool, Cleanup(dir))
+}
+
+/// Shortcut: Bash echo script that returns params as-is.
+fn bash_echo_tool() -> (ScriptTool, Cleanup) {
+    let (tool, dir) = setup_script_tool(
+        "echo_sh",
+        ScriptRuntime::Bash,
+        "#!/bin/bash\ninput=$(cat)\necho \"$input\"\n",
+        Some(5000),
+    );
+    (tool, Cleanup(dir))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ScriptTool 构造 — 3 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [构造] ScriptTool 返回正确的元数据
+#[test]
+fn script_tool_metadata() {
+    let config = ToolConfig {
+        name: "test_tool".into(),
+        description: "A test tool".into(),
+        runtime: ScriptRuntime::Python,
+        entrypoint: "main.py".into(),
+        timeout_ms: Some(10000),
+        params_schema: serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}}),
+    };
+    let tool = ScriptTool::new(config, PathBuf::from("/tmp/test_tool"));
+    assert_eq!(tool.name(), "test_tool");
+    assert_eq!(tool.description(), "A test tool");
+    assert_eq!(tool.parameters_schema()["type"], "object");
+}
+
+// [构造] timeout_ms = None 时正常构造
+#[test]
+fn script_tool_no_timeout() {
+    let config = ToolConfig {
+        name: "no_timeout".into(),
+        description: "No timeout".into(),
+        runtime: ScriptRuntime::Bash,
+        entrypoint: "main.sh".into(),
+        timeout_ms: None,
+        params_schema: serde_json::Value::Null,
+    };
+    let tool = ScriptTool::new(config, PathBuf::from("/tmp/t"));
+    assert!(tool.name() == "no_timeout");
+}
+
+// [边界] 空 name/description 不 panic
+#[test]
+fn script_tool_empty_strings() {
+    let config = ToolConfig {
+        name: "".into(),
+        description: "".into(),
+        runtime: ScriptRuntime::Bash,
+        entrypoint: "".into(),
+        timeout_ms: None,
+        params_schema: serde_json::Value::Null,
+    };
+    let tool = ScriptTool::new(config, PathBuf::new());
+    assert_eq!(tool.name(), "");
+    assert_eq!(tool.description(), "");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ScriptTool execute — 8 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [方法] Python 脚本执行：echo params 回显
+#[tokio::test]
+async fn execute_python_echo() {
+    let (tool, _cleanup) = python_echo_tool();
+    let result = tool
+        .execute(serde_json::json!({"message": "hello", "count": 42}))
+        .await
+        .unwrap();
+    assert_eq!(result["message"], "hello");
+    assert_eq!(result["count"], 42);
+}
+
+// [方法] Bash 脚本执行：echo params 回显
+#[tokio::test]
+async fn execute_bash_echo() {
+    let (tool, _cleanup) = bash_echo_tool();
+    let result = tool
+        .execute(serde_json::json!({"msg": "bash works"}))
+        .await
+        .unwrap();
+    assert_eq!(result["msg"], "bash works");
+}
+
+// [方法] 脚本 exit code 非 0 → 返回 error
+#[tokio::test]
+async fn execute_script_nonzero_exit() {
+    let script = "import sys\nsys.exit(1)\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "failer",
+        ScriptRuntime::Python,
+        script,
+        Some(5000),
+    );
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("exit code"));
+}
+
+// [方法] 脚本输出非 JSON → 返回 parse error
+#[tokio::test]
+async fn execute_script_invalid_json_output() {
+    let script = "print('not json')\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "badjson",
+        ScriptRuntime::Python,
+        script,
+        Some(5000),
+    );
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+}
+
+// [方法] stderr 写入不影响成功结果（只检查 exit code 和 stdout）
+#[tokio::test]
+async fn execute_script_with_stderr_output() {
+    let script = "import sys, json\nparams = json.loads(sys.stdin.read())\nsys.stderr.write('warning: deprecated')\nprint(json.dumps(params))\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "stderr_warn",
+        ScriptRuntime::Python,
+        script,
+        Some(5000),
+    );
+    let result = tool
+        .execute(serde_json::json!({"ok": true}))
+        .await
+        .unwrap();
+    // stderr does not affect result parsing — stdout is the only source
+    assert_eq!(result["ok"], true);
+}
+
+// [方法] 空 JSON 对象 {} 作为参数
+#[tokio::test]
+async fn execute_empty_params() {
+    let (tool, _cleanup) = python_echo_tool();
+    let result = tool.execute(serde_json::json!({})).await.unwrap();
+    assert!(result.is_object());
+}
+
+// [方法] null 参数
+#[tokio::test]
+async fn execute_null_params() {
+    let (tool, _cleanup) = python_echo_tool();
+    let result = tool.execute(serde_json::Value::Null).await.unwrap();
+    assert!(result.is_null());
+}
+
+// [边界] 不存在的入口脚本 → spawn error
+#[tokio::test]
+async fn execute_nonexistent_entrypoint() {
+    let config = ToolConfig {
+        name: "ghost".into(),
+        description: "Does not exist".into(),
+        runtime: ScriptRuntime::Python,
+        entrypoint: "nope.py".into(),
+        timeout_ms: Some(5000),
+        params_schema: serde_json::Value::Null,
+    };
+    let tool = ScriptTool::new(config, PathBuf::from("/tmp/nonexistent_dir_xyz"));
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ScriptTool 超时 — 2 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [超时] 脚本执行超过 timeout_ms → timeout error
+#[tokio::test]
+async fn execute_timeout() {
+    let script = "import sys, time\ntime.sleep(10)\nprint('{}')\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "sleeper",
+        ScriptRuntime::Python,
+        script,
+        Some(100), // 100ms timeout
+    );
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().message, "timeout");
+}
+
+// [超时] 无超时（timeout_ms = None）时长时间运行不报错
+#[tokio::test]
+async fn execute_no_timeout_completes() {
+    let (tool, _cleanup) = setup_script_tool(
+        "quick",
+        ScriptRuntime::Python,
+        "import sys, json\nprint(json.dumps({'ok': True}))\n",
+        None, // no timeout
+    );
+    let result = tool.execute(serde_json::json!({})).await.unwrap();
+    assert_eq!(result["ok"], true);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ScriptTool cancel — 2 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [取消] cancel 触发后 execute 返回 cancelled error
+#[tokio::test]
+async fn cancel_during_execution() {
+    let script = "import sys, time\ntime.sleep(10)\nprint('{}')\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "long_runner",
+        ScriptRuntime::Python,
+        script,
+        None, // no timeout, cancelled explicitly
+    );
+
+    let tool_ref = std::sync::Arc::new(tool);
+    let tool_clone = tool_ref.clone();
+
+    // Spawn execute in background
+    let handle = tokio::spawn(async move { tool_clone.execute(serde_json::json!({})).await });
+
+    // Give it a moment to start
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Cancel the execution
+    tool_ref.cancel().await;
+
+    // Execute should return cancelled
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().message, "cancelled");
+}
+
+// [取消] 对未在执行中的 tool 调用 cancel 不 panic
+#[tokio::test]
+async fn cancel_when_idle_no_panic() {
+    let (tool, _cleanup) = python_echo_tool();
+    tool.cancel().await; // no execute in progress — should not panic
+}
+```
+
+---
+
+## 验证命令
+
+```bash
+# 编译检查
+. "$HOME/.cargo/env" && cargo check -p arf-mcp
+
+# 运行 arf-mcp 测试
+. "$HOME/.cargo/env" && cargo test -p arf-mcp
+
+# Workspace 全量测试
+. "$HOME/.cargo/env" && cargo test --workspace
+```
+
+---
+
+## 测试覆盖摘要
+
+| 文件 | 新增测试 | 覆盖角度 |
+|------|---------|---------|
+| `config_tests.rs` | 8 | `[构造][边界]` — TOML 解析（full/minimal/all runtimes/invalid runtime/missing field/nested schema） |
+| `script_tests.rs` | 15 | `[构造][方法][边界][超时][取消]` — ScriptTool 构造、execute、timeout、cancel |
+| **合计** | **23** | 累计 arf-mcp: 69 + 23 = **92 tests** |
