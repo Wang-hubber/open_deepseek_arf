@@ -5,6 +5,8 @@
 //! RemoteMcpNode proxies to an external MCP server via HTTP.
 
 pub mod config;
+pub mod discovery;
+pub mod error;
 pub mod executor;
 pub mod script;
 pub mod skill;

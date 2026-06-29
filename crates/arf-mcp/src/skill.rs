@@ -57,6 +57,7 @@ pub struct LoadedResource {
 // ── SkillIndex ──────────────────────────────────────────────────────
 
 /// Scan, index, and retrieve lazy-loaded skills.
+#[derive(Debug)]
 pub struct SkillIndex {
     #[allow(dead_code)]
     root: PathBuf,
