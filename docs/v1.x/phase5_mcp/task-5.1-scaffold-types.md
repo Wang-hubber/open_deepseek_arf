@@ -252,6 +252,10 @@ pub struct ToolCallSet {
 pub struct ToolResultItem {
     /// Matches `ToolCallItem.id`.
     pub call_id: String,
+    /// Tool name — matches `ToolCallItem.tool`. Carried so ModelAdapter
+    /// can construct `ModelMessage { name }` without Engine maintaining
+    /// a separate call_id → tool_name lookup table.
+    pub name: String,
     /// `"success"` or `"error"` or `"cancelled"`.
     pub status: String,
     /// The tool's return value. Null on error/cancelled.
@@ -260,13 +264,41 @@ pub struct ToolResultItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+impl ToolResultItem {
+    /// Convert this tool result into a `ModelMessage` for the LLM conversation.
+    ///
+    /// This is the integration point between MCP and ModelAdapter:
+    ///   - `status = "success"` → `content = result.to_string()`
+    ///   - `status = "error"`   → `content = {"error": message}`
+    ///   - `status = "cancelled"` → `content = {"error": "cancelled: ..."}`
+    ///
+    /// All variants produce `role = "tool"`, `tool_call_id = call_id`,
+    /// `name = self.name`. ModelAdapter passes this directly to the model API.
+    pub fn to_model_message(&self) -> arf_core::ModelMessage {
+        let content = match self.status.as_str() {
+            "success" => self.result.to_string(),
+            "error" => serde_json::json!({
+                "error": self.error.as_deref().unwrap_or("unknown error")
+            })
+            .to_string(),
+            "cancelled" => serde_json::json!({
+                "error": self.error.as_deref().unwrap_or("cancelled")
+            })
+            .to_string(),
+            other => serde_json::json!({"error": format!("unknown status: {other}")}).to_string(),
+        };
+        arf_core::ModelMessage::new("tool", content)
+            .with_tool_call_id(&self.call_id)
+            .with_name(&self.name)
+    }
+}
 ```
 
 逐行解释：
-- `status` — 三态："success" / "error" / "cancelled"，Engine 据此判断是否继续
-- `result` — `serde_json::Value`，错误时为 `null`
-- `error` — `#[serde(skip_serializing_if = "Option::is_none")]`：成功时 `error: None` 不出现在 JSON 中，保持消息体简洁
-- Tool 作者不构造此 struct — 全部由 executor 集中处理
+- `name` — 新增字段，executor 从 `ToolCallItem.tool` 回填。MCP 内部已知 tool 名称，写入结果避免 Engine 再查表
+- `to_model_message()` — MCP → ModelAdapter 的唯一转换入口。根据 status 决定 content 格式：success 直接输出 result JSON 字符串；error/cancelled 包装为 `{"error": "..."}` JSON 对象，ModelAdapter 透明传递
+- `from arf_core::ModelMessage` — arf-mcp 已依赖 arf-core，直接引用类型，无需类型桥接
 
 ```rust
 
@@ -820,19 +852,33 @@ fn tool_call_set_empty_session_id() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ToolResultItem — 10 tests
+// ToolResultItem — 19 tests
 // ═══════════════════════════════════════════════════════════════
 
-// [构造] success 状态：result 有值，error 为 None
+fn make_result_item(
+    call_id: &str,
+    name: &str,
+    status: &str,
+    result: Value,
+    error: Option<&str>,
+) -> ToolResultItem {
+    ToolResultItem {
+        call_id: call_id.into(),
+        name: name.into(),
+        status: status.into(),
+        result,
+        error: error.map(|s| s.into()),
+    }
+}
+
+// ── 构造 & 序列化 ──
+
+// [构造] success 状态：result 有值，error 为 None，name 正确
 #[test]
 fn tool_result_item_success() {
-    let item = ToolResultItem {
-        call_id: "call_0".into(),
-        status: "success".into(),
-        result: serde_json::json!({"ok": true, "data": [1, 2, 3]}),
-        error: None,
-    };
+    let item = make_result_item("call_0", "read_file", "success", serde_json::json!({"ok": true, "data": [1, 2, 3]}), None);
     assert_eq!(item.status, "success");
+    assert_eq!(item.name, "read_file");
     assert_eq!(item.result["ok"], true);
     assert!(item.error.is_none());
 }
@@ -840,12 +886,7 @@ fn tool_result_item_success() {
 // [构造] error 状态：result 为 null，error 有值
 #[test]
 fn tool_result_item_error() {
-    let item = ToolResultItem {
-        call_id: "call_1".into(),
-        status: "error".into(),
-        result: serde_json::Value::Null,
-        error: Some("file not found".into()),
-    };
+    let item = make_result_item("call_1", "search", "error", Value::Null, Some("file not found"));
     assert_eq!(item.status, "error");
     assert_eq!(item.result, serde_json::Value::Null);
     assert_eq!(item.error, Some("file not found".into()));
@@ -854,12 +895,7 @@ fn tool_result_item_error() {
 // [构造] cancelled 状态：result 为 null，error 解释原因
 #[test]
 fn tool_result_item_cancelled() {
-    let item = ToolResultItem {
-        call_id: "call_2".into(),
-        status: "cancelled".into(),
-        result: serde_json::Value::Null,
-        error: Some("cancelled: dependency call_1 failed".into()),
-    };
+    let item = make_result_item("call_2", "write_file", "cancelled", Value::Null, Some("cancelled: dependency call_1 failed"));
     assert_eq!(item.status, "cancelled");
     assert_eq!(item.result, serde_json::Value::Null);
     assert!(item.error.unwrap().contains("cancelled"));
@@ -868,43 +904,29 @@ fn tool_result_item_cancelled() {
 // [序列化] success 不输出 error 字段
 #[test]
 fn tool_result_item_success_skips_error() {
-    let item = ToolResultItem {
-        call_id: "call_0".into(),
-        status: "success".into(),
-        result: serde_json::json!({"ok": true}),
-        error: None,
-    };
+    let item = make_result_item("call_0", "read_file", "success", serde_json::json!({"ok": true}), None);
     let json = serde_json::to_string(&item).unwrap();
-    assert!(!json.contains("error"));
+    assert!(!json.contains("\"error\""));
     assert!(json.contains("success"));
 }
 
 // [序列化] error 状态输出 error 字段
 #[test]
 fn tool_result_item_error_includes_error_field() {
-    let item = ToolResultItem {
-        call_id: "call_1".into(),
-        status: "error".into(),
-        result: serde_json::Value::Null,
-        error: Some("timeout".into()),
-    };
+    let item = make_result_item("call_1", "search", "error", Value::Null, Some("timeout"));
     let json = serde_json::to_string(&item).unwrap();
     assert!(json.contains("\"error\""));
     assert!(json.contains("timeout"));
 }
 
-// [序列化] serde 往返 success
+// [序列化] serde 往返 success（含 name 字段）
 #[test]
 fn tool_result_item_serialization_roundtrip_success() {
-    let item = ToolResultItem {
-        call_id: "call_0".into(),
-        status: "success".into(),
-        result: serde_json::json!({"deleted": 42}),
-        error: None,
-    };
+    let item = make_result_item("call_0", "read_file", "success", serde_json::json!({"deleted": 42}), None);
     let json = serde_json::to_string(&item).unwrap();
     let back: ToolResultItem = serde_json::from_str(&json).unwrap();
     assert_eq!(back.call_id, "call_0");
+    assert_eq!(back.name, "read_file");
     assert_eq!(back.status, "success");
     assert_eq!(back.result["deleted"], 42);
     assert_eq!(back.error, None);
@@ -913,12 +935,7 @@ fn tool_result_item_serialization_roundtrip_success() {
 // [序列化] serde 往返 error
 #[test]
 fn tool_result_item_serialization_roundtrip_error() {
-    let item = ToolResultItem {
-        call_id: "call_1".into(),
-        status: "error".into(),
-        result: serde_json::Value::Null,
-        error: Some("bad input".into()),
-    };
+    let item = make_result_item("call_1", "search", "error", Value::Null, Some("bad input"));
     let json = serde_json::to_string(&item).unwrap();
     let back: ToolResultItem = serde_json::from_str(&json).unwrap();
     assert_eq!(back.status, "error");
@@ -928,14 +945,10 @@ fn tool_result_item_serialization_roundtrip_error() {
 // [trait] Clone 克隆后字段一致
 #[test]
 fn tool_result_item_clone() {
-    let item = ToolResultItem {
-        call_id: "call_0".into(),
-        status: "success".into(),
-        result: serde_json::json!({"x": 1}),
-        error: None,
-    };
+    let item = make_result_item("call_0", "t", "success", serde_json::json!({"x": 1}), None);
     let cloned = item.clone();
     assert_eq!(item.call_id, cloned.call_id);
+    assert_eq!(item.name, cloned.name);
     assert_eq!(item.status, cloned.status);
     assert_eq!(item.result, cloned.result);
     assert_eq!(item.error, cloned.error);
@@ -944,12 +957,7 @@ fn tool_result_item_clone() {
 // [边界] call_id 为空字符串：不 panic
 #[test]
 fn tool_result_item_empty_call_id() {
-    let item = ToolResultItem {
-        call_id: "".into(),
-        status: "success".into(),
-        result: serde_json::Value::Null,
-        error: None,
-    };
+    let item = make_result_item("", "t", "success", Value::Null, None);
     assert_eq!(item.call_id, "");
 }
 
@@ -959,15 +967,114 @@ fn tool_result_item_deeply_nested_result() {
     let result = serde_json::json!({
         "files": [{"name": "a.rs", "matches": [{"line": 1, "col": 2}]}]
     });
-    let item = ToolResultItem {
-        call_id: "call_0".into(),
-        status: "success".into(),
-        result: result.clone(),
-        error: None,
-    };
+    let item = make_result_item("call_0", "search", "success", result.clone(), None);
     let json = serde_json::to_string(&item).unwrap();
     let back: ToolResultItem = serde_json::from_str(&json).unwrap();
     assert_eq!(back.result, result);
+}
+
+// ── to_model_message — 9 tests ──
+
+// [方法] success → ModelMessage { role="tool", tool_call_id, name, content=result_str }
+#[test]
+fn to_model_message_success() {
+    let item = make_result_item("call_0", "read_file", "success", serde_json::json!({"ok": true, "bytes": 42}), None);
+    let mm = item.to_model_message();
+    assert_eq!(mm.role, "tool");
+    assert_eq!(mm.tool_call_id, Some("call_0".into()));
+    assert_eq!(mm.name, Some("read_file".into()));
+    // content should be the JSON string of the result
+    let content: Value = serde_json::from_str(&mm.content).unwrap();
+    assert_eq!(content["ok"], true);
+    assert_eq!(content["bytes"], 42);
+}
+
+// [方法] success 带字符串 result → content 即为 JSON 字符串
+#[test]
+fn to_model_message_success_string_result() {
+    let item = make_result_item("call_1", "read_file", "success", serde_json::Value::String("file contents\nline 2".into()), None);
+    let mm = item.to_model_message();
+    assert_eq!(mm.role, "tool");
+    assert_eq!(mm.content, "\"file contents\\nline 2\""); // JSON string
+}
+
+// [方法] error → ModelMessage content 含 error 包装
+#[test]
+fn to_model_message_error() {
+    let item = make_result_item("call_1", "search", "error", Value::Null, Some("file not found"));
+    let mm = item.to_model_message();
+    assert_eq!(mm.role, "tool");
+    assert_eq!(mm.tool_call_id, Some("call_1".into()));
+    assert_eq!(mm.name, Some("search".into()));
+    let content: Value = serde_json::from_str(&mm.content).unwrap();
+    assert_eq!(content["error"], "file not found");
+}
+
+// [方法] cancelled → ModelMessage content 含 cancelled 原因
+#[test]
+fn to_model_message_cancelled() {
+    let item = make_result_item("call_2", "write_file", "cancelled", Value::Null, Some("cancelled: dependency call_1 failed"));
+    let mm = item.to_model_message();
+    assert_eq!(mm.role, "tool");
+    let content: Value = serde_json::from_str(&mm.content).unwrap();
+    assert!(content["error"].as_str().unwrap().contains("cancelled"));
+}
+
+// [方法] error 的 error=None → content 含 "unknown error"
+#[test]
+fn to_model_message_error_without_message() {
+    let item = ToolResultItem {
+        call_id: "call_3".into(),
+        name: "t".into(),
+        status: "error".into(),
+        result: Value::Null,
+        error: None,
+    };
+    let mm = item.to_model_message();
+    let content: Value = serde_json::from_str(&mm.content).unwrap();
+    assert_eq!(content["error"], "unknown error");
+}
+
+// [方法] cancelled 的 error=None → content 含 "cancelled"
+#[test]
+fn to_model_message_cancelled_without_message() {
+    let item = ToolResultItem {
+        call_id: "call_4".into(),
+        name: "t".into(),
+        status: "cancelled".into(),
+        result: Value::Null,
+        error: None,
+    };
+    let mm = item.to_model_message();
+    let content: Value = serde_json::from_str(&mm.content).unwrap();
+    assert_eq!(content["error"], "cancelled");
+}
+
+// [边界] 超大 result（100KB JSON）→ content 完整保留
+#[test]
+fn to_model_message_large_result() {
+    let large_str = "x".repeat(100_000);
+    let item = make_result_item("call_0", "read_file", "success", serde_json::Value::String(large_str.clone()), None);
+    let mm = item.to_model_message();
+    // content should be the JSON-encoded string (quotes + escaped)
+    let expected = serde_json::Value::String(large_str).to_string();
+    assert_eq!(mm.content, expected);
+}
+
+// [边界] name 为空字符串 → ModelMessage.name = Some("")
+#[test]
+fn to_model_message_empty_name() {
+    let item = make_result_item("call_0", "", "success", serde_json::json!({"x": 1}), None);
+    let mm = item.to_model_message();
+    assert_eq!(mm.name, Some("".into()));
+}
+
+// [边界] call_id 为空字符串 → ModelMessage.tool_call_id = Some("")
+#[test]
+fn to_model_message_empty_call_id() {
+    let item = make_result_item("", "t", "success", serde_json::json!({"x": 1}), None);
+    let mm = item.to_model_message();
+    assert_eq!(mm.tool_call_id, Some("".into()));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -980,24 +1087,9 @@ fn tool_result_set_multiple_results() {
     let set = ToolResultSet {
         session_id: "session-1".into(),
         results: vec![
-            ToolResultItem {
-                call_id: "call_0".into(),
-                status: "success".into(),
-                result: serde_json::json!("content"),
-                error: None,
-            },
-            ToolResultItem {
-                call_id: "call_1".into(),
-                status: "error".into(),
-                result: serde_json::Value::Null,
-                error: Some("failed".into()),
-            },
-            ToolResultItem {
-                call_id: "call_2".into(),
-                status: "cancelled".into(),
-                result: serde_json::Value::Null,
-                error: Some("cancelled: upstream call_1 failed".into()),
-            },
+            make_result_item("call_0", "read_file", "success", serde_json::json!("content"), None),
+            make_result_item("call_1", "search", "error", Value::Null, Some("failed")),
+            make_result_item("call_2", "write_file", "cancelled", Value::Null, Some("cancelled: upstream call_1 failed")),
         ],
     };
     assert_eq!(set.session_id, "session-1");
@@ -1023,18 +1115,8 @@ fn tool_result_set_serialization_roundtrip() {
     let set = ToolResultSet {
         session_id: "session-1".into(),
         results: vec![
-            ToolResultItem {
-                call_id: "call_0".into(),
-                status: "success".into(),
-                result: serde_json::json!({"ok": true}),
-                error: None,
-            },
-            ToolResultItem {
-                call_id: "call_1".into(),
-                status: "error".into(),
-                result: serde_json::Value::Null,
-                error: Some("boom".into()),
-            },
+            make_result_item("call_0", "read_file", "success", serde_json::json!({"ok": true}), None),
+            make_result_item("call_1", "search", "error", Value::Null, Some("boom")),
         ],
     };
     let json = serde_json::to_string(&set).unwrap();
@@ -1042,6 +1124,7 @@ fn tool_result_set_serialization_roundtrip() {
     assert_eq!(back.session_id, "session-1");
     assert_eq!(back.results.len(), 2);
     assert_eq!(back.results[0].call_id, "call_0");
+    assert_eq!(back.results[0].name, "read_file");
     assert_eq!(back.results[1].call_id, "call_1");
 }
 
@@ -1050,12 +1133,7 @@ fn tool_result_set_serialization_roundtrip() {
 fn tool_result_set_clone() {
     let set = ToolResultSet {
         session_id: "sid".into(),
-        results: vec![ToolResultItem {
-            call_id: "c0".into(),
-            status: "success".into(),
-            result: serde_json::json!(null),
-            error: None,
-        }],
+        results: vec![make_result_item("c0", "t", "success", serde_json::json!(null), None)],
     };
     let cloned = set.clone();
     assert_eq!(set.session_id, cloned.session_id);
@@ -1077,12 +1155,7 @@ fn tool_result_set_empty_session_id() {
 fn tool_result_set_debug() {
     let set = ToolResultSet {
         session_id: "sid".into(),
-        results: vec![ToolResultItem {
-            call_id: "c0".into(),
-            status: "success".into(),
-            result: serde_json::json!({"x": 1}),
-            error: None,
-        }],
+        results: vec![make_result_item("c0", "t", "success", serde_json::json!({"x": 1}), None)],
     };
     let debug = format!("{set:?}");
     assert!(debug.contains("sid"));
@@ -1441,6 +1514,6 @@ mod tests;
 | 文件 | 测试数 | 覆盖角度 |
 |------|--------|---------|
 | `tool_tests.rs` | 8 | `[构造][方法][边界][类型][覆盖]` |
-| `types_tests.rs` | 40 | `[构造][边界][序列化][trait][兼容]` |
+| `types_tests.rs` | 49 | `[构造][边界][序列化][trait][兼容][方法]` |
 | `config_tests.rs` | 21 | `[覆盖][序列化][构造][边界][兼容][trait]` |
-| **合计** | **69** | |
+| **合计** | **78** | |
