@@ -132,8 +132,12 @@ pub trait Tool: Send + Sync {
 ```rust
 /// A single tool invocation within a tool_call_set.
 ///
-/// Optional `blocked_by` declares intra-set dependencies:
-/// this call must wait for the listed call IDs to complete before executing.
+/// Bidirectional dependency lock (same pattern as task State):
+///   blocked_by — who blocks me (I depend on them)
+///   blocking  — who I block (they depend on me)
+///
+/// Engine sets the dependencies; executor derives the reverse edges
+/// during DAG construction for efficient bidirectional traversal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallItem {
     /// Unique ID within this tool_call_set (e.g., "call_0", "call_1").
@@ -142,10 +146,14 @@ pub struct ToolCallItem {
     pub tool: String,
     /// Parameters for the tool call.
     pub params: serde_json::Value,
-    /// IDs of calls within the same set that must complete before this one.
+    /// IDs of calls that must complete before this one.
     /// Empty = no dependencies, can execute immediately.
     #[serde(default)]
     pub blocked_by: Vec<String>,
+    /// IDs of calls that depend on this one.
+    /// Empty = nothing waits for this call.
+    #[serde(default)]
+    pub blocking: Vec<String>,
 }
 ```
 
@@ -155,10 +163,12 @@ pub struct ToolCallItem {
 /// A set of 1-N tool calls dispatched together.
 ///
 /// Engine assembles this after receiving a model_response with tool_calls.
-/// MCP builds a DAG, topologically sorts, and executes:
-/// - Calls without blocked_by: concurrent execution
+/// MCP builds a DAG from the bidirectional lock (blocked_by / blocking),
+/// topologically sorts, and executes:
+/// - Calls without dependencies: concurrent execution
 /// - Calls with blocked_by: serialized by dependency order
-/// - Any call fails → cascade cancel all downstream calls
+/// - Any call fails → cascade cancel along blocking (forward)
+/// - Any call cancelled by upstream → cascade cancel along blocking (forward)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallSet {
     /// The session this tool call set belongs to.
@@ -322,12 +332,14 @@ pub struct SkillIndex {
       {
         "id": "call_0",
         "tool": "read_file",
-        "params": {"path": "/workspace/src/main.rs"}
+        "params": {"path": "/workspace/src/main.rs"},
+        "blocking": ["call_2"]
       },
       {
         "id": "call_1",
         "tool": "search_content",
-        "params": {"pattern": "fn main", "path": "/workspace/src"}
+        "params": {"pattern": "fn main", "path": "/workspace/src"},
+        "blocking": ["call_2"]
       },
       {
         "id": "call_2",
@@ -374,7 +386,7 @@ pub struct SkillIndex {
 
 ### 级联取消示例
 
-当 `call_1` 失败时，`call_2`（blocked_by call_0, call_1）被取消：
+当 `call_1` 失败时，executor 沿 `blocking` 正向遍历：call_1.blocking → call_2 → cancelled。同时沿 `blocked_by` 回查可确认 call_2 的所有上游状态。
 
 ```json
 {
@@ -398,6 +410,18 @@ pub struct SkillIndex {
     ]
   }
 }
+```
+
+### 逆向取消示例
+
+当 `call_0` 被 Engine 直接取消（非执行失败，如用户中断），沿 `blocking` 正向级联：
+
+```
+Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
+  → call_0.blocking = ["call_2"]
+    → call_2 沿 blocked_by 回查：call_1 仍在跑，但 call_0 已取消
+      → call_2 仍有一组上游未全部成功 → call_2 = cancelled
+        → call_2.blocking = ["call_3"] → call_3 = cancelled
 ```
 
 ### use_skill — Engine → MCP
@@ -437,15 +461,20 @@ pub struct SkillIndex {
 
 ```
 ToolCallSet.calls
-  → 构建邻接表（blocked_by → edges）
+  → 构建双向链：
+       blocked_by → edges（正向：谁阻塞我 — 入度）
+       blocking   → reverse edges（逆向：我阻塞谁 — 出度）
+       Engine 同时提供 blocked_by + blocking，executor 交叉验证：
+         A.blocking 包含 B ⇔ B.blocked_by 包含 A
+         不一致 → 全部返回 error（数据错误，不静默修复）
     → 检测环（DFS，有环则全部返回 error）
-      → 拓扑排序（Kahn 算法）
+      → 拓扑排序（Kahn 算法，基于 blocked_by 入度）
         → 按层级分批：
-            Layer 0: [call_0, call_1]   ← 无依赖，concurrent
+            Layer 0: [call_0, call_1]   ← 入度 = 0，concurrent
             Layer 1: [call_2]           ← 依赖 0,1 都完成
             Layer 2: [call_3]           ← 依赖 2 完成
           → 每层内部并发执行（tokio::spawn）
-            → 任一步失败 → 级联取消 downstream
+            → 任一步失败 → 沿 blocking 正向级联取消
               → 组装 ToolResultSet 返回
 ```
 
@@ -475,8 +504,23 @@ spawn per call:
 
 ### 级联取消策略
 
-- 当 call X 返回 `status: "error"`，沿 blocking 链标记所有直接/间接依赖者为 `status: "cancelled"`
-- 对每个 cancelled call，调用 `tool.cancel()` 通知工具释放资源，然后跳过执行
+双向锁支持正向和逆向遍历，与 Phase 2 Task 状态的双向锁模式一致：
+
+```
+              blocked_by (I depend on them)
+       call_0 ──────────────────→ call_2 ──→ call_3
+       call_1 ──────────────────→ call_2
+              blocking (they depend on me)
+       call_0 ←────────────────── call_2 ←── call_3
+       call_1 ←────────────────── call_2
+```
+
+**正向取消（沿 blocking）**：call X 执行失败或超时 → 沿 `blocking` 链标记所有直接/间接下游为 `cancelled`
+**逆向查找（沿 blocked_by）**：需要知道"call Y 被谁阻塞"时，沿 `blocked_by` 回查上游
+
+- 当 call X 返回 `status: "error"` 或超时 → 沿 `blocking` 正向遍历，标记所有下游为 `cancelled`
+- 对每个 cancelled call，调用 `tool.cancel()` 通知工具释放资源，跳过执行
+- 如果 call X 的所有上游（`blocked_by`）中任一失败或取消，call X 也被级联取消
 - 最终 ToolResultSet 包含所有 call 的结果（含 cancelled）
 
 ### 超时
