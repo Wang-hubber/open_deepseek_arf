@@ -50,13 +50,47 @@ arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json
 
 ## 数据结构
 
+### ToolError
+
+```rust
+/// Error returned by a tool's execute().
+///
+/// The executor catches this and packages it into the ToolResultItem.
+/// Tool authors don't need to follow any error convention — just return Err.
+#[derive(Debug, Clone)]
+pub struct ToolError {
+    pub message: String,
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+impl From<&str> for ToolError {
+    fn from(s: &str) -> Self {
+        Self { message: s.to_string() }
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(s: String) -> Self {
+        Self { message: s }
+    }
+}
+```
+
 ### Tool trait
 
 ```rust
 /// A tool that MCP can execute.
 ///
 /// Implementations are Send + Sync so they can be shared across tokio tasks.
-/// Each tool is self-contained: it receives parameters and returns a result.
+/// Tool authors only need to implement `execute()` — error handling, panic
+/// catching, and result packaging are centralized in the executor.
 /// Sandboxing and approval are handled by separate Nodes on the Bus — not here.
 pub trait Tool: Send + Sync {
     /// Unique tool name: "read_file", "write_file", "search_content".
@@ -70,12 +104,26 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given parameters.
     ///
-    /// Returns a JSON value as the tool result. On error, returns
-    /// `{"ok": false, "error": "message"}` rather than panicking.
+    /// Returns Ok(result) on success, Err(ToolError) on failure.
+    /// The executor also wraps this in catch_unwind for panic safety —
+    /// tool authors can use plain `unwrap()` / `expect()` without breaking MCP.
     async fn execute(
         &self,
         params: serde_json::Value,
-    ) -> serde_json::Value;
+    ) -> Result<serde_json::Value, ToolError>;
+
+    /// Cancel an in-progress execution.
+    ///
+    /// Called by the executor when:
+    /// - A dependency fails (cascade cancel)
+    /// - Engine sends a cancellation for this tool_call_set
+    ///
+    /// Default implementation is a no-op. Tools with long-running or
+    /// resource-holding operations should override this to release
+    /// resources and set a cancellation flag.
+    async fn cancel(&self) {
+        // no-op by default
+    }
 }
 ```
 
@@ -117,6 +165,12 @@ pub struct ToolCallSet {
     pub session_id: String,
     /// 1-N tool calls in this set.
     pub calls: Vec<ToolCallItem>,
+    /// Per-call timeout in milliseconds. None = no timeout (Engine's choice).
+    /// MCP does not impose a default or hidden deadline.
+    /// When a call exceeds this timeout, the executor cancels it and
+    /// cascades to its dependents.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 ```
 
@@ -124,15 +178,23 @@ pub struct ToolCallSet {
 
 ```rust
 /// Result of a single tool call.
+///
+/// All error packaging is centralized in the executor — tool authors
+/// never construct this struct directly. The executor:
+/// 1. Calls tool.execute() inside catch_unwind
+/// 2. On Ok(val) → status: "success", result: val
+/// 3. On Err(e) → status: "error", error: e.message
+/// 4. On panic → status: "error", error: "panic: {message}"
+/// 5. On cancel (cascade or timeout) → calls tool.cancel(), status: "cancelled"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultItem {
     /// Matches ToolCallItem.id.
     pub call_id: String,
     /// "success" or "error" or "cancelled".
     pub status: String,
-    /// The tool's return value.
+    /// The tool's return value. Null on error/cancelled.
     pub result: serde_json::Value,
-    /// Error message if status is "error".
+    /// Error message populated by executor on error/cancelled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -190,10 +252,13 @@ pub struct SkillEntry {
 
 ### SkillIndex
 
+> SkillIndex 是 MCP 内部组件，不对外暴露。Engine 通过 Bus 消息（`use_skill` → `skill_loaded`）获取 skill body，不直接扫描文件系统。
+
 ```rust
 /// Scan, index, and retrieve lazy-loaded skills.
 ///
 /// Scans `<root>/skills/` for subdirectories containing skill.yaml + skill.md.
+/// MCP-internal — Engine never sees this struct.
 pub struct SkillIndex {
     root: PathBuf,
     index: HashMap<String, SkillEntry>,
@@ -384,17 +449,56 @@ ToolCallSet.calls
               → 组装 ToolResultSet 返回
 ```
 
+### 集中式错误处理
+
+每个 tool call 执行时，executor 统一包裹三层保护。Tool 作者不需要遵守任何错误约定——抛异常、返回 Err、或 unwrap panic 都会被捕获并封装为标准的 tool_result message。
+
+```
+spawn per call:
+  ┌─ tokio::spawn(async {
+  │    // Layer 1: catch_unwind — panic safety
+  │    let result = catch_unwind(AssertUnwindSafe(|| async {
+  │        // Layer 2: Result<_, ToolError> — type-safe errors
+  │        tool.execute(params).await
+  │    })).await;
+  │
+  │    // Layer 3: timeout (if ToolCallSet.timeout_ms is set)
+  │    // tokio::time::timeout wraps the entire execution
+  │
+  │    match result {
+  │        Ok(Ok(val))            → ToolResultItem { status: "success", result: val }
+  │        Ok(Err(tool_err))      → ToolResultItem { status: "error", error: tool_err.message }
+  │        Err(panic_payload)     → ToolResultItem { status: "error", error: "panic: {msg}" }
+  │    }
+  │  })
+```
+
 ### 级联取消策略
 
 - 当 call X 返回 `status: "error"`，沿 blocking 链标记所有直接/间接依赖者为 `status: "cancelled"`
-- 不尝试执行已取消的 call
+- 对每个 cancelled call，调用 `tool.cancel()` 通知工具释放资源，然后跳过执行
 - 最终 ToolResultSet 包含所有 call 的结果（含 cancelled）
+
+### 超时
+
+- `ToolCallSet.timeout_ms` 由 Engine 设置，MCP 不做默认值、不设兜底
+- 超时只由 Engine 的业务需求驱动——Engine 不传就是无超时
+- 超时触发时：executor 调用 `tool.cancel()` → 级联取消 dependents → 标记 `status: "cancelled"`
+
+### 取消机制
+
+`Tool::cancel()` 是优雅退出的钩子：
+- 默认实现为空（no-op），简单工具不需要关心
+- 持有文件句柄、网络连接等资源的工具应覆盖 `cancel()` 设置标志位
+- `cancel()` 被调用后，正在运行的 `execute()` 应尽快返回
+- 取消不等待——executor 调用 `cancel()` 后 abort tokio task
 
 ### 并发模型
 
 - 每个 tool call 在独立的 `tokio::spawn` 任务中执行
 - 层内并发数无硬性限制（由 tokio runtime 调度）
 - 所有 tool 实现必须是 `Send + Sync`
+- 执行期间 executor 持有每个 task 的 `JoinHandle`，用于取消
 
 ---
 
@@ -465,7 +569,7 @@ crates/arf-mcp/
 | 6.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`tool.rs`、`lib.rs` | `crates/arf-mcp/` |
 | 6.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
 | 6.3 | SkillIndex | 扫描 skill 目录、resolve、load_body | `skill.rs` |
-| 6.4 | DAG 执行器 | 构建邻接表、环检测、拓扑排序、分层并发、级联取消 | `executor.rs` |
+| 6.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
 | 6.5 | LocalMcpNode | Bus 节点生命周期 + listen loop（`tool_call_set` / `use_skill` 消息处理） | `node.rs` |
 | 6.6 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
 | 6.7 | 集成测试 | LocalMcpNode + Bus + mock Engine 消息收发 | `tests/` |
@@ -478,9 +582,11 @@ crates/arf-mcp/
 - [ ] `LocalMcpNode` 正确广播 `node_online`（含 tools + skills 元数据）
 - [ ] `LocalMcpNode` 正确响应 `tool_call_set` → 执行 → `tool_result_set`
 - [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded`
-- [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消
+- [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
+- [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
+- [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
 - [ ] Tool trait 可 mock（用于 Engine 单测）
-- [ ] SkillIndex 正确扫描 skill 目录并加载 body
+- [ ] SkillIndex 正确扫描 skill 目录并加载 body，不对外暴露
 
 ---
 
