@@ -71,10 +71,21 @@ pub struct McpNode {
     pub namespace: String,
     /// Bus-facing NodeId: `mcp/{namespace}`.
     pub node_id: NodeId,
+    /// Root directory for skill/script discovery (skills/*, tools/*).
+    root_dir: PathBuf,
     /// Internal: resource scanning, indexing, L2/L3 queries.
     discovery: DiscoveryModule,
     /// Internal: DAG execution, tool lifecycle, future sandbox entry.
     runtime: RuntimeModule,
+    /// Built-in Rust tools injected via Builder.
+    builtin_tools: HashMap<String, Arc<dyn Tool>>,
+}
+
+impl McpNode {
+    /// Create a new McpNode via the Builder.
+    pub fn builder() -> McpNodeBuilder {
+        McpNodeBuilder::default()
+    }
 }
 ```
 
@@ -85,6 +96,8 @@ pub struct McpNode {
 | `RuntimeModule` | ❌ 内部 | — |
 
 **namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
+
+**Builder 模式**：内置 Rust Tool（如 `ReadFileTool`）通过 `McpNode::builder().with_tool(Arc::new(tool))` 注入，这是 ARF 的 DI 模式。`root_dir` 传给 `SkillIndex` 和未来 `ScriptTool` 用于文件夹扫描。`DiscoveryModule::scan()` 合并两个来源——内置 Tool 注册表 + 文件夹下资源——生成统一的 `node_online` 广播。
 
 **Engine 路由逻辑**（极简）：
 1. 监听 `node_online` → 看到 `mcp/filesystem`、`mcp/network` 等节点
@@ -102,6 +115,124 @@ arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json
 ```
 
 不依赖 `arf-state`、不依赖 `arf-agent`、不依赖 `arf-engine`。
+
+---
+
+## 资源注册与发现
+
+> 开发者如何注册 Tool/Skill？MCP 如何发现它们？
+
+### 两种注册路径
+
+| 路径 | 适用资源 | 场景 | 实现方式 |
+|------|---------|------|---------|
+| **文件夹约定** | Skill（纯数据）+ 未来 ScriptTool | 零代码、git 友好、热加载 | `DiscoveryModule::scan(root)` |
+| **Builder API** | 内置 Rust Tool | 类型安全、编译期检查、高性能 | `McpNode::builder().with_tool(Arc::new(ReadFileTool))` |
+
+### McpNode 的 root 目录
+
+McpNode 构造时接收一个 root 目录，内部按约定组织：
+
+```
+{root}/
+├── skills/                 # Phase 5: SkillIndex 扫描
+│   ├── react-component/
+│   │   ├── SKILL.md
+│   │   ├── scripts/
+│   │   ├── references/
+│   │   └── assets/
+│   └── ...
+├── tools/                  # 未来 Phase: ScriptTool 扫描
+│   ├── cleanup_logs/
+│   │   ├── tool.toml
+│   │   └── main.sh
+│   └── ...
+```
+
+**Skill**：开发者只需建文件夹 + 写 `SKILL.md`，`SkillIndex::scan(root)` 自动发现。
+
+**内置 Rust Tool**：通过 Builder 注入，编译进二进制 — 这是 ARF 的 DI 模式。
+
+```rust
+let mcp = McpNode::builder()
+    .namespace("filesystem")
+    .root_dir("/path/to/root")
+    .with_tool(Arc::new(ReadFileTool::new()))
+    .with_tool(Arc::new(WriteFileTool::new()))
+    .with_tool(Arc::new(SearchContentTool::new()))
+    .build()
+    .await?;
+```
+
+### 脚本 Tool（未来 Phase 设计）
+
+> 不在 Phase 5 交付范围，但目录结构预留扩展点。
+
+#### 语言支持与场景
+
+| 语言 | 场景 | 执行方式 |
+|------|------|---------|
+| **Python** | AI 生态、数据处理、LLM 工具链 | `python3 {entrypoint}` |
+| **Rust** | 性能敏感的解析、并发操作 | 首次/变更时自动编译为 binary |
+| **Bash** | 定时任务、系统操作、CI/CD 集成 | `bash {entrypoint}` |
+
+#### tool.toml — 脚本 Tool 元数据
+
+```toml
+name = "cleanup_logs"
+description = "Delete log files older than N days"
+runtime = "bash"             # "python" | "bash" | "rust"
+entrypoint = "main.sh"       # 入口文件
+timeout_ms = 30000           # 可选：单次执行超时
+
+[params_schema]               # JSON Schema
+type = "object"
+properties.days = { type = "integer", default = 30 }
+properties.path = { type = "string" }
+```
+
+#### 执行协议：stdin/stdout JSON
+
+MCP 通过 `ScriptTool`（通用的 `Tool` trait 实现）包裹所有脚本：
+
+```
+MCP executor
+  → ScriptTool.execute(params)
+    → 按 runtime 选择执行器
+    → stdin 写入 JSON params
+    → stdout 读取 JSON result
+    → stderr 捕获为 error
+```
+
+脚本只需要：**从 stdin 读 JSON，往 stdout 写 JSON**。
+
+```python
+import sys, json
+params = json.loads(sys.stdin.read())
+# ... 业务逻辑 ...
+print(json.dumps({"ok": True, "deleted": 42}))
+```
+
+#### 与内置 Tool 的关系
+
+`DiscoveryModule::scan()` 合并两个来源：
+1. **内置 Tool 注册表**（Builder 注入的 Rust Tool）— 编译时已知
+2. **文件夹下脚本 Tool**（`tools/*/tool.toml`）— 运行时扫描
+
+合并为统一的工具列表，通过 `node_online` 广播。Engine 不关心工具来自哪里。
+
+### 持久化选择：文件夹 vs SQLite
+
+**文件夹胜出**：
+- Skill 本质是 Markdown 文件，放数据库里反而别扭
+- Git 友好，开发者的 skill 可以版本控制
+- FileWatcher 可直接监听文件变更做热加载
+- Skill 数量级最多几十个，不需要查询引擎
+- 如果未来有全文搜索需求，在内存中建 `HashMap<String, SkillEntry>` 索引即可
+
+### API 注册 + 持久化
+
+不在 Phase 5 范围。属于未来 Remote MCP / Registry 场景。当前设计保持简单。
 
 ---
 
@@ -811,10 +942,14 @@ crates/arf-mcp/
 - [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
 - [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
 - [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
-- [ ] Tool trait 可 mock（用于 Engine 单测）
-- [ ] SkillIndex 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
+- [ ] `Tool trait` 可 mock（用于 Engine 单测）
+- [ ] `SkillIndex` 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
 - [ ] McpNode 可多实例并存（不同 namespace），各自独立广播 `node_online`
+- [ ] McpNode 构造使用 Builder 模式，内置 Tool 通过 `with_tool()` 注入（遵循 ARF DI 原则）
+- [ ] McpNode 接收 `root_dir`，SkillIndex 扫描 `{root_dir}/skills/*/SKILL.md`
+- [ ] 脚本 Tool 目录结构（`tools/*/tool.toml`）在代码结构中预留，Phase 5 不实现执行器
+- [ ] 文件夹约定是主要发现机制；API 注册 + 持久化不在 Phase 5 范围
 
 ---
 
