@@ -13,7 +13,7 @@
 - **所有本地 Tool 都是 ScriptTool**——不区分"内置"和"脚本"，`DiscoveryModule`（Task 5.6）扫描 `{root}/tools/*/tool.toml` 统一发现
 - **取消机制**：`ScriptTool` 持有 `Mutex<Option<oneshot::Sender>>`，`execute()` 内部创建 oneshot channel，`cancel()` 触发 sender → `execute()` 的 `tokio::select!` 收到信号 → `child.start_kill()` 终止子进程
 - **超时**：通过 `tokio::select!` 的 `timeout` 分支实现，超时后 `start_kill()` 终止子进程
-- **Rust runtime**：entrypoint 是预编译二进制，直接执行，不负责编译
+- **Rust runtime**：entrypoint 指向 `.rs` 源文件，首次执行 `rustc` 编译 → 二进制缓存到 tool 目录，后续通过 mtime 对比判断是否需要重编译。编译错误作为 `ToolError` 返回
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
@@ -86,6 +86,7 @@ impl ToolConfig {
 ### `crates/arf-mcp/src/script.rs` — 新建
 
 ```rust
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -103,11 +104,12 @@ use crate::types::ToolError;
 ///
 /// ScriptTool implements the Tool trait, so it works with the standard
 /// DAG executor — no special path. The `execute()` method:
-/// 1. Starts a child process (python3 / bash / compiled binary)
-/// 2. Writes params as JSON to stdin
-/// 3. Reads result as JSON from stdout
-/// 4. Captures stderr for error reporting
-/// 5. Kills the process on timeout or cancel
+/// 1. (Rust only) Compile .rs → cached binary via mtime comparison
+/// 2. Starts a child process (python3 / bash / compiled Rust binary)
+/// 3. Writes params as JSON to stdin
+/// 4. Reads result as JSON from stdout
+/// 5. Captures stderr for error reporting
+/// 6. Kills the process on timeout or cancel
 pub struct ScriptTool {
     /// Tool name from tool.toml.
     name: String,
@@ -148,22 +150,68 @@ impl ScriptTool {
     }
 
     /// Build the platform command for this tool's runtime.
-    fn build_command(&self) -> Command {
+    ///
+    /// For Rust, this also handles on-demand compilation:
+    /// - First call: `rustc source -o binary` → cache binary next to source
+    /// - Subsequent calls: compare mtime, recompile only if source changed
+    /// - Compilation errors are returned as `ToolError`
+    async fn build_command(&self) -> Result<Command, ToolError> {
         let entrypoint_path = self.tool_dir.join(&self.entrypoint);
         match self.runtime {
             ScriptRuntime::Python => {
                 let mut cmd = Command::new("python3");
                 cmd.arg(&entrypoint_path);
-                cmd
+                Ok(cmd)
             }
             ScriptRuntime::Bash => {
                 let mut cmd = Command::new("bash");
                 cmd.arg(&entrypoint_path);
-                cmd
+                Ok(cmd)
             }
             ScriptRuntime::Rust => {
-                // Pre-compiled binary — run directly
-                Command::new(&entrypoint_path)
+                // entrypoint 是 .rs 源文件，binary 去掉 .rs 后缀
+                let source = &entrypoint_path;
+                let binary = self.tool_dir.join(
+                    self.entrypoint.trim_end_matches(".rs")
+                );
+
+                // mtime 对比：源文件是否比已有二进制更新
+                let needs_compile = match (fs::metadata(source), fs::metadata(&binary)) {
+                    (Ok(src_meta), Ok(bin_meta)) => {
+                        let src_time = src_meta.modified()
+                            .map_err(|e| ToolError::from(format!("stat src: {e}")))?;
+                        let bin_time = bin_meta.modified()
+                            .map_err(|e| ToolError::from(format!("stat bin: {e}")))?;
+                        src_time > bin_time
+                    }
+                    (Ok(_), Err(_)) => true, // 二进制不存在 → 编译
+                    (Err(_), _) => {
+                        return Err(ToolError::from(format!(
+                            "source file not found: {}",
+                            source.display()
+                        )));
+                    }
+                };
+
+                if needs_compile {
+                    let output = Command::new("rustc")
+                        .arg(source)
+                        .arg("-o").arg(&binary)
+                        .arg("-C").arg("opt-level=2")
+                        .output()
+                        .await
+                        .map_err(|e| ToolError::from(format!("rustc spawn: {e}")))?;
+
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(ToolError::from(format!(
+                            "rustc compile error:\n{}",
+                            stderr
+                        )));
+                    }
+                }
+
+                Ok(Command::new(&binary))
             }
         }
     }
@@ -184,9 +232,10 @@ impl Tool for ScriptTool {
     }
 
     async fn execute(&self, params: Value) -> Result<Value, ToolError> {
-        // 1. Spawn child process
+        // 1. Build command (Rust: compile if needed)
         let mut child = self
             .build_command()
+            .await?
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -463,7 +512,9 @@ default = 10
 
 测试策略：
 - 使用临时目录 + 写入真实脚本文件来测试 `ScriptTool.execute()`
-- Python 和 Bash 用真实子进程，Rust 跳过（需要预编译二进制）
+- Python、Bash、Rust 三语言均用真实子进程验证
+- Rust 测试验证编译 + 执行 + 缓存重编译跳过三条路径
+- Rust 测试要求 `rustc` 在 PATH 中（开发环境默认满足）
 - 每个测试创建独立 temp dir，测试结束后自动清理
 
 ```rust
@@ -503,14 +554,10 @@ fn setup_script_tool(
             ("main.sh".to_string(), p)
         }
         ScriptRuntime::Rust => {
-            let p = temp.join("main");
+            let entry = "main.rs";
+            let p = temp.join(entry);
             fs::write(&p, script_content).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-            ("main".to_string(), p)
+            (entry.to_string(), p)
         }
     };
 
@@ -555,6 +602,17 @@ fn bash_echo_tool() -> (ScriptTool, Cleanup) {
         "echo_sh",
         ScriptRuntime::Bash,
         "#!/bin/bash\ninput=$(cat)\necho \"$input\"\n",
+        Some(5000),
+    );
+    (tool, Cleanup(dir))
+}
+
+/// Shortcut: Rust echo program — reads stdin, writes to stdout.
+fn rust_echo_tool() -> (ScriptTool, Cleanup) {
+    let (tool, dir) = setup_script_tool(
+        "echo_rs",
+        ScriptRuntime::Rust,
+        "use std::io::Read;\nfn main() {\n    let mut input = String::new();\n    std::io::stdin().read_to_string(&mut input).unwrap();\n    print!(\"{}\", input);\n}\n",
         Some(5000),
     );
     (tool, Cleanup(dir))
@@ -613,7 +671,7 @@ fn script_tool_empty_strings() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ScriptTool execute — 8 tests
+// ScriptTool execute — 13 tests
 // ═══════════════════════════════════════════════════════════════
 
 // [方法] Python 脚本执行：echo params 回显
@@ -719,6 +777,75 @@ async fn execute_nonexistent_entrypoint() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ScriptTool Rust — 5 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [方法] Rust echo 编译 + 执行 + params 回显
+#[tokio::test]
+async fn execute_rust_echo() {
+    let (tool, _cleanup) = rust_echo_tool();
+    let result = tool
+        .execute(serde_json::json!({"lang": "rust", "n": 1}))
+        .await
+        .unwrap();
+    assert_eq!(result["lang"], "rust");
+    assert_eq!(result["n"], 1);
+}
+
+// [方法] Rust 编译错误 → 返回 error
+#[tokio::test]
+async fn execute_rust_compile_error() {
+    let script = "this is not valid rust code\n";
+    let (tool, _cleanup) = setup_script_tool(
+        "bad_rs",
+        ScriptRuntime::Rust,
+        script,
+        Some(5000),
+    );
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("rustc compile error"));
+}
+
+// [方法] Rust 二次执行使用缓存（mtime 对比跳过重编译）
+#[tokio::test]
+async fn execute_rust_cached_binary() {
+    let (tool, _cleanup) = rust_echo_tool();
+    // 第一次执行：编译 + 运行
+    let r1 = tool.execute(serde_json::json!({"run": 1})).await.unwrap();
+    assert_eq!(r1["run"], 1);
+    // 第二次执行：源文件未变 → 跳过编译，直接运行
+    let r2 = tool.execute(serde_json::json!({"run": 2})).await.unwrap();
+    assert_eq!(r2["run"], 2);
+}
+
+// [边界] Rust 源文件不存在 → 返回 error
+#[tokio::test]
+async fn execute_rust_source_not_found() {
+    let config = ToolConfig {
+        name: "missing_rs".into(),
+        description: "No such source".into(),
+        runtime: ScriptRuntime::Rust,
+        entrypoint: "ghost.rs".into(),
+        timeout_ms: Some(5000),
+        params_schema: serde_json::Value::Null,
+    };
+    let tool = ScriptTool::new(config, PathBuf::from("/tmp/nonexistent_rust_dir"));
+    let result = tool.execute(serde_json::json!({})).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("not found"));
+}
+
+// [方法] Rust stdin 大 JSON 编译执行
+#[tokio::test]
+async fn execute_rust_large_input() {
+    let (tool, _cleanup) = rust_echo_tool();
+    let large_data = serde_json::json!({"data": "x".repeat(10000)});
+    let result = tool.execute(large_data.clone()).await.unwrap();
+    assert_eq!(result["data"], large_data["data"]);
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ScriptTool 超时 — 2 tests
 // ═══════════════════════════════════════════════════════════════
 
@@ -813,5 +940,5 @@ async fn cancel_when_idle_no_panic() {
 | 文件 | 新增测试 | 覆盖角度 |
 |------|---------|---------|
 | `config_tests.rs` | 8 | `[构造][边界]` — TOML 解析（full/minimal/all runtimes/invalid runtime/missing field/nested schema） |
-| `script_tests.rs` | 15 | `[构造][方法][边界][超时][取消]` — ScriptTool 构造、execute、timeout、cancel |
-| **合计** | **23** | 累计 arf-mcp: 69 + 23 = **92 tests** |
+| `script_tests.rs` | 20 | `[构造][方法][边界][超时][取消]` — ScriptTool 构造(3)、execute(13 含 5 Rust)、超时(2)、取消(2) |
+| **合计** | **28** | 累计 arf-mcp: 69 + 28 = **97 tests** |
