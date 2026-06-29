@@ -78,6 +78,7 @@ LocalMcpNode / RemoteMcpNode (Bus NodeHandle)
   │ 按 msg_type 分发：
   │
   ├── msg_type = tool_call_set        → [internal] runtime / HTTP proxy 处理
+  ├── msg_type = run_skill_script     → [internal] discovery 的 run_script 处理 (Remote 返回 error)
   ├── msg_type = use_skill            → [internal] discovery 处理 (Remote 返回 error)
   └── msg_type = load_skill_resource  → [internal] discovery 处理 (Remote 返回 error)
 ```
@@ -985,10 +986,15 @@ JsonRpcError ──→ ToolResultItem
 ```
 skills/{name}/           # name 为 kebab-case（如 react-component）
 ├── SKILL.md             # (必选) YAML frontmatter + Markdown body
-├── scripts/             # (可选) 可执行脚本
+├── scripts/             # (可选) 可执行脚本 + script.toml 元数据
+│   ├── generate-component.py
+│   ├── generate-component.toml   # (可选) 脚本元数据 = tool.toml 格式
+│   └── validate.py               # (可选) 无 .toml = 无可调用描述
 ├── references/          # (可选) 参考文档
 └── assets/              # (可选) 静态资源（模板、图片等）
 ```
+
+**脚本元数据约定**：`scripts/` 下的脚本可以附带同名的 `.toml` 文件（如 `generate-component.toml`），格式与 `tool.toml` 完全一致——只是 `name` 和 `entrypoint` 字段从文件名自动推导，无需在 toml 中重复声明。`.toml` 中提供的 `description` 和 `params_schema` 将被 `load_skill_resource` 返回给 LLM，供其判断该脚本的用途和调用方式。
 
 ### SKILL.md 格式
 
@@ -1023,7 +1029,7 @@ YAML frontmatter 定义：
 |------|---------|------|---------|
 | L1 元数据 | Agent 启动 | `{name, description}` | `node_online` 广播 |
 | L2 说明文档 | LLM 决定使用此 Skill | body (SKILL.md 全文) + `resources` (文件清单) | `use_skill` → `skill_loaded` |
-| L3 资源文件 | LLM 需要具体脚本/模板 | 单个文件内容 | `load_skill_resource` → `skill_resource_loaded` |
+| L3 资源文件 | LLM 需要具体脚本/模板 | 脚本：content + description + params_schema（来自 script.toml）；普通文件：content | `load_skill_resource` → `skill_resource_loaded` |
 
 ### SkillEntry
 
@@ -1085,8 +1091,31 @@ pub struct SkillIndex {
 - `resolve(name) -> Option<&SkillEntry>` — 按名查找
 - `load_body(name) -> Option<String>` — 读取 `SKILL.md` 全文（L2）
 - `load_resources(name) -> SkillResources` — 列出三级目录文件清单（L2 附带）
-- `load_resource_file(name, resource_path) -> Option<String>` — 读取具体资源文件内容（L3）
+- `load_resource_file(name, resource_path) -> Option<LoadedResource>` — 读取文件内容 + 脚本元数据（L3）
+- `load_script_meta(name, script_path) -> Option<ScriptMeta>` — 读取脚本的 `script.toml` 元数据（description + params_schema）
+- `run_script(name, script_path, params) -> Result<Value, String>` — 执行 skill 脚本（复用 ScriptTool subprocess 机制）
 - `list_index() -> Vec<&SkillEntry>` — 列出全部 L1 元数据
+
+`LoadedResource` 结构：
+```rust
+pub struct LoadedResource {
+    pub content: String,
+    /// Present only for scripts/ files with a script.toml.
+    pub description: Option<String>,
+    /// Present only for scripts/ files with a script.toml.
+    pub params_schema: Option<serde_json::Value>,
+}
+```
+
+`ScriptMeta` 结构（从 `scripts/{name}.toml` 解析，字段名沿用 tool.toml 格式）：
+```rust
+pub struct ScriptMeta {
+    pub description: String,
+    pub runtime: ScriptRuntime,
+    pub timeout_ms: Option<u64>,
+    pub params_schema: serde_json::Value,
+}
+```
 
 ### MCP 自检
 
@@ -1305,6 +1334,8 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
 
 ### skill_resource_loaded — MCP → Engine (L3)
 
+返回文件内容。对于 `scripts/` 下的脚本，额外携带来自 `script.toml` 的 `description` 和 `params_schema`，使 LLM 能理解脚本的用途和调用方式。
+
 ```json
 {
   "msg_type": "skill_resource_loaded",
@@ -1314,10 +1345,62 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
     "namespace": "filesystem",
     "skill_name": "react-component",
     "resource_path": "scripts/generate-component.py",
-    "content": "#!/usr/bin/env python3\n\nimport sys\n..."
+    "content": "#!/usr/bin/env python3\n\nimport sys\n...",
+    "description": "Generate a React component with TypeScript props",
+    "params_schema": {
+      "type": "object",
+      "properties": {
+        "component_name": {"type": "string", "description": "Name of the component"}
+      },
+      "required": ["component_name"]
+    }
   }
 }
 ```
+
+普通文件（`references/`、`assets/`）无 `script.toml` 时，`description` 和 `params_schema` 为 `null`。
+
+### run_skill_script — Engine → MCP
+
+Engine 请求执行 skill 的 `scripts/` 下的脚本。与 `tool_call_set` 使用相同的数据结构（`ToolCallItem` / `ToolResultItem`），但走独立的 `msg_type` 通道——skill 脚本不作为全局 Tool 注册，执行权归属 skill 所属的 MCP。
+
+```json
+{
+  "msg_type": "run_skill_script",
+  "from": "engine/session-1",
+  "to": ["mcp/filesystem"],
+  "payload": {
+    "namespace": "filesystem",
+    "session_id": "session-1",
+    "skill_name": "react-component",
+    "script_path": "scripts/generate-component.py",
+    "call_id": "call_5",
+    "params": {"component_name": "Button"}
+  }
+}
+```
+
+### skill_script_result — MCP → Engine
+
+返回脚本执行结果，shape 与 `ToolResultItem` 一致。
+
+```json
+{
+  "msg_type": "skill_script_result",
+  "from": "mcp/filesystem",
+  "to": ["engine/session-1"],
+  "payload": {
+    "session_id": "session-1",
+    "call_id": "call_5",
+    "name": "react-component/scripts/generate-component.py",
+    "status": "success",
+    "result": {"ok": true, "files_created": ["src/components/Button.tsx"]},
+    "error": null
+  }
+}
+```
+
+**设计约束**：`run_skill_script` 不支持 DAG（无 `blocked_by`/`blocking`），一次只执行一个脚本。如果需要编排多个脚本调用，Engine 应在 model response 的 tool_calls 中逐个发出。Skill 脚本的运行时继承 MCP 的 `RuntimeModule`——如果用 `LocalRuntime` 就在宿主机执行，用 `SandboxRuntime` 就在容器内执行。
 
 MCP 安全约束：`resource_path` 必须在 `{skill_dir}/scripts/`、`references/` 或 `assets/` 下，路径穿越（`../`）和绝对路径拒绝返回 error。
 
@@ -1586,7 +1669,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`tool.rs`（Tool trait）、`types.rs`（ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet）、`config.rs`（ScriptRuntime, ToolConfig, RemoteConfig）、`lib.rs` | `crates/arf-mcp/` |
 | 5.1a | ModelAdapter 集成 | `arf-model-adapter` 依赖 `arf-mcp`，`convert.rs` 新增 `tool_result_to_model_message()` + 9 个测试 | `crates/arf-model-adapter/` |
 | 5.2 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时/取消 kill） | `config.rs`, `script.rs` |
-| 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
+| 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3 含脚本 description+params_schema)、`load_script_meta`、`run_script`（复用 ScriptTool subprocess）、自检。Skill 脚本不注册为全局 Tool，通过独立的 `run_skill_script` / `skill_script_result` 消息执行 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
 | 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
@@ -1621,7 +1704,13 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] `LocalMcpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
 - [ ] `LocalMcpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
 - [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
-- [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 脚本含 description + params_schema，普通文件含 content)
+- [ ] `LocalMcpNode` 正确响应 `run_skill_script` → 调用 `SkillIndex::run_script()` → 返回 `skill_script_result`
+- [ ] `run_skill_script` / `skill_script_result` 使用与 `ToolCallItem` / `ToolResultItem` 一致的数据结构（call_id, name, status, result, error）
+- [ ] Skill 脚本元数据从 `scripts/{name}.toml` 读取（格式与 tool.toml 一致，name/entrypoint 自动推导）
+- [ ] Skill 脚本无 `.toml` 时，`load_skill_resource` 返回 description=null, params_schema=null
+- [ ] `SkillIndex::run_script()` 复用 `ScriptTool` 的 subprocess 执行机制，继承 MCP 的 `RuntimeModule`
+- [ ] `run_skill_script` 不支持 DAG（单脚本执行），需要编排时 Engine 逐个发出调用
 - [ ] Python API：`from py_arf.mcp import LocalMcpNode, RemoteMcpNode` 可正常 import 并使用
 - [ ] 内部去重：同一 namespace 内 tool/skill name 冲突 → panic
 - [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`），Engine 只需按 NodeId 路由
