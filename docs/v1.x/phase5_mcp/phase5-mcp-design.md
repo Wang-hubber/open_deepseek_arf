@@ -8,6 +8,28 @@
 
 **一个 MCP 实例 = 一个 namespace = Bus 上一个节点。** Engine 只和 `mcp/{namespace}` 通讯。本地 MCP 扫描文件夹发现 Tool/Skill，远程 MCP 通过 HTTP 协议发现和代理执行。Engine 对两者无区别——都是 `node_online` 广播 + 响应 `tool_call_set`。
 
+> **核心设计意图 — 执行权归属注册方**
+>
+> ```
+> Engine                              MCP (mcp/filesystem)
+>   │                                     │
+>   │  发出 tool_call_set                  │  我注册了 read_file，我决定它怎么跑
+>   │  [call_0: read_file, ...]           │    ├── LocalRuntime  → python3 script.py  (宿主机)
+>   │                                     │    └── SandboxRuntime → docker run ...    (容器)
+>   │                                     │
+>   │  ←── tool_result_set ────────────── │  执行细节对 Engine 不可见
+>   │  [call_0: {status:"success", ...}]  │
+>   │                                     │
+>   │  Engine 只看到：                      │
+>   │  - node_online 时知道 capabilities    │
+>   │  - tool_result_set 时知道结果         │
+>   │  - 不关心宿主机/Docker/Firecracker    │
+> ```
+>
+> **一句话：谁注册了这个 Tool，谁就决定这个 Tool 如何被运行。Engine 侧完全没有认知负担——只获取最终结果。**
+>
+> 封装边界在 `RuntimeModule` trait。执行策略（本地进程 / Docker 容器 / Firecracker uVM）是 MCP 节点的内部实现细节，通过 `capabilities()` 自描述，通过 `run_single()` 执行。Engine 不需要理解、也无法触及这一层。
+
 ```
 Bus
  │
