@@ -166,13 +166,19 @@ impl RemoteMcpNode {
 
 ```
 arf-core: NodeId, Message, NodeInfo, ModelMessage
-    ↑
-arf-bus: Bus, NodeHandle, MessageFilter
-    ↑
-arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json + toml + reqwest
+    ↑                   ↑
+    │                   │
+arf-bus: Bus,     arf-mcp ─── depends on: arf-core + serde + serde_json + tokio + toml + reqwest
+NodeHandle,             ↑
+MessageFilter           │
+    ↑           arf-model-adapter ─── depends on: arf-core + arf-bus + arf-mcp + reqwest
+    │
+arf-engine ─── depends on: arf-core + arf-bus + arf-state (Phase 6)
 ```
 
-不依赖 `arf-state`、不依赖 `arf-agent`、不依赖 `arf-engine`。
+不依赖 `arf-state`、不依赖 `arf-agent`。
+
+**关键**：`arf-model-adapter` 依赖 `arf-mcp`，因为它需要将 `ToolResultItem`（MCP 产出）转换为 `ModelMessage`（模型 API 格式）。转换函数 `tool_result_to_model_message()` 在 `arf-model-adapter/src/convert.rs` 中定义。MCP 不感知 ModelAdapter——它只产出纯数据。
 
 ---
 
@@ -504,14 +510,20 @@ pub struct ToolCallSet {
 /// All error packaging is centralized in the executor — tool authors
 /// never construct this struct directly. The executor:
 /// 1. Calls tool.execute() inside catch_unwind
-/// 2. On Ok(val) → status: "success", result: val
+/// 2. On Ok(val) → status: "success", result: val, name: from ToolCallItem.tool
 /// 3. On Err(e) → status: "error", error: e.message
 /// 4. On panic → status: "error", error: "panic: {message}"
 /// 5. On cancel (cascade or timeout) → calls tool.cancel(), status: "cancelled"
+///
+/// The `name` field is backfilled from `ToolCallItem.tool` by the executor.
+/// It travels with the result so downstream consumers (ModelAdapter) can
+/// construct the model-specific tool-result message without a call_id→name lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultItem {
     /// Matches ToolCallItem.id.
     pub call_id: String,
+    /// Tool name, matches ToolCallItem.tool. Backfilled by executor.
+    pub name: String,
     /// "success" or "error" or "cancelled".
     pub status: String,
     /// The tool's return value. Null on error/cancelled.
@@ -750,16 +762,19 @@ Engine 按 tool 的 namespace 前缀路由到对应 MCP 节点，MCP 内部分�
     "results": [
       {
         "call_id": "call_0",
+        "name": "read_file",
         "status": "success",
         "result": "fn main() {\n    println!(\"Hello\");\n}\n"
       },
       {
         "call_id": "call_1",
+        "name": "search_content",
         "status": "success",
         "result": {"matches": [{"line": 1, "content": "fn main() {"}]}
       },
       {
         "call_id": "call_2",
+        "name": "write_file",
         "status": "success",
         "result": {"ok": true, "path": "/workspace/out.txt", "bytes": 42}
       }
@@ -778,15 +793,17 @@ Engine 按 tool 的 namespace 前缀路由到对应 MCP 节点，MCP 内部分�
   "payload": {
     "session_id": "session-1",
     "results": [
-      {"call_id": "call_0", "status": "success", "result": "..."},
+      {"call_id": "call_0", "name": "read_file", "status": "success", "result": "..."},
       {
         "call_id": "call_1",
+        "name": "search_content",
         "status": "error",
         "result": null,
         "error": "pattern syntax error: unmatched ("
       },
       {
         "call_id": "call_2",
+        "name": "write_file",
         "status": "cancelled",
         "result": null,
         "error": "cancelled: dependency call_1 failed"
@@ -971,6 +988,91 @@ spawn per call:
 
 ---
 
+## MCP ↔ ModelAdapter 集成
+
+> MCP 产出纯数据（`ToolResultItem`），ModelAdapter 负责转换为模型 API 格式（`ModelMessage`）。MCP 不感知 ModelMessage 的存在。
+
+### 数据流
+
+```
+Engine 收到 model_response (含 tool_calls)
+  → Engine 构建 ToolCallSet { calls: [ToolCallItem { id: "call_0", tool: "read_file", params: {...} }] }
+  → Engine 发送 tool_call_set 给 mcp/{namespace}
+  → MCP 执行，executor 将 ToolCallItem.tool 回填到 ToolResultItem.name
+  → MCP 返回 ToolResultSet { results: [ToolResultItem { call_id: "call_0", name: "read_file", ... }] }
+  → Engine 调用 tool_result_to_model_message(&item) → ModelMessage
+  → Engine 将 ModelMessage 追加到 conversation history
+  → 下一轮 model_call
+```
+
+**关键**：`ToolResultItem.name` 由 MCP executor 回填，ModelAdapter 直接使用。Engine 不做 call_id→name 查表——这个设计消除了 Engine 的中间状态。
+
+### 转换规则
+
+转换函数位于 `arf-model-adapter/src/convert.rs`，由 ModelAdapter 持有：
+
+```rust
+/// Convert a ToolResultItem (from MCP) into a ModelMessage for the LLM conversation.
+///
+/// Clean boundary: MCP produces data, ModelAdapter converts to model API format.
+/// MCP never knows about ModelMessage.
+pub fn tool_result_to_model_message(item: &ToolResultItem) -> ModelMessage {
+    let content = match item.status.as_str() {
+        "success" => item.result.to_string(),
+        "error" => serde_json::json!({
+            "error": item.error.as_deref().unwrap_or("unknown error")
+        }).to_string(),
+        "cancelled" => serde_json::json!({
+            "error": item.error.as_deref().unwrap_or("cancelled")
+        }).to_string(),
+        other => serde_json::json!({"error": format!("unknown status: {other}")}).to_string(),
+    };
+    ModelMessage::new("tool", content)
+        .with_tool_call_id(&item.call_id)
+        .with_name(&item.name)
+}
+```
+
+| status | content | 示例 |
+|--------|---------|------|
+| `"success"` | `result.to_string()` | `"{\"ok\": true, \"bytes\": 42}"` |
+| `"error"` | `{"error": message}` | `"{\"error\": \"file not found\"}"` |
+| `"cancelled"` | `{"error": "cancelled: ..."}` | `"{\"error\": \"cancelled: dependency call_1 failed\"}"` |
+| other | `{"error": "unknown status: X"}` | (防御性兜底) |
+
+所有变体统一产出 `role = "tool"`，`tool_call_id = call_id`，`name = item.name`。
+
+### 职责边界
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                       MCP                               │
+│  ToolResultItem { call_id, name, status, result, error }│
+│  纯数据 struct，无任何 ModelMessage 知识                   │
+└──────────────────────┬──────────────────────────────────┘
+                       │ item: &ToolResultItem
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│                  ModelAdapter                           │
+│  tool_result_to_model_message(item) → ModelMessage      │
+│  唯一转换入口，了解模型 API 格式                            │
+└──────────────────────┬──────────────────────────────────┘
+                       │ ModelMessage { role, content, ... }
+                       ▼
+                   [LLM API]
+```
+
+### 依赖
+
+```
+arf-model-adapter ──→ arf-mcp (需要 ToolResultItem 类型)
+                    ──→ arf-core (需要 ModelMessage 类型)
+```
+
+MCP **不**依赖 ModelAdapter。依赖方向：`adapter → mcp`，单向。
+
+---
+
 ## 测试基准工具
 
 以下三个工具作为 ScriptTool 测试 fixtures，验证 MCP 资源注册、发现和运行机制。它们以脚本形式放在测试数据目录下，通过 `tool.toml` 声明，由 `ScriptTool` 包裹执行 — 与开发者自定义工具的注册路径完全一致。
@@ -1056,6 +1158,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
 | 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`tool.rs`（Tool trait）、`types.rs`（ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet）、`config.rs`（ScriptRuntime, ToolConfig, RemoteConfig）、`lib.rs` | `crates/arf-mcp/` |
+| 5.1a | ModelAdapter 集成 | `arf-model-adapter` 依赖 `arf-mcp`，`convert.rs` 新增 `tool_result_to_model_message()` + 9 个测试 | `crates/arf-model-adapter/` |
 | 5.2 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时/取消 kill） | `config.rs`, `script.rs` |
 | 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
@@ -1101,6 +1204,11 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
 - [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
 - [ ] `Tool` trait 可 mock（用于 Engine 单测）
+- [ ] `ToolResultItem.name` 由 executor 从 `ToolCallItem.tool` 回填，随结果携带
+- [ ] `ToolResultItem` 是纯数据 struct——无 `to_model_message()` 方法，不感知 `ModelMessage`
+- [ ] `arf-model-adapter` 依赖 `arf-mcp`，`convert.rs` 提供 `tool_result_to_model_message()` 转换函数
+- [ ] `tool_result_to_model_message()` 正确处理 success/error/cancelled 三种 status，统一产出 role="tool" 的 ModelMessage
+- [ ] MCP 不依赖 ModelAdapter——依赖方向 `adapter → mcp`，单向
 - [ ] `SkillIndex` 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
 - [ ] LocalMcpNode + RemoteMcpNode 多实例并存（不同 namespace），各自独立广播 `node_online`
