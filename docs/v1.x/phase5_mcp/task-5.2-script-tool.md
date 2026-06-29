@@ -942,3 +942,103 @@ async fn cancel_when_idle_no_panic() {
 | `config_tests.rs` | 8 | `[构造][边界]` — TOML 解析（full/minimal/all runtimes/invalid runtime/missing field/nested schema） |
 | `script_tests.rs` | 20 | `[构造][方法][边界][超时][取消]` — ScriptTool 构造(3)、execute(13 含 5 Rust)、超时(2)、取消(2) |
 | **合计** | **28** | 累计 arf-mcp: 69 + 28 = **97 tests** |
+
+---
+
+## 实施记录
+
+> 以下是代码转录过程中遇到的问题和调整，如实记录。
+
+### 1. tokio feature 不足
+
+**问题**：`tokio = { features = ["process", "time", "sync"] }` 缺少 `io-util` 和 `macros`。
+
+- `AsyncWriteExt::write_all()` / `shutdown()` 需要 `io-util` feature
+- `tokio::select!` 宏需要 `macros` feature
+
+**修复**：Cargo.toml 中 tokio features 改为：
+
+```toml
+tokio = { version = "1", features = ["process", "time", "sync", "io-util", "macros"] }
+```
+
+### 2. Child 所有权竞争
+
+**问题**：`child.wait_with_output()` 消耗 `child` 的所有权（`fn wait_with_output(mut self)`），导致 cancel/timeout 分支无法再调用 `child.start_kill()`。
+
+**文档中的写法**（有问题）：
+```rust
+let wait_fut = child.wait_with_output();  // child moved
+tokio::pin!(wait_fut);
+tokio::select! {
+    result = &mut wait_fut => { result }
+    _ = &mut cancel_rx => {
+        child.start_kill().ok();  // ❌ borrow after move
+        ...
+    }
+}
+```
+
+**修复**：用 `Arc<Mutex<Option<Child>>>` 共享所有权——`wait_fut` 和 cancel/timeout 分支谁先触发谁取走 child：
+
+```rust
+let child_cell = Arc::new(Mutex::new(Some(child)));
+let wait_fut = {
+    let cell = child_cell.clone();
+    async move {
+        let child = cell.lock().unwrap().take().unwrap();
+        child.wait_with_output().await
+    }
+};
+tokio::pin!(wait_fut);
+tokio::select! {
+    result = &mut wait_fut => { result }
+    _ = &mut cancel_rx => {
+        if let Some(mut c) = child_cell.lock().unwrap().take() {
+            c.start_kill().ok();  // ✅ take 成功，wait_fut 不会再拿到 child
+        }
+        return Err(ToolError::from("cancelled"));
+    }
+}
+```
+
+原理：`Mutex` 保护 `Option<Child>`，`take()` 取走所有权。`kill_on_drop(true)` 确保被 `wait_fut` 拿走的 child 在 drop 时也会被清理。
+
+### 3. TOML 内联格式不兼容
+
+**问题**：测试中使用了 `name="t" description="d" runtime="python" entrypoint="e.py"` 这种 JSON 风格的单行写法。
+
+TOML 规范不支持逗号分隔的 key-value 对在同一行——它要求换行或 table 语法。
+
+**修复**：将单行 TOML 改为标准多行格式：
+
+```toml
+# ❌ 不合法
+name="t" description="d" runtime="python" entrypoint="e.py"
+
+# ✅ 合法
+name = "t"
+description = "d"
+runtime = "python"
+entrypoint = "e.py"
+```
+
+### 4. 测试并行竞争（temp 目录冲突）
+
+**问题**：多个 Rust 测试（`execute_rust_echo`、`execute_rust_cached_binary`、`execute_rust_large_input`）共享同一个 temp 目录 `/tmp/arf_mcp_test_echo_rs`。`cargo test` 默认并行运行测试，导致目录被并发删除/重建，出现 "No such file or directory"。
+
+**修复**：给每个测试调用分配唯一的 temp 目录，使用原子计数器：
+
+```rust
+static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn setup_script_tool(...) -> (ScriptTool, PathBuf) {
+    let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = std::env::temp_dir().join(format!("arf_mcp_test_{name}_{id}"));
+    ...
+}
+```
+
+### 5. 未使用的 import 清理
+
+`script_tests.rs` 中 `use serde_json::Value;` 并未直接使用（测试使用 `serde_json::json!` 宏和完整路径 `serde_json::Value::Null`）。已移除该 import。

@@ -11,6 +11,8 @@ arf-core = { path = "../arf-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+toml = "0.8"
+tokio = { version = "1", features = ["process", "time", "sync", "io-util", "macros"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

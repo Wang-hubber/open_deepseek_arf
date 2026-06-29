@@ -35,6 +35,16 @@ pub struct ToolConfig {
     pub params_schema: serde_json::Value,
 }
 
+impl ToolConfig {
+    /// Parse a `tool.toml` file content into a `ToolConfig`.
+    ///
+    /// The TOML format uses lowercase runtime names ("python", "bash", "rust")
+    /// matching `ScriptRuntime`'s `#[serde(rename_all = "lowercase")]`.
+    pub fn from_toml_str(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| format!("invalid tool.toml: {e}"))
+    }
+}
+
 // ── RemoteConfig ───────────────────────────────────────────────────────
 
 /// Streamable HTTP transport configuration for a remote MCP server.

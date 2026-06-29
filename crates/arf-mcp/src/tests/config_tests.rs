@@ -275,3 +275,132 @@ fn remote_config_debug() {
     assert!(debug.contains("streamable-http"));
     assert!(debug.contains("mcp.example.com"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ToolConfig::from_toml_str — 8 tests
+// ═══════════════════════════════════════════════════════════════
+
+// [构造] 完整 tool.toml 解析成功
+#[test]
+fn tool_config_from_toml_full() {
+    let toml_content = r#"
+name = "cleanup_logs"
+description = "Delete log files older than N days"
+runtime = "bash"
+entrypoint = "main.sh"
+timeout_ms = 30000
+
+[params_schema]
+type = "object"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.name, "cleanup_logs");
+    assert_eq!(
+        config.description,
+        "Delete log files older than N days"
+    );
+    assert_eq!(config.runtime, ScriptRuntime::Bash);
+    assert_eq!(config.entrypoint, "main.sh");
+    assert_eq!(config.timeout_ms, Some(30000));
+    assert_eq!(config.params_schema["type"], "object");
+}
+
+// [构造] 最小 tool.toml（仅必填字段）
+#[test]
+fn tool_config_from_toml_minimal() {
+    let toml_content = r#"
+name = "hello"
+description = "Say hello"
+runtime = "python"
+entrypoint = "hello.py"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.name, "hello");
+    assert_eq!(config.runtime, ScriptRuntime::Python);
+    assert_eq!(config.timeout_ms, None);
+    assert_eq!(config.params_schema, serde_json::Value::Null);
+}
+
+// [构造] Python runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_python() {
+    let toml_content = r#"
+name = "t"
+description = "d"
+runtime = "python"
+entrypoint = "e.py"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Python);
+}
+
+// [构造] Bash runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_bash() {
+    let toml_content = r#"
+name = "t"
+description = "d"
+runtime = "bash"
+entrypoint = "e.sh"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Bash);
+}
+
+// [构造] Rust runtime 解析
+#[test]
+fn tool_config_from_toml_runtime_rust() {
+    let toml_content = r#"
+name = "t"
+description = "d"
+runtime = "rust"
+entrypoint = "main.rs"
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    assert_eq!(config.runtime, ScriptRuntime::Rust);
+}
+
+// [边界] 无效 runtime 字符串 → 报错
+#[test]
+fn tool_config_from_toml_invalid_runtime() {
+    let result = ToolConfig::from_toml_str(
+        r#"name="t" description="d" runtime="javascript" entrypoint="x""#,
+    );
+    assert!(result.is_err());
+}
+
+// [边界] 缺少必填字段 name → 报错
+#[test]
+fn tool_config_from_toml_missing_name() {
+    let result =
+        ToolConfig::from_toml_str(r#"description="d" runtime="python" entrypoint="x""#);
+    assert!(result.is_err());
+}
+
+// [边界] params_schema 为嵌套 TOML table
+#[test]
+fn tool_config_from_toml_nested_params_schema() {
+    let toml_content = r#"
+name = "search"
+description = "Full-text search"
+runtime = "python"
+entrypoint = "search.py"
+
+[params_schema]
+type = "object"
+
+[params_schema.properties.query]
+type = "string"
+description = "Search query"
+
+[params_schema.properties.max_results]
+type = "integer"
+default = 10
+"#;
+    let config = ToolConfig::from_toml_str(toml_content).unwrap();
+    let schema = &config.params_schema;
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["properties"]["query"]["type"], "string");
+    assert_eq!(schema["properties"]["max_results"]["type"], "integer");
+    assert_eq!(schema["properties"]["max_results"]["default"], 10);
+}
