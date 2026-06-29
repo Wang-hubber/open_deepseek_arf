@@ -1,255 +1,233 @@
-# 任务 5.12：集成测试（LocalMcpNode + RemoteMcpNode + 多 namespace）
+# 任务 5.12：集成测试（LocalMcpNode + RemoteMcpNode + MiniEngine + ModelAdapter）
 
 > Phase 5 — MCP 第十二项任务
 > 父文档：`docs/v1.x/phase5_mcp/phase5-mcp-design.md`
-> 依赖：Task 5.10 (fixtures), Task 5.5 (McpNode 统一), Task 5.8 (RemoteMcpNode)
+> 依赖：Task 5.10 (fixtures), Task 5.5 (McpNode 统一), Task 5.8 (RemoteMcpNode), Task 5.1a (ModelAdapter convert)
 
 ## 设计思路
 
-Task 5.12 在 `tests/` 目录（非 `src/tests/`）中编写集成测试——通过 Bus 消息协议、跨多 namespace 验证 MCP 完整链路。与 `src/tests/node_tests.rs`（单元级、单节点、echo/fail 工具）的区别：
+构建一个 `MiniEngine`——最小可行的 Engine 骨架，通过 Bus 发现 MCP 节点、路由 tool_call_set、接收 tool_result_set、调用 `tool_result_to_model_message()` 转换结果。配合 5.10 fixtures（本地链路）和 CodeTidy（远程链路）验证 MCP 框架的完整集成。
 
-| 维度 | `node_tests.rs` (已有) | `integration_tests.rs` (本任务) |
-|------|----------------------|------------------------------|
-| 访问级别 | `use crate::` 内部模块 | `use arf_mcp::` 公开 API |
-| 工具 | echo/fail 内联脚本 | 5.10 real fixtures (read_file/write_file/search_content) |
-| 远程 | 无 | Mock HTTP JSON-RPC server |
-| 多 namespace | 单节点 | 2+ 节点，同名 tool 不冲突 |
-| 工具执行 | echo 只验证 roundtrip | write_file → read_file 跨工具验证 |
+### 与已有测试的关系
 
-**聚焦三个场景**：
+| 测试层 | 文件 | 做什么 | 局限 |
+|--------|------|--------|------|
+| 单元 | `src/tests/node_tests.rs` | 单节点 echo/fail，DAG，级联取消 | `use crate::` 内部，非公开 API |
+| live | `tests/codetidy_live.rs` | 直接用 Bus + engine handle 调 CodeTidy | 手动构造消息，无 Engine 抽象 |
+| **集成** | `tests/integration_tests.rs` | MiniEngine + fixtures + CodeTidy + ModelAdapter | **本任务** |
 
-1. **Local chain with real fixtures** — LocalMcpNode + 5.10 fixtures → 真实文件读写验证
-2. **Remote chain with mock server** — RemoteMcpNode + 本地 JSON-RPC mock → 发现 + 执行
-3. **Multi-namespace isolation** — 两个 LocalMcpNode（不同 namespace、同名工具）→ 路由互不干扰
+### MiniEngine 是什么
 
-### 不在 5.12 范围
+```
+                    ┌─────────────────────────────────┐
+                    │           MiniEngine             │
+                    │                                 │
+  node_online ──────┤→ 注册 namespace → tools         │
+                    │                                 │
+  call_tool(ns,     │  按 namespace 路由              │
+    tool, params) ──┤  → tool_call_set → mcp/{ns}     │
+                    │                                 │
+  tool_result_set ──┤→ tool_result_to_model_message() │
+                    │  → ModelMessage                 │
+                    └─────────────────────────────────┘
+```
 
-- **Skill 集成**：fixtures 目录无 skills，且 `use_skill`/`run_skill_script` 已在 `node_tests.rs` 的单元测试中覆盖
-- **全链路 ReAct**：Task 5.13 负责 Engine + ModelAdapter + LLM 闭环
-- **RetryConfig** 重连逻辑：`remote_tests.rs` 单元测试已覆盖
+MiniEngine 不是完整的 ReAct 引擎（Task 5.13 才引入真实 LLM），但它验证了 Engine 最核心的集成能力——**发现 → 路由 → 执行 → 转换**——在真实 Bus + 真实 MCP 节点上的完整链路。
+
+### Remote 选择：CodeTidy
+
+使用 CodeTidy（`https://mcp.codetidy.dev`，免费、无需认证、62 个开发者工具）作为远程 MCP 测试目标。已在 `codetidy_live.rs` 中验证过基础连接和 12 个测试。本任务扩展更多工具类型和边界条件。
 
 ### 目录结构
 
 ```
 crates/arf-mcp/tests/
 ├── fixtures/                  # Task 5.10 (已有)
-│   └── tools/...
-├── codetidy_live.rs           # 已有（live remote test）
-└── integration_tests.rs       # [新建] 本任务
+├── codetidy_live.rs           # 已有
+└── integration_tests.rs       # [新建]
 ```
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
-| `crates/arf-mcp/tests/integration_tests.rs` | 新建 | Local + Remote + Multi-namespace 集成测试 |
-| `crates/arf-mcp/src/tests/node_tests.rs` | 不改 | 已有单元级集成测试 |
+| `crates/arf-mcp/tests/integration_tests.rs` | 新建 | MiniEngine + Local fixtures + CodeTidy + ModelAdapter 集成 |
+| `crates/arf-mcp/Cargo.toml` | 更新 | 添加 `arf-model-adapter` dev-dependency |
 
 ---
 
-## Mock MCP HTTP Server
-
-RemoteMcpNode 需要 mock MCP server 来验证远程链路（不依赖外部服务如 codetidy.dev）。用 `tokio::net::TcpListener` + 手动 HTTP 响应——不引入额外依赖。
-
-### 协议覆盖
-
-Mock server 处理 RemoteMcpNode 在 `connect()` 和 `tool_call_set` 期间发起的 3 种 JSON-RPC 请求：
-
-```
-connect():
-  → initialize     → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"mock"}}}
-  → tools/list     → {"jsonrpc":"2.0","id":2,"result":{"tools":[{name,description,inputSchema}]}}
-
-tool_call_set:
-  → tools/call     → {"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text","text":"..."}]}}
-```
-
-### 实现
+## MiniEngine 实现
 
 ```rust
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
-
-/// A minimal JSON-RPC 2.0 mock for MCP integration testing.
-///
-/// Spawns a TCP server that responds to initialize / tools/list / tools/call.
-/// The caller provides the tool definitions and a handler for tool calls.
-struct MockMcpServer {
-    addr: SocketAddr,
-    shutdown_tx: oneshot::Sender<()>,
-}
-
-impl MockMcpServer {
-    /// Start a mock server. `tools_json` is the value for `result.tools` in
-    /// the tools/list response. `call_handler` receives (tool_name, arguments_json)
-    /// and returns the text result to include in tools/call response content.
-    async fn start(
-        tools_json: serde_json::Value,
-        call_handler: Arc<dyn Fn(&str, serde_json::Value) -> String + Send + Sync>,
-    ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-
-        tokio::spawn(async move {
-            let mut req_id_counter: u64 = 2;
-            loop {
-                tokio::select! {
-                    Ok((stream, _)) = listener.accept() => {
-                        let tools = tools_json.clone();
-                        let handler = call_handler.clone();
-                        tokio::spawn(async move {
-                            let (reader, mut writer) = stream.into_split();
-                            let mut buf_reader = BufReader::new(reader);
-                            let mut request = String::new();
-                            let mut line = String::new();
-
-                            // Read HTTP headers
-                            let mut content_length: usize = 0;
-                            loop {
-                                line.clear();
-                                buf_reader.read_line(&mut line).await.unwrap();
-                                if line == "\r\n" || line.is_empty() { break; }
-                                if line.to_lowercase().starts_with("content-length:") {
-                                    content_length = line[15..].trim().parse().unwrap_or(0);
-                                }
-                            }
-
-                            // Read body
-                            let mut body = vec![0u8; content_length];
-                            if content_length > 0 {
-                                use tokio::io::AsyncReadExt;
-                                buf_reader.read_exact(&mut body).await.unwrap();
-                            }
-                            request = String::from_utf8_lossy(&body).to_string();
-
-                            // Parse JSON-RPC method
-                            let req: serde_json::Value = serde_json::from_str(&request).unwrap();
-                            let method = req["method"].as_str().unwrap_or("");
-                            let id = req["id"].as_u64().unwrap_or(999);
-
-                            let response = match method {
-                                "initialize" => serde_json::json!({
-                                    "jsonrpc": "2.0", "id": id,
-                                    "result": {
-                                        "protocolVersion": "2024-11-05",
-                                        "serverInfo": {"name": "mock-mcp", "version": "0.1.0"}
-                                    }
-                                }),
-                                "tools/list" => serde_json::json!({
-                                    "jsonrpc": "2.0", "id": id,
-                                    "result": {"tools": tools}
-                                }),
-                                "tools/call" => {
-                                    let tool_name = req["params"]["name"].as_str().unwrap_or("");
-                                    let args = req["params"]["arguments"].clone();
-                                    let text = handler(tool_name, args);
-                                    serde_json::json!({
-                                        "jsonrpc": "2.0", "id": id,
-                                        "result": {
-                                            "content": [{"type": "text", "text": text}]
-                                        }
-                                    })
-                                }
-                                _ => serde_json::json!({
-                                    "jsonrpc": "2.0", "id": id,
-                                    "error": {"code": -32601, "message": format!("Method not found: {method}")}
-                                }),
-                            };
-
-                            let body = serde_json::to_string(&response).unwrap();
-                            let http_resp = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                body.len(), body
-                            );
-                            writer.write_all(http_resp.as_bytes()).await.unwrap();
-                            writer.shutdown().await.unwrap();
-                        });
-                    }
-                    _ = &mut shutdown_rx => break,
-                }
-            }
-        });
-
-        Self { addr, shutdown_tx }
-    }
-
-    fn url(&self) -> String {
-        format!("http://{}", self.addr)
-    }
-}
-
-impl Drop for MockMcpServer {
-    fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
-    }
-}
-```
-
-**关键设计决策**：
-- 每个连接 `tokio::spawn` 独立处理——并发测试不会互相阻塞
-- JSON-RPC `id` 从请求中提取并回传——RemoteMcpNode 可能校验 id 匹配
-- `Connection: close` ——每次请求后关闭，无需 keep-alive 复杂度
-- `shutdown_tx` 在 Drop 中发送——测试结束自动清理 server
-
----
-
-## 测试场景
-
-### 角度覆盖
-
-| # | 场景 | 测试内容 |
-|---|------|---------|
-| 1 | Local + fixture | read_file 读真实 fixture 脚本文件 → 返回 content |
-| 2 | Local + fixture | write_file 写临时文件 → read_file 验证写入内容（跨工具链） |
-| 3 | Local + fixture | search_content 在 fixture 目录搜索 → 返回匹配 |
-| 4 | Remote + mock | 连接 mock server → node_online 携带 tools |
-| 5 | Remote + mock | tools/call → mock 返回结果 |
-| 6 | Remote + mock | 不存在的 tool → error |
-| 7 | Multi-namespace | 两个 namespace 各有 echo tool → 分别调用不干扰 |
-| 8 | Multi-namespace | 跨 namespace 同名 tool → 路由到正确的节点 |
-| 9 | 边界 | 非法 msg_type → error 不 panic |
-
-### 测试代码
-
-#### 辅助函数
-
-```rust
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arf_bus::Bus;
-use arf_core::{MessageFilter, NodeId, NodeInfo, ToMatch};
-use arf_mcp::config::RemoteConfig;
-use arf_mcp::McpNode;
+use arf_core::{MessageFilter, ModelMessage, NodeId, NodeInfo, ToMatch};
+use arf_mcp::types::ToolResultItem;
+use arf_model_adapter::convert::tool_result_to_model_message;
 
-/// Build a Bus for testing.
-fn test_bus() -> Bus {
-    Bus::new(Duration::from_secs(5), Duration::from_secs(30), 128)
+/// Tool metadata from node_online for routing.
+#[derive(Debug, Clone)]
+struct McpToolInfo {
+    name: String,
+    description: String,
 }
 
-/// Connect a fake engine node that receives tool_result_set messages.
-async fn connect_engine(bus: &Bus, id: &str) -> arf_bus::NodeHandle {
-    bus.connect(
-        NodeInfo {
-            node_id: NodeId::new(id),
-            node_type: "engine".into(),
-            capabilities: serde_json::json!({}),
-            online_since: 0,
-        },
-        MessageFilter {
-            types: Some(vec![
-                "tool_result_set".into(),
-                "skill_loaded".into(),
-                "skill_resource_loaded".into(),
-                "skill_script_result".into(),
-            ]),
-            to_match: ToMatch::All,
-        },
-    )
-    .await
-    .unwrap()
+/// Registered MCP node information.
+#[derive(Debug, Clone)]
+struct McpNodeEntry {
+    node_id: NodeId,
+    namespace: String,
+    tools: Vec<McpToolInfo>,
+}
+
+/// A minimal Engine for integration testing.
+///
+/// Connects to the Bus as an engine node, discovers MCP nodes via
+/// `node_online`, routes `tool_call_set` by namespace, and converts
+/// `tool_result_set` to `ModelMessage` via ModelAdapter.
+struct MiniEngine {
+    bus: Bus,
+    handle: arf_bus::NodeHandle,
+    session_id: String,
+    mcp_nodes: HashMap<String, McpNodeEntry>, // namespace → entry
+}
+
+impl MiniEngine {
+    /// Connect to the Bus as an engine node and start listening for MCP nodes.
+    async fn new(bus: Bus, session_id: &str) -> Self {
+        let handle = bus
+            .connect(
+                NodeInfo {
+                    node_id: NodeId::new(format!("engine/{session_id}")),
+                    node_type: "engine".into(),
+                    capabilities: serde_json::json!({}),
+                    online_since: 0,
+                },
+                MessageFilter {
+                    types: Some(vec![
+                        "tool_result_set".into(),
+                        "skill_error".into(),
+                        "skill_loaded".into(),
+                        "skill_resource_loaded".into(),
+                        "skill_script_result".into(),
+                    ]),
+                    to_match: ToMatch::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        MiniEngine { bus, handle, session_id: session_id.into(), mcp_nodes: HashMap::new() }
+    }
+
+    /// Register an MCP node. Called after `node_online` is received.
+    fn register_mcp(&mut self, namespace: &str, node_id: NodeId, tools: Vec<McpToolInfo>) {
+        self.mcp_nodes.insert(
+            namespace.into(),
+            McpNodeEntry { node_id, namespace: namespace.into(), tools },
+        );
+    }
+
+    /// Get all known MCP node namespaces.
+    fn namespaces(&self) -> Vec<&str> {
+        self.mcp_nodes.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get the list of tool names for a namespace.
+    fn tool_names(&self, namespace: &str) -> Option<Vec<String>> {
+        self.mcp_nodes.get(namespace).map(|e| {
+            e.tools.iter().map(|t| t.name.clone()).collect()
+        })
+    }
+
+    /// Send a tool_call_set to the MCP node for the given namespace,
+    /// wait for the tool_result_set, and convert each result to ModelMessage.
+    async fn call_tool(
+        &mut self,
+        namespace: &str,
+        tool_name: &str,
+        params: serde_json::Value,
+    ) -> Result<Vec<ModelMessage>, String> {
+        let entry = self.mcp_nodes.get(namespace)
+            .ok_or_else(|| format!("unknown namespace: {namespace}"))?;
+
+        let call_id = "c0";
+        self.handle
+            .send(
+                "tool_call_set",
+                vec![entry.node_id.clone()],
+                serde_json::json!({
+                    "session_id": self.session_id,
+                    "calls": [{"id": call_id, "tool": tool_name, "params": params}],
+                }),
+            )
+            .await
+            .map_err(|e| format!("send error: {e}"))?;
+
+        let resp = self.handle.recv().await
+            .map_err(|e| format!("recv error: {e}"))?;
+
+        if resp.msg_type != "tool_result_set" {
+            return Err(format!("unexpected msg_type: {}", resp.msg_type));
+        }
+
+        let results: Vec<ToolResultItem> = serde_json::from_value(
+            resp.payload["results"].clone(),
+        )
+        .map_err(|e| format!("parse error: {e}"))?;
+
+        let messages: Vec<ModelMessage> = results
+            .iter()
+            .map(|item| tool_result_to_model_message(item))
+            .collect();
+
+        Ok(messages)
+    }
+
+    /// Send tool_call_set with multiple calls (for DAG/concurrent tests).
+    async fn call_tools_batch(
+        &mut self,
+        namespace: &str,
+        calls: serde_json::Value,
+    ) -> Result<Vec<ToolResultItem>, String> {
+        let entry = self.mcp_nodes.get(namespace)
+            .ok_or_else(|| format!("unknown namespace: {namespace}"))?;
+
+        self.handle
+            .send(
+                "tool_call_set",
+                vec![entry.node_id.clone()],
+                serde_json::json!({
+                    "session_id": self.session_id,
+                    "calls": calls,
+                }),
+            )
+            .await
+            .map_err(|e| format!("send error: {e}"))?;
+
+        let resp = self.handle.recv().await
+            .map_err(|e| format!("recv error: {e}"))?;
+
+        serde_json::from_value(resp.payload["results"].clone())
+            .map_err(|e| format!("parse error: {e}"))
+    }
+}
+```
+
+**关键设计**：
+- `call_tool()` 返回 `Vec<ModelMessage>`——每次调用自动走 `tool_result_to_model_message()` 转换
+- `call_tools_batch()` 返回原始 `Vec<ToolResultItem>`——供边界测试直接检查 result/error 字段
+- `register_mcp()` 由外部调用——Engine 从 Bus 订阅中提取 `node_online` payload 后注册
+
+---
+
+## 辅助函数
+
+```rust
+/// Build a Bus for testing.
+fn test_bus() -> Bus {
+    Bus::new(Duration::from_secs(10), Duration::from_secs(30), 128)
 }
 
 /// Path to the fixtures root (contains tools/ subdirectory).
@@ -257,406 +235,764 @@ fn fixtures_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// Drain messages until `msg_type` matches. Panics if timeout.
-async fn drain_until(rx: &mut arf_bus::Receiver, msg_type: &str) -> arf_bus::Message {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let m = rx.recv().await.unwrap();
-            if m.msg_type == msg_type {
-                return m;
-            }
+/// CodeTidy remote MCP config.
+fn codetidy_config() -> arf_mcp::config::RemoteConfig {
+    arf_mcp::config::RemoteConfig {
+        transport: "streamable-http".into(),
+        url: "https://mcp.codetidy.dev".into(),
+        timeout_secs: Some(30),
+        headers: HashMap::new(),
+        tls_ca_cert: None,
+        retry: None,
+    }
+}
+
+/// Subscribe to Bus, drain all messages until `node_online` for a given
+/// namespace, return the tools array from its payload.
+async fn wait_for_node_online(
+    rx: &mut arf_bus::Receiver,
+    namespace: &str,
+) -> (NodeId, Vec<MiniEngineMcpToolInfo>) {
+    loop {
+        let m = rx.recv().await.unwrap();
+        if m.msg_type == "node_online" && m.payload["namespace"].as_str() == Some(namespace) {
+            let node_id = NodeId::new(m.payload["node_id"].as_str().unwrap());
+            let tools: Vec<MiniEngineMcpToolInfo> = m.payload["capabilities"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| MiniEngineMcpToolInfo {
+                    name: t["name"].as_str().unwrap().into(),
+                    description: t["description"].as_str().unwrap_or("").into(),
+                })
+                .collect();
+            return (node_id, tools);
         }
-    })
-    .await
-    .unwrap()
+    }
 }
 ```
 
-#### 场景 1-3: Local chain with real fixtures
+---
+
+## 测试场景
+
+### 角度覆盖
+
+| # | 链路 | 测试内容 |
+|---|------|---------|
+| 1 | Local + MiniEngine | read_file 读真实文件 → ModelMessage |
+| 2 | Local + MiniEngine | write_file → read_file 跨工具验证 |
+| 3 | Local + MiniEngine | search_content 搜索返回匹配 |
+| 4 | Local | **边界**: read_file 不存在的文件 → error status |
+| 5 | Local | **边界**: write_file 自动创建父目录 |
+| 6 | Local | **边界**: search_content 无匹配 → 空数组 |
+| 7 | Local | **边界**: 写入含 Unicode/emoji/换行的内容 → 读回一致 |
+| 8 | Remote + MiniEngine | 连接 CodeTidy → MiniEngine 注册 → call_tool |
+| 9 | Remote + MiniEngine | base64 编码/解码往返 → ModelMessage |
+| 10 | Remote + MiniEngine | hash 不同算法交叉验证（SHA256/MD5/SHA1） |
+| 11 | Remote + MiniEngine | URL 编码/解码往返 |
+| 12 | Remote + MiniEngine | JWT 解码已知 token → 结构化字段验证 |
+| 13 | Remote | **边界**: 不存在的 tool → error status |
+| 14 | Remote | **边界**: 空 params 工具（uuid）正确返回 |
+| 15 | Remote | **边界**: 缺失必填参数 → 工具报错 |
+| 16 | Remote | **边界**: 超大输入（base64 编码 ~10KB 文本） |
+| 17 | Multi-ns + Engine | Local + Remote 共存，MiniEngine 按 namespace 路由 |
+| 18 | Multi-ns + Engine | 两个 Local namespace 同名 tool → 路由不混淆 |
+| 19 | ModelAdapter | tool_result_to_model_message 三种 status → 正确转换 |
+
+### 测试代码
+
+#### 场景 1-3: Local + MiniEngine + fixtures
 
 ```rust
 // ═══════════════════════════════════════════════════════════════════
-// LocalMcpNode + fixtures — 3 tests
+// MiniEngine + Local fixtures — 3 tests
 // ═══════════════════════════════════════════════════════════════════
 
-// [集成] read_file fixture 读真实文件 → 返回 content
+// [集成] MiniEngine: read_file fixture → ModelMessage
 #[tokio::test]
-async fn local_read_file_returns_content() {
+async fn engine_local_read_file_to_model_message() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
+
     let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
     node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
 
-    // Drain node_online
-    drain_until(&mut rx, "node_online").await;
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    // Read the read_file tool's own main.py to verify real file reading
     let test_file = fixtures_root().join("tools/read_file/main.py");
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c0", "tool": "read_file", "params": {"path": test_file.to_str().unwrap()}}],
-            }),
-        )
+    let messages = engine
+        .call_tool("fs", "read_file", serde_json::json!({
+            "path": test_file.to_str().unwrap(),
+        }))
         .await
         .unwrap();
 
-    let resp = engine.recv().await.unwrap();
-    let r = &resp.payload["results"][0];
-    assert_eq!(r["call_id"], "c0");
-    assert_eq!(r["name"], "read_file");
-    assert_eq!(r["status"], "success");
-    assert!(r["result"]["content"].as_str().unwrap().contains("#!/usr/bin/env python3"));
-    assert!(r["error"].is_null());
+    assert_eq!(messages.len(), 1);
+    let msg = &messages[0];
+    assert_eq!(msg.role, "tool");
+    assert!(msg.content.contains("#!/usr/bin/env python3"));
+    assert_eq!(msg.tool_call_id.as_deref(), Some("c0"));
+    assert_eq!(msg.name.as_deref(), Some("read_file"));
 }
 
-// [集成] write_file → read_file 跨工具链验证
+// [集成] MiniEngine: write_file → read_file 跨工具链
 #[tokio::test]
-async fn local_write_then_read_cross_tool_chain() {
+async fn engine_local_write_then_read() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
+
     let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
     node.connect(&bus).await.unwrap();
-    drain_until(&mut rx, "node_online").await;
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    let tmp_dir = std::env::temp_dir().join("arf_mcp_int_write_read");
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
+
+    let tmp_dir = std::env::temp_dir().join("arf_int_engine_wr");
     let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
     let file_path = tmp_dir.join("hello.txt");
 
-    // Step 1: write_file
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c0", "tool": "write_file", "params": {
-                    "path": file_path.to_str().unwrap(),
-                    "content": "Hello, integration test!",
-                }}],
-            }),
-        )
+    // Step 1: write
+    let messages = engine
+        .call_tool("fs", "write_file", serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": "Hello from MiniEngine!",
+        }))
         .await
         .unwrap();
+    assert!(messages[0].content.contains("ok"));
 
-    let resp = engine.recv().await.unwrap();
-    assert_eq!(resp.payload["results"][0]["status"], "success");
-
-    // Step 2: read_file — verify the written content
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c1", "tool": "read_file", "params": {
-                    "path": file_path.to_str().unwrap(),
-                }}],
-            }),
-        )
+    // Step 2: read back
+    let messages = engine
+        .call_tool("fs", "read_file", serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+        }))
         .await
         .unwrap();
-
-    let resp = engine.recv().await.unwrap();
-    let r = &resp.payload["results"][0];
-    assert_eq!(r["status"], "success");
-    assert_eq!(r["result"]["content"], "Hello, integration test!");
+    assert!(messages[0].content.contains("Hello from MiniEngine!"));
 }
 
-// [集成] search_content 在 fixture 目录搜索 → 返回匹配
+// [集成] MiniEngine: search_content 搜索
 #[tokio::test]
-async fn local_search_content_finds_matches() {
+async fn engine_local_search_content() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
+
     let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
     node.connect(&bus).await.unwrap();
-    drain_until(&mut rx, "node_online").await;
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c0", "tool": "search_content", "params": {
-                    "pattern": "def main",
-                    "path": fixtures_root().join("tools").to_str().unwrap(),
-                }}],
-            }),
-        )
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
+
+    let messages = engine
+        .call_tool("fs", "search_content", serde_json::json!({
+            "pattern": "def main",
+            "path": fixtures_root().join("tools").to_str().unwrap(),
+        }))
         .await
         .unwrap();
 
-    let resp = engine.recv().await.unwrap();
-    let r = &resp.payload["results"][0];
-    assert_eq!(r["status"], "success");
-    let matches = r["result"]["matches"].as_array().unwrap();
-    assert!(matches.len() >= 3, "should find 'def main' in all 3 Python fixture scripts");
+    assert!(messages[0].content.contains("def main"));
 }
 ```
 
-#### 场景 4-6: Remote chain with mock HTTP server
+#### 场景 4-7: Local 边界条件
 
 ```rust
 // ═══════════════════════════════════════════════════════════════════
-// RemoteMcpNode + mock server — 3 tests
+// Local 边界条件 — 4 tests
 // ═══════════════════════════════════════════════════════════════════
 
-// [集成] RemoteMcpNode 连接 mock server → node_online 携带 tools
+// [边界] read_file 不存在的文件 → error status via ModelMessage
 #[tokio::test]
-async fn remote_connect_discovers_tools() {
-    let mock_tools = serde_json::json!([
-        {"name": "add", "description": "Add two numbers", "inputSchema": {
-            "type": "object",
-            "properties": {
-                "a": {"type": "integer"},
-                "b": {"type": "integer"},
-            },
-            "required": ["a", "b"]
-        }},
-    ]);
-
-    let handler = Arc::new(|_name: &str, _args: serde_json::Value| -> String {
-        "42".to_string()
-    });
-    let server = MockMcpServer::start(mock_tools.clone(), handler).await;
-
+async fn local_read_nonexistent_file_returns_error_model_message() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
 
-    let config = RemoteConfig {
-        transport: "streamable-http".into(),
-        url: server.url(),
-        timeout_secs: Some(10),
-        headers: std::collections::HashMap::new(),
-        tls_ca_cert: None,
-        retry: None,
-    };
-    let node = McpNode::remote("calc", config).await.unwrap();
+    let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
     node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
 
-    let msg = drain_until(&mut rx, "node_online").await;
-    assert_eq!(msg.payload["namespace"], "calc");
-    let tools = msg.payload["capabilities"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "add");
-}
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
 
-// [集成] RemoteMcpNode tools/call → mock 返回结果
-#[tokio::test]
-async fn remote_tool_call_returns_mock_result() {
-    let mock_tools = serde_json::json!([
-        {"name": "greet", "description": "Greet someone", "inputSchema": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"]
-        }},
-    ]);
-
-    let handler = Arc::new(|tool_name: &str, args: serde_json::Value| -> String {
-        if tool_name == "greet" {
-            let name = args["name"].as_str().unwrap_or("world");
-            format!("Hello, {name}!")
-        } else {
-            "unknown".into()
-        }
-    });
-    let server = MockMcpServer::start(mock_tools, handler).await;
-
-    let bus = test_bus();
-    let mut rx = bus.subscribe();
-
-    let config = RemoteConfig {
-        transport: "streamable-http".into(),
-        url: server.url(),
-        timeout_secs: Some(10),
-        headers: std::collections::HashMap::new(),
-        tls_ca_cert: None,
-        retry: None,
-    };
-    let node = McpNode::remote("calc", config).await.unwrap();
-    node.connect(&bus).await.unwrap();
-    drain_until(&mut rx, "node_online").await;
-
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c0", "tool": "greet", "params": {"name": "世界"}}],
-            }),
-        )
+    let messages = engine
+        .call_tool("fs", "read_file", serde_json::json!({
+            "path": "/nonexistent/file.xyz",
+        }))
         .await
         .unwrap();
 
-    let resp = engine.recv().await.unwrap();
-    let r = &resp.payload["results"][0];
-    assert_eq!(r["status"], "success");
-    assert_eq!(r["name"], "greet");
-    assert_eq!(r["result"], "Hello, 世界!");
+    assert_eq!(messages[0].role, "tool");
+    // Error status → ModelMessage content is {"error": "..."}
+    assert!(messages[0].content.contains("error"));
+    assert!(messages[0].content.contains("file not found"));
 }
 
-// [集成] RemoteMcpNode 调用不存在的 tool → error
+// [边界] write_file 自动创建父目录
 #[tokio::test]
-async fn remote_unknown_tool_returns_error() {
-    let mock_tools = serde_json::json!([
-        {"name": "add", "description": "Add numbers", "inputSchema": {"type": "object"}},
-    ]);
-    let handler = Arc::new(|_: &str, _: serde_json::Value| -> String { "unreachable".into() });
-    let server = MockMcpServer::start(mock_tools, handler).await;
-
+async fn local_write_creates_parent_dirs() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
-    let config = RemoteConfig {
-        transport: "streamable-http".into(),
-        url: server.url(),
-        timeout_secs: Some(10),
-        headers: std::collections::HashMap::new(),
-        tls_ca_cert: None,
-        retry: None,
-    };
-    let node = McpNode::remote("calc", config).await.unwrap();
-    node.connect(&bus).await.unwrap();
-    drain_until(&mut rx, "node_online").await;
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    engine
-        .send(
-            "tool_call_set",
-            vec![node.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "c0", "tool": "ghost", "params": {}}],
-            }),
-        )
+    let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
+
+    let tmp = std::env::temp_dir().join("arf_int_deep_dirs");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let deep_path = tmp.join("a/b/c/d/output.txt");
+
+    let messages = engine
+        .call_tool("fs", "write_file", serde_json::json!({
+            "path": deep_path.to_str().unwrap(),
+            "content": "deeply nested",
+        }))
         .await
         .unwrap();
 
-    let resp = engine.recv().await.unwrap();
-    let r = &resp.payload["results"][0];
-    assert_eq!(r["status"], "error");
-    // RemoteMcpNode should report the tool is not found (not proxied to mock)
-    assert!(r["error"].as_str().unwrap().contains("not found"));
+    assert!(messages[0].content.contains("ok"));
+    assert!(deep_path.exists());
+    assert_eq!(std::fs::read_to_string(&deep_path).unwrap(), "deeply nested");
+}
+
+// [边界] search_content 无匹配 → 空 matches
+#[tokio::test]
+async fn local_search_no_matches_returns_empty() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
+
+    let messages = engine
+        .call_tool("fs", "search_content", serde_json::json!({
+            "pattern": "ZZZZZ_NO_MATCH_ZZZZZ",
+            "path": fixtures_root().join("tools").to_str().unwrap(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("\"matches\": []"));
+}
+
+// [边界] Unicode + emoji + 换行 content → write → read 一致
+#[tokio::test]
+async fn local_unicode_emoji_newline_roundtrip() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = Arc::new(McpNode::local("fs", fixtures_root()).unwrap());
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "fs").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("fs", node_id, tools);
+
+    let tmp_dir = std::env::temp_dir().join("arf_int_unicode");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let file_path = tmp_dir.join("unicode.txt");
+
+    let content = "你好世界 🌍\nLine 2: \"quoted\"\nLine 3: \\backslash\\\nLine 4: \t tab";
+    engine
+        .call_tool("fs", "write_file", serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": content,
+        }))
+        .await
+        .unwrap();
+
+    let messages = engine
+        .call_tool("fs", "read_file", serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("你好世界"));
+    assert!(messages[0].content.contains("\\\"quoted\\\""));
+    assert!(messages[0].content.contains("\\\\backslash\\\\"));
 }
 ```
 
-#### 场景 7-8: Multi-namespace isolation
+#### 场景 8-12: Remote + CodeTidy + MiniEngine
 
 ```rust
 // ═══════════════════════════════════════════════════════════════════
-// Multi-namespace isolation — 2 tests
+// MiniEngine + CodeTidy Remote — 5 tests
 // ═══════════════════════════════════════════════════════════════════
 
-// [集成] 两个 namespace 各有 echo → 分别调用不干扰
+// [集成] CodeTidy 连接 → MiniEngine 注册 → 发起 call_tool
 #[tokio::test]
-async fn multi_namespace_same_tool_name_no_interference() {
+async fn engine_codetidy_connect_and_call() {
     let bus = test_bus();
     let mut rx = bus.subscribe();
 
-    // Create two identical root directories with echo tools
-    let id = std::sync::atomic::AtomicU64::new(0)
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let root1 = std::env::temp_dir().join(format!("arf_mcp_int_ns1_{id}"));
-    let root2 = std::env::temp_dir().join(format!("arf_mcp_int_ns2_{id}"));
-    for root in [&root1, &root2] {
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    let messages = engine
+        .call_tool("codetidy", "codetidy_uppercase", serde_json::json!({
+            "input": "hello world",
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(messages[0].role, "tool");
+    assert!(messages[0].content.contains("HELLO WORLD"));
+    assert_eq!(messages[0].name.as_deref(), Some("codetidy_uppercase"));
+}
+
+// [集成] base64 编码→解码往返
+#[tokio::test]
+async fn engine_codetidy_base64_roundtrip() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    // Encode
+    let messages = engine
+        .call_tool("codetidy", "codetidy_base64_encode", serde_json::json!({
+            "input": "Roundtrip test 往返测试!",
+        }))
+        .await
+        .unwrap();
+    let encoded: serde_json::Value = serde_json::from_str(&messages[0].content).unwrap();
+    let encoded_str = encoded.as_str().unwrap();
+
+    // Decode
+    let messages = engine
+        .call_tool("codetidy", "codetidy_base64_decode", serde_json::json!({
+            "input": encoded_str,
+        }))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("Roundtrip test"));
+    assert!(messages[0].content.contains("往返测试"));
+}
+
+// [集成] hash 不同算法交叉验证 — 同一输入 SHA256/MD5 结果不同
+#[tokio::test]
+async fn engine_codetidy_hash_cross_validate() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    // SHA256("test")
+    let messages = engine
+        .call_tool("codetidy", "codetidy_hash_generate", serde_json::json!({
+            "input": "test",
+            "algorithm": "sha256",
+        }))
+        .await
+        .unwrap();
+    let sha256: serde_json::Value = serde_json::from_str(&messages[0].content).unwrap();
+    assert!(sha256.as_str().unwrap().to_lowercase().starts_with("9f86d081"));
+
+    // MD5("test") — should be different
+    let messages = engine
+        .call_tool("codetidy", "codetidy_hash_generate", serde_json::json!({
+            "input": "test",
+            "algorithm": "md5",
+        }))
+        .await
+        .unwrap();
+    let md5: serde_json::Value = serde_json::from_str(&messages[0].content).unwrap();
+
+    // Same input, different algorithm → different hash
+    assert_ne!(sha256.as_str().unwrap(), md5.as_str().unwrap());
+}
+
+// [集成] URL 编码→解码往返
+#[tokio::test]
+async fn engine_codetidy_url_encode_decode_roundtrip() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    let original = "hello world & more?key=value#fragment";
+    let messages = engine
+        .call_tool("codetidy", "codetidy_url_encode", serde_json::json!({
+            "input": original,
+        }))
+        .await
+        .unwrap();
+    let encoded: serde_json::Value = serde_json::from_str(&messages[0].content).unwrap();
+    let encoded_str = encoded.as_str().unwrap();
+    assert!(encoded_str.contains("%20")); // space encoded
+
+    let messages = engine
+        .call_tool("codetidy", "codetidy_url_decode", serde_json::json!({
+            "input": encoded_str,
+        }))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("hello world & more"));
+}
+
+// [集成] JWT 解码已知 token → 结构化字段
+#[tokio::test]
+async fn engine_codetidy_jwt_decode_known_token() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    // A well-known JWT with payload: {"sub":"1234567890","name":"John Doe","iat":1516239022}
+    let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let messages = engine
+        .call_tool("codetidy", "codetidy_jwt_decode", serde_json::json!({
+            "token": jwt,
+        }))
+        .await
+        .unwrap();
+
+    // JWT decode should return structured payload
+    assert!(messages[0].content.contains("John Doe"));
+    assert!(messages[0].content.contains("1234567890"));
+}
+```
+
+#### 场景 13-16: Remote 边界条件
+
+```rust
+// ═══════════════════════════════════════════════════════════════════
+// Remote 边界条件 — 4 tests
+// ═══════════════════════════════════════════════════════════════════
+
+// [边界] 不存在的 tool → error status → ModelMessage 含 error
+#[tokio::test]
+async fn remote_nonexistent_tool_returns_model_error() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    let messages = engine
+        .call_tool("codetidy", "this_tool_does_not_exist_xyz", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("error"));
+    assert!(messages[0].content.contains("not found"));
+}
+
+// [边界] 空 params 工具（uuid_generate）正确返回
+#[tokio::test]
+async fn remote_empty_params_tool_works() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    let messages = engine
+        .call_tool("codetidy", "codetidy_uuid_generate", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let uuid_str = &messages[0].content;
+    assert!(uuid_str.len() >= 32, "expected UUID, got: {uuid_str}");
+    // UUID v4: xxxxxxxx-xxxx-4xxx-xxxx-xxxxxxxxxxxx
+    assert!(uuid_str.contains('-'), "UUID should contain dashes");
+}
+
+// [边界] 缺失必填参数 → 工具报错
+#[tokio::test]
+async fn remote_missing_required_param_errors() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    // hash_generate requires "input" and "algorithm" — omit both
+    let messages = engine
+        .call_tool("codetidy", "codetidy_hash_generate", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    // hash without input should fail or return error
+    // The tool itself may return an error or the MCP server rejects it
+    assert!(
+        messages[0].content.contains("error")
+            || messages[0].content.contains("missing")
+            || messages[0].content.contains("required"),
+        "expected error, got: {}",
+        messages[0].content
+    );
+}
+
+// [边界] 超大输入（~10KB base64 编码）
+#[tokio::test]
+async fn remote_large_input_base64() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let node = McpNode::remote("codetidy", codetidy_config()).await.unwrap();
+    node.connect(&bus).await.unwrap();
+    let (node_id, tools) = wait_for_node_online(&mut rx, "codetidy").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("codetidy", node_id, tools);
+
+    // Generate ~10KB of text
+    let large_text = "The quick brown fox jumps over the lazy dog. ".repeat(200);
+    assert!(large_text.len() > 8000); // ~9000 chars
+
+    let messages = engine
+        .call_tool("codetidy", "codetidy_base64_encode", serde_json::json!({
+            "input": large_text,
+        }))
+        .await
+        .unwrap();
+
+    // Should succeed with a long base64 string
+    let encoded: serde_json::Value = serde_json::from_str(&messages[0].content).unwrap();
+    assert!(encoded.as_str().unwrap().len() > large_text.len());
+
+    // Verify roundtrip: decode the encoded result
+    let messages = engine
+        .call_tool("codetidy", "codetidy_base64_decode", serde_json::json!({
+            "input": encoded.as_str().unwrap(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(messages[0].content.contains("The quick brown fox"));
+    assert!(messages[0].content.contains("lazy dog"));
+}
+```
+
+#### 场景 17-18: Multi-namespace + MiniEngine 路由
+
+```rust
+// ═══════════════════════════════════════════════════════════════════
+// Multi-namespace + MiniEngine 路由 — 2 tests
+// ═══════════════════════════════════════════════════════════════════
+
+// [集成] Local + Remote 共存，MiniEngine 按 namespace 路由
+#[tokio::test]
+async fn engine_routes_local_and_remote_by_namespace() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    // Local MCP
+    let local_node = Arc::new(McpNode::local("files", fixtures_root()).unwrap());
+    local_node.connect(&bus).await.unwrap();
+    let (local_nid, local_tools) = wait_for_node_online(&mut rx, "files").await;
+
+    // Remote MCP (CodeTidy)
+    let remote_node = McpNode::remote("ct", codetidy_config()).await.unwrap();
+    remote_node.connect(&bus).await.unwrap();
+    let (remote_nid, remote_tools) = wait_for_node_online(&mut rx, "ct").await;
+
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("files", local_nid, local_tools);
+    engine.register_mcp("ct", remote_nid, remote_tools);
+
+    // Call local tool
+    let test_file = fixtures_root().join("tools/read_file/main.py");
+    let local_resp = engine
+        .call_tool("files", "read_file", serde_json::json!({
+            "path": test_file.to_str().unwrap(),
+        }))
+        .await
+        .unwrap();
+    assert!(local_resp[0].content.contains("#!/usr/bin/env python3"));
+
+    // Call remote tool — different namespace, different result shape
+    let remote_resp = engine
+        .call_tool("ct", "codetidy_uppercase", serde_json::json!({
+            "input": "hello",
+        }))
+        .await
+        .unwrap();
+    assert!(remote_resp[0].content.contains("HELLO"));
+
+    // Both should be accessible via engine.namespaces()
+    let nss = engine.namespaces();
+    assert!(nss.contains(&"files"));
+    assert!(nss.contains(&"ct"));
+}
+
+// [集成] 两个 Local namespace 同名 tool → 路由不混淆
+#[tokio::test]
+async fn engine_same_tool_name_different_namespace() {
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    // Create two identical roots with echo tools, different namespaces
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root_a = std::env::temp_dir().join(format!("arf_int_ns_a_{id}"));
+    let root_b = std::env::temp_dir().join(format!("arf_int_ns_b_{id}"));
+    for (root, ns_tag) in [(&root_a, "alpha"), (&root_b, "beta")] {
         let _ = std::fs::remove_dir_all(root);
         let tool_dir = root.join("tools/echo");
         std::fs::create_dir_all(&tool_dir).unwrap();
         std::fs::write(
             tool_dir.join("tool.toml"),
-            "name = \"echo\"\ndescription = \"Echo\"\nruntime = \"python\"\nentrypoint = \"main.py\"\n",
+            format!("name = \"echo\"\ndescription = \"Echo in {ns_tag}\"\nruntime = \"python\"\nentrypoint = \"main.py\"\n"),
         )
         .unwrap();
         std::fs::write(
             tool_dir.join("main.py"),
-            "import sys, json\nparams = json.loads(sys.stdin.read())\nprint(json.dumps(params))\n",
+            format!("import sys, json\nparams = json.loads(sys.stdin.read())\nparams[\"ns\"] = \"{ns_tag}\"\nprint(json.dumps(params))\n"),
         )
         .unwrap();
     }
 
-    let node_a = Arc::new(McpNode::local("alpha", root1).unwrap());
-    let node_b = Arc::new(McpNode::local("beta", root2).unwrap());
+    let node_a = Arc::new(McpNode::local("alpha", root_a).unwrap());
+    let node_b = Arc::new(McpNode::local("beta", root_b).unwrap());
     node_a.connect(&bus).await.unwrap();
     node_b.connect(&bus).await.unwrap();
 
-    // Drain both node_online messages
-    drain_until(&mut rx, "node_online").await;
-    drain_until(&mut rx, "node_online").await;
+    let (nid_a, tools_a) = wait_for_node_online(&mut rx, "alpha").await;
+    let (nid_b, tools_b) = wait_for_node_online(&mut rx, "beta").await;
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
+    let mut engine = MiniEngine::new(bus, "s1").await;
+    engine.register_mcp("alpha", nid_a, tools_a);
+    engine.register_mcp("beta", nid_b, tools_b);
 
     // Call echo on alpha
-    engine
-        .send(
-            "tool_call_set",
-            vec![node_a.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "ca", "tool": "echo", "params": {"ns": "alpha"}}],
-            }),
-        )
+    let msg_a = engine
+        .call_tool("alpha", "echo", serde_json::json!({"msg": "a"}))
         .await
         .unwrap();
+    assert!(msg_a[0].content.contains("\"alpha\""));
 
-    let resp_a = engine.recv().await.unwrap();
-    assert_eq!(resp_a.payload["results"][0]["status"], "success");
-    assert_eq!(resp_a.payload["results"][0]["result"]["ns"], "alpha");
-
-    // Call echo on beta
-    engine
-        .send(
-            "tool_call_set",
-            vec![node_b.node_id.clone()],
-            serde_json::json!({
-                "session_id": "s1",
-                "calls": [{"id": "cb", "tool": "echo", "params": {"ns": "beta"}}],
-            }),
-        )
+    // Call echo on beta — should return "beta", not "alpha"
+    let msg_b = engine
+        .call_tool("beta", "echo", serde_json::json!({"msg": "b"}))
         .await
         .unwrap();
-
-    let resp_b = engine.recv().await.unwrap();
-    assert_eq!(resp_b.payload["results"][0]["status"], "success");
-    assert_eq!(resp_b.payload["results"][0]["result"]["ns"], "beta");
+    assert!(msg_b[0].content.contains("\"beta\""));
 }
 ```
 
-#### 场景 9: 边界
+#### 场景 19: ModelAdapter 转换
 
 ```rust
-// [边界] 非法 msg_type → error 不 panic
-#[tokio::test]
-async fn unknown_msg_type_returns_error() {
-    let bus = test_bus();
-    let mut rx = bus.subscribe();
-    let node = Arc::new(McpNode::local("test", fixtures_root()).unwrap());
-    node.connect(&bus).await.unwrap();
-    drain_until(&mut rx, "node_online").await;
+// ═══════════════════════════════════════════════════════════════════
+// ModelAdapter 转换验证 — 1 test
+// ═══════════════════════════════════════════════════════════════════
 
-    let mut engine = connect_engine(&bus, "engine/s1").await;
-    engine
-        .send("bogus_msg_type", vec![node.node_id.clone()], serde_json::json!({}))
-        .await
-        .unwrap();
+// [类型] tool_result_to_model_message 三种 status → 正确转换
+#[test]
+fn tool_result_to_model_message_all_statuses() {
+    use arf_mcp::types::ToolResultItem;
+    use arf_model_adapter::convert::tool_result_to_model_message;
 
-    // Node should respond with an error, not crash/panic
-    let result =
-        tokio::time::timeout(Duration::from_secs(2), engine.recv()).await;
-    // Either we get an error response or no response (silently ignored) — both are OK.
-    // The key is: the node does NOT panic.
-    // We re-subscribe to verify the node is still online.
-    let graph = bus.graph();
-    assert!(graph.nodes.iter().any(|n| n.node_id == node.node_id),
-        "node should still be online after unknown msg_type");
+    // success
+    let success = ToolResultItem {
+        call_id: "c0".into(),
+        name: "echo".into(),
+        status: "success".into(),
+        result: serde_json::json!({"ok": true, "data": 42}),
+        error: None,
+    };
+    let msg = tool_result_to_model_message(&success);
+    assert_eq!(msg.role, "tool");
+    assert_eq!(msg.tool_call_id.as_deref(), Some("c0"));
+    assert_eq!(msg.name.as_deref(), Some("echo"));
+    assert!(msg.content.contains("42"));
+
+    // error
+    let error = ToolResultItem {
+        call_id: "c1".into(),
+        name: "fail".into(),
+        status: "error".into(),
+        result: serde_json::Value::Null,
+        error: Some("something went wrong".into()),
+    };
+    let msg = tool_result_to_model_message(&error);
+    assert!(msg.content.contains("error"));
+    assert!(msg.content.contains("something went wrong"));
+
+    // cancelled
+    let cancelled = ToolResultItem {
+        call_id: "c2".into(),
+        name: "cancelled_tool".into(),
+        status: "cancelled".into(),
+        result: serde_json::Value::Null,
+        error: Some("cancelled: dependency c1 failed".into()),
+    };
+    let msg = tool_result_to_model_message(&cancelled);
+    assert!(msg.content.contains("error"));
+    assert!(msg.content.contains("cancelled"));
+    assert!(msg.content.contains("c1"));
 }
+```
+
+---
+
+## 依赖更新
+
+`crates/arf-mcp/Cargo.toml` 的 dev-dependencies 需添加 `arf-model-adapter`：
+
+```toml
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"
+arf-model-adapter = { path = "../arf-model-adapter" }
 ```
 
 ---
@@ -664,8 +1000,11 @@ async fn unknown_msg_type_returns_error() {
 ## 验证命令
 
 ```bash
-# 仅集成测试
+# 仅集成测试（需要网络 — CodeTidy）
 . "$HOME/.cargo/env" && cargo test -p arf-mcp --test integration_tests
+
+# 跳过远程测试（仅本地）
+. "$HOME/.cargo/env" && cargo test -p arf-mcp --test integration_tests -- local
 
 # 全 workspace
 . "$HOME/.cargo/env" && cargo test --workspace
