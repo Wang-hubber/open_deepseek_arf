@@ -883,30 +883,118 @@ cd py-arf && ../.venv/bin/python -m pytest tests/test_mcp.py -v
 
 ## 实施记录
 
-### 1. pyo3 0.29 不支持 `Python::with_gil`
+### 1. `PyType` 找不到 —— classmethod 类型声明
 
-**发现**：pyo3 0.22+ 移除了 `Python::with_gil` API。在 `extension-module` feature 下，Python 解释器由外部进程启动，Rust 代码无法在测试中自行初始化 Python。
-
-**影响**：`#[cfg(test)]` Rust 单元测试（`mcp.rs` 末尾的 18 个测试）无法编译——`Python::with_gil` 不存在，替代的 `Python::try_attach` 在测试中返回 `None`（Python 未初始化）。
-
-**决策**：移除 Rust 侧 `#[cfg(test)]` 单元测试，全部测试通过 Python pytest 运行（`test_mcp.py`）。这与 `py-arf` 现有模式一致——`lib.rs` 中也无 Rust 单元测试。
-
-**验证**：14 个 pytest 测试覆盖了原 Rust 测试的所有角度（`[构造]`/`[边界]`/`[类型]`/`[集成]`），加上 `test_connect_to_bus` 的 Bus 集成验证。
-
-### 2. pyo3 0.29 API 差异
-
-- `Bound<PyAny>::downcast::<T>()` → `cast::<T>()`（重命名）
-- `PyDict::iter()` 返回 `(k, v)` 元组，非 `PyResult`，值需单独 `.extract::<String>()`
-- `#[classmethod]` 的 `_cls` 参数类型为 `&Bound<'_, pyo3::types::PyType>`（非裸 `PyType`）
-
-### 3. `node.node_id` 返回类型不一致
-
-**发现**：Python 侧 `node.node_id` 返回 `str`（`"mcp/test"`），但 `graph.nodes[i].node_id` 返回 `NodeId` 对象。直接 `==` 比较失败。
-
-**修复**：测试中改为 `str(mcp_nodes[0].node_id) == node.node_id`。记录为类型不一致问题，后续可考虑统一。
-
-### 4. workspace 测试结果
-
+**编译错误**：
 ```
-504 passed, 0 failed (+14 Python pytest passed)
+error[E0425]: cannot find type `PyType` in this scope
+   --> py-arf/src/mcp.rs:134:37
+    |
+134 |     fn local(_cls: &pyo3::Bound<'_, PyType>, namespace: String, root: String) -> PyResult<Self> {
+    |                                     ^^^^^^
+    |
+help: `PyTypeMethods` has a name defined in the doc alias attribute as `PyType`
 ```
+
+**发现**：pyo3 0.29 中 `PyType` 不在 `prelude` 中，需从 `pyo3::types::PyType` 显式导入。`PyTypeMethods` 是 doc alias，对应的是方法 trait，不是类型。
+
+**修复**：`_cls: &pyo3::Bound<'_, pyo3::types::PyType>`（完整路径，不缩写）。
+
+### 2. `Bound<PyAny>::iter()` 不存在 —— dict 迭代
+
+**编译错误**：
+```
+error[E0599]: no method named `iter` found for reference `&pyo3::Bound<'_, pyo3::PyAny>` in the current scope
+  --> py-arf/src/mcp.rs:19:21
+   |
+19 |     for pair in obj.iter()? {
+   |                     ^^^^
+   |
+help: there is a method `iter_tag` with a similar name
+```
+
+**发现**：`py_headers_to_hashmap()` 中 `obj` 是 `&Bound<'_, PyAny>`，PyO3 0.29 的 `Bound` 没有 `iter()` 方法。需要先 cast 为 `PyDict`，然后调用 `PyDict::iter()`。
+
+**修复**：
+```rust
+// 错误
+for pair in obj.iter()? { ... }
+
+// 正确
+let dict = obj.cast::<PyDict>()?;
+for (k, v) in dict.iter() {
+    map.insert(k.extract::<String>()?, v.extract::<String>()?);
+}
+```
+
+### 3. `cast` vs `downcast` —— pyo3 0.29 重命名
+
+**编译错误**：
+```
+error[E0599]: no method named `downcast` found for reference `&pyo3::Bound<'_, pyo3::PyAny>` in the current scope
+  --> py-arf/src/mcp.rs:19:20
+   |
+19 |     let dict = obj.downcast::<PyDict>()?;
+   |                    ^^^^^^^^
+   |
+help: there is a method `cast` with a similar name
+```
+
+**发现**：pyo3 0.29 将 `Bound::downcast::<T>()` 重命名为 `cast::<T>()`。功能相同——检查 Python 对象是否可以转为目标类型。
+
+**修复**：`obj.downcast::<PyDict>()` → `obj.cast::<PyDict>()`。
+
+### 4. `Python::with_gil` 已从 pyo3 0.29 移除 —— Rust 单元测试不可用
+
+**编译错误**（×17，每个 `#[test]` 函数一处）：
+```
+error[E0599]: no associated function or constant named `with_gil` found for struct `pyo3::Python<'py>` in the current scope
+   --> py-arf/src/mcp.rs:221:17
+    |
+221 |         Python::with_gil(|py| {
+    |                 ^^^^^^^^ associated function or constant not found
+    |
+note: if you're trying to build a new `pyo3::Python<'_>` consider using one of the following associated functions:
+      pyo3::Python::<'_>::try_attach
+      pyo3::Python::<'unbound>::assume_attached
+```
+
+**发现**：pyo3 0.22+ 改变了 GIL 管理模型。`Python::with_gil` 在 extension-module 模式下不可用——Python 由外部进程初始化，Rust 侧不能自行启动解释器。`Python::try_attach` 在非嵌入场景始终返回 `None`。这是 pyo3 0.22+ 的有意设计：extension-module crate 的单元测试应通过 Python 侧（pytest）或 `#[pyo3::test]`（需要 `testing` feature，pyo3 0.29 未提供）。
+
+**影响**：`mcp.rs` 末尾的 18 个 `#[cfg(test)]` 测试全部无法编译。
+
+**决策**：移除 Rust 侧 `#[cfg(test)]` 单元测试（删除约 240 行），覆盖角度迁移至 Python pytest（`test_mcp.py` 14 个测试）。这与 `py-arf/src/lib.rs` 现有模式一致——lib.rs 也无 `#[cfg(test)]` Rust 测试。
+
+同时移除 `Cargo.toml` 中的 `[dev-dependencies] tempfile = "3"`。
+
+### 5. `PyMcpNode` 缺少 `Debug` derive
+
+**编译错误**（连带错误，修复 #4 后消失）：
+```
+error[E0277]: `mcp::PyMcpNode` doesn't implement `Debug`
+   --> py-arf/src/mcp.rs:361:30
+    |
+361 |             let err = result.unwrap_err();
+    |                              ^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Debug` is not implemented for `mcp::PyMcpNode`
+```
+
+**根因**：`Result::unwrap_err()` 要求 `E: Debug`。`PyErr` 实现 `Debug`，但 `PyResult<T>` 的 `E` 不直接可见……实际原因是 `unwrap_err()` 需要 `T: Debug`（`PyMcpNode`）以便在 `Err` 分支打印 `Err` 中包裹的 `Ok` 值。
+
+**修复**：随 #4 一起移除测试代码块，问题不再存在。
+
+### 6. `node.node_id` 返回类型不一致 —— `str` vs `NodeId`
+
+**测试失败**：
+```
+FAILED tests/test_mcp.py::TestMcpNodeLocal::test_connect_to_bus - AssertionError: assert NodeId('mcp/test') == 'mcp/test'
+E            +  where NodeId('mcp/test') = NodeInfo(node_id='mcp/test', type='mcp').node_id
+E            +  and   'mcp/test' = McpNode(namespace='test', node_id='mcp/test').node_id
+```
+
+**发现**：Python 侧 `node.node_id` 返回 Python `str`（`"mcp/test"`），但 `BusGraph.nodes[i].node_id` 返回 `NodeId` 对象。两个类型不同，直接 `==` 比较失败。
+
+**根因**：`PyMcpNode::node_id` getter 调用 `self.inner.node_id.to_string()` 返回 `String`，PyO3 自动转为 Python `str`。而 `PyNodeInfo::node_id` getter 调用 `PyNodeId { inner: self.inner.node_id.clone() }` 返回 `NodeId` 对象。两边应该统一——要么都返回 `str`，要么都返回 `NodeId`。
+
+**修复**：测试中临时改为 `str(mcp_nodes[0].node_id) == node.node_id`。记录为类型不一致问题（两个 getter 返回不同类型），待后续统一——建议 `PyMcpNode::node_id` 也返回 `NodeId` 对象保持一致性。
