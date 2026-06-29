@@ -6,55 +6,99 @@
 
 ## 定位
 
-MCP 拆分为两个独立 Bus 节点——**发现**与**执行**分离，各自可独立替换。Engine 按 `node_type` 区分路由。
+**一个 MCP 实例 = 一个 namespace。** 每个实例内管理 discovery + runtime 两个内部子节点，保证本 namespace 内工具/技能不重名。跨实例重名互不干扰。
 
 ```
-              Bus
-               │
-   ┌───────────┴───────────┐
-   │                       │
-   ▼                       ▼
-ResourceDiscoveryNode   ResourceRuntimeNode
- (node_type:              (node_type:
-  resource_discovery)      resource_runtime)
-   │                       │
-   ├─ 扫描 tools/skills    ├─ 接收 tool_call_set
-   ├─ 广播 node_online     ├─ DAG 拓扑排序
-   ├─ use_skill (L2)       ├─ 并发执行
-   └─ load_skill_resource  └─ tool_result_set
-      (L3)
+Bus
+ │
+ ├── mcp/filesystem (namespace="filesystem")
+ │       ├── discovery   → 扫描/广播 tools + skills
+ │       └── runtime     → 执行 tool_call_set
+ │
+ ├── mcp/network (namespace="network")
+ │       ├── discovery   → 扫描/广播 tools + skills
+ │       └── runtime     → 执行 tool_call_set
+ │
+ └── mcp/sandbox (namespace="sandbox")  ← 未来安全隔离
+         ├── discovery
+         └── runtime (sandboxed)
+```
+
+Engine 视角：**我加载/运行哪个 MCP 实例给的资源**——不关心子节点细节，只按 namespace 路由。
+
+```
+                Engine
+                  │
+                  │ 看到 Bus 上有：
+                  │   mcp/filesystem  → {tools: [read_file, write_file], skills: [...]}
+                  │   mcp/network     → {tools: [read_file, fetch_url], skills: [...]}
+                  │
+                  │ 两个 read_file 分属不同 namespace，不冲突
 ```
 
 **Skill 渐进式发现（L1 → L2 → L3）**：
 
 ```
-L1: Engine 监听 node_online → 拿 {name, description} → 注入 system prompt
-L2: LLM 决定使用 → Engine ──use_skill──→ DiscoveryNode ──skill_loaded──→ Engine
-L3: LLM 需要资源 → Engine ──load_skill_resource──→ DiscoveryNode ──skill_resource_loaded──→ Engine
+L1: Engine 监听 mcp/{instance}/discovery 的 node_online → 拿 {name, description}
+L2: LLM 决定使用 → Engine ──use_skill──→ mcp/{instance}/discovery ──skill_loaded──→ Engine
+L3: LLM 需要资源 → Engine ──load_skill_resource──→ mcp/{instance}/discovery ──skill_resource_loaded──→ Engine
 ```
 
 **Tool 执行流程**：
 
 ```
-Engine ──tool_call_set──→ Bus ──tool_call_set──→ RuntimeNode
-                                                    │ 构建 DAG
-                                                    │ 拓扑排序
-                                                    │ 并发执行
-                                                    │ 级联取消
-Engine ←──tool_result_set── Bus ←──tool_result_set──┘
+Engine ──tool_call_set(to=mcp/{instance}/runtime)──→ Bus ──→ mcp/{instance}/runtime
+                                                               │ 构建 DAG / 拓扑排序
+                                                               │ 并发执行 / 级联取消
+Engine ←──tool_result_set────────────────────────── Bus ←──────┘
 ```
 
-**核心原则：可插拔。** Discovery 和 Runtime 各自可替换——换一个 Runtime 实现接入 sandbox，整个系统无感。
+**核心原则：namespace 隔离。** 每个 MCP 实例是独立命名空间——新增 MCP 实例不影响已有实例，删除亦然。
 
-## 节点类型
+## 节点结构
 
-| 类型 | `node_type` | 职责 | 本阶段 |
-|------|-------------|------|--------|
-| `ResourceDiscoveryNode` | `resource_discovery` | 扫描/索引/广播 tools + skills，响应 L2/L3 查询 | ✅ |
-| `ResourceRuntimeNode` | `resource_runtime` | 接收 `tool_call_set`，DAG 异步执行，返回 `tool_result_set` | ✅ |
-| `RemoteMcpNode` | — | 外部 MCP 协议（stdio/SSE），未来扩展 | 🔲 未来 |
+每个 MCP 实例由两个内部子节点组成，共享同一 namespace：
 
-**注册与刷新**：静态注册——构造时传入 tools/skills 目录路径，启动后广播。无独立 refresh 方法——要刷新资源列表就重启节点。两个节点可连接同一条 Bus，也可各自独立部署。
+```
+McpInstance { namespace: "filesystem" }
+  ├─ McpDiscoveryHandle  → node_type: "mcp_discovery"
+  │     NodeId: mcp/{namespace}/discovery
+  │     职责: 扫描 tools/skills, 广播 node_online, L2/L3 查询
+  │
+  └─ McpRuntimeHandle    → node_type: "mcp_runtime"
+        NodeId: mcp/{namespace}/runtime
+        职责: 接收 tool_call_set, DAG 异步执行, 返回 tool_result_set
+```
+
+| 子节点 | `node_type` | NodeId 约定 | 消息方向 |
+|--------|-------------|-------------|---------|
+| discovery | `mcp_discovery` | `mcp/{namespace}/discovery` | 广播 `node_online`，响应 `use_skill`/`load_skill_resource` |
+| runtime | `mcp_runtime` | `mcp/{namespace}/runtime` | 广播 `node_online`，响应 `tool_call_set` |
+
+**namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`）。MCP 实例内部保证 tools/skills 不重名。
+
+```rust
+/// An MCP instance = one namespace = one logical resource provider.
+///
+/// Internally composes discovery + runtime handles sharing the same
+/// namespace. Externally, Engine sees two Bus nodes (`mcp/{ns}/discovery`
+/// and `mcp/{ns}/runtime`) that form one logical MCP instance.
+pub struct McpInstance {
+    /// Namespace identifier (e.g. "filesystem", "network").
+    pub namespace: String,
+    /// Discovery handle — scans/registers resources, handles L2/L3 queries.
+    pub discovery: McpDiscoveryHandle,
+    /// Runtime handle — executes tool_call_set, future sandbox entry point.
+    pub runtime: McpRuntimeHandle,
+}
+```
+
+`McpInstance` 构造时执行内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误，不应静默）。跨实例同名无影响。
+
+**Engine 路由逻辑**：
+1. 监听所有 `node_online`，按 namespace 分组（`mcp/{ns}/discovery` + `mcp/{ns}/runtime` = 一个完整 MCP 实例）
+2. 调用工具时：按 namespace 前缀匹配 → `tool_call_set` 发给 `mcp/{ns}/runtime`
+3. 加载 skill 时：`use_skill` 发给 `mcp/{ns}/discovery`
 
 ## 依赖关系
 
@@ -373,18 +417,19 @@ pub struct SkillIndex {
 
 ## Bus 消息协议
 
-### node_online — ResourceDiscoveryNode 注册
+### node_online — discovery 子节点注册
 
-Discovery 节点负责资源发现——上线时广播全部 tools 元数据和 skills L1 元数据。Engine 据此构建 system prompt。
+Discovery 负责资源发现——上线时广播本 namespace 的全部 tools 描述 + skills L1 元数据。Engine 据此构建 system prompt。
 
 ```json
 {
   "msg_type": "node_online",
-  "from": "resource_discovery/main",
+  "from": "mcp/filesystem/discovery",
   "to": [],
   "payload": {
-    "node_type": "resource_discovery",
-    "node_id": "resource_discovery/main",
+    "node_type": "mcp_discovery",
+    "node_id": "mcp/filesystem/discovery",
+    "namespace": "filesystem",
     "capabilities": {
       "tools": [
         {"name": "read_file", "description": "Read file contents"},
@@ -403,18 +448,19 @@ Discovery 节点负责资源发现——上线时广播全部 tools 元数据和
 }
 ```
 
-### node_online — ResourceRuntimeNode 注册
+### node_online — runtime 子节点注册
 
-Runtime 节点负责工具执行——广播自己可执行的工具列表。Engine 据此路由 `tool_call_set`。
+Runtime 负责工具执行——广播本 namespace 可执行的工具名列表。Engine 据此路由 `tool_call_set`。
 
 ```json
 {
   "msg_type": "node_online",
-  "from": "resource_runtime/main",
+  "from": "mcp/filesystem/runtime",
   "to": [],
   "payload": {
-    "node_type": "resource_runtime",
-    "node_id": "resource_runtime/main",
+    "node_type": "mcp_runtime",
+    "node_id": "mcp/filesystem/runtime",
+    "namespace": "filesystem",
     "capabilities": {
       "tools": ["read_file", "write_file", "search_content"]
     },
@@ -423,18 +469,23 @@ Runtime 节点负责工具执行——广播自己可执行的工具列表。Eng
 }
 ```
 
-> Engine 发现逻辑：`resource_discovery` 提供工具描述（注入 system prompt），`resource_runtime` 提供可执行工具列表（路由 `tool_call_set` 的目标）。两者可一对多——一个 discovery 节点可以对应多个 runtime 节点（如不同 sandbox 策略的 runtime）。
+> **Engine 发现逻辑**：
+> 1. 收到 `node_online` → 按 `namespace` 分组（discovery + runtime 配对）
+> 2. Discovery 的工具描述注入 system prompt（`filesystem/read_file`）
+> 3. 调用工具时 → 按 namespace 找到对应 runtime → 发 `tool_call_set` 给 `mcp/{ns}/runtime`
+> 4. 跨 namespace 重名工具不冲突——`filesystem/read_file` ≠ `network/read_file`
 
-### tool_call_set — Engine → ResourceRuntimeNode
+### tool_call_set — Engine → runtime
 
-定向消息（`to: ["resource_runtime/main"]`）：
+Engine 按 tool 的 namespace 前缀路由到对应 runtime 节点。
 
 ```json
 {
   "msg_type": "tool_call_set",
   "from": "engine/session-1",
-  "to": ["resource_runtime/main"],
+  "to": ["mcp/filesystem/runtime"],
   "payload": {
+    "namespace": "filesystem",
     "session_id": "session-1",
     "calls": [
       {
@@ -467,7 +518,7 @@ Runtime 节点负责工具执行——广播自己可执行的工具列表。Eng
 ```json
 {
   "msg_type": "tool_result_set",
-  "from": "resource_runtime/main",
+  "from": "mcp/filesystem/runtime",
   "to": ["engine/session-1"],
   "payload": {
     "session_id": "session-1",
@@ -532,29 +583,31 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
         → call_2.blocking = ["call_3"] → call_3 = cancelled
 ```
 
-### use_skill — Engine → MCP
+### use_skill — Engine → discovery (L2)
 
 ```json
 {
   "msg_type": "use_skill",
   "from": "engine/session-1",
-  "to": ["resource_discovery/main"],
+  "to": ["mcp/filesystem/discovery"],
   "payload": {
+    "namespace": "filesystem",
     "name": "react-component"
   }
 }
 ```
 
-### skill_loaded — MCP → Engine (L2)
+### skill_loaded — discovery → Engine (L2)
 
 返回 `SKILL.md` 全文 + 资源文件清单。Engine 将 body 注入 LLM 上下文，`resources` 供 LLM 按需请求 L3。
 
 ```json
 {
   "msg_type": "skill_loaded",
-  "from": "resource_discovery/main",
+  "from": "mcp/filesystem/discovery",
   "to": ["engine/session-1"],
   "payload": {
+    "namespace": "filesystem",
     "name": "react-component",
     "description": "Use when asked to build React components with TypeScript...",
     "body": "---\nname: react-component\ndescription: >\n  Use when asked to build React components...\n---\n\n# React Component Skill\n\n## Prerequisites\n...\n## Main Flow\n1. Run `scripts/generate-component.py` ...\n",
@@ -567,30 +620,30 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
 }
 ```
 
-### load_skill_resource — Engine → MCP (L3)
-
-LLM 需要具体脚本/模板/参考文档时，Engine 精准请求：
+### load_skill_resource — Engine → discovery (L3)
 
 ```json
 {
   "msg_type": "load_skill_resource",
   "from": "engine/session-1",
-  "to": ["resource_discovery/main"],
+  "to": ["mcp/filesystem/discovery"],
   "payload": {
+    "namespace": "filesystem",
     "skill_name": "react-component",
     "resource_path": "scripts/generate-component.py"
   }
 }
 ```
 
-### skill_resource_loaded — MCP → Engine (L3)
+### skill_resource_loaded — discovery → Engine (L3)
 
 ```json
 {
   "msg_type": "skill_resource_loaded",
-  "from": "resource_discovery/main",
+  "from": "mcp/filesystem/discovery",
   "to": ["engine/session-1"],
   "payload": {
+    "namespace": "filesystem",
     "skill_name": "react-component",
     "resource_path": "scripts/generate-component.py",
     "content": "#!/usr/bin/env python3\n\nimport sys\n..."
@@ -737,8 +790,9 @@ crates/arf-mcp/
     ├── types.rs            # ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet
     ├── skill.rs            # SkillEntry, SkillIndex
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
-    ├── node_discovery.rs   # ResourceDiscoveryNode: Bus lifecycle + L2/L3 query handling
-    ├── node_runtime.rs     # ResourceRuntimeNode: Bus lifecycle + tool_call_set execution (🔲 future sandbox)
+    ├── instance.rs         # McpInstance: composes discovery + runtime handles, namespace management
+    ├── node_discovery.rs   # McpDiscoveryHandle: Bus lifecycle + L2/L3 query handling
+    ├── node_runtime.rs     # McpRuntimeHandle: Bus lifecycle + tool_call_set execution (🔲 future sandbox)
     ├── tools/
     │   ├── mod.rs          # Built-in tool registry
     │   ├── read_file.rs    # ReadFileTool
@@ -763,22 +817,25 @@ crates/arf-mcp/
 | 5.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
 | 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 5.5 | ResourceDiscoveryNode | Bus 生命周期 + `node_online` 广播 (tools/skills L1) + `use_skill` (L2) + `load_skill_resource` (L3) | `node_discovery.rs` |
-| 5.6 | ResourceRuntimeNode | Bus 生命周期 + `node_online` 广播 + `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（🔲 未来 sandbox 接入点） | `node_runtime.rs` |
-| 5.7 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
-| 5.8 | 集成测试 | Discovery + Runtime + Bus + mock Engine 消息收发 | `tests/` |
+| 5.5 | McpInstance | 组装 discovery + runtime 子节点、namespace 管理、内部工具去重 | `instance.rs` |
+| 5.6 | McpDiscoveryHandle | Bus 生命周期 + `node_online` 广播 (tools/skills L1) + `use_skill` (L2) + `load_skill_resource` (L3) | `node_discovery.rs` |
+| 5.7 | McpRuntimeHandle | Bus 生命周期 + `node_online` 广播 + `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（🔲 未来 sandbox 接入点） | `node_runtime.rs` |
+| 5.8 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
+| 5.9 | 集成测试 | McpInstance + 多 namespace 隔离 + Bus + mock Engine | `tests/` |
 
 ## 交付标准
 
 - [ ] `cargo test --workspace` 全部通过
 - [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json`
 - [ ] 三个内置工具可完成实际文件读写和内容搜索
-- [ ] `ResourceDiscoveryNode` 正确广播 `node_online`（含 tools 描述 + skills L1 元数据）
-- [ ] `ResourceDiscoveryNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
-- [ ] `ResourceDiscoveryNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
-- [ ] `ResourceRuntimeNode` 正确广播 `node_online`（含可执行 tools 列表）
-- [ ] `ResourceRuntimeNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
-- [ ] `ResourceRuntimeNode` 是未来 sandbox 的清晰接入点（execute 逻辑集中在此）
+- [ ] `McpInstance` 组装 discovery + runtime，内部保证 tools/skills 不重名
+- [ ] `McpDiscoveryHandle` 正确广播 `node_online`（含 tools 描述 + skills L1 元数据 + namespace）
+- [ ] `McpDiscoveryHandle` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
+- [ ] `McpDiscoveryHandle` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] `McpRuntimeHandle` 正确广播 `node_online`（含可执行 tools 列表 + namespace）
+- [ ] `McpRuntimeHandle` 正确接收 `tool_call_set` → executor 调度 → `tool_result_set`
+- [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`）
+- [ ] Engine 按 namespace 前缀路由 tool_call_set 到正确 runtime
 - [ ] L3 资源读取有路径安全校验（拒绝 `../` 和绝对路径）
 - [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
 - [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
@@ -794,6 +851,6 @@ crates/arf-mcp/
 
 | Phase | 如何使用 MCP |
 |-------|-------------|
-| Phase 6 Engine | 监听两个 `node_online`（discovery + runtime）→ AgentConfig 匹配 → `tool_call_set` 发给 runtime → `use_skill` 发给 discovery → 注入消息流 |
+| Phase 6 Engine | 监听 `node_online` 按 namespace 分组 → AgentConfig 匹配 → `tool_call_set` 发给 `mcp/{ns}/runtime` → `use_skill` 发给 `mcp/{ns}/discovery` |
 | Phase 7 集成 | E2E：Engine + ModelAdapter + MCP 完整 ReAct 循环 |
 | 未来 RemoteMCP | 同消息格式，只是工具执行转发到外部进程 |
