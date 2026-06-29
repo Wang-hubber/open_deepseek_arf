@@ -2,7 +2,7 @@
 
 > 父文档：`docs/v1.x/2026-06-26-arfv1-roadmap.md`
 > 依赖：Phase 1 (Bus) — 已完成
-> 状态：✅ 设计完成
+> 状态：✅ 设计完成（含 RuntimeModule trait 抽象）
 
 ## 定位
 
@@ -14,7 +14,9 @@ Bus
  ├── mcp/filesystem  (LocalMcpNode) root=/mcp/stable
  │       │
  │       ├── [内部] discovery → 扫描 {root}/tools + {root}/skills
- │       └── [内部] runtime   → ScriptTool subprocess 执行
+ │       └── [内部] runtime   → RuntimeModule trait (构造时绑定)
+ │             ├── LocalRuntime (默认) → 宿主机直接 spawn
+ │             └── SandboxRuntime (用户定义) → Bus → sandbox node
  │
  ├── mcp/codetidy    (RemoteMcpNode) url=https://mcp.codetidy.dev
  │       │
@@ -77,6 +79,7 @@ LocalMcpNode / RemoteMcpNode (Bus NodeHandle)
   │ root_dir       │    │ RemoteConfig      │
   │ DiscoveryModule│    │ HTTP transport     │
   │ RuntimeModule  │    │ tools/list proxy   │
+	  │  (trait)       │    │                   │
   │ SkillIndex     │    │ tools/call proxy   │
   └────────────────┘    └───────────────────┘
       本地 Tool+Skill         外部 Tool (无 Skill)
@@ -135,27 +138,206 @@ connect(bus)       bus.connect() +                     HTTP initialize
 
 ```rust
 /// A local MCP node — discovers tools and skills from the filesystem.
+///
+/// RuntimeModule is a trait object bound at construction time:
+/// - Default: `LocalRuntime` — spawns subprocesses directly on the host
+/// - Custom:  `SandboxRuntime` — forwards execution to a sandbox Bus node
 pub struct LocalMcpNode {
     pub namespace: String,
     pub node_id: NodeId,
     root_dir: PathBuf,
     discovery: DiscoveryModule,
-    runtime: RuntimeModule,
+    runtime: Box<dyn RuntimeModule>,
 }
 
 impl LocalMcpNode {
-    /// Scan the filesystem and create the node. No Bus connection yet.
+    /// Scan the filesystem with the default local runtime.
     /// Returns Err(McpError::Discovery) if the root_dir doesn't exist
     /// or contains no valid tools/skills.
     pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Result<Self, McpError> {
         todo!()
     }
 
+    /// Scan the filesystem with a custom RuntimeModule (e.g. Docker sandbox).
+    /// The runtime is bound at construction — its execution strategy is fixed
+    /// before the node goes online.
+    pub fn with_runtime(
+        namespace: impl Into<String>,
+        root_dir: PathBuf,
+        runtime: Box<dyn RuntimeModule>,
+    ) -> Result<Self, McpError> {
+        todo!()
+    }
+
     /// Connect to the Bus and broadcast node_online.
+    /// The node_online payload includes runtime.capabilities() so Engine
+    /// can see execution characteristics (local vs sandbox, image, etc.).
     pub async fn connect(&self, bus: &Bus) -> Result<(), McpError> {
         todo!()
     }
 }
+```
+
+### RuntimeModule trait — 执行后端抽象
+
+**定义时绑定执行方式，capability 自描述。** `RuntimeModule` 不关心内部 DAG 调度（由 executor 统一处理），只负责单个 tool call 的实际执行。框架默认提供 `LocalRuntime`（宿主机直接 spawn），开发者可实现 `SandboxRuntime` 转发到 Bus 上的 sandbox 节点。
+
+```rust
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+use serde_json::Value;
+
+use crate::tool::Tool;
+use crate::types::{ToolCallSet, ToolResultSet};
+
+/// Execution backend for tool calls — bound at LocalMcpNode construction.
+///
+/// The RuntimeModule trait decouples DAG scheduling from subprocess execution.
+/// The executor handles topology, concurrency, and cascade cancel — it calls
+/// `run_single()` for each individual tool invocation.
+///
+/// Implementations:
+/// - `LocalRuntime` (framework default): spawn subprocesses on the host
+/// - `SandboxRuntime` (user-defined): forward to a sandbox Bus node
+#[async_trait]
+pub trait RuntimeModule: Send + Sync {
+    /// Self-describing capabilities — injected into `node_online.payload.capabilities`.
+    ///
+    /// Engine sees this and knows the execution environment without understanding
+    /// sandbox internals. Examples:
+    /// ```json
+    /// {"runtime": "local", "concurrency": "layer-parallel"}
+    /// {"runtime": "sandbox", "engine": "docker", "image": "python:3.11-slim"}
+    /// ```
+    fn capabilities(&self) -> Value;
+
+    /// Execute a full `tool_call_set`. The default implementation delegates
+    /// DAG scheduling to the executor and calls `run_single()` per call.
+    /// Override this only if you need to replace the entire execution model.
+    async fn execute(
+        &self,
+        call_set: &ToolCallSet,
+        tools: &HashMap<String, Arc<dyn Tool>>,
+    ) -> ToolResultSet;
+
+    /// Execute a single tool call. Called by the default `execute()` impl
+    /// (after DAG scheduling) or directly for single-call sets.
+    async fn run_single(
+        &self,
+        call_id: &str,
+        tool: &dyn Tool,
+        params: Value,
+    ) -> (String, Value, Option<String>); // (status, result, error)
+}
+```
+
+**框架默认实现**：
+
+```rust
+/// Default RuntimeModule — spawns subprocesses directly on the host.
+///
+/// This is what `LocalMcpNode::new()` uses. Zero configuration, zero overhead.
+pub struct LocalRuntime;
+
+#[async_trait]
+impl RuntimeModule for LocalRuntime {
+    fn capabilities(&self) -> Value {
+        serde_json::json!({"runtime": "local", "concurrency": "layer-parallel"})
+    }
+
+    async fn execute(
+        &self,
+        call_set: &ToolCallSet,
+        tools: &HashMap<String, Arc<dyn Tool>>,
+    ) -> ToolResultSet {
+        // Delegates to the DAG executor (Task 5.4), which calls run_single()
+        // per call after topological sort and layer construction.
+        todo!() // Task 5.4 + 5.7
+    }
+
+    async fn run_single(
+        &self,
+        call_id: &str,
+        tool: &dyn Tool,
+        params: Value,
+    ) -> (String, Value, Option<String>) {
+        match tool.execute(params).await {
+            Ok(val) => ("success".into(), val, None),
+            Err(e) => ("error".into(), Value::Null, Some(e.message)),
+        }
+    }
+}
+```
+
+**SandboxRuntime 示例（用户实现，Phase 5 后置）**：
+
+```rust
+/// User-defined RuntimeModule — forwards execution to a sandbox Bus node.
+///
+/// Does NOT spawn subprocesses itself. Instead, sends a `sandbox_exec`
+/// message to `sandbox/{engine}` and waits for `sandbox_result`.
+pub struct SandboxRuntime {
+    /// Name of the sandbox Bus node (e.g., "docker", "firecracker").
+    engine: String,
+    /// Container image (e.g., "python:3.11-slim").
+    image: String,
+    /// Bus handle for sending sandbox_exec messages.
+    bus: Arc<Bus>,
+}
+
+#[async_trait]
+impl RuntimeModule for SandboxRuntime {
+    fn capabilities(&self) -> Value {
+        serde_json::json!({
+            "runtime": "sandbox",
+            "engine": self.engine,
+            "image": self.image,
+        })
+    }
+
+    async fn run_single(
+        &self,
+        call_id: &str,
+        tool: &dyn Tool,
+        params: Value,
+    ) -> (String, Value, Option<String>) {
+        // Send sandbox_exec message to sandbox/{engine} node
+        // Wait for sandbox_result response
+        // Return (status, result, error)
+        todo!()
+    }
+}
+```
+
+**构造对比**：
+
+```rust
+// 默认：宿主机执行，零配置
+let mcp = LocalMcpNode::new("filesystem", root_dir)?;
+
+// 沙箱：Docker 隔离执行
+let runtime = Box::new(SandboxRuntime::new("docker", "python:3.11-slim", &bus));
+let mcp = LocalMcpNode::with_runtime("filesystem", root_dir, runtime)?;
+```
+
+**Python 侧等价**：
+
+```python
+# 默认
+mcp = LocalMcpNode(namespace="filesystem", root_dir="/root")
+
+# 沙箱：用户自定义 RuntimeModule
+class DockerSandbox(RuntimeModule):
+    def capabilities(self) -> dict:
+        return {"runtime": "sandbox", "engine": "docker", "image": self.image}
+
+    async def run_single(self, call_id, tool, params):
+        # 发 sandbox_exec → 收 sandbox_result
+        ...
+
+runtime = DockerSandbox(image="python:3.11-slim", bus=bus)
+mcp = LocalMcpNode.with_runtime("filesystem", "/root", runtime)
 ```
 
 ### RemoteMcpNode
@@ -910,6 +1092,7 @@ MCP 节点上线时广播一个 `node_online`，携带本 namespace 的全部能
     "node_id": "mcp/filesystem",
     "namespace": "filesystem",
     "capabilities": {
+      "runtime": {"runtime": "local", "concurrency": "layer-parallel"},
       "tools": [
         {"name": "read_file", "description": "Read file contents"},
         {"name": "write_file", "description": "Write content to a file"},
@@ -1348,7 +1531,7 @@ crates/arf-mcp/
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
     ├── node.rs             # LocalMcpNode: Bus lifecycle + msg_type dispatch + discovery/runtime
     ├── discovery.rs        # DiscoveryModule: scans {root}/tools + {root}/skills, L2/L3
-    ├── runtime.rs          # RuntimeModule: tool_call_set → executor dispatch (ScriptTool sandbox)
+    ├── runtime.rs          # RuntimeModule trait + LocalRuntime: execution backend (构造时绑定)
     └── tests/
         ├── tool_tests.rs       # Tool trait tests
         ├── config_tests.rs     # tool.toml + RemoteConfig parsing
@@ -1385,7 +1568,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
 | 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
-| 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
+| 5.7 | RuntimeModule | `RuntimeModule` trait（`capabilities()` 自描述 + `execute()` / `run_single()`）+ `LocalRuntime` 默认实现（宿主机直接 spawn ScriptTool subprocess）。trait 对象在 `LocalMcpNode` 构造时绑定，执行方式在定义阶段固定。Python 用户可实现 `RuntimeModule` 子类注入自定义执行后端（如 `SandboxRuntime` → Bus → sandbox node） | `runtime.rs` |
 | 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RetryConfig` + `RemoteMcpNode` JSON-RPC 握手/发现/代理执行/重连 + headers 注入 + 自定义 TLS CA + `node_online` 广播 | `remote.rs` |
 | 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` + `RemoteConfig` + `RetryConfig` 暴露给 Python | `py-arf/src/mcp/` |
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
@@ -1420,7 +1603,12 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] Python API：`from py_arf.mcp import LocalMcpNode, RemoteMcpNode` 可正常 import 并使用
 - [ ] 内部去重：同一 namespace 内 tool/skill name 冲突 → panic
 - [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`），Engine 只需按 NodeId 路由
-- [ ] RuntimeModule 是 ScriptTool sandbox 的清晰接入点（subprocess 管理集中在此）
+- [ ] `RuntimeModule` trait：`capabilities()` 自描述执行环境 + `execute(call_set, tools) → ToolResultSet` + `run_single(call_id, tool, params) → (status, result, error)`
+- [ ] `LocalRuntime`（框架默认）：`capabilities()` 返回 `{"runtime": "local", "concurrency": "layer-parallel"}`，`run_single()` 直接调用 `tool.execute(params)`
+- [ ] `LocalMcpNode::new()` 默认使用 `LocalRuntime`，零配置即宿主机执行
+- [ ] `LocalMcpNode::with_runtime(ns, root, runtime)` 接受 `Box<dyn RuntimeModule>`，构造时绑定执行后端
+- [ ] RuntimeModule 对 Python 用户暴露——可通过 PyO3 子类化 `RuntimeModule` 实现自定义执行方式（如 DockerSandbox）
+- [ ] `node_online.payload.capabilities` 包含 `runtime` 字段，Engine 可看到执行环境特征
 - [ ] L3 资源读取有路径安全校验（拒绝 `../` 和绝对路径）
 - [ ] `tool.toml` 正确解析为 `ToolConfig`（含 `name`, `description`, `runtime`, `entrypoint`, `params_schema`, `timeout_ms`）
 - [ ] `ScriptTool` 实现 `Tool` trait：spawn subprocess → stdin 写入 JSON params → stdout 读取 JSON result → stderr 捕获为 error
@@ -1457,14 +1645,41 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 ### API
 
 ```python
-from py_arf.mcp import LocalMcpNode, RemoteMcpNode, RemoteConfig
+from py_arf.mcp import LocalMcpNode, RemoteMcpNode, RemoteConfig, RuntimeModule
 
-# 本地 MCP — 纯文件夹驱动，构造即扫描
+# 本地 MCP — 默认 LocalRuntime，零配置宿主机执行
 mcp_local = LocalMcpNode(
     namespace="filesystem",
     root_dir="/path/to/tools",
 )
 await mcp_local.connect(bus)  # → node_online 广播
+
+# 本地 MCP — 自定义 RuntimeModule，沙箱执行
+class DockerSandbox(RuntimeModule):
+    def __init__(self, image: str, bus):
+        self.image = image
+        self._bus = bus
+
+    def capabilities(self) -> dict:
+        return {"runtime": "sandbox", "engine": "docker", "image": self.image}
+
+    async def run_single(self, call_id: str, tool, params: dict):
+        # 转发 tool.execute 请求到 sandbox/docker Bus 节点
+        msg = Message(type="sandbox_exec", payload={
+            "call_id": call_id,
+            "command": tool.build_command_spec(),
+            "params": params,
+        })
+        result = await self._bus.send_and_wait("sandbox/docker", msg)
+        return (result["status"], result["result"], result.get("error"))
+
+sandbox_runtime = DockerSandbox(image="python:3.11-slim", bus=bus)
+mcp_sandboxed = LocalMcpNode.with_runtime(
+    namespace="filesystem",
+    root_dir="/path/to/tools",
+    runtime=sandbox_runtime,
+)
+await mcp_sandboxed.connect(bus)  # node_online 包含 runtime capabilities
 
 # 远程 MCP — URL 驱动，构造不联网
 mcp_remote = RemoteMcpNode(
@@ -1485,7 +1700,10 @@ await mcp_remote.connect(bus)  # → HTTP init → tools/list → node_online �
 | Rust | Python |
 |------|--------|
 | `LocalMcpNode::new(namespace, root_dir)` | `LocalMcpNode(namespace=str, root_dir=str)` |
+| `LocalMcpNode::with_runtime(ns, root, runtime)` | `LocalMcpNode.with_runtime(namespace=str, root_dir=str, runtime=RuntimeModule)` |
 | `LocalMcpNode::connect(bus)` | `await mcp.connect(bus)` |
+| `RuntimeModule` trait (async_trait) | `RuntimeModule` base class (PyO3 子类化) |
+| `LocalRuntime` (default impl) | 无需显式构造，`LocalMcpNode()` 默认使用 |
 | `RemoteMcpNode::new(namespace, config)` | `RemoteMcpNode(namespace=str, config=RemoteConfig)` |
 | `RemoteMcpNode::connect(bus)` | `await mcp.connect(bus)` |
 | `RemoteConfig { transport, url, timeout_secs: Option<u64>, headers, tls_ca_cert, retry }` | `RemoteConfig(transport=str, url=str, timeout_secs=int\|None, headers=dict, tls_ca_cert=str\|None, retry=RetryConfig\|None)` |
