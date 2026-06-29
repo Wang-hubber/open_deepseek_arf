@@ -1067,6 +1067,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
 | 5.12 | 集成测试 | LocalMcpNode + RemoteMcpNode + 多 namespace 隔离 + Bus + mock Engine E2E (用 5.10 fixtures 验证本地链路; mock HTTP server 验证远程链路) | `tests/` |
+| 5.13 | 全链路集成测试 | MCP + ModelAdapter + 极简 Engine + Bus 全链路 ReAct 场景测试。Engine 监听 `node_online` 发现 MCP → 构建 system prompt（含 tool 描述）→ 用户发消息 → LLM 决定 tool call → Engine 发 `tool_call_set` → MCP 执行 → `tool_result_set` 返回 → LLM 继续 → 完整 ReAct 闭环。覆盖：本地 Tool 调用、远程 Tool 调用、Skill 加载后使用、多 namespace 路由。使用真实 LLM API KEY（用户提供） | `tests/full_chain/` |
 
 ## 交付标准
 
@@ -1105,6 +1106,10 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] LocalMcpNode + RemoteMcpNode 多实例并存（不同 namespace），各自独立广播 `node_online`
 - [ ] `DiscoveryModule::scan()` 合并两个来源：`tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry，统一通过 `node_online` 广播
 - [ ] 文件夹约定是本地 MCP 唯一发现机制；API 注册 + 持久化不在 Phase 5 范围
+- [ ] 全链路集成：Engine 发现 MCP 节点 → 构建 system prompt（含 tool 描述 + skill L1）→ LLM 决定 tool call → `tool_call_set` 正确路由到目标 namespace
+- [ ] 全链路集成：MCP 执行结果通过 `tool_result_set` 返回 → Engine 注入 LLM 上下文 → LLM 继续推理 → ReAct 闭环
+- [ ] 全链路集成：Skill 加载链路 — `use_skill` → `skill_loaded` → LLM 根据 body 决定工具调用 → 执行 → 结果
+- [ ] 全链路集成：多 namespace 场景 — LocalMcpNode + RemoteMcpNode 共存，Engine 按 namespace 正确路由
 
 ---
 
