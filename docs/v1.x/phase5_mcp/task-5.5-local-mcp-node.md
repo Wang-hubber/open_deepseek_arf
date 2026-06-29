@@ -8,21 +8,15 @@
 
 `LocalMcpNode` 是本地 MCP 的集成点——把 DiscoveryModule + RuntimeModule + Bus 接在一起。构造时扫描文件系统，`connect()` 时上线 Bus 并广播 `node_online`，内部消息循环按 `msg_type` 分派请求。
 
-**Engine 如何发现 MCP 节点**：两种方式互补：
-
-| 方式 | 触发 | 机制 | 适用场景 |
-|------|------|------|---------|
-| 主动 | Engine 启动 | `bus.graph()` 获取当前在线节点快照 | Engine 启动晚于 MCP |
-| 被动 | 节点上线 | 监听 `node_online` 广播 | MCP 动态加入/退出 |
+**Engine 如何发现 MCP 节点**——两步走，覆盖全部时序：
 
 ```
-Engine::init(bus)
-  → graph = bus.graph()             // 主动查：当前所有在线 MCP
-  → subscribe()                      // 被动听：后续 node_online / node_offline
-  → 对每个 MCP: 纳入 ResolvedManifest
+Engine::start(bus)
+  1. graph = bus.graph()    // 一次性主动感知当前所有在线 MCP
+  2. subscribe()             // 订阅后续 node_online / node_offline
 ```
 
-`bus.graph()` 返回 `BusGraph { nodes: HashMap<NodeId, NodeInfo> }`，包含每个在线节点的完整 `NodeInfo`（含 capabilities.tools + capabilities.skills）。Engine 不需要等任何广播就能构建 system prompt。
+Step 1 覆盖"Engine 启动晚于 MCP"的场景——engine 上线时 MCP 可能已经在线很久了。Step 2 覆盖"Engine 运行期间 MCP 动态增删"的场景。`bus.graph()` 返回 `BusGraph { nodes }`，每个 node 的 `NodeInfo.capabilities` 包含 tools + skills 元数据。零等待。
 
 **消息分派**：
 

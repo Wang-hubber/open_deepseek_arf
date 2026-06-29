@@ -1155,11 +1155,11 @@ MCP 节点上线时广播一个 `node_online`，携带本 namespace 的全部能
 }
 ```
 
-> **Engine 发现逻辑（极简）**：
-> 1. 收到 `node_online` → 看到 `mcp/filesystem` 及其全部能力
-> 2. 工具描述注入 system prompt（`filesystem/read_file`）
-> 3. 所有后续请求都发给 `mcp/filesystem`：`tool_call_set`、`use_skill`、`load_skill_resource`
-> 4. MCP 内部按 `msg_type` 分发给 discovery 或 runtime 模块——Engine 不需要知道细节
+> **Engine 发现逻辑**：
+> 1. 启动时 `bus.graph()` 主动获取当前所有在线 MCP 节点（覆盖 MCP 先于 Engine 上线的时序）
+> 2. 订阅 `node_online` / `node_offline` ——感知运行期间的动态增删
+> 3. 工具描述 + skill L1 注入 system prompt
+> 4. 所有后续请求都发给 `mcp/{namespace}`——MCP 内部按 `msg_type` 分派，Engine 不知道细节
 
 ### tool_call_set — Engine → MCP
 
