@@ -17,10 +17,12 @@ Engine ──tool_call_set──→ Bus ──tool_call_set──→ MCP Node
                                                     │
 Engine ←──tool_result_set── Bus ←──tool_result_set──┘
 
-Skill 发现流程：
-Engine ──use_skill──→ Bus ──use_skill──→ MCP Node
-                                            │ SkillIndex.load_body()
-Engine ←──skill_loaded── Bus ←──skill_loaded──┘
+Skill 渐进式发现（L1 → L2 → L3）：
+L1: Engine 监听 node_online → 拿 {name, description} → 注入 system prompt
+L2: LLM 决定使用 → Engine ──use_skill──→ MCP ──skill_loaded──→ Engine
+                                                    │ body + resources
+L3: LLM 需要资源 → Engine ──load_skill_resource──→ MCP ──skill_resource_loaded──→ Engine
+                                                              │ 具体文件内容
 ```
 
 **核心原则：可插拔。** MCP 自身可替换——换一个 MCP 实现，只要消息格式不变，整个系统无感。
@@ -227,59 +229,125 @@ pub struct ToolResultSet {
 
 ## Skill 数据模型
 
-沿用 v0.x 格式，每个 skill 是一个目录：
+**Skill 是纯数据——"给 AI 的工作手册"。** 不包含可执行逻辑，不自带 Tool trait。LLM 读取 body 后自己决定调什么工具、用什么资源。MCP 只负责存储、索引和按需出货。
+
+### 目录结构
+
+每个 skill 是标准化的文件夹，`SKILL.md` 为唯一入口：
 
 ```
-skills/{name}/
-  skill.yaml   → {name, description, tools_sequence, keywords}
-  skill.md     → 领域知识 body (Markdown)
+skills/{name}/           # name 为 kebab-case（如 react-component）
+├── SKILL.md             # (必选) YAML frontmatter + Markdown body
+├── scripts/             # (可选) 可执行脚本
+├── references/          # (可选) 参考文档
+└── assets/              # (可选) 静态资源（模板、图片等）
 ```
+
+### SKILL.md 格式
+
+```markdown
+---
+name: react-component
+description: >
+  Use when asked to build React components with TypeScript.
+  Keywords: react, component, tsx, frontend.
+compatibility: node>=18
+---
+
+# React Component Skill
+
+## Prerequisites
+- Ensure tsconfig.json has strict mode enabled.
+
+## Main Flow
+1. Read existing component files to understand project conventions.
+2. Run `scripts/generate-component.py` to scaffold the component.
+...
+```
+
+YAML frontmatter 定义：
+- **`name`** (必填)：唯一标识，kebab-case，仅含小写字母、数字和连字符
+- **`description`** (必填)：含触发短语、使用时机和关键词，LLM 据此判断是否加载
+- **`compatibility`** (可选)：运行环境或依赖声明
+
+### 渐进式披露（L1 → L2 → L3）
+
+| 层级 | 触发时机 | 内容 | 暴露方式 |
+|------|---------|------|---------|
+| L1 元数据 | Agent 启动 | `{name, description}` | `node_online` 广播 |
+| L2 说明文档 | LLM 决定使用此 Skill | body (SKILL.md 全文) + `resources` (文件清单) | `use_skill` → `skill_loaded` |
+| L3 资源文件 | LLM 需要具体脚本/模板 | 单个文件内容 | `load_skill_resource` → `skill_resource_loaded` |
 
 ### SkillEntry
 
+> 纯数据 struct，无 trait，无 execute。
+
 ```rust
-/// A skill registered by MCP — metadata only.
+/// A skill registered by MCP — L1 metadata only.
 ///
-/// The full body is loaded on demand via use_skill → skill_loaded.
+/// The full body and resources are loaded on demand via
+/// use_skill (L2) and load_skill_resource (L3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillEntry {
-    /// Unique skill name.
+    /// Unique skill name (kebab-case). Parsed from SKILL.md frontmatter.
     pub name: String,
-    /// Human-readable description.
+    /// Human-readable description with trigger phrases and keywords.
+    /// LLM uses this to decide whether to load the skill.
     pub description: String,
-    /// Trigger keywords for LLM to decide when to use this skill.
-    #[serde(default)]
-    pub keywords: Vec<String>,
-    /// Tool names associated with this skill. MCP that hosts the skill
-    /// must also host these tools.
-    #[serde(default)]
-    pub tools_sequence: Vec<String>,
-    /// Path to skill directory (for body loading).
+    /// Optional compatibility constraint (e.g. "node>=18").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    /// Path to skill directory (for body/resource loading).
+    /// Not serialized — MCP-internal.
     #[serde(skip)]
     pub source_dir: String,
+}
+
+/// File manifest for a skill's resource directories.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillResources {
+    /// Files under scripts/ (e.g. ["generate-component.py"]).
+    #[serde(default)]
+    pub scripts: Vec<String>,
+    /// Files under references/ (e.g. ["api-guide.md"]).
+    #[serde(default)]
+    pub references: Vec<String>,
+    /// Files under assets/ (e.g. ["template.tsx"]).
+    #[serde(default)]
+    pub assets: Vec<String>,
 }
 ```
 
 ### SkillIndex
 
-> SkillIndex 是 MCP 内部组件，不对外暴露。Engine 通过 Bus 消息（`use_skill` → `skill_loaded`）获取 skill body，不直接扫描文件系统。
+> MCP 内部组件，不对外暴露。Engine 通过 Bus 消息获取 skill 内容，不直接扫描文件系统。
 
 ```rust
 /// Scan, index, and retrieve lazy-loaded skills.
 ///
-/// Scans `<root>/skills/` for subdirectories containing skill.yaml + skill.md.
-/// MCP-internal — Engine never sees this struct.
+/// Scans `<root>/skills/*/SKILL.md`, parses YAML frontmatter for L1 metadata.
+/// Body and resources loaded on demand. MCP-internal — Engine never sees this.
 pub struct SkillIndex {
     root: PathBuf,
-    index: HashMap<String, SkillEntry>,
+    entries: HashMap<String, SkillEntry>,
 }
 ```
 
 方法：
-- `scan()` — (重新)构建索引
+- `scan()` — 扫描 `skills/*/SKILL.md`，解析 YAML frontmatter 构建 L1 索引；同时遍历 `scripts/`、`references/`、`assets/` 构建 `SkillResources`
 - `resolve(name) -> Option<&SkillEntry>` — 按名查找
-- `load_body(name) -> Option<String>` — 读取 skill.md 内容
-- `list_index() -> Vec<&SkillEntry>` — 列出全部
+- `load_body(name) -> Option<String>` — 读取 `SKILL.md` 全文（L2）
+- `load_resources(name) -> SkillResources` — 列出三级目录文件清单（L2 附带）
+- `load_resource_file(name, resource_path) -> Option<String>` — 读取具体资源文件内容（L3）
+- `list_index() -> Vec<&SkillEntry>` — 列出全部 L1 元数据
+
+### MCP 自检
+
+`scan()` 时交叉校验：
+- `SKILL.md` 不存在 → 跳过该目录（非 skill）
+- `name` 不符合 kebab-case → warning 日志，仍注册
+- body 中引用的 `scripts/`、`references/`、`assets/` 下的文件缺失 → warning 日志，不阻断
+- 不强制资源完整性——Skill 可以只有 `SKILL.md`，无子目录
 
 ---
 
@@ -305,9 +373,7 @@ pub struct SkillIndex {
         "skills": [
           {
             "name": "react-component",
-            "description": "Build React components with TypeScript",
-            "keywords": ["react", "component", "tsx"],
-            "tools_sequence": ["read_file", "write_file", "search_content"]
+            "description": "Use when asked to build React components with TypeScript. Keywords: react, component, tsx, frontend."
           }
         ]
       }
@@ -437,7 +503,9 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
 }
 ```
 
-### skill_loaded — MCP → Engine
+### skill_loaded — MCP → Engine (L2)
+
+返回 `SKILL.md` 全文 + 资源文件清单。Engine 将 body 注入 LLM 上下文，`resources` 供 LLM 按需请求 L3。
 
 ```json
 {
@@ -446,12 +514,49 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
   "to": ["engine/session-1"],
   "payload": {
     "name": "react-component",
-    "description": "Build React components with TypeScript",
-    "tools_sequence": ["read_file", "write_file", "search_content"],
-    "body": "# React Component Skill\n\n## When to use\n..."
+    "description": "Use when asked to build React components with TypeScript...",
+    "body": "---\nname: react-component\ndescription: >\n  Use when asked to build React components...\n---\n\n# React Component Skill\n\n## Prerequisites\n...\n## Main Flow\n1. Run `scripts/generate-component.py` ...\n",
+    "resources": {
+      "scripts": ["generate-component.py"],
+      "references": ["design-system.md"],
+      "assets": ["component-template.tsx"]
+    }
   }
 }
 ```
+
+### load_skill_resource — Engine → MCP (L3)
+
+LLM 需要具体脚本/模板/参考文档时，Engine 精准请求：
+
+```json
+{
+  "msg_type": "load_skill_resource",
+  "from": "engine/session-1",
+  "to": ["mcp/filesystem"],
+  "payload": {
+    "skill_name": "react-component",
+    "resource_path": "scripts/generate-component.py"
+  }
+}
+```
+
+### skill_resource_loaded — MCP → Engine (L3)
+
+```json
+{
+  "msg_type": "skill_resource_loaded",
+  "from": "mcp/filesystem",
+  "to": ["engine/session-1"],
+  "payload": {
+    "skill_name": "react-component",
+    "resource_path": "scripts/generate-component.py",
+    "content": "#!/usr/bin/env python3\n\nimport sys\n..."
+  }
+}
+```
+
+MCP 安全约束：`resource_path` 必须在 `{skill_dir}/scripts/`、`references/` 或 `assets/` 下，路径穿越（`../`）和绝对路径拒绝返回 error。
 
 ---
 
@@ -612,7 +717,7 @@ crates/arf-mcp/
 |---|------|------|------|
 | 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`tool.rs`、`lib.rs` | `crates/arf-mcp/` |
 | 5.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
-| 5.3 | SkillIndex | 扫描 skill 目录、resolve、load_body | `skill.rs` |
+| 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
 | 5.5 | LocalMcpNode | Bus 节点生命周期 + listen loop（`tool_call_set` / `use_skill` 消息处理） | `node.rs` |
 | 5.6 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
@@ -625,12 +730,15 @@ crates/arf-mcp/
 - [ ] 三个内置工具可完成实际文件读写和内容搜索
 - [ ] `LocalMcpNode` 正确广播 `node_online`（含 tools + skills 元数据）
 - [ ] `LocalMcpNode` 正确响应 `tool_call_set` → 执行 → `tool_result_set`
-- [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded`
+- [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
+- [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] L3 资源读取有路径安全校验（拒绝 `../` 和绝对路径）
 - [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
 - [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
 - [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
 - [ ] Tool trait 可 mock（用于 Engine 单测）
-- [ ] SkillIndex 正确扫描 skill 目录并加载 body，不对外暴露
+- [ ] SkillIndex 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
+- [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
 
 ---
 
