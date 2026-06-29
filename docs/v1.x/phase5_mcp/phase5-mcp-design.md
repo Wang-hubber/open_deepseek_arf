@@ -168,9 +168,10 @@ pub struct RemoteConfig {
     pub transport: String,
     /// Base URL of the remote MCP server.
     pub url: String,
-    /// HTTP request timeout in seconds. Default = 60.
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
+    /// HTTP request timeout in seconds. `None` = no timeout (the default).
+    /// Set this when the remote service has known latency characteristics.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     /// Optional HTTP headers injected into every request.
     /// Common use: Authorization, X-API-Key, custom tenant IDs.
     #[serde(default)]
@@ -183,8 +184,6 @@ pub struct RemoteConfig {
     #[serde(default)]
     pub retry: Option<RetryConfig>,
 }
-
-fn default_timeout_secs() -> u64 { 60 }
 
 /// Retry policy for transient HTTP failures during tools/call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +367,7 @@ local.connect(&bus).await?; // → node_online 广播
 let remote = RemoteMcpNode::new("codetidy", RemoteConfig {
     transport: "streamable-http".into(),
     url: "https://mcp.codetidy.dev".into(),
-    timeout_secs: 60,
+    timeout_secs: None,  // 不设超时，由开发者按服务特性决定
     headers: HashMap::from([
         ("Authorization".into(), "Bearer sk-xxx".into()),
     ]),
@@ -1474,7 +1473,7 @@ mcp_remote = RemoteMcpNode(
     config=RemoteConfig(
         transport="streamable-http",
         url="https://mcp.codetidy.dev",
-        timeout_secs=60,
+        timeout_secs=None,
         headers={"Authorization": "Bearer sk-xxx"},
         retry=RetryConfig(max_retries=3, initial_backoff_ms=1000, max_backoff_ms=30000),
     ),
@@ -1490,7 +1489,7 @@ await mcp_remote.connect(bus)  # → HTTP init → tools/list → node_online �
 | `LocalMcpNode::connect(bus)` | `await mcp.connect(bus)` |
 | `RemoteMcpNode::new(namespace, config)` | `RemoteMcpNode(namespace=str, config=RemoteConfig)` |
 | `RemoteMcpNode::connect(bus)` | `await mcp.connect(bus)` |
-| `RemoteConfig { transport, url, timeout_secs, headers, tls_ca_cert, retry }` | `RemoteConfig(transport=str, url=str, timeout_secs=int, headers=dict, tls_ca_cert=str\|None, retry=RetryConfig\|None)` |
+| `RemoteConfig { transport, url, timeout_secs: Option<u64>, headers, tls_ca_cert, retry }` | `RemoteConfig(transport=str, url=str, timeout_secs=int\|None, headers=dict, tls_ca_cert=str\|None, retry=RetryConfig\|None)` |
 | `RetryConfig { max_retries, initial_backoff_ms, max_backoff_ms }` | `RetryConfig(max_retries=int, initial_backoff_ms=int, max_backoff_ms=int)` |
 
 Python 类型通过 PyO3 从 Rust struct 自动导出，不做手动类型桥接。
