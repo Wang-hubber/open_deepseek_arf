@@ -8,6 +8,7 @@ pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod executor;
+pub mod runtime;
 pub mod script;
 pub mod skill;
 pub mod tool;
