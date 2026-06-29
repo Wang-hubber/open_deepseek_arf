@@ -6,40 +6,41 @@
 
 ## 定位
 
-**一个 MCP 实例 = 一个 namespace = Bus 上一个节点。** Engine 只和 `mcp/{namespace}` 通讯，声明请求类型；MCP 内部管理 discovery/runtime 子模块，按 `msg_type` 分发。
+**一个 MCP 实例 = 一个 namespace = Bus 上一个节点。** Engine 只和 `mcp/{namespace}` 通讯。本地 MCP 扫描文件夹发现 Tool/Skill，远程 MCP 通过 HTTP 协议发现和代理执行。Engine 对两者无区别——都是 `node_online` 广播 + 响应 `tool_call_set`。
 
 ```
 Bus
  │
- ├── mcp/filesystem   (namespace="filesystem")
+ ├── mcp/filesystem  (LocalMcpNode) root=/mcp/stable
  │       │
- │       ├── [内部] discovery → 扫描 tools/skills
- │       └── [内部] runtime   → 执行 tool_call_set
+ │       ├── [内部] discovery → 扫描 {root}/tools + {root}/skills
+ │       └── [内部] runtime   → ScriptTool subprocess 执行
  │
- ├── mcp/network      (namespace="network")
+ ├── mcp/codetidy    (RemoteMcpNode) url=https://mcp.codetidy.dev
  │       │
- │       ├── [内部] discovery
- │       └── [内部] runtime
+ │       ├── [内部] 无文件系统，HTTP tools/list 发现
+ │       └── [内部] HTTP tools/call 代理执行
  │
- └── mcp/sandbox      (namespace="sandbox")
+ └── mcp/another     (LocalMcpNode) root=/mcp/experimental
          ├── [内部] discovery
-         └── [内部] runtime (sandboxed)
+         └── [内部] runtime
 ```
 
-Engine 视角——**一个 MCP 节点，一个入口**：
+Engine 视角——**多个 MCP 节点，统一入口**：
 
 ```
 Engine
   │
-  │ 看到 Bus 上有两个 MCP 节点：
-  │   mcp/filesystem  → node_online{tools: [{read_file, ...}, {write_file, ...}], skills: [...]}
-  │   mcp/network     → node_online{tools: [{read_file, ...}, {fetch_url, ...}], skills: [...]}
+  │ 看到 Bus 上有三个 MCP 节点：
+  │   mcp/filesystem   → node_online{tools: [read_file, write_file, search_content], skills: [...]}
+  │   mcp/codetidy     → node_online{tools: [json_format, base64_encode, url_decode, ...], skills: []}
+  │   mcp/another      → node_online{tools: [code_review_v2, ...], skills: [...]}
   │
-  │ 需要读文件 → tool_call_set 发给 mcp/filesystem（声明：我要执行工具）
-  │ 需要发请求 → tool_call_set 发给 mcp/network
-  │ 需要 skill   → use_skill 发给 mcp/filesystem（声明：我要加载资源）
+  │ 需要读文件    → tool_call_set 发给 mcp/filesystem
+  │ 需要 JSON 格式化 → tool_call_set 发给 mcp/codetidy
+  │ 需要 skill      → use_skill 发给 mcp/filesystem
   │
-  │ 两个 read_file 分属不同 namespace，不冲突
+  │ 各 namespace 独立，同名 tool 不冲突
 ```
 
 **MCP 内部消息分发**：
@@ -48,58 +49,113 @@ Engine
 Engine 发消息给 mcp/{namespace}
   │
   ▼
-McpNode (Bus NodeHandle)
+LocalMcpNode / RemoteMcpNode (Bus NodeHandle)
   │
   │ 按 msg_type 分发：
   │
-  ├── msg_type = tool_call_set        → [internal] runtime 处理
-  ├── msg_type = use_skill            → [internal] discovery 处理
-  └── msg_type = load_skill_resource  → [internal] discovery 处理
+  ├── msg_type = tool_call_set        → [internal] runtime / HTTP proxy 处理
+  ├── msg_type = use_skill            → [internal] discovery 处理 (Remote 返回 error)
+  └── msg_type = load_skill_resource  → [internal] discovery 处理 (Remote 返回 error)
 ```
 
 ## 节点结构
 
-MCP 对外是**单一 Bus 节点**，内部组合 discovery 和 runtime 两个模块：
+### 两种节点，统一接口
+
+```
+               ┌──────────────────────┐
+               │     Bus Node 接口     │
+               │  node_online / tool_  │
+               │  call_set / use_skill │
+               └──────┬───────────────┘
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+  ┌───────┴────────┐    ┌────────┴──────────┐
+  │ LocalMcpNode   │    │  RemoteMcpNode    │
+  │                │    │                   │
+  │ root_dir       │    │ RemoteConfig      │
+  │ DiscoveryModule│    │ HTTP transport     │
+  │ RuntimeModule  │    │ tools/list proxy   │
+  │ SkillIndex     │    │ tools/call proxy   │
+  └────────────────┘    └───────────────────┘
+      本地 Tool+Skill         外部 Tool (无 Skill)
+```
+
+| | 构造 | 发现 | 执行 | Skill |
+|---|---|---|---|---|
+| **LocalMcpNode** | `new(namespace, root_dir)` | `DiscoveryModule::scan(root_dir)` | ScriptTool subprocess | ✅ `skills/*/SKILL.md` |
+| **RemoteMcpNode** | `new(namespace, config)` | HTTP `tools/list` | HTTP `tools/call` proxy | ❌ |
+
+两者对 Engine 完全透明 — 都是 `node_online` 广播能力，都响应 `tool_call_set`。
+
+### LocalMcpNode
 
 ```rust
-/// An MCP node = one Bus node = one namespace.
-///
-/// Engine talks ONLY to this node. Discovery and runtime are internal
-/// modules — Engine never sees them.
-pub struct McpNode {
-    /// Namespace identifier (e.g. "filesystem", "network").
+/// A local MCP node — discovers tools and skills from the filesystem.
+pub struct LocalMcpNode {
     pub namespace: String,
-    /// Bus-facing NodeId: `mcp/{namespace}`.
     pub node_id: NodeId,
-    /// Root directory for tool/skill discovery ({root}/tools/*, {root}/skills/*).
     root_dir: PathBuf,
-    /// Internal: scans {root}/tools + {root}/skills, handles L2/L3 queries.
     discovery: DiscoveryModule,
-    /// Internal: DAG execution, tool lifecycle, ScriptTool sandbox.
     runtime: RuntimeModule,
 }
 
-impl McpNode {
-    /// Create a new McpNode.
-    ///
-    /// `root_dir` is the directory containing `tools/` and `skills/` subdirectories.
-    /// `DiscoveryModule::scan()` is called during construction to populate the
-    /// tool and skill registries.
+impl LocalMcpNode {
     pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Self {
         todo!()
     }
 }
 ```
 
-| | 对 Engine 可见 | NodeId |
-|---|---|---|
-| `McpNode` | ✅ 唯一入口 | `mcp/{namespace}` |
-| `DiscoveryModule` | ❌ 内部 | — |
-| `RuntimeModule` | ❌ 内部 | — |
+### RemoteMcpNode
 
-**namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
+```rust
+/// Streamable HTTP transport configuration for a remote MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteConfig {
+    pub transport: String,  // "streamable-http"
+    pub url: String,
+}
 
-**文件夹扫描**：`root_dir` 传给 `DiscoveryModule` 和 `SkillIndex`。`DiscoveryModule::scan()` 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry，生成统一的 `node_online` 广播。框架不内置任何 Tool——所有 Tool 通过文件夹约定发现。
+/// A remote MCP node — discovers tools via HTTP, proxies execution.
+pub struct RemoteMcpNode {
+    pub namespace: String,
+    pub node_id: NodeId,
+    config: RemoteConfig,
+    http_client: reqwest::Client,
+    known_tools: HashMap<String, ToolEntry>,
+}
+
+impl RemoteMcpNode {
+    pub fn new(namespace: impl Into<String>, config: RemoteConfig) -> Self {
+        todo!()
+    }
+}
+```
+
+**RemoteMcpNode 工作流**：
+
+```
+构造 → Bus::connect (node_online 未广播，tools 为空)
+  │
+  └→ [内部] HTTP POST → initialize (MCP 握手)
+       → HTTP POST → tools/list (获取远程工具列表)
+       → 构建 ToolEntry，广播 node_online
+
+收到 tool_call_set:
+  ├→ tool = "json_format" → HTTP POST → tools/call {name: "json_format", arguments: {...}}
+  ├→ 等待 HTTP 响应
+  └→ 组装 ToolResultItem → tool_result_set 返回 Engine
+```
+
+> 删除路径扫描 + Rust 脚本编译：远程工具数量级为数十个，内存中 HashMap 索引可避免 O(n) 遍历，且不支持 Rust 编译型脚本。
+>
+> 初始化阶段：RemoteMcpNode 构造时，请求 tools/list 获取远程工具列表并建立本地 ToolIndex（HashMap<String, ToolEntry>），后续执行 tool_call_set 无需再次索引，直接根据 HashMap key 获取实现。
+
+**namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`、`codetidy`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
+
+**文件夹扫描**：LocalMcpNode 的 `root_dir` 传给 `DiscoveryModule` 和 `SkillIndex`。`DiscoveryModule::scan()` 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry，生成统一的 `node_online` 广播。框架不内置任何 Tool——所有本地 Tool 通过文件夹约定发现。
 
 **Engine 路由逻辑**（极简）：
 1. 监听 `node_online` → 看到 `mcp/filesystem`、`mcp/network` 等节点
@@ -113,7 +169,7 @@ arf-core: NodeId, Message, NodeInfo, ModelMessage
     ↑
 arf-bus: Bus, NodeHandle, MessageFilter
     ↑
-arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json + toml
+arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json + toml + reqwest
 ```
 
 不依赖 `arf-state`、不依赖 `arf-agent`、不依赖 `arf-engine`。
@@ -133,20 +189,20 @@ arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json + 
 | **ScriptTool** | `{root}/tools/{name}/` | `tool.toml` | `DiscoveryModule` 扫描 → `ScriptTool` 包裹 |
 | **Skill** | `{root}/skills/{name}/` | `SKILL.md` | `SkillIndex` 扫描 → `SkillEntry` 索引 |
 
-### McpNode 的 root 目录
+### LocalMcpNode 的 root 目录
 
-McpNode 构造时接收一个 root 目录，内部按约定组织：
+`LocalMcpNode` 构造时接收一个 root 目录，内部按约定组织：
 
 ```
 {root}/
-├── skills/                 # Phase 5: SkillIndex 扫描
+├── skills/                 # SkillIndex 扫描
 │   ├── react-component/
 │   │   ├── SKILL.md
 │   │   ├── scripts/
 │   │   ├── references/
 │   │   └── assets/
 │   └── ...
-├── tools/                  # Phase 5: ScriptTool 扫描
+├── tools/                  # ScriptTool 扫描
 │   ├── cleanup_logs/
 │   │   ├── tool.toml
 │   │   └── main.sh
@@ -158,9 +214,15 @@ McpNode 构造时接收一个 root 目录，内部按约定组织：
 **ScriptTool**：开发者建文件夹 + 写 `tool.toml` + 入口脚本，`DiscoveryModule::scan()` 自动发现并创建 `ScriptTool` 实例。
 
 ```rust
-// 简单构造 — 只需 namespace 和 root_dir
-let mcp = McpNode::new("filesystem", PathBuf::from("/path/to/root"));
+// 本地 MCP — 简单构造，只需 namespace 和 root_dir
+let local = LocalMcpNode::new("filesystem", PathBuf::from("/path/to/root"));
 // DiscoveryModule::scan() 自动扫描 {root}/tools + {root}/skills
+
+// 远程 MCP — URL 驱动
+let remote = RemoteMcpNode::new("codetidy", RemoteConfig {
+    transport: "streamable-http".into(),
+    url: "https://mcp.codetidy.dev".into(),
+});
 ```
 
 ### 脚本 Tool
@@ -956,23 +1018,35 @@ crates/arf-mcp/
     ├── lib.rs              # pub mod, re-exports
     ├── tool.rs             # Tool trait
     ├── types.rs            # ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet
-    ├── config.rs           # ScriptRuntime, ToolConfig — tool.toml parsing
+    ├── config.rs           # ScriptRuntime, ToolConfig, RemoteConfig
     ├── script.rs           # ScriptTool: implements Tool trait via subprocess + stdin/stdout JSON
+    ├── remote.rs           # RemoteMcpNode: HTTP transport + tools/list + tools/call proxy
     ├── skill.rs            # SkillEntry, SkillResources, SkillIndex
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
-    ├── node.rs             # McpNode: Bus lifecycle + msg_type dispatch → internal modules
-    ├── discovery.rs        # DiscoveryModule: scans {root}/tools + {root}/skills, L2/L3 handling
+    ├── node.rs             # LocalMcpNode: Bus lifecycle + msg_type dispatch + discovery/runtime
+    ├── discovery.rs        # DiscoveryModule: scans {root}/tools + {root}/skills, L2/L3
     ├── runtime.rs          # RuntimeModule: tool_call_set → executor dispatch (ScriptTool sandbox)
     └── tests/
         ├── tool_tests.rs       # Tool trait tests
-        ├── config_tests.rs     # tool.toml parsing
+        ├── config_tests.rs     # tool.toml + RemoteConfig parsing
         ├── script_tests.rs     # ScriptTool execute + cancel + timeout
+        ├── remote_tests.rs     # RemoteMcpNode: mock HTTP server + tools/list + tools/call
         ├── skill_tests.rs      # SkillIndex scan/resolve/load
         ├── executor_tests.rs   # DAG build, cycle detect, topo sort, cascade cancel
-        ├── node_tests.rs       # McpNode: msg_type dispatch + internal routing
+        ├── node_tests.rs       # LocalMcpNode: msg_type dispatch + internal routing
         ├── discovery_tests.rs  # DiscoveryModule: scan + L2/L3
         ├── runtime_tests.rs    # RuntimeModule: tool execution + sandbox boundary
-        └── integration_tests.rs # E2E: node online → tool_call_set → result_set
+        └── integration_tests.rs # E2E: LocalMcpNode + RemoteMcpNode + multi-namespace + Bus
+```
+
+### Python bindings
+
+```
+py-arf/src/mcp/           # Python package (在 py-arf crate 内)
+├── __init__.py            # from py_arf.mcp import LocalMcpNode, RemoteMcpNode
+├── local.py               # LocalMcpNode Python wrapper
+├── remote.py              # RemoteMcpNode Python wrapper
+└── types.py               # RemoteConfig python dataclass
 ```
 
 ---
@@ -981,29 +1055,38 @@ crates/arf-mcp/
 
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
-| 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`tool.rs`（Tool trait）、`types.rs`（ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet）、`config.rs`（ScriptRuntime, ToolConfig）、`lib.rs` | `crates/arf-mcp/` |
+| 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`tool.rs`（Tool trait）、`types.rs`（ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet）、`config.rs`（ScriptRuntime, ToolConfig, RemoteConfig）、`lib.rs` | `crates/arf-mcp/` |
 | 5.2 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时/取消 kill） | `config.rs`, `script.rs` |
 | 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 5.5 | McpNode | `McpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
+| 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
 | 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
-| 5.8 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
-| 5.9 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
-| 5.10 | 集成测试 | McpNode + 多 namespace 隔离 + Bus + mock Engine + ScriptTool E2E（用 5.8 fixtures 验证扫描→发现→执行→结果完整链路） | `tests/` |
+| 5.8 | RemoteMcpNode | `RemoteMcpNode::new(namespace, config)` → Bus 连接 + HTTP `initialize`/`tools/list` 发现 + HTTP `tools/call` 代理执行 + `node_online` 广播 | `remote.rs` |
+| 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` 暴露给 Python，支持 `with_remote()` builder 方法 | `py-arf/src/mcp/` |
+| 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
+| 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
+| 5.12 | 集成测试 | LocalMcpNode + RemoteMcpNode + 多 namespace 隔离 + Bus + mock Engine E2E (用 5.10 fixtures 验证本地链路; mock HTTP server 验证远程链路) | `tests/` |
 
 ## 交付标准
 
 - [ ] `cargo test --workspace` 全部通过
-- [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json` + `toml`
-- [ ] 框架不内置任何 Tool — 所有 Tool 通过 `{root}/tools/*/tool.toml` 扫描发现
+- [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json` + `toml` + `reqwest`
+- [ ] 框架不内置任何 Tool — 所有本地 Tool 通过 `{root}/tools/*/tool.toml` 扫描发现
 - [ ] 三个测试 fixture（read_file/write_file/search_content）作为 ScriptTool 实例完成实际文件读写和内容搜索
-- [ ] `McpNode::new(namespace, root_dir)` 简单构造，无 Builder/DI
-- [ ] `McpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
-- [ ] `McpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
-- [ ] `McpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
-- [ ] `McpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
-- [ ] `McpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] `LocalMcpNode::new(namespace, root_dir)` 简单构造
+- [ ] `RemoteMcpNode::new(namespace, config)` 简单构造
+- [ ] `RemoteMcpNode` 构造时通过 HTTP `initialize` + `tools/list` 获取远程工具列表，构建 `ToolIndex` (HashMap) 索引后广播 `node_online`
+- [ ] `RemoteMcpNode` 收到 `tool_call_set` 时通过 HTTP `tools/call` 代理执行，返回 `tool_result_set`
+- [ ] `RemoteMcpNode` 不支持 Skill（`use_skill`/`load_skill_resource` 返回 error）
+- [ ] `RemoteMcpNode` 外部 MCP server 不可达时，构造阶段返回错误
+- [ ] `LocalMcpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
+- [ ] `LocalMcpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
+- [ ] `LocalMcpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
+- [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
+- [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] Python API：`from py_arf.mcp import LocalMcpNode, RemoteMcpNode` 可正常 import 并使用
+- [ ] Python `RemoteMcpNode` 支持 `with_remote()` builder 方法注册外部 MCP
 - [ ] 内部去重：同一 namespace 内 tool/skill name 冲突 → panic
 - [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`），Engine 只需按 NodeId 路由
 - [ ] RuntimeModule 是 ScriptTool sandbox 的清晰接入点（subprocess 管理集中在此）
@@ -1019,9 +1102,57 @@ crates/arf-mcp/
 - [ ] `Tool` trait 可 mock（用于 Engine 单测）
 - [ ] `SkillIndex` 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
-- [ ] McpNode 可多实例并存（不同 namespace），各自独立广播 `node_online`
+- [ ] LocalMcpNode + RemoteMcpNode 多实例并存（不同 namespace），各自独立广播 `node_online`
 - [ ] `DiscoveryModule::scan()` 合并两个来源：`tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry，统一通过 `node_online` 广播
-- [ ] 文件夹约定是唯一发现机制；API 注册 + 持久化不在 Phase 5 范围
+- [ ] 文件夹约定是本地 MCP 唯一发现机制；API 注册 + 持久化不在 Phase 5 范围
+
+---
+
+## Python API
+
+### 设计原则
+
+验证对称性：Rust API 和 Python API 暴露同等的概念模型。Python 开发者应能使用与 Rust 开发者相同的构造模式，不做类型桥接的妥协。
+
+### API
+
+```python
+from py_arf.mcp import LocalMcpNode, RemoteMcpNode, RemoteConfig
+
+# 本地 MCP — 纯文件夹驱动
+mcp_local = LocalMcpNode(
+    namespace="filesystem",
+    root_dir="/path/to/tools",
+)
+
+# 远程 MCP — URL 驱动
+mcp_remote = RemoteMcpNode(
+    namespace="codetidy",
+    config=RemoteConfig(
+        transport="streamable-http",
+        url="https://mcp.codetidy.dev",
+    ),
+)
+
+# 本地 MCP 支持 with_remote() builder 方法注册外部 MCP
+mcp_local.with_remote(
+    name="codetidy",
+    config=RemoteConfig(
+        transport="streamable-http",
+        url="https://mcp.codetidy.dev",
+    ),
+)
+```
+
+### 转换规则
+
+| Rust | Python |
+|------|--------|
+| `LocalMcpNode::new(namespace, root_dir)` | `LocalMcpNode(namespace=str, root_dir=str)` |
+| `RemoteMcpNode::new(namespace, config)` | `RemoteMcpNode(namespace=str, config=RemoteConfig)` |
+| `RemoteConfig { transport, url }` | `RemoteConfig(transport=str, url=str)` |
+
+Python 类型通过 PyO3 从 Rust struct 自动导出，不做手动类型桥接。
 
 ---
 
