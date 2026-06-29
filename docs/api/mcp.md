@@ -563,29 +563,273 @@ for n in mcp_nodes:
 # mcp/codetidy: 62 tools
 ```
 
-### 模式四：script 工具三种 runtime
+### 模式四：三种 Runtime 编写指南
 
-```toml
-# Python — JSON 原生支持，最自然
-# tool.toml: runtime = "python", entrypoint = "main.py"
+同一个 `read_file` 工具，用 Python、Bash、Rust 分别实现。三个版本共享相同的 `tool.toml` 结构（仅 `runtime` 和 `entrypoint` 不同），输出完全一致的 JSON。
+
+**文件结构**：
+
+```
+{root}/tools/
+├── read_file/
+│   ├── tool.toml       # runtime = "python"
+│   └── main.py
+├── read_file_bash/
+│   ├── tool.toml       # runtime = "bash"
+│   └── main.sh
+└── read_file_rust/
+    ├── tool.toml       # runtime = "rust"
+    └── main.rs
 ```
 
-```toml
-# Bash — 用 python3 做 JSON 胶水，核心操作用原生命令
-# tool.toml: runtime = "bash", entrypoint = "main.sh"
-```
+#### Python — `runtime = "python"`
+
+最自然的写法。`json` 模块 + `pathlib` 现代 API，完整的异常分类：
 
 ```toml
-# Rust — rustc 编译，无外部 crate，适合性能关键 + 输入简单的工具
-# tool.toml: runtime = "rust", entrypoint = "main.rs"
-# ⚠️ 限制：无 serde_json（手写 JSON 解析）、无 regex（仅 str::contains）
+# tool.toml
+name = "read_file"
+description = "Read the contents of a file at the given path. Returns the file content as a string."
+runtime = "python"
+entrypoint = "main.py"
+timeout_ms = 10000
+
+[params_schema]
+type = "object"
+properties.path = { type = "string", description = "Absolute path to the file to read" }
+required = ["path"]
 ```
 
-| Runtime | JSON 支持 | 首次延迟 | 适合场景 |
-|---------|----------|---------|---------|
-| Python | 原生 `json` 模块 | 即时 | 通用工具，复杂 JSON 操作 |
-| Bash | python3 胶水（~5行） | 即时 | 文件/系统操作密集 |
-| Rust | 手写提取器（~60行） | rustc 编译 ~1-3s | 计算密集，简单 JSON 输入 |
+```python
+# main.py
+#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+
+def main():
+    try:
+        params = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as e:
+        print(json.dumps({"ok": False, "error": f"invalid JSON params: {e}"}))
+        sys.exit(0)
+
+    path_str = params.get("path", "")
+    if not path_str:
+        print(json.dumps({"ok": False, "error": "missing required param: path"}))
+        sys.exit(0)
+
+    file_path = Path(path_str)
+    if not file_path.exists():
+        print(json.dumps({"ok": False, "error": f"file not found: {path_str}"}))
+        sys.exit(0)
+    if not file_path.is_file():
+        print(json.dumps({"ok": False, "error": f"not a file: {path_str}"}))
+        sys.exit(0)
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except PermissionError:
+        print(json.dumps({"ok": False, "error": f"permission denied: {path_str}"}))
+        sys.exit(0)
+    except UnicodeDecodeError:
+        print(json.dumps({"ok": False, "error": f"binary file not supported: {path_str}"}))
+        sys.exit(0)
+    except OSError as e:
+        print(json.dumps({"ok": False, "error": f"read error: {e}"}))
+        sys.exit(0)
+
+    print(json.dumps({"ok": True, "content": content, "path": path_str}))
+
+if __name__ == "__main__":
+    main()
+```
+
+**设计要点**：
+- `sys.exit(0)` 而非非零退出码——错误通过 JSON 字段传递，非进程退出码。保证 ScriptTool 始终能解析 stdout
+- `UnicodeDecodeError` 单独捕获——二进制文件不应被当作文本读取，返回明确错误
+- `pathlib.Path` 比 `os.path` 更简洁，Python 3.6+ 内置
+
+```bash
+$ echo '{"path":"/etc/hostname"}' | python3 main.py
+{"ok": true, "content": "iZbp1hzrvnradlsiut7vanZ\n", "path": "/etc/hostname"}
+
+$ echo '{"path":"/nonexistent"}' | python3 main.py
+{"ok": false, "error": "file not found: /nonexistent"}
+```
+
+#### Bash — `runtime = "bash"`
+
+Bash 没有原生 JSON 支持——用 `python3 -c` 做编解码胶水（每处 ~3 行），核心文件操作用原生命令：
+
+```toml
+# tool.toml — 与 Python 版仅 runtime 和 entrypoint 不同
+runtime = "bash"
+entrypoint = "main.sh"
+```
+
+```bash
+# main.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# JSON input parsing (bash has no native JSON — python3 glue)
+PATH_VAL=$(python3 -c "
+import json,sys
+d = json.loads(sys.stdin.read())
+print(d.get('path', ''))
+" 2>/dev/null || true)
+
+if [ -z "$PATH_VAL" ]; then
+    python3 -c "import json; print(json.dumps({'ok': False, 'error': 'missing required param: path'}))"
+    exit 0
+fi
+
+# File operations (native bash)
+if [ ! -e "$PATH_VAL" ]; then
+    python3 -c "import json; print(json.dumps({'ok': False, 'error': 'file not found: $PATH_VAL'}))"
+    exit 0
+fi
+
+if [ ! -f "$PATH_VAL" ]; then
+    python3 -c "import json; print(json.dumps({'ok': False, 'error': 'not a file: $PATH_VAL'}))"
+    exit 0
+fi
+
+if [ ! -r "$PATH_VAL" ]; then
+    python3 -c "import json; print(json.dumps({'ok': False, 'error': 'permission denied: $PATH_VAL'}))"
+    exit 0
+fi
+
+# Use python3 for JSON encoding (guarantees correct escaping of special chars)
+python3 -c "
+import json
+content = open('$PATH_VAL').read()
+print(json.dumps({'ok': True, 'content': content, 'path': '$PATH_VAL'}))
+"
+```
+
+**设计要点**：
+- `set -euo pipefail` — 未定义变量/管道失败立即退出
+- `[ -e ]` / `[ -f ]` / `[ -r ]` 三级检查 — 存在性 → 类型 → 权限
+- JSON 编解码用 `python3 -c` 胶水——不假装 Bash 能做 JSON，也不因为 JSON 限制而放弃 Bash 在文件操作上的表达力
+
+```bash
+$ echo '{"path":"/etc/hostname"}' | bash main.sh
+{"ok": true, "content": "iZbp1hzrvnradlsiut7vanZ\n", "path": "/etc/hostname"}
+
+$ echo '{"path":"/nonexistent"}' | bash main.sh
+{"ok": false, "error": "file not found: /nonexistent"}
+```
+
+#### Rust — `runtime = "rust"`
+
+`rustc` 直接编译（无 Cargo），不能用 `serde_json`——需手写最小 JSON 字符串提取器。适合性能敏感且输入结构简单的工具：
+
+```toml
+# tool.toml
+runtime = "rust"
+entrypoint = "main.rs"
+```
+
+```rust
+// main.rs
+use std::fs;
+use std::io::{self, Read};
+
+/// Extract a string field value from flat JSON like {"key": "value"}.
+/// Handles \\", \\n, \\t, \\r escapes. No serde_json needed.
+fn extract_str(json: &str, key: &str) -> Option<String> {
+    let search = format!("\"{}\"", key);
+    let pos = json.find(&search)?;
+    let after_key = &json[pos + search.len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = &after_key[colon + 1..];
+    let trimmed = after_colon.trim_start();
+    if !trimmed.starts_with('"') {
+        return None;
+    }
+    let inner = &trimmed[1..];
+    let mut result = String::new();
+    let mut chars = inner.chars();
+    loop {
+        match chars.next() {
+            None => return None,
+            Some('\\') => match chars.next() {
+                Some('"') => result.push('"'),
+                Some('\\') => result.push('\\'),
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some(c) => { result.push('\\'); result.push(c); }
+                None => return None,
+            },
+            Some('"') => break,
+            Some(c) => result.push(c),
+        }
+    }
+    Some(result)
+}
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let input = input.trim();
+
+    let path_str = match extract_str(input, "path") {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            println!(r#"{{"ok": false, "error": "missing required param: path"}}"#);
+            return;
+        }
+    };
+
+    let metadata = match fs::metadata(&path_str) {
+        Ok(m) => m,
+        Err(_) => {
+            println!(r#"{{"ok": false, "error": "file not found: {}"}}"#, path_str);
+            return;
+        }
+    };
+    if !metadata.is_file() {
+        println!(r#"{{"ok": false, "error": "not a file: {}"}}"#, path_str);
+        return;
+    }
+
+    match fs::read_to_string(&path_str) {
+        Ok(content) => {
+            let escaped = content.replace('\\', "\\\\").replace('"', "\\\"")
+                .replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+            println!(r#"{{"ok": true, "content": "{}", "path": "{}"}}"#,
+                escaped, path_str);
+        }
+        Err(e) => {
+            println!(r#"{{"ok": false, "error": "read error: {}"}}"#, e);
+        }
+    };
+}
+```
+
+**设计要点**：
+- `extract_str()` — ~40 行最小 JSON 字符串提取器，处理 `\"`、`\n`、`\t`、`\r` 转义。仅覆盖扁平对象，不处理嵌套/数组
+- 手动 `replace()` 做 JSON 转义——`\` → `\\`、`"` → `\"`、换行 → `\n` 等
+- `rustc` 编译：首次 ~1-3s，ScriptTool 按 mtime 缓存，后续直接执行 binary
+
+```bash
+$ rustc main.rs -o main && echo '{"path":"/etc/hostname"}' | ./main
+{"ok": true, "content": "iZbp1hzrvnradlsiut7vanZ\n", "path": "/etc/hostname"}
+
+$ echo '{"path":"/nonexistent"}' | ./main
+{"ok": false, "error": "file not found: /nonexistent"}
+```
+
+#### Runtime 选择速查
+
+| 维度 | Python | Bash | Rust |
+|------|--------|------|------|
+| JSON 支持 | 原生 `json` 模块 | python3 胶水 (~3 行/处) | 手写提取器 (~40 行) |
+| 首次延迟 | 即时 | 即时 | rustc ~1-3s（后续缓存） |
+| 正则 | `re` 模块 | `grep -rnI` | 无（仅 `str::contains`） |
+| 最佳场景 | 通用，复杂 JSON | 文件/系统操作为主 | 计算密集，输入简单 |
 
 ---
 
