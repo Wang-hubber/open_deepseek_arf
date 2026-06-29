@@ -6,35 +6,55 @@
 
 ## 定位
 
-MCP (Model Context Protocol) 是 Bus 上的**资源管理节点**，负责工具/技能的注册、发现与执行。MCP 不感知 Agent——只认 Bus 上的消息格式。
+MCP 拆分为两个独立 Bus 节点——**发现**与**执行**分离，各自可独立替换。Engine 按 `node_type` 区分路由。
 
 ```
-Engine ──tool_call_set──→ Bus ──tool_call_set──→ MCP Node
+              Bus
+               │
+   ┌───────────┴───────────┐
+   │                       │
+   ▼                       ▼
+ResourceDiscoveryNode   ResourceRuntimeNode
+ (node_type:              (node_type:
+  resource_discovery)      resource_runtime)
+   │                       │
+   ├─ 扫描 tools/skills    ├─ 接收 tool_call_set
+   ├─ 广播 node_online     ├─ DAG 拓扑排序
+   ├─ use_skill (L2)       ├─ 并发执行
+   └─ load_skill_resource  └─ tool_result_set
+      (L3)
+```
+
+**Skill 渐进式发现（L1 → L2 → L3）**：
+
+```
+L1: Engine 监听 node_online → 拿 {name, description} → 注入 system prompt
+L2: LLM 决定使用 → Engine ──use_skill──→ DiscoveryNode ──skill_loaded──→ Engine
+L3: LLM 需要资源 → Engine ──load_skill_resource──→ DiscoveryNode ──skill_resource_loaded──→ Engine
+```
+
+**Tool 执行流程**：
+
+```
+Engine ──tool_call_set──→ Bus ──tool_call_set──→ RuntimeNode
                                                     │ 构建 DAG
                                                     │ 拓扑排序
                                                     │ 并发执行
                                                     │ 级联取消
-                                                    │
 Engine ←──tool_result_set── Bus ←──tool_result_set──┘
-
-Skill 渐进式发现（L1 → L2 → L3）：
-L1: Engine 监听 node_online → 拿 {name, description} → 注入 system prompt
-L2: LLM 决定使用 → Engine ──use_skill──→ MCP ──skill_loaded──→ Engine
-                                                    │ body + resources
-L3: LLM 需要资源 → Engine ──load_skill_resource──→ MCP ──skill_resource_loaded──→ Engine
-                                                              │ 具体文件内容
 ```
 
-**核心原则：可插拔。** MCP 自身可替换——换一个 MCP 实现，只要消息格式不变，整个系统无感。
+**核心原则：可插拔。** Discovery 和 Runtime 各自可替换——换一个 Runtime 实现接入 sandbox，整个系统无感。
 
 ## 节点类型
 
-| 类型 | 标识 | 本阶段 |
-|------|------|--------|
-| `LocalMcpNode` | `node_type: "mcp"`, 静态注册工具/技能 | ✅ |
-| `RemoteMcpNode` | `node_type: "mcp"`, 外部 MCP 协议（stdio/SSE） | 🔲 未来 |
+| 类型 | `node_type` | 职责 | 本阶段 |
+|------|-------------|------|--------|
+| `ResourceDiscoveryNode` | `resource_discovery` | 扫描/索引/广播 tools + skills，响应 L2/L3 查询 | ✅ |
+| `ResourceRuntimeNode` | `resource_runtime` | 接收 `tool_call_set`，DAG 异步执行，返回 `tool_result_set` | ✅ |
+| `RemoteMcpNode` | — | 外部 MCP 协议（stdio/SSE），未来扩展 | 🔲 未来 |
 
-**注册与刷新**：静态注册——MCP Node 构造时传入工具和技能列表，启动后广播。无独立 refresh 方法——要刷新资源列表就重启节点。
+**注册与刷新**：静态注册——构造时传入 tools/skills 目录路径，启动后广播。无独立 refresh 方法——要刷新资源列表就重启节点。两个节点可连接同一条 Bus，也可各自独立部署。
 
 ## 依赖关系
 
@@ -353,45 +373,67 @@ pub struct SkillIndex {
 
 ## Bus 消息协议
 
-### node_online — MCP 注册
+### node_online — ResourceDiscoveryNode 注册
+
+Discovery 节点负责资源发现——上线时广播全部 tools 元数据和 skills L1 元数据。Engine 据此构建 system prompt。
 
 ```json
 {
   "msg_type": "node_online",
-  "from": "mcp/filesystem",
+  "from": "resource_discovery/main",
   "to": [],
   "payload": {
-    "node_type": "mcp",
-    "node_id": "mcp/filesystem",
+    "node_type": "resource_discovery",
+    "node_id": "resource_discovery/main",
     "capabilities": {
-      "resources": {
-        "tools": [
-          {"name": "read_file", "description": "Read file contents"},
-          {"name": "write_file", "description": "Write content to a file"},
-          {"name": "search_content", "description": "Search files for a pattern"}
-        ],
-        "skills": [
-          {
-            "name": "react-component",
-            "description": "Use when asked to build React components with TypeScript. Keywords: react, component, tsx, frontend."
-          }
-        ]
-      }
+      "tools": [
+        {"name": "read_file", "description": "Read file contents"},
+        {"name": "write_file", "description": "Write content to a file"},
+        {"name": "search_content", "description": "Search files for a pattern"}
+      ],
+      "skills": [
+        {
+          "name": "react-component",
+          "description": "Use when asked to build React components with TypeScript. Keywords: react, component, tsx, frontend."
+        }
+      ]
     },
     "online_since": 1719500000000
   }
 }
 ```
 
-### tool_call_set — Engine → MCP
+### node_online — ResourceRuntimeNode 注册
 
-定向消息（`to: ["mcp/filesystem"]`）：
+Runtime 节点负责工具执行——广播自己可执行的工具列表。Engine 据此路由 `tool_call_set`。
+
+```json
+{
+  "msg_type": "node_online",
+  "from": "resource_runtime/main",
+  "to": [],
+  "payload": {
+    "node_type": "resource_runtime",
+    "node_id": "resource_runtime/main",
+    "capabilities": {
+      "tools": ["read_file", "write_file", "search_content"]
+    },
+    "online_since": 1719500000000
+  }
+}
+```
+
+> Engine 发现逻辑：`resource_discovery` 提供工具描述（注入 system prompt），`resource_runtime` 提供可执行工具列表（路由 `tool_call_set` 的目标）。两者可一对多——一个 discovery 节点可以对应多个 runtime 节点（如不同 sandbox 策略的 runtime）。
+
+### tool_call_set — Engine → ResourceRuntimeNode
+
+定向消息（`to: ["resource_runtime/main"]`）：
 
 ```json
 {
   "msg_type": "tool_call_set",
   "from": "engine/session-1",
-  "to": ["mcp/filesystem"],
+  "to": ["resource_runtime/main"],
   "payload": {
     "session_id": "session-1",
     "calls": [
@@ -425,7 +467,7 @@ pub struct SkillIndex {
 ```json
 {
   "msg_type": "tool_result_set",
-  "from": "mcp/filesystem",
+  "from": "resource_runtime/main",
   "to": ["engine/session-1"],
   "payload": {
     "session_id": "session-1",
@@ -496,7 +538,7 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
 {
   "msg_type": "use_skill",
   "from": "engine/session-1",
-  "to": ["mcp/filesystem"],
+  "to": ["resource_discovery/main"],
   "payload": {
     "name": "react-component"
   }
@@ -510,7 +552,7 @@ Engine 发 cancel 消息 → executor 标记 call_0 = cancelled
 ```json
 {
   "msg_type": "skill_loaded",
-  "from": "mcp/filesystem",
+  "from": "resource_discovery/main",
   "to": ["engine/session-1"],
   "payload": {
     "name": "react-component",
@@ -533,7 +575,7 @@ LLM 需要具体脚本/模板/参考文档时，Engine 精准请求：
 {
   "msg_type": "load_skill_resource",
   "from": "engine/session-1",
-  "to": ["mcp/filesystem"],
+  "to": ["resource_discovery/main"],
   "payload": {
     "skill_name": "react-component",
     "resource_path": "scripts/generate-component.py"
@@ -546,7 +588,7 @@ LLM 需要具体脚本/模板/参考文档时，Engine 精准请求：
 ```json
 {
   "msg_type": "skill_resource_loaded",
-  "from": "mcp/filesystem",
+  "from": "resource_discovery/main",
   "to": ["engine/session-1"],
   "payload": {
     "skill_name": "react-component",
@@ -695,7 +737,8 @@ crates/arf-mcp/
     ├── types.rs            # ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet
     ├── skill.rs            # SkillEntry, SkillIndex
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
-    ├── node.rs             # LocalMcpNode: Bus lifecycle + listen loop
+    ├── node_discovery.rs   # ResourceDiscoveryNode: Bus lifecycle + L2/L3 query handling
+    ├── node_runtime.rs     # ResourceRuntimeNode: Bus lifecycle + tool_call_set execution (🔲 future sandbox)
     ├── tools/
     │   ├── mod.rs          # Built-in tool registry
     │   ├── read_file.rs    # ReadFileTool
@@ -705,7 +748,8 @@ crates/arf-mcp/
         ├── tool_tests.rs       # Tool trait + individual tools
         ├── skill_tests.rs      # SkillIndex scan/resolve/load
         ├── executor_tests.rs   # DAG build, cycle detect, topo sort, cascade cancel
-        ├── node_tests.rs       # LocalMcpNode lifecycle + Bus integration
+        ├── node_discovery_tests.rs   # DiscoveryNode lifecycle + L2/L3
+        ├── node_runtime_tests.rs     # RuntimeNode lifecycle + tool execution
         └── integration_tests.rs # E2E: node online → tool_call_set → result_set
 ```
 
@@ -719,19 +763,22 @@ crates/arf-mcp/
 | 5.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
 | 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
 | 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 5.5 | LocalMcpNode | Bus 节点生命周期 + listen loop（`tool_call_set` / `use_skill` 消息处理） | `node.rs` |
-| 5.6 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
-| 5.7 | 集成测试 | LocalMcpNode + Bus + mock Engine 消息收发 | `tests/` |
+| 5.5 | ResourceDiscoveryNode | Bus 生命周期 + `node_online` 广播 (tools/skills L1) + `use_skill` (L2) + `load_skill_resource` (L3) | `node_discovery.rs` |
+| 5.6 | ResourceRuntimeNode | Bus 生命周期 + `node_online` 广播 + `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（🔲 未来 sandbox 接入点） | `node_runtime.rs` |
+| 5.7 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
+| 5.8 | 集成测试 | Discovery + Runtime + Bus + mock Engine 消息收发 | `tests/` |
 
 ## 交付标准
 
 - [ ] `cargo test --workspace` 全部通过
 - [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json`
 - [ ] 三个内置工具可完成实际文件读写和内容搜索
-- [ ] `LocalMcpNode` 正确广播 `node_online`（含 tools + skills 元数据）
-- [ ] `LocalMcpNode` 正确响应 `tool_call_set` → 执行 → `tool_result_set`
-- [ ] `LocalMcpNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
-- [ ] `LocalMcpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] `ResourceDiscoveryNode` 正确广播 `node_online`（含 tools 描述 + skills L1 元数据）
+- [ ] `ResourceDiscoveryNode` 正确响应 `use_skill` → `skill_loaded` (L2: body + resources)
+- [ ] `ResourceDiscoveryNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
+- [ ] `ResourceRuntimeNode` 正确广播 `node_online`（含可执行 tools 列表）
+- [ ] `ResourceRuntimeNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
+- [ ] `ResourceRuntimeNode` 是未来 sandbox 的清晰接入点（execute 逻辑集中在此）
 - [ ] L3 资源读取有路径安全校验（拒绝 `../` 和绝对路径）
 - [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
 - [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
@@ -739,6 +786,7 @@ crates/arf-mcp/
 - [ ] Tool trait 可 mock（用于 Engine 单测）
 - [ ] SkillIndex 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
+- [ ] Discovery 和 Runtime 可独立启动、独立替换（不同 Bus NodeHandle）
 
 ---
 
@@ -746,6 +794,6 @@ crates/arf-mcp/
 
 | Phase | 如何使用 MCP |
 |-------|-------------|
-| Phase 6 Engine | 监听 `node_online` 发现 MCP 节点 → AgentConfig 匹配工具/技能 → 发 `tool_call_set` → 收 `tool_result_set` → 注入消息流 |
+| Phase 6 Engine | 监听两个 `node_online`（discovery + runtime）→ AgentConfig 匹配 → `tool_call_set` 发给 runtime → `use_skill` 发给 discovery → 注入消息流 |
 | Phase 7 集成 | E2E：Engine + ModelAdapter + MCP 完整 ReAct 循环 |
 | 未来 RemoteMCP | 同消息格式，只是工具执行转发到外部进程 |
