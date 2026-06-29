@@ -82,12 +82,54 @@ LocalMcpNode / RemoteMcpNode (Bus NodeHandle)
       本地 Tool+Skill         外部 Tool (无 Skill)
 ```
 
-| | 构造 | 发现 | 执行 | Skill |
-|---|---|---|---|---|
-| **LocalMcpNode** | `new(namespace, root_dir)` | `DiscoveryModule::scan(root_dir)` | ScriptTool subprocess | ✅ `skills/*/SKILL.md` |
-| **RemoteMcpNode** | `new(namespace, config)` | HTTP `tools/list` | HTTP `tools/call` proxy | ❌ |
+| | new() | connect(bus) | 运行时 | Skill |
+|---|---|---|---|---|---|
+| **LocalMcpNode** | `new(ns, root_dir) -> Result<Self, McpError>` | `connect(bus) -> Result<(), McpError>` → `node_online` | ScriptTool subprocess → `ToolResultItem` | ✅ `skills/*/SKILL.md` |
+| **RemoteMcpNode** | `new(ns, config) -> Self` (不联网) | `connect(bus) -> Result<(), McpError>` → HTTP init + `node_online` | HTTP `tools/call` proxy → `ToolResultItem` | ❌ → `skill_error` |
 
 两者对 Engine 完全透明 — 都是 `node_online` 广播能力，都响应 `tool_call_set`。
+
+### 统一生命周期 + 错误类型
+
+LocalMcpNode 和 RemoteMcpNode 共享相同的生命周期分界和错误类型。Engine 只看到连接成功后的 `node_online` 广播——连接失败意味着节点不存在。
+
+```rust
+/// Unified error type for MCP node creation and connection.
+pub enum McpError {
+    /// Resource discovery failed (local: scan error; remote: tools/list failed).
+    Discovery { reason: String },
+    /// Remote MCP server unreachable (RemoteMcpNode only).
+    RemoteUnreachable { url: String, reason: String },
+    /// MCP handshake rejected (RemoteMcpNode only).
+    RemoteRejected { url: String, code: i32, message: String },
+    /// Bus connection failed.
+    BusConnect { reason: String },
+}
+```
+
+```
+                    LocalMcpNode                         RemoteMcpNode
+                    ─────────────                        ─────────────
+new()              scan(root_dir) + 自检                仅创建 struct，不联网
+                   失败 → McpError::Discovery
+
+connect(bus)       bus.connect() +                     HTTP initialize
+                   广播 node_online                     → tools/list
+                   失败 → McpError::BusConnect          → bus.connect()
+                                                         → 广播 node_online
+                                                        失败 → McpError::Remote*
+
+运行时             tool_call_set → executor             tool_call_set → HTTP proxy
+                    ↓                                    ↓
+                   ToolResultItem                       ToolResultItem
+                   { status: "success"                  { status: "success"
+                   | "error"                            | "error"
+                   | "cancelled",                       | "cancelled",
+                     error: Option<String> }              error: Option<String> }
+                                                        + use_skill → skill_error
+```
+
+> **Engine 视角**：连接成功 → 收到 `node_online` → 发 `tool_call_set` → 收 `tool_result_set`。不管本地还是远程，运行时错误统一为 `ToolResultItem.error: String`。零认知负担。
 
 ### LocalMcpNode
 
@@ -102,7 +144,15 @@ pub struct LocalMcpNode {
 }
 
 impl LocalMcpNode {
-    pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Self {
+    /// Scan the filesystem and create the node. No Bus connection yet.
+    /// Returns Err(McpError::Discovery) if the root_dir doesn't exist
+    /// or contains no valid tools/skills.
+    pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Result<Self, McpError> {
+        todo!()
+    }
+
+    /// Connect to the Bus and broadcast node_online.
+    pub async fn connect(&self, bus: &Bus) -> Result<(), McpError> {
         todo!()
     }
 }
@@ -116,7 +166,12 @@ impl LocalMcpNode {
 pub struct RemoteConfig {
     pub transport: String,  // "streamable-http"
     pub url: String,
+    /// HTTP request timeout in seconds. Default = 60.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
 }
+
+fn default_timeout_secs() -> u64 { 60 }
 
 /// A remote MCP node — discovers tools via HTTP, proxies execution.
 pub struct RemoteMcpNode {
@@ -128,7 +183,14 @@ pub struct RemoteMcpNode {
 }
 
 impl RemoteMcpNode {
+    /// Create the node struct without networking. Always succeeds.
     pub fn new(namespace: impl Into<String>, config: RemoteConfig) -> Self {
+        todo!()
+    }
+
+    /// HTTP initialize → tools/list → Bus connect → broadcast node_online.
+    /// Returns Err(McpError::RemoteUnreachable|RemoteRejected|BusConnect).
+    pub async fn connect(&self, bus: &Bus) -> Result<(), McpError> {
         todo!()
     }
 }
@@ -137,38 +199,50 @@ impl RemoteMcpNode {
 **RemoteMcpNode 工作流（JSON-RPC 2.0）**：
 
 ```
-构造 → Bus::connect (node_online 未广播，tools 为空)
+new() → 创建 struct（参数校验，不联网）
   │
-  └→ [内部] HTTP POST → initialize
-       → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"arf-mcp","version":"1.0.0"}}}
-       ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{...},"capabilities":{"tools":{}}}}
-       │
-       ├─ 失败 → RemoteMcpNode 构造失败（远端不可达）
-       │
-       └→ HTTP POST → tools/list
-            → {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-            ← {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"...","description":"...","inputSchema":{...}}]}}
-            → 解析为 Vec<RemoteToolDef>，构建 known_tools (HashMap<String, RemoteToolDef>)
-            → 发送 node_online 广播
+connect(bus):
+  ├→ HTTP POST → initialize (MCP 握手)
+  │    → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
+  │    ← {"jsonrpc":"2.0","id":1,"result":{...}}
+  │
+  ├→ 失败:
+  │    ├─ 网络不可达 → Err(McpError::RemoteUnreachable { url, reason })
+  │    ├─ 握手被拒   → Err(McpError::RemoteRejected { url, code, message })
+  │    └─ HTTP 超时  → Err(McpError::RemoteUnreachable { url, reason: "timeout after Ns" })
+  │
+  ├→ HTTP POST → tools/list
+  │    → {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+  │    ← {"jsonrpc":"2.0","id":2,"result":{"tools":[{name,description,inputSchema}]}}
+  │    → 构建 known_tools (HashMap<String, RemoteToolDef>)
+  │
+  ├→ bus.connect() → 广播 node_online (携带全部 tools)
+  │   失败 → Err(McpError::BusConnect { reason })
+  │
+  └→ 成功
 
 收到 tool_call_set:
-  ├→ 对每个 ToolCallItem:
-  │    ├─ 查 known_tools：不存在 → ToolResultItem { status: "error", error: "tool not found: ..." }
-  │    ├─ 存在 → HTTP POST → tools/call
-  │    │    → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"json_format","arguments":{...}}}
-  │    │    ← 成功: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"..."}]}}
-  │    │       → ToolResultItem { status: "success", result: text }
-  │    │    ← 失败: {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"..."}}
-  │    │       → ToolResultItem { status: "error", error: "MCP error: ..." }
-  │    │    ← HTTP 超时:
-  │    │       → ToolResultItem { status: "error", error: "HTTP timeout" }
-  │    └─ name 从 ToolCallItem.tool 回填到 ToolResultItem.name
-  │
-  └→ 组装 ToolResultSet → tool_result_set 返回 Engine
+  └→ 对每个 ToolCallItem:
+       ├─ tool 不在 known_tools → ToolResultItem { status: "error", error: "tool not found: {name}" }
+       ├─ HTTP POST tools/call
+       │    → {"jsonrpc":"2.0","id":N,"method":"tools/call","params":{"name":"X","arguments":{...}}}
+       │    ← 成功: {"result":{"content":[{type:"text","text":"..."}]}}
+       │       → ToolResultItem { status: "success", result: text, name: tool }
+       │    ← 失败: {"error":{"code":-32000,"message":"..."}}
+       │       → ToolResultItem { status: "error", error: "MCP error [{code}]: {message}" }
+       │    ← HTTP 超时 (timeout_secs):
+       │       → ToolResultItem { status: "error", error: "HTTP timeout after {N}s" }
+       │    ← HTTP 4xx/5xx:
+       │       → ToolResultItem { status: "error", error: "HTTP {status}" }
+       │    ← 非 text content_type:
+       │       → ToolResultItem { status: "error", error: "unsupported content type: {type}" }
+       └─ name 从 ToolCallItem.tool 回填
+
+收到 use_skill / load_skill_resource:
+  → 返回 skill_error: { error: "skills not supported by remote MCP node: {namespace}" }
 ```
 
-> RemoteMcpNode 不支持 Skill——收到 `use_skill` / `load_skill_resource` 返回
-> `{"msg_type":"skill_error","payload":{"error":"skills not supported by remote MCP node: {namespace}"}}`
+> 远端中途断连不做自动重连。后续 tool_call_set 各自独立尝试 HTTP，失败返回 error。如需恢复，重新 `connect()`。
 
 **namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`、`codetidy`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
 
@@ -237,15 +311,17 @@ arf-engine ─── depends on: arf-core + arf-bus + arf-state (Phase 6)
 **ScriptTool**：开发者建文件夹 + 写 `tool.toml` + 入口脚本，`DiscoveryModule::scan()` 自动发现并创建 `ScriptTool` 实例。
 
 ```rust
-// 本地 MCP — 简单构造，只需 namespace 和 root_dir
-let local = LocalMcpNode::new("filesystem", PathBuf::from("/path/to/root"));
-// DiscoveryModule::scan() 自动扫描 {root}/tools + {root}/skills
+// 本地 MCP — 构造即扫描，连接即上线
+let local = LocalMcpNode::new("filesystem", PathBuf::from("/path/to/root"))?;
+local.connect(&bus).await?; // → node_online 广播
 
-// 远程 MCP — URL 驱动
+// 远程 MCP — 构造不联网，连接时握手
 let remote = RemoteMcpNode::new("codetidy", RemoteConfig {
     transport: "streamable-http".into(),
     url: "https://mcp.codetidy.dev".into(),
+    timeout_secs: 60,
 });
+remote.connect(&bus).await?; // → HTTP initialize → tools/list → node_online 广播
 ```
 
 ### 脚本 Tool
@@ -1266,12 +1342,14 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json` + `toml` + `reqwest`
 - [ ] 框架不内置任何 Tool — 所有本地 Tool 通过 `{root}/tools/*/tool.toml` 扫描发现
 - [ ] 三个测试 fixture（read_file/write_file/search_content）作为 ScriptTool 实例完成实际文件读写和内容搜索
-- [ ] `LocalMcpNode::new(namespace, root_dir)` 简单构造
-- [ ] `RemoteMcpNode::new(namespace, config)` 简单构造
-- [ ] `RemoteMcpNode` 构造时通过 HTTP `initialize` + `tools/list` 获取远程工具列表，构建 `ToolIndex` (HashMap) 索引后广播 `node_online`
-- [ ] `RemoteMcpNode` 收到 `tool_call_set` 时通过 HTTP `tools/call` 代理执行，返回 `tool_result_set`
-- [ ] `RemoteMcpNode` 不支持 Skill（`use_skill`/`load_skill_resource` 返回 error）
-- [ ] `RemoteMcpNode` 外部 MCP server 不可达时，构造阶段返回错误
+- [ ] `LocalMcpNode::new(ns, root_dir) -> Result<Self, McpError>` — 构造即扫描，失败返回 Discovery error
+- [ ] `LocalMcpNode::connect(bus) -> Result<(), McpError>` — 连接 Bus + 广播 node_online
+- [ ] `RemoteMcpNode::new(ns, config) -> Self` — 纯构造，不联网
+- [ ] `RemoteMcpNode::connect(bus) -> Result<(), McpError>` — HTTP initialize + tools/list → bus.connect() → 广播 node_online
+- [ ] `RemoteMcpNode` 远端不可达/握手被拒/超时时 `connect()` 返回 `McpError::RemoteUnreachable` 或 `RemoteRejected`
+- [ ] `RemoteMcpNode` 运行时错误统一为 `ToolResultItem { status: "error", error: String }`
+- [ ] `RemoteMcpNode` 不支持 Skill（`use_skill`/`load_skill_resource` 返回 skill_error）
+- [ ] `McpError` 统一 LocalMcpNode 和 RemoteMcpNode 的错误类型
 - [ ] `LocalMcpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
 - [ ] `LocalMcpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
 - [ ] `LocalMcpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
@@ -1320,29 +1398,23 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 ```python
 from py_arf.mcp import LocalMcpNode, RemoteMcpNode, RemoteConfig
 
-# 本地 MCP — 纯文件夹驱动
+# 本地 MCP — 纯文件夹驱动，构造即扫描
 mcp_local = LocalMcpNode(
     namespace="filesystem",
     root_dir="/path/to/tools",
 )
+await mcp_local.connect(bus)  # → node_online 广播
 
-# 远程 MCP — URL 驱动
+# 远程 MCP — URL 驱动，构造不联网
 mcp_remote = RemoteMcpNode(
     namespace="codetidy",
     config=RemoteConfig(
         transport="streamable-http",
         url="https://mcp.codetidy.dev",
+        timeout_secs=60,
     ),
 )
-
-# 本地 MCP 支持 with_remote() builder 方法注册外部 MCP
-mcp_local.with_remote(
-    name="codetidy",
-    config=RemoteConfig(
-        transport="streamable-http",
-        url="https://mcp.codetidy.dev",
-    ),
-)
+await mcp_remote.connect(bus)  # → HTTP init → tools/list → node_online 广播
 ```
 
 ### 转换规则
@@ -1350,8 +1422,10 @@ mcp_local.with_remote(
 | Rust | Python |
 |------|--------|
 | `LocalMcpNode::new(namespace, root_dir)` | `LocalMcpNode(namespace=str, root_dir=str)` |
+| `LocalMcpNode::connect(bus)` | `await mcp.connect(bus)` |
 | `RemoteMcpNode::new(namespace, config)` | `RemoteMcpNode(namespace=str, config=RemoteConfig)` |
-| `RemoteConfig { transport, url }` | `RemoteConfig(transport=str, url=str)` |
+| `RemoteMcpNode::connect(bus)` | `await mcp.connect(bus)` |
+| `RemoteConfig { transport, url, timeout_secs }` | `RemoteConfig(transport=str, url=str, timeout_secs=int)` |
 
 Python 类型通过 PyO3 从 Rust struct 自动导出，不做手动类型桥接。
 
