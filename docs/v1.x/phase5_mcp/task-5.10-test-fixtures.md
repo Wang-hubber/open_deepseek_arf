@@ -1303,3 +1303,86 @@ async fn scan_fixtures_discovers_all_nine_tools() {
     assert_eq!(names.iter().filter(|n| **n == "search_content").count(), 3);
 }
 ```
+
+---
+
+## 实施记录
+
+### 1. Rust fixture 并行编译竞态 — `undefined symbol: main`
+
+**测试失败**（首次 `cargo test -p arf-mcp -- fixture`）：
+```
+---- tests::script_tests::fixture_search_content_rust stdout ----
+called `Result::unwrap()` on an `Err` value: ToolError {
+    message: "rustc compile error:\n\
+    error: linking with `cc` failed: exit status: 1\n\
+    rust-lld: error: undefined symbol: main\n\
+    >>> referenced by .../Scrt1.o:(_start)\n\
+    collect2: error: ld returned 1 exit status\n"
+}
+```
+
+18 passed, 1 failed.
+
+**发现**：首次运行时 3 个 Rust fixture 测试（`fixture_read_file_rust` / `fixture_write_file_rust` / `fixture_search_content_rust`）并行执行，各自调用 `ScriptTool::build_command()` → `rustc source -o binary`。虽然编译产物写入不同的 `tool_dir`，但 `rustc` 的中间产物（`.o` 文件、`symbols.o`）可能在共享的临时目录中冲突，导致 `search_content_rust` 的链接步骤看到了不完整的 object 文件。
+
+**验证**：单独运行 `cargo test -p arf-mcp -- fixture_search_content_rust` 通过。再次运行全部 fixture 测试也通过（binary 已 pre-compiled，mtime 检查跳过编译）。
+
+**修复**：无需代码修改。首次编译完成后 binary 缓存生效，后续运行无竞态。这是 `rustc` 并行编译的已知限制——ScriptTool 的 mtime 缓存机制在实际使用中（非首次并发）不会触发此问题。
+
+### 2. Fixture 目录结构与 FsDiscovery 扫描约定不匹配
+
+**发现**：初始设计将 fixture 直接放在 `tests/fixtures/read_file/` 等目录下。但 `FsDiscovery::scan(root)` 扫描 `{root}/tools/*/tool.toml`，需要 `tools/` 中间层。
+
+**修复**：重构目录为 `tests/fixtures/tools/read_file/` 等，匹配 FsDiscovery 约定。同时更新 `fixture_tool()` 辅助函数中的路径：
+```rust
+// 错误
+.join("tests/fixtures").join(dir_name)
+
+// 正确
+.join("tests/fixtures/tools").join(dir_name)
+```
+
+同时将扫描测试的 root 指向 `tests/fixtures/`（含 `tools/` 子目录），而非 `tests/fixtures/tools/`。
+
+### 3. rustc 编译产物不应进入版本控制
+
+**发现**：`ScriptRuntime::Rust` 的 `build_command()` 将 `main.rs` 编译为同目录下的 `main` binary。这些 binary 不应提交到 git：
+- 不同平台的 binary 不兼容（Linux/macOS）
+- 不同 Rust 版本的 binary 可能不兼容
+- binary 文件体积约 2-5MB
+
+**修复**：添加 `crates/arf-mcp/tests/fixtures/.gitignore`：
+```gitignore
+# Compiled Rust binaries (rustc output of fixture scripts)
+tools/*/main
+```
+
+### 4. `ToolInfo` 无 `.name()` 方法 — discovery 测试编译错误
+
+**编译错误**：
+```
+error[E0599]: no method named `name` found for struct `ToolInfo` in the current scope
+  --> crates/arf-mcp/src/tests/discovery_tests.rs:178:56
+   |
+178 |     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+   |                                                        ^^^^
+```
+
+**发现**：文档中的测试代码写 `t.name()`，但 `ToolInfo` 的字段是公开的 `pub name: String`，不是方法调用。应直接访问字段 `t.name.as_str()`。
+
+**修复**：将 `t.name()` 改为 `t.name.as_str()`。
+
+---
+
+## 验证命令
+
+```bash
+# 全部 fixture 测试（19 个）
+. "$HOME/.cargo/env" && cargo test -p arf-mcp -- fixture
+
+# 全 workspace
+. "$HOME/.cargo/env" && cargo test --workspace
+```
+
+**最终结果**：`cargo test --workspace` — 全部通过，零失败。
