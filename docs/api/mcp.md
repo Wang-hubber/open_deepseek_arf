@@ -66,7 +66,7 @@ from arf import Bus, McpNode
 # 1. 准备工具目录（按约定组织）
 root = tempfile.mkdtemp()
 tool_dir = os.path.join(root, "tools", "echo")
-os.makedirs(tool_dir)
+os.makedirs(name=tool_dir)
 
 # tool.toml — 工具元数据
 with open(os.path.join(tool_dir, "tool.toml"), "w") as f:
@@ -83,8 +83,10 @@ with open(os.path.join(tool_dir, "main.sh"), "w") as f:
 
 # 2. 创建节点 + 连接 Bus
 bus = Bus()
-node = McpNode.local("greeter", root)  # 同步构造，扫描 {root}/tools/*/tool.toml
-await node.connect(bus)                # 广播 node_online
+node = McpNode.local(namespace="greeter", root=root)  # 同步构造，扫描 {root}/tools/*/tool.toml
+# McpNode.local() → 0.3ms
+await node.connect(bus=bus)                # 广播 node_online
+# node.connect() → 1.2ms
 
 # 3. 验证：Bus 上能看到这个 MCP 节点
 graph = bus.graph()
@@ -92,9 +94,10 @@ mcp_nodes = [n for n in graph.nodes if n.node_type == "mcp"]
 print(f"Namespace: {node.namespace}")          # Namespace: greeter
 print(f"Node ID:   {node.node_id}")            # Node ID:   mcp/greeter
 print(f"Tools:     {mcp_nodes[0].capabilities['tools']}")
-# Tools: [{"name": "echo", "description": "Echo back the input params as JSON"}]
+# Tools: [{'name': 'echo', 'description': 'Echo back the input params as JSON'}]
 
 await bus.shutdown()
+# 总耗时 ~0.1s
 ```
 
 ### 第一个远程 MCP：连接 CodeTidy
@@ -107,8 +110,10 @@ config = RemoteConfig(
     url="https://mcp.codetidy.dev",
     timeout_secs=30,
 )
-node = await McpNode.remote("codetidy", config)  # 异步构造，HTTP 握手
-await node.connect(bus)                          # 广播 node_online
+node = await McpNode.remote(namespace="codetidy", config=config)  # 异步构造，HTTP 握手
+# McpNode.remote() → 1.7-2.4s（取决于网络延迟）
+await node.connect(bus=bus)                          # 广播 node_online
+# node.connect() → 0.9ms
 
 graph = bus.graph()
 ct = [n for n in graph.nodes if n.node_type == "mcp"][0]
@@ -116,9 +121,10 @@ tools = ct.capabilities["tools"]
 print(f"CodeTidy 提供 {len(tools)} 个工具")      # CodeTidy 提供 62 个工具
 
 await bus.shutdown()
+# 总耗时 ~2.3s
 ```
 
-> **注意**：`McpNode.local()` 是同步构造（文件扫描），`McpNode.remote()` 是异步构造（需 HTTP 握手）。两者都通过 `await node.connect(bus)` 注册到 Bus。
+> **注意**：`McpNode.local(namespace=..., root=...)` 是同步构造（文件扫描），`McpNode.remote(namespace=..., config=...)` 是异步构造（需 HTTP 握手）。两者都通过 `await node.connect(bus=bus)` 注册到 Bus。
 
 ---
 
@@ -228,8 +234,8 @@ from arf import McpNode
 
 | 方法 | 类型 | 网络 | 说明 |
 |------|------|------|------|
-| `McpNode.local(ns, root)` | sync | 否 | 扫描 `{root}/tools/*/tool.toml`，默认 LocalRuntime |
-| `McpNode.remote(ns, config)` | async | 是 | HTTP initialize + tools/list，RemoteRuntime |
+| `McpNode.local(namespace=..., root=...)` | sync | 否 | 扫描 `{root}/tools/*/tool.toml`，默认 LocalRuntime |
+| `McpNode.remote(namespace=..., config=...)` | async | 是 | HTTP initialize + tools/list，RemoteRuntime |
 
 #### `McpNode.local()`
 
@@ -252,17 +258,16 @@ def local(cls, namespace: str, root: str) -> McpNode:
 
 | Exception | Match text | Trigger |
 |-----------|-----------|---------|
-| `RuntimeError` | `"discovery"` | `root` 不存在或不可读 |
-| `RuntimeError` | `"malformed"` | 某 `tool.toml` 格式错误（不阻断，warning 跳过） |
+| `RuntimeError` | `"discovery error"` | `root` 不存在或不可读 |
 
 **Example:**
 
 ```python
 # 最小用法 — root 可为空目录（无工具）
-node = McpNode.local("my-ns", "/path/to/tools")
+node = McpNode.local(namespace="my-ns", root="/path/to/tools")
 
 # 含工具 — tools/echo/tool.toml + main.py
-node = McpNode.local("filesystem", "/mcp/stable")
+node = McpNode.local(namespace="filesystem", root="/mcp/stable")
 print(node.namespace)  # "filesystem"
 print(node.node_id)    # "mcp/filesystem"
 ```
@@ -288,8 +293,8 @@ async def remote(cls, namespace: str, config: RemoteConfig) -> McpNode:
 
 | Exception | Match text | Trigger |
 |-----------|-----------|---------|
-| `RuntimeError` | `"unreachable"` | DNS 解析失败、连接被拒、TLS 错误、超时 |
-| `RuntimeError` | `"rejected"` | MCP 握手被服务器拒绝（错误的协议版本等） |
+| `ConnectionError` | `"unreachable"` | DNS 解析失败、连接被拒、TLS 错误、超时 |
+| `ConnectionError` | `"rejected"` | MCP 握手被服务器拒绝（错误的协议版本等） |
 
 **Example:**
 
@@ -300,7 +305,7 @@ config = RemoteConfig(
     headers={"Authorization": "Bearer sk-xxx"},
     retry=RetryConfig(max_retries=3),
 )
-node = await McpNode.remote("codetidy", config)
+node = await McpNode.remote(namespace="codetidy", config=config)
 ```
 
 #### `McpNode.connect()`
@@ -327,8 +332,8 @@ async def connect(self, bus: Bus) -> None:
 **Example:**
 
 ```python
-node = McpNode.local("tools", "/path/to/root")
-await node.connect(bus)  # 广播 node_online，含 tools + skills L1 + runtime capabilities
+node = McpNode.local(namespace="tools", root="/path/to/root")
+await node.connect(bus=bus)  # 广播 node_online，含 tools + skills L1 + runtime capabilities
 ```
 
 #### 属性
@@ -339,7 +344,7 @@ await node.connect(bus)  # 广播 node_online，含 tools + skills L1 + runtime 
 | `node_id` | `str` | read-only | Bus 节点 ID，格式 `mcp/{namespace}` |
 
 ```python
-node = McpNode.local("filesystem", "/root")
+node = McpNode.local(namespace="filesystem", root="/root")
 assert node.namespace == "filesystem"
 assert node.node_id == "mcp/filesystem"
 ```
@@ -474,7 +479,7 @@ async def main():
     # 1. 准备工具
     root = tempfile.mkdtemp()
     tool_dir = os.path.join(root, "tools", "echo")
-    os.makedirs(tool_dir)
+    os.makedirs(name=tool_dir)
     with open(os.path.join(tool_dir, "tool.toml"), "w") as f:
         f.write('name = "echo"\ndescription = "Echo"\nruntime = "bash"\nentrypoint = "main.sh"\n')
     with open(os.path.join(tool_dir, "main.sh"), "w") as f:
@@ -482,21 +487,24 @@ async def main():
 
     # 2. 启动 Bus + MCP 节点
     bus = Bus()
-    node = McpNode.local("demo", root)
-    await node.connect(bus)
+    node = McpNode.local(namespace="demo", root=root)
+    await node.connect(bus=bus)
 
     # 3. 模拟 Engine — 连接 Bus + 发送 tool_call_set
-    engine_info = NodeInfo(node_id=NodeId("engine/s1"), node_type="engine",
-                           capabilities={}, online_since=0)
+    engine_info = NodeInfo(
+        node_id="engine/s1",
+        node_type="engine",
+        capabilities={},
+    )
     engine_filter = MessageFilter(
         types=["tool_result_set"],
-        to_match=ToMatch.ALL,
+        to_match=ToMatch.All,
     )
-    engine = await bus.connect(engine_info, engine_filter)
+    engine = await bus.connect(info=engine_info, filter=engine_filter)
 
     engine.send(
-        "tool_call_set",
-        to=[NodeId(node.node_id)],
+        msg_type="tool_call_set",
+        to=[NodeId(id=node.node_id)],
         payload={
             "session_id": "s1",
             "calls": [{"id": "c0", "tool": "echo", "params": {}}],
@@ -508,6 +516,8 @@ async def main():
     result = resp.payload["results"][0]
     print(f"Status: {result['status']}")  # Status: success
     print(f"Name:   {result['name']}")    # Name:   echo
+    print(f"Result: {result['result']}")  # Result: {'msg': 'hello from mcp'}
+    # tool_call_set → tool_result_set: ~2ms
 
     await bus.shutdown()
 
@@ -518,29 +528,29 @@ asyncio.run(main())
 
 ```python
 # 两个 namespace，各有同名 echo 工具
-node_a = McpNode.local("alpha", "/mcp/alpha")
-node_b = McpNode.local("beta",  "/mcp/beta")
+node_a = McpNode.local(namespace="alpha", root="/mcp/alpha")
+node_b = McpNode.local(namespace="beta",  root="/mcp/beta")
 
-await node_a.connect(bus)
-await node_b.connect(bus)
+await node_a.connect(bus=bus)
+await node_b.connect(bus=bus)
 
 # node_a.node_id == "mcp/alpha"
 # node_b.node_id == "mcp/beta"
 # 调用时按 node_id 路由，同名 echo 互不干扰
-engine.send("tool_call_set", to=[NodeId(node_a.node_id)], payload={...})  # → alpha
-engine.send("tool_call_set", to=[NodeId(node_b.node_id)], payload={...})  # → beta
+engine.send(msg_type="tool_call_set", to=[NodeId(id=node_a.node_id)], payload={...})  # → alpha
+engine.send(msg_type="tool_call_set", to=[NodeId(id=node_b.node_id)], payload={...})  # → beta
 ```
 
 ### 模式三：远程 MCP + 本地 MCP 共存
 
 ```python
 # 本地文件工具 + 远程 CodeTidy 工具并存
-local = McpNode.local("fs", "/mcp/stable")
-remote = await McpNode.remote("codetidy",
-    RemoteConfig(url="https://mcp.codetidy.dev", timeout_secs=30))
+local = McpNode.local(namespace="fs", root="/mcp/stable")
+remote = await McpNode.remote(namespace="codetidy",
+    config=RemoteConfig(url="https://mcp.codetidy.dev", timeout_secs=30))
 
-await local.connect(bus)
-await remote.connect(bus)
+await local.connect(bus=bus)
+await remote.connect(bus=bus)
 
 # Bus 上有两个 MCP 节点
 graph = bus.graph()
@@ -581,10 +591,9 @@ for n in mcp_nodes:
 
 | Exception | Match text | Trigger |
 |-----------|-----------|---------|
-| `RuntimeError` | `"discovery"` | `McpNode.local()` — root 路径不存在或不可读 |
-| `RuntimeError` | `"malformed"` | `McpNode.local()` — 某 `tool.toml` 解析失败（不阻断） |
-| `RuntimeError` | `"unreachable"` | `McpNode.remote()` — 远端不可达（DNS/连接拒/超时/TLS） |
-| `RuntimeError` | `"rejected"` | `McpNode.remote()` — MCP 握手被服务端拒绝 |
+| `RuntimeError` | `"discovery error"` | `McpNode.local()` — root 路径不存在或不可读 |
+| `ConnectionError` | `"unreachable"` | `McpNode.remote()` — 远端不可达（DNS/连接拒/超时/TLS） |
+| `ConnectionError` | `"rejected"` | `McpNode.remote()` — MCP 握手被服务端拒绝（协议版本不匹配等） |
 | `RuntimeError` | `"bus connect"` | `node.connect()` — Bus 连接失败 |
 
 > **注意**：工具执行错误（如文件不存在、脚本返回 error）不会抛异常——它们通过 `ToolResultItem.status = "error"` 和 `error` 字段返回。Engine 通过 `tool_result_set` 消息获取结构化错误，并转换为 `ModelMessage` 注入 LLM 上下文。
@@ -595,9 +604,9 @@ for n in mcp_nodes:
 
 | 维度 | Rust | Python |
 |------|------|--------|
-| **Local 构造** | `McpNode::local(ns, root)` | `McpNode.local(ns, root)` — sync classmethod |
-| **Remote 构造** | `McpNode::remote(ns, config).await` | `await McpNode.remote(ns, config)` — async classmethod |
-| **connect** | `node.connect(&bus).await` | `await node.connect(bus)` — async method |
+| **Local 构造** | `McpNode::local(ns, root)` | `McpNode.local(namespace=ns, root=root)` — sync classmethod |
+| **Remote 构造** | `McpNode::remote(ns, config).await` | `await McpNode.remote(namespace=ns, config=config)` — async classmethod |
+| **connect** | `node.connect(&bus).await` | `await node.connect(bus=bus)` — async method |
 | **自定义 runtime** | `McpNode::local_with_runtime(ns, root, rt)` | 暂未暴露（延后到 SandboxRuntime 需求驱动） |
 | **namespace** | `node.namespace`（String 字段） | `node.namespace`（str property） |
 | **node_id** | `node.node_id`（NodeId 类型） | `node.node_id`（str property，自动转换） |
@@ -608,14 +617,16 @@ for n in mcp_nodes:
 
 ## 性能说明
 
-| 操作 | 耗时 | 说明 |
-|------|------|------|
-| `McpNode.local()` | ~1ms | 文件系统扫描 `tools/*/tool.toml` |
-| `McpNode.remote()` | ~2-5s | HTTP initialize + tools/list（取决于网络延迟） |
-| `node.connect()` | <1ms | 注册到 Bus + 广播 `node_online` |
-| 本地 tool 执行 | ~50ms | Python subprocess spawn（冷启动） |
+| 操作 | 实测耗时 | 说明 |
+|------|---------|------|
+| `McpNode.local()` | ~0.3ms | 文件系统扫描 `tools/*/tool.toml` |
+| `McpNode.remote()` | ~1.7-2.4s | HTTP initialize + tools/list（取决于网络延迟） |
+| `node.connect()` | ~1ms | 注册到 Bus + 广播 `node_online` |
+| 本地 tool 执行 | ~2ms | Bash subprocess spawn + stdin/stdout JSON（冷启动 ~50ms） |
 | 远程 tool 执行 | ~500ms-2s | HTTP tools/call 往返 |
 | Rust tool 首次编译 | ~1-3s | `rustc source -o binary`；后续使用 mtime 缓存 |
+| 本地完整示例（Quickstart） | ~0.1s | Bus 创建 + scan + connect + shutdown |
+| 远程完整示例（CodeTidy） | ~2.3s | Bus 创建 + HTTP 握手 + connect + shutdown |
 
 ---
 
