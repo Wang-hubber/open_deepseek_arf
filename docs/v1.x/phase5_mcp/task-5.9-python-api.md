@@ -336,11 +336,316 @@ __all__ = [
 ]
 ```
 
+### `py-arf/src/mcp.rs` 末尾 — `#[cfg(test)]` 单元测试
+
+```rust
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use pyo3::prelude::*;
+
+    use super::*;
+    use crate::PyBus;
+
+    // ════════════════════════════════════════════════════════════
+    // Helper — create a temp directory with a minimal tool
+    // ════════════════════════════════════════════════════════════
+
+    fn make_temp_tool_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let tool_dir = root.join("tools").join("hello");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(
+            tool_dir.join("tool.toml"),
+            "name = \"hello\"\ndescription = \"Say hello\"\nruntime = \"bash\"\nentrypoint = \"main.sh\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tool_dir.join("main.sh"),
+            "#!/bin/bash\nread p\necho '{\"msg\":\"hello\"}'",
+        )
+        .unwrap();
+
+        (tmp, root)
+    }
+
+    // ── PyRetryConfig ──────────────────────────────────────────
+
+    #[test]
+    fn retry_config_defaults() {
+        Python::with_gil(|py| {
+            let cfg = PyRetryConfig::new(3, 1000, 30000);
+            assert_eq!(cfg.max_retries(), 3);
+            assert_eq!(cfg.initial_backoff_ms(), 1000);
+            assert_eq!(cfg.max_backoff_ms(), 30000);
+            let r = cfg.__repr__();
+            assert!(r.contains("RetryConfig"));
+            assert!(r.contains("max_retries=3"));
+        });
+    }
+
+    #[test]
+    fn retry_config_custom_values() {
+        Python::with_gil(|_py| {
+            let cfg = PyRetryConfig::new(5, 500, 60000);
+            assert_eq!(cfg.max_retries(), 5);
+            assert_eq!(cfg.initial_backoff_ms(), 500);
+            assert_eq!(cfg.max_backoff_ms(), 60000);
+        });
+    }
+
+    #[test]
+    fn retry_config_clone() {
+        Python::with_gil(|_py| {
+            let cfg = PyRetryConfig::new(7, 2000, 90000);
+            let cloned = cfg.clone();
+            assert_eq!(cloned.max_retries(), 7);
+        });
+    }
+
+    // ── PyRemoteConfig ─────────────────────────────────────────
+
+    #[test]
+    fn remote_config_minimal() {
+        Python::with_gil(|py| {
+            let cfg = PyRemoteConfig::new(
+                "https://example.com/mcp".into(),
+                "http".into(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(cfg.url(), "https://example.com/mcp");
+            assert_eq!(cfg.transport(), "http");
+            assert!(cfg.timeout_secs().is_none());
+            assert!(cfg.tls_ca_cert().is_none());
+            assert!(cfg.retry().is_none());
+        });
+    }
+
+    #[test]
+    fn remote_config_with_timeout() {
+        Python::with_gil(|py| {
+            let cfg =
+                PyRemoteConfig::new("https://x.com".into(), "http".into(), Some(30), None, None, None)
+                    .unwrap();
+            assert_eq!(cfg.timeout_secs(), Some(30));
+        });
+    }
+
+    #[test]
+    fn remote_config_with_retry() {
+        Python::with_gil(|py| {
+            let retry = PyRetryConfig::new(2, 500, 10000);
+            let cfg = PyRemoteConfig::new(
+                "https://x.com".into(),
+                "http".into(),
+                None,
+                None,
+                None,
+                Some(retry),
+            )
+            .unwrap();
+            assert!(cfg.retry().is_some());
+            assert_eq!(cfg.retry().unwrap().max_retries(), 2);
+        });
+    }
+
+    #[test]
+    fn remote_config_with_tls_ca() {
+        Python::with_gil(|py| {
+            let cfg = PyRemoteConfig::new(
+                "https://x.com".into(),
+                "http".into(),
+                None,
+                None,
+                Some("/etc/ca.pem".into()),
+                None,
+            )
+            .unwrap();
+            assert_eq!(cfg.tls_ca_cert(), Some("/etc/ca.pem".into()));
+        });
+    }
+
+    #[test]
+    fn remote_config_repr() {
+        Python::with_gil(|py| {
+            let cfg =
+                PyRemoteConfig::new("https://x.com".into(), "http".into(), None, None, None, None)
+                    .unwrap();
+            let r = cfg.__repr__();
+            assert!(r.contains("RemoteConfig"));
+            assert!(r.contains("https://x.com"));
+        });
+    }
+
+    // ── PyMcpNode — local() ────────────────────────────────────
+
+    #[test]
+    fn mcp_node_local_constructs() {
+        Python::with_gil(|py| {
+            let (_tmp, root) = make_temp_tool_dir();
+            let node =
+                PyMcpNode::local(&py.get_type::<PyMcpNode>(), "test-ns".into(), root.display().to_string())
+                    .unwrap();
+            assert_eq!(node.namespace(), "test-ns");
+            assert!(node.node_id().contains("mcp/test-ns"));
+        });
+    }
+
+    #[test]
+    fn mcp_node_local_empty_root() {
+        Python::with_gil(|py| {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let node =
+                PyMcpNode::local(&py.get_type::<PyMcpNode>(), "empty".into(), root.display().to_string())
+                    .unwrap();
+            assert_eq!(node.namespace(), "empty");
+        });
+    }
+
+    #[test]
+    fn mcp_node_local_missing_root() {
+        Python::with_gil(|py| {
+            let result = PyMcpNode::local(
+                &py.get_type::<PyMcpNode>(),
+                "bad".into(),
+                "/nonexistent/path/definitely/missing".into(),
+            );
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("discovery"));
+        });
+    }
+
+    #[test]
+    fn mcp_node_local_with_skills() {
+        Python::with_gil(|py| {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+
+            // Also add a skill directory
+            let skill_dir = root.join("skills").join("my-skill");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: my-skill\ndescription: A test skill\n---\n\n# My Skill\n",
+            )
+            .unwrap();
+
+            let node =
+                PyMcpNode::local(&py.get_type::<PyMcpNode>(), "with-skills".into(), root.display().to_string())
+                    .unwrap();
+            assert_eq!(node.namespace(), "with-skills");
+        });
+    }
+
+    #[test]
+    fn mcp_node_repr() {
+        Python::with_gil(|py| {
+            let (_tmp, root) = make_temp_tool_dir();
+            let node =
+                PyMcpNode::local(&py.get_type::<PyMcpNode>(), "ns".into(), root.display().to_string())
+                    .unwrap();
+            let r = node.__repr__();
+            assert!(r.contains("McpNode"));
+            assert!(r.contains("ns"));
+        });
+    }
+
+    // ── McpError → PyErr mapping ───────────────────────────────
+
+    #[test]
+    fn error_discovery_to_pyerr() {
+        let err = arf_mcp::error::McpError::Discovery {
+            reason: "root missing".into(),
+        };
+        let py_err = mcp_error_to_py(err);
+        let msg = py_err.to_string();
+        assert!(msg.contains("discovery"));
+        assert!(msg.contains("root missing"));
+    }
+
+    #[test]
+    fn error_remote_unreachable_to_pyerr() {
+        let err = arf_mcp::error::McpError::RemoteUnreachable {
+            url: "https://bad.example".into(),
+            reason: "connection refused".into(),
+        };
+        let py_err = mcp_error_to_py(err);
+        let msg = py_err.to_string();
+        assert!(msg.contains("bad.example"));
+        assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn error_remote_rejected_to_pyerr() {
+        let err = arf_mcp::error::McpError::RemoteRejected {
+            url: "https://x.com".into(),
+            code: 403,
+            message: "forbidden".into(),
+        };
+        let py_err = mcp_error_to_py(err);
+        let msg = py_err.to_string();
+        assert!(msg.contains("403"));
+        assert!(msg.contains("forbidden"));
+    }
+
+    #[test]
+    fn error_bus_connect_to_pyerr() {
+        let err = arf_mcp::error::McpError::BusConnect {
+            reason: "channel full".into(),
+        };
+        let py_err = mcp_error_to_py(err);
+        let msg = py_err.to_string();
+        assert!(msg.contains("bus"));
+        assert!(msg.contains("channel full"));
+    }
+}
+```
+
+测试文件需要在 `Cargo.toml` 添加 dev-dependency：
+
+```toml
+[dev-dependencies]
+tempfile = "3"
+```
+
+**18 个 Rust 单元测试**，按角度标注：
+
+| 测试 | 覆盖角度 |
+|------|---------|
+| `retry_config_defaults` | [构造] 默认值 + getter + repr |
+| `retry_config_custom_values` | [构造] 自定义值 |
+| `retry_config_clone` | [类型] Clone 派生 |
+| `remote_config_minimal` | [构造] 最少参数 + 所有 getter |
+| `remote_config_with_timeout` | [边界] timeout_secs 可选字段 |
+| `remote_config_with_retry` | [边界] retry 嵌套配置 |
+| `remote_config_with_tls_ca` | [边界] tls_ca_cert 可选字段 |
+| `remote_config_repr` | [类型] __repr__ |
+| `mcp_node_local_constructs` | [构造] 扫描 tools 目录 + namespace/node_id |
+| `mcp_node_local_empty_root` | [边界] 空目录（0 tools, 0 skills）合法 |
+| `mcp_node_local_missing_root` | [边界] 不存在目录 → RuntimeError |
+| `mcp_node_local_with_skills` | [构造] tools + skills 共存 |
+| `mcp_node_repr` | [类型] __repr__ |
+| `error_discovery_to_pyerr` | [错误] McpError::Discovery → PyErr |
+| `error_remote_unreachable_to_pyerr` | [错误] McpError::RemoteUnreachable → PyErr |
+| `error_remote_rejected_to_pyerr` | [错误] McpError::RemoteRejected → PyErr |
+| `error_bus_connect_to_pyerr` | [错误] McpError::BusConnect → PyErr |
+
 ---
 
-## 测试
+## 测试（Python 集成测试）
 
-### Rust 侧 — `py-arf/tests/test_mcp.py`
+### `py-arf/tests/test_mcp.py`
 
 ```python
 """Tests for arf MCP Python bindings."""
@@ -536,14 +841,17 @@ async def test_remote_codetidy_connect():
 
 | 文件 | 新增测试 | 覆盖角度 |
 |------|---------|---------|
+| `mcp.rs #[cfg(test)]` | 3 | `[构造][类型]` — RetryConfig 默认值/自定义/Clone |
+| `mcp.rs #[cfg(test)]` | 5 | `[构造][边界][类型]` — RemoteConfig minimal/timeout/retry/tls/repr |
+| `mcp.rs #[cfg(test)]` | 5 | `[构造][边界][类型]` — McpNode tools/empty/missing/skills/repr |
+| `mcp.rs #[cfg(test)]` | 4 | `[错误]` — McpError 4 variants → PyErr |
 | `test_mcp.py::TestRetryConfig` | 3 | `[构造]` — 默认值(1)、自定义值(1)、repr(1) |
 | `test_mcp.py::TestRemoteConfig` | 3 | `[构造]` — minimal(1)、full(1)、repr(1) |
-| `test_mcp.py::TestMcpNodeLocal` | 3 | `[构造][生命周期]` — tools(1)、missing root(1)、empty(1) |
-| `test_mcp.py::TestMcpNodeLocal` | 1 | `[集成]` — bus connect + graph verify |
+| `test_mcp.py::TestMcpNodeLocal` | 4 | `[构造][生命周期][集成]` — tools(1)、missing root(1)、empty(1)、bus connect(1) |
 | `test_mcp.py::TestMcpNodeRemoteConfig` | 1 | `[构造]` — RemoteConfig + RetryConfig 组合 |
 | `test_mcp.py::TestMcpNodeRepr` | 2 | `[类型]` — RetryConfig repr(1)、RemoteConfig repr(1) |
 | `test_mcp_live.py` | 1 | `[集成][远端]` — CodeTidy 真实连接 |
-| **合计** | **14** | |
+| **合计** | **31** (18 Rust + 14 Python, 含 1 slow) | |
 
 ---
 
