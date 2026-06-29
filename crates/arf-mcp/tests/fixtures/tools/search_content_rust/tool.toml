@@ -1,0 +1,11 @@
+name = "search_content"
+description = "Search for a substring in files under a directory. Returns matching lines with file path, line number, and content. Note: uses substring matching, not regex (rustc-only, no regex crate available)."
+runtime = "rust"
+entrypoint = "main.rs"
+timeout_ms = 30000
+
+[params_schema]
+type = "object"
+properties.pattern = { type = "string", description = "Substring to search for (exact match, not regex)" }
+properties.path = { type = "string", description = "Directory path to search in" }
+required = ["pattern", "path"]

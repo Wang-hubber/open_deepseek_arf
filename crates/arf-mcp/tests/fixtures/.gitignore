@@ -1,0 +1,2 @@
+# Compiled Rust binaries (rustc output of fixture scripts)
+tools/*/main

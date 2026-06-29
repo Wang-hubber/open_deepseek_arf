@@ -1,0 +1,11 @@
+name = "search_content"
+description = "Search for a regex pattern in files under a directory. Returns matching lines with file path, line number, and content."
+runtime = "bash"
+entrypoint = "main.sh"
+timeout_ms = 30000
+
+[params_schema]
+type = "object"
+properties.pattern = { type = "string", description = "Regex pattern to search for" }
+properties.path = { type = "string", description = "Directory path to search in" }
+required = ["pattern", "path"]

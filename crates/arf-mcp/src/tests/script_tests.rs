@@ -6,6 +6,29 @@ use crate::config::{ScriptRuntime, ToolConfig};
 use crate::script::ScriptTool;
 use crate::tool::Tool;
 
+/// Build a ScriptTool pointing at a fixture directory under tests/fixtures/.
+/// `dir_name` is the subdirectory name (e.g. "read_file_bash").
+/// `tool_name` is the logical tool name (e.g. "read_file").
+fn fixture_tool(dir_name: &str, tool_name: &str, runtime: ScriptRuntime) -> ScriptTool {
+    let entrypoint = match runtime {
+        ScriptRuntime::Python => "main.py",
+        ScriptRuntime::Bash => "main.sh",
+        ScriptRuntime::Rust => "main.rs",
+    };
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/tools")
+        .join(dir_name);
+    let config = ToolConfig {
+        name: tool_name.into(),
+        description: format!("Fixture tool: {tool_name} ({runtime:?})"),
+        runtime,
+        entrypoint: entrypoint.into(),
+        timeout_ms: Some(30000),
+        params_schema: serde_json::json!({"type": "object"}),
+    };
+    ScriptTool::new(config, fixture_dir)
+}
+
 /// Create a temp directory, write a script file into it, return (tool_dir, config).
 /// Each invocation gets a unique directory (counter-based) to avoid races
 /// when tests run in parallel.
@@ -372,4 +395,271 @@ async fn cancel_during_execution() {
 async fn cancel_when_idle_no_panic() {
     let (tool, _cleanup) = python_echo_tool();
     tool.cancel().await;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fixture integration tests — validate the 3 tools × 3 runtimes
+// against real fixture scripts under tests/fixtures/.
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── read_file (Python) ─────────────────────────────────────────────
+
+// [方法] read_file (python) 正常读文件返回 content
+#[tokio::test]
+async fn fixture_read_file_python() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    fs::write(tmp.path(), "hello from python fixture").unwrap();
+    let t = fixture_tool("read_file", "read_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({"path": tmp.path()})).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["content"], "hello from python fixture");
+}
+
+// [边界] read_file (python) 文件不存在 → error
+#[tokio::test]
+async fn fixture_read_file_python_nonexistent() {
+    let t = fixture_tool("read_file", "read_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({"path": "/nonexistent/path.txt"})).await.unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("file not found"));
+}
+
+// [边界] read_file (python) 空文件 → content=""
+#[tokio::test]
+async fn fixture_read_file_python_empty() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let t = fixture_tool("read_file", "read_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({"path": tmp.path()})).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["content"], "");
+}
+
+// ── write_file (Python) ────────────────────────────────────────────
+
+// [方法] write_file (python) 正常写文件返回 ok + bytes
+#[tokio::test]
+async fn fixture_write_file_python() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("output.txt");
+    let t = fixture_tool("write_file", "write_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "Hello, 世界!",
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["path"], file_path.to_str().unwrap());
+    assert!(result["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "Hello, 世界!");
+}
+
+// [边界] write_file (python) 写入空字符串 → bytes=0
+#[tokio::test]
+async fn fixture_write_file_python_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("empty.txt");
+    let t = fixture_tool("write_file", "write_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "",
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["bytes"], 0);
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "");
+}
+
+// [边界] write_file (python) 父目录不存在时自动创建
+#[tokio::test]
+async fn fixture_write_file_python_creates_parents() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("a/b/c/output.txt");
+    let t = fixture_tool("write_file", "write_file", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "deep",
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert!(file_path.exists());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "deep");
+}
+
+// ── search_content (Python) ────────────────────────────────────────
+
+// [方法] search_content (python) 搜索返回匹配行
+#[tokio::test]
+async fn fixture_search_content_python() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "fn main() {\n    let x = 1;\n}\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "// no match here\n").unwrap();
+    let t = fixture_tool("search_content", "search_content", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "pattern": "fn main",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    let matches = result["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert!(matches[0]["content"].as_str().unwrap().contains("fn main()"));
+}
+
+// [边界] search_content (python) 目录不存在 → error
+#[tokio::test]
+async fn fixture_search_content_python_nonexistent_dir() {
+    let t = fixture_tool("search_content", "search_content", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "pattern": "test",
+        "path": "/nonexistent/dir",
+    })).await.unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("directory not found"));
+}
+
+// [边界] search_content (python) 无效正则 → error
+#[tokio::test]
+async fn fixture_search_content_python_invalid_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = fixture_tool("search_content", "search_content", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "pattern": "[unclosed",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("invalid regex"));
+}
+
+// [边界] search_content (python) 无匹配 → 空 matches
+#[tokio::test]
+async fn fixture_search_content_python_no_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("only.txt"), "nothing here\n").unwrap();
+    let t = fixture_tool("search_content", "search_content", ScriptRuntime::Python);
+    let result = t.execute(serde_json::json!({
+        "pattern": "ZZZZZ",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    let matches = result["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 0);
+}
+
+// ── read_file (Bash) ───────────────────────────────────────────────
+
+// [方法] read_file (bash) 正常读文件返回 content
+#[tokio::test]
+async fn fixture_read_file_bash() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    fs::write(tmp.path(), "hello from bash fixture").unwrap();
+    let t = fixture_tool("read_file_bash", "read_file", ScriptRuntime::Bash);
+    let result = t.execute(serde_json::json!({"path": tmp.path()})).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["content"], "hello from bash fixture");
+}
+
+// [边界] read_file (bash) 文件不存在 → error
+#[tokio::test]
+async fn fixture_read_file_bash_nonexistent() {
+    let t = fixture_tool("read_file_bash", "read_file", ScriptRuntime::Bash);
+    let result = t.execute(serde_json::json!({"path": "/nonexistent/path.txt"})).await.unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("file not found"));
+}
+
+// ── write_file (Bash) ──────────────────────────────────────────────
+
+// [方法] write_file (bash) 正常写文件返回 ok + bytes
+#[tokio::test]
+async fn fixture_write_file_bash() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("output_bash.txt");
+    let t = fixture_tool("write_file_bash", "write_file", ScriptRuntime::Bash);
+    let result = t.execute(serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "Hello from bash!",
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert!(result["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "Hello from bash!");
+}
+
+// ── search_content (Bash) ──────────────────────────────────────────
+
+// [方法] search_content (bash) grep 搜索返回匹配行
+#[tokio::test]
+async fn fixture_search_content_bash() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "// no match here\n").unwrap();
+    let t = fixture_tool("search_content_bash", "search_content", ScriptRuntime::Bash);
+    let result = t.execute(serde_json::json!({
+        "pattern": "fn main",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    let matches = result["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert!(matches[0]["content"].as_str().unwrap().contains("fn main()"));
+}
+
+// ── read_file (Rust) ───────────────────────────────────────────────
+
+// [方法] read_file (rust) 正常读文件返回 content
+#[tokio::test]
+async fn fixture_read_file_rust() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    fs::write(tmp.path(), "hello from rust fixture").unwrap();
+    let t = fixture_tool("read_file_rust", "read_file", ScriptRuntime::Rust);
+    let result = t.execute(serde_json::json!({"path": tmp.path()})).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["content"], "hello from rust fixture");
+}
+
+// ── write_file (Rust) ──────────────────────────────────────────────
+
+// [方法] write_file (rust) 正常写文件返回 ok + bytes
+#[tokio::test]
+async fn fixture_write_file_rust() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("output_rust.txt");
+    let t = fixture_tool("write_file_rust", "write_file", ScriptRuntime::Rust);
+    let result = t.execute(serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "Hello from rust!",
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    assert!(result["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "Hello from rust!");
+}
+
+// ── search_content (Rust) ──────────────────────────────────────────
+
+// [方法] search_content (rust) 子串匹配返回匹配行
+#[tokio::test]
+async fn fixture_search_content_rust() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "// no match here\n").unwrap();
+    let t = fixture_tool("search_content_rust", "search_content", ScriptRuntime::Rust);
+    let result = t.execute(serde_json::json!({
+        "pattern": "fn main",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    let matches = result["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert!(matches[0]["content"].as_str().unwrap().contains("fn main()"));
+}
+
+// [类型] Rust 版不支持正则，仅做子串匹配 — "[" 会被当作普通字符匹配
+#[tokio::test]
+async fn fixture_search_content_rust_substring_not_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("test.rs"), "[unclosed bracket\n").unwrap();
+    let t = fixture_tool("search_content_rust", "search_content", ScriptRuntime::Rust);
+    let result = t.execute(serde_json::json!({
+        "pattern": "[unclosed",
+        "path": dir.path().to_str().unwrap(),
+    })).await.unwrap();
+    assert_eq!(result["ok"], true);
+    let matches = result["matches"].as_array().unwrap();
+    // Rust uses str::contains, so "[unclosed" matches literally
+    assert_eq!(matches.len(), 1);
 }

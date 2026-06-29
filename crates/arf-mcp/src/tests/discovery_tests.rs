@@ -157,3 +157,19 @@ fn scan_root_not_exists_returns_error() {
     let err = result.unwrap_err();
     assert!(matches!(err, crate::error::McpError::Discovery { .. }));
 }
+
+// [覆盖] FsDiscovery scan fixtures/tools/ → 9 tools (3 tools × 3 runtimes)
+#[test]
+fn scan_fixtures_discovers_all_nine_tools() {
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures");
+    let dm = FsDiscovery::scan(fixture_root).unwrap();
+
+    let tools = dm.list_tools();
+    assert_eq!(tools.len(), 9, "fixtures should have exactly 9 tools (3 × 3 runtimes)");
+
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "read_file").count(), 3);
+    assert_eq!(names.iter().filter(|n| **n == "write_file").count(), 3);
+    assert_eq!(names.iter().filter(|n| **n == "search_content").count(), 3);
+}
