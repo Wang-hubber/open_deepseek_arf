@@ -27,6 +27,10 @@ from arf._arf import (
     ToolCallDelta,
     ToolDef,
     Usage,
+    # Phase 5: MCP
+    McpNode,
+    RemoteConfig,
+    RetryConfig,
 )
 
 __all__ = [
@@ -57,4 +61,8 @@ __all__ = [
     "ToolCallDelta",
     "ToolDef",
     "Usage",
+    # Phase 5: MCP
+    "McpNode",
+    "RemoteConfig",
+    "RetryConfig",
 ]

@@ -7,6 +7,8 @@ use std::sync::{Arc, OnceLock};
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
+pub mod mcp;
+
 use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
 use arf_core::{BusGraph, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt, ToMatch};
@@ -408,8 +410,8 @@ impl PyBusGraph {
 // ═══════════════════════════════════════════════════════════════════
 
 #[pyclass(name = "Bus")]
-struct PyBus {
-    inner: Arc<Bus>,
+pub struct PyBus {
+    pub(crate) inner: Arc<Bus>,
 }
 
 #[pymethods]
@@ -1578,6 +1580,11 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOpenAIProvider>()?;
     m.add_class::<PyAnthropicProvider>()?;
     m.add_class::<PyModelAdapterNode>()?;
+
+    // Phase 5: MCP
+    m.add_class::<mcp::PyRetryConfig>()?;
+    m.add_class::<mcp::PyRemoteConfig>()?;
+    m.add_class::<mcp::PyMcpNode>()?;
 
     Ok(())
 }
