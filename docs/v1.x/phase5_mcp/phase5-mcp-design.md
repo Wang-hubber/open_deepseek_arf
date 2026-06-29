@@ -124,7 +124,7 @@ pub struct RemoteMcpNode {
     pub node_id: NodeId,
     config: RemoteConfig,
     http_client: reqwest::Client,
-    known_tools: HashMap<String, ToolEntry>,
+    known_tools: HashMap<String, RemoteToolDef>,
 }
 
 impl RemoteMcpNode {
@@ -134,24 +134,41 @@ impl RemoteMcpNode {
 }
 ```
 
-**RemoteMcpNode 工作流**：
+**RemoteMcpNode 工作流（JSON-RPC 2.0）**：
 
 ```
 构造 → Bus::connect (node_online 未广播，tools 为空)
   │
-  └→ [内部] HTTP POST → initialize (MCP 握手)
-       → HTTP POST → tools/list (获取远程工具列表)
-       → 构建 ToolEntry，广播 node_online
+  └→ [内部] HTTP POST → initialize
+       → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"arf-mcp","version":"1.0.0"}}}
+       ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{...},"capabilities":{"tools":{}}}}
+       │
+       ├─ 失败 → RemoteMcpNode 构造失败（远端不可达）
+       │
+       └→ HTTP POST → tools/list
+            → {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+            ← {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"...","description":"...","inputSchema":{...}}]}}
+            → 解析为 Vec<RemoteToolDef>，构建 known_tools (HashMap<String, RemoteToolDef>)
+            → 发送 node_online 广播
 
 收到 tool_call_set:
-  ├→ tool = "json_format" → HTTP POST → tools/call {name: "json_format", arguments: {...}}
-  ├→ 等待 HTTP 响应
-  └→ 组装 ToolResultItem → tool_result_set 返回 Engine
+  ├→ 对每个 ToolCallItem:
+  │    ├─ 查 known_tools：不存在 → ToolResultItem { status: "error", error: "tool not found: ..." }
+  │    ├─ 存在 → HTTP POST → tools/call
+  │    │    → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"json_format","arguments":{...}}}
+  │    │    ← 成功: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"..."}]}}
+  │    │       → ToolResultItem { status: "success", result: text }
+  │    │    ← 失败: {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"..."}}
+  │    │       → ToolResultItem { status: "error", error: "MCP error: ..." }
+  │    │    ← HTTP 超时:
+  │    │       → ToolResultItem { status: "error", error: "HTTP timeout" }
+  │    └─ name 从 ToolCallItem.tool 回填到 ToolResultItem.name
+  │
+  └→ 组装 ToolResultSet → tool_result_set 返回 Engine
 ```
 
-> 删除路径扫描 + Rust 脚本编译：远程工具数量级为数十个，内存中 HashMap 索引可避免 O(n) 遍历，且不支持 Rust 编译型脚本。
->
-> 初始化阶段：RemoteMcpNode 构造时，请求 tools/list 获取远程工具列表并建立本地 ToolIndex（HashMap<String, ToolEntry>），后续执行 tool_call_set 无需再次索引，直接根据 HashMap key 获取实现。
+> RemoteMcpNode 不支持 Skill——收到 `use_skill` / `load_skill_resource` 返回
+> `{"msg_type":"skill_error","payload":{"error":"skills not supported by remote MCP node: {namespace}"}}`
 
 **namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`、`codetidy`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
 
@@ -542,6 +559,81 @@ pub struct ToolResultSet {
     pub results: Vec<ToolResultItem>,
 }
 ```
+
+---
+
+### MCP 协议类型 (remote)
+
+> RemoteMcpNode 与外部 MCP server 通讯的 JSON-RPC 2.0 类型。仅定义需要结构化提取的响应类型，请求侧用 `serde_json::json!()` 构造。
+
+```rust
+/// A tool entry parsed from an MCP `tools/list` response.
+///
+/// Represents a single tool available on the remote server.
+/// Stored in `RemoteMcpNode.known_tools` for dispatch by name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteToolDef {
+    /// Tool name — matches the key in `known_tools` HashMap.
+    pub name: String,
+    /// Human-readable description for LLM function calling.
+    pub description: String,
+    /// JSON Schema for the tool's parameters (MCP spec field name: `inputSchema`).
+    #[serde(default)]
+    pub input_schema: serde_json::Value,
+}
+
+/// Successful result from an MCP `tools/call` response.
+///
+/// The `content` array carries the tool's output. Phase 5 only handles
+/// `type: "text"` content items; `image` and `resource` return an error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallToolResult {
+    pub content: Vec<ToolContent>,
+}
+
+/// A single content item within `CallToolResult.content`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolContent {
+    /// MCP content type: `"text"`, `"image"`, or `"resource"`.
+    #[serde(rename = "type")]
+    pub content_type: String,
+    /// Text content. Present when `content_type` is `"text"`.
+    /// For `"image"` / `"resource"` — Phase 5 returns an error.
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+/// JSON-RPC error from an MCP method call.
+///
+/// Extracted from the response envelope on `tools/call` failure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcError {
+    /// Numeric error code (MCP defines -32700 to -32000 range).
+    pub code: i32,
+    /// Human-readable error message.
+    pub message: String,
+}
+```
+
+**映射关系**：
+
+```
+RemoteToolDef ──→ node_online.capabilities.tools[]
+  { name, description, input_schema }  → { name, description, parameters_schema: input_schema }
+
+JsonRpcError ──→ ToolResultItem
+  { code, message }  → { status: "error", error: "MCP error [-32000]: {message}" }
+```
+
+**ToolContent 处理规则**：
+
+| content_type | 处理 |
+|--------------|------|
+| `"text"` | 取 `text` 字段 → `ToolResultItem.result` |
+| `"image"` | Phase 5 返回 `ToolResultItem { status: "error", error: "unsupported content type: image" }` |
+| `"resource"` | Phase 5 返回 `ToolResultItem { status: "error", error: "unsupported content type: resource" }` |
+
+所有 MCP 协议类型定义在 `crates/arf-mcp/src/remote.rs` 中，与 `RemoteMcpNode` 实现同文件。
 
 ---
 
@@ -1118,7 +1210,7 @@ crates/arf-mcp/
     ├── types.rs            # ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet
     ├── config.rs           # ScriptRuntime, ToolConfig, RemoteConfig
     ├── script.rs           # ScriptTool: implements Tool trait via subprocess + stdin/stdout JSON
-    ├── remote.rs           # RemoteMcpNode: HTTP transport + tools/list + tools/call proxy
+    ├── remote.rs           # RemoteToolDef, CallToolResult, ToolContent, JsonRpcError + RemoteMcpNode
     ├── skill.rs            # SkillEntry, SkillResources, SkillIndex
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
     ├── node.rs             # LocalMcpNode: Bus lifecycle + msg_type dispatch + discovery/runtime
@@ -1161,7 +1253,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
 | 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
-| 5.8 | RemoteMcpNode | `RemoteMcpNode::new(namespace, config)` → Bus 连接 + HTTP `initialize`/`tools/list` 发现 + HTTP `tools/call` 代理执行 + `node_online` 广播 | `remote.rs` |
+| 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RemoteMcpNode` JSON-RPC 握手/发现/代理执行 + `node_online` 广播 + HTTP 超时/错误处理 | `remote.rs` |
 | 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` 暴露给 Python，支持 `with_remote()` builder 方法 | `py-arf/src/mcp/` |
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
