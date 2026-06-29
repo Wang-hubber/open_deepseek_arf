@@ -71,20 +71,22 @@ pub struct McpNode {
     pub namespace: String,
     /// Bus-facing NodeId: `mcp/{namespace}`.
     pub node_id: NodeId,
-    /// Root directory for skill/script discovery ({root}/skills/*, {root}/tools/*).
+    /// Root directory for tool/skill discovery ({root}/tools/*, {root}/skills/*).
     root_dir: PathBuf,
-    /// Internal: resource scanning, indexing, L2/L3 queries.
+    /// Internal: scans {root}/tools + {root}/skills, handles L2/L3 queries.
     discovery: DiscoveryModule,
-    /// Internal: DAG execution, tool lifecycle, sandbox entry (ScriptTool).
+    /// Internal: DAG execution, tool lifecycle, ScriptTool sandbox.
     runtime: RuntimeModule,
-    /// Built-in Rust tools injected via Builder.
-    builtin_tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl McpNode {
-    /// Create a new McpNode via the Builder.
-    pub fn builder() -> McpNodeBuilder {
-        McpNodeBuilder::default()
+    /// Create a new McpNode.
+    ///
+    /// `root_dir` is the directory containing `tools/` and `skills/` subdirectories.
+    /// `DiscoveryModule::scan()` is called during construction to populate the
+    /// tool and skill registries.
+    pub fn new(namespace: impl Into<String>, root_dir: PathBuf) -> Self {
+        todo!()
     }
 }
 ```
@@ -97,7 +99,7 @@ impl McpNode {
 
 **namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
 
-**Builder 模式**：内置 Rust Tool（如 `ReadFileTool`）通过 `McpNode::builder().with_tool(Arc::new(tool))` 注入，这是 ARF 的 DI 模式。`root_dir` 传给 `SkillIndex` 和未来 `ScriptTool` 用于文件夹扫描。`DiscoveryModule::scan()` 合并两个来源——内置 Tool 注册表 + 文件夹下资源——生成统一的 `node_online` 广播。
+**文件夹扫描**：`root_dir` 传给 `DiscoveryModule` 和 `SkillIndex`。`DiscoveryModule::scan()` 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry，生成统一的 `node_online` 广播。框架不内置任何 Tool——所有 Tool 通过文件夹约定发现。
 
 **Engine 路由逻辑**（极简）：
 1. 监听 `node_online` → 看到 `mcp/filesystem`、`mcp/network` 等节点
@@ -122,12 +124,14 @@ arf-mcp ─── depends on: arf-core + arf-bus + tokio + serde + serde_json + 
 
 > 开发者如何注册 Tool/Skill？MCP 如何发现它们？
 
-### 两种注册路径
+### 唯一注册路径：文件夹约定
 
-| 路径 | 适用资源 | 场景 | 实现方式 |
-|------|---------|------|---------|
-| **文件夹约定** | Skill（纯数据）+ ScriptTool（脚本） | 零代码、git 友好、热加载 | `DiscoveryModule::scan(root)` |
-| **Builder API** | 内置 Rust Tool | 类型安全、编译期检查、高性能 | `McpNode::builder().with_tool(Arc::new(ReadFileTool))` |
+**所有 Tool 和 Skill 通过文件夹扫描发现。** 框架只提供发现和执行机制，不内置任何具体实现。开发者按约定组织目录，MCP 自动扫描注册。
+
+| 资源 | 目录 | 入口文件 | 实现方式 |
+|------|------|---------|---------|
+| **ScriptTool** | `{root}/tools/{name}/` | `tool.toml` | `DiscoveryModule` 扫描 → `ScriptTool` 包裹 |
+| **Skill** | `{root}/skills/{name}/` | `SKILL.md` | `SkillIndex` 扫描 → `SkillEntry` 索引 |
 
 ### McpNode 的 root 目录
 
@@ -149,19 +153,14 @@ McpNode 构造时接收一个 root 目录，内部按约定组织：
 │   └── ...
 ```
 
-**Skill**：开发者只需建文件夹 + 写 `SKILL.md`，`SkillIndex::scan(root)` 自动发现。
+**Skill**：开发者建文件夹 + 写 `SKILL.md`，`SkillIndex::scan()` 自动发现。
 
-**内置 Rust Tool**：通过 Builder 注入，编译进二进制 — 这是 ARF 的 DI 模式。
+**ScriptTool**：开发者建文件夹 + 写 `tool.toml` + 入口脚本，`DiscoveryModule::scan()` 自动发现并创建 `ScriptTool` 实例。
 
 ```rust
-let mcp = McpNode::builder()
-    .namespace("filesystem")
-    .root_dir("/path/to/root")
-    .with_tool(Arc::new(ReadFileTool::new()))
-    .with_tool(Arc::new(WriteFileTool::new()))
-    .with_tool(Arc::new(SearchContentTool::new()))
-    .build()
-    .await?;
+// 简单构造 — 只需 namespace 和 root_dir
+let mcp = McpNode::new("filesystem", PathBuf::from("/path/to/root"));
+// DiscoveryModule::scan() 自动扫描 {root}/tools + {root}/skills
 ```
 
 ### 脚本 Tool
@@ -211,13 +210,9 @@ params = json.loads(sys.stdin.read())
 print(json.dumps({"ok": True, "deleted": 42}))
 ```
 
-#### 与内置 Tool 的关系
+#### Tool 来源唯一化
 
-`DiscoveryModule::scan()` 合并两个来源：
-1. **内置 Tool 注册表**（Builder 注入的 Rust Tool）— 编译时已知
-2. **文件夹下脚本 Tool**（`tools/*/tool.toml`）— 运行时扫描
-
-合并为统一的工具列表，通过 `node_online` 广播。Engine 不关心工具来自哪里。
+`DiscoveryModule::scan()` 只从一个来源发现 Tool：**`{root}/tools/*/tool.toml`**。每个合法目录生成一个 `ScriptTool` 实例。不区分"内置"和"脚本"——所有 Tool 都是 ScriptTool，通过 `node_online` 统一广播。
 
 ### 持久化选择：文件夹 vs SQLite
 
@@ -914,13 +909,16 @@ spawn per call:
 
 ---
 
-## 首批内置工具
+## 测试基准工具
+
+以下三个工具作为 ScriptTool 测试 fixtures，验证 MCP 资源注册、发现和运行机制。它们以脚本形式放在测试数据目录下，通过 `tool.toml` 声明，由 `ScriptTool` 包裹执行 — 与开发者自定义工具的注册路径完全一致。
 
 ### read_file
 
 | 字段 | 值 |
 |------|-----|
 | name | `read_file` |
+| runtime | `python` |
 | params | `{"path": "/workspace/src/main.rs"}` |
 | result | 文件内容字符串 |
 | error | `{"ok": false, "error": "file not found: ..."}` |
@@ -930,6 +928,7 @@ spawn per call:
 | 字段 | 值 |
 |------|-----|
 | name | `write_file` |
+| runtime | `python` |
 | params | `{"path": "/workspace/out.txt", "content": "..."}` |
 | result | `{"ok": true, "path": "...", "bytes": 42}` |
 | error | `{"ok": false, "error": "permission denied: ..."}` |
@@ -939,11 +938,12 @@ spawn per call:
 | 字段 | 值 |
 |------|-----|
 | name | `search_content` |
+| runtime | `python` |
 | params | `{"pattern": "fn main", "path": "/workspace/src"}` |
 | result | `{"matches": [{"line": 1, "content": "...", "file": "..."}]}` |
 | error | `{"ok": false, "error": "invalid regex: ..."}` |
 
-> 以上三个是编译进 Rust binary 的内置 Tool。开发者的自定义脚本 Tool 通过文件夹约定 + `tool.toml` 声明 + ScriptTool 执行——不限制语言，Python/Bash/Rust 均支持。
+> 框架不内置任何 Tool。以上三个是集成测试的 ScriptTool fixtures，验证 MCP 的完整链路（扫描 → 发现 → 执行 → 结果）。未来可选包可以按同样约定提供 Tool 包——到那时只需 focus 在工具逻辑，注册机制已通用。
 
 ---
 
@@ -955,22 +955,18 @@ crates/arf-mcp/
 └── src/
     ├── lib.rs              # pub mod, re-exports
     ├── tool.rs             # Tool trait
-    ├── types.rs            # ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet,
-    │                       #   ScriptRuntime, ToolConfig, ScriptTool
+    ├── types.rs            # ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet
+    ├── config.rs           # ScriptRuntime, ToolConfig — tool.toml parsing
+    ├── script.rs           # ScriptTool: implements Tool trait via subprocess + stdin/stdout JSON
     ├── skill.rs            # SkillEntry, SkillResources, SkillIndex
     ├── executor.rs         # DAG builder, cycle detection, topological sort, parallel exec
     ├── node.rs             # McpNode: Bus lifecycle + msg_type dispatch → internal modules
-    ├── discovery.rs        # DiscoveryModule: tools/skills scanning, indexing, L2/L3 handling
+    ├── discovery.rs        # DiscoveryModule: scans {root}/tools + {root}/skills, L2/L3 handling
     ├── runtime.rs          # RuntimeModule: tool_call_set → executor dispatch (ScriptTool sandbox)
-    ├── tools/
-    │   ├── mod.rs          # Built-in tool registry
-    │   ├── read_file.rs    # ReadFileTool
-    │   ├── write_file.rs   # WriteFileTool
-    │   ├── search_content.rs # SearchContentTool
-    │   └── script.rs       # ScriptTool: tool.toml → spawn subprocess → stdin/stdout JSON
     └── tests/
-        ├── tool_tests.rs       # Tool trait + individual tools (incl. ScriptTool)
-        ├── script_tests.rs     # tool.toml parsing + ScriptTool execute + cancel + timeout
+        ├── tool_tests.rs       # Tool trait tests
+        ├── config_tests.rs     # tool.toml parsing
+        ├── script_tests.rs     # ScriptTool execute + cancel + timeout
         ├── skill_tests.rs      # SkillIndex scan/resolve/load
         ├── executor_tests.rs   # DAG build, cycle detect, topo sort, cascade cancel
         ├── node_tests.rs       # McpNode: msg_type dispatch + internal routing
@@ -985,22 +981,24 @@ crates/arf-mcp/
 
 | # | 任务 | 内容 | 产出 |
 |---|------|------|------|
-| 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`types.rs`、`tool.rs`、`lib.rs` — 含 `ScriptRuntime`、`ToolConfig`、`ScriptTool` struct | `crates/arf-mcp/` |
-| 5.2 | Tool trait + 三个内置工具 | `ReadFileTool`、`WriteFileTool`、`SearchContentTool` | `tool.rs`, `tools/*.rs` |
-| 5.3 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时 kill） | `tools/script.rs` |
-| 5.4 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
-| 5.5 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
-| 5.6 | McpNode | Bus 生命周期 + 内部 msg_type 分发（tool_call_set → runtime, use_skill/load_skill_resource → discovery）+ Builder 模式 | `node.rs` |
-| 5.7 | DiscoveryModule | tools/skills 扫描索引（合并内置 Tool 注册表 + `tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry）、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
-| 5.8 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool 的 subprocess spawn 在此） | `runtime.rs` |
+| 5.1 | 脚手架 + 类型定义 | `Cargo.toml`、`tool.rs`（Tool trait）、`types.rs`（ToolError, ToolCallItem, ToolCallSet, ToolResultItem, ToolResultSet）、`config.rs`（ScriptRuntime, ToolConfig）、`lib.rs` | `crates/arf-mcp/` |
+| 5.2 | ScriptTool + tool.toml 解析 | `tool.toml` 反序列化 → `ToolConfig`、`ScriptTool` 实现 `Tool` trait（spawn subprocess + stdin/stdout JSON + stderr 捕获 + 超时/取消 kill） | `config.rs`, `script.rs` |
+| 5.3 | SkillIndex | 扫描 `skills/*/SKILL.md` YAML frontmatter → L1 索引、`load_body` (L2)、`load_resource_file` (L3)、自检 | `skill.rs` |
+| 5.4 | DAG 执行器 | 邻接表、环检测、拓扑排序、分层并发、`catch_unwind` + `Result` 集中错误处理、超时、`cancel()` 级联取消 | `executor.rs` |
+| 5.5 | McpNode | `McpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
+| 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
+| 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
+| 5.8 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.9 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
-| 5.10 | 集成测试 | McpNode + 多 namespace 隔离 + Bus + mock Engine + ScriptTool E2E | `tests/` |
+| 5.10 | 集成测试 | McpNode + 多 namespace 隔离 + Bus + mock Engine + ScriptTool E2E（用 5.8 fixtures 验证扫描→发现→执行→结果完整链路） | `tests/` |
 
 ## 交付标准
 
 - [ ] `cargo test --workspace` 全部通过
-- [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json`
-- [ ] 三个内置工具可完成实际文件读写和内容搜索
+- [ ] `arf-mcp` 仅依赖 `arf-core` + `arf-bus` + `tokio` + `serde_json` + `toml`
+- [ ] 框架不内置任何 Tool — 所有 Tool 通过 `{root}/tools/*/tool.toml` 扫描发现
+- [ ] 三个测试 fixture（read_file/write_file/search_content）作为 ScriptTool 实例完成实际文件读写和内容搜索
+- [ ] `McpNode::new(namespace, root_dir)` 简单构造，无 Builder/DI
 - [ ] `McpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
 - [ ] `McpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
 - [ ] `McpNode` 正确响应 `tool_call_set` → executor 调度 → `tool_result_set`
@@ -1008,24 +1006,22 @@ crates/arf-mcp/
 - [ ] `McpNode` 正确响应 `load_skill_resource` → `skill_resource_loaded` (L3: 单文件)
 - [ ] 内部去重：同一 namespace 内 tool/skill name 冲突 → panic
 - [ ] 跨 namespace 重名工具不冲突（`filesystem/read_file` ≠ `network/read_file`），Engine 只需按 NodeId 路由
-- [ ] RuntimeModule 是未来 sandbox 的清晰接入点（execute 逻辑集中在此）
+- [ ] RuntimeModule 是 ScriptTool sandbox 的清晰接入点（subprocess 管理集中在此）
 - [ ] L3 资源读取有路径安全校验（拒绝 `../` 和绝对路径）
-- [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
-- [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
-- [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
-- [ ] `Tool trait` 可 mock（用于 Engine 单测）
-- [ ] `SkillIndex` 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
-- [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
-- [ ] McpNode 可多实例并存（不同 namespace），各自独立广播 `node_online`
-- [ ] McpNode 构造使用 Builder 模式，内置 Tool 通过 `with_tool()` 注入（遵循 ARF DI 原则）
-- [ ] McpNode 接收 `root_dir`，`SkillIndex` 扫描 `{root}/skills/*/SKILL.md`，`DiscoveryModule` 扫描 `{root}/tools/*/tool.toml`
 - [ ] `tool.toml` 正确解析为 `ToolConfig`（含 `name`, `description`, `runtime`, `entrypoint`, `params_schema`, `timeout_ms`）
 - [ ] `ScriptTool` 实现 `Tool` trait：spawn subprocess → stdin 写入 JSON params → stdout 读取 JSON result → stderr 捕获为 error
 - [ ] `ScriptTool` 支持 Python (`python3`) 和 Bash (`bash`) 两种 runtime
 - [ ] Rust 脚本：首次或源文件变更时自动编译为 binary，后续使用编译产物
 - [ ] `ScriptTool` 超时/取消时 kill 子进程，保证资源不泄漏
-- [ ] `DiscoveryModule::scan()` 合并三个来源：内置 Tool 注册表 + `tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry，统一通过 `node_online` 广播
-- [ ] 文件夹约定是主要发现机制；API 注册 + 持久化不在 Phase 5 范围
+- [ ] DAG 执行器：无依赖并发、有依赖拓扑排序、失败级联取消、`catch_unwind` panic 安全
+- [ ] 超时机制：Engine 传入 `timeout_ms` → executor 按 `tokio::time::timeout` 终止
+- [ ] `Tool::cancel()` 被调用后才 abort task，保证优雅退出
+- [ ] `Tool` trait 可 mock（用于 Engine 单测）
+- [ ] `SkillIndex` 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
+- [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
+- [ ] McpNode 可多实例并存（不同 namespace），各自独立广播 `node_online`
+- [ ] `DiscoveryModule::scan()` 合并两个来源：`tools/*/tool.toml` → ScriptTool + `skills/*/SKILL.md` → SkillEntry，统一通过 `node_online` 广播
+- [ ] 文件夹约定是唯一发现机制；API 注册 + 持久化不在 Phase 5 范围
 
 ---
 
