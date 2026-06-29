@@ -164,14 +164,45 @@ impl LocalMcpNode {
 /// Streamable HTTP transport configuration for a remote MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
-    pub transport: String,  // "streamable-http"
+    /// Transport protocol: `"streamable-http"`.
+    pub transport: String,
+    /// Base URL of the remote MCP server.
     pub url: String,
     /// HTTP request timeout in seconds. Default = 60.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Optional HTTP headers injected into every request.
+    /// Common use: Authorization, X-API-Key, custom tenant IDs.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Optional path to a custom CA certificate bundle (PEM format).
+    /// For internal deployments with self-signed certificates.
+    #[serde(default)]
+    pub tls_ca_cert: Option<PathBuf>,
+    /// Retry configuration for transient failures. `None` = no retry.
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
 }
 
 fn default_timeout_secs() -> u64 { 60 }
+
+/// Retry policy for transient HTTP failures during tools/call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    /// Maximum retry attempts. Default = 3.
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Initial backoff in milliseconds. Default = 1000.
+    #[serde(default = "default_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+    /// Maximum backoff in milliseconds. Default = 30000.
+    #[serde(default = "default_max_backoff_ms")]
+    pub max_backoff_ms: u64,
+}
+
+fn default_max_retries() -> u32 { 3 }
+fn default_initial_backoff_ms() -> u64 { 1000 }
+fn default_max_backoff_ms() -> u64 { 30000 }
 
 /// A remote MCP node — discovers tools via HTTP, proxies execution.
 pub struct RemoteMcpNode {
@@ -221,6 +252,9 @@ connect(bus):
   │
   └→ 成功
 
+### Runtime: tool_call_set 处理 + 重连
+
+```
 收到 tool_call_set:
   └→ 对每个 ToolCallItem:
        ├─ tool 不在 known_tools → ToolResultItem { status: "error", error: "tool not found: {name}" }
@@ -228,21 +262,36 @@ connect(bus):
        │    → {"jsonrpc":"2.0","id":N,"method":"tools/call","params":{"name":"X","arguments":{...}}}
        │    ← 成功: {"result":{"content":[{type:"text","text":"..."}]}}
        │       → ToolResultItem { status: "success", result: text, name: tool }
-       │    ← 失败: {"error":{"code":-32000,"message":"..."}}
+       │    ← MCP 协议错误: {"error":{"code":-32000,"message":"..."}}
        │       → ToolResultItem { status: "error", error: "MCP error [{code}]: {message}" }
-       │    ← HTTP 超时 (timeout_secs):
-       │       → ToolResultItem { status: "error", error: "HTTP timeout after {N}s" }
-       │    ← HTTP 4xx/5xx:
-       │       → ToolResultItem { status: "error", error: "HTTP {status}" }
        │    ← 非 text content_type:
        │       → ToolResultItem { status: "error", error: "unsupported content type: {type}" }
+       │    ← 网络层错误 / 5xx / timeout
+       │       → 如果 config.retry = Some → 触发重连
        └─ name 从 ToolCallItem.tool 回填
 
+重连流程（仅当 config.retry 启用且错误可重试）:
+  ┌→ 等待 backoff (initial_backoff_ms → 指数退避 → max_backoff_ms)
+  ├→ HTTP initialize (重新握手，验证 server 在线)
+  ├→ HTTP tools/list (刷新工具列表，server 可能已更新)
+  ├→ 更新 known_tools，重新广播 node_online
+  ├→ 重试 tools/call
+  ├─ 成功 → ToolResultItem { status: "success" }
+  └─ 超过 max_retries → ToolResultItem { status: "error", error: "retry exhausted after {N} attempts" }
+
+可重试 vs 不可重试:
+  网络错误 (DNS/connection refused/TLS/timeout) → 重试
+  HTTP 5xx (服务端临时故障) → 重试
+  HTTP 429 (限流, 等 Retry-After) → 重试
+  HTTP 4xx 非 429 (认证/权限/参数错误) → 不重试，直接 error
+```
+
+### use_skill / load_skill_resource
+
+```
 收到 use_skill / load_skill_resource:
   → 返回 skill_error: { error: "skills not supported by remote MCP node: {namespace}" }
 ```
-
-> 远端中途断连不做自动重连。后续 tool_call_set 各自独立尝试 HTTP，失败返回 error。如需恢复，重新 `connect()`。
 
 **namespace 约定**：仅含小写字母、数字和连字符（如 `filesystem`、`code-review`、`codetidy`）。MCP 构造时内部去重——同一 namespace 内 tool/skill name 冲突直接 panic（开发期错误）。跨 namespace 同名无影响。
 
@@ -315,11 +364,20 @@ arf-engine ─── depends on: arf-core + arf-bus + arf-state (Phase 6)
 let local = LocalMcpNode::new("filesystem", PathBuf::from("/path/to/root"))?;
 local.connect(&bus).await?; // → node_online 广播
 
-// 远程 MCP — 构造不联网，连接时握手
+// 远程 MCP — 构造不联网，连接时握手，支持重连
 let remote = RemoteMcpNode::new("codetidy", RemoteConfig {
     transport: "streamable-http".into(),
     url: "https://mcp.codetidy.dev".into(),
     timeout_secs: 60,
+    headers: HashMap::from([
+        ("Authorization".into(), "Bearer sk-xxx".into()),
+    ]),
+    tls_ca_cert: None,
+    retry: Some(RetryConfig {
+        max_retries: 3,
+        initial_backoff_ms: 1000,
+        max_backoff_ms: 30000,
+    }),
 });
 remote.connect(&bus).await?; // → HTTP initialize → tools/list → node_online 广播
 ```
@@ -1329,7 +1387,7 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 | 5.5 | LocalMcpNode | `LocalMcpNode::new(namespace, root_dir)` → Bus 连接 + 内部 msg_type 分发（`tool_call_set` → runtime, `use_skill`/`load_skill_resource` → discovery） | `node.rs` |
 | 5.6 | DiscoveryModule | 扫描 `{root}/tools/*/tool.toml` → ScriptTool + `{root}/skills/*/SKILL.md` → SkillEntry、`node_online` 广播、L2/L3 查询处理 | `discovery.rs` |
 | 5.7 | RuntimeModule | `tool_call_set` 接收 → executor 调度 → `tool_result_set` 返回（ScriptTool subprocess sandbox） | `runtime.rs` |
-| 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RemoteMcpNode` JSON-RPC 握手/发现/代理执行 + `node_online` 广播 + HTTP 超时/错误处理 | `remote.rs` |
+| 5.8 | RemoteMcpNode | MCP 协议类型（`RemoteToolDef`, `CallToolResult`, `ToolContent`, `JsonRpcError`）+ `RetryConfig` + `RemoteMcpNode` JSON-RPC 握手/发现/代理执行/重连 + headers 注入 + 自定义 TLS CA + `node_online` 广播 | `remote.rs` |
 | 5.9 | Python API | PyO3 绑定：`LocalMcpNode` 和 `RemoteMcpNode` 暴露给 Python，支持 `with_remote()` builder 方法 | `py-arf/src/mcp/` |
 | 5.10 | 测试 fixtures | 三个 ScriptTool fixtures（read_file/write_file/search_content）以 py 脚本 + tool.toml 形式放在测试数据目录 | `tests/fixtures/` |
 | 5.11 | Workspace 注册 | 根 `Cargo.toml` 添加 `arf-mcp` | `Cargo.toml` |
@@ -1349,6 +1407,11 @@ py-arf/src/mcp/           # Python package (在 py-arf crate 内)
 - [ ] `RemoteMcpNode` 远端不可达/握手被拒/超时时 `connect()` 返回 `McpError::RemoteUnreachable` 或 `RemoteRejected`
 - [ ] `RemoteMcpNode` 运行时错误统一为 `ToolResultItem { status: "error", error: String }`
 - [ ] `RemoteMcpNode` 不支持 Skill（`use_skill`/`load_skill_resource` 返回 skill_error）
+- [ ] `RemoteConfig.headers` 注入到每个 HTTP 请求（开发者提供值，框架负责注入）
+- [ ] `RemoteConfig.tls_ca_cert` 为自签证书场景提供 CA 证书路径
+- [ ] `RemoteConfig.retry` 启用时，网络故障自动指数退避重连并刷新工具列表，成功或 max_retries 耗尽后结束
+- [ ] 重连成功后自动重新握手 + 重新广播 `node_online`（工具列表可能变更）
+- [ ] `RemoteConfig.retry = None` 时不重试，网络故障直接返回 error
 - [ ] `McpError` 统一 LocalMcpNode 和 RemoteMcpNode 的错误类型
 - [ ] `LocalMcpNode` 正确广播一条 `node_online`（含全部 tools 描述 + skills L1 + namespace）
 - [ ] `LocalMcpNode` 内部按 `msg_type` 正确分发：`tool_call_set` → runtime，`use_skill`/`load_skill_resource` → discovery
@@ -1412,6 +1475,8 @@ mcp_remote = RemoteMcpNode(
         transport="streamable-http",
         url="https://mcp.codetidy.dev",
         timeout_secs=60,
+        headers={"Authorization": "Bearer sk-xxx"},
+        retry=RetryConfig(max_retries=3, initial_backoff_ms=1000, max_backoff_ms=30000),
     ),
 )
 await mcp_remote.connect(bus)  # → HTTP init → tools/list → node_online 广播
@@ -1425,7 +1490,8 @@ await mcp_remote.connect(bus)  # → HTTP init → tools/list → node_online �
 | `LocalMcpNode::connect(bus)` | `await mcp.connect(bus)` |
 | `RemoteMcpNode::new(namespace, config)` | `RemoteMcpNode(namespace=str, config=RemoteConfig)` |
 | `RemoteMcpNode::connect(bus)` | `await mcp.connect(bus)` |
-| `RemoteConfig { transport, url, timeout_secs }` | `RemoteConfig(transport=str, url=str, timeout_secs=int)` |
+| `RemoteConfig { transport, url, timeout_secs, headers, tls_ca_cert, retry }` | `RemoteConfig(transport=str, url=str, timeout_secs=int, headers=dict, tls_ca_cert=str\|None, retry=RetryConfig\|None)` |
+| `RetryConfig { max_retries, initial_backoff_ms, max_backoff_ms }` | `RetryConfig(max_retries=int, initial_backoff_ms=int, max_backoff_ms=int)` |
 
 Python 类型通过 PyO3 从 Rust struct 自动导出，不做手动类型桥接。
 
