@@ -2,7 +2,7 @@
 
 > 父文档：`docs/v1.x/2026-06-26-arfv1-roadmap.md`
 > 依赖：Phase 1 (Bus) — 已完成
-> 状态：📝 设计中
+> 状态：✅ 设计完成
 
 ## 定位
 
@@ -814,7 +814,7 @@ crates/arf-mcp/
 - [ ] Tool trait 可 mock（用于 Engine 单测）
 - [ ] SkillIndex 正确扫描 `SKILL.md` YAML frontmatter → L1 索引，不对外暴露
 - [ ] MCP 自检：kebab-case 校验、资源文件存在性检验（warning 不阻断）
-- [ ] Discovery 和 Runtime 可独立启动、独立替换（不同 Bus NodeHandle）
+- [ ] McpNode 可多实例并存（不同 namespace），各自独立广播 `node_online`
 
 ---
 

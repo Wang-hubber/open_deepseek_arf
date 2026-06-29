@@ -23,7 +23,7 @@
 | **2** | State | messages + tasks 生命周期 + 双向锁 + 级联释放 | 1 | ✅ 完成 |
 | **3** | AgentConfig | 纯数据声明式配置骨架：models / tools / subagents / teammates | 1 | ✅ 完成 |
 | **4** | ModelAdapter | 内部格式 ↔ DeepSeek/OpenAI/Anthropic API + Bus 节点 + PyO3 绑定 | 1 | ✅ 完成 |
-| **5** | MCP | 工具发现/注册/执行，资源广播 | 1 | 📝 设计中 |
+| **5** | MCP | 工具发现/注册/执行，资源广播 | 1 | ✅ 设计完成 |
 | **6** | Engine | 收消息→调模型→得 action→发消息，Park/Resume | 1, 2, 3 | 🔲 待实施 |
 | **7** | 集成 | E2E 测试 + 性能基准 + 完整文档 | 0-6 | 🔲 待实施 |
 
@@ -113,7 +113,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 
 **测试**：Rust 299 (61 unit + 18 integration) + Python 59 (27 imports + 14 node + 18 live) = 358 tests
 
-### Phase 5 — MCP 资源管理 📝
+### Phase 5 — MCP 资源管理 ✅
 
 - 监听 Bus 上的 `tool_call_set` 消息，DAG 拓扑排序后并发执行
 - 上线时广播 `node_online{type=mcp, tools=[...], skills=[...]}`
