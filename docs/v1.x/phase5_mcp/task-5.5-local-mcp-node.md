@@ -328,9 +328,35 @@ let mut rx = bus.subscribe();         // 晚了，收不到
 
 **2. 原始 subscribe 不过滤心跳**
 
-`Bus::subscribe()` 返回原始 `broadcast::Receiver`——包括 `heartbeat_request`。而 `NodeHandle::recv()` 内部拦截心跳并自动 ack。测试使用 `bus.subscribe()` 需要手动跳过心跳消息。
+`Bus::subscribe()` 返回原始 `broadcast::Receiver`——包括 `heartbeat_request`。而 `NodeHandle::recv()` 内部拦截心跳并自动 ack。测试中使用 `bus.subscribe()` 监听 `node_online` 时需要手动跳过心跳消息。Engine 侧的测试改用 `bus.connect()` + `NodeHandle`（自带过滤）解决。
 
-**3. 发送响应时 lock 嵌套**
+**3. 定向响应要求接收方是 Bus 节点**（关键发现）
+
+测试最初使用 `bus.send(msg)` 从 `engine/s1` 发 `tool_call_set`，然后通过 `bus.subscribe()` 监听 `tool_result_set`。消息确实送到了 node，node 也调了 `handle.send("tool_result_set", to: vec![engine_id])`，但 `SendError::NodeOffline` 被 `let _ =` 吞掉——`engine/s1` 没有通过 `bus.connect()` 注册为 Bus 节点，Bus 拒绝了发往它的定向消息。
+
+```
+bus.send() → 走到 Bus 消息循环 → 广播成功 ✅
+handle.send(to: engine_id) → Bus 检查 engine_id 在线? → 不在 nodes map → SendError::NodeOffline ❌
+                                                                    → let _ = 吞掉 ← 这是根因
+```
+
+**修复（两处）**：
+
+1. 测试侧：engine 用 `bus.connect()` 注册为真实 Bus 节点，通过 `NodeHandle::send/recv` 通信（自带 MessageFilter 过滤心跳）
+2. node.rs：`let _ = handle.send(...)` → `if let Err(e) = handle.send(...) { eprintln!(...) }`——定向消息投递失败至少记录日志，方便排查
+
+```rust
+// ✅ 修复后的测试模式
+let mut engine = bus.connect(NodeInfo { node_id: NodeId::new("engine/s1"), ... }, filter).await?;
+engine.send("tool_call_set", vec![node_id], payload).await?;   // 定向到 MCP
+let resp = engine.recv().await?;                                 // 收 tool_result_set
+```
+
+**4. ScriptTool 并发竞争——跨 Task 发现**
+
+集成测试 `two_independent_concurrent_calls` 暴露了 ScriptTool 的 `cancel_tx` 并发覆盖问题。详见 [task-5.2 实施记录 §6](./task-5.2-script-tool.md)。
+
+**5. 发送响应时 lock 嵌套安全**
 
 `message_loop` 中两次获取 `self.handle.lock()`：一次 for recv，一次 for send response。关键是在两次之间 `guard` 已 drop，不会死锁：
 
@@ -360,4 +386,4 @@ handle.send(...).await;
 | 文件 | 新增测试 | 覆盖角度 |
 |------|---------|---------|
 | `node_tests.rs` | 2 | `[集成]` — Bus 连接 + node_online 广播(1)、tool_call_set 往返(1) |
-| **合计** | **2** | 累计 arf-mcp: 166 + 2 = **168 tests** |
+| **合计** | **9** | 累计 arf-mcp: 166 + 9 = **175 tests** |

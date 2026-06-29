@@ -1042,3 +1042,39 @@ fn setup_script_tool(...) -> (ScriptTool, PathBuf) {
 ### 5. 未使用的 import 清理
 
 `script_tests.rs` 中 `use serde_json::Value;` 并未直接使用（测试使用 `serde_json::json!` 宏和完整路径 `serde_json::Value::Null`）。已移除该 import。
+
+### 6. ScriptTool 并发竞争——Task 5.5 集成测试发现
+
+**问题**：`ScriptTool` 的 `cancel_tx: Mutex<Option<oneshot::Sender<()>>>` 在并发执行时被覆盖。
+
+`ScriptTool` 通过 `Arc<dyn Tool>` 共享。DAG executor 对同层工具调用 `tokio::spawn` 并发执行，多个 `execute()` 同时运行在同一个 `ScriptTool` 实例上。第二个 `execute()` 的 `*self.cancel_tx = Some(tx)` 覆盖第一个的 sender → 第一个 sender 被 drop → 第一个 `execute()` 的 `cancel_rx` 立即触发 → 返回 `"cancelled"` → 清除 `cancel_tx` → 第二个 sender 也被清理 → 第二个 `execute()` 也可能收到 cancelled。
+
+**症状**：集成测试 `two_independent_concurrent_calls` 中，两个 echo 调用有一个返回 `{status:"error", error:"cancelled"}`。
+
+**修复**：
+
+```rust
+// ❌ 原：单个 Option，并发覆盖
+cancel_tx: Mutex<Option<oneshot::Sender<()>>>,
+
+// ✅ 修复：HashMap<ID, Sender>，并发安全
+cancel_txs: Mutex<HashMap<u64, oneshot::Sender<()>>>,
+next_cancel_id: AtomicU64,
+```
+
+`execute()` 中：
+```rust
+let cancel_id = self.next_cancel_id.fetch_add(1, Ordering::Relaxed);
+let (cancel_tx, mut cancel_rx) = oneshot::channel();
+self.cancel_txs.lock().unwrap().insert(cancel_id, cancel_tx);
+// ... 执行完成后 ...
+self.cancel_txs.lock().unwrap().remove(&cancel_id);
+```
+
+`cancel()` 中：
+```rust
+let txs: Vec<_> = self.cancel_txs.lock().unwrap().drain().map(|(_, tx)| tx).collect();
+for tx in txs { let _ = tx.send(()); }
+```
+
+**教训**：`Arc<dyn Trait>` 共享的对象必须假设并发访问。状态字段要么不可变，要么用并发安全的数据结构。
