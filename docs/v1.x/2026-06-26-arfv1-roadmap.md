@@ -132,7 +132,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 
 **DAG 执行器**：双向锁（blocked_by/blocking）→ 环检测 → 拓扑排序 → 分层并发 → 失败级联取消。
 
-**RuntimeModule trait**：执行后端抽象——`capabilities()` 自描述 + `execute()` / `run_single()`。框架默认 `LocalRuntime`（宿主机直接 spawn），用户可实现 `SandboxRuntime`（转发到 Bus sandbox 节点）。trait 对象在 `LocalMcpNode` 构造时绑定（`new()` 默认 + `with_runtime()` 定制），执行方式在定义阶段固定。Python 用户可通过 PyO3 子类化 `RuntimeModule` 注入自定义执行后端。
+**RuntimeModule trait**：执行后端抽象——`capabilities()` 自描述 + `execute()` / `run_single()`。框架默认 `LocalRuntime`（宿主机直接 spawn），用户可实现 `SandboxRuntime`（转发到 Bus sandbox 节点）。trait 对象在 `McpNode` 构造时绑定（`local()` 默认 + `local_with_runtime()` 定制），执行方式在定义阶段固定。
 
 **多 namespace 隔离**：同一 namespace 内 tool/skill name 冲突 → panic（开发期错误）；跨 namespace 同名无影响。
 
@@ -156,3 +156,11 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 - 性能基准（Bus 吞吐、延迟）
 - 完整 `docs/api/` 文档
 - 教学示例集合
+
+---
+
+## 已知未完成事项
+
+| 事项 | 所属 Phase | 说明 | 计划 |
+|------|-----------|------|------|
+| **RuntimeModule Python 子类化** | Phase 5 (Task 5.9) | PyO3 trait 子类化需要 trampoline 模式，且 `execute()` / `run_single()` 返回值涉及 Rust 类型——Python 侧调用链复杂。当前无具体 `SandboxRuntime` 需求可驱动设计。 | 等容器虚拟化/沙箱需求明确后，以具体用例驱动 PyO3 设计。Python 用户暂通过 `McpNode.local()` / `McpNode.remote()` 使用内置后端。 |

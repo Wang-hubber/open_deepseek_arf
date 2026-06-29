@@ -32,7 +32,7 @@ await node.connect(bus)
 | `RetryConfig` | `RetryConfig` |
 | `McpError` | Python exception (subclass of `Exception`) |
 
-**不在 5.9 范围**：`RuntimeModule` trait 的 Python 子类化（需要 PyO3 trampoline，复杂度高，留待后续 `SandboxRuntime` 需求驱动）。
+**不在 5.9 范围**：`RuntimeModule` trait 的 Python 子类化（需要 PyO3 trampoline，复杂度高，留待后续 `SandboxRuntime` 需求驱动）。详见下方"未完成事项"。
 
 | 文件 | 操作 | 内容 |
 |------|------|------|
@@ -544,6 +544,25 @@ async def test_remote_codetidy_connect():
 | `test_mcp.py::TestMcpNodeRepr` | 2 | `[类型]` — RetryConfig repr(1)、RemoteConfig repr(1) |
 | `test_mcp_live.py` | 1 | `[集成][远端]` — CodeTidy 真实连接 |
 | **合计** | **14** | |
+
+---
+
+---
+
+## 未完成事项
+
+### RuntimeModule Python 子类化（延后）
+
+当前 `RuntimeModule` trait（`runtime.rs`）未通过 PyO3 暴露给 Python。Python 用户无法子类化 `RuntimeModule` 来注入自定义执行后端（如 `DockerSandbox`）。
+
+**阻塞原因**：
+- PyO3 trait 子类化需要 `#[pyclass(subclass)]` + `#[pymethods]` 在 trait 上，且需要 wrapper struct 做 Python→Rust 委托
+- `RuntimeModule` 的方法返回 `ToolResultSet`、`HashMap<String, Arc<dyn Tool>>` 等 Rust 类型——Python 侧调用链复杂
+- 当前没有具体 `SandboxRuntime` 需求可驱动设计——抽象层级不明确
+
+**临时方案**：Python 用户通过 `McpNode.local()` / `McpNode.remote()` 使用内置执行后端。`local_with_runtime()` 构造函数暂不暴露给 Python。
+
+**计划**：等 `SandboxRuntime`（容器虚拟化）需求明确后，以具体用例驱动 PyO3 trampoline 设计。
 
 ---
 
