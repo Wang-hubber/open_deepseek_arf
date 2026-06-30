@@ -7,8 +7,21 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod node;
+pub mod message;
+pub mod tool;
+pub mod route;
+pub mod checkpoint;
+pub mod state;
+pub mod wait_event;
 // Re-export BusId so downstream crates don't need to know about the `node` module layout.
 pub use node::BusId;
+// Re-export common Engine protocol types at the crate root for ergonomic use.
+pub use checkpoint::{Checkpoint, CheckpointRule};
+pub use message::{ActionMessage, MessageIntent, ModelCall, ToolExec};
+pub use route::{Capability, Route};
+pub use state::{OverView, State};
+pub use wait_event::{WaitEvent, WaitStrategy};
+pub use tool::ToolSpec;
 
 // ── NodeId ───────────────────────────────────────────────────────────
 
@@ -967,6 +980,250 @@ mod tests {
         let e = SendError::BusClosed;
         let debug = format!("{e:?}");
         assert!(debug.contains("BusClosed"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 6 task 6.1 — Core types
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── ActionMessage / MessageIntent (5 tests) ──
+
+    // [构造] ModelCall.msg_type 固定为 "model_call"
+    #[test]
+    fn model_call_msg_type_is_model_call() {
+        let m = ModelCall::new(vec![]);
+        assert_eq!(m.msg_type(), "model_call");
+    }
+
+    // [trait] ModelCall.intent = Query（Engine 必须等响应）
+    #[test]
+    fn model_call_intent_is_query() {
+        let m = ModelCall::new(vec![]);
+        assert_eq!(m.intent(), MessageIntent::Query);
+    }
+
+    // [构造] ToolExec.msg_type 固定为 "tool_exec"
+    #[test]
+    fn tool_exec_msg_type_is_tool_exec() {
+        let t = ToolExec::new("read_file", serde_json::json!({"path": "/x"}));
+        assert_eq!(t.msg_type(), "tool_exec");
+    }
+
+    // [trait] ToolExec.intent = Query（与 ModelCall 同——Engines 等响应）
+    #[test]
+    fn tool_exec_intent_is_query() {
+        let t = ToolExec::new("read_file", serde_json::json!({}));
+        assert_eq!(t.intent(), MessageIntent::Query);
+    }
+
+    // [序列化] ModelCall + ToolExec 各自能 round-trip
+    #[test]
+    fn action_message_serde_roundtrip() {
+        let m = ModelCall::new(vec![ModelMessage::new("user", "hi")]);
+        let json = serde_json::to_string(&m).unwrap();
+        let back: ModelCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.correlation_id, m.correlation_id);
+
+        let t = ToolExec::new("bash", serde_json::json!({"cmd": "ls"}));
+        let json = serde_json::to_string(&t).unwrap();
+        let back: ToolExec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tool_name, "bash");
+        assert_eq!(back.correlation_id, t.correlation_id);
+    }
+
+    // ── Route / Capability (4 tests) ──
+
+    // [构造] Capability::one 构造单对 kv
+    #[test]
+    fn capability_one_kv() {
+        let c = Capability::one("kind", "model");
+        assert_eq!(c.requirements, vec![("kind".into(), "model".into())]);
+    }
+
+    // [构造] Route::strict + Route::discovery 工厂
+    #[test]
+    fn route_constructors() {
+        let r = Route::strict(vec![NodeId::new("n1")]);
+        match r {
+            Route::Strict(ids) => assert_eq!(ids.len(), 1),
+            _ => panic!("expected Strict"),
+        }
+        let r2 = Route::discovery(vec![("kind".into(), "mcp".into())]);
+        match r2 {
+            Route::Discovery(c) => assert_eq!(c.requirements[0].0, "kind"),
+            _ => panic!("expected Discovery"),
+        }
+    }
+
+    // [序列化] Route 两种 variant 都能 round-trip
+    #[test]
+    fn route_serde_roundtrip() {
+        let r = Route::strict(vec![NodeId::new("a"), NodeId::new("b")]);
+        let json = serde_json::to_string(&r).unwrap();
+        let back: Route = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
+
+        let r2 = Route::discovery(vec![("kind".into(), "compactor".into())]);
+        let json = serde_json::to_string(&r2).unwrap();
+        let back2: Route = serde_json::from_str(&json).unwrap();
+        assert_eq!(r2, back2);
+    }
+
+    // [边界] 空 requirements Capability 仍合法（永远匹配）
+    #[test]
+    fn capability_empty_requirements() {
+        let c = Capability::new(vec![]);
+        assert!(c.requirements.is_empty());
+        let r = Route::Discovery(c);
+        let json = serde_json::to_string(&r).unwrap();
+        let _back: Route = serde_json::from_str(&json).unwrap();
+    }
+
+    // ── CheckpointRule / Checkpoint (3 tests) ──
+
+    // [覆盖] Checkpoint 5 个 variant 均可构造
+    #[test]
+    fn checkpoint_all_variants_construct() {
+        let _ = Checkpoint::BeforeModelCall;
+        let _ = Checkpoint::AfterModelCall;
+        let _ = Checkpoint::BeforeToolExec;
+        let _ = Checkpoint::AfterToolExec;
+        let _ = Checkpoint::RoundEnd;
+    }
+
+    // [构造] CheckpointRule::new 接受 HRTB closure（编译期验证）
+    #[test]
+    fn checkpoint_rule_accepts_closures() {
+        let rule = CheckpointRule::new(
+            "myrule",
+            Checkpoint::RoundEnd,
+            |s| s.over_view.round_count > 0,
+            |_s| Box::new(ModelCall::new(vec![])),
+        );
+        assert_eq!(rule.name, "myrule");
+        assert_eq!(rule.trigger, Checkpoint::RoundEnd);
+    }
+
+    // [方法] fires / build_msg 正确调用 closures
+    #[test]
+    fn checkpoint_rule_fires_and_builds() {
+        let mut state = State::new();
+        state.inc_round();
+        let rule = CheckpointRule::new(
+            "r",
+            Checkpoint::RoundEnd,
+            |s| s.over_view.round_count > 0,
+            |_s| Box::new(ToolExec::new("echo", serde_json::json!("hi"))),
+        );
+        assert!(rule.fires(&state));
+        let msg = rule.build_msg(&state);
+        assert_eq!(msg.msg_type(), "tool_exec");
+    }
+
+    // ── State / OverView (4 tests) ──
+
+    // [构造] State::default 三字段全空
+    #[test]
+    fn state_default_is_empty() {
+        let s = State::default();
+        assert!(s.messages.is_empty());
+        assert_eq!(s.over_view.round_count, 0);
+        assert!(s.wait_events.is_empty());
+    }
+
+    // [构造] State 辅助方法：push_message / inc_round / inc_turn / set_context_tokens
+    #[test]
+    fn state_helpers_update_overview() {
+        let mut s = State::new();
+        s.inc_round();
+        s.inc_round();
+        s.inc_turn();
+        s.set_context_tokens(1234);
+        s.push_message(ModelMessage::new("user", "hi"));
+
+        assert_eq!(s.over_view.round_count, 2);
+        assert_eq!(s.over_view.turn_count, 1);
+        assert_eq!(s.over_view.context_tokens, 1234);
+        assert_eq!(s.over_view.last_user_message, "hi");
+        assert_eq!(s.messages.len(), 1);
+    }
+
+    // [序列化] State serde 往返
+    #[test]
+    fn state_serde_roundtrip() {
+        let mut s = State::new();
+        s.inc_round();
+        s.inc_turn();
+        s.set_context_tokens(500);
+        s.push_message(ModelMessage::new("assistant", "ok"));
+
+        let json = serde_json::to_string(&s).unwrap();
+        let back: State = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.over_view.round_count, s.over_view.round_count);
+        assert_eq!(back.over_view.context_tokens, s.over_view.context_tokens);
+        assert_eq!(back.messages.len(), 1);
+    }
+
+    // [方法] OverView::context_utilization 计算 0 / 0.5 / 1.0
+    #[test]
+    fn overview_context_utilization() {
+        let mut o = OverView::default();
+        assert_eq!(o.context_utilization(), 0.0);
+        o.context_tokens = 50_000;
+        o.model_context_window = 100_000;
+        assert!((o.context_utilization() - 0.5).abs() < 1e-9);
+        o.context_tokens = 100_000;
+        assert!((o.context_utilization() - 1.0).abs() < 1e-9);
+    }
+
+    // ── WaitEvent / WaitStrategy (3 tests) ──
+
+    // [覆盖] WaitStrategy 3 个 variant 可构造
+    #[test]
+    fn wait_strategy_all_variants() {
+        let _ = WaitStrategy::All;
+        let _ = WaitStrategy::Any;
+        let _ = WaitStrategy::Count(3);
+    }
+
+    // [构造] WaitEvent::new 设置 created_at_ms + correlation_id
+    #[test]
+    fn wait_event_construction() {
+        let cid = Uuid::new_v4();
+        let we = WaitEvent::new(cid, WaitStrategy::All, 5);
+        assert_eq!(we.correlation_id, cid);
+        assert_eq!(we.expected, 5);
+        assert!(we.created_at_ms > 0);
+    }
+
+    // [序列化] WaitEvent 序列化往返（created_at_ms 保留）
+    #[test]
+    fn wait_event_serde_roundtrip() {
+        let we = WaitEvent::new(Uuid::new_v4(), WaitStrategy::Any, 2);
+        let json = serde_json::to_string(&we).unwrap();
+        let back: WaitEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.correlation_id, we.correlation_id);
+        assert_eq!(back.expected, we.expected);
+        assert_eq!(back.created_at_ms, we.created_at_ms);
+        assert_eq!(back.strategy, we.strategy);
+    }
+
+    // ── ToolSpec (1 test) ──
+
+    // [构造] ToolSpec::new 设置字段 + 序列化往返
+    #[test]
+    fn tool_spec_new_and_serde() {
+        let spec = ToolSpec::new(
+            "read_file",
+            "Read a file from disk",
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        );
+        assert_eq!(spec.name, "read_file");
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: ToolSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "read_file");
+        assert_eq!(back.description, "Read a file from disk");
     }
 
     // ═══════════════════════════════════════════════════════════════
