@@ -504,10 +504,11 @@ pub enum Checkpoint {
 **约定**：
 - Engine 在固定 5 个 Checkpoint 位置暂停
 - 调用所有注册规则的 `when`，返回 `true` 才调用 `build`
-- Engine 按 `route` 投递消息，按 `intent` 决定 park 还是继续
+- Engine 从 `build(state)` 返回的 msg 取 `msg_type()`，按 `AgentConfig.routes[msg_type]` 投递（**Route 单一源**）
+- Engine 按 `msg.intent()` 决定 park 等响应（Query）还是 fire-and-forget（Command）
 - 框架提供标准构造器（`every_n_rounds`、`when_context_over`），但底层都是四元组
 
-**CheckpointRule 五元组定义**（name + trigger + when + build + route）：
+**CheckpointRule 四元组定义**（name + trigger + when + build）：
 
 ```rust
 pub struct CheckpointRule {
@@ -519,8 +520,6 @@ pub struct CheckpointRule {
     pub when: Box<dyn for<'a> Fn(&'a State) -> bool + Send + Sync>,
     /// 构造 ActionMessage：从 State 生成要发送的消息
     pub build: Box<dyn for<'a> Fn(&'a State) -> Box<dyn ActionMessage> + Send + Sync + 'a>,
-    /// 路由：Strict（指定 NodeId）或 Discovery（capability 匹配）
-    pub route: Route,
 }
 
 impl CheckpointRule {
@@ -530,7 +529,6 @@ impl CheckpointRule {
         trigger: Checkpoint,
         when: W,
         build: B,
-        route: Route,
     ) -> Self
     where
         W: for<'a> Fn(&'a State) -> bool + Send + Sync + 'static,
@@ -541,13 +539,39 @@ impl CheckpointRule {
             trigger,
             when: Box::new(when),
             build: Box::new(build),
-            route,
         }
     }
 }
 ```
 
-Engine 在 trigger 位置遍历所有规则，`when(state)` 返回 true 的调 `build(state)` 生成消息，按 `route` 投递。
+**Engine 在 trigger 处的执行逻辑**（伪代码）：
+
+```rust
+for rule in &self.checkpoint_rules {
+    if rule.trigger != trigger { continue; }
+    if !(rule.when)(state) { continue; }
+
+    let msg: Box<dyn ActionMessage> = (rule.build)(state);
+    let route = self.config.routes.get(msg.msg_type())
+        .ok_or(EngineError::MissingRoute(msg.msg_type().into()))?;
+
+    self.bus.publish(msg=msg.as_ref(), route=route).await?;
+
+    match msg.intent() {
+        MessageIntent::Query => {
+            // 创建或加入 WaitEvent，等待 receiver 响应
+            self.wait_events.add(msg).await;
+        }
+        MessageIntent::Command => {
+            // fire-and-forget：不加入 WaitEvent
+        }
+    }
+}
+```
+
+**Route 单一源约定**（2026-06-30 决议）：`AgentConfig.routes` 是 Engine 投递消息的唯一依据——既用于 ReAct 循环主动发的 ModelCall/ToolExec，也用于 CheckpointRule.build 产生的所有 msg。`CheckpointRule` 不携带 route（避免双源不一致）。
+
+**Intent 单源约定**（2026-06-30 决议）：`intent` 来自 `ActionMessage::intent()` trait 方法，由具体 msg 类型（如 MemoryOp、CompactOp）声明。`CheckpointRule` 不显式声明 intent（避免与 msg.intent() 不一致）。
 
 **不在 Checkpoint 范畴**：
 - **Input 处理**（user_input 进入 state）发生在 `session.chat(user_input=msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
@@ -617,6 +641,7 @@ let config = AgentConfig {
         m.insert("model_call".into(), Route::Strict(vec![NodeId::new(id="primary_model")]));
         m.insert("tool_exec".into(), Route::Discovery(Capability::new(key="kind", value="mcp")));
         m.insert("memory_op".into(), Route::Strict(vec![NodeId::new(id="memory_node")]));
+        m.insert("compact_op".into(), Route::Discovery(Capability::new(key="kind", value="compactor")));
         m
     },
     checkpoint_rules: vec![
@@ -625,7 +650,6 @@ let config = AgentConfig {
             Checkpoint::RoundEnd,
             |s| s.over_view.round_count % 5 == 0,
             |s| Box::new(MemoryOp::extract(messages=s.messages.clone())),
-            Route::Strict(vec![NodeId::new(id="memory_node")]),
         ),
         CheckpointRule::new(
             "compact",
@@ -633,7 +657,6 @@ let config = AgentConfig {
             |s| s.over_view.context_tokens as f64
                 / s.over_view.model_context_window as f64 > 0.8,
             |s| Box::new(CompactOp::new(messages=s.messages.clone())),
-            Route::Discovery(Capability::new(key="kind", value="compactor")),
         ),
     ],
     ..Default::default()
@@ -1164,16 +1187,16 @@ routes.insert("model_call".into(), Route::Strict(vec![
 ### 11.3 上下文压缩：Discovery + Query
 
 ```rust
+// CompactOp 的 msg_type="compact_op"，Engine 查 AgentConfig.routes["compact_op"] 投递
 CheckpointRule::new(
     "compact",
     Checkpoint::BeforeModelCall,
     |s| s.over_view.context_tokens as f64
         / s.over_view.model_context_window as f64 > 0.8,
     |s| Box::new(CompactOp::new(messages=s.messages.clone())),
-    Route::Discovery(Capability::new(key="kind", value="compactor")),
 )
 
-// Query + Discovery → Engine 在 BeforeModelCall park 等所有 compactor 完成
+// CompactOp 的 intent() = Query（§11.1 模式）→ Engine park 等所有 compactor 完成
 // 压缩完成后才发 ModelCall，确保模型收到的是压缩后的上下文
 ```
 
@@ -1268,21 +1291,21 @@ config = AgentConfig(
     routes={
         "model_call": Route.strict(node_ids=["primary_model"]),
         "tool_exec":  Route.discovery(capability=Capability(key="kind", value="mcp")),
+        "memory_op":  Route.strict(node_ids=["memory_node"]),
+        "compact_op": Route.discovery(capability=Capability(key="kind", value="compactor")),
     },
     checkpoint_rules=[
-        # 每 5 轮提取记忆
+        # 每 5 轮提取记忆（route 来自 routes["memory_op"]）
         CheckpointRule.every_n_rounds(
             trigger=Checkpoint.RoundEnd,
             every_n=5,
             build=lambda s: MemoryOp.extract(messages=s.messages),
-            route=Route.strict(node_ids=["memory_node"]),
         ),
-        # 上下文超 80% 触发压缩
+        # 上下文超 80% 触发压缩（route 来自 routes["compact_op"]）
         CheckpointRule.when_context_over(
             trigger=Checkpoint.BeforeModelCall,
             ratio=0.8,
             build=lambda s: CompactOp.new(messages=s.messages),
-            route=Route.discovery(capability=Capability(key="kind", value="compactor")),
         ),
     ],
     processors={
@@ -1609,21 +1632,21 @@ async def main():
             "tool_exec": Route.discovery(
                 capability=Capability(key="kind", value="mcp")
             ),
+            "memory_op": Route.strict(node_ids=["memory/l1"]),
+            "compact_op": Route.discovery(
+                capability=Capability(key="kind", value="compactor")
+            ),
         },
         checkpoint_rules=[
             CheckpointRule.every_n_rounds(
                 trigger=Checkpoint.RoundEnd,
                 every_n=5,
                 build=lambda s: MemoryOp.extract(messages=s.messages),
-                route=Route.strict(node_ids=["memory/l1"]),
             ),
             CheckpointRule.when_context_over(
                 trigger=Checkpoint.BeforeModelCall,
                 ratio=0.8,
                 build=lambda s: CompactOp.new(messages=s.messages),
-                route=Route.discovery(
-                    capability=Capability(key="kind", value="compactor")
-                ),
             ),
         ],
     )
