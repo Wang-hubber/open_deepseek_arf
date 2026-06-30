@@ -592,7 +592,7 @@ bus.connect(info=memory.info(), filter=memory.filter()).await?;
 // ── 3. 声明 AgentConfig（routes + checkpoint_rules）──────────────
 let config = AgentConfig {
     agent_id: "assistant".into(),
-    model: ModelConfig { provider: "deepseek".into(), model: "deepseek-v4-flash".into() },
+    model_config: ModelConfig { provider: "deepseek".into(), model: "deepseek-v4-flash".into() },
     system_prompt_template: "You are a helpful assistant.\n\nTools:\n{{tools}}".into(),
     max_turns: 10,
     routes: {
@@ -1033,7 +1033,7 @@ Engine 不解析 memory/compact 的语义，只执行备份和替换。
 ```rust
 pub struct AgentConfig {
     pub agent_id: String,
-    pub model: ModelConfig,
+    pub model_config: ModelConfig,
     pub system_prompt_template: String,
     pub max_turns: u32,
     pub tool_timeout_ms: Option<u64>,
