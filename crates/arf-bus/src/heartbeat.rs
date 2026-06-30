@@ -164,46 +164,13 @@ mod tests {
     // 超时检测 (2 tests)
     // ═══════════════════════════════════════════════════════════════
 
-    // [超时] 节点不调用 recv → 不发送 ACK → 超时 → node_offline
-    #[tokio::test]
-    async fn node_without_ack_times_out() {
-        let bus = Bus::new(
-            Duration::from_millis(20), // heartbeat interval
-            Duration::from_millis(40), // short timeout for test
-            16,
-        );
-        let mut rx = bus.subscribe();
-
-        // Connect a node that NEVER calls recv — won't send HeartbeatAck
-        let handle = bus
-            .connect(test_node_info("zombie"), test_filter())
-            .await
-            .unwrap();
-        // Drain node_online
-        let _ = rx.recv().await.unwrap();
-
-        // Wait for timeout (need several ticks to pass the timeout)
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        // Drain heartbeat_request messages, look for node_offline
-        let mut saw_offline = false;
-        for _ in 0..20 {
-            match tokio::time::timeout(Duration::from_millis(30), rx.recv()).await {
-                Ok(Ok(msg)) => {
-                    if msg.msg_type == "node_offline" && msg.from.as_str() == "zombie" {
-                        saw_offline = true;
-                        break;
-                    }
-                }
-                _ => break, // timeout or closed
-            }
-        }
-        assert!(saw_offline, "zombie node should have been marked offline");
-
-        // Clean up disconnect will silently fail (node already removed)
-        handle.disconnect().await;
-        bus.shutdown().await;
-    }
+    // [超时] Phase 6 task 6.0.2 之后，"NodeHandle 不调 recv 不 ack" 的前提
+    // 已不成立：每个 NodeHandle 的 forwarding task 只要订阅的 inbound mpsc rx
+    // 还活着，就会持续 ack 心跳。等价的"掉线"测试见 lib.rs 中
+    // handle_drop_without_disconnect_leaves_zombie_entry（NodeHandle 被 drop
+    // 而非 idle 时，forwarding task 退出，Bus 在下次心跳 tick 把它清理）。
+    //
+    // 原 node_without_ack_times_out 测试已被 6.0.2 的语义改变取代，特此删除。
 
     // [超时] 手动发 HeartbeatAck → last_ack 更新 → 不超时
     #[tokio::test]

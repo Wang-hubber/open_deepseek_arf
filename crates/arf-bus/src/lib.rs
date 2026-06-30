@@ -4,12 +4,13 @@
 //! handles node lifecycle (online/offline/heartbeat), and routes messages
 //! (broadcast when `to` is empty, directed otherwise).
 
-use arf_core::{Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
+use arf_core::{BusId, Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════
 // ConnectError
@@ -86,6 +87,8 @@ pub(crate) struct NodeEntry {
 /// them at the application layer (persistence + retry) — the Bus layer handles
 /// transport only.
 pub struct Bus {
+    /// Stable Bus identifier (Phase 6 multi-Bus). Generated at construction.
+    pub id: BusId,
     /// Send commands into the bus message loop.
     pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
     /// Clone of the broadcast sender, used by `subscribe()`.
@@ -160,6 +163,7 @@ impl Bus {
         });
 
         Self {
+            id: BusId(Uuid::new_v4()),
             cmd_tx,
             broadcast_tx: Mutex::new(Some(broadcast_tx)),
             nodes,
@@ -190,6 +194,13 @@ impl Bus {
     /// Returns a `broadcast::Receiver` that receives every message
     /// broadcast on the bus. In task 1.3, this will be wrapped in `NodeHandle`.
     pub fn subscribe(&self) -> broadcast::Receiver<Message> {
+        self.subscribe_internal()
+    }
+
+    /// Internal subscribe (used by `connect()` and `attach_to()` to wire
+    /// forwarding tasks). Same as `subscribe()` but `pub(crate)` so it can
+    /// be called from `connection.rs`.
+    pub(crate) fn subscribe_internal(&self) -> broadcast::Receiver<Message> {
         self.broadcast_tx
             .lock()
             .unwrap()

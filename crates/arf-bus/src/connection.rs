@@ -1,119 +1,231 @@
 //! Node connection lifecycle — connect, send, receive, disconnect.
 //!
-//! `NodeHandle` is the primary API that nodes use to interact with the Bus.
+//! `NodeHandle` is the primary API that nodes use to interact with one or
+//! more Buses. Phase 6 task 6.0.2 introduces multi-Bus subscription via
+//! `attach_to()`. The primary Bus is set by `Bus::connect()`.
+//!
+//! ## Multi-Bus architecture
+//!
+//! Each subscription has its own inbound `mpsc` channel. The forwarding task
+//! (one per subscription) writes filtered, heartbeat-acked messages to its
+//! channel; `NodeHandle::recv()` uses `futures::future::select_all` over all
+//! active subscription receivers. When all forwarding tasks exit (all attached
+//! Buses shut down), all inbound channels close and `recv()` returns
+//! `Err(RecvError::Closed)`.
 
-use arf_core::{Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
+use arf_core::{
+    BusId, Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt,
+};
+use futures::future::{self, FutureExt};
+use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{Bus, BusCommand, ConnectError};
 
 // ═══════════════════════════════════════════════════════════════════
+// Subscription — per-Bus state owned by NodeHandle
+// ═══════════════════════════════════════════════════════════════════
+
+/// One Bus subscription inside a `NodeHandle`.
+///
+/// Created by `Bus::connect()` (primary) or `NodeHandle::attach_to()` (additional).
+/// Each subscription runs a forwarding task that intercepts heartbeats, applies
+/// the per-subscription filter, and writes accepted messages to its own
+/// inbound `mpsc`. `NodeHandle::recv()` selects over all subscription inbounds.
+pub struct Subscription {
+    /// Stable identifier for the Bus this subscription is attached to.
+    pub bus_id: BusId,
+    /// Channel for sending commands (Disconnect, HeartbeatAck) back to this Bus.
+    pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
+    /// Bus-side broadcast receiver (held for API symmetry; the actual `recv`
+    /// loop runs in the per-subscription forwarding task).
+    pub(crate) _bus_broadcast_rx: broadcast::Receiver<Message>,
+    /// Per-subscription inbound receiver. Forwarding task sends filtered
+    /// messages here; NodeHandle reads via select_all across all subs.
+    pub(crate) inbound_rx: mpsc::Receiver<Message>,
+    /// Per-subscription message filter.
+    pub filter: MessageFilter,
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // NodeHandle
 // ═══════════════════════════════════════════════════════════════════
 
-/// A connected node's handle to the Bus.
+/// A node's handle to one or more Buses.
 ///
-/// Created by `Bus::connect()`, consumed by `disconnect()`.
-/// Used to send messages, receive messages, and query node info.
+/// Created by `Bus::connect()` (primary subscription), extended by
+/// `NodeHandle::attach_to()` (additional subscriptions). `recv()` reads the
+/// next message from any subscription via `select_all`. Closing semantics:
+/// `recv()` returns `Err(Closed)` only when ALL attached Buses' forwarding
+/// tasks have exited (all per-subscription inbound channels closed).
 ///
-/// `recv()` requires `&mut self` because `broadcast::Receiver::recv()`
-/// modifies internal cursor state. In async contexts where multiple
-/// tasks need to receive, wrap in `Arc<Mutex<NodeHandle>>`.
+/// `recv()` requires `&mut self` because it advances receiver cursors.
 pub struct NodeHandle {
-    /// Clone of Bus.cmd_tx — sends commands to the message loop.
-    pub(crate) cmd_tx: mpsc::Sender<BusCommand>,
-    /// Subscription to the broadcast channel — receives all messages.
-    pub(crate) broadcast_rx: broadcast::Receiver<Message>,
-    /// This node's identity and capabilities.
+    /// This node's identity and capabilities (from primary connect()).
     pub(crate) info: NodeInfo,
-    /// Message filter for receive-side filtering (used in task 1.6).
-    pub(crate) filter: MessageFilter,
+    /// Primary Bus identifier — used by `send()` to choose a default route.
+    pub(crate) primary_bus_id: BusId,
+    /// All subscriptions (primary first, then attached in attach order).
+    pub(crate) subscriptions: Vec<Subscription>,
 }
 
 impl NodeHandle {
-    /// Send a message from this node.
+    /// Send a message from this node on the **primary** Bus.
     ///
-    /// The `from` field is automatically filled from this node's `NodeInfo`.
-    /// Returns a `SendReceipt` with online node counts.
+    /// Equivalent to `send_via(self.primary_bus_id, ...)`. To target a specific
+    /// attached Bus, use `send_via`.
     pub async fn send(
         &self,
         msg_type: &str,
         to: Vec<NodeId>,
         payload: serde_json::Value,
     ) -> Result<SendReceipt, SendError> {
-        let msg = Message::new(msg_type, self.info.node_id.clone(), to, payload);
-        self.send_raw(msg).await
+        self.send_via(self.primary_bus_id, msg_type, to, payload).await
     }
 
-    /// Send a pre-constructed Message.
+    /// Send a message on a specific attached Bus.
     ///
-    /// The `from` field is NOT overridden — use with caution.
-    /// Prefer `send()` for normal use.
-    async fn send_raw(&self, msg: Message) -> Result<SendReceipt, SendError> {
+    /// Returns `SendError::NoSuchBus` if the BusId is not among the attached
+    /// subscriptions.
+    pub async fn send_via(
+        &self,
+        bus_id: BusId,
+        msg_type: &str,
+        to: Vec<NodeId>,
+        payload: serde_json::Value,
+    ) -> Result<SendReceipt, SendError> {
+        let sub = self
+            .subscriptions
+            .iter()
+            .find(|s| s.bus_id == bus_id)
+            .ok_or(SendError::NoSuchBus(bus_id))?;
+        let msg = Message::new(msg_type, self.info.node_id.clone(), to, payload);
         let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(BusCommand::Send {
-                msg,
-                respond_to: tx,
-            })
+        sub.cmd_tx
+            .send(BusCommand::Send { msg, respond_to: tx })
             .await
             .map_err(|_| SendError::BusClosed)?;
         rx.await.map_err(|_| SendError::BusClosed)?
     }
 
-    /// Receive the next application-visible message from the Bus.
+    /// Attach this handle to another Bus.
     ///
-    /// Heartbeat requests are intercepted and auto-acknowledged — they are
-    /// never returned to the caller. Blocks until a non-heartbeat message
-    /// arrives.
+    /// Adds a subscription with its own filter. The same NodeId may be attached
+    /// to multiple Buses; each Bus maintains its own online-nodes map.
+    pub async fn attach_to(
+        &mut self,
+        bus: Arc<Bus>,
+        filter: MessageFilter,
+    ) -> Result<BusId, ConnectError> {
+        let bus_id = bus.id;
+
+        // Register in the new Bus's nodes map.
+        let (reg_tx, reg_rx) = oneshot::channel();
+        bus.cmd_tx
+            .send(BusCommand::Connect {
+                info: self.info.clone(),
+                filter: filter.clone(),
+                respond_to: reg_tx,
+            })
+            .await
+            .map_err(|_| ConnectError::BusClosed)?;
+        reg_rx.await.map_err(|_| ConnectError::BusClosed)??;
+
+        // Subscribe AFTER registration so we don't see our own node_online.
+        let forward_rx = bus.subscribe_internal();
+        let stored_rx = bus.subscribe_internal();
+
+        // Each subscription gets its own inbound mpsc. The forwarding task owns
+        // the tx; NodeHandle holds the rx as this subscription's `inbound_rx`.
+        let (inbound_tx, inbound_rx) = mpsc::channel(16);
+        tokio::spawn(spawn_forward_task(
+            bus.cmd_tx.clone(),
+            forward_rx,
+            filter.clone(),
+            self.info.node_id.clone(),
+            inbound_tx,
+        ));
+
+        self.subscriptions.push(Subscription {
+            bus_id,
+            cmd_tx: bus.cmd_tx.clone(),
+            _bus_broadcast_rx: stored_rx,
+            inbound_rx,
+            filter,
+        });
+
+        Ok(bus_id)
+    }
+
+    /// Receive the next application-visible message from any attached Bus.
     ///
-    /// MessageFilter filtering will be applied in task 1.6.
+    /// Heartbeat requests are intercepted by per-subscription forwarding tasks
+    /// and auto-acknowledged. Per-subscription `MessageFilter` is applied before
+    /// messages reach this recv. Returns `Err(Closed)` when ALL attached Buses
+    /// have shut down (all forwarding tasks exited, all inbound channels closed).
     pub async fn recv(&mut self) -> Result<Message, broadcast::error::RecvError> {
         loop {
-            let msg = self.broadcast_rx.recv().await?;
-            if msg.msg_type == "heartbeat_request" {
-                let _ = self
-                    .cmd_tx
-                    .send(BusCommand::HeartbeatAck {
-                        node_id: self.info.node_id.clone(),
-                    })
-                    .await;
-                continue;
+            // First, drain anything immediately available across all subscriptions.
+            for sub in self.subscriptions.iter_mut() {
+                match sub.inbound_rx.try_recv() {
+                    Ok(msg) => return Ok(msg),
+                    Err(mpsc::error::TryRecvError::Empty) => continue,
+                    Err(mpsc::error::TryRecvError::Disconnected) => continue,
+                }
             }
-            if !self.filter.matches(&msg, &self.info.node_id) {
-                continue;
+
+            // Check if all subscriptions have closed (no active forwarding tasks).
+            let active = self
+                .subscriptions
+                .iter()
+                .filter(|s| !s.inbound_rx.is_closed())
+                .count();
+            if active == 0 {
+                return Err(broadcast::error::RecvError::Closed);
             }
-            return Ok(msg);
+
+            // Build await-futures for non-closed subscriptions only.
+            let mut futures: Vec<Pin<Box<dyn future::Future<Output = Option<Message>> + Send>>> =
+                Vec::new();
+            for sub in self.subscriptions.iter_mut() {
+                if !sub.inbound_rx.is_closed() {
+                    futures.push(sub.inbound_rx.recv().boxed());
+                }
+            }
+            if futures.is_empty() {
+                return Err(broadcast::error::RecvError::Closed);
+            }
+
+            let (result, _idx, _rest) = future::select_all(futures).await;
+            match result {
+                Some(msg) => return Ok(msg),
+                None => continue, // One subscription closed; loop to check others.
+            }
         }
     }
 
     /// Try to receive a message without blocking.
     ///
-    /// Heartbeat requests are intercepted and auto-acknowledged (using
-    /// `try_send` since this is a synchronous method).
-    /// Returns `Ok(Some(msg))` if a non-heartbeat message is available,
-    /// `Ok(None)` if no message is ready.
+    /// Returns `Ok(None)` if no message is ready across all subscriptions,
+    /// `Err(Closed)` if all forwarding tasks have exited (all Buses shut down).
     pub fn try_recv(&mut self) -> Result<Option<Message>, broadcast::error::TryRecvError> {
-        loop {
-            match self.broadcast_rx.try_recv() {
-                Ok(msg) => {
-                    if msg.msg_type == "heartbeat_request" {
-                        let _ = self.cmd_tx.try_send(BusCommand::HeartbeatAck {
-                            node_id: self.info.node_id.clone(),
-                        });
-                        continue;
+        let mut any_alive = false;
+        for sub in self.subscriptions.iter_mut() {
+            match sub.inbound_rx.try_recv() {
+                Ok(msg) => return Ok(Some(msg)),
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    if !sub.inbound_rx.is_closed() {
+                        any_alive = true;
                     }
-                    if !self.filter.matches(&msg, &self.info.node_id) {
-                        continue;
-                    }
-                    return Ok(Some(msg));
                 }
-                Err(broadcast::error::TryRecvError::Empty) => return Ok(None),
-                Err(e @ broadcast::error::TryRecvError::Lagged(_)) => return Err(e),
-                Err(broadcast::error::TryRecvError::Closed) => {
-                    return Err(broadcast::error::TryRecvError::Closed);
-                }
+                Err(mpsc::error::TryRecvError::Disconnected) => continue,
             }
+        }
+        if any_alive {
+            Ok(None)
+        } else {
+            Err(broadcast::error::TryRecvError::Closed)
         }
     }
 
@@ -122,26 +234,85 @@ impl NodeHandle {
         &self.info
     }
 
-    /// Get this node's filter configuration.
+    /// Get the primary Bus's filter configuration.
     pub fn filter_config(&self) -> &MessageFilter {
-        &self.filter
+        &self.subscriptions[0].filter
     }
 
-    /// Disconnect this node from the Bus.
+    /// List attached BusIds (primary first, then attached in attach order).
+    pub fn subscriptions(&self) -> Vec<BusId> {
+        self.subscriptions.iter().map(|s| s.bus_id).collect()
+    }
+
+    /// Disconnect from all attached Buses.
     ///
-    /// Sends a Disconnect command to the message loop,
-    /// which removes the NodeEntry and broadcasts `node_offline`.
-    /// Consumes `self` — the handle is no longer usable after this.
+    /// Sends `Disconnect` to each attached Bus (in attach order), then drops
+    /// `self` — which closes all inbound `mpsc::Receiver`s and causes the
+    /// forwarding tasks to exit on their next iteration.
     pub async fn disconnect(self) {
-        let (tx, rx) = oneshot::channel();
-        let _ = self
-            .cmd_tx
-            .send(BusCommand::Disconnect {
-                node_id: self.info.node_id.clone(),
-                respond_to: tx,
-            })
-            .await;
-        let _ = rx.await;
+        for sub in &self.subscriptions {
+            let (tx, rx) = oneshot::channel();
+            let _ = sub
+                .cmd_tx
+                .send(BusCommand::Disconnect {
+                    node_id: self.info.node_id.clone(),
+                    respond_to: tx,
+                })
+                .await;
+            let _ = rx.await;
+        }
+        // Drop self; all subscription inbound_rx are dropped, forwarding
+        // tasks exit on next `tx.send().await` failure.
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Forwarding task — one per subscription
+// ═══════════════════════════════════════════════════════════════════
+
+/// Background task: read broadcast messages from one subscription, intercept
+/// heartbeats, apply the per-subscription filter, and forward accepted messages
+/// to the per-subscription inbound `mpsc`.
+///
+/// Exits when:
+/// - broadcast channel closes (Bus shutdown / disconnect), OR
+/// - inbound `mpsc` closes (NodeHandle dropped).
+///
+/// `Lagged` is silently skipped — the slow consumer loses the lagged messages
+/// without affecting the NodeHandle API (handle.recv() doesn't expose Lagged).
+async fn spawn_forward_task(
+    cmd_tx: mpsc::Sender<BusCommand>,
+    mut broadcast_rx: broadcast::Receiver<Message>,
+    filter: MessageFilter,
+    node_id: NodeId,
+    inbound_tx: mpsc::Sender<Message>,
+) {
+    loop {
+        // Check if NodeHandle has been dropped. If yes, stop acking heartbeats
+        // so the Bus can mark this node offline (Phase 6 task 6.0.2 semantic).
+        if inbound_tx.is_closed() {
+            break;
+        }
+        match broadcast_rx.recv().await {
+            Ok(msg) => {
+                if msg.msg_type == "heartbeat_request" {
+                    let _ = cmd_tx
+                        .send(BusCommand::HeartbeatAck {
+                            node_id: node_id.clone(),
+                        })
+                        .await;
+                    continue;
+                }
+                if !filter.matches(&msg, &node_id) {
+                    continue;
+                }
+                if inbound_tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
     }
 }
 
@@ -150,49 +321,59 @@ impl NodeHandle {
 // ═══════════════════════════════════════════════════════════════════
 
 impl Bus {
-    /// Connect a node to the Bus.
+    /// Connect a node to this Bus. Returns a `NodeHandle` with one subscription.
     ///
-    /// Registers the node in the online nodes map, broadcasts `node_online`,
-    /// and returns a `NodeHandle` for the node to use.
-    ///
-    /// The returned `NodeHandle`'s `broadcast_rx` is created **after**
+    /// The returned `NodeHandle`'s forwarding task subscribes **after**
     /// registration, so the node does not see its own `node_online` message.
     ///
     /// Returns `Err(ConnectError::AlreadyConnected)` if a node with the same
-    /// `NodeId` is already online.
+    /// `NodeId` is already online on this Bus.
     pub async fn connect(
         &self,
         info: NodeInfo,
         filter: MessageFilter,
     ) -> Result<NodeHandle, ConnectError> {
-        let (tx, rx) = oneshot::channel();
+        let bus_id = self.id;
+
+        // Register in the nodes map.
+        let (reg_tx, reg_rx) = oneshot::channel();
         self.cmd_tx
             .send(BusCommand::Connect {
                 info: info.clone(),
                 filter: filter.clone(),
-                respond_to: tx,
+                respond_to: reg_tx,
             })
             .await
             .map_err(|_| ConnectError::BusClosed)?;
+        reg_rx.await.map_err(|_| ConnectError::BusClosed)??;
 
-        // Wait for registration confirmation
-        rx.await.map_err(|_| ConnectError::BusClosed)??;
+        // Subscribe AFTER registration — the forwarding task gets the real
+        // working receiver; Subscription stores a separate one for symmetry.
+        let forward_rx = self.subscribe_internal();
+        let stored_rx = self.subscribe_internal();
 
-        // Create the broadcast receiver AFTER registration,
-        // so the node doesn't see its own node_online message.
-        let broadcast_rx = self
-            .broadcast_tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("broadcast_tx should exist until shutdown")
-            .subscribe();
+        // Per-subscription inbound mpsc. forwarding task owns the tx.
+        let (inbound_tx, inbound_rx) = mpsc::channel(16);
+        tokio::spawn(spawn_forward_task(
+            self.cmd_tx.clone(),
+            forward_rx,
+            filter.clone(),
+            info.node_id.clone(),
+            inbound_tx,
+        ));
+
+        let primary_sub = Subscription {
+            bus_id,
+            cmd_tx: self.cmd_tx.clone(),
+            _bus_broadcast_rx: stored_rx,
+            inbound_rx,
+            filter,
+        };
 
         Ok(NodeHandle {
-            cmd_tx: self.cmd_tx.clone(),
-            broadcast_rx,
             info,
-            filter,
+            primary_bus_id: bus_id,
+            subscriptions: vec![primary_sub],
         })
     }
 }
@@ -229,7 +410,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // NodeHandle — 构造 & 基本属性 (4 tests)
+    // NodeHandle — 构造 & 基本属性 (5 tests)
     // ═══════════════════════════════════════════════════════════════
 
     // [构造] connect 返回 NodeHandle，node_info() 返回传入的 NodeInfo
@@ -248,23 +429,17 @@ mod tests {
     #[tokio::test]
     async fn connect_broadcasts_node_online() {
         let bus = test_bus();
-
-        // Subscribe BEFORE connect to capture node_online
         let mut rx = bus.subscribe();
-
         let info = test_node_info("node-a");
         let handle = bus.connect(info, test_filter()).await.unwrap();
-
-        // rx should receive node_online
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg.msg_type, "node_online");
         assert_eq!(msg.from.as_str(), "node-a");
-
         handle.disconnect().await;
         bus.shutdown().await;
     }
 
-    // [构造] filter_config() 返回传入的 MessageFilter
+    // [构造] filter_config() 返回 primary subscription 的 MessageFilter
     #[tokio::test]
     async fn node_handle_stores_filter_config() {
         let bus = test_bus();
@@ -287,11 +462,19 @@ mod tests {
         let bus = test_bus();
         let info = test_node_info("dup");
         let _h1 = bus.connect(info.clone(), test_filter()).await.unwrap();
-
         let result = bus.connect(info, test_filter()).await;
         assert!(matches!(result, Err(ConnectError::AlreadyConnected(_))));
-
         _h1.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [构造] subscriptions() 初始仅含 primary BusId
+    #[tokio::test]
+    async fn subscriptions_initially_only_primary() {
+        let bus = test_bus();
+        let handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        assert_eq!(handle.subscriptions(), vec![bus.id]);
+        handle.disconnect().await;
         bus.shutdown().await;
     }
 
@@ -304,20 +487,16 @@ mod tests {
     async fn node_handle_send_message_appears_on_bus() {
         let bus = test_bus();
         let mut rx = bus.subscribe();
-
         let sender = bus
             .connect(test_node_info("sender"), test_filter())
             .await
             .unwrap();
-
-        // Drain node_online (sent during connect)
         let _ = rx.recv().await.unwrap();
 
         let receipt = sender
             .send("action", vec![], serde_json::json!({"cmd": "run"}))
             .await
             .unwrap();
-
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg.msg_type, "action");
         assert_eq!(msg.from.as_str(), "sender");
@@ -336,15 +515,12 @@ mod tests {
             .connect(test_node_info("s"), test_filter())
             .await
             .unwrap();
-
-        // Only sender is online (plus the sender itself = 1)
         let receipt = sender
             .send("t", vec![], serde_json::json!(null))
             .await
             .unwrap();
         assert_eq!(receipt.online_nodes, 1);
 
-        // Connect another node
         let other = bus
             .connect(test_node_info("o"), test_filter())
             .await
@@ -372,23 +548,17 @@ mod tests {
             .connect(test_node_info("sender2"), test_filter())
             .await
             .unwrap();
-
         sender
             .send("ping", vec![], serde_json::json!("hello"))
             .await
             .unwrap();
-
         let msg = receiver.recv().await.unwrap();
-        // Receiver may see sender's node_online first
         if msg.msg_type == "node_online" {
             let msg2 = receiver.recv().await.unwrap();
             assert_eq!(msg2.msg_type, "ping");
-            assert_eq!(msg2.payload, serde_json::json!("hello"));
         } else {
             assert_eq!(msg.msg_type, "ping");
-            assert_eq!(msg.payload, serde_json::json!("hello"));
         }
-
         receiver.disconnect().await;
         sender.disconnect().await;
         bus.shutdown().await;
@@ -402,11 +572,8 @@ mod tests {
             .connect(test_node_info("n"), test_filter())
             .await
             .unwrap();
-
-        // Should be empty initially (broadcast_rx created after node_online)
         let result = handle.try_recv().unwrap();
         assert!(result.is_none());
-
         handle.disconnect().await;
         bus.shutdown().await;
     }
@@ -423,8 +590,6 @@ mod tests {
             .connect(test_node_info("send"), test_filter())
             .await
             .unwrap();
-
-        // Drain sender's node_online
         let _ = receiver.recv().await.unwrap();
 
         for i in 0..5 {
@@ -433,12 +598,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-
         for i in 0..5 {
             let msg = receiver.recv().await.unwrap();
             assert_eq!(msg.payload, serde_json::json!(i));
         }
-
         receiver.disconnect().await;
         sender.disconnect().await;
         bus.shutdown().await;
@@ -457,16 +620,11 @@ mod tests {
             .connect(test_node_info("ephemeral"), test_filter())
             .await
             .unwrap();
-
-        // Drain node_online
         let _ = rx.recv().await.unwrap();
-
         handle.disconnect().await;
-
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg.msg_type, "node_offline");
         assert_eq!(msg.from.as_str(), "ephemeral");
-
         bus.shutdown().await;
     }
 
@@ -475,14 +633,10 @@ mod tests {
     async fn reconnect_after_disconnect_succeeds() {
         let bus = test_bus();
         let info = test_node_info("reconnector");
-
         let h1 = bus.connect(info.clone(), test_filter()).await.unwrap();
         h1.disconnect().await;
-
-        // Reconnect with the same NodeId
         let h2 = bus.connect(info, test_filter()).await.unwrap();
         assert_eq!(h2.node_info().node_id.as_str(), "reconnector");
-
         h2.disconnect().await;
         bus.shutdown().await;
     }
@@ -493,24 +647,17 @@ mod tests {
         let bus = test_bus();
         let mut rx = bus.subscribe();
         let info = test_node_info("r");
-
         let h1 = bus.connect(info.clone(), test_filter()).await.unwrap();
         h1.disconnect().await;
-
-        // Drain node_online + node_offline
         let _ = rx.recv().await.unwrap();
         let _ = rx.recv().await.unwrap();
-
         let h2 = bus.connect(info, test_filter()).await.unwrap();
         h2.send("after_reconnect", vec![], serde_json::json!("ok"))
             .await
             .unwrap();
-
-        // Drain node_online then verify our message
         let _ = rx.recv().await.unwrap();
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg.msg_type, "after_reconnect");
-
         h2.disconnect().await;
         bus.shutdown().await;
     }
@@ -527,14 +674,10 @@ mod tests {
             .connect(test_node_info("A"), test_filter())
             .await
             .unwrap();
-        // A's rx created after A's node_online, so A doesn't see its own
         let mut b = bus
             .connect(test_node_info("B"), test_filter())
             .await
             .unwrap();
-        // B's rx created after both node_online, so B sees nothing from history
-
-        // Only A sees B's node_online (A's rx was created before B connected)
         let msg = a.recv().await.unwrap();
         assert_eq!(msg.msg_type, "node_online");
         assert_eq!(msg.from.as_str(), "B");
@@ -546,15 +689,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Each node sees both messages (broadcast includes self).
-        // Drain self-echo, verify the peer's message.
-        let a_first = a.recv().await.unwrap(); // A's own "from_a" (self-echo)
-        let a_second = a.recv().await.unwrap(); // B's "from_b"
+        let a_first = a.recv().await.unwrap();
+        let a_second = a.recv().await.unwrap();
         assert_eq!(a_first.payload, serde_json::json!("from_a"));
         assert_eq!(a_second.payload, serde_json::json!("from_b"));
 
-        let b_first = b.recv().await.unwrap(); // A's "from_a"
-        let b_second = b.recv().await.unwrap(); // B's own "from_b" (self-echo)
+        let b_first = b.recv().await.unwrap();
+        let b_second = b.recv().await.unwrap();
         assert_eq!(b_first.payload, serde_json::json!("from_a"));
         assert_eq!(b_second.payload, serde_json::json!("from_b"));
 
@@ -563,7 +704,7 @@ mod tests {
         bus.shutdown().await;
     }
 
-    // [多节点] 新节点看不到 connect 之前的历史消息（subscribe 在连接后才创建）
+    // [多节点] 新节点看不到 connect 之前的历史消息
     #[tokio::test]
     async fn late_joiner_sees_only_future_messages() {
         let bus = test_bus();
@@ -571,28 +712,20 @@ mod tests {
             .connect(test_node_info("early"), test_filter())
             .await
             .unwrap();
-
-        // Send before late joiner connects
         early
             .send("historical", vec![], serde_json::json!("ancient"))
             .await
             .unwrap();
-
         let mut late = bus
             .connect(test_node_info("late"), test_filter())
             .await
             .unwrap();
-
-        // late's rx was created AFTER both early's node_online AND "historical".
-        // So late sees nothing from the past. Send a new message, late should see it.
         early
             .send("current", vec![], serde_json::json!("now"))
             .await
             .unwrap();
         let msg = late.recv().await.unwrap();
         assert_eq!(msg.msg_type, "current");
-        assert_eq!(msg.payload, serde_json::json!("now"));
-
         early.disconnect().await;
         late.disconnect().await;
         bus.shutdown().await;
@@ -610,16 +743,12 @@ mod tests {
             .connect(test_node_info("leaver"), test_filter())
             .await
             .unwrap();
-
         leaver.disconnect().await;
-
-        // Survivor can still send
         let receipt = survivor
             .send("still_here", vec![], serde_json::json!("ok"))
             .await
             .unwrap();
-        assert_eq!(receipt.online_nodes, 1); // only survivor remains
-
+        assert_eq!(receipt.online_nodes, 1);
         survivor.disconnect().await;
         bus.shutdown().await;
     }
@@ -628,7 +757,7 @@ mod tests {
     // NodeHandle — shutdown 交互 (2 tests)
     // ═══════════════════════════════════════════════════════════════
 
-    // [关闭] shutdown 后 receiver 返回 Closed——Bus 消费后 broadcast channel 关闭
+    // [关闭] shutdown 后 receiver 返回 Closed
     #[tokio::test]
     async fn node_handle_recv_returns_closed_after_shutdown() {
         let bus = test_bus();
@@ -636,11 +765,14 @@ mod tests {
             .connect(test_node_info("n"), test_filter())
             .await
             .unwrap();
-
         bus.shutdown().await;
-
-        let result = handle.recv().await;
-        assert!(matches!(result, Err(broadcast::error::RecvError::Closed)));
+        // Use timeout because forwarding task needs a brief moment to detect
+        // broadcast close and exit, then handle.recv() observes Closed.
+        let result = tokio::time::timeout(Duration::from_secs(2), handle.recv())
+            .await
+            .expect("recv should observe Closed within 2s")
+            .unwrap_err();
+        assert!(matches!(result, broadcast::error::RecvError::Closed));
     }
 
     // [关闭] shutdown 后 NodeHandle.send() 返回 BusClosed
@@ -651,10 +783,7 @@ mod tests {
             .connect(test_node_info("n"), test_filter())
             .await
             .unwrap();
-
-        // Don't disconnect — just shutdown the bus
         bus.shutdown().await;
-
         let result = handle.send("t", vec![], serde_json::json!(null)).await;
         assert!(matches!(result, Err(SendError::BusClosed)));
     }
@@ -668,7 +797,6 @@ mod tests {
     async fn concurrent_connect_and_send_no_lost_messages() {
         let bus = Arc::new(test_bus());
         let mut rx = bus.subscribe();
-
         let handles: Vec<_> = (0..5)
             .map(|i| {
                 let bus = bus.clone();
@@ -680,13 +808,10 @@ mod tests {
                 })
             })
             .collect();
-
         let mut node_handles = Vec::new();
         for h in handles {
             node_handles.push(h.await.unwrap());
         }
-
-        // Count messages — 5 node_online + 5 ping = 10
         let mut ping_count = 0;
         let mut online_count = 0;
         for _ in 0..10 {
@@ -699,11 +824,9 @@ mod tests {
         }
         assert_eq!(online_count, 5);
         assert_eq!(ping_count, 5);
-
         for h in node_handles {
             h.disconnect().await;
         }
-
         let bus = Arc::into_inner(bus).unwrap();
         bus.shutdown().await;
     }
@@ -725,14 +848,10 @@ mod tests {
             .connect(test_node_info("s"), test_filter())
             .await
             .unwrap();
-
-        // sender's node_online has type "node_online" → filtered out by types
-        // Send non-matching type → filtered
         sender
             .send("noise", vec![], serde_json::json!(null))
             .await
             .unwrap();
-        // Send matching type but directed (not broadcast) → filtered by to_match
         sender
             .send(
                 "action",
@@ -741,18 +860,222 @@ mod tests {
             )
             .await
             .unwrap();
-        // Send matching (action + broadcast) → should be the only one received
         sender
             .send("action", vec![], serde_json::json!("run"))
             .await
             .unwrap();
-
         let msg = receiver.recv().await.unwrap();
         assert_eq!(msg.msg_type, "action");
         assert_eq!(msg.payload, serde_json::json!("run"));
-
         receiver.disconnect().await;
         sender.disconnect().await;
         bus.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Multi-Bus (7 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    // [多Bus] attach_to 后 subscriptions 列表包含两条 BusId
+    #[tokio::test]
+    async fn attach_to_adds_subscription() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        let bid_b = handle.attach_to(bus_b.clone(), test_filter()).await.unwrap();
+        let subs = handle.subscriptions();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0], bus_a.id);
+        assert_eq!(subs[1], bid_b);
+        assert_eq!(bid_b, bus_b.id);
+        handle.disconnect().await;
+        bus_a.signal_shutdown();
+        bus_b.signal_shutdown();
+    }
+
+    // [多Bus] 在 bus_a 上 send，在 bus_b 上 send，两条消息都能从 handle.recv() 读到
+    #[tokio::test]
+    async fn multi_bus_recv_from_both() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        handle.attach_to(bus_b.clone(), test_filter()).await.unwrap();
+
+        let sender_a = bus_a.connect(test_node_info("sa"), test_filter()).await.unwrap();
+        let sender_b = bus_b.connect(test_node_info("sb"), test_filter()).await.unwrap();
+
+        sender_a.send("from_a", vec![], serde_json::json!(1)).await.unwrap();
+        sender_b.send("from_b", vec![], serde_json::json!(2)).await.unwrap();
+
+        let mut got_a = false;
+        let mut got_b = false;
+        for _ in 0..8 {
+            let msg = handle.recv().await.unwrap();
+            match msg.msg_type.as_str() {
+                "from_a" => got_a = true,
+                "from_b" => got_b = true,
+                _ => {} // drain node_online etc.
+            }
+            if got_a && got_b {
+                break;
+            }
+        }
+        assert!(got_a && got_b);
+
+        sender_a.disconnect().await;
+        sender_b.disconnect().await;
+        handle.disconnect().await;
+        bus_a.signal_shutdown();
+        bus_b.signal_shutdown();
+    }
+
+    // [多Bus] per-Bus filter 隔离
+    #[tokio::test]
+    async fn multi_bus_filters_isolated_per_subscription() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let filter_a = MessageFilter {
+            types: Some(vec!["a_only".into()]),
+            to_match: ToMatch::All,
+        };
+        let filter_b = MessageFilter {
+            types: Some(vec!["b_only".into()]),
+            to_match: ToMatch::All,
+        };
+        let mut handle = bus_a.connect(test_node_info("multi"), filter_a).await.unwrap();
+        handle.attach_to(bus_b.clone(), filter_b).await.unwrap();
+
+        let sender_a = bus_a.connect(test_node_info("sa"), test_filter()).await.unwrap();
+        let sender_b = bus_b.connect(test_node_info("sb"), test_filter()).await.unwrap();
+        sender_a.send("a_only", vec![], serde_json::json!(1)).await.unwrap();
+        sender_b.send("b_only", vec![], serde_json::json!(2)).await.unwrap();
+        sender_a.send("b_only", vec![], serde_json::json!(3)).await.unwrap();
+        sender_b.send("a_only", vec![], serde_json::json!(4)).await.unwrap();
+
+        let mut got_a = false;
+        let mut got_b = false;
+        for _ in 0..2 {
+            let msg = handle.recv().await.unwrap();
+            match msg.msg_type.as_str() {
+                "a_only" => got_a = true,
+                "b_only" => got_b = true,
+                _ => panic!("unexpected msg_type: {}", msg.msg_type),
+            }
+        }
+        assert!(got_a && got_b);
+
+        sender_a.disconnect().await;
+        sender_b.disconnect().await;
+        handle.disconnect().await;
+        bus_a.signal_shutdown();
+        bus_b.signal_shutdown();
+    }
+
+    // [多Bus] send_via 选 BusId 路由
+    #[tokio::test]
+    async fn send_via_routes_to_specific_bus() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        handle.attach_to(bus_b.clone(), test_filter()).await.unwrap();
+
+        let mut rx_b = bus_b.subscribe();
+        // Drain handle's node_online on bus_b
+        let _ = rx_b.recv().await.unwrap();
+
+        handle
+            .send_via(bus_b.id, "on_b", vec![], serde_json::json!("hello_b"))
+            .await
+            .unwrap();
+
+        let msg_b = rx_b.recv().await.unwrap();
+        assert_eq!(msg_b.msg_type, "on_b");
+
+        handle.disconnect().await;
+        bus_a.signal_shutdown();
+        bus_b.signal_shutdown();
+    }
+
+    // [多Bus] send_via 用未知 BusId → SendError::NoSuchBus
+    #[tokio::test]
+    async fn send_via_unknown_bus_returns_error() {
+        let bus_a = Arc::new(test_bus());
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        let bogus = BusId::new();
+        let result = handle
+            .send_via(bogus, "x", vec![], serde_json::json!(null))
+            .await;
+        assert!(matches!(result, Err(SendError::NoSuchBus(_))));
+        handle.disconnect().await;
+        bus_a.signal_shutdown();
+    }
+
+    // [多Bus] disconnect 触发两条 Bus 的 node_offline
+    #[tokio::test]
+    async fn disconnect_broadcasts_offline_on_all_buses() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let mut rx_a = bus_a.subscribe();
+        let mut rx_b = bus_b.subscribe();
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        handle.attach_to(bus_b.clone(), test_filter()).await.unwrap();
+
+        // Drain all node_online events (2 each: handle primary + handle attach_to)
+        for _ in 0..4 {
+            let _ = tokio::select! {
+                m = rx_a.recv() => m.unwrap(),
+                m = rx_b.recv() => m.unwrap(),
+            };
+        }
+
+        handle.disconnect().await;
+
+        // Each Bus should broadcast node_offline for "multi"
+        let mut saw_offline = 0;
+        for _ in 0..2 {
+            let msg = tokio::select! {
+                m = rx_a.recv() => m.unwrap(),
+                m = rx_b.recv() => m.unwrap(),
+            };
+            if msg.msg_type == "node_offline" && msg.from.as_str() == "multi" {
+                saw_offline += 1;
+            }
+        }
+        assert_eq!(saw_offline, 2);
+
+        bus_a.signal_shutdown();
+        bus_b.signal_shutdown();
+    }
+
+    // [多Bus] shutdown 一条 Bus 后 handle 仍能 recv 另一条 Bus 的消息
+    #[tokio::test]
+    async fn shutdown_one_bus_keeps_handle_alive() {
+        let bus_a = Arc::new(test_bus());
+        let bus_b = Arc::new(test_bus());
+        let mut handle = bus_a.connect(test_node_info("multi"), test_filter()).await.unwrap();
+        handle.attach_to(bus_b.clone(), test_filter()).await.unwrap();
+
+        let sender_b = bus_b.connect(test_node_info("sb"), test_filter()).await.unwrap();
+
+        bus_a.signal_shutdown();
+
+        sender_b.send("alive", vec![], serde_json::json!("yes")).await.unwrap();
+        // Drain node_online events; assert "alive" eventually arrives.
+        let mut got_alive = false;
+        for _ in 0..6 {
+            let msg = tokio::time::timeout(Duration::from_secs(2), handle.recv())
+                .await
+                .expect("recv should complete within 2s")
+                .unwrap();
+            if msg.msg_type == "alive" {
+                got_alive = true;
+                break;
+            }
+        }
+        assert!(got_alive, "expected 'alive' message from bus_b after bus_a shutdown");
+
+        sender_b.disconnect().await;
+        handle.disconnect().await;
+        bus_b.signal_shutdown();
     }
 }

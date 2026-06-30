@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod node;
+// Re-export BusId so downstream crates don't need to know about the `node` module layout.
+pub use node::BusId;
 
 // ── NodeId ───────────────────────────────────────────────────────────
 
@@ -193,6 +195,9 @@ pub enum SendError {
     NodeOffline(Vec<NodeId>),
     /// Bus has been shut down.
     BusClosed,
+    /// `send_via` was called with a `BusId` that this handle is not attached to.
+    /// (Phase 6 multi-Bus — added in task 6.0.2.)
+    NoSuchBus(crate::node::BusId),
 }
 
 impl std::fmt::Display for SendError {
@@ -203,6 +208,7 @@ impl std::fmt::Display for SendError {
                 write!(f, "target nodes offline: {}", names.join(", "))
             }
             Self::BusClosed => write!(f, "bus closed"),
+            Self::NoSuchBus(bid) => write!(f, "no such bus: {bid}"),
         }
     }
 }
