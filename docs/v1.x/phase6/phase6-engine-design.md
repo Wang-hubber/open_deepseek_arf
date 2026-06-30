@@ -2550,3 +2550,390 @@ if __name__ == "__main__":
 - ~~`EngineBuilder.build(config)` 多态~~ → 已统一。§3 和 §14 均使用 `EngineBuilder::new(bus).build(config)`。
 - `Capability` Python 构造简化为 `Capability(key="k", value="v")`（vs Rust 侧 `Capability::new(key, value)`）——语言惯例差异，合理。
 - McpNode Python 绑定缺少 `shutdown()` 方法——app.py 第 1530 行用 `hasattr` 兜底，后续 Rust MCP 实现需补充。
+
+---
+
+## 15. Pool 节点架构（2026-06-30 增）
+
+> 状态：设计
+> 动机：Engine 属于消费者，它和 Model API / MCP server 等生产者**不是幂等关系**（请求与响应必须 1:1 耦合）。当同质资源出现突发并发，单实例 Node 会成为瓶颈或触发生产者限流。本节定义 `Pool` 抽象：在 §1.5 Multi-Bus 基础上提供"同质资源 + 容量上限 + 生命周期管理"的通用模板，`ModelAdapterPool` / `McpPool` 是两个具体实现。
+
+### 15.1 架构定位
+
+```
+顶层 Bus ─────────────┬─ Engine (stateful, 单实例)
+                       ├─ ModelAdapterPool ─── sub-Bus ── model_node_1 ... model_node_N
+                       └─ McpPool ─────────── sub-Bus ── tool_node_1 ... tool_node_M
+                                          ↑
+                                       一个 Pool Node (1 个 NodeId)
+```
+
+**五条边界**：
+
+1. **新增框架级 crate**：`arf-pool`，位于 `arf-engine` 平级（不在 Engine 内部）。
+2. **Pool = §1.5.3 域控制器（高效拓扑）的特殊化**：区别是 Pool 内置容量 / Lifecycle / Overflow 控制，普通 facade 不带。
+3. **Resource trait 是池化对象的最小契约**：`ModelAdapterResource` / `McpResource` 是两个内置实现；App 可实现 `MemoryResource` / `HttpResource` 等扩展。
+4. **App 配 Pool 行为（YAGNI 内置的"智能"决策）**：`min_nodes` / `max_nodes` / `idle_timeout` / `overflow` 全部由 App 显式声明，框架不内置自动调优。
+5. **不破坏 §10 三条边界**：Engine 不知道 Pool 存在；Pool 不知道 Engine 存在；Resource trait 不引入新边界。
+
+**与 §1.5 关系**：
+- 复用 §1.5.2 `Node` trait / `attach_to` / 多 Bus
+- 复用 §1.5.2 `Bus::barrier`（Pool 需要时 App 可对 sub-Node 做 barrier）
+- 复用 §3.3.2 Discovery 缓存（Pool 顶层 Node 走正常 Discovery）
+- 复用 §2.0 `BuildError`（新增变体）
+
+### 15.2 组件与数据流
+
+#### 15.2.1 组件清单
+
+| 组件 | 位置 | 职责 |
+|------|------|------|
+| `Resource` trait | `arf-pool/src/resource.rs` | 池化对象最小契约 |
+| `PoolConfig` | `arf-pool/src/config.rs` | 容量 / idle / overflow 策略 |
+| `ResourceManager<R>` | `arf-pool/src/manager.rs` | 生命周期：创建 / 扩缩 / 排队 |
+| `PoolNode<R>` | `arf-pool/src/pool_node.rs` | 顶层 Bus 上的 1 个 Node |
+| `Pool<R>` | `arf-pool/src/pool.rs` | 公开 API：new / connect / drain / stats |
+| `ModelAdapterResource` | `arf-adapter/src/pool_resource.rs` | ModelAdapter 的 Resource 适配器 |
+| `McpResource` | `arf-mcp/src/pool_resource.rs` | McpClientManager 的 Resource 适配器 |
+
+#### 15.2.2 一次 `model_call` 全程
+
+```
+1. Engine (top bus)
+   publish model_call msg, to=[model_pool]
+
+2. ModelAdapterPool::on_message  (PoolNode in top bus)
+   manager.acquire()  // 取出空闲 sub-Node；无空闲则走 overflow 策略
+   改写 msg：to=[sub_node_id], from_bus=Some(top_bus_id)
+   msg_via(sub_bus, sub_node_id, payload)
+
+3. sub-Bus
+   broadcast → sub_node 收到
+
+4. ModelAdapterResource (sub node)
+   调真实 ModelAdapter.chat(messages)
+   publish model_response back to sub-Bus
+
+5. sub-Bus
+   PoolNode 收到 model_response
+   manager.release(sub_node_id)  // sub-Node 标记空闲
+   把 model_response 投回 top bus, to=[engine_id]
+
+6. Engine 收到 model_response, ReAct 循环继续
+```
+
+**关键约定**：
+- `correlation_id` 透传：步骤 2-5 全程不变，Engine 的 WaitEvent 按它匹配
+- `from_bus` 透传：sub_node 看到的 `from_bus` = top bus id（不是 sub-bus id）
+- PoolNode 不解析 `payload` 内部字段，只做 transport 转发
+
+#### 15.2.3 容量 / Lifecycle 状态机（sub-Node 维度）
+
+```
+                ┌─ min_nodes 保底（创建后永不自动销毁）
+                │
+   [Nil] ──new──> [Idle] ◀── release ── [Busy] ── acquire ──> [Idle]
+                  │   │                                          │
+                  │   └── idle_timeout 触发 ──> [Draining]        │
+                  │                            │                  │
+                  │                            ▼                  │
+                  └────────── new (需要时) ── [Nil]               │
+                                                               │
+                                       overflow 触发新 sub_node ┘
+```
+
+- **Nil**：sub-Node 不存在（未创建 / 已销毁）
+- **Idle**：已存在但未在处理请求
+- **Busy**：正在处理 1 个请求（Pool 是 1:1 锁，不支持单 sub-Node 内部并发）
+- **Draining**：idle 超时，停止接收新请求，等当前请求完成后销毁
+
+**ResourceManager 内部数据**：
+- `live: HashMap<NodeId, SubNodeState>` —— 当前存活的 sub-Node
+- `pending: VecDeque<Waiter>` —— overflow=Queue 时的等待者
+- `waiters: HashMap<correlation_id, oneshot::Sender>` —— Waiter 等响应时阻塞的位置
+- `last_used: HashMap<NodeId, Instant>` —— 用于 idle_timeout 检查
+
+#### 15.2.4 Overflow 三种策略
+
+| 策略 | acquire 行为 | 失败模式 |
+|------|------------|----------|
+| `Queue { max_pending }` | 当前 live 全忙 → 入 `pending` 队列；超过 `max_pending` → 返回 `PoolError::QueueFull` | 返回错误给调用方 |
+| `Reject` | 当前 live 全忙且已 == `max_nodes` → 返回 `PoolError::NoCapacity` | 立即返回 |
+| `Block { acquire_timeout }` | 当前 live 全忙 → await 到有 sub-Node release；`acquire_timeout` 到期立即返回 | 超时返回 `PoolError::AcquireTimeout` |
+
+**所有 overflow 策略都先尝试扩 sub-Node**（在 `[Nil] → [Idle]` 边）——这正是 "动态并发度" 的体现。只有在已达 `max_nodes` 上限后才走 overflow 分支。
+
+### 15.3 错误模型
+
+新增 `PoolError`（沿用 §2.0 分组约定）：
+
+```rust
+// crates/arf-pool/src/error.rs
+
+pub enum PoolError {
+    /// 构造时参数非法（min > max, min < 0, ...）
+    InvalidConfig { reason: String },
+
+    /// Overflow::Queue 队列满
+    QueueFull { pending: usize, max: usize },
+
+    /// Overflow::Reject + 已达 max_nodes
+    NoCapacity { live: usize, max: usize },
+
+    /// Overflow::Block + acquire_timeout 到期
+    AcquireTimeout { waited: Duration },
+
+    /// 工厂闭包创建 Resource 失败
+    FactoryFailed { source: String },
+
+    /// 内部 sub-Bus 关闭
+    SubBusShutdown,
+
+    /// Snapshot / restore 失败（透传 Resource 自己的错误）
+    ResourceSnapshot { node_id: NodeId, source: String },
+}
+```
+
+`PoolError` 通过 `model_call` / `tool_exec` 响应字段 `error: String` 体现（沿用 §3.2 `Response::Done` 业务错误约定），或通过 `node_offline` lifecycle signal 触发 §5.7 流程。
+
+### 15.4 Snapshot / Restore
+
+Pool 的状态 = `ResourceManager` 的 manifest + 所有 live sub-Node 的 state。
+
+```rust
+pub struct PoolSnapshot {
+    pub manifest: PoolManifest,         // min/max/idle/overflow/...
+    pub live_sub_nodes: Vec<(NodeId, serde_json::Value)>,  // sub-Node id + 各自 state
+    pub last_used: HashMap<NodeId, Instant>,
+}
+
+pub struct PoolManifest {
+    pub min_nodes: usize,
+    pub max_nodes: usize,
+    pub idle_timeout: Duration,
+    pub overflow: OverflowStrategy,
+}
+```
+
+**约定**：
+- `PoolNode::snapshot` 是 `&self`（与 §1.5.2 决议一致）——读锁 manager manifest
+- 遍历 live sub-Node 时**串行调用**（避免一次性锁住所有 sub-Node）
+- `restore` 是 `&mut self`——清空当前 live，按 snapshot 重建（App 需在 restore 前停 Engine，或用 barrier 等机制确保无 in-flight 消息穿过 sub-Bus）
+- idle 超时计时器**不持久化**（恢复后从 0 重新计）
+
+### 15.5 可观测性
+
+`PoolStats` 由 App 主动 poll（不主动 push）：
+
+```rust
+pub struct PoolStats {
+    pub live: usize,                    // 当前存活 sub-Node 数
+    pub busy: usize,                    // Busy 状态数
+    pub idle: usize,                    // Idle 状态数
+    pub draining: usize,                // Draining 状态数
+    pub pending: usize,                 // Overflow::Queue 等待者数
+    pub total_acquired: u64,            // 累计 acquire 次数
+    pub total_released: u64,            // 累计 release 次数
+    pub total_evicted: u64,             // idle_timeout 销毁次数
+    pub total_capacity_rejections: u64, // Overflow 拒绝次数
+}
+```
+
+**集成方式**：App 在自己的 metrics / tracing adapter 里周期性 `pool.stats()`，挂到 OTel / Prometheus / 自家监控。Pool 本身**不集成任何 metrics 后端**（与 §1.5.2 Node::snapshot 同样的"框架不给依赖"原则）。
+
+### 15.6 App 使用模式
+
+#### 15.6.1 创建 ModelAdapterPool
+
+```rust
+use arf_pool::{Pool, PoolConfig, OverflowStrategy};
+use arf_adapter::ModelAdapterResource;
+use std::time::Duration;
+
+let model_pool = Pool::new(
+    &top_bus,
+    Arc::new(|| ModelAdapterResource::new(ModelConfig {
+        base_url: "https://api.deepseek.com".into(),
+        api_key: env::var("DEEPSEEK_API_KEY")?,
+        model_name: "deepseek-chat".into(),
+        context_window: 128_000,
+    })),
+    PoolConfig {
+        node_id: NodeId::new("model_pool"),
+        capabilities: json!({
+            "kind": "model",
+            "tier": "primary",
+        }),
+        min_nodes: 1,                              // lazy 启动 1 个保底
+        max_nodes: 4,                              // 突发可扩到 4
+        idle_timeout: Duration::from_secs(60),     // 60 秒空闲就回收
+        overflow: OverflowStrategy::Queue { max_pending: 8 },
+    },
+).await?;
+
+model_pool.connect(&top_bus).await?;
+```
+
+#### 15.6.2 创建 McpPool
+
+```rust
+use arf_mcp::McpResource;
+
+let mcp_pool = Pool::new(
+    &top_bus,
+    Arc::new(|| McpResource::new(McpConfig {
+        servers: vec![McpServerConfig::stdio("filesystem", "npx", ...)],
+        tools_dir: ...,
+    })),
+    PoolConfig {
+        node_id: NodeId::new("mcp_pool"),
+        capabilities: json!({"kind": "mcp", "transport": "stdio"}),
+        min_nodes: 1,
+        max_nodes: 2,                              // MCP 子进程重,谨慎
+        idle_timeout: Duration::from_secs(120),
+        overflow: OverflowStrategy::Reject,        // 不排队,直接拒绝
+    },
+).await?;
+```
+
+#### 15.6.3 Engine 端零改动
+
+```rust
+// §3 装配示例完全不变 —— Discovery 路由 model_call 时自动匹配 model_pool
+let engine = EngineBuilder::new(bus=top_bus.clone())
+    .build(config=AgentConfig {
+        routes: hashmap!{
+            "model_call" => Route::Discovery(Capability {
+                requirements: vec![("kind".into(), "model".into())],
+            }),
+            "tool_exec"  => Route::Discovery(Capability {
+                requirements: vec![("kind".into(), "mcp".into())],
+            }),
+            // ... 其余不变
+        },
+        ..Default::default()
+    })
+    .await?;
+```
+
+**关键点**：
+- Engine 的 `model_call` 不需要知道目标是 Pool 还是单 ModelAdapter
+- Discovery 匹配 `kind=model` 时把 Pool 顶层 Node 当作 receiver 返回
+- Engine 发出去的就是一条普通 msg；Pool 内部完成 fan-out / in
+
+#### 15.6.4 优雅关闭
+
+```rust
+// App 退出前
+let report = model_pool.drain().await?;
+tracing::info!(?report, "model pool drained");
+// report: { evicted: 3, in_flight: 0, failed: 0 }
+```
+
+`drain()` 行为：
+1. 立即停止接收新 acquire
+2. 等所有 in-flight 请求完成（带 timeout）
+3. 销毁所有 sub-Node
+4. 返回 `DrainReport { evicted, in_flight, failed }`
+
+#### 15.6.5 与现有快照 / 恢复集成
+
+```rust
+// snapshot
+let pool_snapshot = model_pool.snapshot().await?;
+store.put("pools", json!({
+    "model_pool": pool_snapshot,
+    "mcp_pool": mcp_pool.snapshot().await?,
+})).await?;
+
+// restore
+let snapshot = store.get("pools").await?;
+model_pool.restore(snapshot["model_pool"].clone()).await?;
+```
+
+### 15.7 API 表面（Rust trait sketch）
+
+```rust
+// crates/arf-pool/src/lib.rs —— 框架级 crate
+
+/// 池化对象最小契约。任何实现该 trait 的类型都可挂到 Pool<R> 上。
+pub trait Resource: Send + Sync {
+    fn id(&self) -> &str;
+    fn capabilities(&self) -> serde_json::Value;  // 用于 sub-Bus NodeInfo
+    fn snapshot(&self) -> Result<serde_json::Value, SnapshotError>;
+    fn restore(&mut self, v: serde_json::Value) -> Result<(), RestoreError>;
+}
+
+pub struct PoolConfig {
+    pub node_id: NodeId,
+    pub capabilities: serde_json::Value,      // 顶层 Bus 上声明的能力
+    pub min_nodes: usize,                    // 保底数量 (lazy 启动)
+    pub max_nodes: usize,                    // 硬上限
+    pub idle_timeout: Duration,              // 超时销毁
+    pub overflow: OverflowStrategy,          // Queue(n) | Reject | Block
+}
+
+pub enum OverflowStrategy {
+    Queue { max_pending: usize },
+    Reject,
+    Block { acquire_timeout: Duration },
+}
+
+pub struct Pool<R: Resource> {
+    top_handle: NodeHandle,                  // 顶层 Bus Node
+    sub_bus: Bus,                            // 内部 sub-Bus
+    manager: ResourceManager<R>,
+    // ...
+}
+
+impl<R: Resource + 'static> Pool<R> {
+    pub async fn new(
+        top_bus: &Bus,
+        factory: Arc<dyn Fn() -> R>,
+        config: PoolConfig,
+    ) -> Result<Arc<Self>, PoolError>;
+
+    /// 对顶层 Bus 注册（应在 new() 后调用）
+    pub async fn connect(&self) -> Result<(), BusError>;
+
+    /// 强制缩容到 min_nodes
+    pub async fn drain(&self) -> Result<DrainReport, PoolError>;
+
+    /// 指标
+    pub fn stats(&self) -> PoolStats;
+}
+
+/// PoolNode 的 on_message 路由：
+/// 1. manager.acquire() 拿 sub-Node (Queue/Block 可能 await)
+/// 2. 改写 msg.to = [sub_node_id], 投到 sub_bus
+/// 3. 等 sub_node 响应 (correlation_id 不变)
+/// 4. manager.release(sub_node_id)
+/// 5. 把响应原样投回 top_bus
+```
+
+### 15.8 测试策略（边界优先）
+
+按 CLAUDE.md 边界优先测试约定：
+
+| 边界 | 测什么 |
+|------|--------|
+| `[构造]` | min=0, min>max, min<0 等非法 config |
+| `[方法]` | acquire / release 在 Idle / Busy / Draining 各种状态下的行为 |
+| `[边界]` | max_nodes 触顶时 Overflow 三种策略的分支 |
+| `[时间]` | idle_timeout 销毁的精确性（用 tokio test 时间注入） |
+| `[并发]` | N 个并发 acquire 不会让 live 超过 max_nodes |
+| `[资源]` | FactoryFailed 时 Pool 仍能正常服务后续请求 |
+| `[快照]` | snapshot + restore 完整 round-trip；manifest 与 live 状态都恢复 |
+| `[回归]` | 与 §1.5.2 域控制器 facade 互不干扰（Pool + 普通 facade 并存） |
+
+集成测试必须包含：
+- Engine + ModelAdapterPool + McpPool 跑通 ReAct 完整 round
+- Pool 满载时 Engine 端 `model_call` 行为（按 overflow 策略走）
+
+### 15.9 不在 §15 范围内（YAGNI）
+
+- Pool 内部请求的优先级队列（FIFO 是默认）
+- Pool 内 sub-Node 间的请求路由策略（轮询 / 随机 / 最少连接——当前由 acquire 顺序决定）
+- Pool 自动水平扩缩（基于 CPU / 内存指标的自动调优）——App 显式配置
+- Pool 嵌套（Pool 内有 Pool）——增加复杂度，无明确需求
+- Pool metrics 主动 push（gauge / counter 主动报告）——App 显式 poll
