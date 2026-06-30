@@ -114,17 +114,105 @@ pub enum Route {
     /// 发现模式：发向 BusGraph 中声明了该 capability 的所有节点
     Discovery(Capability),
 }
-
-pub struct Capability {
-    pub key: String,       // e.g. "kind"
-    pub value: String,     // e.g. "model" | "mcp" | "memory" | "compactor"
-}
 ```
 
 **Discovery + Query 语义**：Engine 等所有匹配节点最终响应。
 **Discovery + Command 语义**：Engine 不等，所有匹配节点收到后自行处理。
 
 无 `Any` 模式——必须显式声明 capability 才能 Discovery。
+
+#### 2.3.1 Capability 匹配机制
+
+**Node 声明能力**（connect 时一次性声明）：
+
+```rust
+// McpNode 注册时声明
+let mcp_info = NodeInfo {
+    node_id: NodeId::new("local_mcp"),
+    capabilities: serde_json::json!({
+        "kind": "mcp",
+        "transport": "stdio",
+        "tools": ["read_file", "bash", "edit_file"],
+    }),
+    ...
+};
+bus.connect(mcp_info, mcp_filter).await?;
+
+// ModelAdapter 注册时声明
+let model_info = NodeInfo {
+    node_id: NodeId::new("primary_model"),
+    capabilities: serde_json::json!({
+        "kind": "model",
+        "tier": "primary",
+        "model_name": "claude-opus-4-7",
+        "context_window": 200000,
+    }),
+    ...
+};
+```
+
+**Capability 定义**（多对 key-value，AND 语义）：
+
+```rust
+pub struct Capability {
+    /// 全部满足才算匹配（AND 语义）
+    pub requirements: Vec<(String, String)>,
+}
+```
+
+**Engine 解析 Discovery Route**：
+
+```
+Route::Discovery(cap) 触发解析
+       │
+       ▼
+遍历 BusGraph.nodes（在线节点列表）
+       │
+       ▼
+对每个 NodeInfo：
+    node.capabilities 是否包含 cap.requirements 的所有 key-value？
+       │
+       ├─ yes → 加入 receivers 列表
+       └─ no  → skip
+       │
+       ▼
+receivers 列表（可能为空，可能多个）
+       │
+       ▼
+按 receivers 投递消息
+```
+
+**匹配示例**：
+
+```rust
+// 匹配任何 MCP 节点
+Capability { requirements: vec![("kind".into(), "mcp".into())] }
+// 命中：local_mcp
+
+// 匹配 primary 层的 model
+Capability { requirements: vec![
+    ("kind".into(), "model".into()),
+    ("tier".into(), "primary".into()),
+]}
+// 命中：NodeInfo.capabilities.kind == "model" && tier == "primary"
+
+// 匹配 file-backed memory
+Capability { requirements: vec![
+    ("kind".into(), "memory".into()),
+    ("backend".into(), "file".into()),
+]}
+```
+
+**关键约定**：
+- `requirements` 全部满足才匹配（**AND 语义**；需要 OR 时拆成多次 Discovery）
+- `NodeInfo.capabilities` 是 JSON Value，可以是字符串、数字、数组、对象——Capability 匹配只看**顶层字符串字段**；数组/嵌套对象不进 match
+- Capabilities 在 connect 时声明，**不变直到 disconnect + reconnect**；运行时变更需重连
+- Engine 缓存解析结果，收到 `node_online` / `node_offline` 事件时失效缓存
+
+**边界场景**：
+- 无匹配 → Engine 抛 `NoReceiver` 错误，App 决定 fail-fast / 降级 / 重试
+- 单匹配 → 退化为 Strict 单 receiver 行为
+- 多匹配 → 按 Discovery 语义（Query 等全部，Command 全发）
 
 ### 2.4 State（三部分）
 
