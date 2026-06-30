@@ -566,7 +566,117 @@ Capability { requirements: vec![
 - `NodeInfo.capabilities` 是 JSON Value，可以是字符串、数字、数组、对象——Capability 匹配只看**顶层字符串字段**；数组/嵌套对象不进 match
 - **App 不要把路由关键信息放在数组里**——数组字段只能用于 Node 信息展示（如 `tools: ["read_file", "bash"]` 仅给人看，不能用于 Discovery 匹配）
 - Capabilities 在 connect 时声明，**不变直到 disconnect + reconnect**；运行时变更需重连
-- Engine 缓存解析结果，收到 `node_online` / `node_offline` lifecycle signal 时失效缓存
+
+#### 3.3.2 Discovery Cache（2026-06-30 补全 §G11）
+
+Engine 内部维护 Discovery 路由解析结果缓存，避免每次 publish 都遍历 BusGraph。
+
+**数据结构**：
+
+```rust
+// crates/arf-engine/src/cache.rs
+
+/// Discovery 路由解析缓存。Capability → 当前匹配该 Capability 的 NodeId 集合。
+/// RwLock 保护：run() 并发读、lifecycle signal 触发增量写。
+pub struct DiscoveryCache {
+    matches: RwLock<HashMap<Capability, HashSet<NodeId>>>,
+}
+
+impl DiscoveryCache {
+    /// 获取 receivers，未命中则 lazy resolve 并缓存。
+    pub fn get_or_resolve<F>(&self, cap: &Capability, resolver: F) -> HashSet<NodeId>
+    where F: FnOnce() -> HashSet<NodeId>;
+
+    /// 增量失效：node_online 触发
+    pub fn on_node_online(&self, node_id: NodeId, caps: &serde_json::Value);
+
+    /// 增量失效：node_offline 触发
+    pub fn on_node_offline(&self, node_id: NodeId);
+
+    /// 全清（App 显式调用，如 Bus 拓扑重建）
+    pub fn clear(&self);
+}
+```
+
+**Engine 集成**：
+
+```rust
+// Engine 内部结构（§4.3）：
+pub struct Engine {
+    config: Arc<AgentConfig>,
+    bus: Vec<Arc<Bus>>,
+    routes: Arc<HashMap<String, Route>>,
+    checkpoint_rules: Arc<Vec<CheckpointRule>>,
+    discovery_cache: Arc<DiscoveryCache>,  // 新增（2026-06-30）
+}
+
+// Engine 订阅 Bus 的 lifecycle signal：
+engine.subscribe_lifecycle_signals(buses);
+// node_online 触发 DiscoveryCache::on_node_online()
+// node_offline 触发 DiscoveryCache::on_node_offline()
+
+// publish Discovery 路由时：
+async fn publish_discovery(&self, msg: &dyn ActionMessage, cap: &Capability) {
+    let receivers = self.discovery_cache.get_or_resolve(cap, || {
+        // 首次或失效后重算：遍历所有 Bus 的 graph
+        self.buses.iter()
+            .flat_map(|b| b.graph().nodes.iter())
+            .filter(|n| n.capabilities.matches(cap))
+            .map(|n| n.node_id.clone())
+            .collect()
+    });
+    if receivers.is_empty() {
+        return Err(EngineError::NoReceiver { ... });
+    }
+    self.bus.publish(msg=msg, to=receivers).await?;
+}
+```
+
+**失效策略：增量更新**（2026-06-30 决议）：
+
+```rust
+// node_online 增量：
+impl DiscoveryCache {
+    pub fn on_node_online(&self, node_id: NodeId, caps: &serde_json::Value) {
+        let mut matches = self.matches.write().unwrap();
+        for (cap, set) in matches.iter_mut() {
+            if caps.matches(cap) {  // 新 Node 匹配该 Capability
+                set.insert(node_id.clone());
+            }
+        }
+    }
+
+    pub fn on_node_offline(&self, node_id: NodeId) {
+        let mut matches = self.matches.write().unwrap();
+        for (_, set) in matches.iter_mut() {
+            set.remove(&node_id);  // 从所有 set 中移除
+        }
+    }
+}
+```
+
+**性能特征**：
+- 增量失效：O(capability_count × average_set_size)，不重新遍历 BusGraph
+- get_or_resolve 命中：O(1)（HashMap 查找 + clone HashSet）
+- get_or_resolve 未命中：O(node_count) 首次计算
+- 总成本：Engine 启动时 N 个 Capability 各懒解析一次；后续 lifecycle 增量维护
+
+**多 Bus 不变式**：
+- NodeId 全局唯一（§1.5.2），同一 NodeId 在多 Bus 上是同一节点
+- Cache 不需记录 BusId——publish 时 Bus 通过 NodeId 路由
+- 多 Bus 拓扑变更（如 App 加 Bus）触发 `cache.clear()` + 懒重算
+
+**与 build() 校验的关系**：
+- `build()` 时对所有 routes 做 fail-fast 校验（Strict/MissingCapabilities）
+- Discovery 缓存在运行时懒填充，不在 build() 时
+- 首次 publish Discovery msg 时 cache miss → resolve → 缓存
+
+**为什么需要缓存**（2026-06-30 决议动机）：
+- 不缓存：每次 publish Discovery 都要遍历 BusGraph（O(node_count)），大拓扑下代价高
+- 缓存后：Engine 在自己内存里查 receivers（O(1)），**完全不轮询 Bus**
+- Engine 通过订阅 Bus 的 lifecycle signal（push-based）维护缓存——Bus 不被 Engine 轮询
+- 这把"Engine 需要知道哪些 Node 在线"的查询开销从 N 次/BusGraph 降到 O(1) 内存查找
+- Bus 的设计目标（§1.5）：**不**被 Engine 频繁 query；lifecycle signal 是 push 而不是 pull
 
 **边界场景**：
 - 无匹配 → Engine 抛 `NoReceiver` 错误，App 决定 fail-fast / 降级 / 重试
