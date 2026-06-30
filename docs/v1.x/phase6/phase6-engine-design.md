@@ -1093,7 +1093,7 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 
 ## 10. 三条不可违反的边界
 
-1. **Engine 不知道任何具体节点类型** —— `ModelAdapter` / `McpNode` / `MemoryNode` 等字眼不出现在 Engine 代码
+1. **Engine 不知道任何具体节点类型** —— Engine 代码不 `use` 任何具体 Node 实现所在的 crate；`ModelAdapter` / `McpNode` / `MemoryNode` 等节点类型名不出现在 Engine 代码。msg_type 字符串（`"model_call"` / `"tool_exec"` 等）是路由 key，与节点类型名解耦——**不构成边界违反**。
 2. **Node 不知道 Engine 的存在** —— Node 只订阅 msg_types，不假设发送者是 Engine
 3. **Checkpoint 是位置，不是消息类型** —— 5 个位置固定；具体发什么 msg 由 CheckpointRule 决定
 
