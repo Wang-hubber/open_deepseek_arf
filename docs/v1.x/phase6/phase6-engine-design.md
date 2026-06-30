@@ -596,17 +596,34 @@ for rule in &self.checkpoint_rules {
 
 `EngineBuilder.build(config)` 内部顺序执行：
 
-1. **校验 routes**：检查 `AgentConfig.routes` 中所有 msg_type 对应的 Node 都已在 BusGraph 上线（fail-fast）
-2. **收集 Skills**：遍历 BusGraph 中所有 `kind=skill` 的 Node，取它们 expose 的 skill 描述，填到 `system_prompt_template` 的 `{{skills}}` 占位符
-3. **收集 Tools**：遍历 BusGraph 中所有 `kind=mcp` 的 Node，取它们 declare 的 tools，存为 `Engine.tools: Vec<ToolSpec>`（**不**写入 prompt，见下方）
-4. **格式化 system prompt**：用填好 skills 的 prompt 生成 `messages[0]`（system role）
-5. **追加 initial_memory**：将 `config.initial_memory: Vec<String>` 依次转为 system role messages，追加到 `messages[1..]`（保持最长前缀稳定）
-6. **创建 Engine**：Engine 持有 (formatted_messages + initial_memory) 作为初始 state.messages
+1. **聚合多 Bus 视图**：EngineBuilder 接 `buses: Vec<Arc<Bus>>`，build() 遍历所有 Bus 的 graph，union 为 `merged_graph: Vec<NodeInfo>`（**Bus 上节点先去重**：NodeId 全局唯一，同一 Node 在多条 Bus 上只出现一次，详见 §1.5.2）
+2. **校验 routes**：检查 `AgentConfig.routes` 中所有 msg_type 对应的 Node（Strict → 精确 NodeId；Discovery → Capability 匹配）都在 `merged_graph` 上线（fail-fast）
+3. **过滤并收集 Skills**：遍历 `merged_graph` 中所有 `kind=skill` 的 Node，过滤 `config.skills_include / skills_exclude`（glob 模式），将命中的 skill 描述填到 `system_prompt_template` 的 `{{skills}}` 占位符
+4. **过滤并收集 Tools**：遍历 `merged_graph` 中所有 `kind=mcp` 的 Node，过滤 `config.tools_include / tools_exclude`，将命中的 tools 存为 `Engine.tools: Vec<ToolSpec>`（**不**写入 prompt，见下方）
+5. **格式化 system prompt**：用填好 skills 的 prompt 生成 `messages[0]`（system role）
+6. **追加 initial_memory**：将 `config.initial_memory: Vec<String>` 依次转为 system role messages，追加到 `messages[1..]`（保持最长前缀稳定）
+7. **创建 Engine**：Engine 持有 (formatted_messages + initial_memory) 作为初始 state.messages
+
+**资源过滤 glob 语法**（2026-06-30 决议）：
+- 工具/技能的完整标识符为 `{node_id}.{tool_name}`（如 `mcp_local.read_file`、`skill_hub.greet`）
+- include 模式匹配 glob：
+  - `exact_name` — 精确匹配（如 `read_file` 匹配任何 node 上的 `read_file`）
+  - `node_id.*` — 匹配该 node 上的所有工具（如 `mcp_local.*`）
+  - `*:read_*` — 匹配任何 node 上以 `read_` 开头的工具
+  - `mcp_*` — 匹配任何以 `mcp_` 开头的 node
+- exclude 模式语法同上；**excluded 优先于 included**（先 exclude，再 include）
+- include 为空列表 → 不收任何该类资源；include 为 None 或包含 `*` → 收全部（除非被 exclude）
 
 **Tools 不入 prompt**（2026-06-30 决议）：
 - LLM API（OpenAI/Anthropic/DeepSeek）原生支持 `tools` 参数，独立于 system prompt
 - Engine 在构造 `ModelCall` 时将 `Engine.tools` 装入 payload（不是 state.messages 的一部分）
 - App 的 `system_prompt_template` 中**不应**包含 `{{tools}}` 占位符（如果写了，Engine 不替换）
+
+**多 Bus 视图聚合**（2026-06-30 决议）：
+- EngineBuilder 现在接 `buses: Vec<Arc<Bus>>`，不是单 Bus
+- build() 把所有 Bus 的 graph union 为 merged_graph（NodeId 去重）
+- routes 校验、tools/skills 收集都走 merged_graph
+- App 显式声明 Engine 订阅哪些 Bus（与 §1.5 Node trait 的 `attach_to` 配合）
 
 **Memory 注入语义**（2026-06-30 决议）：
 - **固定 memory（build 时）**：`config.initial_memory` 追加到 messages 前缀，作为 system role message
@@ -670,28 +687,37 @@ App 通过 `EngineBuilder` 把所有部件组装起来。Engine 不参与装配�
 ```rust
 // crates/arf-agent/src/builder.rs
 
-// ── 1. 创建 Bus ─────────────────────────────────────────────────
-let bus = Bus::new(heartbeat_interval=5000, heartbeat_timeout=15000, channel_capacity=64);
+// ── 1. 创建 Bus（可多个）───────────────────────────────────────
+let bus_top = Bus::new(heartbeat_interval=5000, heartbeat_timeout=15000, channel_capacity=64);
+let bus_sub = Bus::new(heartbeat_interval=5000, heartbeat_timeout=15000, channel_capacity=64);
+// EngineBuilder.build() 聚合所有 Bus 的 graph（NodeId 去重）
 
 // ── 2. 创建并连接具体 Node（必须在 build() 之前！）───────────────
-//    build() 时 fail-fast 校验 routes → 查 BusGraph，
+//    build() 时 fail-fast 校验 routes → 查 merged_graph，
 //    若 node_id 不在线或 capability 无匹配，返回 BuildError。
 let model = ModelAdapter::new(
     node_id=NodeId::new(id="primary_model"),
     config=model_config,
 );
-bus.connect(info=model.info(), filter=model.filter()).await?;
+bus_top.connect(info=model.info(), filter=model.filter()).await?;
 
 let mcp = McpNode::new(
     node_id=NodeId::new(id="local_mcp"),
     config=mcp_config,
 );
-bus.connect(info=mcp.info(), filter=mcp.filter()).await?;
+bus_top.connect(info=mcp.info(), filter=mcp.filter()).await?;
+
+// 子 Bus 上的特殊 mcp（facade 不参与——本例假设 sub_bus 上直接挂节点）
+let mcp_advanced = McpNode::new(
+    node_id=NodeId::new(id="advanced_mcp"),
+    config=advanced_config,
+);
+bus_sub.connect(info=mcp_advanced.info(), filter=mcp_advanced.filter()).await?;
 
 let memory = MemoryNode::new(
     node_id=NodeId::new(id="memory_node"),
 );
-bus.connect(info=memory.info(), filter=memory.filter()).await?;
+bus_top.connect(info=memory.info(), filter=memory.filter()).await?;
 
 // ── 3. 声明 AgentConfig（routes + checkpoint_rules）──────────────
 let config = AgentConfig {
@@ -728,6 +754,20 @@ let config = AgentConfig {
             |s| Box::new(CompactOp::new(messages=s.messages.clone())),
         ),
     ],
+    // 资源过滤（§2.5.1）：只收 local_mcp 的基础工具 + advanced_mcp 的所有工具
+    tools_include: Some(vec![
+        "local_mcp.read_file".into(),
+        "local_mcp.bash".into(),
+        "local_mcp.edit_file".into(),
+        "advanced_mcp.*".into(),  // 通配：该 node 上所有工具
+    ]),
+    tools_exclude: vec![
+        "advanced_mcp.dangerous_exec".into(),
+    ],
+    skills_include: Some(vec![
+        "skill_hub.greet".into(),
+    ]),
+    skills_exclude: vec![],
     ..Default::default()
 };
 
@@ -735,7 +775,7 @@ let config = AgentConfig {
 //   * Strict route 的 NodeId 必须当前在线
 //   * Discovery route 的 Capability 必须当前有匹配
 //   * 失败 → BuildError { missing_nodes, missing_capabilities }
-let engine = EngineBuilder::new(bus=bus.clone())
+let engine = EngineBuilder::new(buses=vec![bus_top.clone(), bus_sub.clone()])
     .build(config=config)
     .await?;
 
@@ -757,9 +797,17 @@ engine.chat(user_input="Read /etc/hostname").await?;
 **校验失败示例**：
 ```rust
 // 假设 App 忘记实例化 "primary_model"
-let result = EngineBuilder::new(bus=bus.clone())
-    .route(msg_type="model_call", route=Route::Strict(vec![NodeId::new(id="primary_model")]))
-    .build()
+let config = AgentConfig {
+    routes: {
+        let mut m = HashMap::new();
+        m.insert("model_call".into(), Route::Strict(vec![NodeId::new(id="primary_model")]));
+        m
+    },
+    ..Default::default()
+};
+
+let result = EngineBuilder::new(buses=vec![bus_top.clone()])
+    .build(config=config)
     .await;
 
 match result {
@@ -1210,6 +1258,11 @@ pub struct AgentConfig {
     /// Node 掉线时 Engine 等待响应失败的处理 hook（§5.7）。
     /// None 时使用默认行为（FailSession）。
     pub on_member_failed: Option<Arc<dyn OnMemberFailedHandler>>,
+    /// Tools 白名单 glob（§2.5.1）：include 为 None 或包含 `*` 表示收全部；空列表 = 不收
+    pub tools_include: Option<Vec<String>>,
+    pub tools_exclude: Vec<String>,
+    pub skills_include: Option<Vec<String>>,
+    pub skills_exclude: Vec<String>,
 }
 ```
 
@@ -1442,9 +1495,14 @@ config = AgentConfig(
         "human_handoff_result": HumanHandoffProcessor(),
     },
     on_member_failed=MyRetryHandler(max_retries=3),
+    # 资源过滤（§2.5.1）
+    tools_include=["local_mcp.read_file", "local_mcp.bash", "advanced_mcp.*"],
+    tools_exclude=["advanced_mcp.dangerous_exec"],
+    skills_include=["skill_hub.greet"],
+    skills_exclude=[],
 )
 
-engine = await EngineBuilder.new(bus=bus).build(config=config)
+engine = await EngineBuilder.new(buses=[bus_top, bus_sub]).build(config=config)
 session = await engine.start_session(session_id="s1")
 output = await session.chat(user_input="Read /etc/hostname")
 ```
@@ -1784,7 +1842,7 @@ async def main():
         ],
     )
 
-    engine = await EngineBuilder.new(bus=bus).build(config=config)
+    engine = await EngineBuilder.new(buses=[bus_top, bus_sub]).build(config=config)
     print("\n[app] Engine built — routes + checkpoint_rules validated")
 
     # ── 1.5 启动 Session ────────────────────────────────────────────
@@ -1849,9 +1907,9 @@ if __name__ == "__main__":
 
 | # | 验证点 | 设计位置 | 结论 |
 |---|--------|---------|------|
-| 1 | **组装接口** | §3 App 装配模型 | `EngineBuilder.new(bus).route(...).add_checkpoint(...).build(config)` 链式调用流畅，7 行完成全装配 |
+| 1 | **组装接口** | §3 App 装配模型 | `EngineBuilder.new(buses=[...]).build(config=AgentConfig{...})` 声明式 API，所有 App 配置进 AgentConfig |
 | 2 | **Route 语义** | §2.3 Route | `Strict(["model/deepseek"])` 精确路由 + `Discovery(Capability("kind","mcp"))` 能力发现，语义一目了然 |
-| 3 | **Checkpoint 抽象** | §2.5 CheckpointRule | `every_n_rounds()` 和 `when_context_over()` 两个标准构造器覆盖了典型需求；`when/build/route` 四元组足够灵活 |
+| 3 | **Checkpoint 抽象** | §2.5 CheckpointRule | `every_n_rounds()` 和 `when_context_over()` 两个标准构造器覆盖了典型需求；`name/trigger/when/build` 四元组足够灵活 |
 | 4 | **Session 生命周期** | §4 ReAct 循环 | `start_session() → chat()` 多轮不丢状态，`over_view` 字段自动维护 |
 | 5 | **Node 独立性** | §10 第二条边界 | MemoryNode/CompactionNode 只订阅 msg_type，不假设发送者是 Engine。mock 的实现只依赖 Bus API，不 import Engine |
 | 6 | **平铺模式** | §1.5.3 扁平拓扑 | 7 个 Node 在同一 Bus 上无消息串扰——filter 在接收端过滤，每个 Node 只看到自己订阅的类型 |
