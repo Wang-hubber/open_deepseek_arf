@@ -235,6 +235,23 @@ pub struct OverView {
 
 `over_view` 字段由 Engine 在每个 Checkpoint 转移点维护。`messages` / `tasks` 是底层详细数据，Checkpoint 条件复杂时可自行遍历。
 
+**字段计算策略**：
+
+| 字段 | 计算方式 | 时机 |
+|------|---------|------|
+| `round_count` | `state.messages` 中 `role=user` 的条数（或 Engine 内部计数器） | 每次 chat() +1 |
+| `turn_count` | Engine 内部计数器；每发一次 model_call/tool_exec +1 | ReAct 转移点 |
+| `context_tokens` | **API usage 捕获**：从 model_call 响应的 `usage.prompt_tokens` 取 | 每次 model_call 响应后写入 |
+| `model_context_window` | 启动时从 ModelAdapter 的 capabilities 读取；AgentConfig 可覆盖 | EngineBuilder.build() 时 |
+| `runtime` | Active time（仅 Engine 处于 `processing` 状态的累计时长，不含 `waiting` / `parked`） | 状态机转移点累加 |
+| `last_user_message` | 最近一次 chat() 的 user_input | chat() 时更新 |
+
+**`context_tokens` 的精确性来源**：
+- 每次 model_call 响应都带 `usage.prompt_tokens`（OpenAI / Anthropic / DeepSeek 等都返回）
+- Engine 不解析 message 字节、不做 char/word 启发式估算
+- 唯一一次估算在 session 初始（messages 刚 push 后）；之后每次 model_call 自动校准
+- CheckpointRule 触发的 CompactOp / MemoryOp 等会修改 messages，造成少量漂移；下次 model_call 响应的 usage 会重新精确
+
 ### 2.5 CheckpointRule（四元组）
 
 ```rust
@@ -691,12 +708,15 @@ impl ActionMessage for HumanHandoff {
 
 ## 13. 待澄清 / 留待实现阶段
 
-- `OverView` 字段的精确计算（context_tokens 估算、runtime 计时起点）
 - `Task` 的具体形态（是否 tool_call 抽象？是否包含 subagent 句柄？）
 - Node 订阅 msg_types 的注册机制（filter vs 内部自过滤）
 - Engine 启动时如何校验 `AgentConfig` 声明的 node_id / capability 真实存在
 - 节点掉线时的 Engine 行为（重试 / park / 失败）
 - SessionState 持久化时机
+
+### 13.1 已澄清
+
+- ~~`OverView` 字段的精确计算~~ → 见 §2.4 字段计算策略表。`context_tokens` 来自 API 响应的 `usage.prompt_tokens`；`runtime` 是 active time（processing 状态累计）；`model_context_window` 启动时从 ModelAdapter capabilities 读取
 
 ## 14. Python API 展望
 
