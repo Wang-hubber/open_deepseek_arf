@@ -652,7 +652,7 @@ for rule in &self.checkpoint_rules {
 **Intent 单源约定**（2026-06-30 决议）：`intent` 来自 `ActionMessage::intent()` trait 方法，由具体 msg 类型（如 MemoryOp、CompactOp）声明。`CheckpointRule` 不显式声明 intent（避免与 msg.intent() 不一致）。
 
 **不在 Checkpoint 范畴**：
-- **Input 处理**（user_input 进入 state）发生在 `session.chat(user_input=msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
+- **Input 处理**（user_input 进入 state）发生在 `engine.run(state, user_input)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
 - **System prompt 组装 + Tools/Skills 收集**发生在 `EngineBuilder.build()` 时（见下方 §2.5.1）
 - **运行时 memory 抽取**：CheckpointRule.build 返回 MemoryOp::extract 作为 Command msg，发到 MemoryNode（详见 §11.1）
 - **运行时 memory 检索**：由模型主动发起 tool call（如 `memory_search`），走标准 tool_exec 流程；**不**是单独的 MemoryOp::Retrieve msg
@@ -732,15 +732,58 @@ Engine 是 Bus 上一个特殊 Node，运行固定 ReAct 状态机。
 **Engine 拥有**：
 - ReAct 状态机（idle / processing / waiting / stopped）
 - 5 个 Checkpoint 触发位置
-- Session 状态（State 的所有权）
 - 等待队列（WaitEvent 列表：每个 event 含 members + strategy）
 - Park/Resume 机制
 
 **Engine 不拥有**：
+- State 所有权（State 由 App 持有；Engine.run() 借用 &mut State）
 - 任何具体 Node 实例（ModelAdapter / McpNode / MemoryNode 等字眼不出现在 Engine 代码）
 - Route 表
 - CheckpointRule 列表
 - messages/tasks 的具体业务解释（Engine 只做存取）
+
+**Engine API**（2026-06-30 决议：去掉 Session 抽象）：
+
+```rust
+impl Engine {
+    /// 跑一轮 chat：处理 user_input，触发 ReAct 主循环，最终修改 state 并返回 final_output。
+    /// App 调用方负责：input 拦截、State 持久化、生命周期管理。
+    /// Engine 不感知 Session 概念——App 自由组合 Engine + State + 持久化层。
+    pub async fn run(
+        &self,
+        state: &mut State,
+        user_input: String,
+    ) -> Result<String, RunError>;
+
+    /// 同步快照当前 state（与 Node::snapshot 风格一致）。
+    /// App 可同步组合 Session（保存快照 / 序列化到磁盘 / 中断对话）。
+    pub fn snapshot(&self, state: &State) -> SessionSnapshot;
+
+    /// 从快照恢复 state（异步，因可能涉及 Node 重连等异步操作）。
+    /// App 控制何时 resume、何时持久化。
+    pub async fn restore(&self, snap: SessionSnapshot) -> Result<State, RestoreError>;
+}
+
+/// State 序列化快照（含 messages + over_view + WaitEvent 列表）。
+/// App 决定存哪里（文件 / DB / S3）、何时存、怎么存。
+#[derive(Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub version: u32,         // schema 版本
+    pub state: State,
+    pub wait_events: Vec<WaitEvent>,
+    pub created_at: i64,
+    pub metadata: HashMap<String, Value>,  // App 自定义元数据
+}
+```
+
+**为什么没有 Session struct**（2026-06-30 决议）：
+- Session 本质是 App 对话层抽象，可能跨多个 Engine（agent group）
+- 用户视角只是"我开始了一段对话"，不知道背后 Engine 拓扑
+- 框架提供原语（Engine.run + snapshot + restore），App 自由组合：
+  - 简单 App：1 Engine + 1 State + 文件持久化
+  - 复杂 App：N Engine（agent group）+ 跨 Engine 共享 State + 数据库持久化
+- 框架不做 `Session` / `start_session` / `session.chat` 等抽象，避免与 App 自定义 Session 冲突
+- **App 用 §1.5.2 已有的 `Node::snapshot/restore` 同步机制组装 Session**——单 Engine 持久化只需 Engine.snapshot(state)；多 Engine 持久化用 §5.6 `Bus::barrier` 协调后再持久化
 
 ### 2.7 App（唯一的装配者）
 
@@ -848,9 +891,13 @@ let engine = EngineBuilder::new(buses=vec![bus_top.clone(), bus_sub.clone()])
 // Engine 也作为 Node 上 Bus（§1.5 Node trait）
 bus.connect(info=engine.info(), filter=engine.filter()).await?;
 
-// ── 5. 运行 ────────────────────────────────────────────────────
-engine.start_session(session_id="s1").await?;
-engine.chat(user_input="Read /etc/hostname").await?;
+// ── 5. 运行（2026-06-30 决议：框架不提供 Session 抽象）──
+//    App 自己持有 state 并管理生命周期：
+let mut state: State = State::default();
+let output = engine.run(state=&mut state, user_input="Read /etc/hostname".into()).await?;
+//    App 决定何时快照：engine.snapshot(&state) 是同步的，可直接存到文件/DB。
+let snap: SessionSnapshot = engine.snapshot(state=&state);
+serde_json::to_writer(File::create("session.json")?, &snap)?;
 ```
 
 **为什么去掉 `NodeBinding`？**
@@ -888,7 +935,7 @@ match result {
 ## 4. ReAct 循环（固定，不可配置）
 
 ```
-session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完成
+engine.run(state=&mut state, user_input=msg)  ← App 端：拦截/转换/审批在调用方完成
        │
        ▼
    state.messages.push(value=msg)
@@ -935,7 +982,7 @@ session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完�
 ```
 
 **关键约定**：
-- App 调 `session.chat(user_input=msg)` 之前负责 input 拦截（验证、转换、审批），Engine 不感知
+- App 调 `engine.run(state=&mut state, user_input=msg)` 之前负责 input 拦截（验证、转换、审批），Engine 不感知
 - Engine 内部 ReAct 循环只围绕 `model_call` 和 `tool_exec` 两个 action
 - 5 个 Checkpoint 是位置标记；具体发什么 msg 由 CheckpointRule 决定
 - Engine 只通过 `ModelCall` / `ToolExec` 两个内置消息类型与 Bus 通信；`Memory` / `Compact` / `Subagent` / `HumanHandoff` 等由 App 通过 CheckpointRule 注入
@@ -1162,9 +1209,9 @@ CheckpointRule::new(
 2. 从持久化存储加载最近一次成功 checkpoint 的所有快照
 3. 对每个 Node 调用 `restore(snapshot)`
 4. Node `attach_to` 对应的 Bus
-5. Engine 调用 `session.resume()` → 重发未完成 WaitEvent（§5.5）
+5. App 调用 `engine.restore(snap)` 拿到 state → `engine.run(state, ...)` 重发未完成 WaitEvent（§5.5）
 
-恢复后，App 可选地：调用 `Bus::barrier` 验证所有 Node 都健康 ack，再宣布 session live。
+恢复后，App 可选地：调用 `Bus::barrier` 验证所有 Node 都健康 ack，再宣布 Engine 可用。
 
 #### 5.6.5 边界约定
 
@@ -1580,8 +1627,11 @@ config = AgentConfig(
 )
 
 engine = await EngineBuilder.new(buses=[bus_top, bus_sub]).build(config=config)
-session = await engine.start_session(session_id="s1")
-output = await session.chat(user_input="Read /etc/hostname")
+
+# 框架不提供 Session；App 自己组装（2026-06-30 决议）
+state = State.default()
+output = await engine.run(state=state, user_input="Read /etc/hostname")
+snap = engine.snapshot(state=state)  # 同步快照
 ```
 
 ### 14.1 Integration Test: 平铺模式 App（设计验证）
@@ -1720,7 +1770,7 @@ class CompactionNode(BusNode):
   1. 组装接口 — EngineBuilder.new(bus).route(...).add_checkpoint(...).build(config)
   2. Route 语义 — Strict（model_call → 精确 NodeId）vs Discovery（tool_exec → kind=mcp）
   3. Checkpoint 抽象 — every_n_rounds() / when_context_over() 构造器
-  4. Session 生命周期 — start_session() → chat() 多轮 → 状态保持
+  4. State 生命周期 — App 持有 State，engine.run(&mut state, ...) 多轮不丢状态
   5. Node 独立性 — MemoryNode/CompactionNode 不知道 Engine 的存在
   6. 平铺模式 — 所有 Node 在同一 Bus 上无消息串扰
 
@@ -1937,9 +1987,9 @@ async def main():
     engine = await EngineBuilder.new(buses=[bus_top, bus_sub]).build(config=config)
     print("\n[app] Engine built — routes + checkpoint_rules validated")
 
-    # ── 1.5 启动 Session ────────────────────────────────────────────
-    session = await engine.start_session(session_id="flat-demo")
-    print("[app] Session started: flat-demo")
+    # ── 1.5 App 持有 State（2026-06-30 决议：框架不提供 Session 抽象）──
+    state = State.default()
+    print("[app] State initialized")
 
     # ── 1.6 多轮对话 ────────────────────────────────────────────────
     rounds = [
@@ -1956,26 +2006,26 @@ async def main():
         print(f"[app] Round {i}: {user_input}")
         print(f"{'='*60}")
 
-        output = await session.chat(user_input=user_input)
+        output = await engine.run(state=state, user_input=user_input)
         print(f"[app] Round {i} output: {output}")
 
         # 检查 Checkpoint 触发（mock 环境会打印）
-        print(f"[app] State: round={session.state.over_view.round_count}, "
-              f"turn={session.state.over_view.turn_count}, "
-              f"context={session.state.over_view.context_tokens}"
-              f"/{session.state.over_view.model_context_window}")
+        print(f"[app] State: round={state.over_view.round_count}, "
+              f"turn={state.over_view.turn_count}, "
+              f"context={state.over_view.context_tokens}"
+              f"/{state.over_view.model_context_window}")
 
     # ── 1.7 验证结果 ─────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print("[app] All rounds complete. Validating...")
-    print(f"  Total rounds: {session.state.over_view.round_count}")
-    print(f"  Total turns:  {session.state.over_view.turn_count}")
-    print(f"  Messages:     {len(session.state.messages)}")
+    print(f"  Total rounds: {state.over_view.round_count}")
+    print(f"  Total turns:  {state.over_view.turn_count}")
+    print(f"  Messages:     {len(state.messages)}")
 
-    assert session.state.over_view.round_count == len(rounds), \
-        f"Expected {len(rounds)} rounds, got {session.state.over_view.round_count}"
-    assert session.state.over_view.turn_count > 0, "Expected non-zero turns"
-    assert len(session.state.messages) > 0, "Expected non-empty messages"
+    assert state.over_view.round_count == len(rounds), \
+        f"Expected {len(rounds)} rounds, got {state.over_view.round_count}"
+    assert state.over_view.turn_count > 0, "Expected non-zero turns"
+    assert len(state.messages) > 0, "Expected non-empty messages"
 
     # 验证 Checkpoint 触发：第 5 轮 RoundEnd 应触发 memory extract
     # （mock 环境下 checkpoint_rules 的 when 条件满足即触发）
@@ -2002,7 +2052,7 @@ if __name__ == "__main__":
 | 1 | **组装接口** | §3 App 装配模型 | `EngineBuilder.new(buses=[...]).build(config=AgentConfig{...})` 声明式 API，所有 App 配置进 AgentConfig |
 | 2 | **Route 语义** | §2.3 Route | `Strict(["model/deepseek"])` 精确路由 + `Discovery(Capability("kind","mcp"))` 能力发现，语义一目了然 |
 | 3 | **Checkpoint 抽象** | §2.5 CheckpointRule | `every_n_rounds()` 和 `when_context_over()` 两个标准构造器覆盖了典型需求；`name/trigger/when/build` 四元组足够灵活 |
-| 4 | **Session 生命周期** | §4 ReAct 循环 | `start_session() → chat()` 多轮不丢状态，`over_view` 字段自动维护 |
+| 4 | **State 生命周期** | §4 ReAct 循环 | App 持有 `State`，通过 `engine.run(&mut state, ...)` 多轮不丢状态，`over_view` 字段自动维护 |
 | 5 | **Node 独立性** | §10 第二条边界 | MemoryNode/CompactionNode 只订阅 msg_type，不假设发送者是 Engine。mock 的实现只依赖 Bus API，不 import Engine |
 | 6 | **平铺模式** | §1.5.3 扁平拓扑 | 7 个 Node 在同一 Bus 上无消息串扰——filter 在接收端过滤，每个 Node 只看到自己订阅的类型 |
 | 7 | **Query vs Command** | §2.1 MessageIntent | model_call / tool_exec / compact_op 是 Query（Engine park 等响应）；MemoryOp.extract 是 Command（Engine 不等，fire-and-forget）。压缩必须在模型调用前完成，所以 compact_op 是 Query |
