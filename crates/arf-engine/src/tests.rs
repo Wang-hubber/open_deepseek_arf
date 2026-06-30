@@ -6,9 +6,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arf_bus::Bus;
-use arf_core::{NodeId, Route, State};
+use arf_core::{ActionMessage, MessageIntent, NodeId, Route, State};
+use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
+use crate::checkpoint::{evaluate, resolve_route};
 use crate::config::{AgentConfig, ModelConfig};
 use crate::error::{BuildError, RunError};
 use crate::EngineBuilder;
@@ -541,4 +544,1011 @@ async fn run_returns_stopped_on_cancel_immediate() {
     let mut state = State::new();
     let res = engine.run(&mut state, "x".into(), cancel).await;
     assert!(matches!(res, Err(RunError::Stopped)));
+}
+
+// ── Phase 6 task 6.5 — Checkpoint system (14 tests) ───────────────────────
+
+// Test ActionMessage implementations for 6.5. Each msg_type + intent pair
+// is a separate struct (can't share msg_type because of conflicting intents).
+mod cp_fixtures {
+    use super::*;
+
+    /// Command-intent checkpoint side-effect. msg_type "test_cp_command".
+    #[derive(Debug, Clone)]
+    pub struct CpCommand {
+        pub cid: Uuid,
+        pub label: String,
+    }
+
+    #[async_trait]
+    impl ActionMessage for CpCommand {
+        fn msg_type(&self) -> &'static str {
+            "test_cp_command"
+        }
+        fn correlation_id(&self) -> Uuid {
+            self.cid
+        }
+        fn payload(&self) -> serde_json::Value {
+            // Include correlation_id so responders can extract it for matching.
+            serde_json::json!({"correlation_id": self.cid.to_string(), "label": self.label})
+        }
+        fn intent(&self) -> MessageIntent {
+            MessageIntent::Command
+        }
+    }
+
+    /// Query-intent checkpoint side-effect. msg_type "test_cp_query".
+    /// Engine will park and wait for "test_cp_query_result".
+    #[derive(Debug, Clone)]
+    pub struct CpQuery {
+        pub cid: Uuid,
+        pub label: String,
+    }
+
+    #[async_trait]
+    impl ActionMessage for CpQuery {
+        fn msg_type(&self) -> &'static str {
+            "test_cp_query"
+        }
+        fn correlation_id(&self) -> Uuid {
+            self.cid
+        }
+        fn payload(&self) -> serde_json::Value {
+            // Include correlation_id so responders can extract it for matching.
+            serde_json::json!({"correlation_id": self.cid.to_string(), "label": self.label})
+        }
+        fn intent(&self) -> MessageIntent {
+            MessageIntent::Query
+        }
+    }
+}
+
+/// Helper: spin up a model-call responder that replies to every model_call
+/// (and tool_exec) it sees. Returns the JoinHandle and a ready receiver
+/// that fires once the task has subscribed to the bus.
+fn spawn_model_responder(
+    bus: Arc<arf_bus::Bus>,
+    responses: Vec<serde_json::Value>,
+) -> (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let mut rx = bus.subscribe();
+        let _ = ready_tx.send(());
+        let mut idx = 0;
+        while let Ok(m) = rx.recv().await {
+            let cid = m
+                .payload
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok());
+            match m.msg_type.as_str() {
+                "model_call" => {
+                    if let Some(cid) = cid {
+                        if idx < responses.len() {
+                            let mut payload = responses[idx].clone();
+                            idx += 1;
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.insert(
+                                    "correlation_id".to_string(),
+                                    serde_json::Value::String(cid.to_string()),
+                                );
+                            }
+                            let resp = arf_core::Message::with_from_bus(
+                                "model_response",
+                                NodeId::new("model/mock"),
+                                vec![],
+                                payload,
+                                bus.id,
+                            );
+                            let _ = bus.send(resp).await;
+                        }
+                    }
+                }
+                "tool_exec" => {
+                    if let Some(cid) = cid {
+                        let resp = arf_core::Message::with_from_bus(
+                            "tool_result",
+                            NodeId::new("tool/mock"),
+                            vec![],
+                            serde_json::json!({"correlation_id": cid.to_string(), "content": "ok"}),
+                            bus.id,
+                        );
+                        let _ = bus.send(resp).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    (handle, ready_rx)
+}
+
+/// Helper: spin up a recorder task that watches `bus.subscribe()` and
+/// returns every received msg_type. Caller must `.await` the ready receiver
+/// before sending messages to ensure subscription is active.
+fn spawn_recorder(
+    bus: Arc<arf_bus::Bus>,
+    drain_duration: std::time::Duration,
+) -> (tokio::task::JoinHandle<Vec<String>>, tokio::sync::oneshot::Receiver<()>) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let mut rx = bus.subscribe();
+        let _ = ready_tx.send(());
+        let mut log = Vec::new();
+        let deadline = tokio::time::Instant::now() + drain_duration;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                res = rx.recv() => {
+                    match res {
+                        Ok(m) => log.push(m.msg_type),
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        log
+    });
+    (handle, ready_rx)
+}
+
+/// Helper: spin up a recorder that captures (msg_type, payload.label) tuples
+/// — useful when checkpoints need to be distinguished by their unique label.
+fn spawn_label_recorder(
+    bus: Arc<arf_bus::Bus>,
+    drain_duration: std::time::Duration,
+) -> (
+    tokio::task::JoinHandle<Vec<(String, Option<String>)>>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let mut rx = bus.subscribe();
+        let _ = ready_tx.send(());
+        let mut log = Vec::new();
+        let deadline = tokio::time::Instant::now() + drain_duration;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                res = rx.recv() => {
+                    match res {
+                        Ok(m) => {
+                            let label = m.payload.get("label").and_then(|v| v.as_str()).map(String::from);
+                            log.push((m.msg_type, label));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        log
+    });
+    (handle, ready_rx)
+}
+
+/// Helper: respond to arbitrary msg_types. `extra_responses` is a map from
+/// request msg_type → response payload (correlation_id auto-injected).
+/// Built-in: model_call, tool_exec. Use this for Query intent tests where
+/// CheckpointRule dispatches custom msg_types.
+fn spawn_custom_responder(
+    bus: Arc<arf_bus::Bus>,
+    extra_responses: HashMap<String, serde_json::Value>,
+) -> (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let mut rx = bus.subscribe();
+        let _ = ready_tx.send(());
+        while let Ok(m) = rx.recv().await {
+            let cid = m
+                .payload
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let (resp_type, mut body): (String, serde_json::Value) = match m.msg_type.as_str() {
+                "model_call" => ("model_response".into(), serde_json::json!({"content": "ok"})),
+                "tool_exec" => ("tool_result".into(), serde_json::json!({"content": "ok"})),
+                other => {
+                    if let Some(payload) = extra_responses.get(other) {
+                        (format!("{other}_result"), payload.clone())
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            if let Some(cid) = cid {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "correlation_id".to_string(),
+                        serde_json::Value::String(cid.to_string()),
+                    );
+                }
+                let resp = arf_core::Message::with_from_bus(
+                    resp_type,
+                    NodeId::new("mock/handler"),
+                    vec![],
+                    body,
+                    bus.id,
+                );
+                let _ = bus.send(resp).await;
+            }
+        }
+    });
+    (handle, ready_rx)
+}
+
+/// Helper: register a sink node on the bus and return cp routes for it.
+/// Combines `bus.connect()` (so EngineBuilder's Strict-route check passes)
+/// with the standard routes HashMap.
+async fn cp_routes_for(bus: &Arc<arf_bus::Bus>) -> HashMap<String, Route> {
+    let info = arf_core::NodeInfo {
+        node_id: NodeId::new("cp/sink"),
+        node_type: "test_sink".into(),
+        capabilities: serde_json::json!({"kind": "test_sink"}),
+        online_since: 0,
+    };
+    let _h = bus
+        .connect(
+            info,
+            arf_core::MessageFilter {
+                types: None,
+                to_match: arf_core::ToMatch::All,
+            },
+        )
+        .await
+        .unwrap();
+    let mut routes = HashMap::new();
+    routes.insert(
+        "test_cp_command".into(),
+        Route::strict(vec![NodeId::new("cp/sink")]),
+    );
+    routes.insert(
+        "test_cp_query".into(),
+        Route::strict(vec![NodeId::new("cp/sink")]),
+    );
+    routes
+}
+
+// [构造] BeforeModelCall checkpoint + when=true → 触发 rule.build + publish msg
+#[tokio::test]
+async fn checkpoint_before_model_call_fires_and_dispatches() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "before_model_call_marker",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "bmc".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    // BeforeModelCall fires → test_cp_command dispatched BEFORE model_call.
+    assert!(
+        log.iter().any(|t| t == "test_cp_command"),
+        "checkpoint Command msg should be dispatched; got: {log:?}"
+    );
+    let cp_pos = log.iter().position(|t| t == "test_cp_command").unwrap();
+    let mc_pos = log.iter().position(|t| t == "model_call").unwrap();
+    assert!(
+        cp_pos < mc_pos,
+        "BeforeModelCall checkpoint should fire before model_call (cp={cp_pos}, mc={mc_pos})"
+    );
+}
+
+// [构造] AfterModelCall checkpoint 触发 → 在 model_response 已 push 后才执行
+#[tokio::test]
+async fn checkpoint_after_model_call_fires_after_push() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "after_model_call_marker",
+        Checkpoint::AfterModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "amc".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    let cp_pos = log.iter().position(|t| t == "test_cp_command").expect("cp msg dispatched");
+    let mr_pos = log.iter().position(|t| t == "model_response").expect("model_response dispatched");
+    assert!(
+        cp_pos > mr_pos,
+        "AfterModelCall should fire AFTER model_response (cp={cp_pos}, mr={mr_pos}); log={log:?}"
+    );
+}
+
+// [构造] BeforeToolExec 在 tool_exec publish 前触发
+#[tokio::test]
+async fn checkpoint_before_tool_exec_fires_before_publish() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "before_tool_exec_marker",
+        Checkpoint::BeforeToolExec,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "bte".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(800));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    // 1st model_call → tool_call; tool_exec → tool_result; 2nd model_call → done
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![
+            serde_json::json!({
+                "content": "",
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+            }),
+            serde_json::json!({"content": "done"}),
+        ],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "run tool".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    let cp_pos = log.iter().position(|t| t == "test_cp_command").expect("cp msg dispatched");
+    let te_pos = log.iter().position(|t| t == "tool_exec").expect("tool_exec dispatched");
+    assert!(
+        cp_pos < te_pos,
+        "BeforeToolExec checkpoint should fire BEFORE tool_exec (cp={cp_pos}, te={te_pos}); log={log:?}"
+    );
+}
+
+// [构造] AfterToolExec 在 tool message push 后触发
+#[tokio::test]
+async fn checkpoint_after_tool_exec_fires_after_push() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "after_tool_exec_marker",
+        Checkpoint::AfterToolExec,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "ate".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(800));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![
+            serde_json::json!({
+                "content": "",
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+            }),
+            serde_json::json!({"content": "done"}),
+        ],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "run tool".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    let cp_pos = log.iter().position(|t| t == "test_cp_command").expect("cp msg dispatched");
+    let tr_pos = log.iter().position(|t| t == "tool_result").expect("tool_result dispatched");
+    assert!(
+        cp_pos > tr_pos,
+        "AfterToolExec checkpoint should fire AFTER tool_result (cp={cp_pos}, tr={tr_pos}); log={log:?}"
+    );
+}
+
+// [构造] RoundEnd 在最终 return 前触发
+#[tokio::test]
+async fn checkpoint_round_end_fires_before_return() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "round_end_marker",
+        Checkpoint::RoundEnd,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "re".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+    assert_eq!(output, "ok");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    // RoundEnd fires → test_cp_command dispatched before run() returns.
+    assert!(
+        log.iter().any(|t| t == "test_cp_command"),
+        "RoundEnd checkpoint should dispatch; log={log:?}"
+    );
+}
+
+// [边界] when=false 不触发 build，也不发送 msg
+#[tokio::test]
+async fn checkpoint_when_false_skips_dispatch() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "never_fires",
+        Checkpoint::BeforeModelCall,
+        |_s| false,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "should_not_dispatch".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    assert!(
+        !log.iter().any(|t| t == "test_cp_command"),
+        "when=false should NOT dispatch; log={log:?}"
+    );
+}
+
+// [边界] 多个 rule 同 trigger 都触发时按注册顺序串行 dispatch
+#[tokio::test]
+async fn checkpoint_multiple_rules_fire_in_order() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule_a = CheckpointRule::new(
+        "rule_a",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "a".into(),
+            })
+        },
+    );
+    let rule_b = CheckpointRule::new(
+        "rule_b",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "b".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule_a, rule_b];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    let positions: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| *t == "test_cp_command")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(positions.len(), 2, "two cp commands expected; log={log:?}");
+    let mc_pos = log.iter().position(|t| t == "model_call").expect("model_call");
+    assert!(
+        positions[0] < mc_pos && positions[1] < mc_pos,
+        "both checkpoints should fire before model_call"
+    );
+}
+
+// [覆盖] 5 个 Checkpoint variant 都被 engine.run 在最小 happy path 中触发
+#[tokio::test]
+async fn all_five_checkpoints_visited_in_happy_path() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let mk = |name: &'static str, cp: Checkpoint| CheckpointRule::new(
+        name,
+        cp,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: name.to_string(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![
+        mk("bmc", Checkpoint::BeforeModelCall),
+        mk("amc", Checkpoint::AfterModelCall),
+        mk("bte", Checkpoint::BeforeToolExec),
+        mk("ate", Checkpoint::AfterToolExec),
+        mk("re",  Checkpoint::RoundEnd),
+    ];
+
+    let (recorder, rec_ready) = spawn_label_recorder(bus.clone(), std::time::Duration::from_millis(800));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![
+            serde_json::json!({
+                "content": "",
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+            }),
+            serde_json::json!({"content": "done"}),
+        ],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    // All 5 distinct checkpoint rule labels must appear in the log.
+    let labels_seen: std::collections::HashSet<String> = log
+        .iter()
+        .filter(|(t, _)| t == "test_cp_command")
+        .filter_map(|(_, l)| l.clone())
+        .collect();
+    for expected in &["bmc", "amc", "bte", "ate", "re"] {
+        assert!(
+            labels_seen.contains(*expected),
+            "checkpoint label '{}' not seen; log={:?}",
+            expected,
+            log
+        );
+    }
+}
+
+// [路径] CheckpointRule.build 输出 msg_type 未在 routes 注册 → UndeclaredMsgType
+#[tokio::test]
+async fn undeclared_msg_type_returns_error() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    // Rule produces CpCommand (msg_type "test_cp_command") but routes do NOT
+    // register that msg_type.
+    let rule = CheckpointRule::new(
+        "undeclared",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "x".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    // Intentionally leave routes empty (do NOT register test_cp_command)
+    cfg.checkpoint_rules = vec![rule];
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out");
+
+    match res {
+        Err(RunError::UndeclaredMsgType { msg_type }) => {
+            assert_eq!(msg_type, "test_cp_command");
+        }
+        other => panic!("expected UndeclaredMsgType, got: {other:?}"),
+    }
+}
+
+// [intent] Query intent 触发 rule → engine park 等响应 → receiver 响应后继续
+#[tokio::test]
+async fn query_intent_park_and_await_response() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "query_at_bmc",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpQuery {
+                cid: Uuid::new_v4(),
+                label: "q".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    // Custom responder: handles test_cp_query → test_cp_query_result.
+    let (resp_h, resp_ready) = spawn_custom_responder(
+        bus.clone(),
+        HashMap::from([("test_cp_query".into(), serde_json::json!({"ok": true}))]),
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out — Query intent should park and resume on response")
+    .expect("run should succeed");
+
+    resp_h.abort();
+}
+
+// [intent] Command intent 触发 rule → engine 不等响应，立即继续
+#[tokio::test]
+async fn command_intent_fire_and_forget() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "command_at_bmc",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "cmd".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
+    rec_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    // Only model_call responder; test_cp_command has no responder (Command intent).
+    let (resp_h, resp_ready) = spawn_model_responder(
+        bus.clone(),
+        vec![serde_json::json!({"content": "ok"})],
+    );
+    resp_ready.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    // If engine were to wait for cp response, it would time out. Command intent fires-and-forgets.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("run timed out — Command intent should NOT block on response")
+    .expect("run should succeed");
+
+    let log = recorder.await.unwrap_or_default();
+    resp_h.abort();
+
+    assert!(
+        log.iter().any(|t| t == "test_cp_command"),
+        "Command intent should still dispatch; log={log:?}"
+    );
+}
+
+// [方法] Strict route ResolveRoute 返回 route.ids 原样
+#[test]
+fn strict_route_resolve_returns_ids() {
+    let ids = vec![NodeId::new("a"), NodeId::new("b")];
+    let route = Route::Strict(ids.clone());
+    let graph = vec![];
+    let resolved = resolve_route(&route, &graph);
+    assert_eq!(resolved, ids, "Strict should return ids regardless of graph");
+}
+
+// [方法] Discovery route 用 current bus graph 计算匹配节点
+#[test]
+fn discovery_route_resolve_queries_current_graph() {
+    let route = Route::Discovery(arf_core::Capability::one("kind", "mcp"));
+    let graph = vec![
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/a"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/b"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+        arf_core::NodeInfo {
+            node_id: NodeId::new("model/x"),
+            node_type: "model".into(),
+            capabilities: serde_json::json!({"kind": "model"}),
+            online_since: 0,
+        },
+    ];
+    let resolved = resolve_route(&route, &graph);
+    assert_eq!(resolved.len(), 2);
+    assert!(resolved.contains(&NodeId::new("mcp/a")));
+    assert!(resolved.contains(&NodeId::new("mcp/b")));
+}
+
+// [cancel] evaluate_and_dispatch 中 cancel 触发 → RunError::Stopped（不发送）
+#[tokio::test]
+async fn checkpoint_eval_returns_stopped_on_cancel() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let bus = Arc::new(test_bus());
+
+    let rule = CheckpointRule::new(
+        "fires_always",
+        Checkpoint::BeforeModelCall,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "x".into(),
+            })
+        },
+    );
+
+    let mut cfg = minimal_config("a");
+    cfg.routes = cp_routes_for(&bus).await;
+    cfg.checkpoint_rules = vec![rule];
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel(); // cancel before run
+
+    let mut state = State::new();
+    let res = engine.run(&mut state, "hi".into(), cancel).await;
+    assert!(matches!(res, Err(RunError::Stopped)));
+}
+
+// ── Pure-function tests for `evaluate` (complement to route resolve tests) ──
+
+// [方法] evaluate 空 rules → 空结果
+#[test]
+fn evaluate_with_no_rules_returns_empty() {
+    let state = State::new();
+    let rules: Vec<arf_core::CheckpointRule> = vec![];
+    let routes = HashMap::new();
+    let graph = vec![];
+    let res = evaluate(&state, arf_core::Checkpoint::BeforeModelCall, &rules, &routes, &graph);
+    assert!(res.is_ok());
+    assert!(res.unwrap().is_empty());
+}
+
+// [方法] evaluate 跳过不匹配 trigger 的 rule
+#[test]
+fn evaluate_skips_rules_with_wrong_trigger() {
+    use arf_core::{Checkpoint, CheckpointRule};
+    let state = State::new();
+    let rule = CheckpointRule::new(
+        "at_round_end",
+        Checkpoint::RoundEnd,
+        |_s| true,
+        |_s| {
+            Box::new(cp_fixtures::CpCommand {
+                cid: Uuid::new_v4(),
+                label: "x".into(),
+            })
+        },
+    );
+    let routes: HashMap<String, Route> = HashMap::from([
+        ("test_cp_command".into(), Route::strict(vec![NodeId::new("cp/sink")])),
+        ("test_cp_query".into(), Route::strict(vec![NodeId::new("cp/sink")])),
+    ]);
+    let graph = vec![];
+    // Trigger mismatch: ask for BeforeModelCall, rule is RoundEnd.
+    let res = evaluate(&state, Checkpoint::BeforeModelCall, &[rule], &routes, &graph).unwrap();
+    assert!(res.is_empty());
 }

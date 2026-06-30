@@ -465,25 +465,37 @@ async fn checkpoint_eval_returns_stopped_on_cancel() { ... }
 
 ---
 
-## 实现后实际发现（待实测填入）
+## 实现后实际发现
 
 ### 与初稿的差异
 
-1. **借用在 publish_and_await 内部的解决**：实测需要 `take_unchecked` 或放到内部函数；详见 §N.1
-2. **WaitEvent 不动**：6.5 单消息 park 模式不创建 WaitEvent，仅在 self.response_waits 注册；多消息时 6.6 才用 Vec<WaitEvent>
-3. **DiscoveryCache 不实现**：每次 evaluate 都查 bus.graph()；6.5 acceptance OK；6.7 加缓存
+1. **`wait_for_response_matching` 签名扩展**：初稿未规定参数。实测改为 `wait_for_response_matching(cid, expected_response_types: &[&str])`，Caller 必须传入预测的响应 msg_type（model_call→model_response, tool_exec→tool_result, memory_op→memory_op_result, App 自定义→`<msg_type>_result`）。
+2. **`engine_response_types` 始终包含 model_response/tool_result**：初稿只查 routes。实测发现 Engine ReAct 主循环内部使用 ModelCall/ToolExec（不依赖 AgentConfig.routes），所以 filter 必须**始终**监听 model_response/tool_result，否则 engine 收到不响应就超时。
+3. **CheckpointRule 不能 Clone**：初稿 `let rules = self.config.checkpoint_rules.clone();` 编译失败。实测改为借用 `&self.config.checkpoint_rules` 和 `&self.config.routes` 同时传给 `evaluate()`，避免持有可变借用。
+4. **`App 自定义类型 → <msg_type>_result`**：6.5 实测约定。Engine filter 包含 routes 中 msg_type 对应的 `_result` 后备类型；publish_and_await_query 用同一约定计算 expected_response_types。
+5. **ActionMessage::payload() 必须包含 correlation_id**：测试中发现自定义 CpQuery 的 payload 只有 `{"label": "q"}`，responder 提取 cid 失败。规范：App 实现 ActionMessage 时，payload() 必须把 correlation_id 序列化进去（与 builtin ModelCall 一致：`serde_json::to_value(self)`）。
+6. **WaitEvent 不动**：6.5 单消息 park 模式不创建 WaitEvent，仅在 self.response_waits 注册；多消息时 6.6 才用 Vec<WaitEvent>
+7. **DiscoveryCache 不实现**：每次 evaluate 都查 bus.graph()；6.5 acceptance OK；6.7 加缓存
 
-### 实现期间 bug（待填入）
+### 实现期间 bug
 
-1. ?
-2. ?
+1. **engine filter 漏掉 model_response/tool_result**：`engine_response_types` 初版只查 routes。改：`types.push(MODEL_RESPONSE)` + `types.push(TOOL_RESULT)` 始终在循环前 push。
+2. **ActionMessage 测试 fixture 漏 correlation_id**：CpCommand/CpQuery 的 payload() 初版只有 `{"label": ...}`。改：手动加 `{"correlation_id": ..., "label": ...}`。
 
 ### 实际测试结果
 
 ```
 cargo test --workspace
-...（待实测）
-0 FAILED
+test result: ok. 52 passed; 0 failed
+test result: ok. 91 passed; 0 failed
+test result: ok. 14 passed; 0 failed
+test result: ok. 161 passed; 0 failed
+test result: ok. 32 passed; 0 failed  (arf-engine: 6.5 新增 16 个测试)
+test result: ok. 204 passed; 0 failed
+test result: ok. 12 passed; 0 failed
+test result: ok. 19 passed; 0 failed
+test result: ok. 70 passed; 0 failed
+合计 655 passed; 0 failed
 ```
 
 ### 6.5 输出

@@ -1,6 +1,7 @@
 //! ARF Engine — ReAct runtime loop.
 
 pub mod builder;
+pub mod checkpoint;
 pub mod config;
 pub mod engine;
 pub mod error;

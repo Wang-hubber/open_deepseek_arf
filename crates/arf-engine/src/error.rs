@@ -44,4 +44,8 @@ pub enum RunError {
     /// 发送消息时 bus 返回的错误
     #[error("bus 端错误: {0}")]
     Bus(#[from] arf_core::SendError),
+
+    /// CheckpointRule.build 输出的 msg_type() 不在 AgentConfig.routes 中
+    #[error("Checkpoint 输出的 msg_type '{msg_type}' 未在 AgentConfig.routes 注册")]
+    UndeclaredMsgType { msg_type: String },
 }
