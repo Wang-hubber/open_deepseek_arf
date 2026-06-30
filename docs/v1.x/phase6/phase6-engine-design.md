@@ -403,6 +403,32 @@ pub struct State {
     pub over_view: OverView,          // 聚合指标（O(1) 访问）
 }
 
+/// ModelMessage — State 使用的领域层消息类型。
+/// 与 Bus 上的 `Message`（wire format，含 from_bus/to/sender/payload）区分：
+/// ModelMessage 是 domain format（role/content/tool_calls），仅在 State 内与 LLM 交互时使用。
+/// Engine 注入 State 时由 App 注册的 ResponseProcessor 把 wire 响应转为 ModelMessage。
+pub struct ModelMessage {
+    pub role: Role,
+    pub content: String,
+    /// assistant 消息包含 tool_calls 时填充
+    pub tool_calls: Vec<ToolCall>,
+    /// tool 响应消息对应的主调用 id（role=Tool 时填充）
+    pub tool_call_id: Option<String>,
+}
+
+pub enum Role {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
 // WaitEvent 队列（§5）是 State 的逻辑扩展——
 // 它属于 Engine 的运行时状态，跟随 State 一起持久化（§5.5）
 
