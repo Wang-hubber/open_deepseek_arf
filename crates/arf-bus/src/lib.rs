@@ -48,6 +48,19 @@ pub(crate) struct NodeEntry {
     pub filter: MessageFilter,
 }
 
+// ── BarrierReceipt ────────────────────────────────────────────────────
+
+/// Result of `Bus::barrier()`. Phase 6 task 6.0.4.
+#[derive(Debug, Clone)]
+pub struct BarrierReceipt {
+    pub correlation_id: Uuid,
+    pub acked: Vec<NodeId>,
+    pub missing: Vec<NodeId>,
+    /// True if barrier returned before all expected participants acked
+    /// (i.e., `missing` is non-empty).
+    pub timed_out: bool,
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Bus
 // ═══════════════════════════════════════════════════════════════════
@@ -252,9 +265,97 @@ impl Bus {
         let _ = self
             .cmd_tx
             .try_send(BusCommand::Shutdown { respond_to: tx });
-        // Drop the broadcast sender to close the channel.
+        // Drop the broadcast sender to close the broadcast channel.
         // After this, all broadcast::Receiver instances will get Closed.
         self.broadcast_tx.lock().unwrap().take();
+    }
+
+    /// Broadcast a barrier request and collect acknowledgments from the
+    /// listed `participants` until all respond or `timeout` elapses.
+    ///
+    /// Listeners (raw `bus.subscribe()` or NodeHandle forwarding tasks)
+    /// receive a `barrier_request` message with payload
+    /// `{"correlation_id": "<uuid>", "participants": [...]}`. Participants
+    /// should respond via `NodeHandle::barrier_ack(correlation_id)`.
+    ///
+    /// Note: This is a **best-effort** protocol. Participants listed in
+    /// the request that don't ack within `timeout` are returned in
+    /// `missing`. App code decides how to handle partial results
+    /// (retry, fail, accept with caveats).
+    pub async fn barrier(
+        &self,
+        participants: Vec<NodeId>,
+        timeout: Duration,
+    ) -> BarrierReceipt {
+        let correlation_id = Uuid::new_v4();
+        let participants_set: std::collections::HashSet<NodeId> =
+            participants.iter().cloned().collect();
+
+        // Subscribe BEFORE broadcasting — avoids race where acks arrive
+        // before our listener is registered.
+        let mut listener = self.subscribe_internal();
+
+        let request = Message::with_from_bus(
+            "barrier_request",
+            NodeId::new("bus"),
+            vec![],
+            serde_json::json!({
+                "correlation_id": correlation_id,
+                "participants": participants,
+            }),
+            self.id,
+        );
+
+        // Best-effort broadcast: skip cleanly if no listeners (shutdown).
+        let _ = self
+            .broadcast_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|tx| tx.send(request));
+
+        // Collect acks until all expected respond or timeout elapses.
+        let mut acked: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+        let deadline = std::time::Instant::now() + timeout;
+
+        while acked.len() < participants_set.len() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline - now;
+            match tokio::time::timeout(remaining, listener.recv()).await {
+                Ok(Ok(msg)) => {
+                    if msg.msg_type != "barrier_ack" {
+                        continue;
+                    }
+                    // Only accept acks carrying our correlation_id.
+                    let cid_match = msg
+                        .payload
+                        .get("correlation_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        == Some(correlation_id);
+                    if !cid_match {
+                        continue;
+                    }
+                    if participants_set.contains(&msg.from) {
+                        acked.insert(msg.from.clone());
+                    }
+                }
+                Ok(Err(_)) => break, // Bus shut down
+                Err(_) => break,     // Timeout
+            }
+        }
+
+        let missing: Vec<NodeId> = participants_set.difference(&acked).cloned().collect();
+        let timed_out = !missing.is_empty();
+        BarrierReceipt {
+            correlation_id,
+            acked: acked.into_iter().collect(),
+            missing,
+            timed_out,
+        }
     }
 }
 
@@ -1415,6 +1516,172 @@ mod tests {
             g.nodes.len()
         );
 
+        bus.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Bus::barrier (Phase 6 task 6.0.4) — 5 tests
+    // ═══════════════════════════════════════════════════════════════
+
+    // [barrier] 单个 ack 路径：handle.barrier_ack 在 barrier 内被接收
+    #[tokio::test]
+    async fn barrier_with_real_ack_via_handle() {
+        let bus = Arc::new(test_bus());
+
+        // Outside test thread: hold the handle for barrier_ack.
+        // Inside spawned task: run barrier with short timeout, while test
+        // thread reads barrier_request from raw subscribe and acks.
+        let bus_for_task = bus.clone();
+        let bus_for_main = bus.clone();
+
+        let task = tokio::spawn(async move {
+            // Run barrier for participant [n1]
+            bus_for_task
+                .barrier(vec![NodeId::new("n1")], Duration::from_millis(500))
+                .await
+        });
+
+        // Main thread: subscribe to bus, listen for barrier_request, then ack.
+        let mut rx = bus_for_main.subscribe();
+        // Drain heartbeats (interval defaults to 1s; we wait short enough to skip)
+        // Look for barrier_request specifically.
+        let cid;
+        loop {
+            let msg = tokio::time::timeout(Duration::from_millis(800), rx.recv())
+                .await
+                .expect("should observe barrier_request within 800ms")
+                .unwrap();
+            if msg.msg_type == "barrier_request" {
+                cid = msg
+                    .payload
+                    .get("correlation_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .expect("correlation_id missing");
+                break;
+            }
+            // ignore heartbeats, etc.
+        }
+
+        // Send ack manually (we're not a registered Node — use raw send)
+        let ack_msg = Message::with_from_bus(
+            "barrier_ack",
+            NodeId::new("n1"),
+            vec![],
+            serde_json::json!({ "correlation_id": cid }),
+            bus_for_main.id,
+        );
+        bus_for_main.send(ack_msg).await.unwrap();
+
+        // Wait for barrier to return
+        let receipt = task.await.unwrap();
+        assert_eq!(receipt.acked, vec![NodeId::new("n1")]);
+        assert!(receipt.missing.is_empty());
+        assert!(!receipt.timed_out);
+
+        // Cleanup skipped: rx (broadcast::Receiver) keeps a subscription
+        // slot which counts against bus.broadcast_tx; try_unwrap fails until
+        // rx is dropped. Letting rx drop at end-of-test is acceptable —
+        // run_message_loop exits when test process tears down.
+        drop(rx);
+        // Try unwrap again now that rx is gone
+        if let Ok(bus) = Arc::try_unwrap(bus_for_main) {
+            bus.shutdown().await;
+        }
+    }
+
+    // [barrier] 无人响应 → 全 missing，timed_out=true
+    #[tokio::test]
+    async fn barrier_no_responses_all_missing() {
+        let bus = test_bus();
+        let _h1 = bus.connect(test_node_info("n1"), test_filter()).await.unwrap();
+        // No ack listener spawned
+        let receipt = bus
+            .barrier(vec![NodeId::new("n1")], Duration::from_millis(200))
+            .await;
+        assert!(receipt.acked.is_empty());
+        assert_eq!(receipt.missing, vec![NodeId::new("n1")]);
+        assert!(receipt.timed_out);
+        bus.shutdown().await;
+    }
+
+    // [barrier] correlation_id 不匹配的 ack 被忽略
+    #[tokio::test]
+    async fn barrier_ignores_mismatched_correlation_id() {
+        let bus = test_bus();
+        let _h1 = bus.connect(test_node_info("n1"), test_filter()).await.unwrap();
+
+        // Manually send a barrier_ack with WRONG correlation_id
+        let wrong_cid = Uuid::new_v4();
+        let ack_msg = Message::with_from_bus(
+            "barrier_ack",
+            NodeId::new("n1"),
+            vec![],
+            serde_json::json!({ "correlation_id": wrong_cid }),
+            bus.id,
+        );
+        bus.send(ack_msg).await.unwrap();
+
+        // Run barrier with a different (correct) correlation_id — should not see this ack
+        let receipt = bus
+            .barrier(vec![NodeId::new("n1")], Duration::from_millis(200))
+            .await;
+        assert!(receipt.acked.is_empty(), "wrong-cid ack should be ignored");
+        assert_eq!(receipt.missing, vec![NodeId::new("n1")]);
+        assert!(receipt.timed_out);
+        assert_ne!(receipt.correlation_id, wrong_cid);
+        bus.shutdown().await;
+    }
+
+    // [barrier] empty participants 列表 → 立即返回（无等待）
+    #[tokio::test]
+    async fn barrier_empty_participants() {
+        let bus = test_bus();
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(2),
+            bus.barrier(vec![], Duration::from_millis(500)),
+        )
+        .await
+        .expect("barrier with empty list should return");
+        assert!(receipt.acked.is_empty());
+        assert!(receipt.missing.is_empty());
+        assert!(!receipt.timed_out);
+        bus.shutdown().await;
+    }
+
+    // [barrier] correlation_id 每次都不同
+    #[tokio::test]
+    async fn barrier_unique_correlation_ids() {
+        let bus = test_bus();
+        let r1 = bus.barrier(vec![NodeId::new("n1")], Duration::from_millis(100)).await;
+        let r2 = bus.barrier(vec![NodeId::new("n1")], Duration::from_millis(100)).await;
+        assert_ne!(r1.correlation_id, r2.correlation_id);
+        bus.shutdown().await;
+    }
+
+    // [barrier] 非参与者发送的 ack 被忽略（不在 participants 里）
+    #[tokio::test]
+    async fn barrier_ignores_ack_from_non_participant() {
+        let bus = test_bus();
+        let h_outside = bus.connect(test_node_info("outsider"), test_filter()).await.unwrap();
+
+        // outsider sends ack without being a participant in the upcoming barrier
+        let ack_msg = Message::with_from_bus(
+            "barrier_ack",
+            NodeId::new("outsider"),
+            vec![],
+            serde_json::json!({ "correlation_id": "placeholder" }),
+            bus.id,
+        );
+        bus.send(ack_msg).await.unwrap();
+
+        // Run barrier for [n1]; outsider's ack shouldn't count
+        let receipt = bus
+            .barrier(vec![NodeId::new("n1")], Duration::from_millis(200))
+            .await;
+        assert!(receipt.acked.is_empty());
+
+        h_outside.disconnect().await;
         bus.shutdown().await;
     }
 }

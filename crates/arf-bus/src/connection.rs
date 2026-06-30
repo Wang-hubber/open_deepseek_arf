@@ -20,6 +20,7 @@ use futures::future::{self, FutureExt};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use uuid::Uuid;
 
 use crate::{Bus, BusCommand, ConnectError};
 
@@ -269,6 +270,35 @@ impl NodeHandle {
         }
         // Drop self; all subscription inbound_rx are dropped, forwarding
         // tasks exit on next `tx.send().await` failure.
+    }
+
+    /// Respond to a barrier request via the primary subscription's Bus.
+    ///
+    /// The ack carries the given `correlation_id` so the Bus can match it
+    /// to the originating `Bus::barrier()` call.
+    ///
+    /// Returns `SendError::BusClosed` if the primary Bus is shut down.
+    pub async fn barrier_ack(&self, correlation_id: Uuid) -> Result<(), SendError> {
+        let msg = Message::with_from_bus(
+            "barrier_ack",
+            self.info.node_id.clone(),
+            vec![],
+            serde_json::json!({ "correlation_id": correlation_id }),
+            self.primary_bus_id,
+        );
+        let (tx, rx) = oneshot::channel();
+        let primary = self
+            .subscriptions
+            .first()
+            .expect("NodeHandle always has at least one subscription");
+        primary
+            .cmd_tx
+            .send(BusCommand::Send { msg, respond_to: tx })
+            .await
+            .map_err(|_| SendError::BusClosed)?;
+        rx.await
+            .map_err(|_| SendError::BusClosed)?
+            .map(|_| ())
     }
 }
 
