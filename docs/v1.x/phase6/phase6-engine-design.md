@@ -484,12 +484,23 @@ Capability { requirements: vec![
 - 单匹配 → 退化为 Strict 单 receiver 行为
 - 多匹配 → 按 Discovery 语义（Query 等全部，Command 全发）
 
-### 2.4 State（两部分 + WaitEvent 队列）
+### 2.4 State（messages + over_view + wait_events）
+
+**所有权语义**（2026-06-30 决议）：
+- **App 持有 State**（在 `engine.run()` 之外；State 的生命周期由 App 管理）
+- **Engine.run(&mut state, ...)** 期间借走 &mut State，修改 messages / over_view / wait_events
+- Engine 不再拥有 State——State 的持久化、克隆、跨 Engine 共享都是 App 决定
+- App **不**应该直接访问 `state.wait_events`（Engine 内部维护）；仅 `messages` 和 `over_view` 是 App 可读的"对话视图"
 
 ```rust
 pub struct State {
-    pub messages: Vec<ModelMessage>,  // 对话历史（详细）
-    pub over_view: OverView,          // 聚合指标（O(1) 访问）
+    /// 对话历史（详细）。Engine 在 chat() 中追加；App 可读。
+    pub messages: Vec<ModelMessage>,
+    /// 聚合指标（O(1) 访问）。Engine 在每次 chat() / ReAct 转移点维护；App 可读。
+    pub over_view: OverView,
+    /// 等待中的消息组（§5）。Engine 内部维护；App 不应访问。
+    /// 包含所有未完成 WaitEvent，snapshot 时随 State 一起序列化（§5.5）。
+    pub wait_events: Vec<WaitEvent>,
 }
 
 /// ModelMessage — State 使用的领域层消息类型。
@@ -730,17 +741,17 @@ pub struct ToolSpec {
 Engine 是 Bus 上一个特殊 Node，运行固定 ReAct 状态机。
 
 **Engine 拥有**：
-- ReAct 状态机（idle / processing / waiting / stopped）
+- ReAct 状态机（idle / processing / waiting / stopped，详见 §4.1）
 - 5 个 Checkpoint 触发位置
-- 等待队列（WaitEvent 列表：每个 event 含 members + strategy）
-- Park/Resume 机制
+- Park/Resume 机制（&mut State 期间维护 wait_events 字段）
 
 **Engine 不拥有**：
-- State 所有权（State 由 App 持有；Engine.run() 借用 &mut State）
+- State 所有权（State 由 App 持有；Engine.run() 借用 &mut State，详见 §2.4）
 - 任何具体 Node 实例（ModelAdapter / McpNode / MemoryNode 等字眼不出现在 Engine 代码）
 - Route 表
 - CheckpointRule 列表
 - messages/tasks 的具体业务解释（Engine 只做存取）
+- 持久化时机与存储后端（App 全权）
 
 **Engine API**（2026-06-30 决议：去掉 Session 抽象）：
 
@@ -991,22 +1002,43 @@ engine.run(state=&mut state, user_input=msg)  ← App 端：拦截/转换/审批
 
 | 状态 | 含义 |
 |------|------|
-| `idle` | inbox 空，队列空 |
-| `processing` | 正在执行 ReAct 循环 |
-| `waiting` | 至少有一个未完成的 WaitEvent，等 event 触发 |
-| `stopped` | 收到 stop 信号，终结 |
+| `idle` | `state.wait_events.is_empty()`，无 in-flight 操作 |
+| `processing` | 正在执行 ReAct 循环主流程（构造 msg / publish / 等响应 / 更新 State） |
+| `waiting` | `!state.wait_events.is_empty()`，等待所有未完成 WaitEvent 完成 |
+| `stopped` | 收到 stop 信号，run() 返回 `Err(EngineError::Stopped)` |
 
-**术语约定**：状态机名称为 `waiting`；"park" 是动词（"Engine 进入 waiting 状态 / park 等响应"），不是状态名。文档后续出现的 "park" 一律按动词理解。
+**术语约定**：状态机名称为 `waiting`；"park" 是动词（"Engine 进入 waiting 状态 / park 等响应"），不是状态名。
+
+**状态机转移矩阵**（2026-06-30 补全）：
+
+| From → To | 触发条件 | Engine 副作用 |
+|-----------|----------|--------------|
+| `idle` → `processing` | `engine.run(state, user_input)` 被调用 | state.messages.push(user_msg); state.over_view.round_count += 1; 触发 BeforeModelCall Checkpoint |
+| `processing` → `processing` | ModelCall 响应到达，需要 tool_exec | 追加 assistant ModelMessage；触发 AfterModelCall Checkpoint；触发 BeforeToolExec；publish tool_exec |
+| `processing` → `waiting` | Engine publish 一个 intent=Query 的 msg | state.wait_events.push(new_event); 等待 receiver 响应 |
+| `processing` → `waiting` | Engine publish 多个 intent=Query msg（multi-member event） | state.wait_events.push(multi_member_event); 等待所有 member 响应 |
+| `waiting` → `processing` | 某 WaitEvent 的 strategy 满足（All/Any/Count(n)） | 从 state.wait_events 移除；inject responses to state.messages；触发新一轮 think |
+| `waiting` → `waiting` | 部分 member 响应到达但未满足 strategy | 更新对应 member.received_count；继续 park |
+| `waiting` → `stopped` | App 调用 `engine.cancel()` | 通知所有 in-flight receiver（Cancel msg）；state.wait_events 清空；run() 返回 Err |
+| `processing` → `stopped` | 命中终止条件（§4.2）：纯文本 / task_complete / max_turns / 不可恢复错误 | run() 返回 Ok(final_output) 或 Err(error) |
+| `waiting` → `stopped` | node_offline lifecycle signal + OnMemberFailedHandler 返回 FailSession | state.wait_events 清空；run() 返回 Err |
+| `*` → `idle` | （仅在 run() 返回后发生；下次 run() 进来再决定转 processing 还是 stopped） | state 不变 |
+
+**关键不变式**：
+- `idle` ↔ `waiting` 通过 `processing` 中转（不能直接互转）
+- `stopped` 是终态；后续 `engine.run()` 需 App 显式重置（如 `engine.restore(snap)`）
+- 进入 `stopped` 后，state.wait_events 必清空（持久化前）
+- `processing` 不会"卡住"——任何 publish 出去的 Query intent msg 都会立即让状态转 `waiting`
 
 ### 4.2 终止条件
 
-| 条件 | 触发 |
-|------|------|
-| 模型返回纯文本 | LLM 不再调用 tool |
-| `task_complete` | LLM 调用了 kernel tool |
-| `max_turns` 超限 | `turn_count >= max_turns` |
-| cancel | 外部 `cancel_session` |
-| error | 不可恢复错误 |
+| 条件 | 触发 | 转移目标 |
+|------|------|----------|
+| 模型返回纯文本 | LLM 不再调用 tool | `processing` → `stopped`（run 返回 Ok(output)） |
+| `task_complete` | LLM 调用了 kernel tool | `processing` → `stopped`（run 返回 Ok(output)） |
+| `max_turns` 超限 | `turn_count >= max_turns` | `processing` → `stopped`（run 返回 Err(MaxTurnsExceeded)） |
+| cancel | App 调 `engine.cancel()` | `*` → `stopped`（run 返回 Err(Stopped)） |
+| 不可恢复 error | Receiver panic / OnMemberFailed 返回 FailSession / 节点全掉 | `*` → `stopped`（run 返回 Err(EngineError)） |
 
 ## 5. 等待队列（事件级）
 
@@ -1422,12 +1454,12 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 
 | Engine 拥有 | 不拥有（App / Node 提供） |
 |------------|--------------------------|
-| Session 状态机（idle/processing/waiting/stopped） | 具体 Node 实现（ModelAdapter 等） |
-| ReAct 循环流程 | Route 表 |
-| 5 个 Checkpoint 位置 | CheckpointRule 列表 |
-| 终止条件判断 | NodeId / Capability 声明 |
-| WaitEvent 队列 + 持久化时机 | ActionMessage 子类型 |
-| State.over_view 字段维护 | messages/tasks 业务解释 |
+| ReAct 状态机（idle/processing/waiting/stopped，§4.1） | State 所有权（State 由 App 持有，Engine 通过 &mut 借走） |
+| ReAct 循环流程 | 具体 Node 实现（ModelAdapter 等） |
+| 5 个 Checkpoint 位置 | Route 表 |
+| 终止条件判断 | CheckpointRule 列表 |
+| 在 &mut State 期间维护 messages / over_view / wait_events | NodeId / Capability 声明 |
+| ActionMessage 子类型 | 持久化时机与存储后端 |
 | System prompt 组装 | BusGraph 查询 |
 | Turn/Round 计数 | |
 
