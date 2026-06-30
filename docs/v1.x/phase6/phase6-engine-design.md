@@ -1043,7 +1043,149 @@ match result {
 }
 ```
 
-## 4. ReAct 循环（固定，不可配置）
+## 4. 并发模型（2026-06-30 增）
+
+> **核心原则**：框架**不**提供并发原语；并发由 App 通过 **sub-Bus + 同配置多 Node + facade Node 分发**模式组合实现。
+
+### 4.0 并发边界总览
+
+| 单元 | 并发模型 | 说明 |
+|------|----------|------|
+| **单 Node** | **串行** | Node::on_message 接收 `&mut self`，Rust 借用规则保证同时只处理一个 msg |
+| **CheckpointRule** | **串行** | trigger 位置顺序遍历所有规则，逐个 build+publish |
+| **Engine.run()（同一调用）** | **串行** | 状态机转移串行；State 通过 `&mut` 单写者 |
+| **Engine.run()（跨调用）** | **可重入** | 不同 state 实例的并发 run() 是安全的（Engine 只持 immutable config） |
+| **WaitEvent 多 member** | **并发接收** | 各 member 独立跟踪 received_count，互不阻塞 |
+| **Bus broadcast** | **并发投递** | Bus 内部 mpsc 并发向多 subscriber 投递消息 |
+
+### 4.1 单 Node 串行不变式
+
+```rust
+// Node trait 强制串行：&mut self
+pub trait Node: Send + Sync {
+    async fn on_message(&mut self, msg: Message, from_bus: BusId);
+    //            ^^^^^^^ 借用检查保证：同一 Node 不会并发 on_message
+}
+```
+
+**Rust 借用规则保证**：
+- Bus 给 Node 投递消息时持有 `&mut NodeHandle`
+- Node 处理完一条消息后才能接收下一条
+- 无内部锁需求（除非 Node 内部有跨字段共享状态需要 Mutex）
+
+### 4.2 CheckpointRule 串行评估
+
+```rust
+// trigger 位置的执行逻辑（§3.5.1 详述）—— 完全串行
+for rule in &self.checkpoint_rules {  // 顺序遍历
+    if rule.trigger != trigger { continue; }
+    if !(rule.when)(state) { continue; }  // 顺序调用 when()
+    let msg = (rule.build)(state);        // 顺序调用 build()
+    bus.publish(msg).await?;              // 顺序 publish
+    // park if Query
+}
+// 同 Checkpoint 位置的多个 rule 触发时，msg 按 rules 列表顺序 publish
+```
+
+**无并发规则求值**——避免闭包并发访问 &mut State 的复杂性。
+
+### 4.3 Engine.run() 可重入
+
+```rust
+// Engine 内部无 per-run mutable state；config 只读（Arc<AgentConfig>）
+pub struct Engine {
+    config: Arc<AgentConfig>,  // 不可变，跨 run() 共享
+    bus: Vec<Arc<Bus>>,       // 多 Bus，read-only
+    routes: Arc<HashMap<...>>, // 不可变
+    checkpoint_rules: Arc<Vec<CheckpointRule>>,  // 不可变
+}
+
+// 不同 state 实例的并发 run() 是安全的：
+async fn app_main(engine: Arc<Engine>) {
+    let task1 = tokio::spawn({
+        let mut state1 = State::default();
+        let cancel1 = CancellationToken::new();
+        engine.run(state=&mut state1, user_input='user A msg', cancel=cancel1)
+    });
+    let task2 = tokio::spawn({
+        let mut state2 = State::default();
+        let cancel2 = CancellationToken::new();
+        engine.run(state=&mut state2, user_input='user B msg', cancel=cancel2)
+    });
+    // 两个 run() 完全独立，互不干扰
+}
+```
+
+**Engine 内部不变式**：
+- run() 不修改 Engine 字段；只修改 `&mut State`
+- 所有跨 run() 共享数据是不可变的（Arc）
+- Engine 可以 clone 多个 Arc<Engine> 给不同 task
+
+### 4.4 并发模式：sub-Bus + 同配置多 Node + facade 分发
+
+**单 Node 串行**意味着：要并发处理同类任务（如多个并发模型调用），不能在一个 Node 上开线程池，必须**实例化多个 Node**。
+
+**模式**：
+
+```
+顶层 Bus
+├── engine/main        Engine
+├── facade/llm_pool    facade Node（订阅顶层 tool_exec / model_call）
+└── sub-Bus (LLM pool)
+    ├── llm/worker_0   ModelAdapter 实例 #1
+    ├── llm/worker_1   ModelAdapter 实例 #2
+    └── llm/worker_2   ModelAdapter 实例 #3
+```
+
+**facade Node 实现**（在两个 Bus 之间转发）：
+
+```rust
+impl Node for LlmPoolFacade {
+    fn id(&self) -> &NodeId { &NODE_ID_FACADE }
+
+    async fn on_message(&mut self, msg: Message, from_bus: BusId) {
+        match (msg.msg_type.as_str(), from_bus) {
+            // 顶层 Bus 来 model_call → 转 sub-Bus 投递
+            ("model_call", BusId::Top) => {
+                self.sub_bus.publish(msg).await;  // 任意 worker 收到
+            }
+            // sub-Bus 来 model_response → 转回顶层 Bus
+            ("model_response", BusId::Sub) => {
+                self.top_bus.publish(msg).await;
+            }
+            _ => unreachable!(),
+        }
+    }
+    // snapshot/restore 同 §1.5.2 facade 模式
+}
+```
+
+**关键点**：
+- 单个 LlmPoolFacade 是串行的（一次处理一条消息）
+- 但 sub-Bus 上有 N 个 worker 实例，**Bus 投递并行分发**
+- 顶层 Bus 视角：facade/llm_pool 是个 Node，看起来"并发处理多个 model_call"
+- 实际并发度由 sub-Bus 上的 worker 数量决定
+
+### 4.5 WaitEvent 多 member 并发接收
+
+```rust
+pub struct WaitEvent {
+    members: Vec<PendingMessageWait>,  // 多 member 可同时 in-flight
+    received: HashMap<CorrelationId, Response>,
+}
+
+// 各 member 独立跟踪 received_count：
+// - 一个 member 收到响应 → 更新它的 count
+// - 另一个 member 收到响应 → 独立更新
+// - strategy 满足时整体出栈
+```
+
+**并发不变式**：
+- WaitEvent 整体在 State 中，&mut State 单写者
+- 但**响应到达的处理**是串行的（Engine 一次处理一条 Response，更新对应 member）
+- 多 member 并发投递（Bus broadcast 到多个 receiver），但 Engine 处理顺序无关（strategy 统计各自 count）
+
+## 5. ReAct 循环（固定，不可配置）
 
 ```
 engine.run(state=&mut state, user_input=msg)  ← App 端：拦截/转换/审批在调用方完成
