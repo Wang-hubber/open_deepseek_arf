@@ -132,6 +132,37 @@ pub trait Node: Send + Sync {
 
 `NodeId` 全局唯一——同一 Node 在所有订阅的 Bus 上是**同一身份**。
 
+**Message 结构**（Bus 上的 wire format，2026-06-30 增 trigger 字段）：
+
+```rust
+/// Bus 上传输的消息。Node 通过 NodeHandle::recv() 收到。
+pub struct Message {
+    /// 消息类型（路由 key，如 "model_call" / "tool_exec" / "memory_op"）
+    pub msg_type: String,
+    /// 发送方 NodeId
+    pub sender: NodeId,
+    /// 接收方 NodeId 列表（Strict 单个；Discovery 多个）
+    pub to: Vec<NodeId>,
+    /// 消息 payload（ActionMessage::payload() 序列化结果）
+    pub payload: serde_json::Value,
+    /// 来源 Bus（多 Bus 时由 Bus 写入；单 Bus 时为 Some(bus_id)）
+    pub from_bus: Option<BusId>,
+    /// Engine 触发上下文（2026-06-30 新增）：
+    /// - ReAct 主循环发出的消息（model_call / tool_exec）→ None
+    /// - CheckpointRule 触发的消息（memory_op / compact_op / human_handoff 等）→ Some(...)
+    /// 用于 trace 区分两类消息；不影响 routing/dispatch 逻辑
+    pub trigger: Option<EngineTrigger>,
+}
+
+/// Engine 触发 CheckpointRule 时填的元数据
+pub struct EngineTrigger {
+    /// 触发的 Checkpoint 位置
+    pub checkpoint: Checkpoint,
+    /// 命中的 CheckpointRule 名称（§2.5 的 name 字段）
+    pub rule_name: String,
+}
+```
+
 **新增 2：Node 可订阅多条 Bus**
 
 ```rust
@@ -567,7 +598,13 @@ for rule in &self.checkpoint_rules {
     let route = self.config.routes.get(msg.msg_type())
         .ok_or(EngineError::MissingRoute(msg.msg_type().into()))?;
 
-    self.bus.publish(msg=msg.as_ref(), route=route).await?;
+    // 2026-06-30 决议：CheckpointRule 触发的消息带 trigger 上下文
+    // 让 trace 能区分 "LLM 主循环消息" vs "Engine 规则触发消息"
+    let trigger_meta = EngineTrigger {
+        checkpoint: rule.trigger,
+        rule_name: rule.name.clone(),
+    };
+    self.bus.publish(msg=msg.as_ref(), route=route, trigger=Some(trigger_meta)).await?;
 
     match msg.intent() {
         MessageIntent::Query => {
@@ -1792,9 +1829,24 @@ async def main():
         """后台任务：打印所有 Bus 消息。"""
         while True:
             msg = await trace_handle.recv()
+            # trigger 字段区分 ReAct 主循环消息 vs Engine 规则触发消息
+            trigger_tag = ""
+            if msg.trigger is not None:
+                trigger_tag = (
+                    f" [trigger={msg.trigger.checkpoint.name}"
+                    f" rule={msg.trigger.rule_name}]"
+                )
             print(f"[trace] {msg.msg_type:20s} {msg.sender!s:>18s}"
+                  f"{trigger_tag}"
                   f" → {[str(t) for t in msg.to]!s:30s}"
                   f" payload={msg.payload}")
+        # 示例输出：
+        # [trace] model_call            engine/main                  → ['model/deepseek']
+        # [trace] model_response        model/deepseek               → ['engine/main']
+        # [trace] tool_exec             engine/main                  → ['mcp/local']
+        # [trace] memory_op             engine/main [trigger=ROUND_END rule=extract_memory]
+        #                                 → ['memory/l1']
+        # 一眼区分 ReAct 步骤（无 trigger 标签）vs 规则触发（带 trigger 标签）
 
     trace_task = asyncio.create_task(trace_loop())
     print("[app] trace/obs connected")
