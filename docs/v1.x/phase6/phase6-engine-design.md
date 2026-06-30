@@ -19,7 +19,7 @@ Engine 做减法。它是 Bus 上的一个 Actor：维护 AgentConfig + State，
 │    ├── tasks     (Vec<Task>)         │
 │    └── over_view (OverView)          │
 │                                      │
-│  8 个 Checkpoint 位置（固定）        │
+│  5 个 Checkpoint 位置（固定）        │
 │      ↓                               │
 │  CheckpointRule 列表（App 注册）     │
 │      when(state) → bool              │
@@ -239,24 +239,30 @@ pub struct OverView {
 
 ```rust
 pub enum Checkpoint {
-    BeforeInput, AfterInput, BeforeThink, AfterThink,
-    BeforeAct, AfterAct, RoundEnd, TurnEnd,
-}
-
-pub struct CheckpointRule {
-    pub name: String,
-    pub trigger: Checkpoint,
-    pub when: Box<dyn Fn(&State) -> bool + Send + Sync>,
-    pub build: Box<dyn Fn(&State) -> Box<dyn ActionMessage> + Send + Sync>,
-    pub route: Route,
+    /// model_call 触发前
+    BeforeModelCall,
+    /// model_call 完成后
+    AfterModelCall,
+    /// tool_exec 触发前
+    BeforeToolExec,
+    /// tool_exec 完成后
+    AfterToolExec,
+    /// round 边界，准备发 final_output
+    RoundEnd,
 }
 ```
 
 **约定**：
-- Engine 在固定 8 个 Checkpoint 位置暂停
+- Engine 在固定 5 个 Checkpoint 位置暂停
 - 调用所有注册规则的 `when`，返回 `true` 才调用 `build`
 - Engine 按 `route` 投递消息，按 `intent` 决定 park 还是继续
 - 框架提供标准构造器（`every_n_rounds`、`when_context_over`），但底层都是四元组
+
+**不在 Checkpoint 范畴**：
+- **Input 处理**（user_input 进入 state）发生在 `session.chat(msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
+- **System prompt 组装**发生在 `EngineBuilder.build()` 时，一次性完成
+- **Tool/Skill 发现**发生在 Node connect 时，一次性声明
+- **Turn 结束**与 RoundEnd 合并（每 turn 必然在 round 内；如需 turn 级 hook 用 `Checkpoint::RoundEnd` + `over_view.turn_count` 判断）
 
 ### 2.6 Engine
 
@@ -264,7 +270,7 @@ Engine 是 Bus 上一个特殊 Node，运行固定 ReAct 状态机。
 
 **Engine 拥有**：
 - ReAct 状态机（idle / processing / waiting / stopped）
-- 8 个 Checkpoint 触发位置
+- 5 个 Checkpoint 触发位置
 - Session 状态（State 的所有权）
 - 等待队列（correlation_id → receiver responses）
 - Park/Resume 机制
@@ -305,7 +311,7 @@ let engine = EngineBuilder::new(bus.clone())
     ))
     .add_checkpoint(CheckpointRule::new(
         "compact",
-        Checkpoint::BeforeThink,
+        Checkpoint::BeforeModelCall,
         |s| s.over_view.context_tokens as f64
             / s.over_view.model_context_window as f64 > 0.8,
         |s| Box::new(CompactOp::new(s.messages.clone())),
@@ -332,24 +338,57 @@ engine.chat("Read /etc/hostname").await?;
 ## 4. ReAct 循环（固定，不可配置）
 
 ```
-idle → inbox 收到 user_input → processing
-
-  BeforeInput   ─►  遍历注册规则，触发 when→build→publish
-  INPUT         ─►  state.messages.push(user_input)
-  AfterInput    ─►  遍历注册规则
-  BeforeThink   ─►  遍历注册规则
-  THINK         ─►  发 ModelCall (intent=Query)，park 等响应
-  AfterThink    ─►  遍历注册规则
-  BeforeAct     ─►  遍历注册规则（如有 tool_calls）
-  ACT           ─►  发 ToolExec (intent=Query)，park 等响应
-  AfterAct      ─►  遍历注册规则
-  判断 tool_calls? ─►  yes → THINK；no → RoundEnd
-  RoundEnd      ─►  遍历注册规则
-  TurnEnd       ─►  遍历注册规则
-                ─►  → idle
+session.chat(msg)  ← App 端：拦截/转换/审批在调用方完成
+       │
+       ▼
+   state.messages.push(msg)
+       │
+       ▼
+   ┌─ Checkpoint::BeforeModelCall ─┐
+   │ for rule in rules:            │
+   │   if rule.when(state):        │
+   │     msg = rule.build(state)   │
+   │     bus.publish(msg, route)   │
+   └────────────────────────────────┘
+       │
+       ▼
+   publish ModelCall(Query) ─► park 等 receiver
+       │
+       ▼
+   ┌─ Checkpoint::AfterModelCall ──┐
+   │ (同 BeforeModelCall pattern)  │
+   └────────────────────────────────┘
+       │
+       ▼
+   判断 tool_calls?
+       │
+       ├─ yes ─► ┌─ Checkpoint::BeforeToolExec ──┐
+       │         │ ...                          │
+       │         └────────────────────────────────┘
+       │              │
+       │              ▼
+       │         publish ToolExec(Query) ─► park
+       │              │
+       │              ▼
+       │         ┌─ Checkpoint::AfterToolExec ───┐
+       │         │ ...                          │
+       │         └────────────────────────────────┘
+       │              │
+       │              └─► 回到 BeforeModelCall
+       │
+       └─ no ─► ┌─ Checkpoint::RoundEnd ────────┐
+                │ ...                         │
+                └──────────────────────────────┘
+                     │
+                     ▼
+                return final_output → idle
 ```
 
-Engine 只通过 `ModelCall` / `ToolExec` 两个内置消息类型与 Bus 通信。`Memory` / `Compact` / `Subagent` / `Peer` 等由 App 通过 CheckpointRule 注入。
+**关键约定**：
+- App 调 `session.chat(msg)` 之前负责 input 拦截（验证、转换、审批），Engine 不感知
+- Engine 内部 ReAct 循环只围绕 `model_call` 和 `tool_exec` 两个 action
+- 5 个 Checkpoint 是位置标记；具体发什么 msg 由 CheckpointRule 决定
+- Engine 只通过 `ModelCall` / `ToolExec` 两个内置消息类型与 Bus 通信；`Memory` / `Compact` / `Subagent` / `HumanHandoff` 等由 App 通过 CheckpointRule 注入
 
 ### 4.1 四状态
 
@@ -462,7 +501,7 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 |------------|--------------------------|
 | Session 状态机（idle/processing/waiting/stopped） | 具体 Node 实现（ModelAdapter 等） |
 | ReAct 循环流程 | Route 表 |
-| 8 个 Checkpoint 位置 | CheckpointRule 列表 |
+| 5 个 Checkpoint 位置 | CheckpointRule 列表 |
 | 终止条件判断 | NodeId / Capability 声明 |
 | 等待队列 + 持久化时机 | ActionMessage 子类型 |
 | State.over_view 字段维护 | messages/tasks 业务解释 |
@@ -473,7 +512,7 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 
 1. **Engine 不知道任何具体节点类型** —— `ModelAdapter` / `McpNode` / `MemoryNode` 等字眼不出现在 Engine 代码
 2. **Node 不知道 Engine 的存在** —— Node 只订阅 msg_types，不假设发送者是 Engine
-3. **Checkpoint 是位置，不是消息类型** —— 8 个位置固定；具体发什么 msg 由 CheckpointRule 决定
+3. **Checkpoint 是位置，不是消息类型** —— 5 个位置固定；具体发什么 msg 由 CheckpointRule 决定
 
 ## 11. 关键场景
 
@@ -509,7 +548,7 @@ impl ActionMessage for MemoryOp {
 ```rust
 CheckpointRule::new(
     "compact",
-    Checkpoint::BeforeThink,
+    Checkpoint::BeforeModelCall,
     |s| s.over_view.context_tokens > (s.over_view.model_context_window * 4 / 5),
     |s| Box::new(CompactOp::new(s.messages.clone())),
     Route::Discovery(Capability::new("kind", "compactor")),
@@ -542,7 +581,7 @@ impl ActionMessage for HumanHandoff {
 | 6.1 | 核心类型定义 | `ActionMessage` trait、`MessageIntent`、`Route`、`Capability`、`State`、`OverView`、`Checkpoint`、`CheckpointRule` — 在 `crates/arf-core/src/` |
 | 6.2 | Response 协议 | `Response::Done(Value)` 单形态；引擎 park 逻辑（Query 等全部、Command 不入队） |
 | 6.3 | Engine 骨架 | `Engine` struct、AgentConfig、State 所有权、4 状态机、bus.connect |
-| 6.4 | ReAct 主循环 | 8 个 Checkpoint 位置、fixed INPUT→THINK→ACT→OBSERVE→OUTPUT、终止判断 |
+| 6.4 | ReAct 主循环 | 5 个 Checkpoint 位置、fixed ModelCall↔ToolExec 循环、终止判断 |
 | 6.5 | Checkpoint 系统 | 规则注册、when/build 调用顺序、intent 决定的 park 行为 |
 | 6.6 | 等待队列 + Park/Resume | PendingWait、correlation_id 匹配、expected_receivers 计算、持久化 |
 | 6.7 | Route 解析 | BusGraph 查询、Strict/Discovery 转换、多 receiver park 协调 |
@@ -581,7 +620,7 @@ config = AgentConfig(
         ),
         # 上下文超 80% 触发压缩
         CheckpointRule.when_context_over(
-            trigger=Checkpoint.BeforeThink, ratio=0.8,
+            trigger=Checkpoint.BeforeModelCall, ratio=0.8,
             build=lambda s: CompactOp.new(s.messages),
             route=Route.discovery(Capability("kind", "compactor")),
         ),
