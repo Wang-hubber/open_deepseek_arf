@@ -128,7 +128,7 @@ pub enum Route {
 ```rust
 // McpNode 注册时声明
 let mcp_info = NodeInfo {
-    node_id: NodeId::new("local_mcp"),
+    node_id: NodeId::new(id="local_mcp"),
     capabilities: serde_json::json!({
         "kind": "mcp",
         "transport": "stdio",
@@ -136,11 +136,11 @@ let mcp_info = NodeInfo {
     }),
     ...
 };
-bus.connect(mcp_info, mcp_filter).await?;
+bus.connect(info=mcp_info, filter=mcp_filter).await?;
 
 // ModelAdapter 注册时声明
 let model_info = NodeInfo {
-    node_id: NodeId::new("primary_model"),
+    node_id: NodeId::new(id="primary_model"),
     capabilities: serde_json::json!({
         "kind": "model",
         "tier": "primary",
@@ -163,7 +163,7 @@ pub struct Capability {
 **Engine 解析 Discovery Route**：
 
 ```
-Route::Discovery(cap) 触发解析
+Route::Discovery(capability=cap) 触发解析
        │
        ▼
 遍历 BusGraph.nodes（在线节点列表）
@@ -259,7 +259,7 @@ pub enum Checkpoint {
 - 框架提供标准构造器（`every_n_rounds`、`when_context_over`），但底层都是四元组
 
 **不在 Checkpoint 范畴**：
-- **Input 处理**（user_input 进入 state）发生在 `session.chat(msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
+- **Input 处理**（user_input 进入 state）发生在 `session.chat(user_input=msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
 - **System prompt 组装**发生在 `EngineBuilder.build()` 时，一次性完成
 - **Tool/Skill 发现**发生在 Node connect 时，一次性声明
 - **Turn 结束**与 RoundEnd 合并（每 turn 必然在 round 内；如需 turn 级 hook 用 `Checkpoint::RoundEnd` + `over_view.turn_count` 判断）
@@ -290,65 +290,80 @@ App 通过 `EngineBuilder` 把所有部件组装起来。Engine 不参与装配�
 ```rust
 // crates/arf-agent/src/builder.rs
 
-let engine = EngineBuilder::new(bus.clone())
+let engine = EngineBuilder::new(bus=bus.clone())
     // ── 注册节点 ──
-    .register_node(NodeBinding::new(NodeId::new("primary_model"), &["model_call"]))
-    .register_node(NodeBinding::new(NodeId::new("local_mcp"), &["tool_exec"]))
-    .register_node(NodeBinding::new(NodeId::new("memory_node"), &["memory_op"]))
+    .register_node(binding=NodeBinding::new(
+        node_id=NodeId::new(id="primary_model"),
+        subscriptions=&["model_call"],
+    ))
+    .register_node(binding=NodeBinding::new(
+        node_id=NodeId::new(id="local_mcp"),
+        subscriptions=&["tool_exec"],
+    ))
+    .register_node(binding=NodeBinding::new(
+        node_id=NodeId::new(id="memory_node"),
+        subscriptions=&["memory_op"],
+    ))
 
     // ── 路由表（msg_type → Route）──
-    .route("model_call", Route::Strict(vec![NodeId::new("primary_model")]))
-    .route("tool_exec", Route::Discovery(Capability::new("kind", "mcp")))
-    .route("memory_op", Route::Strict(vec![NodeId::new("memory_node")]))
+    .route(msg_type="model_call", route=Route::Strict(vec![NodeId::new(id="primary_model")]))
+    .route(msg_type="tool_exec", route=Route::Discovery(Capability::new(key="kind", value="mcp")))
+    .route(msg_type="memory_op", route=Route::Strict(vec![NodeId::new(id="memory_node")]))
 
     // ── Checkpoint 触发器 ──
-    .add_checkpoint(CheckpointRule::new(
-        "extract_memory",
-        Checkpoint::RoundEnd,
-        |s| s.over_view.round_count > 1,
-        |s| Box::new(MemoryOp::extract(s.messages.clone())),
-        Route::Strict(vec![NodeId::new("memory_node")]),
+    .add_checkpoint(rule=CheckpointRule::new(
+        name="extract_memory",
+        trigger=Checkpoint::RoundEnd,
+        when=|s| s.over_view.round_count > 1,
+        build=|s| Box::new(MemoryOp::extract(messages=s.messages.clone())),
+        route=Route::Strict(vec![NodeId::new(id="memory_node")]),
     ))
-    .add_checkpoint(CheckpointRule::new(
-        "compact",
-        Checkpoint::BeforeModelCall,
-        |s| s.over_view.context_tokens as f64
+    .add_checkpoint(rule=CheckpointRule::new(
+        name="compact",
+        trigger=Checkpoint::BeforeModelCall,
+        when=|s| s.over_view.context_tokens as f64
             / s.over_view.model_context_window as f64 > 0.8,
-        |s| Box::new(CompactOp::new(s.messages.clone())),
-        Route::Discovery(Capability::new("kind", "compactor")),
+        build=|s| Box::new(CompactOp::new(messages=s.messages.clone())),
+        route=Route::Discovery(Capability::new(key="kind", value="compactor")),
     ))
 
     .build()
     .await?;
 
 // ── 创建并连接具体节点 ──
-let model = ModelAdapter::new(NodeId::new("primary_model"), model_config);
-model.subscribe_to(&["model_call"]);
-bus.connect(model.info(), model.filter()).await?;
+let model = ModelAdapter::new(
+    node_id=NodeId::new(id="primary_model"),
+    config=model_config,
+);
+model.subscribe_to(msg_types=&["model_call"]);
+bus.connect(info=model.info(), filter=model.filter()).await?;
 
-let mcp = McpNode::new(NodeId::new("local_mcp"), mcp_config);
-mcp.subscribe_to(&["tool_exec"]);
-bus.connect(mcp.info(), mcp.filter()).await?;
+let mcp = McpNode::new(
+    node_id=NodeId::new(id="local_mcp"),
+    config=mcp_config,
+);
+mcp.subscribe_to(msg_types=&["tool_exec"]);
+bus.connect(info=mcp.info(), filter=mcp.filter()).await?;
 
-let engine_handle = bus.connect(engine.info(), engine.filter()).await?;
-engine.start_session("s1").await?;
-engine.chat("Read /etc/hostname").await?;
+let engine_handle = bus.connect(info=engine.info(), filter=engine.filter()).await?;
+engine.start_session(session_id="s1").await?;
+engine.chat(user_input="Read /etc/hostname").await?;
 ```
 
 ## 4. ReAct 循环（固定，不可配置）
 
 ```
-session.chat(msg)  ← App 端：拦截/转换/审批在调用方完成
+session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完成
        │
        ▼
-   state.messages.push(msg)
+   state.messages.push(value=msg)
        │
        ▼
    ┌─ Checkpoint::BeforeModelCall ─┐
    │ for rule in rules:            │
    │   if rule.when(state):        │
    │     msg = rule.build(state)   │
-   │     bus.publish(msg, route)   │
+   │     bus.publish(msg=msg, route=route)   │
    └────────────────────────────────┘
        │
        ▼
@@ -385,7 +400,7 @@ session.chat(msg)  ← App 端：拦截/转换/审批在调用方完成
 ```
 
 **关键约定**：
-- App 调 `session.chat(msg)` 之前负责 input 拦截（验证、转换、审批），Engine 不感知
+- App 调 `session.chat(user_input=msg)` 之前负责 input 拦截（验证、转换、审批），Engine 不感知
 - Engine 内部 ReAct 循环只围绕 `model_call` 和 `tool_exec` 两个 action
 - 5 个 Checkpoint 是位置标记；具体发什么 msg 由 CheckpointRule 决定
 - Engine 只通过 `ModelCall` / `ToolExec` 两个内置消息类型与 Bus 通信；`Memory` / `Compact` / `Subagent` / `HumanHandoff` 等由 App 通过 CheckpointRule 注入
@@ -533,10 +548,10 @@ impl ActionMessage for MemoryOp {
 ### 11.2 Multi-model 投票：Strict + Query
 
 ```rust
-.route("model_call", Route::Strict(vec![
-    NodeId::new("claude"),
-    NodeId::new("gpt"),
-    NodeId::new("deepseek"),
+.route(msg_type="model_call", route=Route::Strict(vec![
+    NodeId::new(id="claude"),
+    NodeId::new(id="gpt"),
+    NodeId::new(id="deepseek"),
 ]))
 
 // ModelCall 默认 intent=Query
@@ -547,11 +562,11 @@ impl ActionMessage for MemoryOp {
 
 ```rust
 CheckpointRule::new(
-    "compact",
-    Checkpoint::BeforeModelCall,
-    |s| s.over_view.context_tokens > (s.over_view.model_context_window * 4 / 5),
-    |s| Box::new(CompactOp::new(s.messages.clone())),
-    Route::Discovery(Capability::new("kind", "compactor")),
+    name="compact",
+    trigger=Checkpoint::BeforeModelCall,
+    when=|s| s.over_view.context_tokens > (s.over_view.model_context_window * 4 / 5),
+    build=|s| Box::new(CompactOp::new(messages=s.messages.clone())),
+    route=Route::Discovery(Capability::new(key="kind", value="compactor")),
 )
 
 // 多 compactor 节点协同压缩
@@ -608,26 +623,28 @@ config = AgentConfig(
     system_prompt_template="You are a helpful assistant.\n\nTools:\n{{tools}}",
     max_turns=10,
     routes={
-        "model_call": Route.strict(["primary_model"]),
-        "tool_exec":  Route.discovery(Capability("kind", "mcp")),
+        "model_call": Route.strict(node_ids=["primary_model"]),
+        "tool_exec":  Route.discovery(capability=Capability(key="kind", value="mcp")),
     },
     checkpoint_rules=[
         # 每 5 轮提取记忆
         CheckpointRule.every_n_rounds(
-            trigger=Checkpoint.RoundEnd, n=5,
-            build=lambda s: MemoryOp.extract(s.messages),
-            route=Route.strict(["memory_node"]),
+            trigger=Checkpoint.RoundEnd,
+            every_n=5,
+            build=lambda s: MemoryOp.extract(messages=s.messages),
+            route=Route.strict(node_ids=["memory_node"]),
         ),
         # 上下文超 80% 触发压缩
         CheckpointRule.when_context_over(
-            trigger=Checkpoint.BeforeModelCall, ratio=0.8,
-            build=lambda s: CompactOp.new(s.messages),
-            route=Route.discovery(Capability("kind", "compactor")),
+            trigger=Checkpoint.BeforeModelCall,
+            ratio=0.8,
+            build=lambda s: CompactOp.new(messages=s.messages),
+            route=Route.discovery(capability=Capability(key="kind", value="compactor")),
         ),
     ],
 )
 
-engine = await EngineBuilder.new(bus).build(config)
-session = await engine.start_session("s1")
-output = await session.chat("Read /etc/hostname")
+engine = await EngineBuilder.new(bus=bus).build(config=config)
+session = await engine.start_session(session_id="s1")
+output = await session.chat(user_input="Read /etc/hostname")
 ```
