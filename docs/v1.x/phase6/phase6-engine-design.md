@@ -388,7 +388,7 @@ Capability { requirements: vec![
 - `requirements` 全部满足才匹配（**AND 语义**；需要 OR 时拆成多次 Discovery）
 - `NodeInfo.capabilities` 是 JSON Value，可以是字符串、数字、数组、对象——Capability 匹配只看**顶层字符串字段**；数组/嵌套对象不进 match
 - Capabilities 在 connect 时声明，**不变直到 disconnect + reconnect**；运行时变更需重连
-- Engine 缓存解析结果，收到 `node_online` / `node_offline` 事件时失效缓存
+- Engine 缓存解析结果，收到 `node_online` / `node_offline` lifecycle signal 时失效缓存
 
 **边界场景**：
 - 无匹配 → Engine 抛 `NoReceiver` 错误，App 决定 fail-fast / 降级 / 重试
@@ -955,6 +955,8 @@ CheckpointRule::new(
 ### 5.7 Node 掉线处理（2026-06-30 新增）
 
 > Engine 在 pending WaitEvent 期间如何处理 Node 掉线。
+>
+> **术语约定**：`WaitEvent` 是 Engine 内部的 pending message group（§5）；`node_online` / `node_offline` 是 Bus 发出的 lifecycle signal（msg_type 形式，附录节点上下线）。文档后续 "lifecycle signal" 一律指 Bus 侧的 `node_*` 信号，与 `WaitEvent` 区分。
 
 #### 5.7.1 核心场景
 
@@ -969,7 +971,7 @@ Engine 仍 park，响应永远不会到
 #### 5.7.2 决议：Fail + App hook
 
 **Engine 行为**：
-1. Engine 订阅 `node_offline` 事件（与 ModelCall/ToolExec 等并列）
+1. Engine 订阅 `node_offline` lifecycle signal（与 ModelCall/ToolExec 等并列）
 2. 对 pending WaitEvent 的每个 member 跟踪其目标 NodeId
 3. 收到 `node_offline(node_id=X)` 时，检查所有 pending event 的 members：
    - 若 X 是该 event 的某个 member 之一 → 该 member 标记为 "failed response"
