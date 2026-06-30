@@ -119,16 +119,45 @@ App 级别中断恢复的关键是：**每条 Bus 上有状态 Node 的状态同
 pub trait Node: Send + Sync {
     fn id(&self) -> &NodeId;
 
-    /// 序列化自己的状态。语义由 Node 决定（Engine 存 State、模型节点存连接池、...）
+    /// 序列化自己的状态（2026-06-30 决议：&self）。
+    /// snapshot 不阻塞 Node 处理其他消息——Node 内部需用 RwLock/Mutex 保护状态，
+    /// Engine 不负责暂停 Node 接收消息。
+    /// 返回的 Value 可脱锁后使用；Node 内部应自行处理超时（避免长 lock 卡 barrier）。
     fn snapshot(&self) -> Result<serde_json::Value, SnapshotError>;
 
-    /// 从快照恢复状态。语义由 Node 决定。
+    /// 从快照恢复状态（2026-06-30 决议：&mut self）。
+    /// restore 期间 Node 不应处理消息（App 负责协调顺序）。
+    /// 语义由 Node 决定（Engine 存 State、模型节点存连接池、...）
     async fn restore(&mut self, snapshot: serde_json::Value) -> Result<(), RestoreError>;
 
     /// 收到消息。`from_bus` 让 Node 知道消息来自哪条 Bus（facade 转发需要）
     async fn on_message(&mut self, msg: Message, from_bus: BusId);
 }
 ```
+
+**Node snapshot 并发约定**（2026-06-30 决议）：
+- `snapshot` 是 `&self`——不阻塞 Node 处理消息
+- Node 内部用 `RwLock` / `Mutex` 保护共享状态；snapshot 时 read lock，on_message 时 write lock（短临界区）
+- Node 内部负责超时控制：建议用 `tokio::time::timeout` 包装 state read 防止卡 barrier
+- `restore` 是 `&mut self`——restore 期间 Node 应停止处理消息（App 协调顺序）
+- Barrier 调用者不处理 Node 内部超时；Node 实现自负责
+- 失败返回 `SnapshotError::Timeout` / `SnapshotError::Serialize` 等；barrier 收到 Err 后该 Node 加入 missing 列表（§1.5.2 Bus::barrier）
+
+**Node 实现示例**：
+
+```rust
+impl Node for MemoryNode {
+    fn snapshot(&self) -> Result<Value, SnapshotError> {
+        // Node 内部负责不超时（防止卡 barrier）
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let state = self.state.read().await
+                .map_err(|e| SnapshotError::Lock(e.to_string()))?;
+            serde_json::to_value(&*state)
+                .map_err(|e| SnapshotError::Serialize(e.to_string()))
+        })
+        .map_err(|_| SnapshotError::Timeout)?
+    }
+}
 
 `NodeId` 全局唯一——同一 Node 在所有订阅的 Bus 上是**同一身份**。
 
@@ -1142,6 +1171,7 @@ CheckpointRule::new(
 - **AppCheckpoint 是 App Node，不是 Engine 内置机制**——保持 §10 第一条边界
 - **snapshot 语义由 Node 决定**——框架不强加 schema，App 通过 NodeId 索引
 - **barrier 超时策略由 App 决定**——框架只提供 timeout 参数
+- **snapshot 并发由 Node 实现负责**——Node 内部用 RwLock/Mutex 保护状态；Node 内部负责超时控制（详见 §1.5.2）
 - **Engine 不感知 recovery 发生**——Engine 只看到 Resume 信号，与正常 Chat() 不可区分
 
 ### 5.7 Node 掉线 + 超时处理（2026-06-30 新增）
