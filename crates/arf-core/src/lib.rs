@@ -13,15 +13,19 @@ pub mod route;
 pub mod checkpoint;
 pub mod state;
 pub mod wait_event;
+pub mod response;
+pub mod processor;
 // Re-export BusId so downstream crates don't need to know about the `node` module layout.
 pub use node::BusId;
 // Re-export common Engine protocol types at the crate root for ergonomic use.
 pub use checkpoint::{Checkpoint, CheckpointRule};
 pub use message::{ActionMessage, MessageIntent, ModelCall, ToolExec};
+pub use processor::ResponseProcessor;
+pub use response::Response;
 pub use route::{Capability, Route};
 pub use state::{OverView, State};
-pub use wait_event::{WaitEvent, WaitStrategy};
 pub use tool::ToolSpec;
+pub use wait_event::{WaitEvent, WaitStrategy};
 
 // ── NodeId ───────────────────────────────────────────────────────────
 
@@ -1184,6 +1188,64 @@ mod tests {
         let _ = WaitStrategy::All;
         let _ = WaitStrategy::Any;
         let _ = WaitStrategy::Count(3);
+    }
+
+    // ── Phase 6 task 6.2 — Response + ResponseProcessor (4 tests) ──
+
+    // [构造] Response::Done(Value) 接受任意 JSON
+    #[test]
+    fn response_done_accepts_any_value() {
+        let r = Response::Done(serde_json::json!({"content": "hi", "tool_calls": []}));
+        match r {
+            Response::Done(v) => assert_eq!(v["content"], "hi"),
+        }
+    }
+
+    // [序列化] Response serde 往返（单形态）
+    #[test]
+    fn response_serde_roundtrip() {
+        let r = Response::Done(serde_json::json!({"x": 42, "y": [1, 2, 3]}));
+        let s = serde_json::to_string(&r).unwrap();
+        let back: Response = serde_json::from_str(&s).unwrap();
+        assert_eq!(r, back);
+    }
+
+    // [trait] Mock processor 的 handles() 返回注册类型
+    #[test]
+    fn mock_processor_handles_registered_type() {
+        struct MockProc;
+        impl ResponseProcessor for MockProc {
+            fn handles(&self, msg_type: &str) -> bool {
+                msg_type == "custom_thing"
+            }
+            fn process(&self, _msg: &Message) -> Result<Response, String> {
+                Ok(Response::Done(serde_json::json!(null)))
+            }
+        }
+        let p = MockProc;
+        assert!(p.handles("custom_thing"));
+        assert!(!p.handles("model_response"));
+        assert!(!p.handles("tool_result"));
+    }
+
+    // [trait] Mock processor::process 把 Message 转为 Response
+    #[test]
+    fn mock_processor_processes_valid_message() {
+        struct P;
+        impl ResponseProcessor for P {
+            fn handles(&self, msg_type: &str) -> bool {
+                msg_type == "ok"
+            }
+            fn process(&self, msg: &Message) -> Result<Response, String> {
+                Ok(Response::Done(msg.payload.clone()))
+            }
+        }
+        let p = P;
+        let msg = Message::new("ok", NodeId::new("test"), vec![], serde_json::json!({"result": 7}));
+        let r = p.process(&msg).unwrap();
+        match r {
+            Response::Done(v) => assert_eq!(v["result"], 7),
+        }
     }
 
     // [构造] WaitEvent::new 设置 created_at_ms + correlation_id
