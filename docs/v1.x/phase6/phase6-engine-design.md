@@ -289,11 +289,23 @@ pub const BUILTIN_MSG_TYPES: &[(&str, &str)] = &[
 
 ```rust
 pub enum Response {
-    /// Receiver 给出的最终值
-    /// Engine park 等所有 Query 接收方都给出 Done(Value) 才继续
+    /// Receiver 给出的最终值。
+    /// Engine park 等所有 Query 接收方都给出 Done(Value) 才继续。
+    /// Value 的语义由 msg_type 决定：
+    ///   - model_call → { content: String, tool_calls: Vec<ToolCall> }
+    ///   - tool_exec → { content: String, error?: String }（error 字段为业务错误，由 App 解释）
+    ///   - 自定义类型 → 由 AgentConfig.processors 解释（§5.4）
+    /// Engine 不解析 Value 内部字段，不区分成功/业务错误——所有返回都视为"Done"。
     Done(serde_json::Value),
 }
 ```
+
+**无 `Failed` / `Err` / `Timeout` 变体**。理由（2026-06-30 决议）：
+- **Engine 不解析 Receiver 内部错误**——Receiver 内部错误处理是 App 开发者在执行节点（如 ModelAdapter / McpNode）中的职责。Engine 只确保"信息发出 + 信息接收"，对 Value 内部字段无任何语义假设
+- **Receiver 崩溃表现为两种 Engine 可观察的信号**（§5.7）：
+  - `node_offline` lifecycle signal（进程死了）→ OnMemberFailedHandler 处理
+  - 超时（hang 住但未下线）→ OnMemberFailedHandler 处理
+- **业务错误**（如模型返回 "I cannot do that"、tool 抛 PermissionError）作为 Value 内容正常返回，由对应 processor 解释；Engine 不需要 `Failed` 变体
 
 **无 `Wait`**。理由：
 - intent=Query → Engine 必然等所有 receiver，无论快慢
@@ -990,9 +1002,9 @@ CheckpointRule::new(
 - **barrier 超时策略由 App 决定**——框架只提供 timeout 参数
 - **Engine 不感知 recovery 发生**——Engine 只看到 Resume 信号，与正常 Chat() 不可区分
 
-### 5.7 Node 掉线处理（2026-06-30 新增）
+### 5.7 Node 掉线 + 超时处理（2026-06-30 新增）
 
-> Engine 在 pending WaitEvent 期间如何处理 Node 掉线。
+> Engine 在 pending WaitEvent 期间如何处理"响应永远不会到"——两种触发源：`node_offline` lifecycle signal（节点进程死了）或超时（hang 住但未下线）。两种都路由到同一个 `OnMemberFailedHandler`，由 App 决策后续行为。
 >
 > **术语约定**：`WaitEvent` 是 Engine 内部的 pending message group（§5）；`node_online` / `node_offline` 是 Bus 发出的 lifecycle signal（msg_type 形式，附录节点上下线）。文档后续 "lifecycle signal" 一律指 Bus 侧的 `node_*` 信号，与 `WaitEvent` 区分。
 
@@ -1002,6 +1014,7 @@ CheckpointRule::new(
 Engine 发送 ModelCall(Query) → Strict(["primary_model"])
 Engine park → 等响应
 [primary_model crash] → Bus 发 node_offline
+[primary_model hang] → Engine 内部 timer 超时（timeout）
 Engine 仍 park，响应永远不会到
 → 历史上 Engine 会永远卡住
 ```
@@ -1010,27 +1023,42 @@ Engine 仍 park，响应永远不会到
 
 **Engine 行为**：
 1. Engine 订阅 `node_offline` lifecycle signal（与 ModelCall/ToolExec 等并列）
-2. 对 pending WaitEvent 的每个 member 跟踪其目标 NodeId
-3. 收到 `node_offline(node_id=X)` 时，检查所有 pending event 的 members：
-   - 若 X 是该 event 的某个 member 之一 → 该 member 标记为 "failed response"
-4. 按 `WaitStrategy` 决定 event 后续：
+2. 对 pending WaitEvent 的每个 member 跟踪其目标 NodeId + 投递时间
+3. Engine 内部为每个 pending member 设置 timeout（默认从 AgentConfig 读取，可被 `route` 上的 msg_type-specific 配置覆盖）
+4. 收到 `node_offline(node_id=X)` 或某 member 超时时，检查所有 pending event 的 members：
+   - 若 X / 超时 member 是该 event 的某个 member 之一 → 该 member 标记为 "failed response"
+   - 失败原因（`FailedReason::Offline` / `FailedReason::Timeout`）附在 member 上
+5. 按 `WaitStrategy` 决定 event 后续：
    - `All`：任一 member failed → **event failed**（即使其他 member 还没响应）
    - `Any`：failed member 忽略，继续等待其他 member
    - `Count(n)`：failed 不计入成功数，App 决定 n 是按 "响应数" 还是 "完成数（响应+失败）"
-5. event failed → Engine 触发 `OnMemberFailed` hook（App 注册）
-6. 默认行为（无 hook）：整个 session fail，Engine 进入 stopped 状态
+6. event failed → Engine 触发 `OnMemberFailedHandler`（§5.7.3）
+7. 默认行为（无 handler）：整个 session fail，Engine 进入 stopped 状态
 
 #### 5.7.3 App hook 接口
 
 ```rust
+pub enum FailedReason {
+    /// 节点进程崩溃（Bus 发 node_offline）
+    Offline,
+    /// 节点 hang 住但未下线（Engine 内部 timer 触发）
+    Timeout,
+}
+
 pub trait OnMemberFailedHandler: Send + Sync {
-    /// Engine 在某 WaitEvent 的 member 因 node_offline 而失败时调用
+    /// Engine 在某 WaitEvent 的 member 因 node_offline 或超时而失败时调用
     /// 返回决定：
     ///   * FailSession — Engine 进入 stopped，返回 session 错误
-    ///   * Retry(msg) — Engine 重发原 message 给原目标（目标可能仍离线）
+    ///   * Retry(msg) — Engine 重发原 message 给原目标（App 显式决策）
     ///   * SwitchTo(new_route) — Engine 用新 route 重新解析 receiver
     ///   * IgnoreAndContinue — Engine 继续 wait（即便 strategy 是 All）
-    fn on_member_failed(&self, event: EventId, member: CorrelationId, failed_node: NodeId) -> MemberFailedAction;
+    fn on_member_failed(
+        &self,
+        event: EventId,
+        member: CorrelationId,
+        failed_node: NodeId,
+        reason: FailedReason,
+    ) -> MemberFailedAction;
 }
 ```
 
@@ -1041,7 +1069,7 @@ pub trait OnMemberFailedHandler: Send + Sync {
 let config = AgentConfig {
     routes: ...,
     checkpoint_rules: ...,
-    on_member_failed: Some(Arc::new(MyRetryHandler::new(max_retries=3))),
+    on_member_failed: Some(Arc::new(MyFailureHandler::new())),
     ..Default::default()
 };
 
@@ -1050,19 +1078,45 @@ let engine = EngineBuilder::new(bus=bus)
     .await?;
 ```
 
-#### 5.7.4 与 Retry 的关系
+#### 5.7.4 与 Retry 的关系（重试边界）
 
-框架不内置自动重试（重试策略是 App 决策）：
-- App 想重试 → 注册 handler 返回 `Retry`
-- App 想切备用 Node → 返回 `SwitchTo(Route::Strict(vec![backup_model]))`
-- App 想优雅失败 → 返回 `FailSession`（或用默认）
+**Engine 只确保"信息发出 + 信息接收"，不解析 Receiver 内部错误，不自动重试**（2026-06-30 决议）：
+
+| 谁负责 | 什么 | 例子 |
+|--------|------|------|
+| **执行节点自己** | 内部重试：API 限流（429）、网络瞬时失败 | ModelAdapter 看到 429 后 sleep 重试；McpNode 在 transient 错误时重试 |
+| **Engine** | 只发 / 只收；不重试、不解析 Value 内部错误 | 业务错误（如模型返回 "permission denied"）作为 Value.content 正常返回；Engine 不区分 |
+| **App（通过 handler）** | 显示决策：收到 FailedReason 后怎么办 | 注册 `OnMemberFailedHandler` 返回 Retry/SwitchTo/FailSession/IgnoreAndContinue |
+
+**边界澄清**：
+- Engine 内**无**自动重试机制——retry 永远是 App 显式通过 handler 决策
+- Handler 返回 `Retry(msg)` 是 App 级别的重发决策（Engine 仅作为执行者），**不**等同于 Engine 内置重试
+- 执行节点内部重试是 App 实现的细节（如 ModelAdapter 自己 sleep + retry），**不**是 Engine 行为
+- Receiver 业务错误不产生 FailedResponse；所有响应都是 `Done(Value)`，Value 内容由 App processor 解释
+
+**App handler 示例**（App 级别重试）：
+```rust
+impl OnMemberFailedHandler for MyFailureHandler {
+    fn on_member_failed(&self, ..., reason: FailedReason) -> MemberFailedAction {
+        match reason {
+            FailedReason::Timeout if self.attempts < 3 => {
+                self.attempts += 1;
+                MemberFailedAction::Retry(self.last_msg.clone())
+            }
+            _ => MemberFailedAction::FailSession,
+        }
+    }
+}
+```
 
 #### 5.7.5 不做的事
 
 - ❌ Engine 不自动 park 等 Node 恢复——Engine 没法"等"一个可能永不上线的 Node
 - ❌ Engine 不内置重试计数器——App 想要就用 handler
 - ❌ Engine 不监听 `node_online` 自动重发——App 想要就在 handler 里实现
-- ❌ 框架不区分 "临时掉线" vs "永久掉线"——Bus 只发 node_offline，App 自己判断
+- ❌ Engine 不解析 Response::Done 内部字段——Value 语义由 App processor 解释
+- ❌ Engine 不区分 "临时掉线" vs "永久掉线"——Bus 只发 node_offline，App 自己判断
+- ❌ Engine 不执行节点内部重试——那是执行节点（如 ModelAdapter）自己的实现
 
 ## 6. State 变更
 
