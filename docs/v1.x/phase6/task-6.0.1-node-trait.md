@@ -43,18 +43,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ARF shared types: Message, NodeId, NodeInfo, Node trait"
+description = "ARF shared types: Message, NodeId, NodeInfo, Node trait, error types"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
 ```
 
 逐行解释：
 - `description` 文本更新——加上 `Node trait`，反映本任务新增内容
 - `async-trait = "0.1"`——新增依赖；Node trait 的 `async fn on_message` / `async fn restore` 需要展开为 `Pin<Box<dyn Future>>`，否则无法用于 `Arc<dyn Node>` 动态分发。与 `arf-mcp/src/tool.rs` 的 `Tool` trait 用法一致
+- `[dev-dependencies] tokio = { features = ["rt", "macros", "sync"] }`——Node trait 测试用 `#[tokio::test]` 跑 async case，需要 tokio 的 runtime + macros 宏展开；`sync` feature 是为了 `RwLock` 等并发原语在测试中也可用。tokio 仅 dev 依赖，不进入 runtime——`arf-core` 仍保持零运行时依赖的目标（`Node` trait 自身不调用 tokio API；调用方决定 runtime）
 
 ---
 
@@ -444,7 +448,7 @@ mod tests {
         state: RwLock<MockState>,
     }
 
-    #[derive(Default, Clone)]
+    #[derive(Default, Clone, Serialize, Deserialize)]
     struct MockState {
         seen_msg_types: Vec<String>,
         from_buses: Vec<BusId>,
@@ -758,7 +762,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Node trait — 12 tests
+    // Node trait — 17 tests
     // ═══════════════════════════════════════════════════════════════
 
     // [构造] MockNode::id() 返回构造时的 NodeId
@@ -1004,8 +1008,8 @@ mod tests {
 | `BusId` | 12 | `[构造][trait][序列化][兼容][唯一性]` |
 | `SnapshotError` | 8 | `[覆盖][trait]` |
 | `RestoreError` | 9 | `[覆盖][trait][构造]` |
-| `Node` | 16 | `[构造][方法][trait][并发][边界][覆盖]` |
-| **合计** | **45** | |
+| `Node` | 17 | `[构造][方法][trait][并发][边界][覆盖]` |
+| **合计** | **46** | |
 
 ---
 
