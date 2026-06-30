@@ -104,6 +104,19 @@ pub struct ToolExec {
     pub target: Option<NodeId>,
 }
 
+/// Tool call request from LLM (parsed from `model_response.tool_calls[i]`).
+///
+/// Phase 6 task 6.4: added so ReAct loop can deserialize model_response content.
+/// `target` is the optional explicit NodeId (overrides AgentConfig.routes when set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+    #[serde(default)]
+    pub target: Option<NodeId>,
+}
+
 impl ToolExec {
     pub fn new(tool_name: impl Into<String>, arguments: serde_json::Value) -> Self {
         Self {

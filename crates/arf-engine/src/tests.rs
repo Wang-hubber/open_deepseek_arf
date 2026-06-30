@@ -296,7 +296,7 @@ async fn engine_run_one_round_completes() {
     assert_eq!(state.messages[2].content, "echo from mock model");
     assert_eq!(state.over_view.context_tokens, 42);
     assert_eq!(state.over_view.round_count, 1);
-    assert_eq!(state.over_view.turn_count, 2); // user turn + assistant turn
+    assert_eq!(state.over_view.turn_count, 1); // 1 model_call = 1 turn
 
     receiver_handle.abort();
 }
@@ -320,4 +320,225 @@ async fn engine_run_returns_stopped_on_cancel() {
         Ok(_) => {}                  // also OK — send may complete before cancel observed
         Err(e) => panic!("unexpected: {e:?}"),
     }
+}
+
+// ── Phase 6 task 6.4 — ReAct loop tests (4 tests) ──
+
+// 简易 model responder：每收到 model_call，按 query 顺序回应 sequence 中的内容。
+// 必须从 incoming model_call 提取 correlation_id 并原样回传给 engine（否则 engine 匹配不上）。
+async fn run_model_responder(
+    mut rx: tokio::sync::broadcast::Receiver<arf_core::Message>,
+    bus: Arc<arf_bus::Bus>,
+    responses: Vec<serde_json::Value>,
+) {
+    let mut idx = 0;
+    while let Ok(m) = rx.recv().await {
+        // 提取 incoming correlation_id 并 reuse 在 response 里
+        let cid = m
+            .payload
+            .get("correlation_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        if m.msg_type == "model_call" {
+            if let Some(cid) = cid {
+                if idx < responses.len() {
+                    let mut payload = responses[idx].clone();
+                    idx += 1;
+                    // Inject actual cid into payload
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert(
+                            "correlation_id".to_string(),
+                            serde_json::Value::String(cid.to_string()),
+                        );
+                    }
+                    let response = arf_core::Message::with_from_bus(
+                        "model_response",
+                        arf_core::NodeId::new("model/mock"),
+                        vec![],
+                        payload,
+                        bus.id,
+                    );
+                    let _ = bus.send(response).await;
+                }
+            }
+        } else if m.msg_type == "tool_exec" {
+            if let Some(cid) = cid {
+                let payload = serde_json::json!({
+                    "correlation_id": cid.to_string(),
+                    "content": "tool success",
+                    "status": "ok",
+                });
+                let response = arf_core::Message::with_from_bus(
+                    "tool_result",
+                    arf_core::NodeId::new("tool/mock"),
+                    vec![],
+                    payload,
+                    bus.id,
+                );
+                let _ = bus.send(response).await;
+            }
+        }
+    }
+}
+
+// [reAct] model_response 无 tool_calls → 1 round 即返（纯文本）
+#[tokio::test]
+async fn run_returns_immediately_when_no_tool_calls() {
+    let bus = Arc::new(test_bus());
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(minimal_config("a"))
+        .await
+        .unwrap();
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let bus_for_receiver = bus.clone();
+    let receiver = tokio::spawn(async move {
+        let rx = bus_for_receiver.subscribe();
+        ready_tx.send(()).unwrap();
+        run_model_responder(rx, bus_for_receiver.clone(), vec![
+            serde_json::json!({
+                "correlation_id": "00000000-0000-0000-0000-000000000001",
+                "content": "hello back",
+                "usage": {"prompt_tokens": 10},
+            })
+        ]).await;
+    });
+    ready_rx.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        engine.run(&mut state, "hi".into(), cancel),
+    )
+    .await
+    .expect("engine.run timed out")
+    .expect("engine.run should succeed");
+    assert_eq!(output, "hello back");
+    // messages: system + user + assistant
+    assert_eq!(state.messages.len(), 3);
+    assert_eq!(state.messages[2].role, "assistant");
+    assert_eq!(state.over_view.round_count, 1);
+
+    receiver.abort();
+}
+
+// [reAct] model_response 有 1 tool_call → tool_exec 完成后 assistant 无 tool_calls → 终止
+#[tokio::test]
+async fn run_continues_after_tool_result() {
+    let bus = Arc::new(test_bus());
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(minimal_config("a"))
+        .await
+        .unwrap();
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let bus_for_receiver = bus.clone();
+    let receiver = tokio::spawn(async move {
+        let rx = bus_for_receiver.subscribe();
+        ready_tx.send(()).unwrap();
+        // 第 1 次 model_call：返回 1 个 tool_call
+        // 第 2 次 model_call：返回纯文本
+        // 共 2 轮
+        run_model_responder(rx, bus_for_receiver.clone(), vec![
+            serde_json::json!({
+                "correlation_id": "00000000-0000-0000-0000-000000000001",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_0",
+                    "name": "bash",
+                    "arguments": {"cmd": "ls"},
+                }],
+            }),
+            serde_json::json!({
+                "correlation_id": "00000000-0000-0000-0000-000000000002",
+                "content": "done",
+            }),
+        ]).await;
+    });
+    ready_rx.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "run a tool".into(), cancel),
+    )
+    .await
+    .expect("engine.run timed out")
+    .expect("engine.run should succeed");
+    assert_eq!(output, "done");
+    // messages: system + user + assistant(tool_calls) + tool + assistant(text)
+    assert_eq!(state.messages.len(), 5);
+    assert_eq!(state.messages[2].role, "assistant");
+    assert_eq!(state.messages[2].tool_calls.len(), 1);
+    assert_eq!(state.messages[2].tool_calls[0].name, "bash");
+    assert_eq!(state.messages[3].role, "tool");
+    assert_eq!(state.messages[3].content, "tool success");
+    assert_eq!(state.messages[4].role, "assistant");
+    assert_eq!(state.messages[4].content, "done");
+
+    receiver.abort();
+}
+
+// [reAct] max_turns=1 + receiver 在第 1 次响应含 tool_calls → engine 发 tool_exec →
+// 期望：max_turns 触发（turn_count=2 > 1）
+#[tokio::test]
+async fn run_returns_max_turns_exceeded() {
+    let bus = Arc::new(test_bus());
+    let mut cfg = minimal_config("a");
+    cfg.max_turns = 1;
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(cfg)
+        .await
+        .unwrap();
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let bus_for_receiver = bus.clone();
+    let receiver = tokio::spawn(async move {
+        let rx = bus_for_receiver.subscribe();
+        ready_tx.send(()).unwrap();
+        // 永远响应含 tool_call → engine 不停地发 tool_exec，再 model_call，
+        // 直到 turn_count >= max_turns=1。
+        run_model_responder(rx, bus_for_receiver, vec![
+            serde_json::json!({
+                "correlation_id": "00000000-0000-0000-0000-000000000001",
+                "content": "",
+                "tool_calls": [{"id": "call_0", "name": "echo", "arguments": {}}],
+            }),
+        ]).await;
+    });
+    ready_rx.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.run(&mut state, "test".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect_err("should error with MaxTurnsExceeded");
+    assert!(matches!(res, RunError::MaxTurnsExceeded { .. }));
+}
+
+// [reAct] cancel 在 send 之前触发 → Stopped
+#[tokio::test]
+async fn run_returns_stopped_on_cancel_immediate() {
+    let bus = Arc::new(test_bus());
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(minimal_config("a"))
+        .await
+        .unwrap();
+
+    let cancel = CancellationToken::new();
+    cancel.cancel(); // cancel before run
+
+    let mut state = State::new();
+    let res = engine.run(&mut state, "x".into(), cancel).await;
+    assert!(matches!(res, Err(RunError::Stopped)));
 }

@@ -19,7 +19,7 @@ pub mod processor;
 pub use node::BusId;
 // Re-export common Engine protocol types at the crate root for ergonomic use.
 pub use checkpoint::{Checkpoint, CheckpointRule};
-pub use message::{ActionMessage, MessageIntent, ModelCall, ToolExec};
+pub use message::{ActionMessage, MessageIntent, ModelCall, ToolCall, ToolExec};
 pub use processor::ResponseProcessor;
 pub use response::Response;
 pub use route::{Capability, Route};
@@ -355,6 +355,11 @@ pub struct ModelMessage {
     /// Optional display name (e.g., function name for tool role, author for user).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Assistant-only: parallel tool calls requested by the model.
+    /// Phase 6 task 6.4 — added so ReAct loop can persist assistant
+    /// tool_calls back into messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<crate::message::ToolCall>,
     /// Provider-specific opaque data. Managed entirely by ModelAdapter.
     /// State stores it without interpretation. Default to `Value::Null`.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
@@ -372,6 +377,7 @@ impl ModelMessage {
             content: content.into(),
             tool_call_id: None,
             name: None,
+            tool_calls: Vec::new(),
             extra: serde_json::Value::Null,
         }
     }
@@ -1033,6 +1039,44 @@ mod tests {
         let back: ToolExec = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tool_name, "bash");
         assert_eq!(back.correlation_id, t.correlation_id);
+    }
+
+    // ── Phase 6 task 6.4 — ToolCall (3 tests) ──
+
+    // [构造] ToolCall 含 id/name/arguments；serde 序列化往返
+    #[test]
+    fn tool_call_construction_and_serde() {
+        let tc = ToolCall {
+            id: "call_0".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "/etc/hostname"}),
+            target: None,
+        };
+        let json = serde_json::to_string(&tc).unwrap();
+        let back: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, tc);
+    }
+
+    // [构造] target 为 None 时 serde 缺省（向后兼容 model_response 无 target 字段）
+    #[test]
+    fn tool_call_target_optional() {
+        let json = r#"{"id":"call_0","name":"read_file","arguments":{}}"#;
+        let tc: ToolCall = serde_json::from_str(json).unwrap();
+        assert!(tc.target.is_none());
+    }
+
+    // [构造] target=Some 时 round-trip 保留
+    #[test]
+    fn tool_call_target_set() {
+        let tc = ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({}),
+            target: Some(crate::NodeId::new("tool_node_x")),
+        };
+        let json = serde_json::to_string(&tc).unwrap();
+        let back: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.target, Some(crate::NodeId::new("tool_node_x")));
     }
 
     // ── Route / Capability (4 tests) ──

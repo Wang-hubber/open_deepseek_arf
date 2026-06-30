@@ -617,6 +617,7 @@ impl PyModelMessage {
                 content,
                 tool_call_id,
                 name,
+                tool_calls: Vec::new(),
                 extra: extra_json,
             },
         })
