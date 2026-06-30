@@ -1,10 +1,12 @@
-//! ARF shared types — Message format, identifiers, error types.
+//! ARF shared types — Message format, identifiers, error types, Node trait.
 //!
 //! This crate defines the common vocabulary that all other ARF crates share.
 //! It has zero dependencies on other ARF crates.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub mod node;
 
 // ── NodeId ───────────────────────────────────────────────────────────
 

@@ -4,9 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ARF shared types: Message, NodeId, NodeInfo, error types"
+description = "ARF shared types: Message, NodeId, NodeInfo, Node trait, error types"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
