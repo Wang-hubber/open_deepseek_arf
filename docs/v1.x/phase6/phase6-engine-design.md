@@ -4,7 +4,9 @@
 > 状态：设计（重构中）
 > 取代：原 6 消息 enum / ack 双控制 / YAML 检查点方案
 >
-> **2026-06-30 修订**：新增 §1.5 Multi-Bus 架构扩展、§8.5 Recovery 模型。Bus 从"单实例"扩展为"可组合多实例"，Engine-as-Actor 核心设计不变，仅 Bus 层增加最小原语（Node trait + 多 Bus 订阅 + Barrier）。
+> **2026-06-30 修订（v2）**：基于 §13 逐条讨论的 5 项决议——删除 Task 抽象、删除 NodeBinding（build() fail-fast 校验）、filter 改接收端过滤、新增 §5.7 Node 掉线处理（Fail + App hook）、持久化时机 App 全权。
+>
+> **2026-06-30 修订（v1）**：新增 §1.5 Multi-Bus 架构扩展、§5.6 App-level Recovery 模型。Bus 从"单实例"扩展为"可组合多实例"，Engine-as-Actor 核心设计不变，仅 Bus 层增加最小原语（Node trait + 多 Bus 订阅 + Barrier）。
 
 ## 1. 核心思想
 
@@ -135,8 +137,9 @@ pub trait Node: Send + Sync {
 
 ```rust
 impl NodeHandle {
-    /// Node 订阅另一条 Bus。Bus 内部用独立 mpsc channel 接收
-    pub fn attach_to(&mut self, bus: &Bus) -> &mut Self;
+    /// Node 订阅另一条 Bus。Bus 内部用独立 mpsc channel 接收。
+    /// 每条 Bus 订阅有独立 filter（App 在订阅时配置）。
+    pub fn attach_to(&mut self, bus: &Bus, filter: MessageFilter) -> &mut Self;
 
     /// 通过指定 Bus 发消息。Node 必须在该 Bus 上有订阅
     pub async fn send_via(
@@ -147,6 +150,13 @@ impl NodeHandle {
     ) -> Result<SendReceipt, SendError>;
 }
 ```
+
+**filter 机制**（2026-06-30 决议）：**接收端过滤**
+- Bus broadcast 不做过滤，所有 subscriber 都能收到
+- NodeHandle.recv() 按本订阅的 filter 过滤后再返回给 Node
+- App 在 `attach_to(bus, filter)` 时为每条 Bus 订阅独立配置 filter
+- Node 的 `on_message` 只看到已过滤消息——不再需要内部按 (from_bus, msg_type) 二次匹配
+- `from_bus: BusId` 参数保留（用于日志 / 调试 / Node 想区分来源），但不是路由依据
 
 **新增 3（可选）：`Bus::barrier()` 用于全局一致点**
 
@@ -171,33 +181,46 @@ impl Bus {
 
 ### 1.5.3 域控制器作为 App 组合模式
 
-facade Node 是普通 Node，App 自己写转发：
+facade Node 是普通 Node，App 自己写转发。
 
+**订阅配置**（filter 在订阅时指定）：
 ```rust
-struct McpFacade {
-    top_bus: Bus,
-    mcp_sub_bus: Bus,
-}
+// 创建 McpFacade，订阅两条 Bus，每条带独立 filter
+let mut facade = McpFacade::new(...);
+facade.attach_to(bus=top_bus, filter=MessageFilter {
+    types: Some(vec!["tool_exec".into()]),     // 只收 top Bus 的 tool_exec
+    to_match: ToMatch::DirectedToMe,
+});
+facade.attach_to(bus=mcp_sub_bus, filter=MessageFilter {
+    types: Some(vec!["tool_result".into()]),   // 只收 sub-Bus 的 tool_result
+    to_match: ToMatch::DirectedToMe,
+});
+```
 
+**on_message 只处理已过滤消息**：
+```rust
 #[async_trait]
 impl Node for McpFacade {
     fn id(&self) -> &NodeId { &NODE_ID_MCP }
 
-    async fn on_message(&mut self, msg: Message, from_bus: BusId) {
-        match (from_bus == self.top_bus.id(), msg.msg_type.as_str()) {
-            (true, "tool_exec")  => { self.mcp_sub_bus.publish(msg).await; }
-            (false, "tool_result") => { self.top_bus.publish(msg).await; }
-            _ => {} // 其他消息忽略（filter 已过滤大部分噪音）
+    async fn on_message(&mut self, msg: Message, _from_bus: BusId) {
+        // filter 已过滤，msg 要么是 top 的 tool_exec，要么是 sub 的 tool_result
+        match msg.msg_type.as_str() {
+            "tool_exec"   => { self.mcp_sub_bus.publish(msg).await; }
+            "tool_result" => { self.top_bus.publish(msg).await; }
+            _ => unreachable!("filter should have caught this"),
         }
     }
 
     fn snapshot(&self) -> Result<Value> {
-        // facade 是 stateless，可以不实现有意义的 snapshot
+        // facade 是 stateless
         Ok(serde_json::json!({}))
     }
     async fn restore(&mut self, _: Value) -> Result<()> { Ok(()) }
 }
 ```
+
+**简化要点**：filter 在订阅时配置后，`on_message` 不需要检查 `(from_bus, msg_type)` 二元组——filter 已经按 msg_type 过滤，`from_bus` 隐含在订阅上。
 
 **App 拓扑选择**：
 
@@ -373,14 +396,16 @@ Capability { requirements: vec![
 - 单匹配 → 退化为 Strict 单 receiver 行为
 - 多匹配 → 按 Discovery 语义（Query 等全部，Command 全发）
 
-### 2.4 State（三部分）
+### 2.4 State（两部分 + WaitEvent 队列）
 
 ```rust
 pub struct State {
     pub messages: Vec<Message>,      // 对话历史（详细）
-    pub tasks: Vec<Task>,            // 进行中 / 挂起任务
     pub over_view: OverView,         // 聚合指标（O(1) 访问）
 }
+
+// WaitEvent 队列（§5）是 State 的逻辑扩展——
+// 它属于 Engine 的运行时状态，跟随 State 一起持久化（§5.5）
 
 pub struct OverView {
     pub round_count: usize,
@@ -392,7 +417,13 @@ pub struct OverView {
 }
 ```
 
-`over_view` 字段由 Engine 在每个 Checkpoint 转移点维护。`messages` / `tasks` 是底层详细数据，Checkpoint 条件复杂时可自行遍历。
+**设计变更**（2026-06-30）：移除原 `tasks: Vec<Task>` 字段。理由：
+- 所有 in-flight 操作已被 WaitEvent 覆盖（§5）
+- 持久化已被 §5.5 WaitEvent 序列化解决
+- 框架不应假设 UI 层"查询运行中任务"的需求
+- "Don't add abstractions beyond what the task requires"
+
+`over_view` 字段由 Engine 在每个 Checkpoint 转移点维护。`messages` 是底层详细数据，Checkpoint 条件复杂时可自行遍历。
 
 **字段计算策略**：
 
@@ -463,24 +494,12 @@ App 通过 `EngineBuilder` 把所有部件组装起来。Engine 不参与装配�
 
 ## 3. App 装配模型
 
+**2026-06-30 修订**：移除 `NodeBinding`（双重声明，违反 DRY）。`AgentConfig` 只声明路由和 CheckpointRule；具体 Node 通过 `bus.connect()` 上线，`build()` 时 fail-fast 校验 routes。
+
 ```rust
 // crates/arf-agent/src/builder.rs
 
 let engine = EngineBuilder::new(bus=bus.clone())
-    // ── 注册节点 ──
-    .register_node(binding=NodeBinding::new(
-        node_id=NodeId::new(id="primary_model"),
-        subscriptions=&["model_call"],
-    ))
-    .register_node(binding=NodeBinding::new(
-        node_id=NodeId::new(id="local_mcp"),
-        subscriptions=&["tool_exec"],
-    ))
-    .register_node(binding=NodeBinding::new(
-        node_id=NodeId::new(id="memory_node"),
-        subscriptions=&["memory_op"],
-    ))
-
     // ── 路由表（msg_type → Route）──
     .route(msg_type="model_call", route=Route::Strict(vec![NodeId::new(id="primary_model")]))
     .route(msg_type="tool_exec", route=Route::Discovery(Capability::new(key="kind", value="mcp")))
@@ -503,27 +522,57 @@ let engine = EngineBuilder::new(bus=bus.clone())
         route=Route::Discovery(Capability::new(key="kind", value="compactor")),
     ))
 
+    // ── build() 时 fail-fast 校验 routes ──
+    //   * Strict route 的 NodeId 必须当前在线
+    //   * Discovery route 的 Capability 必须当前有匹配
+    //   * 失败 → BuildError { missing_nodes, missing_capabilities }
     .build()
     .await?;
 
 // ── 创建并连接具体节点 ──
+//   注意：实际 Node 必须在 build() 之前 connect，
+//   否则 build() 因 NodeId not online 而失败
 let model = ModelAdapter::new(
     node_id=NodeId::new(id="primary_model"),
     config=model_config,
 );
-model.subscribe_to(msg_types=&["model_call"]);
 bus.connect(info=model.info(), filter=model.filter()).await?;
 
 let mcp = McpNode::new(
     node_id=NodeId::new(id="local_mcp"),
     config=mcp_config,
 );
-mcp.subscribe_to(msg_types=&["tool_exec"]);
 bus.connect(info=mcp.info(), filter=mcp.filter()).await?;
 
-let engine_handle = bus.connect(info=engine.info(), filter=engine.filter()).await?;
+// Engine 也作为 Node 上 Bus（§1.5 Node trait）
+bus.connect(info=engine.info(), filter=engine.filter()).await?;
+
 engine.start_session(session_id="s1").await?;
 engine.chat(user_input="Read /etc/hostname").await?;
+```
+
+**为什么去掉 `NodeBinding`？**
+- `NodeBinding` 跟实际 Node 的 `bus.connect(info, filter)` 重复声明 NodeId 和 subscriptions
+- Engine 不需要"哪些 Node 存在"——BusGraph 知道
+- Engine 不需要"Node 订阅什么"——Bus filter 知道
+- Engine 只需要"哪些 msg_type 走哪条 Route"——`AgentConfig.routes` 已声明
+- `build()` 校验 routes 时直接查 BusGraph，fail-fast 给出具体缺失项
+
+**校验失败示例**：
+```rust
+// 假设 App 忘记实例化 "primary_model"
+let result = EngineBuilder::new(bus=bus.clone())
+    .route(msg_type="model_call", route=Route::Strict(vec![NodeId::new(id="primary_model")]))
+    .build()
+    .await;
+
+match result {
+    Err(BuildError::MissingNodes { nodes }) => {
+        // nodes = ["primary_model"]
+        println!("App misconfigured: nodes not online: {nodes:?}");
+    }
+    _ => {}
+}
 ```
 
 ## 4. ReAct 循环（固定，不可配置）
@@ -789,6 +838,73 @@ CheckpointRule::new(
 - **barrier 超时策略由 App 决定**——框架只提供 timeout 参数
 - **Engine 不感知 recovery 发生**——Engine 只看到 Resume 信号，与正常 Chat() 不可区分
 
+### 5.7 Node 掉线处理（2026-06-30 新增）
+
+> Engine 在 pending WaitEvent 期间如何处理 Node 掉线。
+
+#### 5.7.1 核心场景
+
+```
+Engine 发送 ModelCall(Query) → Strict(["primary_model"])
+Engine park → 等响应
+[primary_model crash] → Bus 发 node_offline
+Engine 仍 park，响应永远不会到
+→ 历史上 Engine 会永远卡住
+```
+
+#### 5.7.2 决议：Fail + App hook
+
+**Engine 行为**：
+1. Engine 订阅 `node_offline` 事件（与 ModelCall/ToolExec 等并列）
+2. 对 pending WaitEvent 的每个 member 跟踪其目标 NodeId
+3. 收到 `node_offline(node_id=X)` 时，检查所有 pending event 的 members：
+   - 若 X 是该 event 的某个 member 之一 → 该 member 标记为 "failed response"
+4. 按 `WaitStrategy` 决定 event 后续：
+   - `All`：任一 member failed → **event failed**（即使其他 member 还没响应）
+   - `Any`：failed member 忽略，继续等待其他 member
+   - `Count(n)`：failed 不计入成功数，App 决定 n 是按 "响应数" 还是 "完成数（响应+失败）"
+5. event failed → Engine 触发 `OnMemberFailed` hook（App 注册）
+6. 默认行为（无 hook）：整个 session fail，Engine 进入 stopped 状态
+
+#### 5.7.3 App hook 接口
+
+```rust
+pub trait OnMemberFailedHandler: Send + Sync {
+    /// Engine 在某 WaitEvent 的 member 因 node_offline 而失败时调用
+    /// 返回决定：
+    ///   * FailSession — Engine 进入 stopped，返回 session 错误
+    ///   * Retry(msg) — Engine 重发原 message 给原目标（目标可能仍离线）
+    ///   * SwitchTo(new_route) — Engine 用新 route 重新解析 receiver
+    ///   * IgnoreAndContinue — Engine 继续 wait（即便 strategy 是 All）
+    fn on_member_failed(&self, event: EventId, member: CorrelationId, failed_node: NodeId) -> MemberFailedAction;
+}
+```
+
+**默认实现**（无 App 注册时）：`FailSession`
+
+**App 注册示例**：
+```rust
+let engine = EngineBuilder::new(bus=bus.clone())
+    .on_member_failed(handler=Arc::new(MyRetryHandler::new(max_retries=3)))
+    ...
+    .build()
+    .await?;
+```
+
+#### 5.7.4 与 Retry 的关系
+
+框架不内置自动重试（重试策略是 App 决策）：
+- App 想重试 → 注册 handler 返回 `Retry`
+- App 想切备用 Node → 返回 `SwitchTo(Route::Strict(vec![backup_model]))`
+- App 想优雅失败 → 返回 `FailSession`（或用默认）
+
+#### 5.7.5 不做的事
+
+- ❌ Engine 不自动 park 等 Node 恢复——Engine 没法"等"一个可能永不上线的 Node
+- ❌ Engine 不内置重试计数器——App 想要就用 handler
+- ❌ Engine 不监听 `node_online` 自动重发——App 想要就在 handler 里实现
+- ❌ 框架不区分 "临时掉线" vs "永久掉线"——Bus 只发 node_offline，App 自己判断
+
 ## 6. State 变更
 
 Engine 的 State 私有，外部节点不直接写入。
@@ -814,11 +930,12 @@ pub struct AgentConfig {
     pub allow_paths: Vec<String>,
     pub routes: HashMap<String, Route>,                   // msg_type → Route
     pub checkpoint_rules: Vec<CheckpointRule>,           // App 注入的触发器
-    pub node_bindings: Vec<NodeBinding>,                  // 节点注册表
 }
 ```
 
-注意：`AgentConfig` 不再直接持有 ActionMessage 类型，而是通过 `routes` + `checkpoint_rules` 间接表达。Engine 不需要知道具体消息类型，只按字符串 msg_type 路由。
+注意（2026-06-30）：移除原 `node_bindings: Vec<NodeBinding>`。具体 Node 通过 `bus.connect()` 上线，`EngineBuilder.build()` 时校验 routes 与当前 BusGraph 一致。
+
+`AgentConfig` 不直接持有 ActionMessage 类型，而是通过 `routes` + `checkpoint_rules` 间接表达。Engine 不需要知道具体消息类型，只按字符串 msg_type 路由。
 
 ## 8. Bus 节点
 
@@ -951,7 +1068,7 @@ impl ActionMessage for HumanHandoff {
 | 6.5 | Checkpoint 系统 | 规则注册、when/build 调用顺序、intent 决定的 park 行为 | 6.4 |
 | 6.6 | 等待队列 + Park/Resume | WaitEvent + PendingMessageWait、correlation_id 匹配、expected_receivers 计算、event strategy 触发、持久化（与 §5.6 App-level Recovery 配合） | 6.5 |
 | 6.7 | Route 解析 | BusGraph 查询、Strict/Discovery 转换、多 receiver park 协调 | 6.3 |
-| 6.8 | EngineBuilder API | `crates/arf-agent/src/builder.rs`、`NodeBinding`、标准 CheckpointRule 构造器 | 6.6 + 6.7 |
+| 6.8 | EngineBuilder API | `crates/arf-agent/src/builder.rs`、标准 CheckpointRule 构造器、`OnMemberFailedHandler` 注册、build() fail-fast 校验 | 6.6 + 6.7 |
 | 6.9 | 集成测试 | MiniEngine + fixtures + ModelAdapter + McpNode 全链路；包含多 Bus 拓扑 fixture | 6.8 |
 | 6.10 | Python API | PyO3 绑定 Engine + AgentConfig + EngineBuilder + Bus::barrier + Node trait | 6.8 |
 
@@ -964,13 +1081,19 @@ impl ActionMessage for HumanHandoff {
 
 ## 13. 待澄清 / 留待实现阶段
 
-- `Task` 的具体形态（是否 tool_call 抽象？是否包含 subagent 句柄？）
-- Node 订阅 msg_types 的注册机制（filter vs 内部自过滤）
-- Engine 启动时如何校验 `AgentConfig` 声明的 node_id / capability 真实存在
-- 节点掉线时的 Engine 行为（重试 / park / 失败）
-- SessionState 持久化时机
+（2026-06-30 全部 5 条原始待澄清项已通过逐条讨论解决——见 §13.1）
 
 ### 13.1 已澄清
+
+#### 来自本轮 §13 讨论的 5 项决议
+
+- ~~`Task` 的具体形态~~ → **删除**（§2.4）。State 简化为 `messages + over_view`；所有 in-flight 操作由 WaitEvent 覆盖（§5）
+- ~~Node 订阅 msg_types 的注册机制（filter vs 内部自过滤）~~ → **接收端过滤**（§1.5.2）。`attach_to(bus, filter)` 每条 Bus 订阅独立配置 filter；Node on_message 只看过滤后消息，不再需要内部按 (from_bus, msg_type) 二次匹配
+- ~~Engine 启动时如何校验 node_id / capability 真实存在~~ → **删 NodeBinding + build() fail-fast**（§3）。`AgentConfig` 只声明 routes；`build()` 时校验当前 BusGraph 满足所有 routes；失败返回 `BuildError { missing_nodes, missing_capabilities }`
+- ~~节点掉线时的 Engine 行为~~ → **Fail + App hook**（§5.7）。Engine 监听 node_offline，对 pending WaitEvent 的 member 标记 failed；按 WaitStrategy 处理；触发 `OnMemberFailedHandler` hook；默认 FailSession
+- ~~SessionState 持久化时机~~ → **App 全权决定**（§1.5.2 + §5.6）。Engine.snapshot/restore 是机制；触发时机由 App 通过 CheckpointRule + Barrier 决定
+
+#### 此前已澄清的 6 项（2026-06-30 multi-bus 修订）
 
 - ~~`OverView` 字段的精确计算~~ → 见 §2.4 字段计算策略表。`context_tokens` 来自 API 响应的 `usage.prompt_tokens`；`runtime` 是 active time（processing 状态累计）；`model_context_window` 启动时从 ModelAdapter capabilities 读取
 - ~~Multi-Bus 是否需要全局路由~~ → **不需要**。每条 Bus 独立；跨 Bus 由 Node 自己订阅多条 Bus 实现（manual bridging）
@@ -978,6 +1101,12 @@ impl ActionMessage for HumanHandoff {
 - ~~域控制器是框架概念还是 App 模式~~ → **App 模式**。facade Node 是普通 Node，App 自己实现转发逻辑
 - ~~多 Node 一致性方案~~ → **独立快照 + 可选 Barrier**（§5.6）。`Node::snapshot/restore` 必备；`Bus::barrier` 可选；App 决定 checkpoint 策略
 - ~~Bus API 变更范围~~ → **最小侵入**（§1.5.2）。`Bus` 结构体不变；`NodeHandle` 内部多 mpsc；现有测试 0 修改通过
+
+### 13.2 仍待实现阶段澄清
+
+- `Bus::barrier` 的具体 ack 协议细节（msg type、correlation_id 命名、oneshot vs broadcast）
+- `OnMemberFailedHandler` 的 Retry/SwitchTo 行为对 Engine 状态的副作用（是否触发新 Checkpoint、是否写 State）
+- AppCheckpoint Node 与 Engine 的 CheckpointRule 集成方式（rule.build 返回 AppCheckpoint msg 类型需要新增）
 
 ## 14. Python API 展望
 
