@@ -843,12 +843,12 @@ AppCheckpoint Node 收到 msg → 触发 App-level checkpoint 逻辑
 **典型 CheckpointRule 配置**:
 
 ```rust
-CheckpointRule::new(
-    name="app_checkpoint",
-    trigger=Checkpoint::RoundEnd,
-    when=|s| s.over_view.round_count % 5 == 0,
-    build=|s| Box::new(AppCheckpoint::new(stateful_node_ids=app.stateful_nodes())),
-)
+CheckpointRule {
+    name: "app_checkpoint".into(),
+    trigger: Checkpoint::RoundEnd,
+    when: Box::new(|s| s.over_view.round_count % 5 == 0),
+    build: Box::new(|s| Box::new(AppCheckpoint::new(stateful_node_ids=app.stateful_nodes()))),
+}
 ```
 
 **恢复流程**:

@@ -577,3 +577,186 @@ async fn shutdown_with_online_nodes_closes_receivers() {
         Err(SendError::BusClosed)
     ));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §9.A finalization (Phase 6 task 6.0.5) — 2 e2e tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// [§9.A 收尾] facade Node 模式：NodeHandle 多 Bus 订阅 + barrier 协调
+// 拓扑：1 个 facade node 同时 subscribed bus_a 和 bus_b，每个 Bus
+// 上的所有 Node 共同响应 barrier。
+#[tokio::test]
+async fn barrier_facade_with_attach_to_two_buses() {
+    use std::sync::Arc;
+    let bus_a = Arc::new(Bus::new(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(30),
+        32,
+    ));
+    let bus_b = Arc::new(Bus::new(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(30),
+        32,
+    ));
+
+    // facade handle：在两条 Bus 上都有订阅
+    let mut facade = bus_a
+        .connect(node("facade"), all_filter())
+        .await
+        .unwrap();
+    facade.attach_to(bus_b.clone(), all_filter()).await.unwrap();
+
+    let _other_a = bus_a.connect(node("other_a"), all_filter()).await.unwrap();
+    let _other_b = bus_b.connect(node("other_b"), all_filter()).await.unwrap();
+
+    // ack listeners — spawned FIRST so they subscribe before we call barrier.
+    // (Ack task subscribes then loops: only acts on barrier_request.)
+    let bus_a_for_task = bus_a.clone();
+    let bus_b_for_task = bus_b.clone();
+    let facade_id = NodeId::new("facade");
+    let ack_task_a = tokio::spawn(async move {
+        let mut rx_a = bus_a_for_task.subscribe();
+        // Subscribe is done above (broadcast_rx registered); now loop on messages
+        // until we see barrier_request matching our facade_id correlation_id
+        // and send ack. We do this each time barrier() is called.
+        while let Ok(msg) = rx_a.recv().await {
+            if msg.msg_type != "barrier_request" { continue; }
+            if let Some(cid) = msg.payload.get("correlation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            {
+                let ack = arf_core::Message::with_from_bus(
+                    "barrier_ack",
+                    facade_id.clone(),
+                    vec![],
+                    serde_json::json!({ "correlation_id": cid }),
+                    bus_a_for_task.id,
+                );
+                let _ = bus_a_for_task.send(ack).await;
+            }
+        }
+    });
+    let ack_task_b = tokio::spawn({
+        let bus_b_for_task = bus_b.clone();
+        let facade_id = NodeId::new("facade");
+        async move {
+            let mut rx_b = bus_b_for_task.subscribe();
+            while let Ok(msg) = rx_b.recv().await {
+                if msg.msg_type != "barrier_request" { continue; }
+                if let Some(cid) = msg.payload.get("correlation_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                {
+                    let ack = arf_core::Message::with_from_bus(
+                        "barrier_ack",
+                        facade_id.clone(),
+                        vec![],
+                        serde_json::json!({ "correlation_id": cid }),
+                        bus_b_for_task.id,
+                    );
+                    let _ = bus_b_for_task.send(ack).await;
+                }
+            }
+        }
+    });
+
+    // Give listeners time to subscribe (avoid race with barrier broadcast)
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // barrier：bus_a 上协调 [facade]。facade 同时在 bus_b 上存在，
+    // 但 bus_a.barrier() 只在 bus_a 范围内等。barrier 内部走 bus_a 广播，
+    // ack 监听 A 也订阅了 bus_a，所以能收到 request 并响应 ack。
+    // (这条 e2e 主要验证：每 Bus 单独 barrier 都能正常 ack 协调。)
+    let receipt = bus_a
+        .barrier(vec![NodeId::new("facade")], std::time::Duration::from_millis(800))
+        .await;
+
+    assert_eq!(receipt.acked, vec![NodeId::new("facade")]);
+    assert!(receipt.missing.is_empty());
+    assert!(!receipt.timed_out);
+
+    // 让 listener 收到 Exit（channel close）后自然退出
+    ack_task_a.abort();
+    ack_task_b.abort();
+    drop(facade);
+    // Best-effort cleanup: drop Arcs; spawned tasks may keep references briefly
+    drop(bus_a);
+    drop(bus_b);
+}
+
+// [§9.A 收尾] NodeHandle 完整 lifecycle：connect → attach_to → send_via → recv
+#[tokio::test]
+async fn node_handle_full_lifecycle_two_buses() {
+    use std::sync::Arc;
+    let bus_a = Arc::new(Bus::new(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(30),
+        32,
+    ));
+    let bus_b = Arc::new(Bus::new(
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(30),
+        32,
+    ));
+
+    let mut handle = bus_a
+        .connect(node("multi"), all_filter())
+        .await
+        .unwrap();
+    handle.attach_to(bus_b.clone(), all_filter()).await.unwrap();
+
+    // Bus B 上注册 tool_node（让定向消息 targets 在线）
+    let _tool_node = bus_b
+        .connect(node("tool_node"), all_filter())
+        .await
+        .unwrap();
+
+    // 在 bus_a 发 model_call
+    handle
+        .send_via(bus_a.id, "model_call", vec![], serde_json::json!({"prompt": "hello"}))
+        .await
+        .unwrap();
+    // 在 bus_b 发 tool_exec
+    handle
+        .send_via(
+            bus_b.id,
+            "tool_exec",
+            vec![NodeId::new("tool_node")],
+            serde_json::json!({"tool": "read"}),
+        )
+        .await
+        .unwrap();
+
+    // 用 subscriptions() 验证订阅列表
+    let subs = handle.subscriptions();
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0], bus_a.id);
+    assert_eq!(subs[1], bus_b.id);
+
+    // recv() 收到两条消息（顺序不定，因 forwarding task 调度）
+    let mut got_model = false;
+    let mut got_tool = false;
+    for _ in 0..4 {
+        // 4 = 2 node_online (own + other's attach) + 2 messages
+        let msg = handle.recv().await.unwrap();
+        match msg.msg_type.as_str() {
+            "model_call" => {
+                assert_eq!(msg.payload["prompt"], "hello");
+                got_model = true;
+            }
+            "tool_exec" => {
+                assert_eq!(msg.payload["tool"], "read");
+                got_tool = true;
+            }
+            _ => {} // node_online, etc.
+        }
+        if got_model && got_tool {
+            break;
+        }
+    }
+    assert!(got_model && got_tool);
+
+    handle.disconnect().await;
+    let _ = Arc::try_unwrap(bus_a).map(|b| async move { b.shutdown().await });
+    let _ = Arc::try_unwrap(bus_b);
+}
