@@ -10,7 +10,7 @@ use arf_core::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::checkpoint as cp_eval;
+use crate::checkpoint::{self as cp_eval, DiscoveryCache};
 use crate::config::AgentConfig;
 use crate::error::{BuildError, RunError};
 
@@ -19,7 +19,8 @@ const TOOL_RESULT: &str = "tool_result";
 
 /// ReAct loop actor. Phase 6 §0.1 — "Engine 是 Bus 上的一个 Actor"。
 /// 6.3 实现最小骨架；6.4 实现完整 ReAct 主循环；6.5 实现 Checkpoint 评估与 dispatch；
-/// 6.6 实现 WaitEvent 队列与 WaitStrategy 触发。
+/// 6.6 实现 WaitEvent 队列与 WaitStrategy 触发；
+/// 6.7 实现 DiscoveryCache 加速 Capability 解析。
 pub struct Engine {
     config: AgentConfig,
     agent_id: NodeId,
@@ -28,6 +29,8 @@ pub struct Engine {
     /// Primary bus handle — held by Engine so we can query `graph()` for
     /// Checkpoint Rule's Discovery route resolution (Phase 6 task 6.5).
     primary_bus: Arc<arf_bus::Bus>,
+    /// Capability → recipients cache. Phase 6 task 6.7.
+    discovery_cache: Arc<DiscoveryCache>,
     /// Pre-computed system prompt (with {{skills}} substituted at build time)
     system_prompt: String,
 }
@@ -62,13 +65,32 @@ impl Engine {
             .await
             .map_err(|e| BuildError::PrimaryBusConnect(e.to_string()))?;
 
+        // 6.7: Spawn lifecycle listener that invalidates the DiscoveryCache
+        // when nodes come online or go offline.
+        let discovery_cache = Arc::new(DiscoveryCache::new());
+        let cache_for_listener = discovery_cache.clone();
+        let mut lifecycle_rx = primary.subscribe();
+        tokio::spawn(async move {
+            while let Ok(m) = lifecycle_rx.recv().await {
+                if m.msg_type == "node_online" || m.msg_type == "node_offline" {
+                    cache_for_listener.invalidate();
+                }
+            }
+        });
+
         Ok(Self {
             config,
             agent_id: info.node_id,
             handle,
             primary_bus: primary.clone(),
+            discovery_cache,
             system_prompt,
         })
+    }
+
+    /// Borrow the DiscoveryCache (test hook). Phase 6 task 6.7.
+    pub fn discovery_cache(&self) -> &DiscoveryCache {
+        &self.discovery_cache
     }
 
     /// Borrow the primary Bus Arc (used by Checkpoint evaluation to query
@@ -205,7 +227,7 @@ impl Engine {
         let graph_nodes = self.primary_bus.graph().nodes;
         let rules = &self.config.checkpoint_rules;
         let routes = &self.config.routes;
-        let built = cp_eval::evaluate(state, trigger, rules, routes, &graph_nodes)?;
+        let built = cp_eval::evaluate(state, trigger, rules, routes, &graph_nodes, &self.discovery_cache)?;
 
         for cm in built {
             match cm.msg.intent() {

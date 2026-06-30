@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::checkpoint::{evaluate, resolve_route};
+use crate::checkpoint::{evaluate, resolve_route, resolve_route_pure, DiscoveryCache};
 use crate::config::{AgentConfig, ModelConfig};
 use crate::error::{BuildError, RunError};
 use crate::EngineBuilder;
@@ -1448,7 +1448,8 @@ fn strict_route_resolve_returns_ids() {
     let ids = vec![NodeId::new("a"), NodeId::new("b")];
     let route = Route::Strict(ids.clone());
     let graph = vec![];
-    let resolved = resolve_route(&route, &graph);
+    let cache = DiscoveryCache::new();
+    let resolved = resolve_route(&route, &graph, &cache);
     assert_eq!(resolved, ids, "Strict should return ids regardless of graph");
 }
 
@@ -1476,7 +1477,8 @@ fn discovery_route_resolve_queries_current_graph() {
             online_since: 0,
         },
     ];
-    let resolved = resolve_route(&route, &graph);
+    let cache = DiscoveryCache::new();
+    let resolved = resolve_route(&route, &graph, &cache);
     assert_eq!(resolved.len(), 2);
     assert!(resolved.contains(&NodeId::new("mcp/a")));
     assert!(resolved.contains(&NodeId::new("mcp/b")));
@@ -1522,7 +1524,7 @@ fn evaluate_with_no_rules_returns_empty() {
     let rules: Vec<arf_core::CheckpointRule> = vec![];
     let routes = HashMap::new();
     let graph = vec![];
-    let res = evaluate(&state, arf_core::Checkpoint::BeforeModelCall, &rules, &routes, &graph);
+    let res = evaluate(&state, arf_core::Checkpoint::BeforeModelCall, &rules, &routes, &graph, &DiscoveryCache::new());
     assert!(res.is_ok());
     assert!(res.unwrap().is_empty());
 }
@@ -1549,7 +1551,7 @@ fn evaluate_skips_rules_with_wrong_trigger() {
     ]);
     let graph = vec![];
     // Trigger mismatch: ask for BeforeModelCall, rule is RoundEnd.
-    let res = evaluate(&state, Checkpoint::BeforeModelCall, &[rule], &routes, &graph).unwrap();
+    let res = evaluate(&state, Checkpoint::BeforeModelCall, &[rule], &routes, &graph, &DiscoveryCache::new()).unwrap();
     assert!(res.is_empty());
 }
 
@@ -1873,4 +1875,171 @@ async fn discovery_multi_receiver_all_responses_collected() {
     resp_handle.abort();
     model_h.abort();
     assert!(state.wait_events.is_empty(), "wait_events cleared");
+}
+
+// ── Phase 6 task 6.7 — Discovery Cache (7 tests) ─────────────────────
+
+// [构造] DiscoveryCache::new 初始为空
+#[test]
+fn cache_new_is_empty() {
+    let cache = DiscoveryCache::new();
+    assert!(cache.is_empty());
+    assert_eq!(cache.len(), 0);
+}
+
+// [方法] get_or_compute miss → 计算 + 缓存；hit → 直接返回
+#[test]
+fn cache_miss_then_hit() {
+    let cache = DiscoveryCache::new();
+    let cap = arf_core::Capability::one("kind", "mcp");
+    let graph = vec![
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/a"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+    ];
+    let r1 = cache.get_or_compute(&cap, &graph);
+    assert_eq!(r1.len(), 1);
+    assert_eq!(cache.len(), 1, "cache should have 1 entry after miss");
+
+    // Hit: graph mutated (no matching node) but cache returns cached result.
+    let graph_empty: Vec<arf_core::NodeInfo> = vec![];
+    let r2 = cache.get_or_compute(&cap, &graph_empty);
+    assert_eq!(r2.len(), 1, "cached result should be returned even when graph mutates");
+    assert_eq!(r2, r1);
+}
+
+// [方法] 多次不同 Capability → 多个 cache entry
+#[test]
+fn cache_multiple_capabilities() {
+    let cache = DiscoveryCache::new();
+    let cap1 = arf_core::Capability::one("kind", "mcp");
+    let cap2 = arf_core::Capability::one("kind", "model");
+    let graph = vec![
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/a"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+        arf_core::NodeInfo {
+            node_id: NodeId::new("model/x"),
+            node_type: "model".into(),
+            capabilities: serde_json::json!({"kind": "model"}),
+            online_since: 0,
+        },
+    ];
+    cache.get_or_compute(&cap1, &graph);
+    cache.get_or_compute(&cap2, &graph);
+    assert_eq!(cache.len(), 2);
+}
+
+// [方法] invalidate 清空所有 entry
+#[test]
+fn cache_invalidate_clears_all() {
+    let cache = DiscoveryCache::new();
+    let cap = arf_core::Capability::one("kind", "mcp");
+    let graph = vec![arf_core::NodeInfo {
+        node_id: NodeId::new("mcp/a"),
+        node_type: "mcp".into(),
+        capabilities: serde_json::json!({"kind": "mcp"}),
+        online_since: 0,
+    }];
+    cache.get_or_compute(&cap, &graph);
+    assert_eq!(cache.len(), 1);
+    cache.invalidate();
+    assert!(cache.is_empty());
+}
+
+// [路径] Strict route 不读 cache（直接返回 ids）
+#[test]
+fn strict_route_bypasses_cache() {
+    let cache = DiscoveryCache::new();
+    let ids = vec![NodeId::new("a"), NodeId::new("b")];
+    let route = Route::Strict(ids.clone());
+    let graph = vec![];
+    let resolved = resolve_route(&route, &graph, &cache);
+    assert_eq!(resolved, ids);
+    assert!(cache.is_empty(), "Strict route should not populate cache");
+}
+
+// [性能] graph 节点变化后再 hit → 仍是旧结果（cache 不重新查）
+#[test]
+fn cache_returns_stale_after_graph_mutation_until_invalidate() {
+    let cache = DiscoveryCache::new();
+    let cap = arf_core::Capability::one("kind", "mcp");
+    let graph_v1 = vec![arf_core::NodeInfo {
+        node_id: NodeId::new("mcp/v1"),
+        node_type: "mcp".into(),
+        capabilities: serde_json::json!({"kind": "mcp"}),
+        online_since: 0,
+    }];
+    let r1 = cache.get_or_compute(&cap, &graph_v1);
+    assert_eq!(r1, vec![NodeId::new("mcp/v1")]);
+
+    // Graph mutated: new node added but cache not invalidated
+    let graph_v2 = vec![
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/v1"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+        arf_core::NodeInfo {
+            node_id: NodeId::new("mcp/v2"),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({"kind": "mcp"}),
+            online_since: 0,
+        },
+    ];
+    let r2 = cache.get_or_compute(&cap, &graph_v2);
+    assert_eq!(
+        r2,
+        vec![NodeId::new("mcp/v1")],
+        "cache returns stale result until invalidated"
+    );
+
+    // After invalidate, recomputed with new graph
+    cache.invalidate();
+    let r3 = cache.get_or_compute(&cap, &graph_v2);
+    assert_eq!(r3.len(), 2, "post-invalidate should reflect graph v2");
+}
+
+// [集成] node_offline signal 触发 cache invalidation（通过 engine.discovery_cache 验证）
+#[tokio::test]
+async fn node_offline_signal_triggers_cache_invalidation() {
+    let bus = Arc::new(test_bus());
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(minimal_config("a"))
+        .await
+        .unwrap();
+
+    let cap = arf_core::Capability::one("kind", "mcp");
+    let graph = vec![arf_core::NodeInfo {
+        node_id: NodeId::new("mcp/a"),
+        node_type: "mcp".into(),
+        capabilities: serde_json::json!({"kind": "mcp"}),
+        online_since: 0,
+    }];
+    engine.discovery_cache().get_or_compute(&cap, &graph);
+    assert_eq!(engine.discovery_cache().len(), 1);
+
+    // Trigger node_offline by sending the bus signal directly.
+    let sig = arf_core::Message::new(
+        "node_offline",
+        NodeId::new("lifecycle/test"),
+        vec![],
+        serde_json::json!({"node_id": "mcp/a"}),
+    );
+    bus.send(sig).await.unwrap();
+
+    // Give the listener task time to process.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        engine.discovery_cache().is_empty(),
+        "node_offline signal should invalidate cache; len={}",
+        engine.discovery_cache().len()
+    );
 }
