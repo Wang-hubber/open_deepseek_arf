@@ -464,7 +464,7 @@ pub enum Checkpoint {
 - Engine 按 `route` 投递消息，按 `intent` 决定 park 还是继续
 - 框架提供标准构造器（`every_n_rounds`、`when_context_over`），但底层都是四元组
 
-**CheckpointRule 四元组定义：**
+**CheckpointRule 五元组定义**（name + trigger + when + build + route）：
 
 ```rust
 pub struct CheckpointRule {
@@ -473,11 +473,34 @@ pub struct CheckpointRule {
     /// 触发位置（5 个 Checkpoint 之一）
     pub trigger: Checkpoint,
     /// 条件谓词：返回 true 才执行 build
-    pub when: Box<dyn Fn(&State) -> bool + Send + Sync>,
+    pub when: Box<dyn for<'a> Fn(&'a State) -> bool + Send + Sync>,
     /// 构造 ActionMessage：从 State 生成要发送的消息
-    pub build: Box<dyn Fn(&State) -> Box<dyn ActionMessage> + Send + Sync>,
+    pub build: Box<dyn for<'a> Fn(&'a State) -> Box<dyn ActionMessage> + Send + Sync + 'a>,
     /// 路由：Strict（指定 NodeId）或 Discovery（capability 匹配）
     pub route: Route,
+}
+
+impl CheckpointRule {
+    /// 位置参数构造器。闭包参数接受 `for<'a> Fn(&'a State) -> ...`，避免与 struct field 生命周期不一致。
+    pub fn new<W, B>(
+        name: impl Into<String>,
+        trigger: Checkpoint,
+        when: W,
+        build: B,
+        route: Route,
+    ) -> Self
+    where
+        W: for<'a> Fn(&'a State) -> bool + Send + Sync + 'static,
+        B: for<'a> Fn(&'a State) -> Box<dyn ActionMessage> + Send + Sync + 'static,
+    {
+        Self {
+            name: name.into(),
+            trigger,
+            when: Box::new(when),
+            build: Box::new(build),
+            route,
+        }
+    }
 }
 ```
 
@@ -555,19 +578,19 @@ let config = AgentConfig {
     },
     checkpoint_rules: vec![
         CheckpointRule::new(
-            name: "extract_memory".into(),
-            trigger: Checkpoint::RoundEnd,
-            when: |s| s.over_view.round_count % 5 == 0,
-            build: |s| Box::new(MemoryOp::extract(messages=s.messages.clone())),
-            route: Route::Strict(vec![NodeId::new(id="memory_node")]),
+            "extract_memory",
+            Checkpoint::RoundEnd,
+            |s| s.over_view.round_count % 5 == 0,
+            |s| Box::new(MemoryOp::extract(messages=s.messages.clone())),
+            Route::Strict(vec![NodeId::new(id="memory_node")]),
         ),
         CheckpointRule::new(
-            name: "compact".into(),
-            trigger: Checkpoint::BeforeModelCall,
-            when: |s| s.over_view.context_tokens as f64
+            "compact",
+            Checkpoint::BeforeModelCall,
+            |s| s.over_view.context_tokens as f64
                 / s.over_view.model_context_window as f64 > 0.8,
-            build: |s| Box::new(CompactOp::new(messages=s.messages.clone())),
-            route: Route::Discovery(Capability::new(key="kind", value="compactor")),
+            |s| Box::new(CompactOp::new(messages=s.messages.clone())),
+            Route::Discovery(Capability::new(key="kind", value="compactor")),
         ),
     ],
     ..Default::default()
@@ -1067,11 +1090,11 @@ impl ActionMessage for MemoryOp {
 ### 11.2 Multi-model 投票：Strict + Query
 
 ```rust
-.route(msg_type="model_call", route=Route::Strict(vec![
+routes.insert("model_call".into(), Route::Strict(vec![
     NodeId::new(id="claude"),
     NodeId::new(id="gpt"),
     NodeId::new(id="deepseek"),
-]))
+]));
 
 // ModelCall 默认 intent=Query
 // Engine park 等三个 model 都给最终响应
@@ -1081,12 +1104,12 @@ impl ActionMessage for MemoryOp {
 
 ```rust
 CheckpointRule::new(
-    name="compact",
-    trigger=Checkpoint::BeforeModelCall,
-    when=|s| s.over_view.context_tokens as f64
+    "compact",
+    Checkpoint::BeforeModelCall,
+    |s| s.over_view.context_tokens as f64
         / s.over_view.model_context_window as f64 > 0.8,
-    build=|s| Box::new(CompactOp::new(messages=s.messages.clone())),
-    route=Route::Discovery(Capability::new(key="kind", value="compactor")),
+    |s| Box::new(CompactOp::new(messages=s.messages.clone())),
+    Route::Discovery(Capability::new(key="kind", value="compactor")),
 )
 
 // Query + Discovery → Engine 在 BeforeModelCall park 等所有 compactor 完成
