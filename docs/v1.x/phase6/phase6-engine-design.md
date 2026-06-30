@@ -3,6 +3,8 @@
 > 依赖：Phase 1 (Bus), Phase 4 (ModelAdapter), Phase 5 (MCP), arf-state
 > 状态：设计（重构中）
 > 取代：原 6 消息 enum / ack 双控制 / YAML 检查点方案
+>
+> **2026-06-30 修订**：新增 §1.5 Multi-Bus 架构扩展、§8.5 Recovery 模型。Bus 从"单实例"扩展为"可组合多实例"，Engine-as-Actor 核心设计不变，仅 Bus 层增加最小原语（Node trait + 多 Bus 订阅 + Barrier）。
 
 ## 1. 核心思想
 
@@ -59,6 +61,163 @@ Engine 做减法。它是 Bus 上的一个 Actor：维护 AgentConfig + State，
                        ▼
                    arf-agent (Phase 7 DI 装配)
 ```
+
+## 1.5 Multi-Bus 架构扩展（增量）
+
+> 2026-06-30 修订。基于汽车电子"域控制器"架构的启示，把 Bus 从"单实例全局对象"扩展为"可组合多实例"。Engine-as-Actor 核心（§2-§11）保持不变；本节定义 Bus 层最小新增原语与 App 组合模式。
+
+### 1.5.1 动机
+
+**Agentic App = Bus(es) + Nodes**
+
+App 级别中断恢复的关键是：**每条 Bus 上有状态 Node 的状态同步与持久化**（当前仅 Engine 有状态）。随着 App 复杂度增长，单 Bus 拓扑暴露出三个问题：
+
+| 问题 | 表现 |
+|------|------|
+| 全局复杂度爆炸 | 所有 Node 在同一 Bus 上互相干扰，filter 越来越复杂 |
+| 域间故障模式不同 | Engine / Model / MCP / Memory 的生命周期、故障、恢复需求各异 |
+| 中断恢复粒度粗 | 单 Bus 状态即 App 状态，无法按域隔离恢复 |
+
+**汽车电子域控制器架构的启示**：现代汽车电子从单一 CAN 总线演进到分层多总线：
+
+```
+顶层 Bus ──┬── 动力域 facade ──┬── sub-Bus ── ECU-A, ECU-B, ECU-C
+           ├── 底盘域 facade ──┼── sub-Bus ── ECU-D, ECU-E
+           └── 娱乐域 facade ──┴── sub-Bus ── ECU-F, ECU-G, ECU-H
+```
+
+- 顶层 Bus 只接各功能域的 **facade Node**（抽象）
+- 每个功能域有独立 sub-Bus，承载该域的具体 **ECU Node**（具体）
+- facade Node 跨坐两条总线，做协议/语义转换
+
+**类比到 ARF**：
+
+```
+顶层 Bus ──┬── Engine（stateful，单独存在）
+           ├── MCP-facade ──────── sub-Bus ── read_file, bash, edit_file, ...
+           ├── ModelAdapter-facade  sub-Bus ── claude, gpt, deepseek, ...
+           └── Memory-facade ───── sub-Bus ── l1_resident, l2_archive, ...
+```
+
+每个 facade Node 是普通 Node，订阅两条 Bus，**自己实现**转发逻辑。
+
+### 1.5.2 框架原语（最小增量）
+
+**不变的部分**（向后兼容）：
+
+- `Bus` 结构体保持单 broadcast 通道模型（CAN 风格）
+- `bus.subscribe()` / `bus.connect()` / `NodeHandle::send()` 完全不变
+- Engine 内部 ReAct 循环 / 5 Checkpoint / WaitEvent 队列 / Route 解析逻辑不变
+
+**新增 1：`Node` trait 统一抽象**
+
+```rust
+// crates/arf-core/src/node.rs
+
+#[async_trait]
+pub trait Node: Send + Sync {
+    fn id(&self) -> &NodeId;
+
+    /// 序列化自己的状态。语义由 Node 决定（Engine 存 State、模型节点存连接池、...）
+    fn snapshot(&self) -> Result<serde_json::Value, SnapshotError>;
+
+    /// 从快照恢复状态。语义由 Node 决定。
+    async fn restore(&mut self, snapshot: serde_json::Value) -> Result<(), RestoreError>;
+
+    /// 收到消息。`from_bus` 让 Node 知道消息来自哪条 Bus（facade 转发需要）
+    async fn on_message(&mut self, msg: Message, from_bus: BusId);
+}
+```
+
+`NodeId` 全局唯一——同一 Node 在所有订阅的 Bus 上是**同一身份**。
+
+**新增 2：Node 可订阅多条 Bus**
+
+```rust
+impl NodeHandle {
+    /// Node 订阅另一条 Bus。Bus 内部用独立 mpsc channel 接收
+    pub fn attach_to(&mut self, bus: &Bus) -> &mut Self;
+
+    /// 通过指定 Bus 发消息。Node 必须在该 Bus 上有订阅
+    pub async fn send_via(
+        &self,
+        bus: &Bus,
+        to: NodeId,
+        payload: serde_json::Value,
+    ) -> Result<SendReceipt, SendError>;
+}
+```
+
+**新增 3（可选）：`Bus::barrier()` 用于全局一致点**
+
+```rust
+impl Bus {
+    /// 广播 barrier msg，等待指定 Node 集合全部 ack
+    /// 返回 BarrierReceipt { acked: Vec<NodeId>, missing: Vec<NodeId> }
+    /// 仅供需要全局一致性的 App 使用——纯独立快照的 App 不必调用
+    pub async fn barrier(
+        &self,
+        participants: &[NodeId],
+        timeout: Duration,
+    ) -> BarrierReceipt;
+}
+```
+
+**关键约定**：
+- `Node::snapshot/restore` 是**必备**（每个 stateful Node 自己实现）
+- `Bus::barrier` 是**可选**——只用独立快照的 App 可完全不调
+- 框架不强制 checkpoint 策略——App 决定何时 snapshot / 是否用 barrier
+- 域控制器 facade 是**App 代码**（普通 Node + 自己的转发逻辑），不是框架原语
+
+### 1.5.3 域控制器作为 App 组合模式
+
+facade Node 是普通 Node，App 自己写转发：
+
+```rust
+struct McpFacade {
+    top_bus: Bus,
+    mcp_sub_bus: Bus,
+}
+
+#[async_trait]
+impl Node for McpFacade {
+    fn id(&self) -> &NodeId { &NODE_ID_MCP }
+
+    async fn on_message(&mut self, msg: Message, from_bus: BusId) {
+        match (from_bus == self.top_bus.id(), msg.msg_type.as_str()) {
+            (true, "tool_exec")  => { self.mcp_sub_bus.publish(msg).await; }
+            (false, "tool_result") => { self.top_bus.publish(msg).await; }
+            _ => {} // 其他消息忽略（filter 已过滤大部分噪音）
+        }
+    }
+
+    fn snapshot(&self) -> Result<Value> {
+        // facade 是 stateless，可以不实现有意义的 snapshot
+        Ok(serde_json::json!({}))
+    }
+    async fn restore(&mut self, _: Value) -> Result<()> { Ok(()) }
+}
+```
+
+**App 拓扑选择**：
+
+| 拓扑 | Engine 订阅 | 适用场景 |
+|------|-----------|----------|
+| 扁平 | 仅 Top Bus | 简单 App（≤10 个 Node） |
+| 域控制器（保守） | 仅 Top Bus，通过 facade | 中等 App（隔离故障域） |
+| 域控制器（高效） | Top Bus + 各 sub-Bus | 高复杂度 App（省 facade 转发开销） |
+
+**Engine 在哪种拓扑由 App 决定**——框架不约束。
+
+### 1.5.4 三条不变的不变量
+
+即使加 Multi-Bus，原 Phase 6 三条边界（§10）保持：
+
+1. **Engine 不知道任何具体节点类型** —— `ModelAdapter` / `McpNode` 字眼不出现在 Engine 代码
+2. **Node 不知道 Engine 的存在** —— Node 只订阅 msg_types，不假设发送者
+3. **Checkpoint 是位置，不是消息类型** —— 5 个位置固定；具体发什么 msg 由 CheckpointRule 决定
+
+Multi-Bus 不引入新边界——`from_bus` 参数让 Node 知道消息来源，但 Node 仍按 msg_type 路由。
 
 ## 2. 七大抽象
 
@@ -552,6 +711,84 @@ Bus 重启 → 取所有未完成 event 的 member.message_payload, 重新 publi
 
 Event 列表随 State 一起序列化。Engine resume 时重放所有非 Cancelled event，重新计算每个 member 的 expected_receivers（基于当前 BusGraph）。
 
+### 5.6 App-level Recovery 模型（多 Node 一致性）
+
+> 与 §1.5 Multi-Bus 扩展配套。WaitEvent 持久化是 Engine 内部机制；本节定义**跨 Node 全局一致性**的 App-level 协议。
+
+#### 5.6.1 两层恢复模型
+
+| 层 | 机制 | 触发者 | 谁决定语义 |
+|----|------|--------|----------|
+| **节点级** | `Node::snapshot/restore`（§1.5.2） | 收到 barrier msg 或 App 显式调用 | Node 自己（Engine 存 State、模型节点存连接池） |
+| **App 级** | `Bus::barrier(participants)` + 持久化存储 | App 在 Checkpoint 处显式调用 | App 自己（何时调用、存哪里、缺失如何处理） |
+
+框架不强制 checkpoint 频率——App 决定每个 CheckpointRule 触发 App-level checkpoint 的条件。
+
+#### 5.6.2 App-level Checkpoint 流程
+
+```
+Engine 到达 Checkpoint::RoundEnd
+       │
+       ▼
+App 注册的 CheckpointRule::build 构造 AppCheckpoint intent（Command，Engine 不等）
+       │
+       ▼
+AppCheckpoint Node 收到 msg → 触发 App-level checkpoint 逻辑
+       │
+       ├─ 1. 调用 bus.barrier(participants=[所有 stateful Node 的 id])
+       │     │
+       │     ▼
+       │   Bus 广播 barrier msg，所有参与者 Node 收到
+       │     │
+       │     ▼
+       │   每个 Node 调 snapshot() → 写入本地 → 发 ack
+       │     │
+       │     ▼
+       │   Bus 收集 ack 直到 timeout / 全部到 → 返回 BarrierReceipt
+       │
+       ├─ 2. 拿到 BarrierReceipt { acked, missing }
+       │
+       ├─ 3. 把 acked Node 的快照批量写入持久化存储
+       │       （文件系统 / S3 / 数据库，由 App 决定）
+       │
+       └─ 4. missing Node → App 决定：retry / fail / 容忍
+              │
+              ▼
+         持久化层 ack 后，App 发送 AppCheckpointDone(Command)
+         Engine 继续下一轮 think
+```
+
+#### 5.6.3 典型 CheckpointRule 配置
+
+```rust
+CheckpointRule::new(
+    name="app_checkpoint",
+    trigger=Checkpoint::RoundEnd,
+    when=|s| s.over_view.round_count % 5 == 0,  // 每 5 轮一次
+    build=|s| Box::new(AppCheckpoint::new(stateful_node_ids=app.stateful_nodes())),
+    route=Route::Strict(vec![NodeId::new("app_checkpoint_coordinator")]),
+)
+```
+
+`app_checkpoint_coordinator` 是 App 提供的 Node，负责上述 4 步流程。它订阅 msg_types 包含 `app_checkpoint`。
+
+#### 5.6.4 恢复流程
+
+1. App 启动 → 创建 Bus 拓扑（top + 各 sub-Bus）+ Node 实例
+2. 从持久化存储加载最近一次成功 checkpoint 的所有快照
+3. 对每个 Node 调用 `restore(snapshot)`
+4. Node `attach_to` 对应的 Bus
+5. Engine 调用 `session.resume()` → 重发未完成 WaitEvent（§5.5）
+
+恢复后，App 可选地：调用 `Bus::barrier` 验证所有 Node 都健康 ack，再宣布 session live。
+
+#### 5.6.5 边界约定
+
+- **AppCheckpoint 是 App Node，不是 Engine 内置机制**——保持 §10 第一条边界
+- **snapshot 语义由 Node 决定**——框架不强加 schema，App 通过 NodeId 索引
+- **barrier 超时策略由 App 决定**——框架只提供 timeout 参数
+- **Engine 不感知 recovery 发生**——Engine 只看到 Resume 信号，与正常 Chat() 不可区分
+
 ## 6. State 变更
 
 Engine 的 State 私有，外部节点不直接写入。
@@ -693,18 +930,37 @@ impl ActionMessage for HumanHandoff {
 
 ## 12. 任务拆解（草案）
 
-| # | 任务 | 内容 |
-|---|------|------|
-| 6.1 | 核心类型定义 | `ActionMessage` trait、`MessageIntent`、`Route`、`Capability`、`State`、`OverView`、`Checkpoint`、`CheckpointRule` — 在 `crates/arf-core/src/` |
-| 6.2 | Response 协议 | `Response::Done(Value)` 单形态；引擎 park 逻辑（Query 等全部、Command 不入队） |
-| 6.3 | Engine 骨架 | `Engine` struct、AgentConfig、State 所有权、4 状态机、bus.connect |
-| 6.4 | ReAct 主循环 | 5 个 Checkpoint 位置、fixed ModelCall↔ToolExec 循环、终止判断 |
-| 6.5 | Checkpoint 系统 | 规则注册、when/build 调用顺序、intent 决定的 park 行为 |
-| 6.6 | 等待队列 + Park/Resume | WaitEvent + PendingMessageWait、correlation_id 匹配、expected_receivers 计算、event strategy 触发、持久化 |
-| 6.7 | Route 解析 | BusGraph 查询、Strict/Discovery 转换、多 receiver park 协调 |
-| 6.8 | EngineBuilder API | `crates/arf-agent/src/builder.rs`、`NodeBinding`、标准 CheckpointRule 构造器 |
-| 6.9 | 集成测试 | MiniEngine + fixtures + ModelAdapter + McpNode 全链路 |
-| 6.10 | Python API | PyO3 绑定 Engine + AgentConfig + EngineBuilder |
+### 12.A Multi-Bus 基础设施（增量，§1.5 实现）
+
+| # | 任务 | 内容 | 依赖 |
+|---|------|------|------|
+| 6.0.1 | Node trait 抽象 | `crates/arf-core/src/node.rs` 定义 `Node` trait（`id`/`snapshot`/`restore`/`on_message`） | — |
+| 6.0.2 | NodeHandle 多 Bus 订阅 | 重构 `NodeHandle` 内部从单 mpsc 改成 `Vec<(BusId, mpsc::Receiver)>`；新增 `attach_to(bus)` / `send_via(bus, to, payload)` | 6.0.1 |
+| 6.0.3 | BusId + Bus 标识 | `Bus` 加 `id: BusId`（UUID 或自增）；`Message` 加 `from_bus: Option<BusId>` 字段（兼容旧数据） | 6.0.2 |
+| 6.0.4 | Bus::barrier() 原语 | `barrier(participants, timeout) -> BarrierReceipt`；broadcast barrier msg + oneshot 收集 ack | 6.0.3 |
+| 6.0.5 | 测试 + 文档 | 现有 Bus 测试 0 修改通过；新增多 Bus / Barrier / snapshot 场景测试；本设计文档落地 | 6.0.4 |
+
+### 12.B Engine 核心实现（原有任务，重排依赖）
+
+| # | 任务 | 内容 | 依赖 |
+|---|------|------|------|
+| 6.1 | 核心类型定义 | `ActionMessage` trait、`MessageIntent`、`Route`、`Capability`、`State`、`OverView`、`Checkpoint`、`CheckpointRule` — 在 `crates/arf-core/src/` | 6.0.5 |
+| 6.2 | Response 协议 | `Response::Done(Value)` 单形态；引擎 park 逻辑（Query 等全部、Command 不入队） | 6.1 |
+| 6.3 | Engine 骨架 | `Engine` struct 实现 `Node` trait、AgentConfig、State 所有权、4 状态机、bus.connect | 6.0.5 + 6.1 |
+| 6.4 | ReAct 主循环 | 5 个 Checkpoint 位置、fixed ModelCall↔ToolExec 循环、终止判断 | 6.3 |
+| 6.5 | Checkpoint 系统 | 规则注册、when/build 调用顺序、intent 决定的 park 行为 | 6.4 |
+| 6.6 | 等待队列 + Park/Resume | WaitEvent + PendingMessageWait、correlation_id 匹配、expected_receivers 计算、event strategy 触发、持久化（与 §5.6 App-level Recovery 配合） | 6.5 |
+| 6.7 | Route 解析 | BusGraph 查询、Strict/Discovery 转换、多 receiver park 协调 | 6.3 |
+| 6.8 | EngineBuilder API | `crates/arf-agent/src/builder.rs`、`NodeBinding`、标准 CheckpointRule 构造器 | 6.6 + 6.7 |
+| 6.9 | 集成测试 | MiniEngine + fixtures + ModelAdapter + McpNode 全链路；包含多 Bus 拓扑 fixture | 6.8 |
+| 6.10 | Python API | PyO3 绑定 Engine + AgentConfig + EngineBuilder + Bus::barrier + Node trait | 6.8 |
+
+### 12.C 域控制器示例（教学任务，§1.5.3 落地）
+
+| # | 任务 | 内容 | 依赖 |
+|---|------|------|------|
+| 6.11 | MCP facade 示例 | `examples/domain_controller/` 演示 McpFacade Node 实现：top Bus ↔ MCP sub-Bus 转发 | 6.9 |
+| 6.12 | App-level Recovery 示例 | `examples/recovery/` 演示 AppCheckpoint Node + Bus::barrier + 文件持久化 | 6.9 + 6.11 |
 
 ## 13. 待澄清 / 留待实现阶段
 
@@ -717,6 +973,11 @@ impl ActionMessage for HumanHandoff {
 ### 13.1 已澄清
 
 - ~~`OverView` 字段的精确计算~~ → 见 §2.4 字段计算策略表。`context_tokens` 来自 API 响应的 `usage.prompt_tokens`；`runtime` 是 active time（processing 状态累计）；`model_context_window` 启动时从 ModelAdapter capabilities 读取
+- ~~Multi-Bus 是否需要全局路由~~ → **不需要**。每条 Bus 独立；跨 Bus 由 Node 自己订阅多条 Bus 实现（manual bridging）
+- ~~Node 跨 Bus 身份~~ → **全局唯一**。同一 NodeId 在所有订阅的 Bus 上是同一 Node（同一状态、同一身份）
+- ~~域控制器是框架概念还是 App 模式~~ → **App 模式**。facade Node 是普通 Node，App 自己实现转发逻辑
+- ~~多 Node 一致性方案~~ → **独立快照 + 可选 Barrier**（§5.6）。`Node::snapshot/restore` 必备；`Bus::barrier` 可选；App 决定 checkpoint 策略
+- ~~Bus API 变更范围~~ → **最小侵入**（§1.5.2）。`Bus` 结构体不变；`NodeHandle` 内部多 mpsc；现有测试 0 修改通过
 
 ## 14. Python API 展望
 
