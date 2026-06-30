@@ -35,7 +35,7 @@ Engine 做减法。它是 Bus 上的一个 Actor：维护 AgentConfig + State，
 │  └──────┬──────┘                     │
 │         │                            │
 │  ┌──────┴──────┐  waiting queue     │
-│  │  PendingWait │  持久化 + 重发     │
+│  │  WaitEvent  │  持久化 + 重发     │
 │  └──────┬──────┘                     │
 │         │                            │
 │         ▼                            │
@@ -272,7 +272,7 @@ Engine 是 Bus 上一个特殊 Node，运行固定 ReAct 状态机。
 - ReAct 状态机（idle / processing / waiting / stopped）
 - 5 个 Checkpoint 触发位置
 - Session 状态（State 的所有权）
-- 等待队列（correlation_id → receiver responses）
+- 等待队列（WaitEvent 列表：每个 event 含 members + strategy）
 - Park/Resume 机制
 
 **Engine 不拥有**：
@@ -411,7 +411,7 @@ session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完�
 |------|------|
 | `idle` | inbox 空，队列空 |
 | `processing` | 正在执行 ReAct 循环 |
-| `waiting` | 发了 intent=Query，等 receiver 响应 |
+| `waiting` | 至少有一个未完成的 WaitEvent，等 event 触发 |
 | `stopped` | 收到 stop 信号，终结 |
 
 ### 4.2 终止条件
@@ -424,37 +424,122 @@ session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完�
 | cancel | 外部 `cancel_session` |
 | error | 不可恢复错误 |
 
-## 5. 等待队列
+## 5. 等待队列（事件级）
+
+Wait list 的基本单元是 **WaitEvent**，不是单个消息。一个 event 可以等待**多条消息**（members），所有 member 满足触发策略后整体出栈，触发新一轮 think。
 
 ```rust
-struct PendingWait {
-    correlation_id: String,
+pub struct WaitEvent {
+    id: EventId,
+    /// 该 event 等待的所有消息
+    members: Vec<PendingMessageWait>,
+    /// 已收集的响应（按 correlation_id 索引）
+    received: HashMap<CorrelationId, Response>,
+    /// 触发策略
+    strategy: WaitStrategy,
+    created_at: Instant,
+}
+
+pub enum WaitStrategy {
+    /// 所有 member 都响应才触发（默认）
+    All,
+    /// 任一 member 响应就触发，其余响应被丢弃
+    Any,
+    /// 指定数量 member 响应后触发
+    Count(usize),
+}
+
+pub struct PendingMessageWait {
+    correlation_id: CorrelationId,
     msg_type: String,
     message_payload: Value,     // 完整原始消息，Bus 重启后重发
-    sent_at: Instant,
-    intent: MessageIntent,      // Query 时必等，Command 不入此队列
     expected_receivers: usize,  // Strict 时=1；Discovery 时=BusGraph 匹配数
-    received: Vec<Response>,    // 已收到响应
+    received_count: usize,
 }
 ```
 
-生命周期：
+### 5.1 默认行为：1 send = 1-member event
+
+每次 `send(msg, route)` 自动创建一个 1-member event，strategy=All。
+
+```rust
+let corr = engine.send(msg=model_call, route=Route::Strict(vec![primary_model])).await?;
+// 隐式创建 WaitEvent { strategy=All, members=[{corr}] }
+// 等到所有 receiver 都响应后，event 出栈
+```
+
+### 5.2 App 显式：多消息合并为一个 event
+
+```rust
+// 创建一个 multi-member event
+let event = engine.create_wait_event(strategy=WaitStrategy::All);
+
+// 两条消息绑定到同一 event
+let corr1 = engine.send_to_event(msg=model_call, route=Route::Strict(vec![primary_model]), event_id=event.id);
+let corr2 = engine.send_to_event(msg=tool_exec, route=Route::Discovery(Capability::new(key="kind", value="mcp")), event_id=event.id);
+
+// 等待 event 完成（等到 model_call 和 tool_exec 都响应）
+let responses = engine.await_event(event_id=event.id).await?;
+// responses = [(corr1, model_response), (corr2, tool_response)]
+
+// Engine 把收集到的响应注入 State，触发新一轮 think-decide-react
+```
+
+**典型场景**：
+- **多模型投票 + 工具执行并行**：Strict([claude, gpt]) 的 model_call + Discovery 的 tool_exec，**等所有结果都齐**再做下一轮 think
+- **Human-in-the-loop + 后台任务**：HumanHandoff(Query) + ProgressUpdate(Command)，等用户响应 + 后台完成**都齐**才继续
+- **First-responder 路由**：strategy=Any 时，Strict([claude, gpt]) 中**任一**模型先响应就触发 event，丢弃另一模型的响应
+
+### 5.3 生命周期
 
 ```
-Engine 发 Query → 入等待队列，expected_receivers = 匹配数
-  ├─ 每个 receiver 给出 Response::Done(value) → received.push
-  │     └─ received.len() == expected_receivers → 处理 responses，移出队列
-  ├─ Cancel 到 → 通知所有未响应 receiver，移出队列
-  └─ Bus 重启 → 取 message_payload 重新 publish
+Engine send(msg, route, event?)
+       │
+       ├─ event=None → 自动创建 1-member WaitEvent, 入队列
+       └─ event=Some(id) → 添加到 event.members
+       │
+       ▼
+Response 到达
+       │
+       ▼
+更新对应 member.received_count
+       │
+       ▼
+event.strategy 满足?
+       ├─ All  → 所有 member 都 received_count == expected_receivers
+       ├─ Any  → 任一 member received_count == expected_receivers
+       └─ Count(n) → 至少 n 个 member 完成
+       │
+       ├─ yes → 收集所有 responses → 移出队列
+       │         Engine 触发新一轮 think-decide-react
+       │
+       └─ no  → 留在队列继续等
+
+Cancel 到 → 通知 event 所有未响应 receiver, 移出队列
+Bus 重启 → 取所有未完成 event 的 member.message_payload, 重新 publish
 ```
 
-等待队列随 State 一起序列化。Engine resume 时重放所有非 Cancelled 条目，重新计算 expected_receivers。
+### 5.4 Event 触发的 think-decide-react
+
+当 event 出栈时，Engine 顺序执行：
+
+1. **收集响应**：从 event.received 提取所有 (correlation_id, Response)
+2. **注入 State**：按消息类型分别处理
+   - model_response → state.messages（追加 assistant 消息）
+   - tool_result → state.messages（追加 tool 消息）
+   - 自定义类型 → 由 App 注册的 processor 处理
+3. **启动新一轮 think**：构造 ModelCall(Query) → 走 Checkpoint::BeforeModelCall → 发到 Bus
+4. **进入新的等待循环**：可能是单 send 触发的新 event，也可能是 Checkpoint 注入的 multi-member event
+
+### 5.5 持久化
+
+Event 列表随 State 一起序列化。Engine resume 时重放所有非 Cancelled event，重新计算每个 member 的 expected_receivers（基于当前 BusGraph）。
 
 ## 6. State 变更
 
 Engine 的 State 私有，外部节点不直接写入。
 
-1. Engine 发消息时带上 state 片段（如 messages 副本）
+1. Engine 发消息时带上 state 片段（如 messages 副本）；同一 event 内的多条消息共享同一 state snapshot
 2. 外部节点处理后返回结果
 3. 如需修改 state，结果中包含 `replacement_messages` 字段
 4. Engine：备份旧 messages → 替换 → 继续
@@ -518,7 +603,7 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 | ReAct 循环流程 | Route 表 |
 | 5 个 Checkpoint 位置 | CheckpointRule 列表 |
 | 终止条件判断 | NodeId / Capability 声明 |
-| 等待队列 + 持久化时机 | ActionMessage 子类型 |
+| WaitEvent 队列 + 持久化时机 | ActionMessage 子类型 |
 | State.over_view 字段维护 | messages/tasks 业务解释 |
 | System prompt 组装 | BusGraph 查询 |
 | Turn/Round 计数 | |
@@ -598,7 +683,7 @@ impl ActionMessage for HumanHandoff {
 | 6.3 | Engine 骨架 | `Engine` struct、AgentConfig、State 所有权、4 状态机、bus.connect |
 | 6.4 | ReAct 主循环 | 5 个 Checkpoint 位置、fixed ModelCall↔ToolExec 循环、终止判断 |
 | 6.5 | Checkpoint 系统 | 规则注册、when/build 调用顺序、intent 决定的 park 行为 |
-| 6.6 | 等待队列 + Park/Resume | PendingWait、correlation_id 匹配、expected_receivers 计算、持久化 |
+| 6.6 | 等待队列 + Park/Resume | WaitEvent + PendingMessageWait、correlation_id 匹配、expected_receivers 计算、event strategy 触发、持久化 |
 | 6.7 | Route 解析 | BusGraph 查询、Strict/Discovery 转换、多 receiver park 协调 |
 | 6.8 | EngineBuilder API | `crates/arf-agent/src/builder.rs`、`NodeBinding`、标准 CheckpointRule 构造器 |
 | 6.9 | 集成测试 | MiniEngine + fixtures + ModelAdapter + McpNode 全链路 |
