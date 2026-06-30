@@ -856,35 +856,33 @@ Bus 重启 → 取所有未完成 event 的 member.message_payload, 重新 publi
 
 1. **收集响应**：从 event.received 提取所有 (correlation_id, Response)
 2. **注入 State**：按消息类型分别处理
-   - model_response → state.messages（追加 assistant 消息）
-   - tool_result → state.messages（追加 tool 消息）
-   - 自定义类型 → 由 App 通过 `EngineBuilder::register_processor(msg_type, processor)` 注册的处理器处理（见下方）
+   - 内置 msg_type（model_response / tool_result，§2.1 白名单）→ Engine 隐式处理，追加对应 ModelMessage
+   - 自定义 msg_type → 由 `AgentConfig.processors` 注册的处理器处理（见下方）
 3. **启动新一轮 think**：构造 ModelCall(Query) → 走 Checkpoint::BeforeModelCall → 发到 Bus
 4. **进入新的等待循环**：可能是单 send 触发的新 event，也可能是 Checkpoint 注入的 multi-member event
 
-**自定义 response processor 注册**（EngineBuilder）：
+**自定义 response processor**（通过 `AgentConfig.processors` 注册）：
 
 ```rust
-/// App 注册自定义消息类型的 response 处理器。
+/// App 实现的自定义消息类型 response 处理器。
 /// 当 WaitEvent 收集到 msg_type 为 custom_type 的 Done 响应时，
-/// Engine 调用 processor 将 payload 注入 State。
+/// Engine 查 AgentConfig.processors 表找到对应 processor，调用 process 注入 State。
 pub trait ResponseProcessor: Send + Sync {
     fn process(&self, response: &serde_json::Value, state: &mut State);
 }
 
-impl EngineBuilder {
-    pub fn register_processor(
-        mut self,
-        msg_type: &str,
-        processor: Arc<dyn ResponseProcessor>,
-    ) -> Self { ... }
-}
-
-// 示例：注册 human_handoff 的 processor
-builder.register_processor(
-    "human_handoff_result",
-    Arc::new(HumanHandoffProcessor::new()),
-);
+// 示例：AgentConfig 声明 human_handoff 的 processor
+let config = AgentConfig {
+    routes: ...,
+    checkpoint_rules: ...,
+    processors: HashMap::from([
+        (
+            "human_handoff_result".into(),
+            Arc::new(HumanHandoffProcessor::new()) as Arc<dyn ResponseProcessor>,
+        ),
+    ]),
+    ..Default::default()
+};
 ```
 
 ### 5.5 持久化
@@ -1015,12 +1013,17 @@ pub trait OnMemberFailedHandler: Send + Sync {
 
 **默认实现**（无 App 注册时）：`FailSession`
 
-**App 注册示例**：
+**App 注册示例**（通过 `AgentConfig.on_member_failed` 字段）：
 ```rust
-let engine = EngineBuilder::new(bus=bus.clone())
-    .on_member_failed(handler=Arc::new(MyRetryHandler::new(max_retries=3)))
-    ...
-    .build()
+let config = AgentConfig {
+    routes: ...,
+    checkpoint_rules: ...,
+    on_member_failed: Some(Arc::new(MyRetryHandler::new(max_retries=3))),
+    ..Default::default()
+};
+
+let engine = EngineBuilder::new(bus=bus)
+    .build(config=config)
     .await?;
 ```
 
@@ -1063,8 +1066,19 @@ pub struct AgentConfig {
     pub allow_paths: Vec<String>,
     pub routes: HashMap<String, Route>,                   // msg_type → Route
     pub checkpoint_rules: Vec<CheckpointRule>,           // App 注入的触发器
+    /// 自定义 msg_type 的 response 处理器（§5.4）。
+    /// 内置 msg_type（model_call / tool_exec，§2.1 白名单）无需注册。
+    pub processors: HashMap<String, Arc<dyn ResponseProcessor>>,
+    /// Node 掉线时 Engine 等待响应失败的处理 hook（§5.7）。
+    /// None 时使用默认行为（FailSession）。
+    pub on_member_failed: Option<Arc<dyn OnMemberFailedHandler>>,
 }
 ```
+
+**所有 App 级配置统一进 AgentConfig**（2026-06-30 决议）：
+- `EngineBuilder` 只保留 `new(bus)` 和 `build(config).await?` 两个方法
+- 不再有 `register_processor` / `on_member_failed` 等链式调用
+- App 改 config → 重新 `build` 一个新 Engine；不需要"在已 build 的 Engine 上追加 handler"
 
 注意（2026-06-30）：移除原 `node_bindings: Vec<NodeBinding>`。具体 Node 通过 `bus.connect()` 上线，`EngineBuilder.build()` 时校验 routes 与当前 BusGraph 一致。
 
@@ -1271,6 +1285,10 @@ config = AgentConfig(
             route=Route.discovery(capability=Capability(key="kind", value="compactor")),
         ),
     ],
+    processors={
+        "human_handoff_result": HumanHandoffProcessor(),
+    },
+    on_member_failed=MyRetryHandler(max_retries=3),
 )
 
 engine = await EngineBuilder.new(bus=bus).build(config=config)
