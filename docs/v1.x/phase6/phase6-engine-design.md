@@ -760,10 +760,15 @@ impl Engine {
     /// 跑一轮 chat：处理 user_input，触发 ReAct 主循环，最终修改 state 并返回 final_output。
     /// App 调用方负责：input 拦截、State 持久化、生命周期管理。
     /// Engine 不感知 Session 概念——App 自由组合 Engine + State + 持久化层。
+    ///
+    /// `cancel` 参数：App 通过 CancellationToken 在任意点取消 run()。
+    /// 取消时 Engine 给所有 in-flight Receiver 发 `cancel` msg（§G6），
+    /// 清空 state.wait_events，返回 Err(Stopped)。
     pub async fn run(
         &self,
         state: &mut State,
         user_input: String,
+        cancel: CancellationToken,
     ) -> Result<String, RunError>;
 
     /// 同步快照当前 state（与 Node::snapshot 风格一致）。
@@ -774,6 +779,10 @@ impl Engine {
     /// App 控制何时 resume、何时持久化。
     pub async fn restore(&self, snap: SessionSnapshot) -> Result<State, RestoreError>;
 }
+
+/// 取消令牌。App 在调用 engine.run() 前 clone() 一份留作"远程控制器"。
+/// 跨线程安全；任一处调用 .cancel() 即触发 Engine 停止。
+pub type CancellationToken = tokio_util::sync::CancellationToken;
 
 /// State 序列化快照（含 messages + over_view + WaitEvent 列表）。
 /// App 决定存哪里（文件 / DB / S3）、何时存、怎么存。
@@ -905,9 +914,11 @@ bus.connect(info=engine.info(), filter=engine.filter()).await?;
 // ── 5. 运行（2026-06-30 决议：框架不提供 Session 抽象）──
 //    App 自己持有 state 并管理生命周期：
 let mut state: State = State::default();
-let output = engine.run(state=&mut state, user_input="Read /etc/hostname".into()).await?;
+let cancel = CancellationToken::new();
+let output = engine.run(state=&mut state, user_input="Read /etc/hostname".into(), cancel=cancel.clone()).await?;
 //    App 决定何时快照：engine.snapshot(&state) 是同步的，可直接存到文件/DB。
 let snap: SessionSnapshot = engine.snapshot(state=&state);
+//    cancel.cancel() 可在任意点触发 Engine 停止（§G6）
 serde_json::to_writer(File::create("session.json")?, &snap)?;
 ```
 
@@ -1019,7 +1030,7 @@ engine.run(state=&mut state, user_input=msg)  ← App 端：拦截/转换/审批
 | `processing` → `waiting` | Engine publish 多个 intent=Query msg（multi-member event） | state.wait_events.push(multi_member_event); 等待所有 member 响应 |
 | `waiting` → `processing` | 某 WaitEvent 的 strategy 满足（All/Any/Count(n)） | 从 state.wait_events 移除；inject responses to state.messages；触发新一轮 think |
 | `waiting` → `waiting` | 部分 member 响应到达但未满足 strategy | 更新对应 member.received_count；继续 park |
-| `waiting` → `stopped` | App 调用 `engine.cancel()` | 通知所有 in-flight receiver（Cancel msg）；state.wait_events 清空；run() 返回 Err |
+| `waiting` → `stopped` | App 调用 `cancel.cancel()`（§G6） | 给所有 in-flight Receiver 发 `cancel` msg；state.wait_events 清空；run() 返回 Err(Stopped) |
 | `processing` → `stopped` | 命中终止条件（§4.2）：纯文本 / task_complete / max_turns / 不可恢复错误 | run() 返回 Ok(final_output) 或 Err(error) |
 | `waiting` → `stopped` | node_offline lifecycle signal + OnMemberFailedHandler 返回 FailSession | state.wait_events 清空；run() 返回 Err |
 | `*` → `idle` | （仅在 run() 返回后发生；下次 run() 进来再决定转 processing 还是 stopped） | state 不变 |
@@ -1037,7 +1048,7 @@ engine.run(state=&mut state, user_input=msg)  ← App 端：拦截/转换/审批
 | 模型返回纯文本 | LLM 不再调用 tool | `processing` → `stopped`（run 返回 Ok(output)） |
 | `task_complete` | LLM 调用了 kernel tool | `processing` → `stopped`（run 返回 Ok(output)） |
 | `max_turns` 超限 | `turn_count >= max_turns` | `processing` → `stopped`（run 返回 Err(MaxTurnsExceeded)） |
-| cancel | App 调 `engine.cancel()` | `*` → `stopped`（run 返回 Err(Stopped)） |
+| cancel | App 调 `cancel.cancel()` | `*` → `stopped`（run 返回 Err(Stopped)） |
 | 不可恢复 error | Receiver panic / OnMemberFailed 返回 FailSession / 节点全掉 | `*` → `stopped`（run 返回 Err(EngineError)） |
 
 ## 5. 等待队列（事件级）
@@ -1134,6 +1145,59 @@ event.strategy 满足?
 Cancel 到 → 通知 event 所有未响应 receiver, 移出队列
 Bus 重启 → 取所有未完成 event 的 member.message_payload, 重新 publish
 ```
+
+**Cancel 传播流程**（2026-06-30 补全 §G6）：
+
+```
+App 调 token.cancel()（任意线程）
+       │
+       ▼
+Engine.run() 内 select! 分支触发
+       │
+       ▼
+遍历 state.wait_events 中所有未完成 event
+       │
+       ├─ 对每个未响应 member 发 cancel msg：
+       │     msg_type = 'cancel'
+       │     to = member.target_node_id
+       │     payload = { correlation_id: member.correlation_id }
+       │     // Receiver 内部决定是否中断处理
+       │     // 如 ModelAdapter 看到 cancel 后中断 reqwest 调用
+       │
+       ├─ 清空 state.wait_events（持久化前的已取消 event 不需保留）
+       │
+       └─ run() 返回 Err(RunError::Stopped)
+              │
+              ▼
+       App 拿到 Err，决定下一步：
+         - 持久化当前 state（含 cancel 后的部分消息）
+         - 调用 engine.cancel_token.cancel() 触发
+         - 重新发起新 run()（state 已变更）
+```
+
+**为什么发 cancel msg 而不是直接丢弃**（2026-06-30 决议）：
+- Receiver 可能正在执行长任务（Model API 30 秒调用、McpNode 工具执行）
+- 直接丢弃 Response 会让 Receiver 浪费计算资源
+- 发 cancel msg 让 Receiver 主动中断：避免资源浪费
+- Receiver 是否处理 cancel 是它的实现细节——简单 Receiver 忽略 cancel 也不影响正确性（Engine 已不 park 等响应）
+
+**cancel msg 处理约定**：
+- `cancel` 是新的 msg_type——App 实现 Receiver 时可选地订阅
+- 不强制所有 Receiver 处理 cancel（内置消息类型按需实现）
+- Receiver 收到 cancel 后的行为由 App 决定（如中断 reqwest 调用、关闭子进程等）
+
+**框架内置 Receiver 必须同步响应 cancel**（2026-06-30 决议）：
+
+| Receiver | cancel 处理细节 |
+|----------|-----------------|
+| `ModelAdapter` | 立即中断正在进行的 HTTP 请求（`reqwest` 调用 abort handle）——避免继续占用 LLM API 计算配额 |
+| `McpNode` | 中断工具执行（subprocess kill、reqwest abort）——避免长任务（如 `sleep 60`）继续消耗 CPU/IO |
+
+**约定**：
+- 框架内置 Receiver **必须**实现 cancel 响应（cancel 触发即停止资源占用）
+- App 自定义 Receiver 也应实现（避免资源浪费）
+- Receiver 收到 cancel 后不必返回 Response——Engine 已不 park 等响应
+- 如果 Receiver 不响应 cancel，Engine 仍正确（run 返回 Err(Stopped)），但**资源被浪费**
 
 ### 5.4 Event 触发的 think-decide-react
 
@@ -1662,7 +1726,8 @@ engine = await EngineBuilder.new(buses=[bus_top, bus_sub]).build(config=config)
 
 # 框架不提供 Session；App 自己组装（2026-06-30 决议）
 state = State.default()
-output = await engine.run(state=state, user_input="Read /etc/hostname")
+cancel = CancellationToken()
+output = await engine.run(state=state, user_input="Read /etc/hostname", cancel=cancel)
 snap = engine.snapshot(state=state)  # 同步快照
 ```
 
@@ -2038,7 +2103,8 @@ async def main():
         print(f"[app] Round {i}: {user_input}")
         print(f"{'='*60}")
 
-        output = await engine.run(state=state, user_input=user_input)
+        cancel = CancellationToken()
+        output = await engine.run(state=state, user_input=user_input, cancel=cancel)
         print(f"[app] Round {i} output: {output}")
 
         # 检查 Checkpoint 触发（mock 环境会打印）
