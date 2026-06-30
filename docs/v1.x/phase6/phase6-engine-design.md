@@ -269,6 +269,22 @@ App 通过实现 `ActionMessage` trait 添加新消息类型（`human_handoff`�
 
 **约定**：内置的几个消息类型——`ModelCall`、`ToolExec`、`MemoryOp`、`CompactOp`——都是 trait 的具体实现，**不是封闭枚举**。
 
+**内置 msg_type 白名单**（Engine 隐式处理，无需 register_processor）：
+
+```rust
+// crates/arf-core/src/message.rs
+
+/// Engine 隐式处理的内置 msg_type 及其响应映射。
+/// WaitEvent 收集到响应时按此表 dispatch；未列出的 msg_type 必须通过
+/// AgentConfig.processors 注册 ResponseProcessor（§5.4）。
+pub const BUILTIN_MSG_TYPES: &[(&str, &str)] = &[
+    ("model_call",  "model_response"),  // ModelAdapter 处理 → engine 注入 assistant 消息
+    ("tool_exec",   "tool_result"),     // McpNode 处理 → engine 注入 tool 消息
+];
+```
+
+其他所有 msg_type（如 `memory_op` / `compact_op` / `human_handoff` / `subagent_op` 等）的响应处理都必须通过 `AgentConfig.processors: HashMap<String, Arc<dyn ResponseProcessor>>` 注册，Engine 在 WaitEvent 完成时按响应 msg_type 查表 dispatch。
+
 ### 2.2 Response（单一形态）
 
 ```rust
