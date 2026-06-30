@@ -184,12 +184,17 @@ async fn directed_and_broadcast_filters_work_end_to_end() {
 async fn heartbeat_timeout_zombie_node_offline() {
     let bus = Bus::new(Duration::from_millis(30), Duration::from_millis(60), 16);
     let mut observer = bus.connect(node("observer"), all_filter()).await.unwrap();
-    let zombie = bus.connect(node("zombie"), all_filter()).await.unwrap();
+    // Zombie is dropped without disconnect — its forwarding task exits,
+    // and Bus eventually times out its entry (Phase 6 task 6.0.2 semantic).
+    {
+        let _zombie = bus.connect(node("zombie"), all_filter()).await.unwrap();
+        // _zombie dropped at end of block — forwarding task exits,
+        // no more HeartbeatAck sent, Bus will mark zombie offline.
+    }
 
     // Drain zombie's node_online from observer
     drain_all(&mut observer);
 
-    // Zombie never calls recv → will time out
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Observer should see node_offline for zombie
@@ -205,7 +210,6 @@ async fn heartbeat_timeout_zombie_node_offline() {
     let ids: Vec<&str> = g.nodes.iter().map(|n| n.node_id.as_str()).collect();
     assert!(!ids.contains(&"zombie"));
 
-    zombie.disconnect().await;
     observer.disconnect().await;
     bus.shutdown().await;
 }
@@ -256,34 +260,28 @@ async fn slow_consumer_lagged_then_recovers() {
     let bus = Bus::new(Duration::from_secs(10), Duration::from_secs(30), 2);
     let mut slow = bus.connect(node("slow"), all_filter()).await.unwrap();
 
-    // Send capacity+1 to overflow: msg0+msg1 fill buffer, msg2 causes Lagged
+    // Send capacity+1 to overflow: msg0+msg1 fill buffer, msg2 overwrites msg0
+    // (forwarding task internally sees Lagged on its broadcast_rx and skips it
+    // — Phase 6 task 6.0.2 silently swallows Lagged).
     for i in 0..3 {
         let msg = arf_core::Message::new("msg", NodeId::new("sys"), vec![], serde_json::json!(i));
         bus.send(msg).await.unwrap();
     }
 
-    // After overflow: try_recv → Lagged, then 2 buffered msgs, then None/Empty
-    let r1 = slow.try_recv(); // Lagged(1) — 1 overwritten
-    let r2 = slow.try_recv(); // msg1 (oldest retained)
-    let r3 = slow.try_recv(); // msg2
-    let r4 = slow.try_recv(); // no more messages
-
+    // Phase 6 task 6.0.2 silently swallows Lagged inside the forwarding
+    // task, so the user does not directly observe Lagged. Drain whatever
+    // messages the forwarding task has produced so far; the count depends
+    // on scheduling (forwarding task may drain the broadcast between sends).
+    let mut drained = 0;
+    while let Ok(Some(_)) = slow.try_recv() {
+        drained += 1;
+        if drained > 5 {
+            break;
+        }
+    }
     assert!(
-        matches!(r1, Err(broadcast::error::TryRecvError::Lagged(_))),
-        "expected Lagged, got {r1:?}"
-    );
-    assert!(
-        matches!(r2, Ok(Some(_))),
-        "expected buffered msg, got {r2:?}"
-    );
-    assert!(
-        matches!(r3, Ok(Some(_))),
-        "expected buffered msg, got {r3:?}"
-    );
-    // After drain, no messages — Ok(None) means empty queue
-    assert!(
-        matches!(r4, Ok(None)),
-        "expected no more messages, got {r4:?}"
+        drained >= 1,
+        "expected at least 1 message after sends, got {drained}"
     );
 
     // After catching up, new message arrives normally
@@ -451,7 +449,11 @@ async fn multi_filter_different_subsets() {
 async fn heartbeat_timeout_then_reconnect_same_id() {
     let bus = Bus::new(Duration::from_millis(30), Duration::from_millis(50), 16);
     let mut observer = bus.connect(node("observer"), all_filter()).await.unwrap();
-    let zombie1 = bus.connect(node("zombie"), all_filter()).await.unwrap();
+    // Same scenario as above: drop handle (Phase 6 semantic).
+    {
+        let _zombie1 = bus.connect(node("zombie"), all_filter()).await.unwrap();
+        // dropped
+    }
 
     drain_all(&mut observer); // drain zombie node_online
 
@@ -465,8 +467,6 @@ async fn heartbeat_timeout_then_reconnect_same_id() {
             .any(|(t, f)| t == "node_offline" && f == "zombie"),
         "should see zombie offline, got {msgs:?}"
     );
-
-    zombie1.disconnect().await;
 
     // Reconnect with same NodeId
     let zombie2 = bus.connect(node("zombie"), all_filter()).await.unwrap();

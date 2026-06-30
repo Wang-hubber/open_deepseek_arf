@@ -100,7 +100,13 @@ impl NodeHandle {
             .iter()
             .find(|s| s.bus_id == bus_id)
             .ok_or(SendError::NoSuchBus(bus_id))?;
-        let msg = Message::new(msg_type, self.info.node_id.clone(), to, payload);
+        let msg = Message::with_from_bus(
+            msg_type,
+            self.info.node_id.clone(),
+            to,
+            payload,
+            bus_id,
+        );
         let (tx, rx) = oneshot::channel();
         sub.cmd_tx
             .send(BusCommand::Send { msg, respond_to: tx })

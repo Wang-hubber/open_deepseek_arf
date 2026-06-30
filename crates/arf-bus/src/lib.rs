@@ -149,21 +149,26 @@ impl Bus {
         let broadcast_tx_clone = broadcast_tx.clone();
         let count_clone = message_count.clone();
         let nodes_clone = nodes.clone();
-        let loop_handle = tokio::spawn(async move {
-            run_message_loop(
-                cmd_rx,
-                broadcast_tx_clone,
-                drain_rx,
-                count_clone,
-                nodes_clone,
-                heartbeat_interval,
-                heartbeat_timeout,
-            )
-            .await;
+        let bus_id = BusId(Uuid::new_v4());
+        let loop_handle = tokio::spawn({
+            let bus_id = bus_id;
+            async move {
+                run_message_loop(
+                    cmd_rx,
+                    broadcast_tx_clone,
+                    drain_rx,
+                    count_clone,
+                    nodes_clone,
+                    heartbeat_interval,
+                    heartbeat_timeout,
+                    bus_id,
+                )
+                .await;
+            }
         });
 
         Self {
-            id: BusId(Uuid::new_v4()),
+            id: bus_id,
             cmd_tx,
             broadcast_tx: Mutex::new(Some(broadcast_tx)),
             nodes,
@@ -177,7 +182,10 @@ impl Bus {
     ///
     /// Returns `Ok(SendReceipt)` with online node counts.
     /// Returns `Err(SendError::BusClosed)` if the bus has been shut down.
-    pub async fn send(&self, msg: Message) -> Result<SendReceipt, SendError> {
+    /// The message is stamped with this Bus's `id` as `from_bus` before
+    /// broadcast (Phase 6 task 6.0.3).
+    pub async fn send(&self, mut msg: Message) -> Result<SendReceipt, SendError> {
+        msg.from_bus = Some(self.id);
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(BusCommand::Send {
@@ -288,6 +296,7 @@ async fn run_message_loop(
     nodes: Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     heartbeat_interval: Duration,
     heartbeat_timeout: Duration,
+    bus_id: BusId,
 ) {
     let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
     // Skip immediate first tick — give nodes time to connect
@@ -348,7 +357,7 @@ async fn run_message_loop(
                         filter,
                         respond_to,
                     }) => {
-                        let result = handle_connect(&broadcast_tx, &nodes, info, filter);
+                        let result = handle_connect(&broadcast_tx, &nodes, info, filter, bus_id);
                         while drain_rx.try_recv().is_ok() {}
                         let _ = respond_to.send(result);
                     }
@@ -356,7 +365,7 @@ async fn run_message_loop(
                         node_id,
                         respond_to,
                     }) => {
-                        handle_disconnect(&broadcast_tx, &nodes, &node_id);
+                        handle_disconnect(&broadcast_tx, &nodes, &node_id, bus_id);
                         while drain_rx.try_recv().is_ok() {}
                         let _ = respond_to.send(());
                     }
@@ -375,7 +384,7 @@ async fn run_message_loop(
                 }
             }
             _ = heartbeat_timer.tick() => {
-                heartbeat::handle_heartbeat_tick(&broadcast_tx, &nodes, heartbeat_timeout);
+                heartbeat::handle_heartbeat_tick(&broadcast_tx, &nodes, heartbeat_timeout, bus_id);
                 while drain_rx.try_recv().is_ok() {}
             }
         }
@@ -388,6 +397,7 @@ fn handle_connect(
     nodes: &Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     info: NodeInfo,
     filter: MessageFilter,
+    bus_id: BusId,
 ) -> Result<(), ConnectError> {
     let node_id = info.node_id.clone();
 
@@ -412,12 +422,13 @@ fn handle_connect(
         );
     }
 
-    // Broadcast node_online
-    let online_msg = Message::new(
+    // Broadcast node_online (stamped with this Bus's id)
+    let online_msg = Message::with_from_bus(
         "node_online",
         node_id,
         vec![],
         serde_json::to_value(&info).unwrap_or_default(),
+        bus_id,
     );
     let _ = broadcast_tx.send(online_msg);
 
@@ -429,18 +440,20 @@ fn handle_disconnect(
     broadcast_tx: &broadcast::Sender<Message>,
     nodes: &Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     node_id: &NodeId,
+    bus_id: BusId,
 ) {
     {
         let mut map = nodes.write().unwrap();
         map.remove(node_id);
     }
 
-    // Broadcast node_offline
-    let offline_msg = Message::new(
+    // Broadcast node_offline (stamped with this Bus's id)
+    let offline_msg = Message::with_from_bus(
         "node_offline",
         node_id.clone(),
         vec![],
         serde_json::json!({}),
+        bus_id,
     );
     let _ = broadcast_tx.send(offline_msg);
 }
@@ -629,6 +642,47 @@ mod tests {
         assert!(rx2.recv().await.is_ok());
 
         _target.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // from_bus stamping (Phase 6 task 6.0.3) — 3 tests
+    // ═══════════════════════════════════════════════════════════════
+
+    // [广播] Bus.connect 后 node_online.from_bus 指向该 Bus
+    #[tokio::test]
+    async fn node_online_stamped_with_from_bus() {
+        let bus = test_bus();
+        let mut rx = bus.subscribe();
+        let _handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg.from_bus, Some(bus.id));
+        _handle.disconnect().await;
+        bus.shutdown().await;
+    }
+
+    // [广播] Bus.disconnect 后 node_offline.from_bus 仍指向该 Bus
+    #[tokio::test]
+    async fn node_offline_stamped_with_from_bus() {
+        let bus = test_bus();
+        let mut rx = bus.subscribe();
+        let handle = bus.connect(test_node_info("n"), test_filter()).await.unwrap();
+        let _ = rx.recv().await.unwrap(); // drain node_online
+        handle.disconnect().await;
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg.msg_type, "node_offline");
+        assert_eq!(msg.from_bus, Some(bus.id));
+        bus.shutdown().await;
+    }
+
+    // [广播] Bus.send 自动给消息加 from_bus
+    #[tokio::test]
+    async fn user_send_stamps_from_bus() {
+        let bus = test_bus();
+        let mut rx = bus.subscribe();
+        bus.send(test_msg(serde_json::json!(null))).await.unwrap();
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg.from_bus, Some(bus.id));
         bus.shutdown().await;
     }
 

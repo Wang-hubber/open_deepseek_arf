@@ -54,12 +54,22 @@ pub struct Message {
     pub to: Vec<NodeId>,
     /// Arbitrary JSON payload.
     pub payload: serde_json::Value,
+    /// Source Bus identifier (Phase 6 multi-Bus). `Some` for messages that
+    /// passed through a Bus (lifecyle, send, broadcast). `None` only for
+    /// messages constructed directly (tests, internal scaffolding).
+    ///
+    /// `#[serde(default)]` allows backward-compatible deserialization of
+    /// Phase 1 historical payloads that lack this field. `skip_serializing_if`
+    /// keeps the wire format clean when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_bus: Option<crate::node::BusId>,
     /// Unix timestamp in milliseconds.
     pub timestamp: u64,
 }
 
 impl Message {
     /// Create a new message with the current timestamp.
+    /// `from_bus` defaults to `None`; use `with_from_bus` for Bus-stamped messages.
     pub fn new(
         msg_type: impl Into<String>,
         from: NodeId,
@@ -72,8 +82,24 @@ impl Message {
             from,
             to,
             payload,
+            from_bus: None,
             timestamp: now_ms(),
         }
+    }
+
+    /// Construct a Message with an explicit `from_bus` stamp.
+    /// Used by Bus-internal broadcast sites (handle_connect, send_via,
+    /// heartbeat tick).
+    pub fn with_from_bus(
+        msg_type: impl Into<String>,
+        from: NodeId,
+        to: Vec<NodeId>,
+        payload: serde_json::Value,
+        from_bus: crate::node::BusId,
+    ) -> Self {
+        let mut m = Self::new(msg_type, from, to, payload);
+        m.from_bus = Some(from_bus);
+        m
     }
 
     /// Returns true if this is a broadcast message (no specific targets).
@@ -667,6 +693,57 @@ mod tests {
         assert_eq!(msg.to, cloned.to);
         assert_eq!(msg.payload, cloned.payload);
         assert_eq!(msg.timestamp, cloned.timestamp);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Message — from_bus (Phase 6 task 6.0.3) — 5 tests
+    // ═══════════════════════════════════════════════════════════════
+
+    // [构造] Message::new 默认 from_bus = None
+    #[test]
+    fn message_new_defaults_from_bus_to_none() {
+        let m = Message::new("x", NodeId::new("a"), vec![], serde_json::json!(null));
+        assert!(m.from_bus.is_none());
+    }
+
+    // [构造] Message::with_from_bus 设置 from_bus
+    #[test]
+    fn message_with_from_bus_sets_field() {
+        let bid = crate::node::BusId::new();
+        let m = Message::with_from_bus("x", NodeId::new("a"), vec![], serde_json::json!(null), bid);
+        assert_eq!(m.from_bus, Some(bid));
+    }
+
+    // [序列化] Message 含 from_bus 字段能 round-trip
+    #[test]
+    fn message_with_from_bus_serialization_roundtrip() {
+        let m = Message::with_from_bus(
+            "x",
+            NodeId::new("a"),
+            vec![],
+            serde_json::json!(null),
+            crate::node::BusId::new(),
+        );
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.from_bus, m.from_bus);
+    }
+
+    // [序列化] Message 无 from_bus 字段时反序列化得到 None（兼容旧数据）
+    #[test]
+    fn message_without_from_bus_deserializes_as_none() {
+        // 历史数据格式：无 from_bus 字段
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000001","msg_type":"x","from":"a","to":[],"payload":null,"timestamp":0}"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert!(m.from_bus.is_none());
+    }
+
+    // [序列化] from_bus: None 时序列化输出不应包含字段
+    #[test]
+    fn message_without_from_bus_omits_field() {
+        let m = Message::new("x", NodeId::new("a"), vec![], serde_json::json!(null));
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("from_bus"));
     }
 
     // ═══════════════════════════════════════════════════════════════

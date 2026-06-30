@@ -21,15 +21,17 @@ pub(crate) fn handle_heartbeat_tick(
     broadcast_tx: &broadcast::Sender<Message>,
     nodes: &Arc<RwLock<HashMap<NodeId, NodeEntry>>>,
     heartbeat_timeout: Duration,
+    bus_id: arf_core::BusId,
 ) {
     let now = Instant::now();
 
-    // 1. Broadcast heartbeat_request
-    let heartbeat_msg = Message::new(
+    // 1. Broadcast heartbeat_request (stamped with from_bus)
+    let heartbeat_msg = Message::with_from_bus(
         "heartbeat_request",
         NodeId::new("bus"),
         vec![],
         serde_json::json!({}),
+        bus_id,
     );
     let _ = broadcast_tx.send(heartbeat_msg);
 
@@ -49,11 +51,12 @@ pub(crate) fn handle_heartbeat_tick(
             map.remove(node_id);
         }
 
-        let offline_msg = Message::new(
+        let offline_msg = Message::with_from_bus(
             "node_offline",
             node_id.clone(),
             vec![],
             serde_json::to_value(info).unwrap_or_default(),
+            bus_id,
         );
         let _ = broadcast_tx.send(offline_msg);
     }
