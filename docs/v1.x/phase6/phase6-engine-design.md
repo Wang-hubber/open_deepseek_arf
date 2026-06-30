@@ -387,6 +387,7 @@ Capability { requirements: vec![
 **关键约定**：
 - `requirements` 全部满足才匹配（**AND 语义**；需要 OR 时拆成多次 Discovery）
 - `NodeInfo.capabilities` 是 JSON Value，可以是字符串、数字、数组、对象——Capability 匹配只看**顶层字符串字段**；数组/嵌套对象不进 match
+- **App 不要把路由关键信息放在数组里**——数组字段只能用于 Node 信息展示（如 `tools: ["read_file", "bash"]` 仅给人看，不能用于 Discovery 匹配）
 - Capabilities 在 connect 时声明，**不变直到 disconnect + reconnect**；运行时变更需重连
 - Engine 缓存解析结果，收到 `node_online` / `node_offline` lifecycle signal 时失效缓存
 
