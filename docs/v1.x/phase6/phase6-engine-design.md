@@ -939,6 +939,54 @@ pub struct ToolSpec {
 
 Engine 是 Bus 上一个特殊 Node，运行固定 ReAct 状态机。
 
+#### 3.6.0 Engine self.filter（2026-06-30 补全 §G12）
+
+Engine 作为 Bus 上的 Node，必须订阅它关心的 msg_type 才能收到响应。filter 在 build() 时由 config 自动计算。
+
+```rust
+impl Engine {
+    /// 计算 Engine 订阅的 msg_type 集合。
+    /// 在 EngineBuilder.build() 时调用，结果用于 bus.connect(filter=...)。
+    pub fn filter(&self) -> MessageFilter {
+        let types: HashSet<String> = self.config.routes.keys()
+            // 所有 routes 对应的响应（{msg_type}_result 后缀）
+            .map(|msg_type| format!("{msg_type}_result"))
+            // 内置 msg_type 响应（§2.1 白名单）
+            .chain(["model_response".into(), "tool_result".into()])
+            // lifecycle signals（§G11 + §5.7）
+            .chain(["node_online".into(), "node_offline".into()])
+            .collect();
+
+        MessageFilter {
+            types: Some(types),
+            to_match: ToMatch::DirectedToMe,
+        }
+    }
+}
+```
+
+**订阅覆盖的 3 类消息**：
+
+| 类别 | msg_type | 来源 | 用途 |
+|------|----------|------|------|
+| **内置响应** | `model_response`, `tool_result` | ModelAdapter / McpNode | ReAct 主循环等待 |
+| **自定义响应** | `{msg_type}_result`（如 `memory_op_result`, `compact_op_result`） | 任何 CheckpointRule 触发的 Query msg 的 Receiver | WaitEvent 完成触发新一轮 think |
+| **Lifecycle signals** | `node_online`, `node_offline` | Bus 自身 | DiscoveryCache 维护（§G11）+ Node 掉线处理（§5.7） |
+
+**Receiver 端约定**（2026-06-30 决议）：
+- 自定义 Receiver 返回响应时，**msg_type 必须遵循 `{原 msg_type}_result` 后缀约定**
+- 例：Receiver 收到 `memory_op` 后返回 `memory_op_result`（带 correlation_id）
+- 例：§14.1.1 MemoryNode mock 已遵循此约定
+- 不遵循的 Receiver：响应不会进入 Engine 的 filter，被 Bus 丢弃
+- 框架不强制——但 App 实现 Receiver 时需遵循，否则 Engine 无法 park
+
+**filter 动态计算时机**：
+- EngineBuilder.build() 时调用一次，filter 传给 bus.connect()
+- build() 之后 AgentConfig.routes 不变（Arc），filter 不需重新计算
+- 多 Bus 时 Engine 在每条 Bus 上都订阅相同 filter
+
+#### 3.6.1 Engine 拥有/不拥有
+
 **Engine 拥有**：
 - ReAct 状态机（idle / processing / waiting / stopped，详见 §4.1）
 - 5 个 Checkpoint 触发位置
