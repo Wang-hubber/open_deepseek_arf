@@ -458,7 +458,7 @@ pub struct OverView {
 | `turn_count` | Engine 内部计数器；每发一次 model_call/tool_exec +1 | ReAct 转移点 |
 | `context_tokens` | **API usage 捕获**：从 model_call 响应的 `usage.prompt_tokens` 取 | 每次 model_call 响应后写入 |
 | `model_context_window` | 启动时从 ModelAdapter 的 capabilities 读取；AgentConfig 可覆盖 | EngineBuilder.build() 时 |
-| `runtime` | Active time（仅 Engine 处于 `processing` 状态的累计时长，不含 `waiting` / `parked`） | 状态机转移点累加 |
+| `runtime` | Active time（仅 Engine 处于 `processing` 状态的累计时长，不含 `waiting` / `stopped`） | 状态机转移点累加 |
 | `last_user_message` | 最近一次 chat() 的 user_input | chat() 时更新 |
 
 **`context_tokens` 的精确性来源**：
@@ -725,6 +725,8 @@ session.chat(user_input=msg)  ← App 端：拦截/转换/审批在调用方完�
 | `processing` | 正在执行 ReAct 循环 |
 | `waiting` | 至少有一个未完成的 WaitEvent，等 event 触发 |
 | `stopped` | 收到 stop 信号，终结 |
+
+**术语约定**：状态机名称为 `waiting`；"park" 是动词（"Engine 进入 waiting 状态 / park 等响应"），不是状态名。文档后续出现的 "park" 一律按动词理解。
 
 ### 4.2 终止条件
 
