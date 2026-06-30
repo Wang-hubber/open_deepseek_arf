@@ -1357,12 +1357,12 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 
 | 节点 | 订阅 | 行为 |
 |------|------|------|
-| ModelAdapter | `model_call` | LLM API 调用 |
+| ModelAdapter | `model_call` | LLM API 调用（Engine 内置流程，无 App 自定义） |
 | McpNode | `tool_exec` | 工具执行（经 Auth/Sandbox 拦截） |
 | MemoryNode | `memory_op` | 抽取（Command only；运行时 retrieval 由模型 tool call 处理，详见 §11.1） |
 | CompactionNode | `compact_op` | 上下文压缩 |
-| SubagentNode | `subagent_op` | 委派子 Agent |
-| HumanProxyNode | `human_handoff` | 人介入 |
+| SubagentNode（App 实现） | `subagent_op` | 委派子 Agent——**Engine 不内置**，App 自己实现的 Node（详见 §13.3） |
+| HumanProxyNode（App 实现） | `human_handoff` | 人介入——**Engine 不内置**，App 自己实现的 Node |
 
 ### 8.3 纯观测（Engine 无感，不响应）
 
@@ -1523,6 +1523,16 @@ impl ActionMessage for HumanHandoff {
 - `Bus::barrier` 的具体 ack 协议细节（msg type、correlation_id 命名、oneshot vs broadcast）
 - `OnMemberFailedHandler` 的 Retry/SwitchTo 行为对 Engine 状态的副作用（是否触发新 Checkpoint、是否写 State）
 - AppCheckpoint Node 与 Engine 的 CheckpointRule 集成方式（rule.build 返回 AppCheckpoint msg 类型需要新增）
+
+### 13.3 不属于本阶段任务（2026-06-30 决议）
+
+以下功能**不**在 Phase 6 Engine 设计范围内，App 自行实现：
+
+- **Subagent 编排**：Engine 不内置 subagent 机制。App 通过 CheckpointRule 注入 `subagent_op`（msg_type 字符串），App 自己实现的 SubagentNode 订阅该 msg_type 并驱动子 Agent。Engine 不感知子 Agent 的存在与状态。
+- **Peer Agent 通信**：Engine 不内置 peer-to-peer 协议。App 通过 `peer_message` msg_type 在多个 Engine 间传递消息，App 自己实现 PeerNode 路由逻辑。
+- **多 Agent 协调**：投票 / 辩论 / 角色切换等模式都是 App 层模式，Engine 只提供 msg_type 抽象。
+
+**核心边界**：Engine 可以驱动任意类型 Agent 的执行（model_call / tool_exec / 任何 msg_type 路由），但不内置任何特定 Agent 拓扑——Engine 是 mechanism，App 决定 topology。
 
 ## 14. Python API 展望
 
