@@ -85,6 +85,27 @@ impl NodeHandle {
         self.send_via(self.primary_bus_id, msg_type, to, payload).await
     }
 
+    /// Public access to primary BusId (for constructing `Message::from_bus`
+    /// outside the handle — e.g., `Engine` building outgoing messages).
+    pub fn primary_bus_id(&self) -> BusId {
+        self.primary_bus_id
+    }
+
+    /// Send a pre-constructed `Message` via this handle's primary Bus.
+    ///
+    /// The `from_bus` field on the message is automatically set to
+    /// `self.primary_bus_id` (Phase 6 task 6.0.3 stamping); `msg.from`
+    /// is left as-is so callers can stamp their own node id.
+    pub async fn send_message(&self, msg: Message) -> Result<SendReceipt, SendError> {
+        self.send_via(
+            self.primary_bus_id,
+            msg.msg_type.as_str(),
+            msg.to.clone(),
+            msg.payload.clone(),
+        )
+        .await
+    }
+
     /// Send a message on a specific attached Bus.
     ///
     /// Returns `SendError::NoSuchBus` if the BusId is not among the attached

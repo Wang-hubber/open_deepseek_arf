@@ -1,19 +1,13 @@
-//! ARF Engine — the ReAct runtime loop.
-//!
-//! Listens to Bus messages filtered by session_id, calls the model via
-//! ModelAdapter, receives action decisions, and emits them back to the Bus.
-//! Manages Park/Resume lifecycle and State persistence.
+//! ARF Engine — ReAct runtime loop.
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
+pub mod builder;
+pub mod config;
+pub mod engine;
+pub mod error;
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn it_works() {
-        assert_eq!(add(2, 2), 4);
-    }
-}
+pub use builder::EngineBuilder;
+pub use config::{AgentConfig, ModelConfig, OnMemberFailedHandler, PermissionConfig};
+pub use engine::Engine;
+pub use error::{BuildError, RunError};
