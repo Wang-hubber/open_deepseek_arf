@@ -587,9 +587,60 @@ for rule in &self.checkpoint_rules {
 
 **不在 Checkpoint 范畴**：
 - **Input 处理**（user_input 进入 state）发生在 `session.chat(user_input=msg)` 调用方，App 在外层拦截/转换/审批；Engine 内部不设 BeforeInput/AfterInput
-- **System prompt 组装**发生在 `EngineBuilder.build()` 时，一次性完成
-- **Tool/Skill 发现**发生在 Node connect 时，一次性声明
+- **System prompt 组装 + Tools/Skills 收集**发生在 `EngineBuilder.build()` 时（见下方 §2.5.1）
+- **运行时 memory 抽取**：CheckpointRule.build 返回 MemoryOp::extract 作为 Command msg，发到 MemoryNode（详见 §11.1）
+- **运行时 memory 检索**：由模型主动发起 tool call（如 `memory_search`），走标准 tool_exec 流程；**不**是单独的 MemoryOp::Retrieve msg
 - **Turn 结束**与 RoundEnd 合并（每 turn 必然在 round 内；如需 turn 级 hook 用 `Checkpoint::RoundEnd` + `over_view.turn_count` 判断）
+
+#### 2.5.1 Engine build() 一次性组装（2026-06-30 决议）
+
+`EngineBuilder.build(config)` 内部顺序执行：
+
+1. **校验 routes**：检查 `AgentConfig.routes` 中所有 msg_type 对应的 Node 都已在 BusGraph 上线（fail-fast）
+2. **收集 Skills**：遍历 BusGraph 中所有 `kind=skill` 的 Node，取它们 expose 的 skill 描述，填到 `system_prompt_template` 的 `{{skills}}` 占位符
+3. **收集 Tools**：遍历 BusGraph 中所有 `kind=mcp` 的 Node，取它们 declare 的 tools，存为 `Engine.tools: Vec<ToolSpec>`（**不**写入 prompt，见下方）
+4. **格式化 system prompt**：用填好 skills 的 prompt 生成 `messages[0]`（system role）
+5. **追加 initial_memory**：将 `config.initial_memory: Vec<String>` 依次转为 system role messages，追加到 `messages[1..]`（保持最长前缀稳定）
+6. **创建 Engine**：Engine 持有 (formatted_messages + initial_memory) 作为初始 state.messages
+
+**Tools 不入 prompt**（2026-06-30 决议）：
+- LLM API（OpenAI/Anthropic/DeepSeek）原生支持 `tools` 参数，独立于 system prompt
+- Engine 在构造 `ModelCall` 时将 `Engine.tools` 装入 payload（不是 state.messages 的一部分）
+- App 的 `system_prompt_template` 中**不应**包含 `{{tools}}` 占位符（如果写了，Engine 不替换）
+
+**Memory 注入语义**（2026-06-30 决议）：
+- **固定 memory（build 时）**：`config.initial_memory` 追加到 messages 前缀，作为 system role message
+- **运行时 retrieval**：由模型主动调 `memory_search` 等 tool，**不**触发 MemoryOp::Retrieve msg
+- **运行时 extraction**：CheckpointRule 触发 `MemoryOp::extract` Command，MemoryNode 完成后**不**修改 messages（memory 抽取是后台操作，模型看不到抽取过程）；抽取结果在下次 session 加载时作为 initial_memory 出现
+- **前缀稳定原则**：所有 build 时一次性确定的 memory 放在 messages **前部**；会话过程中产生的 system messages（如人工补充）追加到 messages **尾部**——确保前缀 cache 命中率
+
+```rust
+// ModelCall payload 包含 tools（不进 messages）
+pub struct ModelCall {
+    pub messages: Vec<ModelMessage>,
+    pub tools: Vec<ToolSpec>,
+    // ...
+}
+
+// ModelAdapter 调用 LLM API：
+let req = CreateRequest {
+    messages: call.messages,
+    tools: call.tools,  // OpenAI/Anthropic 原生支持
+    // ...
+};
+```
+
+**ToolSpec 定义**（App 实现工具时遵循）：
+
+```rust
+/// 工具规范。ModelAdapter 在 ModelCall 时传给 LLM API。
+/// App 在 McpNode connect 时声明；Engine build() 时收集到 Engine.tools。
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,  // JSON Schema
+}
+```
 
 ### 2.6 Engine
 
@@ -646,7 +697,13 @@ bus.connect(info=memory.info(), filter=memory.filter()).await?;
 let config = AgentConfig {
     agent_id: "assistant".into(),
     model_config: ModelConfig { provider: "deepseek".into(), model: "deepseek-v4-flash".into() },
-    system_prompt_template: "You are a helpful assistant.\n\nTools:\n{{tools}}".into(),
+    // 注意：tools **不**在这里。{{skills}} 占位符由 Engine build() 时查 BusGraph 填。
+    system_prompt_template: "You are a helpful assistant.\n\nSkills:\n{{skills}}".into(),
+    // 固定 memory：build() 后作为 system 消息追加到 messages 前缀（cache 命中稳定）
+    initial_memory: vec![
+        "User is a financial analyst working on quarterly reports.".into(),
+        "Previous context: user prefers concise summaries with tables.".into(),
+    ],
     max_turns: 10,
     routes: {
         let mut m = HashMap::new();
@@ -1135,7 +1192,11 @@ Engine 不解析 memory/compact 的语义，只执行备份和替换。
 pub struct AgentConfig {
     pub agent_id: String,
     pub model_config: ModelConfig,
+    /// 包含 `{{skills}}` 占位符的 system prompt 模板（**不含** `{{tools}}`，tools 通过 ModelCall.tools 字段传）。
     pub system_prompt_template: String,
+    /// build() 后作为 system 消息追加到 messages 前部（保持最长前缀稳定，cache 命中率高）。
+    /// 提取自 App 持久化的"用户身份/任务画像/历史摘要"等。运行时 extraction 的结果**不**实时追加到此处。
+    pub initial_memory: Vec<String>,
     pub max_turns: u32,
     pub tool_timeout_ms: Option<u64>,
     pub session_mode: SessionMode,
@@ -1178,7 +1239,7 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 |------|------|------|
 | ModelAdapter | `model_call` | LLM API 调用 |
 | McpNode | `tool_exec` | 工具执行（经 Auth/Sandbox 拦截） |
-| MemoryNode | `memory_op` | 检索（Query）/ 抽取（Command） |
+| MemoryNode | `memory_op` | 抽取（Command only；运行时 retrieval 由模型 tool call 处理，详见 §11.1） |
 | CompactionNode | `compact_op` | 上下文压缩 |
 | SubagentNode | `subagent_op` | 委派子 Agent |
 | HumanProxyNode | `human_handoff` | 人介入 |
@@ -1211,19 +1272,29 @@ Engine 不直接调用任何节点，只发消息。节点按 msg_type 订阅。
 
 ## 11. 关键场景
 
-### 11.1 MemoryOp：Query vs Command 同 trait 不同 intent
+### 11.1 MemoryOp：仅 Extract（Command）
 
 ```rust
+/// 记忆抽取消息（2026-06-30 决议：移除 Retrieve）。
+/// 运行时 memory 检索由模型主动发起 tool call（如 `memory_search`），
+/// 走标准 tool_exec 流程；**不**是单独的 MemoryOp::Retrieve msg。
+pub struct MemoryOp {
+    pub messages: Vec<ModelMessage>,  // 待抽取的消息历史
+}
+
 impl ActionMessage for MemoryOp {
     fn msg_type(&self) -> &'static str { "memory_op" }
-    fn intent(&self) -> MessageIntent {
-        match self.action {
-            MemoryAction::Retrieve => MessageIntent::Query,
-            MemoryAction::Extract  => MessageIntent::Command,
-        }
+    fn intent(&self) -> MessageIntent { MessageIntent::Command }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::json!({ "messages": self.messages })
     }
 }
 ```
+
+**双路 memory 机制**：
+- **固定 memory（build 时）**：App 提供的 `config.initial_memory` 一次性追加到 messages 前缀
+- **运行时 retrieval（tool call）**：模型调 `memory_search` 等 tool，走标准 `tool_exec` 流程
+- **运行时 extraction（CheckpointRule）**：本节 MemoryOp::extract 是唯一触发点，Command intent（fire-and-forget），完成后**不**修改 messages——抽取结果在下次 session 加载时作为 `initial_memory` 出现
 
 ### 11.2 Multi-model 投票：Strict + Query
 
@@ -1340,7 +1411,12 @@ from arf import Engine, EngineBuilder, AgentConfig, Route, Capability
 
 config = AgentConfig(
     agent_id="assistant",
-    system_prompt_template="You are a helpful assistant.\n\nTools:\n{{tools}}",
+    # tools 不在 prompt 里；{{skills}} 由 Engine build() 时自动填
+    system_prompt_template="You are a helpful assistant.\n\nSkills:\n{{skills}}",
+    initial_memory=[
+        "User is a financial analyst.",
+        "Previous context: prefers concise summaries.",
+    ],
     max_turns=10,
     routes={
         "model_call": Route.strict(node_ids=["primary_model"]),
@@ -1676,9 +1752,12 @@ async def main():
         agent_id="assistant",
         system_prompt_template=(
             "You are a helpful assistant.\n\n"
-            "Tools:\n{{tools}}\n\n"
+            "Skills:\n{{skills}}\n\n"
             "Use tools to help the user. Be concise."
         ),
+        initial_memory=[
+            "User is a financial analyst.",
+        ],
         model_config={"provider": "deepseek", "model": "deepseek-v4-flash"},
         max_turns=10,
         routes={
