@@ -1,14 +1,12 @@
-//! Engine — ReAct 循环 actor（Phase 6 §3 / §6.4 / §6.5）。
+//! Engine — ReAct 循环 actor（Phase 6 §3 / §6.4 / §6.5 / §6.6）。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arf_bus::NodeHandle;
 use arf_core::{
     ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, NodeId,
-    NodeInfo, State, ToMatch, ToolCall, ToolExec,
+    NodeInfo, State, ToMatch, ToolCall, ToolExec, WaitStrategy,
 };
-use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -20,7 +18,8 @@ const MODEL_RESPONSE: &str = "model_response";
 const TOOL_RESULT: &str = "tool_result";
 
 /// ReAct loop actor. Phase 6 §0.1 — "Engine 是 Bus 上的一个 Actor"。
-/// 6.3 实现最小骨架；6.4 实现完整 ReAct 主循环；6.5 实现 Checkpoint 评估与 dispatch。
+/// 6.3 实现最小骨架；6.4 实现完整 ReAct 主循环；6.5 实现 Checkpoint 评估与 dispatch；
+/// 6.6 实现 WaitEvent 队列与 WaitStrategy 触发。
 pub struct Engine {
     config: AgentConfig,
     agent_id: NodeId,
@@ -29,8 +28,6 @@ pub struct Engine {
     /// Primary bus handle — held by Engine so we can query `graph()` for
     /// Checkpoint Rule's Discovery route resolution (Phase 6 task 6.5).
     primary_bus: Arc<arf_bus::Bus>,
-    /// correlation_id → oneshot::Sender for in-flight waits
-    response_waits: Arc<Mutex<HashMap<Uuid, oneshot::Sender<serde_json::Value>>>>,
     /// Pre-computed system prompt (with {{skills}} substituted at build time)
     system_prompt: String,
 }
@@ -70,7 +67,6 @@ impl Engine {
             agent_id: info.node_id,
             handle,
             primary_bus: primary.clone(),
-            response_waits: Arc::new(Mutex::new(HashMap::new())),
             system_prompt,
         })
     }
@@ -187,11 +183,12 @@ impl Engine {
 
     /// 评估一个 Checkpoint 位置：所有 trigger 匹配的规则；when=true 时 build + 投递。
     ///
-    /// - Query intent: publish + register wait + await response
+    /// - Query intent: publish + register WaitEvent + await response by strategy
     /// - Command intent: publish only
     ///
     /// 投递接收方由 `AgentConfig.routes[msg.msg_type()]` 决定；Strict 取 NodeIds，
     /// Discovery 查当前 bus graph（无缓存；6.7 加 DiscoveryCache）。
+    /// Phase 6 task 6.6: 传递 `state` 让 publish_and_await_query 写 WaitEvent。
     async fn evaluate_and_dispatch(
         &mut self,
         state: &mut State,
@@ -213,9 +210,12 @@ impl Engine {
         for cm in built {
             match cm.msg.intent() {
                 MessageIntent::Query => {
+                    // 6.6: 默认 All strategy；6.8 暴露 builder 让 App 配置。
                     self.publish_and_await_query(
+                        state,
                         cm.msg.as_ref(),
                         cm.recipients,
+                        WaitStrategy::All,
                         cancel.clone(),
                     )
                     .await?;
@@ -229,15 +229,16 @@ impl Engine {
         Ok(())
     }
 
-    /// Query intent 分发：register wait by correlation_id + send + await response.
-    /// 用 `response_msg_type_for(msg_type)` 预测响应 msg_type（如 model_call → model_response）。
-    /// 响应被读取但**不**处理（6.8 接入 ResponseProcessor 表）。Phase 6 task 6.5.
+    /// Query intent 分发：register WaitEvent in State.wait_events + send + await
+    /// by strategy. Phase 6 task 6.6.
     async fn publish_and_await_query(
         &mut self,
+        state: &mut State,
         msg: &dyn ActionMessage,
         recipients: Vec<NodeId>,
+        strategy: WaitStrategy,
         cancel: CancellationToken,
-    ) -> Result<(), RunError> {
+    ) -> Result<Vec<Message>, RunError> {
         if cancel.is_cancelled() {
             return Err(RunError::Stopped);
         }
@@ -247,8 +248,9 @@ impl Engine {
         let response_msg_type = response_msg_type_for(msg.msg_type())
             .unwrap_or_else(|| format!("{}_result", msg.msg_type()));
 
-        let (tx, _rx) = oneshot::channel();
-        self.response_waits.lock().await.insert(cid, tx);
+        let event = arf_core::WaitEvent::new(cid, strategy, recipients.len().max(1));
+        let event_id = event.id;
+        state.wait_events.push(event);
 
         let wire = Message::with_from_bus(
             msg.msg_type().to_string(),
@@ -257,12 +259,17 @@ impl Engine {
             msg.payload(),
             self.handle.primary_bus_id(),
         );
-        self.handle.send_message(wire).await?;
-        // await response; ignore returned payload — CheckpointRule result not yet dispatched to state
-        let _ = self
-            .wait_for_response_matching(cid, &[response_msg_type.as_str()])
+        if let Err(e) = self.handle.send_message(wire).await {
+            state.wait_events.retain(|e| e.id != event_id);
+            return Err(RunError::Bus(e));
+        }
+
+        // Await responses by strategy; response payloads are ignored for now
+        // (6.8 接入 ResponseProcessor 表 by response msg_type).
+        let responses = self
+            .wait_for_strategy(state, event_id, &[response_msg_type.as_str()], cancel)
             .await?;
-        Ok(())
+        Ok(responses)
     }
 
     /// Command intent 分发：仅 send（fire-and-forget）。Phase 6 task 6.5.
@@ -314,7 +321,7 @@ impl Engine {
             self.handle.primary_bus_id(),
         );
 
-        let response = self.send_and_await(cid, msg, cancel).await?;
+        let response = self.send_and_await(state, cid, msg, cancel).await?;
 
         // Parse
         let content = response
@@ -375,7 +382,7 @@ impl Engine {
             self.handle.primary_bus_id(),
         );
 
-        let response = self.send_and_await(cid, msg, cancel).await?;
+        let response = self.send_and_await(state, cid, msg, cancel).await?;
 
         // Parse tool result
         let result_content = response
@@ -403,13 +410,15 @@ impl Engine {
         Ok(response.payload)
     }
 
-    /// Send a pre-constructed message + register wait + await response (with cancel).
+    /// Send a pre-constructed message + register WaitEvent + await first response.
     ///
-    /// Cancellation is checked before send and before await. If cancel fires
-    /// after send succeeded, the registered waiters entry is removed so the
-    /// forwarding task can drain cleanly.
+    /// Used for Engine's own ModelCall / ToolExec (built-in msg types). The
+    /// `to` field on the message determines `expected` receivers (0 means
+    /// broadcast — typically 1 expected unless route is Discovery multi-receiver).
+    /// Phase 6 task 6.6.
     async fn send_and_await(
         &mut self,
+        state: &mut State,
         cid: Uuid,
         msg: Message,
         cancel: CancellationToken,
@@ -417,54 +426,98 @@ impl Engine {
         if cancel.is_cancelled() {
             return Err(RunError::Stopped);
         }
-        let (tx, _rx) = oneshot::channel();
-        self.response_waits.lock().await.insert(cid, tx);
+        let response_msg_type = response_msg_type_for(&msg.msg_type)
+            .unwrap_or_else(|| format!("{}_result", msg.msg_type));
+
+        // Strict from msg.to; broadcast (to=[]) treated as expected=1 (single responder).
+        let expected = if msg.to.is_empty() { 1 } else { msg.to.len() };
+        let event = arf_core::WaitEvent::new(cid, WaitStrategy::All, expected);
+        let event_id = event.id;
+        state.wait_events.push(event);
 
         if let Err(e) = self.handle.send_message(msg).await {
-            self.response_waits.lock().await.remove(&cid);
+            state.wait_events.retain(|e| e.id != event_id);
             return Err(RunError::Bus(e));
         }
 
-        // wait_for_response loops on handle.recv until response matches cid
-        self.wait_for_response_matching(cid, &[MODEL_RESPONSE, TOOL_RESULT])
-            .await
+        // Engine-built-in ModelCall/ToolExec always expect model_response/tool_result.
+        let expected_types: &[&str] = match response_msg_type.as_str() {
+            MODEL_RESPONSE => &[MODEL_RESPONSE],
+            TOOL_RESULT => &[TOOL_RESULT],
+            other => &[other],
+        };
+        let mut responses = self
+            .wait_for_strategy(state, event_id, expected_types, cancel)
+            .await?;
+        // For All strategy with multiple receivers, just return the first.
+        Ok(responses.remove(0))
     }
 
-    /// Loop on handle.recv; return matching msg (filter by msg_type & cid).
+    /// Loop on handle.recv; accumulate responses matching the WaitEvent's cid
+    /// until the configured strategy triggers.
     ///
-    /// `expected_response_types` lists the response msg_types that count as
-    /// matches (Phase 6 §1.2 builtin whitelist + App custom types).
-    /// Messages of any other type are forwarded to the bus but not consumed.
-    async fn wait_for_response_matching(
+    /// - All: trigger when received.len() == event.expected
+    /// - Any: trigger on first response (rest are received but may be discarded by caller)
+    /// - Count(n): trigger when received.len() >= n
+    ///
+    /// Cancel: retain-removes the event; returns Err(Stopped).
+    /// Phase 6 task 6.6.
+    async fn wait_for_strategy(
         &mut self,
-        cid: Uuid,
+        state: &mut State,
+        event_id: Uuid,
         expected_response_types: &[&str],
-    ) -> Result<Message, RunError> {
+        cancel: CancellationToken,
+    ) -> Result<Vec<Message>, RunError> {
+        let mut received = Vec::new();
         loop {
-            let msg = self.handle.recv().await.map_err(|_| {
-                RunError::Internal("handle closed".into())
-            })?;
-            // Skip non-matching message types
+            // Race recv against cancel so cancellation fires immediately
+            // (handle.recv() alone can block indefinitely if no responder).
+            let msg = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    state.wait_events.retain(|e| e.id != event_id);
+                    return Err(RunError::Stopped);
+                }
+                res = self.handle.recv() => res.map_err(|_| RunError::Internal("handle closed".into()))?,
+            };
+
+            // Look up event (may have been removed by another path).
+            let event_info = state
+                .wait_events
+                .iter()
+                .find(|e| e.id == event_id)
+                .map(|e| (e.correlation_id, e.strategy, e.expected));
+            let (our_cid, strategy, expected) = match event_info {
+                Some(x) => x,
+                None => continue, // event gone — discard msg
+            };
+
+            // Filter: msg_type in expected_response_types AND payload.correlation_id matches.
             if !expected_response_types.contains(&msg.msg_type.as_str()) {
                 continue;
             }
-            if let Some(payload_cid) = msg
+            let msg_cid = msg
                 .payload
                 .get("correlation_id")
                 .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok())
-            {
-                if payload_cid == cid {
-                    return Ok(msg);
-                }
+                .and_then(|s| Uuid::parse_str(s).ok());
+            if msg_cid != Some(our_cid) {
+                continue;
             }
-        }
-    }
 
-    /// Test hook: directly inject a response (bypasses Bus).
-    pub async fn inject_response(&self, cid: Uuid, payload: serde_json::Value) {
-        if let Some(tx) = self.response_waits.lock().await.remove(&cid) {
-            let _ = tx.send(payload);
+            received.push(msg);
+
+            let triggered = match strategy {
+                WaitStrategy::All => received.len() >= expected,
+                WaitStrategy::Any => true,
+                WaitStrategy::Count(n) => received.len() >= n as usize,
+            };
+
+            if triggered {
+                state.wait_events.retain(|e| e.id != event_id);
+                return Ok(received);
+            }
         }
     }
 }
