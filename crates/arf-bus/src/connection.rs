@@ -85,6 +85,29 @@ impl NodeHandle {
         self.send_via(self.primary_bus_id, msg_type, to, payload).await
     }
 
+    /// Send a response message that includes a correlation_id in the payload.
+    ///
+    /// The Engine's wait_for_strategy matches responses by `payload.correlation_id`,
+    /// so response payloads (model_response, tool_result, app_checkpoint_result, …)
+    /// MUST include the same correlation_id as the originating request.
+    /// `send()` does NOT add correlation_id; use `send_response` instead.
+    ///
+    /// If `correlation_id` is `None`, behaves identically to [`send`].
+    pub async fn send_response(
+        &self,
+        msg_type: &str,
+        to: Vec<NodeId>,
+        mut payload: serde_json::Value,
+        correlation_id: Option<uuid::Uuid>,
+    ) -> Result<SendReceipt, SendError> {
+        if let Some(cid) = correlation_id {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("correlation_id".into(), serde_json::Value::String(cid.to_string()));
+            }
+        }
+        self.send(msg_type, to, payload).await
+    }
+
     /// Public access to primary BusId (for constructing `Message::from_bus`
     /// outside the handle — e.g., `Engine` building outgoing messages).
     pub fn primary_bus_id(&self) -> BusId {

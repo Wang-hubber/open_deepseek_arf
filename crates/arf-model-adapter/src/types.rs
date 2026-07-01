@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// These are ARF-standard params. Each Provider translates them to
 /// its native API format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelParams {
     /// Sampling temperature (0.0–2.0). None = provider default.
     pub temperature: Option<f32>,
@@ -33,6 +33,10 @@ pub struct ToolDef {
 pub struct ModelCallPayload {
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<ToolDef>,
+    /// Model inference parameters. Optional on the wire so the engine can
+    /// also send a `ModelCall` (core type) which lacks this field — the
+    /// missing field defaults to `ModelParams::default()`.
+    #[serde(default)]
     pub model_params: ModelParams,
     /// Whether to stream the response. Default true.
     #[serde(default = "default_stream")]

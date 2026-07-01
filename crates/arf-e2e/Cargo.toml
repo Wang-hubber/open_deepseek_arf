@@ -1,0 +1,30 @@
+[package]
+name = "arf-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Phase 6 E2E tests — real Node full-chain coverage"
+publish = false
+
+# This crate is a test-only crate. All test files live in tests/ and the
+# shared helpers in tests/common/ are imported via `mod common;` from each
+# integration test file. There is no [lib] — Rust's auto-discovery of
+# tests/common/mod.rs (when the test file declares `mod common;`) handles
+# the import without compiling common as a separate library target.
+
+[dev-dependencies]
+arf-core = { path = "../arf-core" }
+arf-bus = { path = "../arf-bus" }
+arf-engine = { path = "../arf-engine" }
+arf-model-adapter = { path = "../arf-model-adapter" }
+arf-mcp = { path = "../arf-mcp" }
+arf-pool = { path = "../arf-pool" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"

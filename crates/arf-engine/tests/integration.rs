@@ -111,18 +111,17 @@ async fn e2e_multi_round_react_loop() {
         let _ = ready_tx.send(());
         run_mock_responder(rx, bus_for_resp, vec![
             serde_json::json!({
-                "message": {
-                    "content": "",
-                    "tool_calls": [{"id":"c1","name":"echo","arguments":{"text":"hello"}}],
-                },
+                "message": {"content": ""},
+                "tool_calls": [{"id":"c1","name":"echo","arguments":{"text":"hello"}}],
             }),
             serde_json::json!({
-                "message": {
-                    "content": "round 1 done",
-                    "tool_calls": [{"id":"c2","name":"echo","arguments":{"text":"world"}}],
-                },
+                "message": {"content": "round 1 done"},
+                "tool_calls": [{"id":"c2","name":"echo","arguments":{"text":"world"}}],
             }),
-            serde_json::json!({"message": {"content": "round 2 done", "tool_calls": []}}),
+            serde_json::json!({
+                "message": {"content": "round 2 done"},
+                "tool_calls": [],
+            }),
         ]).await;
     });
     ready_rx.await.unwrap();

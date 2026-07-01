@@ -89,7 +89,13 @@ impl<R: crate::Resource + 'static> PoolNode<R> {
                 Ok(l) => l,
                 Err(_) => return,
             };
-            // Forward to sub bus (re-stamp from = our node_id, keep cid)
+            // Forward to sub bus. The `from` field MUST be our sub-bus
+            // node_id (`{top}/sub`) — the ModelAdapterNode on the sub bus
+            // replies to `msg.from`, and our sub_handle subscribes under
+            // the sub-bus node_id. Using `self.node_id` (the top-bus id)
+            // would route the response to a nonexistent address and the
+            // sub_handle would never see it.
+            let sub_id = NodeId::new(format!("{}/sub", self.node_id));
             let cid = req
                 .payload
                 .get("correlation_id")
@@ -97,7 +103,7 @@ impl<R: crate::Resource + 'static> PoolNode<R> {
                 .and_then(|s| uuid::Uuid::parse_str(s).ok());
             let forwarded = Message::with_from_bus(
                 req.msg_type.clone(),
-                self.node_id.clone(),
+                sub_id,
                 vec![],
                 req.payload.clone(),
                 self.sub_bus.id,

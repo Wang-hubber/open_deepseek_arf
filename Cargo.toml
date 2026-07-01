@@ -12,6 +12,7 @@ members = [
     "py-arf",
     "examples/domain_controller",
     "examples/recovery",
+    "crates/arf-e2e",
 ]
 
 [workspace.package]

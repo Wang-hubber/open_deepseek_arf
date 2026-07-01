@@ -353,10 +353,12 @@ impl Engine {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // tool_calls lives at the TOP level of the wire payload (next to `message`),
+        // not nested inside `message`. ModelResponsePayload's serialized form is:
+        //   {"message": {...}, "tool_calls": [...], "finish_reason": "...", ...}
         let tool_calls: Vec<ToolCall> = response
             .payload
-            .get("message")
-            .and_then(|m| m.get("tool_calls"))
+            .get("tool_calls")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()

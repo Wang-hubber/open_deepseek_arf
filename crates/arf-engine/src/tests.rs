@@ -458,19 +458,19 @@ async fn run_continues_after_tool_result() {
                 "correlation_id": "00000000-0000-0000-0000-000000000001",
                 "message": {
                     "content": "",
-                    "tool_calls": [{
-                        "id": "call_0",
-                        "name": "bash",
-                        "arguments": {"cmd": "ls"},
-                    }],
                 },
+                "tool_calls": [{
+                    "id": "call_0",
+                    "name": "bash",
+                    "arguments": {"cmd": "ls"},
+                }],
             }),
             serde_json::json!({
                 "correlation_id": "00000000-0000-0000-0000-000000000002",
                 "message": {
                     "content": "done",
-                    "tool_calls": [],
                 },
+                "tool_calls": [],
             }),
         ]).await;
     });
@@ -983,12 +983,13 @@ async fn checkpoint_before_tool_exec_fires_before_publish() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "message": {
-                    "content": "",
-                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
-                },
+                "message": {"content": ""},
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
             }),
-            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
+            serde_json::json!({
+                "message": {"content": "done"},
+                "tool_calls": [],
+            }),
         ],
     );
     resp_ready.await.unwrap();
@@ -1046,12 +1047,13 @@ async fn checkpoint_after_tool_exec_fires_after_push() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "message": {
-                    "content": "",
-                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
-                },
+                "message": {"content": ""},
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
             }),
-            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
+            serde_json::json!({
+                "message": {"content": "done"},
+                "tool_calls": [],
+            }),
         ],
     );
     resp_ready.await.unwrap();
@@ -1295,12 +1297,13 @@ async fn all_five_checkpoints_visited_in_happy_path() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "message": {
-                    "content": "",
-                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
-                },
+                "message": {"content": ""},
+                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
             }),
-            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
+            serde_json::json!({
+                "message": {"content": "done"},
+                "tool_calls": [],
+            }),
         ],
     );
     resp_ready.await.unwrap();

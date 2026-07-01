@@ -5,6 +5,7 @@ use std::sync::Arc;
 use arf_bus::Bus;
 use arf_core::{MessageFilter, NodeId, NodeInfo, ToMatch};
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 use crate::provider::Provider;
 use crate::types::ModelCallPayload;
@@ -55,7 +56,7 @@ impl ModelAdapterNode {
                     msg = handle.recv() => {
                         match msg {
                             Ok(msg) => {
-                                if msg.msg_type == "model_call" && msg.is_for(&my_id) {
+                                if msg.msg_type == "model_call" && (msg.is_for(&my_id) || msg.is_broadcast()) {
                                     process_model_call(&provider, &mut handle, &msg).await;
                                 }
                             }
@@ -96,6 +97,15 @@ async fn process_model_call(
     handle: &mut arf_bus::NodeHandle,
     msg: &arf_core::Message,
 ) {
+    // Extract correlation_id from the request payload — the engine
+    // uses it to match responses. The engine's `ModelCall` struct
+    // serializes `correlation_id` at the top level of the payload.
+    let request_cid = msg
+        .payload
+        .get("correlation_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
     let payload: ModelCallPayload = match serde_json::from_value(msg.payload.clone()) {
         Ok(p) => p,
         Err(e) => {
@@ -103,7 +113,10 @@ async fn process_model_call(
                 .send(
                     "model_response",
                     vec![msg.from.clone()],
-                    serde_json::json!({"error": format!("invalid payload: {e}")}),
+                    serde_json::json!({
+                        "error": format!("invalid payload: {e}"),
+                        "correlation_id": request_cid.map(|c| c.to_string()),
+                    }),
                 )
                 .await;
             return;
@@ -134,15 +147,16 @@ async fn process_model_call(
                         .await;
                 }
                 let _ = handle
-                    .send(
+                    .send_response(
                         "model_response",
                         vec![engine_id.clone()],
                         serde_json::to_value(&response).unwrap_or_default(),
+                        request_cid,
                     )
                     .await;
             }
             Err(e) => {
-                send_error_response(handle, &engine_id, &e).await;
+                send_error_response(handle, &engine_id, &e, request_cid).await;
             }
         }
     } else {
@@ -157,15 +171,16 @@ async fn process_model_call(
         {
             Ok(response) => {
                 let _ = handle
-                    .send(
+                    .send_response(
                         "model_response",
                         vec![engine_id.clone()],
                         serde_json::to_value(&response).unwrap_or_default(),
+                        request_cid,
                     )
                     .await;
             }
             Err(e) => {
-                send_error_response(handle, &engine_id, &e).await;
+                send_error_response(handle, &engine_id, &e, request_cid).await;
             }
         }
     }
@@ -185,15 +200,17 @@ async fn send_error_response(
     handle: &mut arf_bus::NodeHandle,
     engine_id: &NodeId,
     error: &crate::ProviderError,
+    correlation_id: Option<Uuid>,
 ) {
     let _ = handle
-        .send(
+        .send_response(
             "model_response",
             vec![engine_id.clone()],
             serde_json::json!({
                 "error": error.to_string(),
                 "finish_reason": "error",
             }),
+            correlation_id,
         )
         .await;
 }
