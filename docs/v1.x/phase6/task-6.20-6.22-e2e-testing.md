@@ -91,7 +91,7 @@ Phase 6 核心代码（19 个子任务）已全部实现，但 E2E 测试覆盖�
 | 端点构造 | `format!("{}/chat/completions", base_url)`（**与 OpenAI 模式不同**——OpenAI 是 `format!("{}/v1/chat/completions", base_url)`） |
 | 鉴权 | `Authorization: Bearer ${MINIMAX_API_KEY}` |
 | Env var | `MINIMAX_API_KEY`（也可读 `MINIMAX_TOKEN` 兼容） |
-| 默认 model | `MiniMax-Text-01` |
+| 默认 model | `MiniMax-M3` |
 
 ### 3.3 改动清单
 
@@ -109,7 +109,7 @@ impl MiniMaxConfig {
         Self {
             base_url: "https://api.minimaxi.com/v1".into(),
             api_key: String::new(),  // 由 from_env 填充
-            models: vec!["MiniMax-Text-01".into()],
+            models: vec!["MiniMax-M3".into()],
             timeout_secs: 320,
             max_retries: 3,
         }
@@ -309,7 +309,7 @@ impl MiniMaxProvider {
 
 - **不分 `#[ignore]`**：用 env-var skip 比 `--include-ignored` 更直接（CI 配置 key 就跑、不配就 skip）
 - **配 key 后所有 E2E 必须通过**：任何失败即 merge gate fail
-- **默认 model 选便宜的**：MiniMax 推荐 `MiniMax-Text-01`（价格低于 vision 系列）
+- **默认 model**：`MiniMax-M3`（用户实际使用）
 
 ---
 
