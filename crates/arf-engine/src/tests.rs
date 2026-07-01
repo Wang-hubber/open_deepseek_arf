@@ -335,7 +335,9 @@ async fn run_model_responder(
     responses: Vec<serde_json::Value>,
 ) {
     let mut idx = 0;
-    while let Ok(m) = rx.recv().await {
+    let stop_at = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while let Ok(m) = tokio::time::timeout_at(stop_at, rx.recv()).await {
+        let m = match m { Ok(m) => m, Err(_) => break };
         // 提取 incoming correlation_id 并 reuse 在 response 里
         let cid = m
             .payload
@@ -614,49 +616,56 @@ fn spawn_model_responder(
     let handle = tokio::spawn(async move {
         let mut rx = bus.subscribe();
         let _ = ready_tx.send(());
+        let stop_at = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut idx = 0;
-        while let Ok(m) = rx.recv().await {
-            let cid = m
-                .payload
-                .get("correlation_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok());
-            match m.msg_type.as_str() {
-                "model_call" => {
-                    if let Some(cid) = cid {
-                        if idx < responses.len() {
-                            let mut payload = responses[idx].clone();
-                            idx += 1;
-                            if let Some(obj) = payload.as_object_mut() {
-                                obj.insert(
-                                    "correlation_id".to_string(),
-                                    serde_json::Value::String(cid.to_string()),
-                                );
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(stop_at) => break,
+                res = rx.recv() => {
+                    let m = match res { Ok(m) => m, Err(_) => break };
+                    let cid = m
+                        .payload
+                        .get("correlation_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok());
+                    match m.msg_type.as_str() {
+                        "model_call" => {
+                            if let Some(cid) = cid {
+                                if idx < responses.len() {
+                                    let mut payload = responses[idx].clone();
+                                    idx += 1;
+                                    if let Some(obj) = payload.as_object_mut() {
+                                        obj.insert(
+                                            "correlation_id".to_string(),
+                                            serde_json::Value::String(cid.to_string()),
+                                        );
+                                    }
+                                    let resp = arf_core::Message::with_from_bus(
+                                        "model_response",
+                                        NodeId::new("model/mock"),
+                                        vec![],
+                                        payload,
+                                        bus.id,
+                                    );
+                                    let _ = bus.send(resp).await;
+                                }
                             }
-                            let resp = arf_core::Message::with_from_bus(
-                                "model_response",
-                                NodeId::new("model/mock"),
-                                vec![],
-                                payload,
-                                bus.id,
-                            );
-                            let _ = bus.send(resp).await;
                         }
+                        "tool_exec" => {
+                            if let Some(cid) = cid {
+                                let resp = arf_core::Message::with_from_bus(
+                                    "tool_result",
+                                    NodeId::new("tool/mock"),
+                                    vec![],
+                                    serde_json::json!({"correlation_id": cid.to_string(), "content": "ok"}),
+                                    bus.id,
+                                );
+                                let _ = bus.send(resp).await;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                "tool_exec" => {
-                    if let Some(cid) = cid {
-                        let resp = arf_core::Message::with_from_bus(
-                            "tool_result",
-                            NodeId::new("tool/mock"),
-                            vec![],
-                            serde_json::json!({"correlation_id": cid.to_string(), "content": "ok"}),
-                            bus.id,
-                        );
-                        let _ = bus.send(resp).await;
-                    }
-                }
-                _ => {}
             }
         }
     });
@@ -738,38 +747,45 @@ fn spawn_custom_responder(
     let handle = tokio::spawn(async move {
         let mut rx = bus.subscribe();
         let _ = ready_tx.send(());
-        while let Ok(m) = rx.recv().await {
-            let cid = m
-                .payload
-                .get("correlation_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok());
-            let (resp_type, mut body): (String, serde_json::Value) = match m.msg_type.as_str() {
-                "model_call" => ("model_response".into(), serde_json::json!({"content": "ok"})),
-                "tool_exec" => ("tool_result".into(), serde_json::json!({"content": "ok"})),
-                other => {
-                    if let Some(payload) = extra_responses.get(other) {
-                        (format!("{other}_result"), payload.clone())
-                    } else {
-                        continue;
+        let stop_at = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(stop_at) => break,
+                res = rx.recv() => {
+                    let m = match res { Ok(m) => m, Err(_) => break };
+                    let cid = m
+                        .payload
+                        .get("correlation_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok());
+                    let (resp_type, mut body): (String, serde_json::Value) = match m.msg_type.as_str() {
+                        "model_call" => ("model_response".into(), serde_json::json!({"content": "ok"})),
+                        "tool_exec" => ("tool_result".into(), serde_json::json!({"content": "ok"})),
+                        other => {
+                            if let Some(payload) = extra_responses.get(other) {
+                                (format!("{other}_result"), payload.clone())
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    if let Some(cid) = cid {
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.insert(
+                                "correlation_id".to_string(),
+                                serde_json::Value::String(cid.to_string()),
+                            );
+                        }
+                        let resp = arf_core::Message::with_from_bus(
+                            resp_type,
+                            NodeId::new("mock/handler"),
+                            vec![],
+                            body,
+                            bus.id,
+                        );
+                        let _ = bus.send(resp).await;
                     }
                 }
-            };
-            if let Some(cid) = cid {
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert(
-                        "correlation_id".to_string(),
-                        serde_json::Value::String(cid.to_string()),
-                    );
-                }
-                let resp = arf_core::Message::with_from_bus(
-                    resp_type,
-                    NodeId::new("mock/handler"),
-                    vec![],
-                    body,
-                    bus.id,
-                );
-                let _ = bus.send(resp).await;
             }
         }
     });
@@ -1836,7 +1852,9 @@ async fn discovery_multi_receiver_all_responses_collected() {
     let resp_handle = tokio::spawn(async move {
         let mut rx = bus_for_resp.subscribe();
         let _ = ready_tx.send(());
-        while let Ok(m) = rx.recv().await {
+        let stop_at = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Ok(m) = tokio::time::timeout_at(stop_at, rx.recv()).await {
+            let m = match m { Ok(m) => m, Err(_) => break };
             if m.msg_type == "test_cp_query" {
                 let cid = m
                     .payload
