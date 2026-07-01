@@ -78,7 +78,7 @@ ARF V1.x 试图把 Agent 运行拆分为三层——**Agent** 持有状态，**E
 | Park/Resume 由 Query 驱动，无显式等待状态 | ✅ `publish_and_await_query` 是唯一的 park/resume 路径 |
 | 多 Bus 协调：`Bus::barrier(...) → BarrierReceipt` | ✅ `barrier(participants: Vec<NodeId>, timeout: Duration) → BarrierReceipt` |
 | `OnMemberFailedHandler` 在节点失败时被调用 | ⚠️ Trait + `AgentConfig.on_member_failed` 字段存在，但 **`Engine.run()` 尚未调用它**。`MemberFailedAction::Retry` / `SwitchTo` 已声明，目前仅 `FailSession` 完整实现 |
-| 10 个 V0.x 风格生命周期 hook（session_start、before_round、on_error…） | ❌ 已被上面 5 个 Checkpoint 触发点取代。V0.x 的 10-hook 系统完全移除——但 `docs/architecture/overview.md` 里仍有旧表未更新 |
+| 10 个 V0.x 风格生命周期 hook（session_start、before_round、on_error…） | ❌ 已被上面 5 个 Checkpoint 触发点取代。V0.x 的 10-hook 系统完全移除 |
 
 ### 设计要点（按当前实现）
 
@@ -207,9 +207,8 @@ make test                                    # 或：跑 Rust + Python 全部测
 |------|------|
 | [`docs/api/`](docs/api/) | **用户 API 参考** — Bus、ModelAdapter、MCP、Engine、AgentConfig、State |
 | [`docs/dev/`](docs/dev/) | 开发者文档 + Phase 设计（Phase 0-6） |
-| [`docs/architecture/`](docs/architecture/) | 架构概念 — session data layout、A2A、park/resume、eval benchmark |
 
-> ⚠️ **`docs/architecture/overview.md` 部分已过时。** 仍然描述 V0.x 的 10-checkpoint Hook 生命周期（`session_start`、`before_round`、`on_error`…）、TracePlugin / CompactionPlugin / MemoryIndex——这些在 V1.x 中都已不存在。V1.x 实现是 5 个 `Checkpoint` 触发点（见上文"设计要点"）。把 `overview.md` 视作历史参考，待重写。
+> 架构概览见 [`README.md`](README.md)（本仓库的根 README）以及 `docs/dev/v1.x-design.md` 与 `docs/dev/phase*/` 各 crate 设计文档。原 `docs/architecture/` 是 V0.x 专属文档，已删除。
 
 ---
 

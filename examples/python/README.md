@@ -36,4 +36,4 @@ python examples/python/ex01_minimal_mock.py
 ## See also
 
 - [docs/api/](../../docs/api/) — User API reference
-- [docs/architecture/](../../docs/architecture/) — Architectural concepts
+- [README.md](../../README.md) — Architecture overview

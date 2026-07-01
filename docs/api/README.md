@@ -227,5 +227,3 @@ cd py-arf
 - [Phase 4 ModelAdapter 设计](../v1.x/phase4/phase4-model-adapter-design.md)
 - [Phase 5 MCP 设计](../v1.x/phase5/phase5-mcp-design.md)
 - [Phase 6 Engine 设计](../v1.x/phase6/phase6-engine-design.md) + [E2E wrap-up](../v1.x/phase6/task-6.20-6.22-e2e-testing.md)
-- [V1.x Agent 配置参考](../agent.md)
-- [A2A 通信参考](../a2a-communication.md)

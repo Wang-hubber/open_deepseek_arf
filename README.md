@@ -83,7 +83,7 @@ The diagram above is **design intent**. Reality is one step behind — the imple
 | Park/Resume driven by Query, no explicit wait state | ✅ `publish_and_await_query` is the single park/resume path |
 | Multi-Bus coordination via `Bus::barrier(...) → BarrierReceipt` | ✅ `barrier(participants: Vec<NodeId>, timeout: Duration) → BarrierReceipt` |
 | `OnMemberFailedHandler` invoked on node failure | ⚠️ Trait + `AgentConfig.on_member_failed` field exist, but `Engine.run()` does **not** yet call it. `MemberFailedAction::Retry` / `SwitchTo` are declared but only `FailSession` is fully implemented. |
-| 10 lifecycle hooks (v0.x style: session_start, before_round, on_error, …) | ❌ Replaced by 5 Checkpoint triggers above. The V0.x 10-hook system is fully gone — `docs/architecture/overview.md` still has a stale table that needs updating. |
+| 10 lifecycle hooks (v0.x style: session_start, before_round, on_error, …) | ❌ Replaced by 5 Checkpoint triggers above. The V0.x 10-hook system is fully gone. |
 
 ### Design Highlights (as currently implemented)
 
@@ -212,9 +212,8 @@ make test                                   # or: runs both Rust and Python test
 |----------|---------|
 | [`docs/api/`](docs/api/) | **User API reference** — Bus, ModelAdapter, MCP, Engine, AgentConfig, State |
 | [`docs/dev/`](docs/dev/) | Developer workflow + phase designs (Phase 0-6) |
-| [`docs/architecture/`](docs/architecture/) | Architectural concepts — session data layout, A2A, park/resume, eval benchmark |
 
-> ⚠️ **`docs/architecture/overview.md` is partly stale.** It still describes V0.x's 10-checkpoint Hook lifecycle (`session_start`, `before_round`, `on_error`, …), TracePlugin / CompactionPlugin / MemoryIndex — none of which exist in V1.x. The V1.x implementation has 5 `Checkpoint` triggers (see Design Highlights above). Treat `overview.md` as historical reference until it's rewritten to match the Rust code.
+> Architecture overview lives in [`README.md`](README.md) (this file) and the per-crate design docs under `docs/dev/v1.x-design.md` and `docs/dev/phase*/`. The previous `docs/architecture/` directory was V0.x-only material and has been removed.
 
 ---
 
