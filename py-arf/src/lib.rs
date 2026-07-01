@@ -17,6 +17,7 @@ use arf_engine::WaitStrategy;
 use arf_model_adapter::{
     AnthropicConfig, AnthropicProvider,
     DeepSeekConfig, DeepSeekProvider,
+    MiniMaxConfig, MiniMaxProvider,
     ModelAdapterNode,
     OpenAIConfig, OpenAIProvider,
     ProviderError,
@@ -1205,6 +1206,62 @@ impl PyAnthropicConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PyMiniMaxConfig
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python MiniMaxConfig — configuration for a MiniMax provider.
+#[pyclass(name = "MiniMaxConfig", from_py_object)]
+#[derive(Clone)]
+struct PyMiniMaxConfig {
+    inner: MiniMaxConfig,
+}
+
+#[pymethods]
+impl PyMiniMaxConfig {
+    #[staticmethod]
+    fn default() -> Self {
+        Self {
+            inner: MiniMaxConfig::default(),
+        }
+    }
+
+    #[staticmethod]
+    fn from_env() -> PyResult<Self> {
+        MiniMaxConfig::from_env()
+            .map(|c| Self { inner: c })
+            .map_err(provider_error_to_py)
+    }
+
+    #[getter]
+    fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+    #[getter]
+    fn api_key(&self) -> String {
+        self.inner.api_key.clone()
+    }
+    #[getter]
+    fn models(&self) -> Vec<String> {
+        self.inner.models.clone()
+    }
+    #[getter]
+    fn timeout_secs(&self) -> u64 {
+        self.inner.timeout_secs
+    }
+    #[getter]
+    fn max_retries(&self) -> u32 {
+        self.inner.max_retries
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MiniMaxConfig(base_url='{}', models={:?})",
+            self.inner.base_url, self.inner.models
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // PyDeepSeekProvider
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1505,6 +1562,106 @@ impl PyAnthropicProvider {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PyMiniMaxProvider
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python MiniMaxProvider — MiniMax API chat completions (OpenAI-compatible).
+#[pyclass(name = "MiniMaxProvider")]
+struct PyMiniMaxProvider {
+    inner: Arc<MiniMaxProvider>,
+}
+
+#[pymethods]
+impl PyMiniMaxProvider {
+    #[new]
+    fn new(config: &PyMiniMaxConfig) -> Self {
+        Self {
+            inner: Arc::new(MiniMaxProvider::new(config.inner.clone())),
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "minimax"
+    }
+
+    #[getter]
+    fn supported_models(&self) -> Vec<String> {
+        self.inner.supported_models().to_vec()
+    }
+
+    fn chat<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|resp| PyModelResponsePayload { inner: resp })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn chat_stream<'py>(
+        &self,
+        py: Python<'py>,
+        model_name: String,
+        messages: Vec<PyModelMessage>,
+        tools: Vec<PyToolDef>,
+        params: PyModelParams,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider = self.inner.clone();
+        let msgs: Vec<ModelMessage> = messages.into_iter().map(|m| m.inner).collect();
+        let tool_defs: Vec<ToolDef> = tools.into_iter().map(|t| t.inner).collect();
+
+        future_into_py(py, async move {
+            provider
+                .chat_stream(&model_name, msgs, tool_defs, params.inner)
+                .await
+                .map(|(chunks, resp)| {
+                    let py_chunks: Vec<PyModelResponseChunk> = chunks
+                        .into_iter()
+                        .map(|c| PyModelResponseChunk { inner: c })
+                        .collect();
+                    (py_chunks, PyModelResponsePayload { inner: resp })
+                })
+                .map_err(provider_error_to_py)
+        })
+    }
+
+    fn connect_to_bus<'py>(
+        &self,
+        py: Python<'py>,
+        bus: &PyBus,
+        node_id: PyNodeId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let provider: Arc<dyn Provider> = self.inner.clone();
+        let bus_ref = bus.inner.clone();
+        let nid = node_id.inner;
+
+        future_into_py(py, async move {
+            ModelAdapterNode::new(provider, &bus_ref, nid)
+                .await
+                .map(|node| PyModelAdapterNode {
+                    inner: Some(node),
+                })
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
+                })
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // PyModelAdapterNode
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1580,9 +1737,11 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDeepSeekConfig>()?;
     m.add_class::<PyOpenAIConfig>()?;
     m.add_class::<PyAnthropicConfig>()?;
+    m.add_class::<PyMiniMaxConfig>()?;
     m.add_class::<PyDeepSeekProvider>()?;
     m.add_class::<PyOpenAIProvider>()?;
     m.add_class::<PyAnthropicProvider>()?;
+    m.add_class::<PyMiniMaxProvider>()?;
     m.add_class::<PyModelAdapterNode>()?;
 
     // Phase 5: MCP
