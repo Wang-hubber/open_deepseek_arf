@@ -195,24 +195,9 @@ Roughly 30% of v0.x's commit history is bug fix. That ratio *is* the story — *
 
 ## Real-world validation: tutorial app (under development)
 
-> **Status (2026-07-01):** The companion tutorial app for V1.x is **under development**. The framework core (Rust crates + py-arf binding) is complete and tested; tutorial units are being authored to match.
+> **Status (2026-07-01):** The companion tutorial app for V1.x is **under development**. The framework core (Rust crates + py-arf binding) is complete and tested; tutorial units will be authored once development starts.
 
-The old Python-version tutorial ([arf_app](https://github.com/Wang-hubber/arf_app), 14 units, v0.x lineage) remains available as historical reference. A new Rust-version tutorial will progressively cover:
-
-| Unit (planned) | Topic | Framework capability verified |
-|----------------|-------|-------------------------------|
-| 01 | Hello ARF (V1.x) | Engine assembly, ReAct boot |
-| 02 | Bus basics | Message send/receive, online graph |
-| 03 | State lifecycle | messages + tasks, two-way locks |
-| 04 | ModelAdapter | OpenAI / Anthropic / DeepSeek / MiniMax providers |
-| 05 | MCP integration | Local + Remote + Script tools |
-| 06 | Hook system | 10 checkpoints, blocking vs side modes |
-| 07 | Park/Resume | WaitItem, cross-session recovery |
-| 08 | Checkpoint + Route | ActionMessage, Strict vs Discovery routing |
-| 09 | Pool | Node pooling, resource leasing |
-| 10 | Eval | Rule + LLM-judge metrics |
-
-> Unit list above is provisional and will be refined as V1.x tutorial development progresses.
+The old Python-version tutorial ([arf_app](https://github.com/Wang-hubber/arf_app), 14 units, v0.x lineage) remains available as historical reference. Unit outline for the V1.x tutorial is held back until development begins, to avoid presenting draft content as a roadmap.
 
 When the new tutorial ships, every framework module will have a real-world scenario validating it — **not "implemented the feature", but "someone used it to ship complete business"**, same standard as the v0.x tutorial.
 

@@ -190,24 +190,9 @@ python examples/python/ex01_minimal_mock.py
 
 ## 实战验证：教学应用（开发中）
 
-> **状态（2026-07-01）：** V1.x 配套教学应用正在开发。框架核心（Rust crates + py-arf 绑定）已完成并通过测试，教学单元正在按 V1.x 架构编写。
+> **状态（2026-07-01）：** V1.x 配套教学应用正在开发。框架核心（Rust crates + py-arf 绑定）已完成并通过测试；教学单元待开发启动后再撰写。
 
-Python 版教程（[arf_app](https://github.com/Wang-hubber/arf_app)，14 单元，v0.x 版本）作为历史参考保留。Rust 重写后的新版教程将渐进覆盖：
-
-| 单元（计划） | 主题 | 验证的框架能力 |
-|--------------|------|---------------|
-| 01 | Hello ARF（V1.x） | Engine 组装、ReAct 启动 |
-| 02 | Bus 基础 | 消息收发、在线节点图 |
-| 03 | State 生命周期 | messages + tasks、双向锁 |
-| 04 | ModelAdapter | OpenAI / Anthropic / DeepSeek / MiniMax 适配 |
-| 05 | MCP 集成 | Local + Remote + Script 工具 |
-| 06 | Hook 系统 | 10 个检查点、blocking vs side 模式 |
-| 07 | Park/Resume | WaitItem、跨 session 恢复 |
-| 08 | Checkpoint + Route | ActionMessage、Strict vs Discovery 路由 |
-| 09 | Pool | 节点池化、资源租约 |
-| 10 | Eval | 规则 + LLM-judge 指标 |
-
-> 以上单元列表为草案，将随 V1.x 教学应用开发进度调整。
+Python 版教程（[arf_app](https://github.com/Wang-hubber/arf_app)，14 单元，v0.x 版本）作为历史参考保留。V1.x 教程的单元大纲暂时收起，待开发启动后再公开——避免把草案当 roadmap 展示。
 
 新版教程发布后，框架的每个模块都会有对应的实战场景验证——**不是"实现了功能"，是"有人用它跑通了完整业务"**，与 v0.x 教程同样的标准。
 
