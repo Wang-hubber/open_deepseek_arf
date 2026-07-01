@@ -10,6 +10,6 @@ mod tests;
 
 pub use arf_core::WaitStrategy;
 pub use builder::EngineBuilder;
-pub use config::{AgentConfig, ModelConfig, OnMemberFailedHandler, PermissionConfig};
+pub use config::{AgentConfig, MemberFailedAction, ModelConfig, OnMemberFailedHandler, PermissionConfig};
 pub use engine::Engine;
 pub use error::{BuildError, RunError};
