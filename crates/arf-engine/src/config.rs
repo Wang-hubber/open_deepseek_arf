@@ -19,6 +19,47 @@ pub struct PermissionConfig {
     pub denied_paths: Vec<String>,
 }
 
+/// Engine-driven action when a Node fails (node_offline or timeout).
+/// Phase 6 task 6.8.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemberFailedAction {
+    /// Fail the current session (default behavior). Engine returns `Err(MemberFailed)`.
+    FailSession,
+    /// Mark the WaitEvent as failed and continue with partial responses.
+    /// 6.8 simplified: not actually retried; 6.x full retry semantics.
+    Retry { delay_ms: u64 },
+    /// Switch to a different NodeId for future requests.
+    /// 6.8 simplified: intent recorded only; 6.x full switch implementation.
+    SwitchTo { alternative: NodeId },
+}
+
+impl Default for MemberFailedAction {
+    fn default() -> Self {
+        Self::FailSession
+    }
+}
+
+/// Node failure handler — invoked by Engine when a member goes offline or times out.
+/// Phase 6 task 6.8.
+pub trait OnMemberFailedHandler: Send + Sync {
+    fn handle(
+        &self,
+        agent: &NodeId,
+        member: &NodeId,
+        reason: &str,
+    ) -> MemberFailedAction;
+}
+
+/// Blanket impl: closures are valid handlers (App ergonomics).
+impl<F> OnMemberFailedHandler for F
+where
+    F: Fn(&NodeId, &NodeId, &str) -> MemberFailedAction + Send + Sync,
+{
+    fn handle(&self, agent: &NodeId, member: &NodeId, reason: &str) -> MemberFailedAction {
+        self(agent, member, reason)
+    }
+}
+
 /// 完整 Agent 配置（Phase 6 §5.2 字段集）。
 ///
 /// **不 derive Clone/Debug/Serialize/Deserialize**：
@@ -50,20 +91,13 @@ pub struct AgentConfig {
     pub processors: HashMap<String, Arc<dyn ResponseProcessor>>,
 
     /// Node 掉线 hook。None 表示默认行为（FailSession）。
-    /// 6.6 / 6.8 接入 `FailedReason` 与完整 handler trait；6.3 仅占位 trait。
+    /// 6.8 完整实现：返回 `MemberFailedAction`。
     pub on_member_failed: Option<Arc<dyn OnMemberFailedHandler>>,
 
     pub tools_include: Option<Vec<String>>,
     pub tools_exclude: Vec<String>,
     pub skills_include: Option<Vec<String>>,
     pub skills_exclude: Vec<String>,
-}
-
-/// Node 掉线 hook trait — Phase 6 §2.P8。占位，6.6 实现完整。
-pub trait OnMemberFailedHandler: Send + Sync {
-    fn on_member_failed(&self, _agent: NodeId, _member: NodeId, _reason: &str) {
-        // 6.3 占位实现。6.6 / 6.8 改写为返回 `MemberFailedAction`。
-    }
 }
 
 impl Default for AgentConfig {

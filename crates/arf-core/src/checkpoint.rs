@@ -53,6 +53,44 @@ impl CheckpointRule {
         }
     }
 
+    /// Standard: fire every N rounds (round 1 skipped to avoid triggering on first chat).
+    /// Phase 6 §2.P3 — typical use: memory extraction every 5 rounds.
+    pub fn every_n_rounds<B>(
+        name: impl Into<String>,
+        trigger: Checkpoint,
+        every_n: u32,
+        build: B,
+    ) -> Self
+    where
+        B: for<'a> Fn(&'a State) -> Box<dyn ActionMessage> + Send + Sync + 'static,
+    {
+        Self::new(
+            name,
+            trigger,
+            move |s| s.over_view.round_count > 0 && s.over_view.round_count as u32 % every_n == 0,
+            build,
+        )
+    }
+
+    /// Standard: fire when context-token utilization (`context_tokens / model_context_window`) >= `ratio`.
+    /// Phase 6 §2.P3 — typical use: compaction when context >= 80%.
+    pub fn when_context_over<B>(
+        name: impl Into<String>,
+        trigger: Checkpoint,
+        ratio: f64,
+        build: B,
+    ) -> Self
+    where
+        B: for<'a> Fn(&'a State) -> Box<dyn ActionMessage> + Send + Sync + 'static,
+    {
+        Self::new(
+            name,
+            trigger,
+            move |s| s.over_view.context_utilization() >= ratio,
+            build,
+        )
+    }
+
     /// Evaluate the `when` predicate against the given state.
     pub fn fires(&self, state: &State) -> bool {
         (self.when)(state)

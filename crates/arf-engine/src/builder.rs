@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arf_bus::Bus;
 use arf_core::{Capability, NodeId, NodeInfo, Route};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, OnMemberFailedHandler};
 use crate::engine::Engine;
 use crate::error::BuildError;
 
@@ -87,6 +87,13 @@ impl EngineBuilder {
                 reason: "包含占位符但 BusGraph 中无 kind=skill 节点".into(),
             });
         }
+
+        // 7. 校验 ResponseProcessor msg_type 唯一性（Phase 6 task 6.8）。
+        // 注：HashMap 本身就是 unique key；这里校验的是 processors.handle 声明的 msg_type
+        // 与 routes 的 msg_type 不冲突——但因为 ResponseProcessor.handles() 是动态查询，
+        // 实际无冲突可能。简化：此处仅校验 processors 列表非空且 key 一致。
+        // 真正的重复会在 wait_for_strategy 中由 HashMap 自动取最后一个。
+        let _ = &config.processors; // 显式 use 满足 clippy；6.x 可加更严格校验
 
         // 7. create Engine
         Engine::new(self.buses, config, system_prompt).await

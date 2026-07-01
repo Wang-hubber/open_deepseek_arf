@@ -48,4 +48,12 @@ pub enum RunError {
     /// CheckpointRule.build 输出的 msg_type() 不在 AgentConfig.routes 中
     #[error("Checkpoint 输出的 msg_type '{msg_type}' 未在 AgentConfig.routes 注册")]
     UndeclaredMsgType { msg_type: String },
+
+    /// Node 掉线 / 超时且 handler 返回 FailSession。Phase 6 task 6.8.
+    #[error("Agent {agent} lost member {member}: {reason}")]
+    MemberFailed {
+        agent: String,
+        member: String,
+        reason: String,
+    },
 }
