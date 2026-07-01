@@ -29,16 +29,21 @@ async def test_disconnect_removes_from_graph(bus):
 
 async def test_disconnect_broadcasts_node_offline(bus):
     """[方法] disconnect broadcasts node_offline that other nodes receive."""
-    h1 = await bus.connect(
-        NodeInfo("engine/a", "engine", {}),
-        MessageFilter(types=None, to_match=ToMatch.BroadcastAndDirectedToMe),
-    )
+    # h2 must connect BEFORE h1 so that h2's broadcast receiver is alive
+    # when h1's node_online is broadcast — otherwise h2 never receives the
+    # node_online that the test tries to drain before the disconnect.
+    # See crates/arf-bus/src/connection.rs disconnect_broadcasts_node_offline
+    # for the Rust-side equivalent test (also subscribes before connect).
     h2 = await bus.connect(
         NodeInfo("engine/b", "engine", {}),
         MessageFilter(types=None, to_match=ToMatch.BroadcastAndDirectedToMe),
     )
+    h1 = await bus.connect(
+        NodeInfo("engine/a", "engine", {}),
+        MessageFilter(types=None, to_match=ToMatch.BroadcastAndDirectedToMe),
+    )
 
-    _ = await h2.recv()  # h1's node_online
+    _ = await h2.recv()  # h1's node_online (visible because h2 was alive first)
     await h1.disconnect()
 
     msg = await h2.recv()
