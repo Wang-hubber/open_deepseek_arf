@@ -8,6 +8,7 @@ members = [
     "crates/arf-agent",
     "crates/arf-model-adapter",
     "crates/arf-mcp",
+    "crates/arf-pool",
     "py-arf",
     "examples/domain_controller",
     "examples/recovery",
