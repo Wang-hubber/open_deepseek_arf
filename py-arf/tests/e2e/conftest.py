@@ -130,23 +130,13 @@ async def attach_live_minimax_node(bus, api_key: str, node_id_str: str):
     # provider.connect_to_bus() does bus.connect() internally — do NOT
     # pre-register or you get "node already connected" error.
     #
-    # IMPORTANT: the return value (PyModelAdapterNode) MUST be kept alive
-    # for the lifetime of the test — if it goes out of scope, Python GC
-    # drops it, which drops the inner ModelAdapterNode, which drops the
-    # shutdown_tx oneshot::Sender, which causes the listen loop to exit
-    # (via the `_ = &mut shutdown_rx` arm matching the dropped-sender
-    # Err), which calls handle.disconnect() and the model node goes
-    # offline. We park the node in the conftest's module-level
-    # `_LIVE_NODES` list so it survives the helper return.
-    global _LIVE_NODES
-    node = await provider.connect_to_bus(bus=bus, node_id=node_id)
-    _LIVE_NODES.append(node)
+    # The return value of connect_to_bus() can be safely discarded —
+    # the provider holds a clone of the ModelAdapterNode in its
+    # `connected_nodes` Arc<Mutex<Vec<...>>>, keeping the listen loop
+    # alive for the provider's lifetime. This is a framework-side
+    # fix for the silent GC-death bug (Phase 6 follow-up 6.22.5).
+    await provider.connect_to_bus(bus=bus, node_id=node_id)
     return node_id
-
-
-# Module-level keep-alive list for ModelAdapterNode references returned by
-# Provider.connect_to_bus(). See `attach_live_minimax_node()` for why.
-_LIVE_NODES: list = []
 
 
 @pytest.fixture(autouse=True)

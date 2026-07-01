@@ -4,16 +4,25 @@ use std::sync::Arc;
 
 use arf_bus::Bus;
 use arf_core::{MessageFilter, NodeId, NodeInfo, ToMatch};
-use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::provider::Provider;
 use crate::types::ModelCallPayload;
 
 /// A ModelAdapter node connected to the Bus.
+///
+/// Cheap to clone (Arc-wrapped): the same Arc can be shared between the
+/// provider's `connected_nodes` vec and a `ModelAdapterNode` handle
+/// returned to the caller. The `cancel: CancellationToken` is the same
+/// — any clone calling `shutdown()` triggers the listen loop's
+/// `_ = cancel.cancelled()` arm to fire. This prevents the silent
+/// GC-death bug where the caller's wrapper was dropped and the inner
+/// node's oneshot::Sender was also dropped, causing the listen loop
+/// to exit (Phase 6 follow-up 6.22.5).
 pub struct ModelAdapterNode {
     node_id: NodeId,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    cancel: CancellationToken,
     _loop_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -24,7 +33,7 @@ impl ModelAdapterNode {
         provider: Arc<dyn Provider>,
         bus: &Bus,
         node_id: NodeId,
-    ) -> Result<Self, arf_bus::ConnectError> {
+    ) -> Result<Arc<Self>, arf_bus::ConnectError> {
         let provider_name = provider.name().to_string();
         let models: Vec<String> = provider.supported_models().to_vec();
 
@@ -48,11 +57,15 @@ impl ModelAdapterNode {
 
         let mut handle = bus.connect(info, filter).await?;
         let my_id = node_id.clone();
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let cancel = CancellationToken::new();
+        let cancel_for_loop = cancel.clone();
 
         let loop_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    _ = cancel_for_loop.cancelled() => {
+                        break; // shutdown requested
+                    }
                     msg = handle.recv() => {
                         match msg {
                             Ok(msg) => {
@@ -61,21 +74,18 @@ impl ModelAdapterNode {
                                 }
                             }
                             Err(_) => break, // Bus closed
-                        }
-                    }
-                    _ = &mut shutdown_rx => {
-                        break; // shutdown requested (or sender dropped)
+                            }
                     }
                 }
             }
             handle.disconnect().await;
         });
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             node_id,
-            shutdown_tx: Some(shutdown_tx),
+            cancel,
             _loop_handle: loop_handle,
-        })
+        }))
     }
 
     /// The NodeId this adapter is registered as on the Bus.
@@ -84,10 +94,10 @@ impl ModelAdapterNode {
     }
 
     /// Shut down the listen loop and disconnect from the Bus.
-    pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+    /// Idempotent: any clone can call this; only the first triggers
+    /// the loop to exit.
+    pub async fn shutdown(&self) {
+        self.cancel.cancel();
     }
 }
 

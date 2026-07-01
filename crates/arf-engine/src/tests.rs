@@ -18,6 +18,10 @@ use crate::EngineBuilder;
 
 // ── EngineBuilder validation tests ───────────────────────────
 
+/// Default test bus. Synchronous constructor returns a `Bus` — tests
+/// that need a model node pre-registered (most engine tests) wrap it
+/// in `test_bus_with_model_node()` instead. The unwrapped `test_bus()`
+/// is used by tests that explicitly check the "no model node" case.
 fn test_bus() -> Bus {
     Bus::new(
         std::time::Duration::from_secs(1),
@@ -26,10 +30,36 @@ fn test_bus() -> Bus {
     )
 }
 
+/// Async helper that wraps `test_bus()` and pre-registers a
+/// `node_type == "model"` node so `EngineBuilder.build()` passes the
+/// `NoModelResponder` check (Phase 6 follow-up 6.22.5). Most engine
+/// tests should use this instead of bare `test_bus()`.
+async fn test_bus_with_model_node() -> Arc<Bus> {
+    let bus = Arc::new(test_bus());
+    // Hand-register a node entry so the graph shows it. The listen task
+    // is not needed — the engine will only check `node_type == "model"`
+    // at build time.
+    let _ = bus
+        .connect(
+            arf_core::NodeInfo {
+                node_id: NodeId::new("model/mock"),
+                node_type: "model".into(),
+                capabilities: serde_json::json!({"kind": "model"}),
+                online_since: 0,
+            },
+            arf_core::MessageFilter {
+                types: None,
+                to_match: arf_core::ToMatch::All,
+            },
+        )
+        .await;
+    bus
+}
+
 // 注册一个 NodeEntry（无 forwarding task 干扰；直接手持 bus.subscribe 即可）。
 // 在 async test 里调用：handler 立即 drop，让 entry 残留在 BusGraph 中。
-fn test_bus_with_node(node_id: &str, _kind: &str) -> (Arc<Bus>, NodeId) {
-    let bus = Arc::new(test_bus());
+async fn test_bus_with_node(node_id: &str, _kind: &str) -> (Arc<Bus>, NodeId) {
+    let bus = test_bus_with_model_node().await;
     let id = NodeId::new(node_id);
     (bus, id)
 }
@@ -73,7 +103,7 @@ async fn build_fails_with_no_buses() {
 // [构造] Strict route 指向不在线节点 → MissingNodes
 #[tokio::test]
 async fn build_fails_when_strict_route_target_offline() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.routes.insert(
         "model_call".into(),
@@ -86,7 +116,7 @@ async fn build_fails_when_strict_route_target_offline() {
 // [构造] Strict route 指向在线节点 → success
 #[tokio::test]
 async fn build_succeeds_with_online_strict_routes() {
-    let (bus, model_id) = test_bus_with_node("model/a", "model");
+    let (bus, model_id) = test_bus_with_node("model/a", "model").await;
     // 手动注册 NodeEntry 让 BusGraph 包含 model_id
     {
         let info = arf_core::NodeInfo {
@@ -119,7 +149,7 @@ async fn build_succeeds_with_online_strict_routes() {
 // [构造] Discovery route capability 无任何匹配 → MissingCapabilities
 #[tokio::test]
 async fn build_fails_when_discovery_capability_no_match() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.routes.insert(
         "tool_exec".into(),
@@ -132,7 +162,7 @@ async fn build_fails_when_discovery_capability_no_match() {
 // [构造] Discovery route 有至少一个匹配 → success
 #[tokio::test]
 async fn build_succeeds_with_discovery_match() {
-    let (bus, _id) = test_bus_with_node("mcp/filesystem", "mcp");
+    let (bus, _id) = test_bus_with_node("mcp/filesystem", "mcp").await;
     {
         let info = arf_core::NodeInfo {
             node_id: _id.clone(),
@@ -169,7 +199,7 @@ async fn build_succeeds_with_discovery_match() {
 #[tokio::test]
 async fn build_fails_on_duplicate_rule_name() {
     use arf_core::{Checkpoint, CheckpointRule, ModelCall};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     fn mk_rule(name: &str) -> CheckpointRule {
         CheckpointRule::new(
@@ -189,7 +219,7 @@ async fn build_fails_on_duplicate_rule_name() {
 // [构造] {{skills}} 但 BusGraph 无 skill 节点 → InvalidTemplate
 #[tokio::test]
 async fn build_fails_when_skills_placeholder_but_no_skill_node() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.system_prompt_template = "Skills: {{skills}}".into();
     let res = EngineBuilder::new(vec![bus]).build(cfg).await;
@@ -199,7 +229,7 @@ async fn build_fails_when_skills_placeholder_but_no_skill_node() {
 // [构造] {{skills}} 且 BusGraph 有 skill 节点 → success 且 system_prompt 替换
 #[tokio::test]
 async fn build_replaces_skills_placeholder() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     // 手动在线注册一个 skill 节点
     let skill_info = arf_core::NodeInfo {
         node_id: NodeId::new("skill/greet"),
@@ -225,7 +255,7 @@ async fn build_replaces_skills_placeholder() {
 // [构造] EngineBuilder build 后通过 engine.handle() 拿到 NodeHandle
 #[tokio::test]
 async fn engine_provides_handle_after_build() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let engine = EngineBuilder::new(vec![bus])
         .build(minimal_config("a"))
         .await
@@ -238,7 +268,7 @@ async fn engine_provides_handle_after_build() {
 #[tokio::test]
 async fn engine_run_one_round_completes() {
     use arf_core::Message;
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
@@ -310,7 +340,7 @@ async fn engine_run_one_round_completes() {
 // [e2e] Engine.run 取消 → RunError::Stopped
 #[tokio::test]
 async fn engine_run_returns_stopped_on_cancel() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
         .await
@@ -393,7 +423,7 @@ async fn run_model_responder(
 // [reAct] model_response 无 tool_calls → 1 round 即返（纯文本）
 #[tokio::test]
 async fn run_returns_immediately_when_no_tool_calls() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
         .await
@@ -439,7 +469,7 @@ async fn run_returns_immediately_when_no_tool_calls() {
 // [reAct] model_response 有 1 tool_call → tool_exec 完成后 assistant 无 tool_calls → 终止
 #[tokio::test]
 async fn run_continues_after_tool_result() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
         .await
@@ -504,7 +534,7 @@ async fn run_continues_after_tool_result() {
 // 期望：max_turns 触发（turn_count=2 > 1）
 #[tokio::test]
 async fn run_returns_max_turns_exceeded() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.max_turns = 1;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
@@ -547,7 +577,7 @@ async fn run_returns_max_turns_exceeded() {
 // [reAct] cancel 在 send 之前触发 → Stopped
 #[tokio::test]
 async fn run_returns_stopped_on_cancel_immediate() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
         .await
@@ -841,7 +871,7 @@ async fn cp_routes_for(bus: &Arc<arf_bus::Bus>) -> HashMap<String, Route> {
 #[tokio::test]
 async fn checkpoint_before_model_call_fires_and_dispatches() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "before_model_call_marker",
@@ -901,7 +931,7 @@ async fn checkpoint_before_model_call_fires_and_dispatches() {
 #[tokio::test]
 async fn checkpoint_after_model_call_fires_after_push() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "after_model_call_marker",
@@ -956,7 +986,7 @@ async fn checkpoint_after_model_call_fires_after_push() {
 #[tokio::test]
 async fn checkpoint_before_tool_exec_fires_before_publish() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "before_tool_exec_marker",
@@ -1021,7 +1051,7 @@ async fn checkpoint_before_tool_exec_fires_before_publish() {
 #[tokio::test]
 async fn checkpoint_after_tool_exec_fires_after_push() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "after_tool_exec_marker",
@@ -1085,7 +1115,7 @@ async fn checkpoint_after_tool_exec_fires_after_push() {
 #[tokio::test]
 async fn checkpoint_round_end_fires_before_return() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "round_end_marker",
@@ -1140,7 +1170,7 @@ async fn checkpoint_round_end_fires_before_return() {
 #[tokio::test]
 async fn checkpoint_when_false_skips_dispatch() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "never_fires",
@@ -1193,7 +1223,7 @@ async fn checkpoint_when_false_skips_dispatch() {
 #[tokio::test]
 async fn checkpoint_multiple_rules_fire_in_order() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule_a = CheckpointRule::new(
         "rule_a",
@@ -1265,7 +1295,7 @@ async fn checkpoint_multiple_rules_fire_in_order() {
 #[tokio::test]
 async fn all_five_checkpoints_visited_in_happy_path() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let mk = |name: &'static str, cp: Checkpoint| CheckpointRule::new(
         name,
@@ -1343,7 +1373,7 @@ async fn all_five_checkpoints_visited_in_happy_path() {
 #[tokio::test]
 async fn undeclared_msg_type_returns_error() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     // Rule produces CpCommand (msg_type "test_cp_command") but routes do NOT
     // register that msg_type.
@@ -1385,7 +1415,7 @@ async fn undeclared_msg_type_returns_error() {
 #[tokio::test]
 async fn query_intent_park_and_await_response() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "query_at_bmc",
@@ -1429,7 +1459,7 @@ async fn query_intent_park_and_await_response() {
 #[tokio::test]
 async fn command_intent_fire_and_forget() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "command_at_bmc",
@@ -1526,7 +1556,7 @@ fn discovery_route_resolve_queries_current_graph() {
 #[tokio::test]
 async fn checkpoint_eval_returns_stopped_on_cancel() {
     use arf_core::{Checkpoint, CheckpointRule};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "fires_always",
@@ -1611,7 +1641,7 @@ fn wait_event_new_initializes_fields() {
 // [构造] WaitStrategy::All expected=2 + 2 响应到达 → 触发
 #[tokio::test]
 async fn wait_strategy_all_triggers_on_full_set() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.routes = cp_routes_for(&bus).await;
     // Two recipients both with kind=test_sink capability → Discovery → 2 recipients
@@ -1717,7 +1747,7 @@ fn wait_strategy_serde_roundtrip() {
 // [cancel] wait_for_strategy cancel 触发 → RunError::Stopped + event 从 state 移除
 #[tokio::test]
 async fn wait_strategy_cancel_removes_event_from_state() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     // No responder — register a WaitEvent and call wait_for_strategy indirectly
     // via a Query intent checkpoint. Cancel after a short delay.
@@ -1780,7 +1810,7 @@ fn state_serde_includes_wait_events() {
 // [兼容] send_and_await 后 state.wait_events 被清空
 #[tokio::test]
 async fn send_and_await_clears_wait_events() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
@@ -1814,7 +1844,7 @@ async fn send_and_await_clears_wait_events() {
 // [路径] Discovery 多 receiver：3 节点中 3 个都响应 → All 触发
 #[tokio::test]
 async fn discovery_multi_receiver_all_responses_collected() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     // Pre-register 3 sink nodes with kind=test_sink so Discovery matches all.
     for i in 0..3 {
@@ -2050,7 +2080,7 @@ fn cache_returns_stale_after_graph_mutation_until_invalidate() {
 // [集成] node_offline signal 触发 cache invalidation（通过 engine.discovery_cache 验证）
 #[tokio::test]
 async fn node_offline_signal_triggers_cache_invalidation() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(minimal_config("a"))
         .await
@@ -2092,7 +2122,7 @@ use arf_core::CheckpointRule;
 #[tokio::test]
 async fn checkpoint_every_n_rounds_fires_on_correct_rounds() {
     use arf_core::{Checkpoint, ModelCall};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.routes = cp_routes_for(&bus).await;
     // every_n=2: should fire on round 2, 4, 6...
@@ -2256,7 +2286,7 @@ async fn response_processor_invoked_on_matching_response() {
     let count = Arc::new(std::sync::Mutex::new(0u32));
     let processor = CountingProcessor { count: count.clone() };
 
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let rule = CheckpointRule::new(
         "query_proc_test",
@@ -2317,7 +2347,7 @@ async fn response_processor_invoked_on_matching_response() {
 #[tokio::test]
 async fn build_accepts_closure_on_member_failed() {
     use crate::config::{MemberFailedAction, OnMemberFailedHandler};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
         MemberFailedAction::FailSession

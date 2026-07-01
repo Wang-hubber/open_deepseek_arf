@@ -111,7 +111,7 @@ impl EngineStub {
 /// Setup: create Bus, ModelAdapterNode, EngineStub.
 async fn setup(
     model_name: &str,
-) -> (Bus, ModelAdapterNode, EngineStub, NodeId) {
+) -> (Bus, Arc<ModelAdapterNode>, EngineStub, NodeId) {
     let bus = test_bus();
     let provider = Arc::new(DeepSeekProvider::new(DeepSeekConfig::new(
         api_key(),
@@ -127,7 +127,7 @@ async fn setup(
     (bus, node, engine, node_id)
 }
 
-async fn teardown(bus: Bus, node: ModelAdapterNode, engine: EngineStub) {
+async fn teardown(bus: Bus, node: Arc<ModelAdapterNode>, engine: EngineStub) {
     engine.disconnect().await;
     node.shutdown().await;
     bus.shutdown().await;

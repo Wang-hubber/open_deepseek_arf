@@ -28,6 +28,29 @@ fn test_bus() -> arf_bus::Bus {
     )
 }
 
+/// `test_bus()` with a `node_type == "model"` node pre-registered so
+/// `EngineBuilder.build()` passes the `NoModelResponder` check
+/// (Phase 6 follow-up 6.22.5). All engine integration tests use this
+/// instead of bare `test_bus()`.
+async fn test_bus_with_model_node() -> Arc<arf_bus::Bus> {
+    let bus = Arc::new(test_bus());
+    let _ = bus
+        .connect(
+            arf_core::NodeInfo {
+                node_id: NodeId::new("model/mock"),
+                node_type: "model".into(),
+                capabilities: serde_json::json!({"kind": "model"}),
+                online_since: 0,
+            },
+            arf_core::MessageFilter {
+                types: None,
+                to_match: arf_core::ToMatch::All,
+            },
+        )
+        .await;
+    bus
+}
+
 fn minimal_config(agent_id: &str) -> AgentConfig {
     AgentConfig {
         agent_id: agent_id.into(),
@@ -102,7 +125,7 @@ async fn run_mock_responder(
 // [E2E] 多 round ReAct 完整流程：每 round model_call + tool_exec + tool_result + 终止
 #[tokio::test]
 async fn e2e_multi_round_react_loop() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let bus_for_resp = bus.clone();
@@ -156,7 +179,7 @@ async fn e2e_multi_round_react_loop() {
 #[tokio::test]
 async fn e2e_round_end_checkpoint_fires_on_completion() {
     use std::sync::atomic::{AtomicU32, Ordering};
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let bus_for_resp = bus.clone();
@@ -240,7 +263,7 @@ async fn e2e_round_end_checkpoint_fires_on_completion() {
 // 这里仅验证 handler 存在且 build() 接受。
 #[tokio::test]
 async fn e2e_on_member_failed_handler_stored_in_config() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
         MemberFailedAction::FailSession
@@ -252,7 +275,7 @@ async fn e2e_on_member_failed_handler_stored_in_config() {
 // [E2E] DiscoveryCache 在 node_offline 后清空，resolution 用新 graph
 #[tokio::test]
 async fn e2e_discovery_cache_invalidated_on_node_lifecycle() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     // Pre-register 2 nodes
     for i in 0..2 {
@@ -305,7 +328,7 @@ async fn e2e_discovery_cache_invalidated_on_node_lifecycle() {
 // [E2E] WaitStrategy 端到端：CheckpointRule.build 出 Query msg，engine park 等响应
 #[tokio::test]
 async fn e2e_query_intent_checkpoint_park_and_resume() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     // Use a sink node to satisfy Strict route
     let sink_info = arf_core::NodeInfo {
@@ -406,7 +429,7 @@ async fn e2e_query_intent_checkpoint_park_and_resume() {
 // 注意：usage 在 ModelResponsePayload 顶层，不在 message 内。
 #[tokio::test]
 async fn engine_reads_nested_model_response_payload() {
-    let bus = Arc::new(test_bus());
+    let bus = test_bus_with_model_node().await;
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let bus_for_resp = bus.clone();

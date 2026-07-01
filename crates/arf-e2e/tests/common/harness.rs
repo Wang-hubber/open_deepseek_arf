@@ -155,7 +155,7 @@ pub struct E2EHarness {
     pub engine: Engine,
     pub state: State,
     pub tmpdir: TempDir,
-    _model_node: Option<ModelAdapterNode>,
+    _model_node: Option<Arc<ModelAdapterNode>>,
     _mcp_node: Option<Arc<McpNode>>,
     pub cancel: Option<CancellationToken>,
 }

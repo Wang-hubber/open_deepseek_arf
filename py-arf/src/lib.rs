@@ -19,13 +19,17 @@ use arf_model_adapter::{
     AnthropicConfig, AnthropicProvider,
     DeepSeekConfig, DeepSeekProvider,
     MiniMaxConfig, MiniMaxProvider,
-    ModelAdapterNode,
     OpenAIConfig, OpenAIProvider,
     ProviderError,
     ModelParams, ModelResponseChunk, ModelResponsePayload,
     ToolCall, ToolCallDelta, ToolDef, Usage,
 };
 use arf_model_adapter::Provider;
+use arf_model_adapter::ModelAdapterNode;
+// Phase 6 follow-up 6.22.5: ModelAdapterNode::new() now returns
+// `Arc<ModelAdapterNode>` (cheap to clone, shared `Arc<Notify>` for
+// shutdown). The rest of this file uses the Arc-wrapped form.
+type SharedModelAdapterNode = Arc<ModelAdapterNode>;
 use arf_pool::Resource;
 
 pub mod engine;
@@ -1271,6 +1275,11 @@ impl PyMiniMaxConfig {
 #[pyclass(name = "DeepSeekProvider")]
 struct PyDeepSeekProvider {
     inner: Arc<DeepSeekProvider>,
+    /// Shared with every `PyModelAdapterNode` returned by `connect_to_bus()`.
+    /// Holds the `ModelAdapterNode` instances for the provider's lifetime,
+    /// so the node stays alive even if the Python wrapper is dropped
+    /// (Phase 6 follow-up 6.22.5 — silent GC death fix).
+    connected_nodes: Arc<std::sync::Mutex<Vec<SharedModelAdapterNode>>>,
 }
 
 #[pymethods]
@@ -1279,6 +1288,7 @@ impl PyDeepSeekProvider {
     fn new(config: &PyDeepSeekConfig) -> Self {
         Self {
             inner: Arc::new(DeepSeekProvider::new(config.inner.clone())),
+            connected_nodes: Arc::new(std::sync::Mutex::new(Vec::<SharedModelAdapterNode>::new())),
         }
     }
 
@@ -1356,16 +1366,27 @@ impl PyDeepSeekProvider {
         let provider: Arc<dyn Provider> = self.inner.clone();
         let bus_ref = bus.inner.clone();
         let nid = node_id.inner;
+        // Clone the shared keep-alive vec Arc from the provider. The
+        // future pushes the new node into the shared vec (provider
+        // always keeps a reference) and returns a PyModelAdapterNode
+        // that holds the same Arc (the returned node also keeps a
+        // reference). Either side dropping is safe — the other side
+        // keeps the ModelAdapterNode alive (Phase 6 follow-up 6.22.5
+        // — silent GC death fix).
+        let keep_alive = self.connected_nodes.clone();
 
         future_into_py(py, async move {
-            ModelAdapterNode::new(provider, &bus_ref, nid)
-                .await
-                .map(|node| PyModelAdapterNode {
-                    inner: Some(node),
-                })
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
-                })
+            let result = ModelAdapterNode::new(provider, &bus_ref, nid).await;
+            match result {
+                Ok(node) => {
+                    keep_alive.lock().unwrap().push(node.clone());
+                    Ok(PyModelAdapterNode {
+                        inner: Some(node),
+                        keep_alive,
+                    })
+                }
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())),
+            }
         })
     }
 }
@@ -1378,6 +1399,8 @@ impl PyDeepSeekProvider {
 #[pyclass(name = "OpenAIProvider")]
 struct PyOpenAIProvider {
     inner: Arc<OpenAIProvider>,
+    /// See `PyDeepSeekProvider::connected_nodes` for rationale.
+    connected_nodes: Arc<std::sync::Mutex<Vec<SharedModelAdapterNode>>>,
 }
 
 #[pymethods]
@@ -1386,6 +1409,7 @@ impl PyOpenAIProvider {
     fn new(config: &PyOpenAIConfig) -> Self {
         Self {
             inner: Arc::new(OpenAIProvider::new(config.inner.clone())),
+            connected_nodes: Arc::new(std::sync::Mutex::new(Vec::<SharedModelAdapterNode>::new())),
         }
     }
 
@@ -1463,16 +1487,27 @@ impl PyOpenAIProvider {
         let provider: Arc<dyn Provider> = self.inner.clone();
         let bus_ref = bus.inner.clone();
         let nid = node_id.inner;
+        // Clone the shared keep-alive vec Arc from the provider. The
+        // future pushes the new node into the shared vec (provider
+        // always keeps a reference) and returns a PyModelAdapterNode
+        // that holds the same Arc (the returned node also keeps a
+        // reference). Either side dropping is safe — the other side
+        // keeps the ModelAdapterNode alive (Phase 6 follow-up 6.22.5
+        // — silent GC death fix).
+        let keep_alive = self.connected_nodes.clone();
 
         future_into_py(py, async move {
-            ModelAdapterNode::new(provider, &bus_ref, nid)
-                .await
-                .map(|node| PyModelAdapterNode {
-                    inner: Some(node),
-                })
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
-                })
+            let result = ModelAdapterNode::new(provider, &bus_ref, nid).await;
+            match result {
+                Ok(node) => {
+                    keep_alive.lock().unwrap().push(node.clone());
+                    Ok(PyModelAdapterNode {
+                        inner: Some(node),
+                        keep_alive,
+                    })
+                }
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())),
+            }
         })
     }
 }
@@ -1485,6 +1520,8 @@ impl PyOpenAIProvider {
 #[pyclass(name = "AnthropicProvider")]
 struct PyAnthropicProvider {
     inner: Arc<AnthropicProvider>,
+    /// See `PyDeepSeekProvider::connected_nodes` for rationale.
+    connected_nodes: Arc<std::sync::Mutex<Vec<SharedModelAdapterNode>>>,
 }
 
 #[pymethods]
@@ -1493,6 +1530,7 @@ impl PyAnthropicProvider {
     fn new(config: &PyAnthropicConfig) -> Self {
         Self {
             inner: Arc::new(AnthropicProvider::new(config.inner.clone())),
+            connected_nodes: Arc::new(std::sync::Mutex::new(Vec::<SharedModelAdapterNode>::new())),
         }
     }
 
@@ -1570,16 +1608,27 @@ impl PyAnthropicProvider {
         let provider: Arc<dyn Provider> = self.inner.clone();
         let bus_ref = bus.inner.clone();
         let nid = node_id.inner;
+        // Clone the shared keep-alive vec Arc from the provider. The
+        // future pushes the new node into the shared vec (provider
+        // always keeps a reference) and returns a PyModelAdapterNode
+        // that holds the same Arc (the returned node also keeps a
+        // reference). Either side dropping is safe — the other side
+        // keeps the ModelAdapterNode alive (Phase 6 follow-up 6.22.5
+        // — silent GC death fix).
+        let keep_alive = self.connected_nodes.clone();
 
         future_into_py(py, async move {
-            ModelAdapterNode::new(provider, &bus_ref, nid)
-                .await
-                .map(|node| PyModelAdapterNode {
-                    inner: Some(node),
-                })
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
-                })
+            let result = ModelAdapterNode::new(provider, &bus_ref, nid).await;
+            match result {
+                Ok(node) => {
+                    keep_alive.lock().unwrap().push(node.clone());
+                    Ok(PyModelAdapterNode {
+                        inner: Some(node),
+                        keep_alive,
+                    })
+                }
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())),
+            }
         })
     }
 }
@@ -1592,6 +1641,11 @@ impl PyAnthropicProvider {
 #[pyclass(name = "MiniMaxProvider")]
 struct PyMiniMaxProvider {
     inner: Arc<MiniMaxProvider>,
+    /// Shared with every `PyModelAdapterNode` returned by `connect_to_bus()`.
+    /// Holds the `ModelAdapterNode` instances for the provider's lifetime,
+    /// so the node stays alive even if the Python wrapper is dropped
+    /// (Phase 6 follow-up 6.22.5 — silent GC death fix).
+    connected_nodes: Arc<std::sync::Mutex<Vec<SharedModelAdapterNode>>>,
 }
 
 #[pymethods]
@@ -1600,6 +1654,7 @@ impl PyMiniMaxProvider {
     fn new(config: &PyMiniMaxConfig) -> Self {
         Self {
             inner: Arc::new(MiniMaxProvider::new(config.inner.clone())),
+            connected_nodes: Arc::new(std::sync::Mutex::new(Vec::<SharedModelAdapterNode>::new())),
         }
     }
 
@@ -1677,16 +1732,27 @@ impl PyMiniMaxProvider {
         let provider: Arc<dyn Provider> = self.inner.clone();
         let bus_ref = bus.inner.clone();
         let nid = node_id.inner;
+        // Clone the shared keep-alive vec Arc from the provider. The
+        // future pushes the new node into the shared vec (provider
+        // always keeps a reference) and returns a PyModelAdapterNode
+        // that holds the same Arc (the returned node also keeps a
+        // reference). Either side dropping is safe — the other side
+        // keeps the ModelAdapterNode alive (Phase 6 follow-up 6.22.5
+        // — silent GC death fix).
+        let keep_alive = self.connected_nodes.clone();
 
         future_into_py(py, async move {
-            ModelAdapterNode::new(provider, &bus_ref, nid)
-                .await
-                .map(|node| PyModelAdapterNode {
-                    inner: Some(node),
-                })
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())
-                })
+            let result = ModelAdapterNode::new(provider, &bus_ref, nid).await;
+            match result {
+                Ok(node) => {
+                    keep_alive.lock().unwrap().push(node.clone());
+                    Ok(PyModelAdapterNode {
+                        inner: Some(node),
+                        keep_alive,
+                    })
+                }
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string())),
+            }
         })
     }
 }
@@ -1700,7 +1766,13 @@ impl PyMiniMaxProvider {
 /// Created by Provider.connect_to_bus(), not constructed directly.
 #[pyclass(name = "ModelAdapterNode")]
 struct PyModelAdapterNode {
-    inner: Option<ModelAdapterNode>,
+    inner: Option<SharedModelAdapterNode>,
+    /// Shared keep-alive handle with the provider's `connected_nodes` vec.
+    /// As long as either the provider or the returned node holds the Arc,
+    /// the contained `ModelAdapterNode` stays alive. Either side dropping
+    /// it is safe — the other side keeps the node alive (Phase 6 follow-up
+    /// 6.22.5 — silent GC death fix).
+    keep_alive: Arc<std::sync::Mutex<Vec<SharedModelAdapterNode>>>,
 }
 
 #[pymethods]

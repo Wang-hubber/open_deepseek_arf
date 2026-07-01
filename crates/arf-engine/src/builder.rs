@@ -62,6 +62,20 @@ impl EngineBuilder {
             }
         }
 
+        // 3.5 validate model_call responder: if no explicit route is set for
+        // `model_call`, the engine will broadcast it and wait for any
+        // `model_response` — that means at least one `node_type == "model"`
+        // node must be on the bus. Without this check, the engine
+        // broadcasts into the void and waits forever (silent hang).
+        // If a route IS set for model_call, step 2/3 already validated
+        // its target.
+        if !config.routes.contains_key("model_call") {
+            let has_model_node = merged.values().any(|n| n.node_type == "model");
+            if !has_model_node {
+                return Err(BuildError::NoModelResponder);
+            }
+        }
+
         // 4. CheckpointRule name 唯一
         let mut seen: HashSet<String> = HashSet::new();
         for rule in &config.checkpoint_rules {

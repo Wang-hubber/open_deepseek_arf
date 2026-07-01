@@ -14,6 +14,13 @@ pub enum BuildError {
         capability: std::collections::HashMap<String, String>,
     },
 
+    /// `model_call` 既无显式 Route，且 BusGraph 上无 `node_type == "model"`
+    /// 节点。Engine 会广播 model_call 后永久等待响应。修复方法：在 Bus 上
+    /// 连接 ModelAdapterNode（`provider.connect_to_bus(bus, node_id)`），
+    /// 或在 `AgentConfig.routes` 中显式设置 `model_call` 路由。
+    #[error("no model_call responder: bus has no `node_type == \"model\"` node and no explicit `model_call` route in AgentConfig.routes — engine would broadcast and hang forever. Connect a ModelAdapterNode (`provider.connect_to_bus(bus, node_id)`) or set `routes[\"model_call\"]` explicitly.")]
+    NoModelResponder,
+
     /// CheckpointRule name 重复。
     #[error("CheckpointRule name 重复: {name}")]
     DuplicateRuleName { name: String },
