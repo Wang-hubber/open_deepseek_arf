@@ -36,61 +36,57 @@ Rather than reinvent the wheel per project, abstract once. Two things ship toget
 
 ## Abstract: a three-layer model of Agent runtime
 
-ARF splits Agent runtime into three layers — **Agent** holds state, **Engine** drives execution, **Resources** provides capability:
+ARF V1.x splits Agent runtime into three layers — **Agent** holds state, **Engine** drives the ReAct main loop, **Bus Actors** provide capability. All three communicate **exclusively through Bus messages** — no direct calls:
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │                       Agent                           │
-│  name + system_prompt + models                       │
-│  passive message-state machine, driven by the engine  │
-│  input() / model_call() / wait() / finish_wait()     │
+│  State — messages + tasks (with two-way locks        │
+│          blocked_by / blocking)                      │
+│  passive state machine, driven by Engine via Bus msgs │
 └────────────────────────┬─────────────────────────────┘
-                         │ dependency injection
+                         │ Bus: ActionMessage (Query / Command)
 ┌────────────────────────┴─────────────────────────────┐
 │                       Engine                          │
-│  GraphEngine — ReAct main loop                       │
-│  Hook scheduling — 10 lifecycle checkpoints           │
-│  Park/Resume — wait / wake                            │
-│  Trace — JSONL event stream                           │
+│  GraphEngine — ReAct main loop (turn / round / session) │
+│  CheckpointRule — subscribed lifecycle rules          │
+│                (replaces hardcoded hooks)             │
+│  Route — Strict (Capability → NodeId)                 │
+│        / Discovery (broadcast by message type)        │
+│  Park/Resume — Query auto-parks; reply auto-wakes     │
 └────────────────────────┬─────────────────────────────┘
-                         │ file system + resource discovery
+                         │ Bus: Node online / heartbeat / Capability broadcast
 ┌────────────────────────┴─────────────────────────────┐
-│                    Resources                          │
-│  tools/ · skills/ · models/ · hooks/                 │
-│  FileWatcher hot-reload · ResourceResolver override  │
-│  Guardrails path safety · path_check permission       │
+│              Bus Actors (capability providers)        │
+│  ModelAdapter · MCP · Pool · Memory · Eval · ...     │
+│  Each actor declares its Capabilities on connect,     │
+│  subscribes to the message types it can serve         │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Core principle: the framework provides mechanism (how), applications decide what to do through configuration + instantiation.**
+**Core principle: the Engine never calls any component directly — every interaction is a Bus message.**
 
 ### Design Highlights
 
-**Dependency Injection + Protocol interface segregation.** All capabilities declare contracts via `Protocol`, assembled via DI. `BaseAgent.__init__(**override_protocols)` can replace any implementation — the framework imports no concrete classes, only interfaces.
+**Protocol interfaces + EngineBuilder assembly.** All capabilities declare contracts via `Protocol` / Rust traits (`ActionMessage`, `Resource`, `OnMemberFailedHandler`, ...), assembled by `EngineBuilder` from an `AgentConfig`. `EngineBuilder::new(bus).build(config).await?` returns a runnable Engine. Applications describe the system through declarative `AgentConfig` (models / tools / checkpoint_rules / on_member_failed / ...); the framework knows only configuration, never concrete classes.
 
-**Hooks: 10 checkpoints × 2 modes.** Plugins don't modify engine code. The engine fires events at 10 checkpoints; each supports two modes:
+**Engine = an intelligent node on the Bus.** The Engine itself is a node on the Bus. It holds no references to MCP / ModelAdapter / other Actors — it **subscribes to `CheckpointRule`s, observes State changes, produces `ActionMessage`s, and routes them via `Route` to target actors**. This is V1.x's central shift: no direct method calls between Engine and other components; every collaboration is an asynchronous message.
 
-| Checkpoint | When |
-|------------|------|
-| `session_start` | Session begins / resume |
-| `before_round` | Each `chat()` entry — park happens here |
-| `before_model` | Before model call |
-| `after_model` | After model response |
-| `before_tools` | Before tool execution |
-| `after_tools` | After tool execution, before commit (externalization here) |
-| `after_round` | Round ends |
-| `before_break` | Before engine break (`task_complete` validation here) |
-| `on_error` | On exception |
-| `session_end` | Session ends, cleanup |
+**CheckpointRule replaces hardcoded hooks.** v0.x's 10 checkpoints were hardcoded event-trigger points in the engine; V1.x converts them to **subscribable rules** — a `CheckpointRule { trigger, when, build, route }` quadruple, all declared in `AgentConfig`. On State change, the Engine `evaluate(rules, routes, graph, cache)` — a pure function returning a list of `(ActionMessage, recipients)` — then dispatches each. `trigger` keeps familiar values: `SessionStart` / `BeforeRound` / `BeforeModel` / `AfterModel` / `BeforeTools` / `AfterTools` / `AfterRound` / `BeforeBreak` / `OnError` / `SessionEnd` — but the semantics shift from "framework fires a callback" to "rule subscribed by the application", freely composable.
 
-- **blocking** — sequential; can mutate context or interrupt flow
-- **side** — `asyncio.create_task` concurrent, fire-and-forget
+**Route: Strict and Discovery.** `Route` decides the recipients of an `ActionMessage`:
+- **Strict** — Resolve a `Capability` to concrete `NodeId`s (e.g. `model_call` → a specific `MiniMaxProvider` node). The Engine maintains a `DiscoveryCache` (Capability → Vec\<NodeId\>), invalidated on `node_online` / `node_offline`.
+- **Discovery** — Broadcast to all nodes that declared subscription to a message type.
 
-**The file system is the registry.** Tools, skills, and models are directories + YAML config. `FileWatcher` hot-reloads — no restart needed. `git push` shares config.
+**MessageIntent: Query and Command.** `ActionMessage::intent()` is `Query` or `Command`, deciding Engine behavior after dispatch:
+- **Query** — Engine parks the current ReAct turn, awaits a response; on reply, auto-resumes and continues. This is the natural shape for `model_call` — must wait for the model.
+- **Command** — Fire-and-forget. The Engine does not await a response and proceeds immediately. Fits side-effecting messages (trace writes, state broadcasts).
 
-**Two A2A communication modes.** Subagents (parent-child delegation, fire-and-forget) + Teammates (peer collaboration, full session park/wake loop).
+**Park/Resume driven by Query.** Unlike v0.x's `WaitItem` + manual `wait()` / `finish_wait()`, V1.x's park/resume is the **natural consequence of message intent** — Engine emits a Query, automatically parks; the first matching reply arrives, automatically resumes. There is no "explicit waiting" state variable in the Engine state machine.
 
-**Park/Resume — wait and wake.** When an Agent waits for external input (user approval, peer reply, child agent completion), it suspends; events wake it. `WaitItem` records the reason and `resume_key`, supporting cross-session recovery.
+**Bus is the registry.** Actors come online via `bus.connect(node_online_with_capabilities)`, broadcasting their `Capability` list; the Engine maintains the `DiscoveryCache` (Capability → NodeId). On `node_offline`, the cache `invalidate()`s. No file-system scanning, no YAML loading, no hot-reload — the Bus node lifecycle **is** the registry update mechanism.
+
+**Multi-Bus coordination: BarrierReceipt.** Cross-Bus scenarios (top Bus ↔ MCP sub-Bus) synchronize via `Bus::barrier(messages)`, returning a `BarrierReceipt` confirming all deliveries; used by the `domain_controller` example for facade forwarding.
 
 ---
 

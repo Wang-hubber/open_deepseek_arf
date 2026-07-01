@@ -34,61 +34,54 @@
 
 ## 抽象：Agent 运行时的三层模型
 
-ARF 将 Agent 运行拆分为三层——Agent 持有状态，Engine 驱动执行，Resources 提供能力：
+ARF V1.x 把 Agent 运行拆分为三层——**Agent** 持有状态，**Engine** 驱动 ReAct 主循环，**Bus Actors** 提供能力。三者之间**全部通过 Bus 消息交互**，不存在直接调用：
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │                       Agent                           │
-│  name + system_prompt + models                       │
-│  被动的消息状态机，由 Engine 驱动执行                  │
-│  input() / model_call() / wait() / finish_wait()     │
+│  State — messages + tasks（含双向锁 blocked_by/blocking）│
+│  被动状态机，由 Engine 经 Bus 消息驱动                  │
 └────────────────────────┬─────────────────────────────┘
-                         │ 依赖注入（DI）
+                         │ Bus: ActionMessage（Query / Command）
 ┌────────────────────────┴─────────────────────────────┐
 │                       Engine                          │
-│  GraphEngine — ReAct 主循环                           │
-│  Hook 调度 — 10 个生命周期检查点                      │
-│  Park/Resume — 等待/唤醒                              │
-│  Trace — JSONL 事件流                                 │
+│  GraphEngine — ReAct 主循环（turn / round / session） │
+│  CheckpointRule — 订阅式生命周期规则（替代硬编码 hook）│
+│  Route — Strict（Capability → NodeId）                │
+│        / Discovery（按消息类型广播）                    │
+│  Park/Resume — Query 消息自动挂起，回复到达自动唤醒     │
 └────────────────────────┬─────────────────────────────┘
-                         │ 文件系统 + 资源发现
+                         │ Bus: Node 上线 / 心跳 / Capability 广播
 ┌────────────────────────┴─────────────────────────────┐
-│                    Resources                          │
-│  tools/ · skills/ · models/ · hooks/                 │
-│  FileWatcher 热加载 · ResourceResolver 覆盖解析       │
-│  Guardrails 路径安全 · path_check 权限校验             │
+│                 Bus Actors（能力提供者）                 │
+│  ModelAdapter · MCP · Pool · Memory · Eval · ...     │
+│  每个 Actor 上线时声明自身 Capability，订阅对应消息类型   │
 └──────────────────────────────────────────────────────┘
 ```
 
-**核心原则：框架提供 mechanism（怎么做），应用通过 configuration + instantiation 决定做什么。**
+**核心原则：Engine 不直接调用任何组件——所有交互都是 Bus 上的消息。**
 
 ### 设计要点
 
-**依赖注入 + Protocol 接口隔离。** 所有能力通过 Protocol 定义契约，通过 DI 组装。`BaseAgent.__init__(**override_protocols)` 可替换任意实现——框架不 import 具体类，只认接口。
+**Protocol 接口 + EngineBuilder 组装。** 所有能力通过 `Protocol` / Rust trait 定义契约（`ActionMessage`、`Resource`、`OnMemberFailedHandler` 等），由 `EngineBuilder` 按 `AgentConfig` 组装。`EngineBuilder::new(bus).build(config).await?` 返回可运行 Engine；用户通过 `AgentConfig`（声明式 models / tools / checkpoint_rules / on_member_failed 等）描述系统，框架只认配置，不暴露具体类。
 
-**Hook：10 个检查点 × 2 种模式。** 插件不修改引擎代码。引擎在 10 个检查点触发事件，每个检查点均支持两种模式：
+**Engine = Bus 上的智能节点。** Engine 自身是 Bus 上的一个节点。它不持有 MCP / ModelAdapter / 其他 Actor 的引用——它**订阅 `CheckpointRule`、监听 State 变化、产出 `ActionMessage` 经 Route 投递到目标 Actor**。这是 V1.x 的核心转变：Engine 与其他组件之间没有直接方法调用，所有协作都是异步消息。
 
-| 检查点 | 触发时机 |
-|--------|---------|
-| `session_start` | 会话开始 / resume 恢复 |
-| `before_round` | 每轮 `chat()` 入口，park 在此 |
-| `before_model` | 模型调用前 |
-| `after_model` | 模型响应后 |
-| `before_tools` | 工具执行前 |
-| `after_tools` | 工具执行后、结果 commit 前（externalization 在此） |
-| `after_round` | 本轮结束 |
-| `before_break` | 引擎 break 前（task_complete 校验在此） |
-| `on_error` | 异常发生时 |
-| `session_end` | 会话结束，cleanup |
+**CheckpointRule 替代硬编码 Hook。** v0.x 的 10 个检查点是引擎内硬编码的事件触发点；V1.x 改成**可订阅规则**——`CheckpointRule { trigger, when, build, route }` 四元组，全部由 `AgentConfig` 声明。Engine 在 State 变化时 `evaluate(rules, routes, graph, cache)`，纯函数地返回 `(ActionMessage, recipients)` 列表，然后逐条派发。`trigger` 仍是熟悉的 `SessionStart` / `BeforeRound` / `BeforeModel` / `AfterModel` / `BeforeTools` / `AfterTools` / `AfterRound` / `BeforeBreak` / `OnError` / `SessionEnd`——但语义从"框架触发回调"变成"声明订阅的规则"，应用可以自由组合。
 
-- **blocking** — 顺序执行，可修改 ctx 注入数据或中断流程
-- **side** — `asyncio.create_task` 并发执行，fire-and-forget
+**Route：Strict 与 Discovery。** `Route` 决定 `ActionMessage` 的接收方：
+- **Strict** — 按 `Capability` 解析到具体 `NodeId`（如 `model_call` → 某个 `MiniMaxProvider` 节点）。Engine 维护 `DiscoveryCache`（Capability → Vec\<NodeId\>），节点上下线时 `invalidate()`。
+- **Discovery** — 按消息类型广播到所有声明订阅该类型的节点。
 
-**文件系统即注册中心。** 工具、技能、模型都是目录加 YAML 配置。`FileWatcher` 热加载，无需重启。`git push` 即共享配置。
+**MessageIntent：Query 与 Command。** `ActionMessage::intent()` 是 `Query` 或 `Command`，决定 Engine 派发后的行为：
+- **Query** — Engine 挂起（park）当前 ReAct turn，等待响应；响应到达时自动 resume 并继续。这是 `model_call` 的典型语义——必须等模型回复才能继续。
+- **Command** — fire-and-forget，Engine 不等待响应，立即进入下一步。适合副作用型消息（trace 写入、状态广播）。
 
-**两种 A2A 通讯。** Subagents（父子委派，一次性用完即焚）+ Teammates（对等队友，整个 session 的 park/wake 协作循环）。
+**Park/Resume 由 Query 驱动。** 与 v0.x 的 `WaitItem` + 手动 `wait()` / `finish_wait()` 不同，V1.x 的 park/resume 是**消息意图的自然结果**——Engine 发出 Query 后自动 park；任意匹配的响应到达时自动 resume。Engine 状态机里不再有"显式等待中"的状态变量。
 
-**Park/Resume 等待唤醒。** Agent 等待外部输入（用户审批、peer 回复、子 agent 完成）时挂起，事件到达时唤醒。`WaitItem` 记录原因和 `resume_key`，支持跨 session 恢复。
+**Bus 即注册中心。** Actor 通过 `bus.connect(node_online_with_capabilities)` 上线、广播自身 `Capability` 列表；Engine 通过 `DiscoveryCache` 缓存 `Capability → NodeId` 映射。节点 `node_offline` 时 `invalidate()`。整个系统没有文件系统扫描、没有 YAML 加载、没有 hot-reload——Bus 节点的生命周期就是注册中心的更新机制。
+
+**Multi-Bus 协调：BarrierReceipt。** 跨 Bus 场景（顶层 Bus ↔ MCP 子 Bus）通过 `Bus::barrier(messages)` 同步跨 Bus 消息，返回 `BarrierReceipt` 确认全部投递；用于 `domain_controller` 示例中的 facade 转发。
 
 ---
 
