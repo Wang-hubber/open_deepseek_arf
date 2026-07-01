@@ -473,17 +473,28 @@ cargo run --manifest-path examples/recovery/Cargo.toml
 
 ### 11.5 Commit 列表
 
-| Task | SHA | Message |
-|------|-----|---------|
-| 6.20 (Task 1) | `ef5a461` + `2965204` + `79c3c01` | 修复 Engine payload 读取（content/tool_calls/usage） |
-| 6.21 (Task 2) | `f7bd43f` + `7b3d00e` | MiniMax provider + selective retry fix |
-| 6.22.1 (Task 3) | `e739c19` | Rust E2E test crate — 15 tests |
-| 6.22.2 (Task 4) | `1a28fec` | Python E2E — 20 tests（含 EngineState.messages getter） |
-| 6.22.3 (Task 5) | (this commit) | Examples 验证 + 实际发现记录 |
+8 commits 跨 5 sub-task：
+
+| Sub-task | SHA | Message |
+|----------|-----|---------|
+| 6.20 #1 | `ef5a461` | fix(engine): read nested ModelResponsePayload payload (6.9 mismatch) |
+| 6.20 #2 | `2965204` | fix(engine): read usage at top level, not nested in message |
+| 6.20 #3 | `79c3c01` | test(engine): move usage to top level in mock ModelResponsePayload |
+| 6.21 #1 | `f7bd43f` | feat(model-adapter): add MiniMax provider (6.21 pre-task B) |
+| 6.21 #2 | `7b3d00e` | fix(model-adapter): selective retry + remove chat_stream stub (MiniMax) |
+| 6.22.1 | `e739c19` | feat(e2e): Rust E2E test crate — 15 tests across 4 scenarios (6.22.1) |
+| 6.22.2 | `1a28fec` | test(py-arf): Python E2E — full py-arf surface (Phase 6 task 6.22.2) |
+| 6.22.3 | `9cc0552` | docs(phase6): record post-implementation findings from E2E wrap-up |
 
 ### 11.6 Phase 6 wrap-up 总结
 
-Phase 6 端到端覆盖：3 sub-task（核心 ReAct / 多 Bus MCP facade / Recovery / PoolNode）+ MiniMax provider + 6.9 mismatch 修复，共 **5 commit + 35 测试**（15 Rust E2E + 20 Python E2E）。
+Phase 6 端到端覆盖：4 spec'd 场景（核心 ReAct / 多 Bus MCP facade / Recovery / PoolNode）+ MiniMax provider + 6.9 mismatch 修复，共 **8 commits + 35 测试**（15 Rust E2E + 20 Python E2E）。
 
 Engine wire format 与真实 `ModelResponsePayload` 序列化对齐（修复 2 处 brief 错误）。E2E 测试提前发现 PoolNode forward 路径 bug（10 秒 timeout 暴露），框架 correctness 比 brief 假设更进一步。
+
+#### Follow-up tasks（不进本分支）
+
+- **6.22.4**：补 py-arf binding（`CheckpointRule` / `Route` / `ModelAdapterPool` / `McpPool`），解锁 4 个 skip 的 Python 测试
+- `ProviderError::Config` 变体（替代 `ProviderError::Parse("config not set")` 的语义误用）
+- E2E angle tag 加深（CLAUDE.md 要求 `[trait]/[序列化]/[时间]/[兼容]` 等显式标注）
 
