@@ -402,8 +402,9 @@ async fn e2e_query_intent_checkpoint_park_and_resume() {
 }
 
 // [修复] 6.20 — Engine 读取 nested ModelResponsePayload payload
-// 验证 Engine.do_model_turn 解析 payload.message.content / payload.message.tool_calls / payload.message.usage
-//（真实 ModelAdapterNode 发送的嵌套格式），而非 payload.content / payload.tool_calls / payload.usage（flat 旧格式）。
+// 验证 Engine.do_model_turn 解析 payload.message.content / payload.message.tool_calls / payload.usage
+//（真实 ModelAdapterNode 发送的嵌套格式），而非 payload.content / payload.tool_calls（flat 旧格式）。
+// 注意：usage 在 ModelResponsePayload 顶层，不在 message 内。
 #[tokio::test]
 async fn engine_reads_nested_model_response_payload() {
     let bus = Arc::new(test_bus());
@@ -419,8 +420,8 @@ async fn engine_reads_nested_model_response_payload() {
                 "message": {
                     "content": "hello from nested payload",
                     "tool_calls": [],
-                    "usage": {"prompt_tokens": 50}
                 },
+                "usage": {"prompt_tokens": 50},
                 "finish_reason": "stop"
             }),
         ]).await;

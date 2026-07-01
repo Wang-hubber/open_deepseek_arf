@@ -271,8 +271,8 @@ async fn engine_run_one_round_completes() {
                         "message": {
                             "content": "echo from mock model",
                             "tool_calls": [],
-                            "usage": { "prompt_tokens": 42 },
                         },
+                        "usage": { "prompt_tokens": 42 },
                     }),
                     bus_for_receiver.id,
                 );
@@ -410,8 +410,8 @@ async fn run_returns_immediately_when_no_tool_calls() {
                 "message": {
                     "content": "hello back",
                     "tool_calls": [],
-                    "usage": {"prompt_tokens": 10},
                 },
+                "usage": {"prompt_tokens": 10},
             })
         ]).await;
     });
