@@ -10,6 +10,7 @@ members = [
     "crates/arf-mcp",
     "py-arf",
     "examples/domain_controller",
+    "examples/recovery",
 ]
 
 [workspace.package]
