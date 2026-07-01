@@ -1,6 +1,0 @@
-name: undo
-events:
-  - {hook_name: "before_round", event_name: "round_start", mode: "blocking"}
-  - {hook_name: "after_round", event_name: "round_end", mode: "blocking"}
-config:
-  max_undo_depth: 3

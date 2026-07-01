@@ -1,1 +1,0 @@
-"""plan_dispatch — execute a plan step in an isolated sub-agent."""

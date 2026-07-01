@@ -1,6 +1,0 @@
-name: plan_solve
-events:
-  - {hook_name: "before_model", event_name: "pre_action", mode: "blocking"}
-  - {hook_name: "before_round", event_name: "round_start", mode: "side"}
-config:
-  workspace_dir: ""

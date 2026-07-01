@@ -1,5 +1,0 @@
-name: eval
-events: []
-config:
-  trace_dir: ./data/traces
-  eval_dir: ./eval

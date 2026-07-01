@@ -1,1 +1,0 @@
-"""plan_status — read-only plan progress snapshot."""

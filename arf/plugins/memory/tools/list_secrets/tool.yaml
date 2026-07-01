@@ -1,7 +1,0 @@
-name: list_secrets
-description: List all available secret names (values are NOT shown).
-parameters:
-  type: object
-  properties: {}
-annotations:
-  readOnlyHint: true
