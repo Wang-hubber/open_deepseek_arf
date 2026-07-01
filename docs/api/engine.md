@@ -461,7 +461,7 @@ class EngineState:
 |------|------|------|
 | `.round_count` | `int` | 已完成的 `engine.run()` 次数。**跨** `run()` 累积。 |
 | `.turn_count` | `int` | 累计的 model_call + tool_exec 步数。每次 `model_call` 或 `tool_exec` +1。 |
-| `.context_tokens` | `int` | 当前 messages 的估算 token 数（粗略字符估算，**不是**精确分词）。 |
+| `.context_tokens` | `int` | 当前 `model_response.usage.prompt_tokens` 的精确值（API 报告的 prompt token 数）。如果 provider 不返回 `usage`, 则保持上一次的值（或首轮 0）。 |
 | `.messages` | `list[dict]` | 完整对话历史，每条 dict 形如 `{"role", "content", "tool_call_id", "name", "tool_calls": [...]}` |
 
 **`messages` 中每条 dict 的字段：**
@@ -538,7 +538,7 @@ asyncio.run(main())
 **易错点：**
 - `state.messages` 的 list / dict 是**只读副本**。修改它不会影响 Engine 内部状态
 - `round_count` 在每次 `run()` 完成后 +1；`turn_count` 在每次 `model_call` 或 `tool_exec` 后 +1
-- `context_tokens` 是粗略估算（基于字符数），不是精确分词
+- `context_tokens` 来自 API 的 `usage.prompt_tokens`（精确值）。Mock model 不返回 usage 时, 此字段保持上一次的值或 0
 - 序列化整个 state 用 `json.dumps({"round_count": ..., "turn_count": ..., "messages": ...})` —— 参考 [状态序列化模式](#状态序列化与持久化)
 
 ---
@@ -672,4 +672,135 @@ print(f"rule attached: {cfg.checkpoint_rules[0]['name']}")
 
 ---
 
-（以下章节将在后续 task 续写：4. Route / 5. Pool）
+---
+
+### 4. 路由策略 (Routing)
+
+Engine 默认按 `AgentConfig.provider` / `model` 自动匹配 `ModelAdapterNode`。当需要把 `model_call` 路由到指定节点，或把 `tool_exec` 路由到指定 MCP 节点时，使用 `AgentConfig.routes` 显式注入 `Route`。**所有 checkpoint 触发的消息也必须在 routes 中注册**（详见 [§ 3](#3-扩展点-checkpoint-extension-points)）。
+
+#### 4.1 `Route` — 路由策略
+
+```python
+class Route:
+    @staticmethod
+    def strict(ids: list[NodeId]) -> Route: ...
+    @staticmethod
+    def discovery(requirements: list[tuple[str, str]]) -> Route: ...
+```
+
+| 构造器 | 行为 |
+|--------|------|
+| `Route.strict(ids=[NodeId("model/a"), ...])` | 定向发给指定 NodeId 列表（点对点） |
+| `Route.discovery(requirements=[("kind", "model"), ...])` | 路由给 capabilities 包含全部 (key, value) 对的节点（按 bus.graph() 自动发现） |
+
+**示例：**
+
+```python
+from arf import Route, NodeId, AgentConfig
+
+# 严格路由：只发给 model/minimax
+r1 = Route.strict(ids=[NodeId("model/minimax")])
+
+# 发现路由：路由给 capabilities.provider == "minimax" 的所有节点
+r2 = Route.discovery(requirements=[("provider", "minimax")])
+
+# 注入 AgentConfig
+config = AgentConfig(
+    agent_id="routed",
+    routes={
+        "model_call": r2,  # 模型按 capabilities.provider 发现
+        "tool_exec": Route.strict(ids=[NodeId("mcp/tools")]),  # 工具严格定向
+    },
+)
+print(f"routes: {list(config.routes.keys())}")
+```
+
+**输出：** `routes: ['model_call', 'tool_exec']`
+
+> **匹配规则：** `Route.discovery` 按 capabilities 字段做精确匹配（`==`）。常见 fields: `provider`（如 `"minimax"`）, `node_type`（`"model"` / `"mcp"`）。ModelAdapterNode 默认 capabilities 形如 `{"provider": "minimax", "models": ["MiniMax-M3"]}` — 所以上例 `("provider", "minimax")` 能匹配所有连接到 Bus 的 MiniMax model 节点。
+
+---
+
+#### 4.2 `Capability` — `Route.discovery()` 的参数包装
+
+直接构造不需要 —— `Route.discovery(requirements=[(k, v), ...])` 内部自动包装。
+
+```python
+class Capability:
+    def __new__(cls, requirements: list[tuple[str, str]]) -> Capability: ...
+```
+
+**示例：**
+
+```python
+from arf import Capability
+
+# 一般不直接构造 — 通过 Route.discovery
+cap = Capability(requirements=[("kind", "model"), ("tier", "premium")])
+print(f"requirements: {cap.requirements}")
+```
+
+---
+
+#### 4.3 `WaitStrategy` — 多响应等待策略
+
+当 `model_call` 通过 `Strict` 路由发给多个 model 节点（投票 / 集成），Engine 需要决定何时认为"收到了足够多的响应"。`WaitStrategy` 决定这个策略：
+
+```python
+class WaitStrategy:
+    All: WaitStrategy          # 等所有目标节点响应
+    Any: WaitStrategy          # 等任一节点响应
+    Count(n: int) -> WaitStrategy  # 等 n 个节点响应
+```
+
+| 策略 | 行为 |
+|------|------|
+| `WaitStrategy.All` | 默认。收齐所有目标节点的响应才继续。 |
+| `WaitStrategy.Any` | 收到任一节点的响应就继续。 |
+| `WaitStrategy.Count(n)` | 收到 n 个节点的响应就继续。 |
+
+**示例：**
+
+```python
+from arf import WaitStrategy
+
+# 三个 model 节点投票：等所有 3 个响应
+strategy = WaitStrategy.All
+
+# 任何一个响应就够（快但不准）
+strategy = WaitStrategy.Any
+
+# 等 2 个（容忍 1 个超时/失败）
+strategy = WaitStrategy.Count(n=2)
+```
+
+> **当前限制：** `WaitStrategy` 已绑定到 Python，但 `EngineBuilder.build()` 暂未暴露设置接口 —— 目前 Engine 总是按 `All` 处理。等待 `WaitStrategy` 注入 API 是后续任务。
+
+---
+
+#### 4.4 `ModelCall` — Engine 发的 `model_call` 消息
+
+`ModelCall` 是 Engine 在 Bus 上发的消息类型（`msg_type="model_call"`）。开发自定义 Provider 时需要处理这个类型。
+
+```python
+class ModelCall:
+    def __new__(cls) -> ModelCall: ...
+    @property
+    def msg_type(self) -> str: ...        # 总是 "model_call"
+    @property
+    def correlation_id(self) -> str: ...  # UUID v4 字符串
+```
+
+**示例：**
+
+```python
+from arf import ModelCall
+
+call = ModelCall()
+print(call.msg_type)         # "model_call"
+print(call.correlation_id)   # "550e8400-e29b-41d4-a716-446655440000"（每次 new 不同）
+```
+
+---
+
+（以下章节将在后续 task 续写：5. Pool）
