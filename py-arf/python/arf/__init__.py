@@ -31,6 +31,9 @@ from arf._arf import (
     McpNode,
     RemoteConfig,
     RetryConfig,
+    # Phase 6 task 6.20: MiniMax provider
+    MiniMaxConfig,
+    MiniMaxProvider,
 )
 
 __all__ = [
@@ -65,4 +68,7 @@ __all__ = [
     "McpNode",
     "RemoteConfig",
     "RetryConfig",
+    # Phase 6 task 6.20: MiniMax provider
+    "MiniMaxConfig",
+    "MiniMaxProvider",
 ]

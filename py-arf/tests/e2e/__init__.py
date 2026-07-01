@@ -1,0 +1,1 @@
+"""Phase 6 Python E2E tests — real Node full-chain coverage."""

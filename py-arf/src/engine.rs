@@ -270,6 +270,56 @@ impl PyState {
             .unwrap_or(0)
     }
 
+    /// Expose `state.messages` to Python as a list of dicts.
+    ///
+    /// Each dict has shape:
+    ///   {role: str, content: str, tool_call_id: str|None, name: str|None,
+    ///    tool_calls: list[{id, name, arguments, target}]}
+    ///
+    /// Phase 6 task 6.22.2: required by Python E2E tests for round-trip
+    /// verification (assert state.messages grows / final assistant content
+    /// matches engine.run() output).
+    #[getter]
+    fn messages<'py>(&self, py: Python<'py>) -> PyResult<Vec<Py<PyAny>>> {
+        use pyo3::types::PyDict;
+        let guard = self.inner.lock().unwrap();
+        let state = guard.as_ref().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("state already consumed")
+        })?;
+        state
+            .messages
+            .iter()
+            .map(|m| {
+                let dict = PyDict::new(py);
+                dict.set_item("role", m.role.clone())?;
+                dict.set_item("content", m.content.clone())?;
+                dict.set_item("tool_call_id", m.tool_call_id.clone())?;
+                dict.set_item("name", m.name.clone())?;
+                let tcs: Vec<Py<PyAny>> = m
+                    .tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let d = PyDict::new(py);
+                        // `.unwrap()` is intentional — building a fresh dict
+                        // with literal string keys cannot fail.
+                        d.set_item("id", tc.id.clone()).unwrap();
+                        d.set_item("name", tc.name.clone()).unwrap();
+                        d.set_item(
+                            "arguments",
+                            json_value_to_py(&tc.arguments, py).unwrap(),
+                        )
+                        .unwrap();
+                        d.set_item("target", tc.target.as_ref().map(|n| n.as_str().to_string()))
+                            .unwrap();
+                        d.into()
+                    })
+                    .collect();
+                dict.set_item("tool_calls", tcs)?;
+                Ok(dict.into())
+            })
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         let guard = self.inner.lock().unwrap();
         match guard.as_ref() {
