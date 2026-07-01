@@ -13,6 +13,7 @@ use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
 use arf_core::{BusGraph, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt, ToMatch};
 use arf_core::ModelMessage;
+use arf_engine::WaitStrategy;
 use arf_model_adapter::{
     AnthropicConfig, AnthropicProvider,
     DeepSeekConfig, DeepSeekProvider,
@@ -23,6 +24,8 @@ use arf_model_adapter::{
     ToolCall, ToolCallDelta, ToolDef, Usage,
 };
 use arf_model_adapter::Provider;
+
+pub mod engine;
 
 // ═══════════════════════════════════════════════════════════════════
 // Global tokio runtime
@@ -1586,6 +1589,14 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<mcp::PyRetryConfig>()?;
     m.add_class::<mcp::PyRemoteConfig>()?;
     m.add_class::<mcp::PyMcpNode>()?;
+
+    // Phase 6: Engine
+    m.add_class::<engine::PyAgentConfig>()?;
+    m.add_class::<engine::PyEngineBuilder>()?;
+    m.add_class::<engine::PyEngine>()?;
+    m.add_class::<engine::PyState>()?;
+    m.add_class::<engine::PyWaitStrategyInner>()?;
+    m.add_class::<engine::PyModelCall>()?;
 
     Ok(())
 }
