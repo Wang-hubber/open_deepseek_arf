@@ -72,7 +72,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 **PyO3 绑定**（task-1.10）：
 - 9 个 Python 类：`Bus`、`NodeHandle`、`NodeId`、`Message`、`NodeInfo`、`MessageFilter`、`ToMatch`、`SendReceipt`、`BusGraph`
 - 异步桥接：`future_into_py` (tokio → asyncio)
-- 用户文档：`docs/api/bus.md`
+- 用户文档：`docs/api/reference/bus.md`
 
 **测试**：Rust 87 + Python 66 = 153 tests
 
@@ -82,7 +82,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 - `tasks`：生命周期 `created → in_progress → blocked → resolved / failed / cancelled`
 - 双向锁：`blocked_by` + `blocking`
 - 级联释放：task 完成→沿 blocking 唤醒 / task 取消→沿 blocked_by 级联取消 / 节点离线→级联释放+注入通知
-- 用户文档：`docs/api/state.md`
+- 用户文档：`docs/api/reference/state.md`
 
 ### Phase 3 — AgentConfig 声明式配置 ✅
 
@@ -91,7 +91,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 - `ToolPermission`: Allow / Ask / Deny 三级权限
 - 1:N 资源映射语义
 - 支持 YAML/JSON 反序列化，支持代码构造，支持 Default
-- 用户文档：`docs/api/agent-config.md`
+- 用户文档：`docs/api/reference/agent-config.md`
 
 ### Phase 4 — ModelAdapter 模型适配器 ✅
 
@@ -111,7 +111,7 @@ Bus 是唯一地基。AgentConfig/State/ModelAdapter/MCP 可在 Bus 完成后并
 - `provider.connect_to_bus()` 模式：避免 PyO3 trait object 提取难题
 - 异步桥接：`future_into_py` (tokio → asyncio)
 
-**用户文档**：`docs/api/model-adapter.md`
+**用户文档**：`docs/api/reference/model-adapter.md`
 
 **测试**：Rust 299 (61 unit + 18 integration) + Python 59 (27 imports + 14 node + 18 live) = 358 tests
 
