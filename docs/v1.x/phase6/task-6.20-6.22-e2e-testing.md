@@ -375,3 +375,115 @@ impl MiniMaxProvider {
 - **6.22 实施**：3 commits（Rust E2E / Python E2E / examples 验证）
 
 每个 sub-task 独立 commit、独立可验证。
+
+---
+
+## 11. 实现后实际发现（2026-07-01）
+
+### 11.1 Examples 验证结果
+
+`cargo run` on each example (2026-07-01, with Task 1+2+3 commits in place):
+
+#### `examples/domain_controller`（task 6.11）
+- ✅ 编译通过（4 个 unused-import / unused-mut 警告，与本任务无关）
+- ✅ 跑通：Engine 在 top Bus 跑 ReAct，DomainController Facade 转发 `tool_exec` → sub Bus McpNode 处理 → `tool_result` 回到 top Bus → Engine 收到
+- 输出：
+  ```
+  Engine output: 
+  State messages: 3
+  State over_view: OverView { round_count: 1, turn_count: 1, context_tokens: 0, ... }
+  ```
+
+#### `examples/recovery`（task 6.12）
+- ✅ 编译通过（同上 4 个警告）
+- ✅ 跑通：AppCheckpoint 收到 RoundEnd checkpoint → 写文件到 `examples/recovery/data_recovery/checkpoint_<cid>.json`
+- ✅ `Bus::barrier()` 调用成功
+- 输出：
+  ```
+  [AppCheckpoint] wrote .../checkpoint_b1368306-dc4d-4f4f-9eda-8a7c148c23a5.json
+  Engine output: 
+  State: round=1, turn=1
+
+  Running barrier()...
+  Barrier: acked=1 missing=1 timed_out=true
+  ```
+
+#### 检查点文件内容
+```json
+{
+  "checkpoint_id": "b1368306-dc4d-4f4f-9eda-8a7c148c23a5",
+  "node_id": "cp/main",
+  "timestamp": 1782875037080
+}
+```
+
+### 11.2 实现期间发现的 bug 与修复
+
+Task 1+2+3 实施期间发现并修复的真实 bug（非设计遗漏，是 wire format 不一致）：
+
+1. **Task 1 brief 错把 `tool_calls` 写成嵌套在 `message` 内**（`message.tool_calls`）。真实 wire format（`ModelResponsePayload` 序列化）是 `tool_calls` 在顶层（`payload.tool_calls`，与 `payload.message` 平级）。修复：`crates/arf-engine/src/engine.rs` 改读 `payload.get("tool_calls")`（非 `payload.message.tool_calls`）。`content` 仍嵌套（`payload.message.content` 正确）。
+
+2. **`usage` 字段位置**：real `ModelResponsePayload.usage` 在顶层（`payload.usage`），**不**在 `message.usage`。Brief 写错；修复：engine 读 `payload.get("usage")`，mock fixture `usage` 字段移到顶层。
+
+3. **ModelAdapterNode 不回传 `correlation_id`**：旧实现 `handle.send("model_response", ...)` 不带 cid，Engine 的 `wait_for_strategy` 无法匹配响应。修复：新增 `NodeHandle::send_response()`（`crates/arf-bus/src/connection.rs`），ModelAdapterNode 全程走 `send_response` 注入 `correlation_id` 到 payload。
+
+4. **PoolNode 转发到 sub bus 用 `from: self.node_id`（top-bus id）**：导致 ModelAdapterNode 响应回不到 PoolNode 的 sub-bus handle（sub handle node_id 是 `{top}/sub`，不是 top）。修复：`from: NodeId::new(format!("{}/sub", self.node_id))`。E2E test `pool_node_bridges_model_call_across_buses` 触发此 bug，10 秒 timeout 暴露。
+
+5. **`call_with_retry` 误重试 400/401/Parse 错误**（MiniMax provider）：reviewer 标记 Important；修复：调用 `crate::convert::is_retryable(&e)` 选择性重试（与 deepseek.rs 一致）。
+
+6. **`chat_stream` 实现不如 trait default**：自定义 stub 返回 `ProviderError::Parse` 比 trait default（调 `chat()` 然后包装）更差。修复：删除 stub，走 trait default fallback。
+
+### 11.3 Brief 假设与现实的偏差
+
+#### examples（task 6.11/6.12）
+- **预期** `barrier 同步成功` → **实际** `acked=1 missing=1 timed_out=true`。
+  根因：example 调 `bus.barrier(vec![cp/main, worker/2], ...)`，但 `cp/main`（AppCheckpoint）的 `MessageFilter` 限定 `types=["app_checkpoint"]`，收不到 `barrier_request`，因此不 ack。example 自 6.12 起就有此简化。E2E `crates/arf-e2e/tests/recovery.rs::bus_barrier_collects_acks_from_n_participants` 单独跑（参与者都用 `barrier_request` 过滤器）能正常全 ack，验证框架正确。
+- **预期** checkpoint JSON 含 `state.messages` → **实际** 只含 `{checkpoint_id, node_id, timestamp}`。example 简化：注释写明"in real app: serialize State"。
+
+#### py-arf 测试
+- **预期** 19 测试 → **实际** 20 测试（多加了 1 个 bus-shutdown test，价值高）。
+- **预期** 0 skip → **实际** 11 skip（7 个 env-gated + 4 个 binding gap）。Binding gap 跟踪为 Phase 6 follow-up 任务 6.22.4。
+- **预期** `from arf import MiniMaxConfig` → **实际** 需要在 `py-arf/python/arf/__init__.py` 显式 re-export（6.21 加 binding 时漏了这一步，Task 4 补上）。
+
+#### Rust E2E
+- **预期** 15 测试 → **实际** 15 测试 ✅。
+- **预期** fixture 与 engine wire format 一致 → **实际** brief 错（见 11.2.1+11.2.2）。E2E fixture 直接用真实 `ModelResponsePayload` 序列化形式，反而提前暴露了 brief 错误。
+
+### 11.4 最终测试结果
+
+```
+cargo test --workspace
+合计 730 passed, 0 failed (含新增 15 E2E 测试 + 修复后的 engine fixture)
+```
+
+```
+cd py-arf && ../.venv/bin/python -m pytest tests/e2e/ -v
+9 passed, 11 skipped (7 env-gated, 4 binding-gap)
+```
+
+```
+cargo run --manifest-path examples/domain_controller/Cargo.toml
+✅ 跑通：3 messages, 1 round, facade 跨 Bus 转发成功
+```
+
+```
+cargo run --manifest-path examples/recovery/Cargo.toml
+✅ 跑通：checkpoint 文件写入，barrier 调用成功（1/2 ack — 见 11.3.1）
+```
+
+### 11.5 Commit 列表
+
+| Task | SHA | Message |
+|------|-----|---------|
+| 6.20 (Task 1) | `ef5a461` + `2965204` + `79c3c01` | 修复 Engine payload 读取（content/tool_calls/usage） |
+| 6.21 (Task 2) | `f7bd43f` + `7b3d00e` | MiniMax provider + selective retry fix |
+| 6.22.1 (Task 3) | `e739c19` | Rust E2E test crate — 15 tests |
+| 6.22.2 (Task 4) | `1a28fec` | Python E2E — 20 tests（含 EngineState.messages getter） |
+| 6.22.3 (Task 5) | (this commit) | Examples 验证 + 实际发现记录 |
+
+### 11.6 Phase 6 wrap-up 总结
+
+Phase 6 端到端覆盖：3 sub-task（核心 ReAct / 多 Bus MCP facade / Recovery / PoolNode）+ MiniMax provider + 6.9 mismatch 修复，共 **5 commit + 35 测试**（15 Rust E2E + 20 Python E2E）。
+
+Engine wire format 与真实 `ModelResponsePayload` 序列化对齐（修复 2 处 brief 错误）。E2E 测试提前发现 PoolNode forward 路径 bug（10 秒 timeout 暴露），框架 correctness 比 brief 假设更进一步。
+
