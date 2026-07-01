@@ -989,10 +989,10 @@ class McpPool:
 ```python
 import asyncio
 from arf import McpPool, McpResource, PoolConfig, Overflow
-# McpNode 实例构造参考 docs/api/mcp.md
+# McpNode 实例构造参考 docs/api/reference/mcp.md
 
 async def main():
-    # mcp_node = McpNode.local("tools", "./tools")  # 参考 docs/api/mcp.md
+    # mcp_node = McpNode.local("tools", "./tools")  # 参考 docs/api/reference/mcp.md
     # 假设已有 mcp_node
     # resources = [McpResource.new(mcp_node=mcp_node)]
     # pool = McpPool.with_resources(
@@ -1008,13 +1008,13 @@ async def main():
     #         await asyncio.sleep(0.01)
     # results = await asyncio.gather(*[call(i) for i in range(5)])
     # print(f"results: {results}")
-    print("see docs/api/mcp.md for McpNode construction")
+    print("see docs/api/reference/mcp.md for McpNode construction")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-> **完整可运行示例** 需要先构造 `McpNode`（参考 [`docs/api/mcp.md`](mcp.md)）。`McpPool` 的 Lease 语义同 `ModelAdapterPool` —— `lease = None` + 50ms sleep 让 Drop 落定。
+> **完整可运行示例** 需要先构造 `McpNode`（参考 [`docs/api/reference/mcp.md`](mcp.md)）。`McpPool` 的 Lease 语义同 `ModelAdapterPool` —— `lease = None` + 50ms sleep 让 Drop 落定。
 
 **易错点：** 同 5.3 —— 串行使用避免死锁，`lease = None` + 50ms sleep 让 Drop 落定。
 
