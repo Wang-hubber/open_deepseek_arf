@@ -21,7 +21,7 @@
 //! forwards the result back to the top Bus (to the original engine).
 //!
 //! Run: `cargo run --example domain_controller` (after adding to a workspace example).
-//! Or: `cd examples/domain_controller && cargo run`.
+//! Or: `cd examples/rust/domain_controller && cargo run`.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -8,7 +8,7 @@ bindings. Until then, this module serves as:
   2. Importable stubs for the phase6_flat integration test
   3. Design validation — writing the test drives out the API shape
 
-Design reference: docs/v1.x/phase6/phase6-engine-design.md
+Design reference: docs/dev/phase6/phase6-engine-design.md
 """
 from __future__ import annotations
 

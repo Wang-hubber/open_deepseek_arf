@@ -1376,5 +1376,5 @@ async def safe_run(engine, state, user_input, timeout=30.0):
 - [Phase 6 task 6.10 — py-arf Engine 绑定](../v1.x/phase6/task-6.10-python-api.md) — 6.10 任务记录
 - [Phase 6 task 6.5 — Checkpoint 系统](../v1.x/phase6/task-6.5-checkpoint-system.md) — 5 个 checkpoint 位置设计
 - [Phase 6 task 6.2 — Response Protocol / Route](../v1.x/phase6/task-6.2-response-protocol.md) — Route.strict / discovery 设计
-- [Phase 6 task 6.17-6.19 — Pool 资源集成](../v1.x/phase6/task-6.17-6.19-pool-resources-integration.md) — Pool 通用原语
-- [examples/domain_controller](../../examples/domain_controller/src/main.rs) — 跨 Bus facade 的 Rust 参考实现
+- [Phase 6 task 6.17-6.19 — Pool 资源集成](../dev/phase6/task-6.17-6.19-pool-resources-integration.md) — Pool 通用原语
+- [examples/domain_controller](../../examples/rust/domain_controller/src/main.rs) — 跨 Bus facade 的 Rust 参考实现

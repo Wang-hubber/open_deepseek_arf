@@ -39,4 +39,4 @@ cd py-arf && ../.venv/bin/python -m pytest tests/e2e/ -v
 
 ## 设计文档
 
-`docs/v1.x/phase6/task-6.20-6.22-e2e-testing.md`
+`docs/dev/phase6/task-6.20-6.22-e2e-testing.md`
