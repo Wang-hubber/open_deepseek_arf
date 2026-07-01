@@ -1280,4 +1280,94 @@ restored: 3 messages, round_count was 1
 
 ---
 
-（以下章节将在后续 task 续写：异常速查表 / Python vs Rust / 参考）
+---
+
+## 异常速查表
+
+| 异常类型 | 触发条件 | match 文本 | 建议处理 |
+|---------|---------|-----------|---------|
+| `ValueError` | `EngineBuilder.new(buses=[])` | `requires at least one bus` | 检查 Bus 列表非空 |
+| `RuntimeError` | `build()` 调第二次 | `builder already consumed` | 重新 `EngineBuilder.new()` |
+| `RuntimeError` | 同一 AgentConfig 用两次 | `AgentConfig already used by another build()` | 重新构造 AgentConfig |
+| `RuntimeError` | 同一 Engine 并发 `run()` | `engine already consumed by a previous run` | 串行 await run |
+| `RuntimeError` | 同一 State 并发 `run()` | `state already consumed by a previous run` | 串行 await run |
+| `Exception` | Bus 无 model 节点（build 时） | `no model_call responder: ...` | 先 `provider.connect_to_bus()` 或在 `routes["model_call"]` 显式配置 |
+| `Exception` | Bus 无工具节点（build 时） | `no tool_exec responder: ...` | 先 `McpNode.connect()` 或在 `routes["tool_exec"]` 显式配置 |
+| `Exception` | Checkpoint msg_type 未在 routes 注册（build 时） | `Checkpoint 输出的 msg_type 'X' 未在 AgentConfig.routes 注册` | 在 `AgentConfig.routes` 加该 msg_type 的 Route |
+| `Exception` | Discovery 无匹配节点（build 时） | `Discovery route Capability 无任何节点匹配: ...` | 检查 capabilities 是否正确广播 |
+| `Exception` | 超过 max_turns | `超过 max_turns (N)` | 提高 max_turns 或处理循环 |
+| `Exception` | Provider 调用失败 | `provider error: ...` | 网络 / 凭据问题 |
+| `Exception` | MCP 调用失败 | `mcp error: ...` | MCP server 不可达 |
+| `Exception` | MiniMaxConfig 无 API key | `parse error: MINIMAX_API_KEY not set` | 设置环境变量 |
+| `asyncio.TimeoutError` | `wait_for` 主动超时 | — | 检查 model / tool 响应时间 |
+| `PoolError.Full` | Pool 满 + Reject 策略 | — | 提高 max_size 或改用 Block 策略 |
+| `PoolError.Timeout` | Block 策略超时 | — | 提高 timeout_secs |
+| `PoolError.Closed` | Pool 已关闭 | — | 不要 close 后再 acquire |
+
+### 推荐处理模式
+
+```python
+import asyncio
+from arf import (
+    AgentConfig, EngineBuilder, EngineState,
+)
+
+
+async def safe_run(engine, state, user_input, timeout=30.0):
+    """Engine.run() 的推荐包装：超时 + max_turns 恢复 + 错误透传。"""
+    try:
+        return await asyncio.wait_for(
+            engine.run(state=state, user_input=user_input),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        # 超时：放弃当前会话, 重新开始
+        state = EngineState()
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "max_turns" in msg:
+            # 陷入工具循环：取最后一条 assistant 文本
+            for m in reversed(state.messages):
+                if m["role"] == "assistant" and m.get("content"):
+                    return m["content"]
+            return ""
+        if "no model_call responder" in msg:
+            raise RuntimeError("Bus 未注册 ModelAdapterNode") from e
+        raise
+```
+
+> **抛 vs 返回：** Engine 在两类异常情况下行为不同 — `max_turns` 触顶是**抛** `Exception`，因为这通常意味着 caller 配置错了（max_turns 设太小）或模型有问题。`asyncio.wait_for` 超时是 `asyncio.TimeoutError`，由 caller 自己抛。Pool 满 (`PoolError.Full`) 是**抛**，由 `Overflow` 策略决定。
+
+---
+
+## Python 与 Rust API 差异
+
+| 维度 | Rust (`arf-engine`) | Python (`py-arf`) |
+|------|-------------------|-------------------|
+| `EngineBuilder::new` | `EngineBuilder::new(buses: Vec<Arc<Bus>>)` 实例方法 | `@staticmethod` `EngineBuilder.new(buses=[bus])` |
+| `build()` | `async fn` 返回 `Result<Engine, BuildError>` | `async def` 返回 `Engine` 或抛 `Exception(<BuildError 文本>)` |
+| `Engine::run` | `&mut self`（可变借用） | `&self`（内部用 Mutex 保证独占） |
+| `EngineState` 字段 | `pub` 直接访问 | 只读 `@property` getter |
+| `EngineState.messages` | `Vec<ModelMessage>` | `list[dict]`（PyO3 桥接） |
+| `EngineState.context_tokens` | API 报告的 `usage.prompt_tokens`（精确） | 同 — 直接转发 `set_context_tokens` 调用 |
+| `CheckpointRule` 构造 | 接受 `Box<dyn Fn>` 闭包 | 接受 `list[ActionMessage]`（预构造消息列表） |
+| `AgentConfig.routes` | 直接字段（`HashMap<String, Route>`） | 构造器 kwarg `routes={"model_call": Route.strict(...)}`；getter 返回 msg_type → "RouteKind" 摘要字符串 |
+| `AgentConfig.checkpoint_rules` | 直接字段（`Vec<CheckpointRule>`） | 构造器 kwarg `checkpoint_rules=[CheckpointRule(...)]`；getter 返回 `list[dict]`（name + trigger） |
+| `Lease.kind` | 关联函数 `Lease::kind()` | 方法 `lease.kind()`（不是 property，必须 `()` 调用） |
+| `ProviderError` 类型 | 枚举 | Python `Exception`（消息文本是 `Display` 输出） |
+| 多 Bus 路由 | `MultiBus::route(msg_type, strategy, recipients)` | `EngineBuilder.new(buses=[bus1, bus2])` 隐式 |
+
+---
+
+## 参考
+
+- [Bus API](bus.md) — 消息总线基础
+- [ModelAdapter API](model-adapter.md) — 4 个 LLM Provider 的 chat / chat_stream
+- [MCP API](mcp.md) — 工具注册（本地文件系统 / 远程 HTTP）
+- [Phase 6 Engine 设计](../v1.x/phase6/phase6-engine-design.md) — Engine 内部架构与 ActionMessage 模型
+- [Phase 6 task 6.10 — py-arf Engine 绑定](../v1.x/phase6/task-6.10-python-api.md) — 6.10 任务记录
+- [Phase 6 task 6.5 — Checkpoint 系统](../v1.x/phase6/task-6.5-checkpoint-system.md) — 5 个 checkpoint 位置设计
+- [Phase 6 task 6.2 — Response Protocol / Route](../v1.x/phase6/task-6.2-response-protocol.md) — Route.strict / discovery 设计
+- [Phase 6 task 6.17-6.19 — Pool 资源集成](../v1.x/phase6/task-6.17-6.19-pool-resources-integration.md) — Pool 通用原语
+- [examples/domain_controller](../../examples/domain_controller/src/main.rs) — 跨 Bus facade 的 Rust 参考实现
