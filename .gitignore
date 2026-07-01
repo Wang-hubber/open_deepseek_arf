@@ -88,6 +88,10 @@ data/**/models/
 # Multi-user data directory (DB, user workspaces, SMTP config)
 data/
 
+# Runtime session dirs
+/team_sessions/
+/data_recovery/
+
 # ============================================================================
 # Legacy & build artifacts
 # ============================================================================

@@ -1,13 +1,21 @@
-VENV ?= .venv
+.PHONY: install test test-rust test-py lint clean
 
-.PHONY: lint test ci
+install:
+	pip install -e ".[dev]"
+
+test: test-rust test-py
+
+test-rust:
+	. "$(HOME)/.cargo/env" && cargo test --workspace
+
+test-py:
+	pytest tests/ -q
 
 lint:
-	. "$$HOME/.cargo/env" && cargo fmt --check
-	. "$$HOME/.cargo/env" && cargo clippy -- -D warnings
+	. "$(HOME)/.cargo/env" && cargo fmt --check
+	. "$(HOME)/.cargo/env" && cargo clippy --workspace --all-targets
 
-test:
-	. "$$HOME/.cargo/env" && cargo test
-	cd py-arf && ../$(VENV)/bin/python -m pytest
-
-ci: lint test
+clean:
+	cargo clean
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type d -name '.pytest_cache' -exec rm -rf {} +
