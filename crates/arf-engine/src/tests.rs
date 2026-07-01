@@ -268,8 +268,11 @@ async fn engine_run_one_round_completes() {
                     vec![],
                     serde_json::json!({
                         "correlation_id": cid.to_string(),
-                        "content": "echo from mock model",
-                        "usage": { "prompt_tokens": 42 },
+                        "message": {
+                            "content": "echo from mock model",
+                            "tool_calls": [],
+                            "usage": { "prompt_tokens": 42 },
+                        },
                     }),
                     bus_for_receiver.id,
                 );
@@ -404,8 +407,11 @@ async fn run_returns_immediately_when_no_tool_calls() {
         run_model_responder(rx, bus_for_receiver.clone(), vec![
             serde_json::json!({
                 "correlation_id": "00000000-0000-0000-0000-000000000001",
-                "content": "hello back",
-                "usage": {"prompt_tokens": 10},
+                "message": {
+                    "content": "hello back",
+                    "tool_calls": [],
+                    "usage": {"prompt_tokens": 10},
+                },
             })
         ]).await;
     });
@@ -450,16 +456,21 @@ async fn run_continues_after_tool_result() {
         run_model_responder(rx, bus_for_receiver.clone(), vec![
             serde_json::json!({
                 "correlation_id": "00000000-0000-0000-0000-000000000001",
-                "content": "",
-                "tool_calls": [{
-                    "id": "call_0",
-                    "name": "bash",
-                    "arguments": {"cmd": "ls"},
-                }],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_0",
+                        "name": "bash",
+                        "arguments": {"cmd": "ls"},
+                    }],
+                },
             }),
             serde_json::json!({
                 "correlation_id": "00000000-0000-0000-0000-000000000002",
-                "content": "done",
+                "message": {
+                    "content": "done",
+                    "tool_calls": [],
+                },
             }),
         ]).await;
     });
@@ -511,8 +522,10 @@ async fn run_returns_max_turns_exceeded() {
         run_model_responder(rx, bus_for_receiver, vec![
             serde_json::json!({
                 "correlation_id": "00000000-0000-0000-0000-000000000001",
-                "content": "",
-                "tool_calls": [{"id": "call_0", "name": "echo", "arguments": {}}],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"id": "call_0", "name": "echo", "arguments": {}}],
+                },
             }),
         ]).await;
     });
@@ -852,7 +865,7 @@ async fn checkpoint_before_model_call_fires_and_dispatches() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -912,7 +925,7 @@ async fn checkpoint_after_model_call_fires_after_push() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -970,10 +983,12 @@ async fn checkpoint_before_tool_exec_fires_before_publish() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "content": "",
-                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                },
             }),
-            serde_json::json!({"content": "done"}),
+            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
         ],
     );
     resp_ready.await.unwrap();
@@ -1031,10 +1046,12 @@ async fn checkpoint_after_tool_exec_fires_after_push() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "content": "",
-                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                },
             }),
-            serde_json::json!({"content": "done"}),
+            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
         ],
     );
     resp_ready.await.unwrap();
@@ -1090,7 +1107,7 @@ async fn checkpoint_round_end_fires_before_return() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -1145,7 +1162,7 @@ async fn checkpoint_when_false_skips_dispatch() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -1209,7 +1226,7 @@ async fn checkpoint_multiple_rules_fire_in_order() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -1278,10 +1295,12 @@ async fn all_five_checkpoints_visited_in_happy_path() {
         bus.clone(),
         vec![
             serde_json::json!({
-                "content": "",
-                "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"id":"c1","name":"bash","arguments":{}}],
+                },
             }),
-            serde_json::json!({"content": "done"}),
+            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
         ],
     );
     resp_ready.await.unwrap();
@@ -1432,7 +1451,7 @@ async fn command_intent_fire_and_forget() {
     // Only model_call responder; test_cp_command has no responder (Command intent).
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -1762,7 +1781,7 @@ async fn send_and_await_clears_wait_events() {
 
     let (resp_h, resp_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     resp_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -1840,7 +1859,7 @@ async fn discovery_multi_receiver_all_responses_collected() {
     // Model responder for the post-checkpoint model_call turn.
     let (model_h, model_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     model_ready.await.unwrap();
     tokio::task::yield_now().await;
@@ -2266,7 +2285,7 @@ async fn response_processor_invoked_on_matching_response() {
     // Also need model responder for post-checkpoint
     let (model_h, model_ready) = spawn_model_responder(
         bus.clone(),
-        vec![serde_json::json!({"content": "ok"})],
+        vec![serde_json::json!({"message": {"content": "ok", "tool_calls": []}})],
     );
     model_ready.await.unwrap();
     tokio::task::yield_now().await;

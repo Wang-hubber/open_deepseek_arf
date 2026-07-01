@@ -139,7 +139,10 @@ async fn pool_node_with_engine_react_loop() {
                             vec![],
                             serde_json::json!({
                                 "correlation_id": cid.to_string(),
-                                "content": "ok from pool",
+                                "message": {
+                                    "content": "ok from pool",
+                                    "tool_calls": [],
+                                },
                             }),
                             bus.id,
                         );

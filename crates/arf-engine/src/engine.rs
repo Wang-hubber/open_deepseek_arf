@@ -345,16 +345,18 @@ impl Engine {
 
         let response = self.send_and_await(state, cid, msg, cancel).await?;
 
-        // Parse
+        // Parse ModelResponsePayload nested format (6.20 修复)
         let content = response
             .payload
-            .get("content")
+            .get("message")
+            .and_then(|m| m.get("content"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
         let tool_calls: Vec<ToolCall> = response
             .payload
-            .get("tool_calls")
+            .get("message")
+            .and_then(|m| m.get("tool_calls"))
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -363,8 +365,8 @@ impl Engine {
             })
             .unwrap_or_default();
 
-        // Update context_tokens
-        if let Some(usage) = response.payload.get("usage") {
+        // Update context_tokens (6.20 修复 — usage 在 message 内)
+        if let Some(usage) = response.payload.get("message").and_then(|m| m.get("usage")) {
             if let Some(tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                 state.set_context_tokens(tokens as usize);
             }

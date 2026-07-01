@@ -111,14 +111,18 @@ async fn e2e_multi_round_react_loop() {
         let _ = ready_tx.send(());
         run_mock_responder(rx, bus_for_resp, vec![
             serde_json::json!({
-                "content": "",
-                "tool_calls": [{"id":"c1","name":"echo","arguments":{"text":"hello"}}],
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"id":"c1","name":"echo","arguments":{"text":"hello"}}],
+                },
             }),
             serde_json::json!({
-                "content": "round 1 done",
-                "tool_calls": [{"id":"c2","name":"echo","arguments":{"text":"world"}}],
+                "message": {
+                    "content": "round 1 done",
+                    "tool_calls": [{"id":"c2","name":"echo","arguments":{"text":"world"}}],
+                },
             }),
-            serde_json::json!({"content": "round 2 done"}),
+            serde_json::json!({"message": {"content": "round 2 done", "tool_calls": []}}),
         ]).await;
     });
     ready_rx.await.unwrap();
@@ -161,7 +165,7 @@ async fn e2e_round_end_checkpoint_fires_on_completion() {
         let mut rx = bus_for_resp.subscribe();
         let _ = ready_tx.send(());
         run_mock_responder(rx, bus_for_resp, vec![
-            serde_json::json!({"content": "done"}),
+            serde_json::json!({"message": {"content": "done", "tool_calls": []}}),
         ]).await;
     });
     ready_rx.await.unwrap();
@@ -361,7 +365,7 @@ async fn e2e_query_intent_checkpoint_park_and_resume() {
                     _ => continue,
                 };
                 let payload = if resp_type == "model_response" {
-                    serde_json::json!({"correlation_id": cid.to_string(), "content": "ok"})
+                    serde_json::json!({"correlation_id": cid.to_string(), "message": {"content": "ok", "tool_calls": []}})
                 } else {
                     serde_json::json!({"correlation_id": cid.to_string()})
                 };
@@ -394,5 +398,56 @@ async fn e2e_query_intent_checkpoint_park_and_resume() {
     .expect("run should succeed");
     assert!(state.wait_events.is_empty(), "wait_events cleared");
 
+    resp_h.abort();
+}
+
+// [修复] 6.20 — Engine 读取 nested ModelResponsePayload payload
+// 验证 Engine.do_model_turn 解析 payload.message.content / payload.message.tool_calls / payload.message.usage
+//（真实 ModelAdapterNode 发送的嵌套格式），而非 payload.content / payload.tool_calls / payload.usage（flat 旧格式）。
+#[tokio::test]
+async fn engine_reads_nested_model_response_payload() {
+    let bus = Arc::new(test_bus());
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let bus_for_resp = bus.clone();
+    let resp_h = tokio::spawn(async move {
+        let mut rx = bus_for_resp.subscribe();
+        let _ = ready_tx.send(());
+        // 发送 nested ModelResponsePayload 格式（真实 ModelAdapterNode 格式）
+        run_mock_responder(rx, bus_for_resp, vec![
+            serde_json::json!({
+                "message": {
+                    "content": "hello from nested payload",
+                    "tool_calls": [],
+                    "usage": {"prompt_tokens": 50}
+                },
+                "finish_reason": "stop"
+            }),
+        ]).await;
+    });
+    ready_rx.await.unwrap();
+    tokio::task::yield_now().await;
+
+    let mut engine = EngineBuilder::new(vec![bus.clone()])
+        .build(minimal_config("nested-payload-test"))
+        .await
+        .unwrap();
+
+    let mut state = State::new();
+    let cancel = CancellationToken::new();
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        engine.run(&mut state, "test input".into(), cancel),
+    )
+    .await
+    .expect("run timed out")
+    .expect("run should succeed");
+
+    // 关键断言：output 来自 nested payload 的 message.content
+    assert_eq!(output, "hello from nested payload");
+    // state.messages 末尾应是 assistant(text) 消息
+    let last = state.messages.last().expect("messages should not be empty");
+    assert_eq!(last.role, "assistant");
+    assert_eq!(last.content, "hello from nested payload");
     resp_h.abort();
 }
