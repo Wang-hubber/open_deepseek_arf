@@ -9,6 +9,7 @@ members = [
     "crates/arf-model-adapter",
     "crates/arf-mcp",
     "py-arf",
+    "examples/domain_controller",
 ]
 
 [workspace.package]
