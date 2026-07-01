@@ -803,4 +803,214 @@ print(call.correlation_id)   # "550e8400-e29b-41d4-a716-446655440000"（每次 n
 
 ---
 
-（以下章节将在后续 task 续写：5. Pool）
+---
+
+### 5. 资源池 (Resource Pool)
+
+Pool 用于限流 / 配额 / 共享 connection（phase 6 task 6.13-6.22）。`Lease` 是 RAII 句柄，当 Python 对象 GC 时自动 release 资源（async Drop via `tokio::spawn`）。
+
+#### 5.1 `PoolConfig` + `Overflow` + `PoolError`
+
+```python
+class PoolConfig:
+    def __new__(
+        cls,
+        max_size: int = 16,
+        overflow: Overflow | None = None,  # 默认 Overflow.Queue(n=0)
+        idle_timeout_secs: float | None = None,
+    ) -> PoolConfig: ...
+
+class Overflow:
+    @staticmethod
+    def Reject() -> Overflow: ...
+    @staticmethod
+    def Queue(n: int) -> Overflow: ...
+    @staticmethod
+    def Block(timeout_secs: float) -> Overflow: ...
+
+class PoolError(Exception):
+    """Pool acquire / release 错误。"""
+    # 变体：Full, Timeout, Closed, Acquire(message)
+```
+
+**`Overflow` 策略：**
+
+| 策略 | 行为 |
+|------|------|
+| `Overflow.Reject()` | 资源满时立即抛 `PoolError.Full` |
+| `Overflow.Queue(n)` | 缓冲 n 个等待者；超出抛 `PoolError.Full` |
+| `Overflow.Block(timeout_secs)` | 阻塞到拿到或超时；超时抛 `PoolError.Timeout` |
+
+**示例：**
+
+```python
+from arf import PoolConfig, Overflow
+
+# 容量 3，溢出排队 4 个
+cfg = PoolConfig(max_size=3, overflow=Overflow.Queue(n=4), idle_timeout_secs=None)
+
+# 容量 1，立即拒绝
+strict = PoolConfig(max_size=1, overflow=Overflow.Reject())
+
+# 容量 2，阻塞等 5 秒
+b = PoolConfig(max_size=2, overflow=Overflow.Block(timeout_secs=5.0))
+print(f"created 3 pool configs")
+```
+
+**输出：** `created 3 pool configs`
+
+---
+
+#### 5.2 `Lease` — RAII 句柄
+
+```python
+class Lease:
+    """RAII 句柄。Lease 被 GC 时自动 release 资源 (async Drop via tokio::spawn)。"""
+    def kind(&self) -> str: ...  # 方法调用: lease.kind() -> "model_adapter" | "mcp"
+    def __repr__(self) -> str: ...
+```
+
+**当前限制：** `Lease.resource()` 尚未暴露 —— 只可通过 `lease.kind()` 知道是哪类资源。Phase 6 follow-up 把 `Lease<ModelAdapterResource>` 和 `Lease<McpResource>` 分别包装为 `ModelAdapterLease` / `McpLease` 子类。
+
+---
+
+#### 5.3 `ModelAdapterResource` + `ModelAdapterPool`
+
+池化 LLM 调用（限流 / 配额 / 共享 rate-limited API connection）。
+
+```python
+class ModelAdapterResource:
+    @staticmethod
+    def from_provider(provider: Provider) -> ModelAdapterResource: ...
+    @property
+    def call_count(self) -> int: ...
+
+class ModelAdapterPool:
+    @staticmethod
+    def with_resources(
+        config: PoolConfig,
+        resources: list[ModelAdapterResource],
+    ) -> ModelAdapterPool: ...
+    async def acquire(self) -> Lease: ...
+    async def total_count(self) -> int: ...
+    async def idle_count(self) -> int: ...
+```
+
+**示例：3 个 provider 池化，串行使用避免死锁**
+
+```python
+import asyncio
+from arf import (
+    ModelAdapterPool, ModelAdapterResource,
+    PoolConfig, Overflow,
+    MiniMaxProvider, MiniMaxConfig,
+)
+
+
+async def main():
+    resources = [
+        ModelAdapterResource.from_provider(
+            provider=MiniMaxProvider(config=MiniMaxConfig.from_env()),
+        )
+        for _ in range(3)
+    ]
+    pool = ModelAdapterPool.with_resources(
+        config=PoolConfig(max_size=3, overflow=Overflow.Queue(n=0)),
+        resources=resources,
+    )
+    print(f"total={await pool.total_count()}, idle={await pool.idle_count()}")
+
+    # 串行 acquire, 每次用完 lease = None, 然后 sleep 让 async Drop 落定
+    for i in range(5):
+        lease = await pool.acquire()
+        try:
+            print(f"acquired {i}: kind={lease.kind()}, repr={lease!r}")
+        finally:
+            lease = None  # drop ref, trigger async Drop
+            await asyncio.sleep(0.01)  # let Drop settle
+
+    print(f"final idle={await pool.idle_count()}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+**输出（mock provider, 无网络调用）：**
+```
+total=3, idle=3
+acquired 0: kind=model_adapter, repr=Lease(model_adapter)
+acquired 1: kind=model_adapter, repr=Lease(model_adapter)
+acquired 2: kind=model_adapter, repr=Lease(model_adapter)
+acquired 3: kind=model_adapter, repr=Lease(model_adapter)
+acquired 4: kind=model_adapter, repr=Lease(model_adapter)
+final idle=3
+```
+
+**易错点：**
+- `lease.kind` 是**方法**（不是属性），必须 `lease.kind()` 调用 — 返回 `"model_adapter"` 或 `"mcp"` 字符串
+- `del lease` 或 `lease = None` 触发 Rust 端的 async Drop，但底层是 `tokio::spawn`，所以**下一个 `acquire()` 前需要 `await asyncio.sleep(0.01-0.05)`**让 Drop 任务落定，否则可能偶尔遇到 `PoolError.Full`
+- 高并发场景用 `await pool.acquire()` + try/finally，不要用 `gather(*[acquire() for _ in range(N)])` 当 N > pool.total_count() + queue depth，会死锁
+- 当前 `Lease.resource()` 未暴露, 只知道 `kind` 字符串, 详细资源属性访问待 Phase 6 follow-up
+
+---
+
+#### 5.4 `McpResource` + `McpPool`
+
+池化 MCP 工具调用（串行化 / 限流 / 共享 MCP connection）。
+
+```python
+class McpResource:
+    @staticmethod
+    def new(mcp_node: McpNode) -> McpResource: ...
+    @property
+    def call_count(self) -> int: ...
+
+class McpPool:
+    @staticmethod
+    def with_resources(
+        config: PoolConfig,
+        resources: list[McpResource],
+    ) -> McpPool: ...
+    async def acquire(self) -> Lease: ...
+    async def total_count(self) -> int: ...
+    async def idle_count(self) -> int: ...
+```
+
+**示例：容量 1 强制串行化多个 tool_exec**
+
+```python
+import asyncio
+from arf import McpPool, McpResource, PoolConfig, Overflow
+# McpNode 实例构造参考 docs/api/mcp.md
+
+async def main():
+    # mcp_node = McpNode.local("tools", "./tools")  # 参考 docs/api/mcp.md
+    # 假设已有 mcp_node
+    # resources = [McpResource.new(mcp_node=mcp_node)]
+    # pool = McpPool.with_resources(
+    #     config=PoolConfig(max_size=1, overflow=Overflow.Queue(n=10)),
+    #     resources=resources,
+    # )
+    # async def call(idx):
+    #     lease = await pool.acquire()
+    #     try:
+    #         return idx
+    #     finally:
+    #         lease = None
+    #         await asyncio.sleep(0.01)
+    # results = await asyncio.gather(*[call(i) for i in range(5)])
+    # print(f"results: {results}")
+    print("see docs/api/mcp.md for McpNode construction")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+> **完整可运行示例** 需要先构造 `McpNode`（参考 [`docs/api/mcp.md`](mcp.md)）。`McpPool` 的 Lease 语义同 `ModelAdapterPool` —— `lease = None` + 50ms sleep 让 Drop 落定。
+
+**易错点：** 同 5.3 —— 串行使用避免死锁，`lease = None` + 50ms sleep 让 Drop 落定。
+
+---
+
+（以下章节将在后续 task 续写：常见模式 / 异常速查表 / Python vs Rust / 参考）
