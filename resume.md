@@ -24,7 +24,7 @@
 
 ### ARF — Agent Resources & Runtime Framework
 
-https://github.com/Wang-hubber/open_deepseek_arf
+https://gitee.com/dalaydata/open_deepseek_arf
 
 **Agent 运行时框架 · 从具体业务问题到形而上学抽象，再回归工程落地的完整实践**
 
@@ -40,7 +40,7 @@ ARF 是我从零设计的 Agent 基础设施框架，由 DeepSeek V4 Pro 与 Cla
 
 ### ARF App 教学项目
 
-https://github.com/Wang-hubber/arf_app
+https://gitee.com/dalaydata/arf_app_021
 
 **从 0 到 1 构建 ARF 应用的 14 单元渐进式教程**
 
