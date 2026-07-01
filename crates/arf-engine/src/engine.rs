@@ -365,8 +365,8 @@ impl Engine {
             })
             .unwrap_or_default();
 
-        // Update context_tokens (6.20 修复 — usage 在 message 内)
-        if let Some(usage) = response.payload.get("message").and_then(|m| m.get("usage")) {
+        // Update context_tokens (usage is at top level per ModelResponsePayload struct)
+        if let Some(usage) = response.payload.get("usage") {
             if let Some(tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                 state.set_context_tokens(tokens as usize);
             }
