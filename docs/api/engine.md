@@ -748,9 +748,11 @@ print(f"requirements: {cap.requirements}")
 
 ```python
 class WaitStrategy:
-    All: WaitStrategy          # 等所有目标节点响应
-    Any: WaitStrategy          # 等任一节点响应
-    Count(n: int) -> WaitStrategy  # 等 n 个节点响应
+    All: WaitStrategy              # 等所有目标节点响应（单例）
+    Any: WaitStrategy              # 等任一节点响应（单例）
+    @staticmethod
+    def Count(n: int) -> WaitStrategy:  # 等 n 个节点响应（构造）
+        ...
 ```
 
 | 策略 | 行为 |
@@ -866,8 +868,13 @@ print(f"created 3 pool configs")
 ```python
 class Lease:
     """RAII 句柄。Lease 被 GC 时自动 release 资源 (async Drop via tokio::spawn)。"""
-    def kind(&self) -> str: ...  # 方法调用: lease.kind() -> "model_adapter" | "mcp"
-    def __repr__(self) -> str: ...
+
+    def kind(self) -> str:
+        """返回 'model_adapter' 或 'mcp'"""
+        ...
+
+    def __repr__(self) -> str:
+        return f"Lease({self.kind()})"
 ```
 
 **当前限制：** `Lease.resource()` 尚未暴露 —— 只可通过 `lease.kind()` 知道是哪类资源。Phase 6 follow-up 把 `Lease<ModelAdapterResource>` 和 `Lease<McpResource>` 分别包装为 `ModelAdapterLease` / `McpLease` 子类。
