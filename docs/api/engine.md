@@ -1013,4 +1013,271 @@ if __name__ == "__main__":
 
 ---
 
-（以下章节将在后续 task 续写：常见模式 / 异常速查表 / Python vs Rust / 参考）
+---
+
+## 常见模式 (Common Patterns)
+
+### Mock Model Node — 无 API 也能跑 Engine
+
+最常用的本地开发/测试模式。Bus 上挂一个 mock model node，订阅 `model_call` 并回复固定响应。完整可运行参考：[`ex01_minimal_mock.py`](../../py-arf/python/arf/examples/ex01_minimal_mock.py)
+
+```python
+import asyncio
+from arf import (
+    Bus, NodeId, NodeInfo, MessageFilter,
+    AgentConfig, EngineBuilder, EngineState,
+)
+
+
+async def attach_mock_model(bus, replies):
+    """Attach a mock model node. `replies` is a list of {content, tool_calls}."""
+    mock = await bus.connect(
+        info=NodeInfo(
+            node_id="model/mock",
+            node_type="model",
+            capabilities={"provider": "mock", "models": ["mock-v1"]},
+        ),
+        filter=MessageFilter(types=["model_call"]),
+    )
+
+    async def responder():
+        idx = 0
+        while True:
+            try:
+                msg = await mock.recv()
+                cid = msg.payload.get("correlation_id") if isinstance(msg.payload, dict) else None
+                reply = replies[idx] if idx < len(replies) else replies[-1]
+                idx += 1
+                tool_calls = reply.get("tool_calls")
+                await mock.send(
+                    msg_type="model_response",
+                    to=[msg.sender],
+                    payload={
+                        "correlation_id": cid,
+                        "message": {"role": "assistant", "content": reply.get("content", "")},
+                        "tool_calls": tool_calls,
+                        "finish_reason": "tool_calls" if tool_calls else "stop",
+                    },
+                )
+            except Exception:
+                break
+
+    return mock, asyncio.create_task(responder())
+
+
+async def main():
+    bus = Bus()
+    mock, task = await attach_mock_model(bus, [{"content": "hello from mock"}])
+    engine = await EngineBuilder.new(buses=[bus]).build(
+        config=AgentConfig(agent_id="mock-demo", provider="mock", model="mock-v1"),
+    )
+    state = EngineState()
+    out = await engine.run(state=state, user_input="hi")
+    print(f"output={out!r}, messages={[m['role'] for m in state.messages]}")
+
+    task.cancel()
+    await bus.shutdown()
+
+
+asyncio.run(main())
+```
+
+**输出：** `output='hello from mock', messages=['system', 'user', 'assistant']` (~5ms)
+
+> **Tip:** `attach_mock_model` 是个轻量级 stub —— 可扩展支持 streaming、tool_call、error injection。完整 `crates/arf-e2e/tests/common/provider.rs::ScriptedProvider` 是 Rust 侧对应实现。
+
+---
+
+### 多轮对话
+
+Engine 持 state —— 多次 `run()` 自动累积。完整可运行参考：[`ex02_multi_round.py`](../../py-arf/python/arf/examples/ex02_multi_round.py)
+
+```python
+state = EngineState()
+
+# 第一轮：用户问"你好"
+out1 = await engine.run(state=state, user_input="你好")
+# state.messages = [system, "你好", assistant("你好！")]
+
+# 第二轮：用户继续（state 保留前一轮）
+out2 = await engine.run(state=state, user_input="你刚才说了什么?")
+# state.messages = [system, "你好", assistant("你好！"), "你刚才说了什么?", assistant("我说：你好！")]
+# 关键：模型"看见"了前面的对话
+```
+
+**输出（mock 模式，~6ms）：**
+```
+turn 1: "Hi! I'm a helpful assistant.", messages count=3
+turn 2: "You asked who I am; I said: I'm a helpful assistant.", messages count=5
+round_count=2, turn_count=2
+```
+
+---
+
+### 工具调用（ReAct + MCP）
+
+mock model 返回 `tool_calls`，Engine 自动发 `tool_exec`，收到 `tool_result` 后继续下一轮。完整可运行参考：[`ex03_tool_call.py`](../../py-arf/python/arf/examples/ex03_tool_call.py)
+
+```python
+# 1. Mock model —— 第一轮返回 tool_call, 第二轮返回最终答案
+mock, model_task = await attach_mock_model(
+    bus,
+    replies=[
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "get_weather",
+                "arguments": {"city": "Beijing"},
+            }],
+        },
+        {"content": "The weather in Beijing is sunny, 25°C."},
+    ],
+)
+
+# 2. Mock MCP node —— 订阅 tool_exec, 回 tool_result
+mcp = await bus.connect(
+    info=NodeInfo(
+        node_id="mcp/weather",
+        node_type="mcp",
+        capabilities={"tools": [{"name": "get_weather"}]},
+    ),
+    filter=MessageFilter(types=["tool_exec"]),
+)
+
+async def tool_responder():
+    while True:
+        try:
+            msg = await mcp.recv()
+            cid = msg.payload.get("correlation_id") if isinstance(msg.payload, dict) else None
+            tool_name = msg.payload.get("name") if isinstance(msg.payload, dict) else None
+            await mcp.send(
+                msg_type="tool_result",
+                to=[msg.sender],
+                payload={
+                    "correlation_id": cid,
+                    "name": tool_name,
+                    "content": "sunny, 25°C",
+                    "ok": True,
+                },
+            )
+        except Exception:
+            break
+
+tool_task = asyncio.create_task(tool_responder())
+
+# 3. Engine 跑
+state = EngineState()
+out = await engine.run(state=state, user_input="What's the weather in Beijing?")
+print(f"output: {out!r}")
+print(f"messages: {[m['role'] for m in state.messages]}")
+print(f"turn_count={state.turn_count}")  # 2 model_calls + 1 tool_exec = 3
+```
+
+**输出（mock 模式，~13ms）：**
+```
+output: 'The weather in Beijing is sunny, 25°C.'
+messages: ['system', 'user', 'assistant', 'tool', 'assistant']
+turn_count=3
+```
+
+---
+
+### max_turns 截断保护
+
+防御模型陷入无限循环。完整可运行参考：[`ex04_max_turns.py`](../../py-arf/python/arf/examples/ex04_max_turns.py)
+
+```python
+# Mock model 永远返回 tool_call —— Engine 应该被 max_turns 截断
+mock, model_task = await attach_always_tool_call_model(bus)
+
+# max_turns=2 限制 —— 跑 2 步后强制抛异常
+engine = await EngineBuilder.new(buses=[bus]).build(
+    config=AgentConfig(
+        agent_id="trunc-test",
+        provider="mock",
+        model="mock-v1",
+        max_turns=2,
+    ),
+)
+state = EngineState()
+try:
+    out = await engine.run(state=state, user_input="infinite loop please")
+except Exception as e:
+    print(f"engine raised after turn_count={state.turn_count}: {e}")
+```
+
+**输出（mock 模式，~7ms）：**
+```
+engine raised after turn_count=2: 超过 max_turns (2)
+```
+
+> **解释：** `turn_count=2` —— Engine 跑了 2 步后 `max_turns` 触顶，**抛** `Exception("超过 max_turns (N)")`（不返回空串）。调用方用 `try/except` 捕获，处理"陷入循环"场景。详见 [异常速查表](#异常速查表) 的 `超过 max_turns` 行 + 推荐处理模式。
+
+---
+
+### 超时保护
+
+Engine 不会自己超时 —— 调用方用 `asyncio.wait_for`。完整可运行参考：[`ex05_timeout.py`](../../py-arf/python/arf/examples/ex05_timeout.py)
+
+```python
+import asyncio
+try:
+    out = await asyncio.wait_for(
+        engine.run(state=state, user_input="complex query"),
+        timeout=30.0,
+    )
+except asyncio.TimeoutError:
+    print("Engine hung — model not responding")
+finally:
+    await bus.shutdown()
+```
+
+**输出（silent mock, 1s 超时，~1.0s）：**
+```
+engine.run() hung > 1s - model not responding
+elapsed=1006.0ms
+```
+
+> **推荐：** 生产代码总用 `asyncio.wait_for` 包裹 `engine.run()`，避免模型 API 挂起导致整个 EventLoop 卡住。
+>
+> **注意：** `EngineBuilder.build()` 会在 build 阶段检查 Bus 资源 —— 如果 Bus 没有 model_call responder 且 `AgentConfig.routes` 没有显式 model_call 配置，会抛 `"no model_call responder: ..."`。这是设计意图，防止 Engine 上线后永远 hang。
+
+---
+
+### 状态序列化与持久化
+
+把 `EngineState.messages` 写入 JSON，下次启动恢复。完整可运行参考：[`ex06_state_serialize.py`](../../py-arf/python/arf/examples/ex06_state_serialize.py)
+
+```python
+import json
+
+state = EngineState()
+# ... 跑 engine.run(state, "hi") ...
+
+# 序列化
+snapshot = {
+    "round_count": state.round_count,
+    "turn_count": state.turn_count,
+    "context_tokens": state.context_tokens,
+    "messages": state.messages,
+}
+with open("state.json", "w") as f:
+    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+# 下次启动：构造一个等价的 state
+with open("state.json") as f:
+    loaded = json.load(f)
+new_state = EngineState()
+print(f"loaded {len(loaded['messages'])} messages, round={loaded['round_count']}")
+```
+
+**输出（mock 模式）：**
+```
+snapshot saved: round=1, messages=3
+restored: 3 messages, round_count was 1
+```
+
+---
+
+（以下章节将在后续 task 续写：异常速查表 / Python vs Rust / 参考）
