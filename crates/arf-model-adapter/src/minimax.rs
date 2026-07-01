@@ -14,10 +14,11 @@ use serde_json::Value;
 
 use arf_core::ModelMessage;
 
+use crate::convert;
 use crate::error::ProviderError;
 use crate::provider::Provider;
 use crate::types::{
-    ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall, ToolDef, Usage,
+    ModelParams, ModelResponsePayload, ToolCall, ToolDef, Usage,
 };
 
 /// Configuration for the MiniMax provider.
@@ -249,7 +250,7 @@ impl MiniMaxProvider {
                 Ok(raw) => return self.parse_response(&raw),
                 Err(e) => {
                     last_error = e.to_string();
-                    if attempt == self.config.max_retries {
+                    if !convert::is_retryable(&e) || attempt == self.config.max_retries {
                         return Err(e);
                     }
                     let delay = 2u64.pow(attempt + 1);
@@ -283,17 +284,6 @@ impl Provider for MiniMaxProvider {
     ) -> Result<ModelResponsePayload, ProviderError> {
         let body = self.build_request_body(model_name, &messages, &tools, &params);
         self.call_with_retry(body).await
-    }
-
-    async fn chat_stream(
-        &self,
-        _model_name: &str,
-        _messages: Vec<ModelMessage>,
-        _tools: Vec<ToolDef>,
-        _params: ModelParams,
-    ) -> Result<(Vec<ModelResponseChunk>, ModelResponsePayload), ProviderError> {
-        // Phase 6 E2E uses non-streaming chat(); streaming TBD in a later phase.
-        Err(ProviderError::Parse("chat_stream not yet implemented for MiniMax".into()))
     }
 }
 
