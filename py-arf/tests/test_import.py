@@ -12,6 +12,7 @@ def test_example_runs():
     import runpy
     from pathlib import Path
 
-    example = Path(__file__).parent.parent / "python" / "arf" / "examples" / "phase0_hello.py"
+    # After docs/examples reorg, examples live at the repo root, not under py-arf/
+    example = Path(__file__).parent.parent.parent / "examples" / "python" / "phase0_hello.py"
     result = runpy.run_path(str(example))
     assert result is not None
