@@ -543,4 +543,133 @@ asyncio.run(main())
 
 ---
 
-（以下章节将在后续 task 续写：3. Checkpoint / 4. Route / 5. Pool）
+---
+
+### 3. 扩展点: Checkpoint (Extension Points)
+
+Engine 在 5 个固定位置触发 checkpoint（phase 6 task 6.5）。每个 Checkpoint 触发时，Engine 串行发送 `CheckpointRule.actions` 列表里的 `ActionMessage`，应用层订阅这些消息实现快照、限速、人工审批、Park/Resume 等能力。
+
+#### 3.1 `Checkpoint` — 5 个触发位置（class attr 单例）
+
+```python
+class Checkpoint:
+    BeforeModelCall: Checkpoint  # 每次 model_call 之前
+    AfterModelCall: Checkpoint   # 收到 model_response 之后
+    BeforeToolExec: Checkpoint   # 发 tool_exec 之前
+    AfterToolExec: Checkpoint    # 收到 tool_result 之后
+    RoundEnd: Checkpoint         # 一轮 ReAct 结束（最终返回前）
+```
+
+| 位置 | 触发时机 |
+|------|---------|
+| `Checkpoint.BeforeModelCall` | 每次 `model_call` 之前 |
+| `Checkpoint.AfterModelCall` | 收到 `model_response` 之后 |
+| `Checkpoint.BeforeToolExec` | 发 `tool_exec` 之前 |
+| `Checkpoint.AfterToolExec` | 收到 `tool_result` 之后 |
+| `Checkpoint.RoundEnd` | 一轮 ReAct 结束（最终返回前） |
+
+**示例：**
+
+```python
+from arf import Checkpoint
+
+# 5 个值都是单例
+assert Checkpoint.BeforeModelCall is Checkpoint.BeforeModelCall
+assert Checkpoint.RoundEnd != Checkpoint.BeforeModelCall
+```
+
+---
+
+#### 3.2 `ActionMessage` — 触发时发的消息
+
+`Engine → checkpoint` ActionMessage 的 Python 包装。`CheckpointRule.actions` 接受 `list[ActionMessage]` — 预先构造好触发时要发的消息。
+
+```python
+class ActionMessage:
+    def __new__(cls, msg_type: str, correlation_id: str | None = None, payload: dict | None = None) -> ActionMessage: ...
+    @property
+    def msg_type(self) -> str: ...
+    @property
+    def correlation_id(self) -> str: ...
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `msg_type` | `str` | 必填 | 消息类型字符串（`"model_call"` / `"tool_exec"` / `"snapshot_state"` 等）。**必须**在 `AgentConfig.routes` 中注册 |
+| `correlation_id` | `str \| None` | `None`（自动 UUID v4） | 关联 ID |
+| `payload` | `dict \| None` | `{"correlation_id": "..."}` | 消息体（JSON 可序列化对象） |
+
+**示例：**
+
+```python
+from arf import ActionMessage
+
+msg = ActionMessage(msg_type="snapshot_state", payload={"reason": "context_80pct"})
+print(msg.msg_type)         # "snapshot_state"
+print(msg.correlation_id)   # 自动生成 UUID
+```
+
+---
+
+#### 3.3 `CheckpointRule` — 声明式 Checkpoint 规则
+
+```python
+class CheckpointRule:
+    def __new__(
+        cls,
+        name: str,
+        trigger: Checkpoint,
+        actions: list[ActionMessage],
+    ) -> CheckpointRule: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def trigger(self) -> Checkpoint: ...
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 规则名（出现在 trace / log 中） |
+| `trigger` | `Checkpoint` | 触发位置（5 选 1） |
+| `actions` | `list[ActionMessage]` | 触发时按顺序发出的消息列表 |
+
+> **与 Rust 实现的差异：** Rust 端 `CheckpointRule::new` 接受 `Box<dyn Fn>` 闭包用于 `when` 和 `build` —— 跨语言边界不可行。Python 版预构造 `actions` 列表，按顺序发送，避免闭包桥接。Phase 6 task 6.22.4 当前仅取 `actions[0]` 作为单消息触发 — 多 action fan-out 是后续任务。
+
+**示例：每轮结束发快照消息**
+
+```python
+from arf import Checkpoint, CheckpointRule, ActionMessage, AgentConfig
+
+cfg = AgentConfig(
+    agent_id="snap-demo",
+    checkpoint_rules=[
+        CheckpointRule(
+            name="snapshot_round_end",
+            trigger=Checkpoint.RoundEnd,
+            actions=[
+                ActionMessage(
+                    msg_type="snapshot_state",
+                    payload={"reason": "round_end"},
+                ),
+            ],
+        ),
+    ],
+)
+print(f"rule attached: {cfg.checkpoint_rules[0]['name']}")
+```
+
+**输出：** `rule attached: snapshot_round_end`
+
+**易错点：**
+- `CheckpointRule` 必须通过 `AgentConfig.checkpoint_rules` 注入, 当前 Engine 不接受运行时 mutation
+- `actions` 列表里的消息按顺序发送, 但都是同步 `await` —— 慢 consumer 会拖慢 Engine
+- Checkpoint 触发时发的消息 `msg_type` **必须**在 `AgentConfig.routes` 注册（即使你只是要丢弃它）, 否则 build 时校验失败
+- 应用层订阅 `msg_type="snapshot_state"` 等自定义消息来响应 checkpoint
+
+---
+
+（以下章节将在后续 task 续写：4. Route / 5. Pool）
