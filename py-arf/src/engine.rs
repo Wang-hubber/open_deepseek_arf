@@ -43,6 +43,7 @@ impl PyAgentConfig {
         system_prompt_template = "You are helpful.".to_string(),
         max_turns = 10u32,
         routes = None,
+        checkpoint_rules = None,
     ))]
     fn new(
         agent_id: String,
@@ -51,10 +52,23 @@ impl PyAgentConfig {
         system_prompt_template: String,
         max_turns: u32,
         routes: Option<std::collections::HashMap<String, PyRoute>>,
-    ) -> Self {
+        checkpoint_rules: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
+    ) -> PyResult<Self> {
         let routes_map: std::collections::HashMap<String, Route> = match routes {
             Some(m) => m.into_iter().map(|(k, v)| (k, v.inner)).collect(),
             None => std::collections::HashMap::new(),
+        };
+        let rules: Vec<CoreCheckpointRule> = match checkpoint_rules {
+            Some(obj) => {
+                let list = obj.cast::<pyo3::types::PyList>()?;
+                let mut out = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    let rule: PyRef<PyCheckpointRule> = item.extract()?;
+                    out.push(rule.into_rust_rule());
+                }
+                out
+            }
+            None => vec![],
         };
         let cfg = AgentConfig {
             agent_id,
@@ -65,7 +79,7 @@ impl PyAgentConfig {
             tool_timeout_ms: None,
             permissions: Default::default(),
             routes: routes_map,
-            checkpoint_rules: vec![],
+            checkpoint_rules: rules,
             processors: Default::default(),
             on_member_failed: None,
             tools_include: None,
@@ -73,9 +87,9 @@ impl PyAgentConfig {
             skills_include: None,
             skills_exclude: vec![],
         };
-        Self {
+        Ok(Self {
             inner: std::sync::Arc::new(std::sync::Mutex::new(Some(cfg))),
-        }
+        })
     }
 
     #[getter]
@@ -86,6 +100,38 @@ impl PyAgentConfig {
     #[getter]
     fn max_turns(&self) -> u32 {
         self.inner.lock().unwrap().as_ref().unwrap().max_turns
+    }
+
+    #[getter]
+    fn routes(&self) -> std::collections::HashMap<String, String> {
+        // Return as msg_type -> "<Route kind>":string summary for inspection.
+        self.inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .routes
+            .iter()
+            .map(|(k, v)| (k.clone(), format!("{:?}", v)))
+            .collect()
+    }
+
+    #[getter]
+    fn checkpoint_rules(&self, py: Python<'_>) -> PyResult<Vec<pyo3::Py<pyo3::PyAny>>> {
+        let cfg = self.inner.lock().unwrap();
+        let rules = &cfg.as_ref().unwrap().checkpoint_rules;
+        let mut out = Vec::with_capacity(rules.len());
+        for r in rules {
+            // We can't reconstruct PyCheckpointRule from the Rust
+            // CoreCheckpointRule (its actions Vec holds opaque
+            // PyActionMessageImpl trait objects, not PyActionMessage).
+            // Instead, expose a lightweight summary dict.
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("name", r.name.clone())?;
+            dict.set_item("trigger", format!("{:?}", r.trigger))?;
+            out.push(dict.into());
+        }
+        Ok(out)
     }
 
     fn __repr__(&self) -> String {
