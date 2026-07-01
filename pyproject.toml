@@ -18,6 +18,7 @@ dev = ["pytest>=7.4.0", "pytest-asyncio>=0.23"]
 
 [tool.maturin]
 manifest-path = "py-arf/Cargo.toml"
+python-source = "py-arf/python"
 module-name = "arf._arf"
 features = ["pyo3/extension-module"]
 
