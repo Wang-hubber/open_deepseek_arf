@@ -244,7 +244,7 @@ impl<R: Resource> Pool<R> {
     }
 
     /// Return a resource to the idle pool.
-    fn release(&self, resource: &Arc<R>) {
+    pub fn release(&self, resource: &Arc<R>) {
         let inner = self.inner.clone();
         let resource = resource.clone();
         // Spawn a release task to avoid holding sync mutex.

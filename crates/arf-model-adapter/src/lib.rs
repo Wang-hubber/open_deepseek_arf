@@ -14,14 +14,16 @@ mod deepseek;
 mod error;
 mod node;
 mod openai;
-mod provider;
-mod types;
+pub mod pool_resource;
+pub mod provider;
+pub mod types;
 
 pub use anthropic::{AnthropicConfig, AnthropicProvider};
 pub use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub use error::ProviderError;
 pub use node::ModelAdapterNode;
 pub use openai::{OpenAIConfig, OpenAIProvider};
+pub use pool_resource::ModelAdapterResource;
 pub use provider::Provider;
 pub use types::{
     ModelCallPayload, ModelParams, ModelResponseChunk, ModelResponsePayload, ToolCall,

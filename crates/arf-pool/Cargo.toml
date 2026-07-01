@@ -9,6 +9,7 @@ description = "ARF Resource pool — bounded resource lifecycle for ModelAdapter
 [dependencies]
 arf-core = { path = "../arf-core" }
 arf-bus = { path = "../arf-bus" }
+arf-engine = { path = "../arf-engine" }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tokio-util = "0.7"
 async-trait = "0.1"
@@ -18,4 +19,5 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+arf-model-adapter = { path = "../arf-model-adapter" }
 tempfile = "3"

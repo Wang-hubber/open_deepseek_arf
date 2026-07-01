@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod error;
 pub mod executor;
 pub mod node;
+pub mod pool_resource;
 pub mod remote;
 pub mod runtime;
 pub mod script;
@@ -18,6 +19,7 @@ pub mod types;
 
 // Re-export main types for integration tests
 pub use node::McpNode;
+pub use pool_resource::McpResource;
 
 #[cfg(test)]
 mod tests;
