@@ -34,6 +34,13 @@ from arf._arf import (
     # Phase 6 task 6.20: MiniMax provider
     MiniMaxConfig,
     MiniMaxProvider,
+    # Phase 6 task 6.10: Engine (ReAct loop)
+    AgentConfig,
+    Engine,
+    EngineBuilder,
+    EngineState,
+    ModelCall,
+    WaitStrategy,
 )
 
 __all__ = [
@@ -71,4 +78,11 @@ __all__ = [
     # Phase 6 task 6.20: MiniMax provider
     "MiniMaxConfig",
     "MiniMaxProvider",
+    # Phase 6 task 6.10: Engine
+    "AgentConfig",
+    "Engine",
+    "EngineBuilder",
+    "EngineState",
+    "ModelCall",
+    "WaitStrategy",
 ]
