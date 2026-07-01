@@ -30,7 +30,7 @@ For two years, every AI application I built asked the same questions — How doe
 
 These questions have nothing to do with any specific business — but no project escapes them.
 
-Rather than reinvent the wheel per project, abstract once. Two things shipped together — **[ARF](https://github.com/Wang-hubber/open_deepseek_arf) (this repo)** provides the engine and infrastructure, **[arf_app](https://github.com/Wang-hubber/arf_app)** provides a 14-unit progressive tutorial. One abstracts, one verifies; one builds wheels, one teaches people to use them.
+Rather than reinvent the wheel per project, abstract once. Two things ship together — **[ARF](https://github.com/Wang-hubber/open_deepseek_arf) (this repo)** provides the engine and infrastructure, and a companion tutorial app provides progressive walk-throughs. The old Python-version tutorial (`arf_app`, 14 units) shipped alongside v0.x and remains as historical reference; **a Rust-version tutorial is now being developed** to match V1.x's architecture.
 
 ---
 
@@ -197,28 +197,28 @@ Roughly 30% of v0.x's commit history is bug fix. That ratio *is* the story — *
 
 ---
 
-## Real-world validation: arf_app
+## Real-world validation: tutorial app (under development)
 
-Framework correctness can't be self-asserted. **[arf_app](https://github.com/Wang-hubber/arf_app)** uses 14 progressive units to build, from scratch, an evaluable, evolvable Agent — each unit closes the loop "teaching goal → docs → code → verification":
+> **Status (2026-07-01):** The companion tutorial app for V1.x is **under development**. The framework core (Rust crates + py-arf binding) is complete and tested; tutorial units are being authored to match.
 
-| Unit | Topic | Framework capability verified |
-|------|-------|-------------------------------|
-| 01 | Hello ARF | Agent assembly, system prompt injection, session creation |
-| 02 | Session management | Multi-session lifecycle, LLM auto-title |
-| 03 | Tool introduction | File read/write, ReAct think→call→execute→respond |
-| 04 | Tool approval | session_mode, approval event handling, runtime policy switch |
-| 05 | Safety system | deny blacklist, regex interception, PathSandbox |
-| 06 | Long-term memory | Memory plugin, cross-session identity persistence |
-| 07 | Convergence Agent | Temperature, prompt and runtime optimization |
-| 08 | Trace trajectory | JSONL output, trace command, foundation for Eval |
-| 09 | Eval evaluation | Rule-based metrics, golden session → annotate → build → compare |
-| 10 | LLM Judge | Model evaluating model, auto-annotate semi-pipeline |
-| 11 | Version persistence | Version archive, auto-regression detection |
-| 12 | Sub Agent | `delegate_task` dispatch ephemeral child Agents, parallel speedup |
-| 13 | Agent Team | PM + Data + Viz trio, AgentBus peer collaboration |
-| 14 | Skill | Single Agent + Skill + Subagents vs multi-person team comparison |
+The old Python-version tutorial ([arf_app](https://github.com/Wang-hubber/arf_app), 14 units, v0.x lineage) remains available as historical reference. A new Rust-version tutorial will progressively cover:
 
-All 14 units run end-to-end. Every framework module has a real-world scenario validating it — **not "implemented the feature", but "someone used it to ship complete business".**
+| Unit (planned) | Topic | Framework capability verified |
+|----------------|-------|-------------------------------|
+| 01 | Hello ARF (V1.x) | Engine assembly, ReAct boot |
+| 02 | Bus basics | Message send/receive, online graph |
+| 03 | State lifecycle | messages + tasks, two-way locks |
+| 04 | ModelAdapter | OpenAI / Anthropic / DeepSeek / MiniMax providers |
+| 05 | MCP integration | Local + Remote + Script tools |
+| 06 | Hook system | 10 checkpoints, blocking vs side modes |
+| 07 | Park/Resume | WaitItem, cross-session recovery |
+| 08 | Checkpoint + Route | ActionMessage, Strict vs Discovery routing |
+| 09 | Pool | Node pooling, resource leasing |
+| 10 | Eval | Rule + LLM-judge metrics |
+
+> Unit list above is provisional and will be refined as V1.x tutorial development progresses.
+
+When the new tutorial ships, every framework module will have a real-world scenario validating it — **not "implemented the feature", but "someone used it to ship complete business"**, same standard as the v0.x tutorial.
 
 ---
 
@@ -227,7 +227,7 @@ All 14 units run end-to-end. Every framework module has a real-world scenario va
 MIT — see [LICENSE](LICENSE)
 
 <p align="center">
-  <sub>ARF framework · <a href="https://github.com/Wang-hubber/open_deepseek_arf">GitHub</a> &nbsp;|&nbsp; Companion tutorial · <a href="https://github.com/Wang-hubber/arf_app">arf_app</a></sub>
+  <sub>ARF framework · <a href="https://github.com/Wang-hubber/open_deepseek_arf">GitHub</a> &nbsp;|&nbsp; Companion tutorial · under development (V1.x)</sub>
   <br/>
   <sub>Built with Rust · Python · DeepSeek · MiniMax</sub>
 </p>
