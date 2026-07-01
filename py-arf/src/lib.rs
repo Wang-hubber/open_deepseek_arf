@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
 pub mod mcp;
+pub mod pool;
 
 use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
@@ -25,6 +26,7 @@ use arf_model_adapter::{
     ToolCall, ToolCallDelta, ToolDef, Usage,
 };
 use arf_model_adapter::Provider;
+use arf_pool::Resource;
 
 pub mod engine;
 
@@ -32,7 +34,7 @@ pub mod engine;
 // Global tokio runtime
 // ═══════════════════════════════════════════════════════════════════
 
-fn get_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Runtime::new().expect("failed to create tokio runtime"))
 }
@@ -1290,6 +1292,13 @@ impl PyDeepSeekProvider {
         self.inner.supported_models().to_vec()
     }
 
+    /// Side-channel: returns the underlying `Arc<dyn Provider>` so it can
+    /// be wrapped by `ModelAdapterResource.from_provider()`. Phase 6 task
+    /// 6.22.4. Not part of the public stable API.
+    fn _provider_arc(&self) -> crate::pool::PyArcProvider {
+        crate::pool::PyArcProvider { arc: self.inner.clone() }
+    }
+
     fn chat<'py>(
         &self,
         py: Python<'py>,
@@ -1388,6 +1397,13 @@ impl PyOpenAIProvider {
     #[getter]
     fn supported_models(&self) -> Vec<String> {
         self.inner.supported_models().to_vec()
+    }
+
+    /// Side-channel: returns the underlying `Arc<dyn Provider>` so it can
+    /// be wrapped by `ModelAdapterResource.from_provider()`. Phase 6 task
+    /// 6.22.4. Not part of the public stable API.
+    fn _provider_arc(&self) -> crate::pool::PyArcProvider {
+        crate::pool::PyArcProvider { arc: self.inner.clone() }
     }
 
     fn chat<'py>(
@@ -1490,6 +1506,13 @@ impl PyAnthropicProvider {
         self.inner.supported_models().to_vec()
     }
 
+    /// Side-channel: returns the underlying `Arc<dyn Provider>` so it can
+    /// be wrapped by `ModelAdapterResource.from_provider()`. Phase 6 task
+    /// 6.22.4. Not part of the public stable API.
+    fn _provider_arc(&self) -> crate::pool::PyArcProvider {
+        crate::pool::PyArcProvider { arc: self.inner.clone() }
+    }
+
     fn chat<'py>(
         &self,
         py: Python<'py>,
@@ -1588,6 +1611,13 @@ impl PyMiniMaxProvider {
     #[getter]
     fn supported_models(&self) -> Vec<String> {
         self.inner.supported_models().to_vec()
+    }
+
+    /// Side-channel: returns the underlying `Arc<dyn Provider>` so it can
+    /// be wrapped by `ModelAdapterResource.from_provider()`. Phase 6 task
+    /// 6.22.4. Not part of the public stable API.
+    fn _provider_arc(&self) -> crate::pool::PyArcProvider {
+        crate::pool::PyArcProvider { arc: self.inner.clone() }
     }
 
     fn chat<'py>(
@@ -1756,6 +1786,23 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<engine::PyState>()?;
     m.add_class::<engine::PyWaitStrategyInner>()?;
     m.add_class::<engine::PyModelCall>()?;
+
+    // Phase 6 task 6.22.4: Checkpoint + Route + CheckpointRule
+    m.add_class::<engine::PyCheckpoint>()?;
+    m.add_class::<engine::PyActionMessage>()?;
+    m.add_class::<engine::PyRoute>()?;
+    m.add_class::<engine::PyCapability>()?;
+    m.add_class::<engine::PyCheckpointRule>()?;
+
+    // Phase 6 task 6.22.4: Pool
+    m.add_class::<pool::PyPoolConfig>()?;
+    m.add_class::<pool::PyOverflow>()?;
+    m.add_class::<pool::PyPoolError>()?;
+    m.add_class::<pool::PyLease>()?;
+    m.add_class::<pool::PyModelAdapterResource>()?;
+    m.add_class::<pool::PyMcpResource>()?;
+    m.add_class::<pool::PyModelAdapterPool>()?;
+    m.add_class::<pool::PyMcpPool>()?;
 
     Ok(())
 }

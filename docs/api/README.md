@@ -141,18 +141,11 @@ from arf import (
 | `EngineState` | 对话状态（`round_count`, `turn_count`, `context_tokens`, `messages`） |
 | `WaitStrategy` | 多响应等待策略（`All` / `Any` / `Count(n)`） |
 | `ModelCall` | Engine 发的 model_call ActionMessage（`msg_type="model_call"`, `correlation_id`） |
-
-## 当前限制（Phase 6 follow-up 6.22.4）
-
-下列 API 在 Rust 侧可用但**未**绑定到 Python——跟踪任务 6.22.4：
-
-| 缺失 | 影响 | 何时用 |
-|------|------|--------|
-| `CheckpointRule` | 无法在 Python 中设 checkpoint | 需要 park/resume / 限速 / 人工审批 |
-| `Route` / `AgentConfig.routes` | Engine 只能走默认路由 | 需要多 Bus 路由 / 模型投票 |
-| `ModelAdapterPool` / `McpPool` | 无法在 Python 中做资源池化 | 需要限流 / 配额管理 |
-
-要解决请在 `py-arf/src/{engine,pool}.rs` 加 PyO3 binding（参考 `engine.rs` 中 `PyEngineBuilder` 的模式）。
+| `Checkpoint` / `CheckpointRule` / `ActionMessage` | 自定义 checkpoint 触发（BeforeModelCall / AfterModelCall / BeforeToolExec / AfterToolExec / RoundEnd） |
+| `Route` / `Capability` | Engine 路由策略（`Route.strict(ids=[...])` / `Route.discovery(requirements=[...])`），通过 `AgentConfig(routes={...})` 注入 |
+| `PoolConfig` / `Overflow` / `PoolError` / `Lease` | 通用资源池化原语 |
+| `ModelAdapterResource` / `ModelAdapterPool` | 池化 LLM 调用（限流 / 配额） |
+| `McpResource` / `McpPool` | 池化 MCP 工具调用（串行 / 限流） |
 
 ## 模块依赖图
 

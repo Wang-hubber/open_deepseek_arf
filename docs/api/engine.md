@@ -1,6 +1,6 @@
 # ARF Engine — ReAct 循环引擎 API 参考
 
-> **Phase 6 task 6.10** · `from arf import AgentConfig, EngineBuilder, Engine, EngineState, WaitStrategy, ModelCall`
+> **Phase 6 task 6.10 + 6.22.4** · `from arf import AgentConfig, EngineBuilder, Engine, EngineState, WaitStrategy, ModelCall, Checkpoint, CheckpointRule, ActionMessage, Route, Capability, ModelAdapterResource, ModelAdapterPool, McpResource, McpPool, PoolConfig, Overflow, PoolError, Lease`
 >
 > Engine 是 ARF 的"大脑"——它驱动 ReAct 循环（Reason → Act → Observe → Reason），把 `ModelAdapter` 的回复和 `McpNode` 的工具调用串成一个完整的 Agent。
 
@@ -277,7 +277,7 @@ out2 = await engine.run(state=state, user_input="你刚才说了什么？")
 | `WaitStrategy.Any` | 收到任一节点的响应就继续 |
 | `WaitStrategy.Count(n)` | 收到 n 个节点的响应就继续 |
 
-> **当前 py-arf 限制：** `WaitStrategy` 已绑定（见 API Reference），但 `EngineBuilder.build()` 暂未暴露设置接口——目前 Engine 总是按 `All` 处理。Phase 6 follow-up 任务 6.22.4 解决。
+> **注：** `WaitStrategy` 已绑定到 Python，但 `EngineBuilder.build()` 暂未暴露设置接口——目前 Engine 总是按 `All` 处理。等待 `WaitStrategy` 注入 API 是后续任务。
 
 ### ModelCall —— 引擎发往模型的 ActionMessage
 
@@ -305,7 +305,7 @@ Engine 在以下 5 个位置触发 checkpoint（Phase 6 task 6.5）：
 
 Checkpoint 通常用于：限速、人工审批、持久化快照、A/B 测试、Park/Resume。
 
-> **当前 py-arf 限制：** `CheckpointRule` 尚未绑定到 Python。设置 checkpoint 需直接用 Rust 或通过 `AgentConfig` YAML/JSON 注入。Phase 6 follow-up 任务 6.22.4 解决。
+`CheckpointRule` 已绑定到 Python（见 [API 参考](#checkpointrule)）。
 
 ---
 
@@ -578,8 +578,6 @@ strategy = WaitStrategy.Any
 strategy = WaitStrategy.Count(n=2)
 ```
 
-> **当前 py-arf 限制：** `WaitStrategy` 已绑定到 Python 但 `EngineBuilder.build()` 未暴露设置接口。Phase 6 follow-up 6.22.4 解决。
-
 ---
 
 ### `ModelCall`
@@ -604,6 +602,344 @@ call = ModelCall()
 print(call.msg_type)        # "model_call"
 print(call.correlation_id)  # "550e8400-e29b-41d4-a716-446655440000"（每次 new 不同）
 ```
+
+---
+
+### `Checkpoint`
+
+5 个 Checkpoint 触发位置（class attr 单例）。
+
+```python
+class Checkpoint:
+    BeforeModelCall: Checkpoint
+    AfterModelCall: Checkpoint
+    BeforeToolExec: Checkpoint
+    AfterToolExec: Checkpoint
+    RoundEnd: Checkpoint
+```
+
+| 位置 | 触发时机 |
+|------|---------|
+| `Checkpoint.BeforeModelCall` | 每次 `model_call` 之前 |
+| `Checkpoint.AfterModelCall` | 收到 `model_response` 之后 |
+| `Checkpoint.BeforeToolExec` | 发 `tool_exec` 之前 |
+| `Checkpoint.AfterToolExec` | 收到 `tool_result` 之后 |
+| `Checkpoint.RoundEnd` | 一轮 ReAct 结束（最终返回前） |
+
+**示例：**
+
+```python
+from arf import Checkpoint
+
+# 5 个值都是单例
+assert Checkpoint.BeforeModelCall is Checkpoint.BeforeModelCall
+assert Checkpoint.RoundEnd != Checkpoint.BeforeModelCall
+```
+
+---
+
+### `ActionMessage`
+
+`Engine → checkpoint` ActionMessage 的 Python 包装。`CheckpointRule.actions` 接受 `list[ActionMessage]`——预先构造好触发时要发的消息。
+
+```python
+class ActionMessage:
+    def __new__(cls, msg_type: str, payload: dict | None = None) -> ActionMessage: ...
+    @property
+    def msg_type(self) -> str: ...
+    @property
+    def correlation_id(self) -> str: ...
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `msg_type` | `str` | 必填 | 消息类型字符串（`"model_call"` / `"tool_exec"` / `"app_checkpoint"` 等） |
+| `payload` | `dict \| None` | `None` | 消息体（JSON 可序列化对象） |
+
+**示例：**
+
+```python
+from arf import ActionMessage
+
+# 简单文本消息
+msg = ActionMessage(msg_type="app_checkpoint", payload={"reason": "context_80pct"})
+
+print(msg.msg_type)        # "app_checkpoint"
+print(msg.correlation_id)  # 自动生成 UUID
+```
+
+---
+
+### `CheckpointRule`
+
+声明式 checkpoint 规则。绑定到 `AgentConfig.checkpoint_rules`（当前 `AgentConfig` 暂未直接暴露此字段，需通过 Engine 内部 API；Phase 6 follow-up）。
+
+```python
+class CheckpointRule:
+    def __new__(
+        cls,
+        name: str,
+        trigger: Checkpoint,
+        actions: list[ActionMessage],
+    ) -> CheckpointRule: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def trigger(self) -> Checkpoint: ...
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 规则名（出现在 trace / log 中） |
+| `trigger` | `Checkpoint` | 触发位置（5 选 1） |
+| `actions` | `list[ActionMessage]` | 触发时按顺序发出的消息列表（目前 `when` 默认为总是触发） |
+
+> **与 Rust 实现的差异：** Rust 端 `CheckpointRule::new` 接受 `Box<dyn Fn>` 闭包用于 `when` 和 `build`——跨语言边界不可行。Python 版预构造 `actions` 列表，按顺序发送，避免闭包桥接。Phase 6 follow-up 可考虑用 PyO3 closure 桥接。
+
+**示例：**
+
+```python
+from arf import Checkpoint, CheckpointRule, ActionMessage
+
+rule = CheckpointRule(
+    name="log_every_round",
+    trigger=Checkpoint.RoundEnd,
+    actions=[
+        ActionMessage(msg_type="app_checkpoint", payload={"action": "snapshot_state"}),
+    ],
+)
+print(rule.name)       # "log_every_round"
+print(rule.trigger)    # Checkpoint.RoundEnd
+```
+
+---
+
+### `Route`
+
+Engine 路由策略。绑定到 `AgentConfig.routes`（详见 [AgentConfig 段](#agentconfig)）。
+
+```python
+class Route:
+    @staticmethod
+    def strict(ids: list[NodeId]) -> Route: ...
+    @staticmethod
+    def discovery(requirements: list[tuple[str, str]]) -> Route: ...
+```
+
+| 构造器 | 行为 |
+|--------|------|
+| `Route.strict(ids=[NodeId("model/a"), ...])` | 定向发给指定 NodeId 列表（点对点） |
+| `Route.discovery(requirements=[("kind", "model"), ...])` | 路由给 capabilities 包含全部 (key, value) 对的节点（按 bus.graph() 自动发现） |
+
+**示例：**
+
+```python
+from arf import Route, NodeId
+
+# 严格路由：只发给 model/minimax
+r1 = Route.strict(ids=[NodeId("model/minimax")])
+
+# 发现路由：路由给 capabilities 包含 {"kind": "model"} 的所有节点
+r2 = Route.discovery(requirements=[("kind", "model")])
+
+# AgentConfig 用法
+config = AgentConfig(
+    agent_id="routed",
+    provider="minimax",
+    model="MiniMax-M3",
+    routes={
+        "model_call": r1,
+        "tool_exec": r2,
+    },
+)
+```
+
+> **注入方式：** `AgentConfig(routes={"model_call": Route.strict(...)})` 构造时传入。`routes` 是 `dict[str, Route]`，key 是 `msg_type`，value 是 `Route` 实例。
+
+---
+
+### `Capability`
+
+`Route.discovery()` 的参数包装。直接构造不需要——`Route.discovery(requirements=[(k, v), ...])` 内部自动包装。
+
+```python
+class Capability:
+    def __new__(cls, requirements: list[tuple[str, str]]) -> Capability: ...
+```
+
+**示例：**
+
+```python
+from arf import Capability
+
+# 一般不直接构造 — 通过 Route.discovery
+cap = Capability(requirements=[("kind", "model"), ("tier", "premium")])
+```
+
+---
+
+### `PoolConfig` + `Overflow` + `PoolError` + `Lease`
+
+Pool 通用原语。
+
+```python
+class PoolConfig:
+    def __new__(
+        cls,
+        max_size: int = 16,
+        overflow: Overflow | None = None,  # 默认 Overflow.Queue(n=0)
+        idle_timeout_secs: float | None = None,
+    ) -> PoolConfig: ...
+
+class Overflow:
+    @staticmethod
+    def Reject() -> Overflow: ...
+    @staticmethod
+    def Queue(n: int) -> Overflow: ...
+    @staticmethod
+    def Block(timeout_secs: float) -> Overflow: ...
+
+class PoolError(Exception):
+    """Pool acquire / release 错误。"""
+    # 变体：Full, Timeout, Closed, Acquire(message)
+
+class Lease:
+    """RAII 句柄。`del lease` 自动 release 资源（async Drop）。"""
+    @property
+    def kind(self) -> str: ...  # "model_adapter" | "mcp"
+    def __repr__(self) -> str: ...
+```
+
+> **当前限制：** `Lease.resource()` 尚未暴露——只可通过 `Lease.kind` 知道是哪类资源。Phase 6 follow-up 把 `Lease<ModelAdapterResource>` 和 `Lease<McpResource>` 分别包装为 `ModelAdapterLease` / `McpLease` 子类，调用方可直接访问 `.resource().call_count` 等。
+
+**`Overflow` 策略：**
+
+| 策略 | 行为 |
+|------|------|
+| `Overflow.Reject()` | 资源满时立即抛 `PoolError.Full` |
+| `Overflow.Queue(n)` | 缓冲 n 个等待者；超出抛 `PoolError.Full` |
+| `Overflow.Block(timeout_secs)` | 阻塞到拿到或超时；超时抛 `PoolError.Timeout` |
+
+**示例：**
+
+```python
+from arf import PoolConfig, Overflow
+
+# 容量 3，溢出排队 4 个
+cfg = PoolConfig(max_size=3, overflow=Overflow.Queue(n=4), idle_timeout_secs=None)
+
+# 容量 1，立即拒绝
+strict = PoolConfig(max_size=1, overflow=Overflow.Reject())
+
+# 容量 2，阻塞等 5 秒
+b = PoolConfig(max_size=2, overflow=Overflow.Block(timeout_secs=5.0))
+```
+
+---
+
+### `ModelAdapterResource` + `ModelAdapterPool`
+
+池化 LLM 调用（限流 / 配额 / 共享 rate-limited API connection）。
+
+```python
+class ModelAdapterResource:
+    @staticmethod
+    def from_provider(provider: Provider) -> ModelAdapterResource: ...
+    @property
+    def call_count(self) -> int: ...
+
+class ModelAdapterPool:
+    @staticmethod
+    def with_resources(
+        config: PoolConfig,
+        resources: list[ModelAdapterResource],
+    ) -> ModelAdapterPool: ...
+    async def acquire(self) -> Lease: ...
+    async def total_count(self) -> int: ...
+    async def idle_count(self) -> int: ...
+```
+
+**示例：**
+
+```python
+import asyncio
+from arf import (
+    ModelAdapterPool, ModelAdapterResource, PoolConfig, Overflow,
+    MiniMaxProvider, MiniMaxConfig,
+)
+
+# 3 个 provider 池化
+resources = [
+    ModelAdapterResource.from_provider(provider=MiniMaxProvider(config=MiniMaxConfig.default()))
+    for _ in range(3)
+]
+config = PoolConfig(max_size=3, overflow=Overflow.Queue(n=6))
+pool = ModelAdapterPool.with_resources(config=config, resources=resources)
+
+# 并发 acquire（async 阻塞直到拿到）
+async def call(idx: int) -> str:
+    lease = await pool.acquire()
+    try:
+        return lease.kind  # "model_adapter"
+    finally:
+        del lease  # async Drop → 自动 release
+
+results = await asyncio.gather(*[call(i) for i in range(10)])
+print(f"acquired: {len(results)}, total: {await pool.total_count()}")
+```
+
+---
+
+### `McpResource` + `McpPool`
+
+池化 MCP 工具调用（串行化 / 限流 / 共享 MCP 连接）。
+
+```python
+class McpResource:
+    @staticmethod
+    def new(mcp_node: McpNode) -> McpResource: ...
+    @property
+    def call_count(self) -> int: ...
+
+class McpPool:
+    @staticmethod
+    def with_resources(
+        config: PoolConfig,
+        resources: list[McpResource],
+    ) -> McpPool: ...
+    async def acquire(self) -> Lease: ...
+    async def total_count(self) -> int: ...
+    async def idle_count(self) -> int: ...
+```
+
+**示例：** 容量 1 强制串行化 5 个并发 tool_exec
+
+```python
+import asyncio
+from arf import McpPool, McpResource, PoolConfig, Overflow
+
+mcp_node = ...  # 一个 McpNode 实例
+resources = [McpResource.new(mcp_node=mcp_node)]
+config = PoolConfig(max_size=1, overflow=Overflow.Queue(n=10))
+pool = McpPool.with_resources(config=config, resources=resources)
+
+# 5 个并发 — 串行执行（capacity=1）
+async def call(idx: int) -> str:
+    lease = await pool.acquire()
+    try:
+        return lease.kind  # "mcp"
+    finally:
+        del lease
+
+results = await asyncio.gather(*[call(i) for i in range(5)])
+assert len(results) == 5
+```
+
+> **注意：** `Lease` 的释放是 async Drop——`del lease` 触发后台 `tokio::spawn`，需要在 50ms 内给 release 任务一点时间 settle。如果连续 acquire 偶尔 `PoolError.Full`，加 `await asyncio.sleep(0.05)` 重试。
 
 > **何时需要直接构造 `ModelCall`：** 通常不需要。Engine 内部构造并发送。开发自定义 `Provider` 时可用于解析响应关联。
 
@@ -1012,12 +1348,9 @@ with open("state.json", "w") as f:
     json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
 # 下次启动：构造一个等价的 state
-# （完整 EngineState 还没有 from_dict() 构造器——Phase 6 follow-up 6.22.4）
 restored_messages = json.load(open("state.json"))["messages"]
 # 手动 replay 一次可恢复上下文，或保存 EngineState JSON
 ```
-
-> **当前 py-arf 限制：** 没有 `EngineState.from_dict()` / `to_dict()`。`state.messages` 是只读快照，可以序列化但恢复需要重新构造 EngineState 并 replay messages（Phase 6 follow-up 6.22.4 提供 pickle 兼容路径）。
 
 ---
 
@@ -1046,9 +1379,8 @@ restored_messages = json.load(open("state.json"))["messages"]
 | `Engine::run` | `&mut self`（可变借用） | `&self`（内部用 Mutex 保证独占） |
 | `EngineState` 字段 | `pub` 直接访问 | 只读 `@property` getter |
 | `EngineState.messages` | `Vec<ModelMessage>` | `list[dict]`（PyO3 桥接） |
-| Checkpoint | `CheckpointRule` builder | **未绑定**（Phase 6 follow-up 6.22.4） |
-| `WaitStrategy` 注入 | `EngineConfig.wait_strategy` | **未暴露**（`AgentConfig` 无此字段，6.22.4） |
-| `Route` / `checkpoint_rules` | `AgentConfig.routes`, `AgentConfig.checkpoint_rules` | **未暴露**（6.22.4） |
+| `CheckpointRule` 构造 | 接受 `Box<dyn Fn>` 闭包 | 接受 `list[ActionMessage]`（预构造消息列表） |
+| `AgentConfig.routes` | 直接字段（`HashMap<String, Route>`） | 构造器 kwarg `routes={"model_call": Route.strict(...)}` |
 | `ProviderError` 类型 | 枚举 | Python `Exception`（消息文本是 `Display` 输出） |
 | 多 Bus 路由 | `MultiBus::route(msg_type, strategy, recipients)` | `EngineBuilder.new(buses=[bus1, bus2])` 隐式 |
 

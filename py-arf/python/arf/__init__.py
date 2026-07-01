@@ -41,6 +41,21 @@ from arf._arf import (
     EngineState,
     ModelCall,
     WaitStrategy,
+    # Phase 6 task 6.22.4: Checkpoint + Route
+    ActionMessage,
+    Capability,
+    Checkpoint,
+    CheckpointRule,
+    Route,
+    # Phase 6 task 6.22.4: Pool
+    Lease,
+    McpPool,
+    McpResource,
+    ModelAdapterPool,
+    ModelAdapterResource,
+    Overflow,
+    PoolConfig,
+    PoolError,
 )
 
 __all__ = [
@@ -85,4 +100,19 @@ __all__ = [
     "EngineState",
     "ModelCall",
     "WaitStrategy",
+    # Phase 6 task 6.22.4: Checkpoint + Route
+    "ActionMessage",
+    "Capability",
+    "Checkpoint",
+    "CheckpointRule",
+    "Route",
+    # Phase 6 task 6.22.4: Pool
+    "Lease",
+    "McpPool",
+    "McpResource",
+    "ModelAdapterPool",
+    "ModelAdapterResource",
+    "Overflow",
+    "PoolConfig",
+    "PoolError",
 ]

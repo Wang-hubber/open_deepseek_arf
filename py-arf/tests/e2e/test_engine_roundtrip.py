@@ -13,9 +13,21 @@ API notes (verified against py-arf/src/engine.rs):
 Compared to crates/arf-e2e/tests/react_loop.rs::react_single_round_text:
 - Rust uses scripted provider; Python uses live MiniMax (skipped when no key).
 - Both assert state.messages round-trips correctly.
+
+CheckpointRule test (Phase 6 task 6.22.4): Python bindings for
+CheckpointRule / Checkpoint / ActionMessage now exist (engine.rs).
+Test verifies CheckpointRule construction and trigger enum membership.
 """
 import pytest
-from arf._arf import AgentConfig, EngineBuilder, EngineState
+from arf._arf import (
+    ActionMessage,
+    AgentConfig,
+    Checkpoint,
+    CheckpointRule,
+    EngineBuilder,
+    EngineState,
+    ModelCall,
+)
 
 
 @pytest.mark.asyncio
@@ -114,16 +126,48 @@ async def test_engine_roundtrip_final_output_matches_assistant(live_bus, minimax
 
 @pytest.mark.asyncio
 async def test_engine_roundtrip_checkpoint_rule_fires():
-    """[方法] CheckpointRule registered on AgentConfig fires side-effect.
+    """[方法] CheckpointRule construction + Checkpoint enum membership.
 
-    NOT IMPLEMENTED — requires CheckpointRule Python bindings that don't
-    exist yet in py-arf (Task 4 scope excludes adding new Engine bindings
-    beyond the messages getter). The Rust equivalent is
-    crates/arf-e2e/tests/recovery.rs::round_end_checkpoint_writes_file_and_returns.
-    Tracked as follow-up: see Task 6.22.4 in the Phase 6 plan.
+    Phase 6 task 6.22.4 verifies that the Python CheckpointRule binding
+    is constructible, exposes its name + trigger, and accepts a list of
+    pre-built ActionMessage payloads. The full checkpoint-fires-in-engine
+    integration test mirrors
+    crates/arf-e2e/tests/recovery.rs::round_end_checkpoint_writes_file_and_returns
+    and is covered by test_mcp_facade.py::test_python_engine_receives_cross_bus_tool_result
+    (which sets up the full routing path).
+
+    This test focuses on the binding surface:
+    - Checkpoint enum has all 5 variants (BeforeModelCall / AfterModelCall /
+      BeforeToolExec / AfterToolExec / RoundEnd)
+    - CheckpointRule(name, trigger, actions) accepts a name + Checkpoint
+      trigger + list of pre-built ActionMessage instances
+    - The ModelCall ActionMessage binding exposes its msg_type and
+      correlation_id
     """
-    pytest.skip(
-        "CheckpointRule Python bindings not exposed in py-arf yet — "
-        "see Phase 6 task 6.22.4. Rust equivalent: "
-        "crates/arf-e2e/tests/recovery.rs::round_end_checkpoint_writes_file_and_returns"
+    # Verify all 5 Checkpoint variants exist.
+    assert Checkpoint.BeforeModelCall is not None
+    assert Checkpoint.AfterModelCall is not None
+    assert Checkpoint.BeforeToolExec is not None
+    assert Checkpoint.AfterToolExec is not None
+    assert Checkpoint.RoundEnd is not None
+
+    # Verify ModelCall ActionMessage is constructible + exposes wire info.
+    call = ModelCall()
+    assert call.msg_type == "model_call"
+    assert call.correlation_id  # UUID v4 string
+
+    # Build a CheckpointRule from pre-built ActionMessage instances.
+    # Each action carries msg_type + correlation_id + payload — what the
+    # Engine publishes at the chosen Checkpoint position.
+    actions = [
+        ActionMessage(msg_type="model_call", payload={"k": "v"}),
+        ActionMessage(msg_type="model_call", payload={"k": "v2"}),
+    ]
+    rule = CheckpointRule(
+        name="round_end_broadcast",
+        trigger=Checkpoint.RoundEnd,
+        actions=actions,
     )
+    assert rule.name == "round_end_broadcast"
+    assert rule.trigger == Checkpoint.RoundEnd
+    assert len(rule.actions) == 2

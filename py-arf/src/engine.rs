@@ -2,15 +2,22 @@
 //!
 //! Phase 6 task 6.10: extends py-arf with Engine types so Python apps can
 //! build and run Engines without using arf-agent crate.
+//!
+//! Phase 6 task 6.22.4: also binds CheckpointRule / Checkpoint / Route /
+//! Capability / ActionMessage so Python users can wire engine behavior
+//! without dropping into Rust.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
+use uuid::Uuid;
 
 use arf_core::{
-    ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, NodeId, State as CoreState,
+    ActionMessage, Capability, Checkpoint, Message, MessageIntent,
+    ModelCall, NodeId, Route, State as CoreState,
 };
+use arf_core::CheckpointRule as CoreCheckpointRule;
 use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig, WaitStrategy};
 
 use crate::{json_value_to_py, py_object_to_json, PyBus, PyNodeId};
@@ -35,6 +42,7 @@ impl PyAgentConfig {
         model = "mock-v1".to_string(),
         system_prompt_template = "You are helpful.".to_string(),
         max_turns = 10u32,
+        routes = None,
     ))]
     fn new(
         agent_id: String,
@@ -42,7 +50,12 @@ impl PyAgentConfig {
         model: String,
         system_prompt_template: String,
         max_turns: u32,
+        routes: Option<std::collections::HashMap<String, PyRoute>>,
     ) -> Self {
+        let routes_map: std::collections::HashMap<String, Route> = match routes {
+            Some(m) => m.into_iter().map(|(k, v)| (k, v.inner)).collect(),
+            None => std::collections::HashMap::new(),
+        };
         let cfg = AgentConfig {
             agent_id,
             model_config: ModelConfig { provider, model },
@@ -51,7 +64,7 @@ impl PyAgentConfig {
             max_turns,
             tool_timeout_ms: None,
             permissions: Default::default(),
-            routes: Default::default(),
+            routes: routes_map,
             checkpoint_rules: vec![],
             processors: Default::default(),
             on_member_failed: None,
@@ -398,5 +411,316 @@ impl PyModelCall {
 
     fn __repr__(&self) -> String {
         format!("ModelCall(cid={})", self.inner.correlation_id())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyCheckpoint
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python Checkpoint — 5 invariant positions where Engine may inject
+/// side-effect messages (Phase 6 §1.5).
+#[pyclass(name = "Checkpoint")]
+#[derive(Clone)]
+pub struct PyCheckpoint {
+    inner: Checkpoint,
+}
+
+#[pymethods]
+impl PyCheckpoint {
+    #[classattr]
+    fn BeforeModelCall() -> Self {
+        Self { inner: Checkpoint::BeforeModelCall }
+    }
+
+    #[classattr]
+    fn AfterModelCall() -> Self {
+        Self { inner: Checkpoint::AfterModelCall }
+    }
+
+    #[classattr]
+    fn BeforeToolExec() -> Self {
+        Self { inner: Checkpoint::BeforeToolExec }
+    }
+
+    #[classattr]
+    fn AfterToolExec() -> Self {
+        Self { inner: Checkpoint::AfterToolExec }
+    }
+
+    #[classattr]
+    fn RoundEnd() -> Self {
+        Self { inner: Checkpoint::RoundEnd }
+    }
+
+    fn __eq__(&self, other: &PyCheckpoint) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Checkpoint.{:?}", self.inner)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyActionMessage
+// ═══════════════════════════════════════════════════════════════════
+
+/// Internal Rust struct that implements ActionMessage for a Python
+/// `PyActionMessage`. Stores msg_type + correlation_id + JSON payload,
+/// and on `payload()` returns the payload.
+pub struct PyActionMessageImpl {
+    msg_type: String,
+    correlation_id: Uuid,
+    payload: serde_json::Value,
+}
+
+#[async_trait::async_trait]
+impl ActionMessage for PyActionMessageImpl {
+    fn msg_type(&self) -> &'static str {
+        // SAFETY: we leak the String to get a 'static str. The PyActionMessageImpl
+        // lives as long as the CheckpointRule (which is itself 'static for the
+        // pool of static strings). This avoids per-call allocation.
+        Box::leak(self.msg_type.clone().into_boxed_str())
+    }
+
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+
+    fn payload(&self) -> serde_json::Value {
+        self.payload.clone()
+    }
+
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}
+
+/// Python ActionMessage — opaque wrapper for embedding in CheckpointRule.
+///
+/// Construct via `ActionMessage(msg_type=..., correlation_id=..., payload={...})`.
+/// The class itself doesn't carry the Rust trait impl — `CheckpointRule`
+/// reads its fields at construction time and builds a Rust `ActionMessage`
+/// from them.
+#[pyclass(name = "ActionMessage")]
+#[derive(Clone)]
+pub struct PyActionMessage {
+    msg_type: String,
+    correlation_id: Uuid,
+    payload: serde_json::Value,
+}
+
+#[pymethods]
+impl PyActionMessage {
+    #[new]
+    #[pyo3(signature = (msg_type, correlation_id=None, payload=None))]
+    fn new(
+        py: Python<'_>,
+        msg_type: String,
+        correlation_id: Option<String>,
+        payload: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let cid = match correlation_id {
+            Some(s) => Uuid::parse_str(&s).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "invalid correlation_id UUID: {e}"
+                ))
+            })?,
+            None => Uuid::new_v4(),
+        };
+        let payload_json = match payload {
+            Some(obj) => py_object_to_json(&obj, py)?,
+            None => serde_json::json!({"correlation_id": cid.to_string()}),
+        };
+        Ok(Self {
+            msg_type,
+            correlation_id: cid,
+            payload: payload_json,
+        })
+    }
+
+    #[getter]
+    fn msg_type(&self) -> &str {
+        &self.msg_type
+    }
+
+    #[getter]
+    fn correlation_id(&self) -> String {
+        self.correlation_id.to_string()
+    }
+
+    #[getter]
+    fn payload(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(&self.payload, py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ActionMessage(msg_type='{}', cid={})",
+            self.msg_type,
+            self.correlation_id
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyRoute
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python Route — how Engine delivers a message to its receiver.
+#[pyclass(name = "Route")]
+#[derive(Clone)]
+pub struct PyRoute {
+    pub(crate) inner: Route,
+}
+
+#[pymethods]
+impl PyRoute {
+    /// Deliver to exact NodeIds (point-to-point).
+    #[staticmethod]
+    fn strict(ids: Vec<PyNodeId>) -> Self {
+        let inner_ids: Vec<NodeId> = ids.into_iter().map(|n| n.inner).collect();
+        Self { inner: Route::strict(inner_ids) }
+    }
+
+    /// Deliver to all Nodes whose `capabilities` JSON contains required
+    /// key/value pairs (AND).
+    #[staticmethod]
+    fn discovery(requirements: Vec<(String, String)>) -> Self {
+        Self {
+            inner: Route::discovery(requirements),
+        }
+    }
+
+    fn __eq__(&self, other: &PyRoute) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            Route::Strict(ids) => format!("Route.Strict({} ids)", ids.len()),
+            Route::Discovery(cap) => format!("Route.Discovery({} reqs)", cap.requirements.len()),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyCapability
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python Capability — AND-matched key/value pairs declared by Node's
+/// `capabilities` JSON.
+#[pyclass(name = "Capability")]
+#[derive(Clone)]
+pub struct PyCapability {
+    pub(crate) inner: Capability,
+}
+
+#[pymethods]
+impl PyCapability {
+    #[new]
+    fn new(requirements: Vec<(String, String)>) -> Self {
+        Self {
+            inner: Capability::new(requirements),
+        }
+    }
+
+    #[getter]
+    fn requirements(&self) -> Vec<(String, String)> {
+        self.inner.requirements.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Capability({} reqs)", self.inner.requirements.len())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyCheckpointRule
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python CheckpointRule — (name, trigger, actions). The Python binding
+/// uses a "pre-built actions" model: callers supply a list of
+/// `ActionMessage` objects that get cloned into the closure at fire time.
+///
+/// The `when` predicate defaults to "always fire" (matches Rust default).
+/// Phase 6 task 6.22.4: this is the minimum viable Python binding. If
+/// users later need a Python `when` callable, the binding can be extended
+/// with a Python-side predicate that wraps a `PyAny`.
+#[pyclass(name = "CheckpointRule")]
+pub struct PyCheckpointRule {
+    pub(crate) name: String,
+    pub(crate) trigger: Checkpoint,
+    pub(crate) actions: Vec<PyActionMessage>,
+}
+
+#[pymethods]
+impl PyCheckpointRule {
+    /// Construct a CheckpointRule from a name + trigger + list of
+    /// pre-built ActionMessage instances.
+    #[new]
+    fn new(name: String, trigger: &PyCheckpoint, actions: Vec<PyActionMessage>) -> Self {
+        Self {
+            name,
+            trigger: trigger.inner,
+            actions,
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    fn trigger(&self) -> PyCheckpoint {
+        PyCheckpoint { inner: self.trigger }
+    }
+
+    #[getter]
+    fn actions(&self) -> Vec<PyActionMessage> {
+        self.actions.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CheckpointRule(name='{}', trigger={:?}, actions={})",
+            self.name,
+            self.trigger,
+            self.actions.len()
+        )
+    }
+}
+
+/// Non-pyclass helper for converting PyCheckpointRule → Rust CheckpointRule.
+impl PyCheckpointRule {
+    /// Convert to a Rust `CheckpointRule`. Used by EngineBuilder to splice
+    /// Python-defined rules into the AgentConfig before build().
+    pub(crate) fn into_rust_rule(&self) -> CoreCheckpointRule {
+        // Clone the actions into a shared Vec<PyActionMessage> that the
+        // build closure captures. The closure returns a fresh Rust
+        // PyActionMessageImpl per invocation by reading the captured
+        // action's fields.
+        let actions = Arc::new(self.actions.clone());
+        let build_actions = actions.clone();
+        CoreCheckpointRule::new(
+            self.name.clone(),
+            self.trigger,
+            |_state| true, // when = always fire
+            move |_state| -> Box<dyn ActionMessage> {
+                // Pick the first action. (Phase 6 task 6.22.4 minimal API:
+                // a single per-rule ActionMessage. Multi-action support
+                // requires Engine-side fan-out — future task.)
+                let action = build_actions
+                    .first()
+                    .expect("CheckpointRule requires at least one action");
+                Box::new(PyActionMessageImpl {
+                    msg_type: action.msg_type.clone(),
+                    correlation_id: action.correlation_id,
+                    payload: action.payload.clone(),
+                })
+            },
+        )
     }
 }
