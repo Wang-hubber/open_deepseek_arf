@@ -112,3 +112,4 @@ app/web/dist/
 # ============================================================================
 .hooks.json
 benchmarks/
+examples/rust/**/data_recovery/
