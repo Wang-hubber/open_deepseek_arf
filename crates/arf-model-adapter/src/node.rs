@@ -64,7 +64,7 @@ impl ModelAdapterNode {
                         }
                     }
                     _ = &mut shutdown_rx => {
-                        break; // shutdown requested
+                        break; // shutdown requested (or sender dropped)
                     }
                 }
             }

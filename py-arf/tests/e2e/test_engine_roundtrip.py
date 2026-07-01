@@ -27,7 +27,14 @@ from arf._arf import (
     EngineBuilder,
     EngineState,
     ModelCall,
+    Route,
 )
+from arf import NodeId
+from .conftest import attach_live_minimax_node, stage, wait_for_or_die
+
+# Live API tests use a 30s timeout per call. 30s is generous for MiniMax-M3
+# (typical response 1-3s) but well below pytest's outer safety net.
+LIVE_TIMEOUT = 30.0
 
 
 @pytest.mark.asyncio
@@ -37,16 +44,35 @@ async def test_engine_roundtrip_text_response(live_bus, minimax_key):
     Mirrors crates/arf-e2e/tests/react_loop.rs::react_single_round_text.
     Live provider path: MiniMax-M3 responds to a deterministic prompt.
     """
+    stage("attach live MiniMax node on bus at model/e2e-text")
+    await attach_live_minimax_node(
+        bus=live_bus, api_key=minimax_key, node_id_str="model/e2e-text"
+    )
+
     config = AgentConfig(
         agent_id="e2e-text",
         provider="minimax",
         model="MiniMax-M3",
+        routes={"model_call": Route.strict(ids=[NodeId("model/e2e-text")])},
     )
+    stage("EngineBuilder.new + build")
     builder = EngineBuilder.new([live_bus])
-    engine = await builder.build(config)
+    engine = await wait_for_or_die(
+        builder.build(config),
+        timeout=LIVE_TIMEOUT,
+        label="EngineBuilder.build(MiniMax-M3)",
+    )
     state = EngineState()
-    output = await engine.run(state, "Respond with the single word: PONG")
-    assert "PONG" in output or "pong" in output.lower()
+    stage("engine.run('Respond with the single word: PONG')")
+    output = await wait_for_or_die(
+        engine.run(state, "Respond with the single word: PONG"),
+        timeout=LIVE_TIMEOUT,
+        label="Engine.run → MiniMax-M3 (text prompt)",
+    )
+    stage(f"output received: {output!r}")
+    assert "PONG" in output or "pong" in output.lower(), (
+        f"expected 'PONG' in output, got {output!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -56,10 +82,32 @@ async def test_engine_state_messages_accumulate(live_bus, minimax_key):
     Mirrors react_loop.rs assertions on state.messages length after one round.
     Expected: system + user + assistant = 3 messages.
     """
-    config = AgentConfig(agent_id="e2e-msg", provider="minimax", model="MiniMax-M3")
-    engine = await EngineBuilder.new([live_bus]).build(config)
+    stage("attach live MiniMax node on bus at model/e2e-msg")
+    await attach_live_minimax_node(
+        bus=live_bus, api_key=minimax_key, node_id_str="model/e2e-msg"
+    )
+
+    config = AgentConfig(
+        agent_id="e2e-msg",
+        provider="minimax",
+        model="MiniMax-M3",
+        routes={"model_call": Route.strict(ids=[NodeId("model/e2e-msg")])},
+    )
+    stage("build engine")
+    engine = await wait_for_or_die(
+        EngineBuilder.new([live_bus]).build(config),
+        timeout=LIVE_TIMEOUT,
+        label="EngineBuilder.build(MiniMax-M3)",
+    )
     state = EngineState()
-    await engine.run(state, "Say 'hello'")
+    stage("engine.run('Say hello')")
+    await wait_for_or_die(
+        engine.run(state, "Say 'hello'"),
+        timeout=LIVE_TIMEOUT,
+        label="Engine.run → MiniMax-M3 (state.messages test)",
+    )
+    stage(f"messages count = {len(state.messages)}; roles = "
+          f"{[m['role'] for m in state.messages]}")
     assert len(state.messages) >= 3
     assert state.messages[0]["role"] == "system"
     assert state.messages[1]["role"] == "user"
@@ -72,47 +120,75 @@ async def test_engine_roundtrip_multi_round(live_bus, minimax_key):
 
     Mirrors multi-round scenario from react_loop.rs. Each Engine.run() on
     the same state is a fresh round (round_count grows).
-
-    Implementation note: Engine.run() currently takes ownership of the
-    inner State for the duration of the call. After it returns the State
-    is restored (see engine.rs:217-219). Calling run() twice on the
-    same Engine should therefore increment round_count.
-
-    We pass two distinct inputs and assert round_count >= 2 after the
-    second run.
     """
-    config = AgentConfig(agent_id="e2e-multi", provider="minimax", model="MiniMax-M3")
-    engine = await EngineBuilder.new([live_bus]).build(config)
+    stage("attach live MiniMax node on bus at model/e2e-multi")
+    await attach_live_minimax_node(
+        bus=live_bus, api_key=minimax_key, node_id_str="model/e2e-multi"
+    )
+
+    config = AgentConfig(
+        agent_id="e2e-multi",
+        provider="minimax",
+        model="MiniMax-M3",
+        routes={"model_call": Route.strict(ids=[NodeId("model/e2e-multi")])},
+    )
+    stage("build engine")
+    engine = await wait_for_or_die(
+        EngineBuilder.new([live_bus]).build(config),
+        timeout=LIVE_TIMEOUT,
+        label="EngineBuilder.build(MiniMax-M3)",
+    )
     state = EngineState()
 
-    await engine.run(state, "Reply with just the word: ONE")
+    stage("round 1: engine.run('Reply ONE')")
+    await wait_for_or_die(
+        engine.run(state, "Reply with just the word: ONE"),
+        timeout=LIVE_TIMEOUT,
+        label="Engine.run round 1",
+    )
     rc_after_first = state.round_count
-    assert rc_after_first >= 1
+    stage(f"round_count after first run = {rc_after_first}")
 
-    await engine.run(state, "Reply with just the word: TWO")
+    stage("round 2: engine.run('Reply TWO')")
+    await wait_for_or_die(
+        engine.run(state, "Reply with just the word: TWO"),
+        timeout=LIVE_TIMEOUT,
+        label="Engine.run round 2",
+    )
     rc_after_second = state.round_count
+    stage(f"round_count after second run = {rc_after_second}")
+    assert rc_after_first >= 1
     assert rc_after_second >= rc_after_first + 1
 
 
 @pytest.mark.asyncio
 async def test_engine_roundtrip_final_output_matches_assistant(live_bus, minimax_key):
-    """[边界] Engine.run()'s return value matches the last assistant message.
+    """[边界] Engine.run()'s return value matches the last assistant message."""
+    stage("attach live MiniMax node on bus at model/e2e-final")
+    await attach_live_minimax_node(
+        bus=live_bus, api_key=minimax_key, node_id_str="model/e2e-final"
+    )
 
-    The engine is expected to return the content of the final assistant
-    message from state.messages. We verify that the returned string is
-    contained in the last assistant message's content (text-typed run).
-    """
     config = AgentConfig(
         agent_id="e2e-final",
         provider="minimax",
         model="MiniMax-M3",
+        routes={"model_call": Route.strict(ids=[NodeId("model/e2e-final")])},
     )
-    engine = await EngineBuilder.new([live_bus]).build(config)
+    stage("build engine")
+    engine = await wait_for_or_die(
+        EngineBuilder.new([live_bus]).build(config),
+        timeout=LIVE_TIMEOUT,
+        label="EngineBuilder.build(MiniMax-M3)",
+    )
     state = EngineState()
-    output = await engine.run(state, "What is 2+2? Answer with just the digit.")
-
-    # The assistant's content (last message) should contain the output text
-    # (or be equal to it after stripping whitespace).
+    stage("engine.run('What is 2+2?')")
+    output = await wait_for_or_die(
+        engine.run(state, "What is 2+2? Answer with just the digit."),
+        timeout=LIVE_TIMEOUT,
+        label="Engine.run → MiniMax-M3 (final-output test)",
+    )
+    stage(f"output received: {output!r}")
     assert state.messages, "state.messages should not be empty after run()"
     last = state.messages[-1]
     assert last["role"] == "assistant", (

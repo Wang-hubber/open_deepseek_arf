@@ -8,6 +8,9 @@ path. The Rust-side `MiniMaxProvider` bindings are in py-arf/src/lib.rs
 """
 import pytest
 from arf import MiniMaxConfig, MiniMaxProvider
+from .conftest import stage, wait_for_or_die
+
+LIVE_TIMEOUT = 30.0
 
 
 def test_minimax_config_default():
@@ -26,25 +29,34 @@ def test_minimax_config_from_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_minimax_provider_live_chat(minimax_key):
+async def test_minimax_provider_live_chat(minimax_key, monkeypatch):
     """[方法] MiniMaxProvider.chat() with live API returns model_response.
 
-    Calls MiniMax-M3 via MiniMax's OpenAI-compatible endpoint. The
-    `model_name`, `messages`, `tools`, `params` signature is fixed by
-    py-arf/src/lib.rs::PyMiniMaxProvider::chat. We pass empty tools and
-    default params since we only need a text response.
+    Note: MiniMaxConfig.api_key is read-only in the current binding.
+    We use `from_env()` which reads MINIMAX_API_KEY. The `minimax_key`
+    fixture guarantees the env var is set; we set it via monkeypatch
+    so this test is isolated.
     """
     from arf import ModelMessage, ModelParams
-    cfg = MiniMaxConfig.default()
-    cfg.api_key = minimax_key
+    monkeypatch.setenv("MINIMAX_API_KEY", minimax_key)
+    cfg = MiniMaxConfig.from_env()
     provider = MiniMaxProvider(cfg)
-    response = await provider.chat(
-        model_name="MiniMax-M3",
-        messages=[ModelMessage(role="user", content="What is 2+2? Answer with just the number.")],
-        tools=[],
-        params=ModelParams(),
+    stage("MiniMaxProvider.chat(model_name='MiniMax-M3', 'What is 2+2?')")
+    response = await wait_for_or_die(
+        provider.chat(
+            model_name="MiniMax-M3",
+            messages=[ModelMessage(role="user", content="What is 2+2? Answer with just the number.")],
+            tools=[],
+            params=ModelParams(),
+        ),
+        timeout=LIVE_TIMEOUT,
+        label="MiniMaxProvider.chat (model=MiniMax-M3, single-turn)",
     )
-    assert "4" in response.content or "four" in response.content.lower()
+    stage(f"response.message.content = {response.message.content!r}")
+    content = response.message.content
+    assert "4" in content or "four" in content.lower(), (
+        f"expected '4' in response, got content={content!r}"
+    )
 
 
 def test_minimax_config_from_env_errors_when_missing(monkeypatch):
