@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub(crate) mod registry;
 #[cfg(test)]
 mod tests;
 
