@@ -53,15 +53,24 @@ impl ResourceRegistry {
         let mut tool_index: HashMap<String, NodeId> = HashMap::new();
 
         for spec in &decl.resources {
-            let node = snapshot
-                .nodes
-                .iter()
-                .find(|n| n.node_type == spec.node_type)
-                .ok_or_else(|| BuildError::MissingNodes {
-                    nodes: vec![format!("{}: node_type=\"{}\"", spec.resource_name, spec.node_type)],
-                })?;
-
             let filter = parse_declared_filter(&spec.capabilities, &spec.resource_name);
+
+            // 按 filter 类型选择节点匹配策略：
+            // - Subset(names): 找 node_type 匹配且至少一个 name 出现在节点
+            //   tools/skills 中的节点（避免两条 spec 同时命中第一个 mcp 节点）。
+            // - All / None_  : 找第一个 node_type 匹配的节点（保留旧行为）。
+            let node = match &filter {
+                DeclaredFilter::Subset(names) => snapshot
+                    .nodes
+                    .iter()
+                    .find(|n| n.node_type == spec.node_type && node_has_any_of(n, names)),
+                DeclaredFilter::All | DeclaredFilter::None_ => {
+                    snapshot.nodes.iter().find(|n| n.node_type == spec.node_type)
+                }
+            }
+            .ok_or_else(|| BuildError::MissingNodes {
+                nodes: vec![format!("{}: node_type=\"{}\"", spec.resource_name, spec.node_type)],
+            })?;
 
             let binding = ResourceBinding {
                 resource_name: spec.resource_name.clone(),
@@ -208,6 +217,38 @@ impl ResourceRegistry {
 }
 
 // ── helpers ──
+
+/// 判断节点的 capabilities 中是否包含 names 列表里的至少一个工具或技能名。
+///
+/// 用于 Subset filter 的节点匹配：只挑"能至少满足一个声明的工具/技能"的节点，
+/// 而不是 `find()` 拿到的第一个 node_type 匹配节点。
+fn node_has_any_of(node: &arf_core::NodeInfo, names: &[String]) -> bool {
+    let tools: Vec<String> = node
+        .capabilities
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(|s| s.as_str()).map(String::from))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let skills: Vec<String> = node
+        .capabilities
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    names
+        .iter()
+        .any(|n| tools.iter().any(|t| t == n) || skills.iter().any(|s| s == n))
+}
 
 fn resolve_model(decl: &AgentConfig, snapshot: &BusGraph) -> Result<NodeId, BuildError> {
     let node = snapshot.nodes.iter().find(|n| {
@@ -447,7 +488,123 @@ mod tests {
         assert!(registry.owner_of_tool("write").is_some());
     }
 
-    // [查询] owner_of_tool 返回正确的 NodeId
+    // [回归] 两条 Subset spec 各自匹配能提供工具的 mcp 节点
+//
+// Bug 复现：之前两条 node_type="mcp" 的 spec 都命中第一个 mcp 节点，
+// 导致第二条 spec 的 binding 覆盖第一条，且 filter 拒绝节点实际工具，
+// tool_index 里没有 codetidy_json_format。
+#[test]
+fn registry_two_subset_specs_resolve_to_distinct_nodes() {
+    let decl = AgentConfig {
+        resources: vec![
+            ResourceSpec {
+                resource_name: "local".into(),
+                node_type: "mcp".into(),
+                capabilities: Some(serde_json::json!({"tools": ["get_time", "random_number"]})),
+            },
+            ResourceSpec {
+                resource_name: "remote".into(),
+                node_type: "mcp".into(),
+                capabilities: Some(serde_json::json!({"tools": ["codetidy_json_format"]})),
+            },
+        ],
+        ..Default::default()
+    };
+    let snapshot = test_snapshot(vec![
+        model_node(),
+        mcp_node("tools/local", serde_json::json!([
+            {"name": "get_time", "description": "t", "params_schema": {}},
+            {"name": "random_number", "description": "r", "params_schema": {}},
+        ])),
+        mcp_node("codetidy/remote", serde_json::json!([
+            {"name": "codetidy_json_format", "description": "f", "params_schema": {}},
+        ])),
+    ]);
+    let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
+
+    assert_eq!(registry.owner_of_tool("get_time").unwrap().as_str(), "tools/local");
+    assert_eq!(registry.owner_of_tool("random_number").unwrap().as_str(), "tools/local");
+    assert_eq!(registry.owner_of_tool("codetidy_json_format").unwrap().as_str(), "codetidy/remote");
+
+    // 两个 mcp binding 都应保留（不再被覆盖）
+    assert_eq!(registry.mcp_nodes.len(), 2);
+    assert!(registry.mcp_nodes.contains_key(&NodeId::new("tools/local")));
+    assert!(registry.mcp_nodes.contains_key(&NodeId::new("codetidy/remote")));
+}
+
+// [错误] Subset filter 没有节点能提供任一指定工具 → MissingNode
+#[test]
+fn registry_subset_no_matching_node_fails() {
+    let decl = AgentConfig {
+        resources: vec![ResourceSpec {
+            resource_name: "ghost".into(),
+            node_type: "mcp".into(),
+            capabilities: Some(serde_json::json!({"tools": ["nonexistent_tool"]})),
+        }],
+        ..Default::default()
+    };
+    let snapshot = test_snapshot(vec![
+        model_node(),
+        mcp_node("mcp/files", serde_json::json!([
+            {"name": "read", "description": "r", "params_schema": {}},
+        ])),
+    ]);
+    assert!(matches!(
+        ResourceRegistry::build(&decl, &snapshot),
+        Err(BuildError::MissingNodes { .. })
+    ));
+}
+
+// [兼容] capabilities=None 走"第一个匹配节点"路径（保留旧行为）
+#[test]
+fn registry_none_filter_picks_first_node() {
+    let decl = AgentConfig {
+        resources: vec![ResourceSpec {
+            resource_name: "ambiguous".into(),
+            node_type: "mcp".into(),
+            capabilities: None,
+        }],
+        ..Default::default()
+    };
+    let snapshot = test_snapshot(vec![
+        model_node(),
+        mcp_node("mcp/a", serde_json::json!([{"name": "x", "description": "x", "params_schema": {}}])),
+        mcp_node("mcp/b", serde_json::json!([{"name": "y", "description": "y", "params_schema": {}}])),
+    ]);
+    let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
+    // build 成功但不注册任何 tool（None filter 拒绝所有）
+    assert!(registry.owner_of_tool("x").is_none());
+    assert!(registry.owner_of_tool("y").is_none());
+    assert_eq!(registry.mcp_nodes.len(), 1);
+}
+
+// [兼容] capabilities={"tools":"all"} 走"第一个匹配节点 + 注册所有"（保留旧行为）
+#[test]
+fn registry_all_sentinel_picks_first_node_with_all_tools() {
+    let decl = AgentConfig {
+        resources: vec![ResourceSpec {
+            resource_name: "all_mcp".into(),
+            node_type: "mcp".into(),
+            capabilities: Some(serde_json::json!({"tools": "all"})),
+        }],
+        ..Default::default()
+    };
+    let snapshot = test_snapshot(vec![
+        model_node(),
+        mcp_node("mcp/a", serde_json::json!([
+            {"name": "alpha", "description": "a", "params_schema": {}},
+        ])),
+        mcp_node("mcp/b", serde_json::json!([
+            {"name": "beta", "description": "b", "params_schema": {}},
+        ])),
+    ]);
+    let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
+    // All filter 取第一个节点的全部 tool
+    assert_eq!(registry.owner_of_tool("alpha").unwrap().as_str(), "mcp/a");
+    assert!(registry.owner_of_tool("beta").is_none());
+}
+
+// [查询] owner_of_tool 返回正确的 NodeId
     #[test]
     fn registry_owner_of_tool_returns_correct_node() {
         let decl = AgentConfig {
