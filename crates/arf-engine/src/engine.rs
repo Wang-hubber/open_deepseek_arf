@@ -5,7 +5,7 @@ use std::sync::Arc;
 use arf_bus::NodeHandle;
 use arf_core::{
     ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, NodeId,
-    NodeInfo, Route, State, ToMatch, ToolCall, ToolExec, ToolSpec, WaitStrategy,
+    NodeInfo, State, ToMatch, ToolCall, ToolExec, WaitStrategy,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::checkpoint::{self as cp_eval, DiscoveryCache};
 use crate::config::AgentConfig;
 use crate::error::{BuildError, RunError};
+use crate::registry::ResourceRegistry;
 
 const MODEL_RESPONSE: &str = "model_response";
 const TOOL_RESULT: &str = "tool_result";
@@ -32,14 +33,11 @@ pub struct Engine {
     /// Capability → recipients cache. Phase 6 task 6.7.
     discovery_cache: Arc<DiscoveryCache>,
     /// Raw system_prompt_template (no `{{skills}}` substitution).
-    /// 详见 `docs/api/explanation/上下文拼装机制.md` — Engine 在 do_model_turn
-    /// 里按 [template, *memory, skills, *conversation] 拼装 prefix。
     system_prompt_template: String,
     /// Session-stable memory items; each pushed as a separate system message.
     initial_memory: Vec<String>,
-    /// Skills cache: (hash, content). Hash over sorted (node_id) of
-    /// `kind=skill` nodes on primary bus; on miss, re-collect.
-    skills_cache: std::sync::Mutex<(u64, String)>,
+    /// Declared resource → NodeId mapping. Build-time snapshot, read-only at runtime.
+    registry: ResourceRegistry,
 }
 
 impl Engine {
@@ -47,14 +45,16 @@ impl Engine {
     pub(crate) async fn new(
         buses: Vec<Arc<arf_bus::Bus>>,
         config: AgentConfig,
+        registry: ResourceRegistry,
     ) -> Result<Self, BuildError> {
         let primary = buses[0].clone();
         let info = NodeInfo {
-            node_id: NodeId::new(format!("engine/{}", config.agent_id)),
+            node_id: NodeId::new(format!("engine/{}", config.model.provider)),
             node_type: "engine".into(),
             capabilities: serde_json::json!({
                 "kind": "engine",
-                "agent_id": config.agent_id,
+                "provider": config.model.provider,
+                "model": config.model.model_name,
             }),
             online_since: 0,
         };
@@ -95,7 +95,7 @@ impl Engine {
             discovery_cache,
             system_prompt_template,
             initial_memory,
-            skills_cache: std::sync::Mutex::new((0, String::new())),
+            registry,
         })
     }
 
@@ -147,18 +147,18 @@ impl Engine {
             }
 
             // 终止：max_turns（每 turn 后判一次）
-            if state.over_view.turn_count as u32 >= self.config.max_turns {
+            if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
                 return Err(RunError::MaxTurnsExceeded {
-                    max_turns: self.config.max_turns,
+                    max_turns: self.config.engine.max_turns,
                 });
             }
 
             // ── Checkpoint::BeforeModelCall (6.5) ────────────────────────
             self.evaluate_and_dispatch(state, Checkpoint::BeforeModelCall, cancel.clone())
                 .await?;
-            if state.over_view.turn_count as u32 >= self.config.max_turns {
+            if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
                 return Err(RunError::MaxTurnsExceeded {
-                    max_turns: self.config.max_turns,
+                    max_turns: self.config.engine.max_turns,
                 });
             }
 
@@ -175,9 +175,9 @@ impl Engine {
                 .await?;
 
             // 终止：max_turns（model turn 后检）
-            if state.over_view.turn_count as u32 >= self.config.max_turns {
+            if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
                 return Err(RunError::MaxTurnsExceeded {
-                    max_turns: self.config.max_turns,
+                    max_turns: self.config.engine.max_turns,
                 });
             }
 
@@ -205,9 +205,9 @@ impl Engine {
                 self.evaluate_and_dispatch(state, Checkpoint::AfterToolExec, cancel.clone())
                     .await?;
 
-                if state.over_view.turn_count as u32 >= self.config.max_turns {
+                if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
                     return Err(RunError::MaxTurnsExceeded {
-                        max_turns: self.config.max_turns,
+                        max_turns: self.config.engine.max_turns,
                     });
                 }
             }
@@ -231,13 +231,13 @@ impl Engine {
         if cancel.is_cancelled() {
             return Err(RunError::Stopped);
         }
-        if self.config.checkpoint_rules.is_empty() {
+        if self.config.engine.checkpoint_rules.is_empty() {
             return Ok(());
         }
         // Build CheckpointMsg list without holding &mut self — keeps borrows disjoint.
         let graph_nodes = self.primary_bus.graph().nodes;
-        let rules = &self.config.checkpoint_rules;
-        let routes = &self.config.routes;
+        let rules = &self.config.engine.checkpoint_rules;
+        let routes = &self.config.engine.routes;
         let built = cp_eval::evaluate(state, trigger, rules, routes, &graph_nodes, &self.discovery_cache)?;
 
         for cm in built {
@@ -345,7 +345,7 @@ impl Engine {
         //   [1..N] system: initial_memory[i]      (each entry as own message)
         //   [N+1] system: skills (live BusGraph; cached by hash)
         //   [N+2..] state.messages  (conversation)
-        let skills_text = collect_skills_cached(&self.primary_bus, &self.skills_cache);
+        let skills_text = self.registry.skills_text(&self.primary_bus);
         let mut messages: Vec<ModelMessage> = Vec::with_capacity(
             2 + self.initial_memory.len() + state.messages.len(),
         );
@@ -358,13 +358,14 @@ impl Engine {
         }
         messages.extend(state.messages.iter().cloned());
 
-        let tools = collect_tools_from_routes(&self.primary_bus, &self.config);
+        let tools = self.registry.tools_for_model(&self.primary_bus);
         let model_call = ModelCall::new(messages).with_tools(tools);
         let cid = model_call.correlation_id;
+        let target = self.registry.model_target();
         let msg = Message::with_from_bus(
             model_call.msg_type(),
             self.agent_id.clone(),
-            vec![],
+            vec![target],
             model_call.payload(),
             self.handle.primary_bus_id(),
         );
@@ -423,10 +424,10 @@ impl Engine {
         // provided, (2) BusGraph owner lookup, (3) broadcast as last
         // resort (legacy). model_call / tool_exec are built-in actions —
         // routing is Engine's job, no user config required.
-        let target = match tc.target.clone() {
-            Some(t) => Some(t),
-            None => find_tool_owner(&self.primary_bus, &tc.name),
-        };
+        let target = tc
+            .target
+            .clone()
+            .or_else(|| self.registry.owner_of_tool(&tc.name));
         let tool_exec = ToolExec {
             correlation_id: Uuid::new_v4(),
             tool_name: tc.name.clone(),
@@ -606,7 +607,7 @@ fn engine_response_types(config: &AgentConfig) -> Vec<String> {
     types.push(MODEL_RESPONSE.to_string());
     types.push(TOOL_RESULT.to_string());
     // Routes-derived response types (App-level CheckpointRule dispatch).
-    for msg_type in config.routes.keys() {
+    for msg_type in config.engine.routes.keys() {
         if let Some(t) = response_msg_type_for(msg_type) {
             if t != MODEL_RESPONSE && t != TOOL_RESULT {
                 types.push(t);
@@ -631,121 +632,3 @@ fn response_msg_type_for(request: &str) -> Option<String> {
     }
 }
 
-/// Collect skills text from `kind=skill` nodes on the primary bus, with
-/// hash-based caching. Returns an empty string if no skill nodes are online
-/// (caller MUST NOT push an empty system message in that case — see spec).
-///
-/// `Engine` keeps a `(u64, String)` cache: on hash miss, re-collect from
-/// the live BusGraph; on hit, return the cached text. The hash is a cheap
-/// fold-over-bytes of the sorted (deduped) node-id list.
-pub(crate) fn collect_skills_cached(
-    primary_bus: &Arc<arf_bus::Bus>,
-    cache: &std::sync::Mutex<(u64, String)>,
-) -> String {
-    let graph = primary_bus.graph();
-    let mut skill_ids: Vec<String> = graph
-        .nodes
-        .iter()
-        .filter(|n| {
-            n.capabilities
-                .get("kind")
-                .and_then(|v| v.as_str())
-                == Some("skill")
-        })
-        .map(|n| n.node_id.to_string())
-        .collect();
-    skill_ids.sort();
-    skill_ids.dedup();
-    // Cheap non-cryptographic hash: fold over bytes.
-    let mut hash: u64 = skill_ids.len() as u64;
-    for s in &skill_ids {
-        hash = hash.wrapping_mul(31).wrapping_add(s.len() as u64);
-        for b in s.bytes() {
-            hash = hash.wrapping_mul(31).wrapping_add(b as u64);
-        }
-    }
-    let mut guard = cache.lock().unwrap();
-    if guard.0 == hash && !guard.1.is_empty() {
-        return guard.1.clone();
-    }
-    let content = if skill_ids.is_empty() {
-        String::new()
-    } else {
-        let items: Vec<String> = skill_ids.iter().map(|s| format!("- {s}")).collect();
-        format!("Available skills:\n{}", items.join("\n"))
-    };
-    *guard = (hash, content.clone());
-    content
-}
-
-/// Collect ToolSpec from MCP nodes targeted by `tool_exec*` Strict routes.
-///
-/// Routes with `msg_type` starting with `"tool_exec"` are the source of truth
-/// for which MCP tools the agent may invoke. For each Strict NodeId in those
-/// routes, we look up the corresponding online node on the primary bus and
-/// pull its advertised `capabilities.tools` (each entry is
-/// `{name, description, params_schema}`). Malformed entries (empty name,
-/// missing tools array) are silently skipped — never panic, never error.
-///
-/// Find the MCP node that advertises a given tool name in its capabilities.
-/// Returns `Some(NodeId)` if exactly one MCP node owns it; `None` if no
-/// node owns it OR if multiple nodes claim ownership (ambiguous — return
-/// None to avoid wrong-node routing).
-///
-/// Used by `do_tool_turn` to route tool_exec directly to the owning node
-/// (avoids broadcast race when multiple MCP nodes are online).
-pub(crate) fn find_tool_owner(primary_bus: &Arc<arf_bus::Bus>, tool_name: &str) -> Option<NodeId> {
-    let graph = primary_bus.graph();
-    let mut owner: Option<NodeId> = None;
-    for node in &graph.nodes {
-        if node.node_type != "mcp" {
-            continue;
-        }
-        let owns = node
-            .capabilities
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .any(|t| t.get("name").and_then(|s| s.as_str()) == Some(tool_name))
-            })
-            .unwrap_or(false);
-        if owns {
-            if owner.is_some() {
-                // Ambiguous: multiple MCP nodes claim the same tool name.
-                return None;
-            }
-            owner = Some(node.node_id.clone());
-        }
-    }
-    owner
-}
-
-/// Discovery routes for `tool_exec*` are out of scope.
-fn collect_tools_from_routes(
-    primary_bus: &Arc<arf_bus::Bus>,
-    config: &AgentConfig,
-) -> Vec<ToolSpec> {
-    let mut specs = Vec::new();
-    let graph = primary_bus.graph();
-    for (msg_type, route) in &config.routes {
-        if !msg_type.starts_with("tool_exec") {
-            continue;
-        }
-        let Route::Strict(ids) = route else { continue };
-        for nid in ids {
-            let Some(node) = graph.nodes.iter().find(|n| &n.node_id == nid) else { continue };
-            let Some(arr) = node.capabilities.get("tools").and_then(|v| v.as_array()) else { continue };
-            for t in arr {
-                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if name.is_empty() {
-                    continue;
-                }
-                let description = t.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let params = t.get("params_schema").cloned().unwrap_or(serde_json::json!({}));
-                specs.push(ToolSpec::new(name, description, params));
-            }
-        }
-    }
-    specs
-}
