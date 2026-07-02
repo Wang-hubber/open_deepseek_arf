@@ -88,7 +88,6 @@ async def main():
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="ex04-trunc-test",
             provider="mock",
             model="mock-v1",
             max_turns=2,

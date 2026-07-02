@@ -68,7 +68,6 @@ async def test_python_checkpoint_writes_and_reads_state_file(
     )
 
     config = AgentConfig(
-        agent_id="e2e-checkpoint",
         provider="minimax",
         model="MiniMax-M3",
         routes={"model_call": Route.strict(ids=[NodeId("model/e2e-checkpoint")])},
@@ -88,8 +87,10 @@ async def test_python_checkpoint_writes_and_reads_state_file(
     )
     stage(f"output = {output!r}")
 
-    assert len(state.messages) >= 3, (
-        f"expected ≥3 messages, got {len(state.messages)}: "
+    # 2026-07-02: system prefix is no longer stored in state.messages
+    # (mirrors react_loop.rs::react_single_round_text).
+    assert len(state.messages) >= 2, (
+        f"expected ≥2 messages, got {len(state.messages)}: "
         f"{[m['role'] for m in state.messages]}"
     )
 
@@ -101,9 +102,10 @@ async def test_python_checkpoint_writes_and_reads_state_file(
     loaded = json.loads(out_path.read_text())
     assert isinstance(loaded, list)
     assert len(loaded) == len(state.messages)
-    assert loaded[0]["role"] == "system"
-    assert loaded[1]["role"] == "user"
-    assert loaded[2]["role"] == "assistant"
+    # 2026-07-02: system prefix is no longer stored in state.messages
+    # (mirrors react_loop.rs::react_single_round_text).
+    assert loaded[0]["role"] == "user"
+    assert loaded[1]["role"] == "assistant"
     assert output.strip() and output.strip() in loaded[-1]["content"], (
         f"loaded assistant content {loaded[-1]['content']!r} should "
         f"contain engine output {output!r}"

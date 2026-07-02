@@ -109,7 +109,6 @@ async def main():
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="ex03-tool-bot",
             provider="mock",
             model="mock-v1",
         ),

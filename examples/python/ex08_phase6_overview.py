@@ -90,7 +90,6 @@ async def main():
     # ── phase 6.10/6.5/6.2: Engine + Checkpoint + Route ──
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="ex08-full-demo",
             system_prompt_template="You are a helpful assistant. Use available tools when appropriate.",
             max_turns=8,
             routes={

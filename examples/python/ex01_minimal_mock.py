@@ -63,7 +63,7 @@ async def main():
     mock, task = await attach_mock_model(bus, text="pong from mock")
 
     engine = await EngineBuilder.new(buses=[bus]).build(
-        config=AgentConfig(agent_id="ex01-minimal", provider="mock", model="mock-v1"),
+        config=AgentConfig(provider="mock", model="mock-v1"),
     )
     state = EngineState()
     output = await engine.run(state=state, user_input="hello")

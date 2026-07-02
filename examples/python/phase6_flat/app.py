@@ -190,13 +190,13 @@ async def main():
     # On failure → BuildError with missing_nodes / missing_capabilities
     #
     config = AgentConfig(
-        agent_id="assistant",
         system_prompt_template=(
             "You are a helpful assistant.\n\n"
             "Tools:\n{{tools}}\n\n"
             "Use tools to help the user. Be concise."
         ),
-        model_config={"provider": "deepseek", "model": "deepseek-v4-flash"},
+        provider="deepseek",
+        model="deepseek-v4-flash",
         max_turns=10,
         routes={
             "model_call": Route.strict(node_ids=["model/deepseek"]),

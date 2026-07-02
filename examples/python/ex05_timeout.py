@@ -50,7 +50,6 @@ async def main():
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="ex05-hang-test",
             provider="silent",  # matches capabilities.provider
             model="silent-v1",
         ),

@@ -66,7 +66,7 @@ async def main():
     )
 
     engine = await EngineBuilder.new(buses=[bus]).build(
-        config=AgentConfig(agent_id="ex02-multi-round"),
+        config=AgentConfig(provider="mock", model="mock-v1"),
     )
     state = EngineState()
 

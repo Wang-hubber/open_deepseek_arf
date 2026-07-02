@@ -50,7 +50,6 @@ async def test_engine_roundtrip_text_response(live_bus, minimax_key):
     )
 
     config = AgentConfig(
-        agent_id="e2e-text",
         provider="minimax",
         model="MiniMax-M3",
         routes={"model_call": Route.strict(ids=[NodeId("model/e2e-text")])},
@@ -88,7 +87,6 @@ async def test_engine_state_messages_accumulate(live_bus, minimax_key):
     )
 
     config = AgentConfig(
-        agent_id="e2e-msg",
         provider="minimax",
         model="MiniMax-M3",
         routes={"model_call": Route.strict(ids=[NodeId("model/e2e-msg")])},
@@ -108,10 +106,12 @@ async def test_engine_state_messages_accumulate(live_bus, minimax_key):
     )
     stage(f"messages count = {len(state.messages)}; roles = "
           f"{[m['role'] for m in state.messages]}")
-    assert len(state.messages) >= 3
-    assert state.messages[0]["role"] == "system"
-    assert state.messages[1]["role"] == "user"
-    assert state.messages[2]["role"] == "assistant"
+    # 2026-07-02: system prefix is no longer stored in state.messages
+    # (mirrors react_loop.rs::react_single_round_text — system is
+    # injected into the model prompt but not into state.messages).
+    assert len(state.messages) >= 2
+    assert state.messages[0]["role"] == "user"
+    assert state.messages[1]["role"] == "assistant"
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,6 @@ async def test_engine_roundtrip_multi_round(live_bus, minimax_key):
     )
 
     config = AgentConfig(
-        agent_id="e2e-multi",
         provider="minimax",
         model="MiniMax-M3",
         routes={"model_call": Route.strict(ids=[NodeId("model/e2e-multi")])},
@@ -170,7 +169,6 @@ async def test_engine_roundtrip_final_output_matches_assistant(live_bus, minimax
     )
 
     config = AgentConfig(
-        agent_id="e2e-final",
         provider="minimax",
         model="MiniMax-M3",
         routes={"model_call": Route.strict(ids=[NodeId("model/e2e-final")])},

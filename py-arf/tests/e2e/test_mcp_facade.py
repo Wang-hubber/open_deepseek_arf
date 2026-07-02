@@ -228,7 +228,6 @@ async def test_python_engine_receives_cross_bus_tool_result():
 
     # Construct an AgentConfig with routes kwarg.
     config = AgentConfig(
-        agent_id="e2e-routes",
         provider="minimax",
         model="MiniMax-M3",
         routes={
@@ -238,7 +237,8 @@ async def test_python_engine_receives_cross_bus_tool_result():
 
     # Verify the AgentConfig accepts the route kwarg without raising.
     # Detailed introspection isn't needed — the kwarg is consumed by
-    # EngineBuilder.build() and stored on AgentConfig.routes. The mere
-    # fact that AgentConfig(...) doesn't raise is sufficient verification
-    # that the binding accepts a dict[str, Route].
-    assert config.agent_id == "e2e-routes"
+    # EngineBuilder.build() and stored on AgentConfig.engine.routes.
+    # The mere fact that AgentConfig(...) doesn't raise is sufficient
+    # verification that the binding accepts a dict[str, Route].
+    assert "model_call" in config.routes
+    assert "Strict" in config.routes["model_call"]

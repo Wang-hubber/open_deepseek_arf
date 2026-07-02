@@ -55,7 +55,7 @@ async def main():
     bus = Bus()
     mock, task = await attach_mock_model(bus)
     engine = await EngineBuilder.new(buses=[bus]).build(
-        config=AgentConfig(agent_id="ex06-state"),
+        config=AgentConfig(provider="mock", model="mock-v1"),
     )
 
     # 1. Run, then serialize
