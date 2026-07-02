@@ -144,6 +144,12 @@ impl McpNode {
             // Engine-native wire format (Phase 6 §3.4). Translate to
             // tool_call_set, execute, then unwrap the single result back
             // into the engine's `tool_result` schema.
+            //
+            // Design intent (2026-07-02): "whoever registers the Tool
+            // responds to that tool's execution". When the engine
+            // broadcasts `tool_exec` to multiple MCP nodes, only the
+            // owner of `tool_name` responds. Non-owners return `None`
+            // and stay silent — the engine waits for whoever replies.
             "tool_exec" => {
                 let tool_name = msg
                     .payload
@@ -169,6 +175,10 @@ impl McpNode {
                         "ok": false,
                         "error": "missing tool_name in tool_exec payload",
                     })));
+                }
+                // Filter: only the node that owns this tool responds.
+                if self.discovery.resolve_tool(&tool_name).is_none() {
+                    return None;
                 }
                 let call_set = ToolCallSet {
                     session_id: correlation_id.clone(),

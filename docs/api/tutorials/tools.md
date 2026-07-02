@@ -6,8 +6,6 @@
 
 在 Ch2 的本地 tool 基础上，再注册一个远程 MCP 节点。模型可以同时调本地与远程 tool — Bus / AgentConfig / Engine / ModelAdapter / MCP (Local + Remote) 全部就位，最小闭环完成。
 
-> ⚠️ 本章需要 **一个真实可用的远程 MCP server URL**。代码里 `REMOTE_MCP_URL` 是占位符，请替换为你自己的 URL。URL 不可达时 Engine 会捕获 tool 失败并继续（fail gracefully），不会 unhandled exception。
-
 ## 远程 MCP 节点约定
 
 `McpNode.remote(namespace, config)` 通过 HTTP/HTTPS 与远程 MCP server 通信。`config` 是 `RemoteConfig`：
@@ -23,9 +21,21 @@
 
 `McpNode.remote` 在 `connect(bus)` 时通过 `HttpDiscovery` 远程拉 tool/skill 列表，本地缓存。后续 `tool_exec` 走相同 wire 协议（`tool_exec` → `tool_result`），Engine 无需区分本地/远程。
 
+### "谁注册谁响应" 的设计意图
+
+Engine 把 `tool_exec` 广播到所有 MCP 节点。**只有注册了该 tool 的 MCP 节点会响应**；非 owner 节点收到 `tool_exec` 后静默忽略（不发响应）。这意味着多 MCP 共存时不会出现"wrong-node responds first"的竞争条件。
+
+## 真实远程 MCP 服务（推荐测试用）
+
+教程需要一个能跑通真实 tool 调用的远程 MCP。推荐 [CodeTidy](https://mcp.codetidy.dev) — 62 个开发者工具（JSON 格式化/校验/转换、Base64、UUID、哈希、Semver 等），无需注册、无需 API key，HTTP 传输。
+
+**Endpoint**: `https://mcp.codetidy.dev/`
+
+> 测试时本地不再需要任何远程 MCP server；本教程的代码直接用 CodeTidy 跑通（假设有网络）。
+
 ## 代码
 
-完整可运行脚本（保存为 `/tmp/ch3.py`；替换 `REMOTE_MCP_URL` 后跑）：
+完整可运行脚本（保存为 `/tmp/ch3.py`）：
 
 ```python
 import asyncio
@@ -38,8 +48,8 @@ from arf import (
 )
 
 
-# 替换为你的真实远程 MCP server URL。本教程默认占位符 — 跑通需替换。
-REMOTE_MCP_URL = "https://your-remote-mcp.example.com/mcp"
+# 真实远程 MCP — CodeTidy（无需 key）。可替换为你自己的 URL。
+REMOTE_MCP_URL = "https://mcp.codetidy.dev/"
 
 
 def ensure_local_tool():
@@ -84,17 +94,12 @@ async def main():
     mcp_local = McpNode.local(namespace="tools", root=".")
     await mcp_local.connect(bus=bus)
 
-    # 远程 MCP 节点 — 替换 REMOTE_MCP_URL 为你自己的 URL
-    mcp_remote = None
-    try:
-        mcp_remote = await McpNode.remote(
-            namespace="weather-api",
-            config=RemoteConfig(transport="http", url=REMOTE_MCP_URL, timeout_secs=10),
-        )
-        await mcp_remote.connect(bus=bus)
-    except Exception as e:
-        print(f"remote MCP unavailable (skipped): {type(e).__name__}: {e}")
-        # 占位 URL 下 mcp_remote 保持 None；engine.run 仍会跑（只调本地 tool）
+    # 远程 MCP 节点 — CodeTidy（62 个工具）
+    mcp_remote = await McpNode.remote(
+        namespace="codetidy",
+        config=RemoteConfig(transport="http", url=REMOTE_MCP_URL, timeout_secs=30),
+    )
+    await mcp_remote.connect(bus=bus)
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
@@ -102,29 +107,23 @@ async def main():
             system_prompt_template="你是一个简洁的中文助手。",
             routes={
                 "model_call": Route.discovery(requirements=[("provider", "minimax")]),
+                # tool_exec* routes 决定 tool_exec 消息的响应类型，但实际路由由
+                # MCP 节点的"谁注册谁响应"过滤决定（见上节）。
                 "tool_exec": Route.strict(ids=[NodeId("mcp/tools")]),
-                # tool_exec_weather 只在 mcp_remote 在线时才有意义；占位 URL 下
-                # engine.build 时会因 NodeId 不在 graph 而失败，所以这里动态构造。
-                **(
-                    {"tool_exec_weather": Route.strict(ids=[NodeId("mcp/weather-api")])}
-                    if mcp_remote is not None else {}
-                ),
+                "tool_exec_remote": Route.strict(ids=[NodeId("mcp/codetidy")]),
             },
         ),
     )
 
     state = EngineState()
-    try:
-        out = await engine.run(
-            state=state,
-            user_input="查一下现在北京时间，再告诉我上海今天天气怎么样。",
-        )
-        print(f"out={out!r}")
-    except Exception as e:
-        # URL 不可达 / tool 失败时 Engine 可能在这里抛 — 我们捕获并继续
-        print(f"engine.run raised (expected if REMOTE_MCP_URL is unreachable): {type(e).__name__}: {e}")
-    print(f"messages={len(state.messages)}, turn_count={state.turn_count}")
+    out = await engine.run(
+        state=state,
+        user_input='用 codetidy_json_format 把这段 JSON 美化：{"name":"ARF","version":"1.0","features":["bus","model_adapter","mcp"]}',
+    )
+    print(f"out={out!r}")
+    print(f"messages={len(state.messages)}")
     print(f"roles={[m['role'] for m in state.messages]}")
+    print(f"last tool msg content[:200]: {next((m.get('content','')[:200] for m in state.messages if m['role']=='tool'), '(no tool call)')!r}")
     await bus.shutdown()
 
 
@@ -135,7 +134,6 @@ if __name__ == "__main__":
 ## 运行
 
 ```bash
-# 替换 REMOTE_MCP_URL 后再跑（占位 URL 跑不通远程 tool，本地 tool 仍能跑）
 export MINIMAX_API_KEY='sk-...'
 cd /path/to/repo
 .venv/bin/python /tmp/ch3.py
@@ -143,16 +141,26 @@ unset MINIMAX_API_KEY
 rm -rf ./tools/get_time
 ```
 
-预期 stdout（占位 URL 场景下，远程 tool 失败但脚本不崩）：
+预期 stdout（实际 LLM 文本会有变化）：
 
 ```text
-remote MCP unavailable (skipped): ConnectionError: remote MCP server unreachable (https://your-remote-mcp.example.com/mcp): ...
-out='**当前北京时间：2026年5月15日 18:37:09（星期四）**\n\n关于上海的天气情况，很抱歉，我目前没有查询天气的工具可用...'
-messages=5, turn_count=3
-roles=['system', 'user', 'assistant', 'tool', 'assistant']
+out='<think>...我将清晰呈现结果。</think>\n\n美化后的结果：\n\n```json\n{\n  "name": "ARF",\n  "version": "1.0",\n  "features": [\n    "bus",\n    "model_adapter",\n    "mcp"\n  ]\n}\n```\n\n✅ JSON 本身是合法的...'
+messages=4
+roles=['user', 'assistant', 'tool', 'assistant']
+last tool msg content[:200]: '{\n  "name": "ARF",\n  "version": "1.0",\n  "features": [\n    "bus",\n    "model_adapter",\n    "mcp"\n  ]\n}\n\n---\nPowered by CodeTidy — free developer tools at https://codetidy.dev\nFull interactive version: ...'
 ```
 
-> 注：占位 URL 下远程 tool 必失败；脚本中 `try/except` 让 main 不 unhandled-exit。本地 `get_time` 仍可被调用；模型会基于可用 tool 给出真实回答（不会编造天气）。**完整跑通 Ch3（本地 + 远程都通）需要真实远程 MCP URL。**
+> 注：完整 ReAct 闭环 — `roles` 包含 `'tool'` 证明远程 MCP tool 真被调用并返回了真实结果。模型在拿到 tool_result 后包装成友好回复。CodeTidy 在返回内容里自动追加了 "Powered by CodeTidy" 链接。
+
+### 换其他 CodeTidy 工具
+
+CodeTidy 提供 62 个工具，模型可能因上下文截断看到不同子集。如果某个工具名 model 看不到，换个等价工具：
+
+```python
+user_input = "用 codetidy_base64_encode 把 'Hello ARF' 编码为 Base64"
+user_input = "用 codetidy_json_validate 检查这段 JSON 是否合法：{...}"
+user_input = "用 codetidy_uuid_generate 生成 3 个 UUID"
+```
 
 ## 下一节
 

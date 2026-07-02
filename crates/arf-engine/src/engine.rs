@@ -418,6 +418,10 @@ impl Engine {
     ) -> Result<serde_json::Value, RunError> {
         state.inc_turn();
 
+        // Engine only knows the model's explicit `tc.target`. If absent,
+        // broadcast `tool_exec` to all MCP nodes and let each MCP node
+        // decide whether to respond (per design intent: only the node that
+        // registered the tool responds — see `McpNode::dispatch` tool_exec arm).
         let target = tc.target.clone();
         let tool_exec = ToolExec {
             correlation_id: Uuid::new_v4(),
@@ -426,10 +430,14 @@ impl Engine {
             target: target.clone(),
         };
         let cid = tool_exec.correlation_id;
+        let to: Vec<NodeId> = match target {
+            Some(t) => vec![t],
+            None => Vec::new(),
+        };
         let msg = Message::with_from_bus(
             tool_exec.msg_type(),
             self.agent_id.clone(),
-            target.into_iter().collect(),
+            to,
             tool_exec.payload(),
             self.handle.primary_bus_id(),
         );
