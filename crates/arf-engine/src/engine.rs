@@ -5,7 +5,7 @@ use std::sync::Arc;
 use arf_bus::NodeHandle;
 use arf_core::{
     ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, NodeId,
-    NodeInfo, State, ToMatch, ToolCall, ToolExec, WaitStrategy,
+    NodeInfo, Route, State, ToMatch, ToolCall, ToolExec, ToolSpec, WaitStrategy,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -333,7 +333,8 @@ impl Engine {
     ) -> Result<(String, Vec<ToolCall>), RunError> {
         state.inc_turn();
 
-        let model_call = ModelCall::new(state.messages.clone());
+        let tools = collect_tools_from_routes(&self.primary_bus, &self.config);
+        let model_call = ModelCall::new(state.messages.clone()).with_tools(tools);
         let cid = model_call.correlation_id;
         let msg = Message::with_from_bus(
             model_call.msg_type(),
@@ -591,4 +592,42 @@ fn response_msg_type_for(request: &str) -> Option<String> {
         "human_handoff" => Some("human_handoff_reply".into()),
         _ => None,
     }
+}
+
+/// Collect ToolSpec from MCP nodes targeted by `tool_exec*` Strict routes.
+///
+/// Routes with `msg_type` starting with `"tool_exec"` are the source of truth
+/// for which MCP tools the agent may invoke. For each Strict NodeId in those
+/// routes, we look up the corresponding online node on the primary bus and
+/// pull its advertised `capabilities.tools` (each entry is
+/// `{name, description, params_schema}`). Malformed entries (empty name,
+/// missing tools array) are silently skipped — never panic, never error.
+///
+/// Discovery routes for `tool_exec*` are out of scope.
+fn collect_tools_from_routes(
+    primary_bus: &Arc<arf_bus::Bus>,
+    config: &AgentConfig,
+) -> Vec<ToolSpec> {
+    let mut specs = Vec::new();
+    let graph = primary_bus.graph();
+    for (msg_type, route) in &config.routes {
+        if !msg_type.starts_with("tool_exec") {
+            continue;
+        }
+        let Route::Strict(ids) = route else { continue };
+        for nid in ids {
+            let Some(node) = graph.nodes.iter().find(|n| &n.node_id == nid) else { continue };
+            let Some(arr) = node.capabilities.get("tools").and_then(|v| v.as_array()) else { continue };
+            for t in arr {
+                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let description = t.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let params = t.get("params_schema").cloned().unwrap_or(serde_json::json!({}));
+                specs.push(ToolSpec::new(name, description, params));
+            }
+        }
+    }
+    specs
 }

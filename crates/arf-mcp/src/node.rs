@@ -10,7 +10,7 @@ use crate::config::RemoteConfig;
 use crate::discovery::DiscoveryBackend;
 use crate::error::McpError;
 use crate::runtime::RuntimeModule;
-use crate::types::ToolCallSet;
+use crate::types::{ToolCallItem, ToolCallSet};
 
 /// The single MCP node type — local and remote differ only in backend.
 pub struct McpNode {
@@ -84,7 +84,11 @@ impl McpNode {
 
     fn build_node_info(&self) -> NodeInfo {
         let tools: Vec<Value> = self.discovery.list_tools().iter()
-            .map(|t| serde_json::json!({"name": t.name, "description": t.description}))
+            .map(|t| serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "params_schema": t.parameters_schema,
+            }))
             .collect();
         let skills: Vec<Value> = self.discovery.list_skills().iter()
             .map(|s| serde_json::json!({"name": s.name, "description": s.description}))
@@ -135,6 +139,66 @@ impl McpNode {
                 };
                 let result_set = self.runtime.execute(&call_set, self.discovery.tool_map()).await;
                 Some(("tool_result_set".into(), serde_json::to_value(&result_set).unwrap_or_default()))
+            }
+
+            // Engine-native wire format (Phase 6 §3.4). Translate to
+            // tool_call_set, execute, then unwrap the single result back
+            // into the engine's `tool_result` schema.
+            "tool_exec" => {
+                let tool_name = msg
+                    .payload
+                    .get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = msg
+                    .payload
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let correlation_id = msg
+                    .payload
+                    .get("correlation_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if tool_name.is_empty() {
+                    return Some(("tool_result".into(), serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "name": "",
+                        "ok": false,
+                        "error": "missing tool_name in tool_exec payload",
+                    })));
+                }
+                let call_set = ToolCallSet {
+                    session_id: correlation_id.clone(),
+                    calls: vec![ToolCallItem {
+                        id: "call_0".into(),
+                        tool: tool_name.clone(),
+                        params: arguments,
+                        blocked_by: vec![],
+                        blocking: vec![],
+                    }],
+                    timeout_ms: None,
+                };
+                let result_set = self.runtime.execute(&call_set, self.discovery.tool_map()).await;
+                let item = result_set.results.into_iter().next();
+                let payload = match item {
+                    Some(r) => serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "name": r.name,
+                        "ok": r.status == "success",
+                        "content": r.result,
+                        "error": r.error,
+                    }),
+                    None => serde_json::json!({
+                        "correlation_id": correlation_id,
+                        "name": tool_name,
+                        "ok": false,
+                        "error": "executor returned no result",
+                    }),
+                };
+                Some(("tool_result".into(), payload))
             }
 
             "use_skill" => {
