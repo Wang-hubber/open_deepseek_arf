@@ -18,7 +18,7 @@ use arf_core::{
     ModelCall, NodeId, Route, State as CoreState,
 };
 use arf_core::CheckpointRule as CoreCheckpointRule;
-use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig, WaitStrategy};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, WaitStrategy};
 
 use crate::{json_value_to_py, py_object_to_json, PyBus, PyNodeId};
 
@@ -37,20 +37,27 @@ pub struct PyAgentConfig {
 impl PyAgentConfig {
     #[new]
     #[pyo3(signature = (
-        agent_id = "agent".to_string(),
-        provider = "mock".to_string(),
-        model = "mock-v1".to_string(),
-        system_prompt_template = "You are helpful.".to_string(),
+        provider = "deepseek".to_string(),
+        model = "deepseek-v4-flash".to_string(),
+        endpoint = None,
+        api_key_env = None,
+        system_prompt_template = "You are a helpful assistant.".to_string(),
+        resources = None,
         max_turns = 10u32,
+        tool_timeout_ms = None,
         routes = None,
         checkpoint_rules = None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        agent_id: String,
         provider: String,
         model: String,
+        endpoint: Option<String>,
+        api_key_env: Option<String>,
         system_prompt_template: String,
+        resources: Option<Vec<PyResourceSpec>>,
         max_turns: u32,
+        tool_timeout_ms: Option<u64>,
         routes: Option<std::collections::HashMap<String, PyRoute>>,
         checkpoint_rules: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
     ) -> PyResult<Self> {
@@ -70,22 +77,30 @@ impl PyAgentConfig {
             }
             None => vec![],
         };
+        let res_specs: Vec<arf_agent::ResourceSpec> = resources
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.inner)
+            .collect();
         let cfg = AgentConfig {
-            agent_id,
-            model_config: ModelConfig { provider, model },
+            model: arf_agent::ModelDecl {
+                provider,
+                model_name: model,
+                endpoint,
+                api_key_env,
+                ..Default::default()
+            },
+            resources: res_specs,
             system_prompt_template,
             initial_memory: vec![],
-            max_turns,
-            tool_timeout_ms: None,
-            permissions: Default::default(),
-            routes: routes_map,
-            checkpoint_rules: rules,
-            processors: Default::default(),
-            on_member_failed: None,
-            tools_include: None,
-            tools_exclude: vec![],
-            skills_include: None,
-            skills_exclude: vec![],
+            allowed_paths: vec![],
+            engine: EngineConfig {
+                routes: routes_map,
+                checkpoint_rules: rules,
+                max_turns,
+                tool_timeout_ms,
+                ..Default::default()
+            },
         };
         Ok(Self {
             inner: std::sync::Arc::new(std::sync::Mutex::new(Some(cfg))),
@@ -93,23 +108,23 @@ impl PyAgentConfig {
     }
 
     #[getter]
-    fn agent_id(&self) -> String {
-        self.inner.lock().unwrap().as_ref().unwrap().agent_id.clone()
+    fn provider(&self) -> String {
+        self.inner.lock().unwrap().as_ref().unwrap().model.provider.clone()
     }
 
     #[getter]
     fn max_turns(&self) -> u32 {
-        self.inner.lock().unwrap().as_ref().unwrap().max_turns
+        self.inner.lock().unwrap().as_ref().unwrap().engine.max_turns
     }
 
     #[getter]
     fn routes(&self) -> std::collections::HashMap<String, String> {
-        // Return as msg_type -> "<Route kind>":string summary for inspection.
         self.inner
             .lock()
             .unwrap()
             .as_ref()
             .unwrap()
+            .engine
             .routes
             .iter()
             .map(|(k, v)| (k.clone(), format!("{:?}", v)))
@@ -119,7 +134,7 @@ impl PyAgentConfig {
     #[getter]
     fn checkpoint_rules(&self, py: Python<'_>) -> PyResult<Vec<pyo3::Py<pyo3::PyAny>>> {
         let cfg = self.inner.lock().unwrap();
-        let rules = &cfg.as_ref().unwrap().checkpoint_rules;
+        let rules = &cfg.as_ref().unwrap().engine.checkpoint_rules;
         let mut out = Vec::with_capacity(rules.len());
         for r in rules {
             // We can't reconstruct PyCheckpointRule from the Rust
@@ -137,9 +152,51 @@ impl PyAgentConfig {
     fn __repr__(&self) -> String {
         let cfg = self.inner.lock().unwrap();
         match cfg.as_ref() {
-            Some(c) => format!("AgentConfig(agent_id='{}', max_turns={})", c.agent_id, c.max_turns),
+            Some(c) => format!("AgentConfig(provider='{}', model='{}', max_turns={})", c.model.provider, c.model.model_name, c.engine.max_turns),
             None => "AgentConfig(consumed)".to_string(),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyResourceSpec
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ResourceSpec — declares a logical resource dependency.
+#[pyclass(name = "ResourceSpec")]
+#[derive(Clone)]
+pub struct PyResourceSpec {
+    pub(crate) inner: arf_agent::ResourceSpec,
+}
+
+#[pymethods]
+impl PyResourceSpec {
+    #[new]
+    #[pyo3(signature = (name, node_type, capabilities = None))]
+    fn new(
+        py: Python<'_>,
+        name: String,
+        node_type: String,
+        capabilities: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let caps_json = match capabilities {
+            Some(obj) => Some(py_object_to_json(&obj, py)?),
+            None => None,
+        };
+        Ok(Self {
+            inner: arf_agent::ResourceSpec {
+                name,
+                node_type,
+                capabilities: caps_json,
+            },
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ResourceSpec(name='{}', node_type='{}')",
+            self.inner.name, self.inner.node_type
+        )
     }
 }
 
