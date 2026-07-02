@@ -32,6 +32,13 @@ pub enum BuildError {
     /// Primary bus 不可用（fail to connect）。
     #[error("primary bus 连接失败: {0}")]
     PrimaryBusConnect(String),
+
+    /// 两个 ResourceSpec 声明了同一工具名。
+    #[error("ambiguous tool '{tool}': declared by both {providers:?}")]
+    AmbiguousTool {
+        tool: String,
+        providers: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error)]
