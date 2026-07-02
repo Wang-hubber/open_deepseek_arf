@@ -15,6 +15,7 @@ mod error;
 mod minimax;
 mod node;
 mod openai;
+pub mod pool_node;
 pub mod pool_resource;
 pub mod provider;
 pub mod types;
@@ -25,6 +26,7 @@ pub use error::ProviderError;
 pub use minimax::{MiniMaxConfig, MiniMaxProvider};
 pub use node::ModelAdapterNode;
 pub use openai::{OpenAIConfig, OpenAIProvider};
+pub use pool_node::ModelAdapterPoolNode;
 pub use pool_resource::ModelAdapterResource;
 pub use provider::Provider;
 pub use types::{

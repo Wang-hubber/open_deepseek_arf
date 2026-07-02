@@ -9,6 +9,7 @@ pub(crate) mod registry;
 #[cfg(test)]
 mod tests;
 
+pub use arf_agent::{ModelDecl, ResourceSpec};
 pub use arf_core::WaitStrategy;
 pub use builder::EngineBuilder;
 pub use config::{AgentConfig, EngineConfig, MemberFailedAction, OnMemberFailedHandler};

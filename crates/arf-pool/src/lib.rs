@@ -41,11 +41,9 @@ use thiserror::Error;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod manager;
-pub mod node;
 pub mod overflow;
 
 pub use manager::{ResourceManager, ResourceState};
-pub use node::PoolNode;
 pub use overflow::Overflow;
 
 /// Errors returned by Pool operations.
