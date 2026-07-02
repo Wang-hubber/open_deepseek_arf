@@ -1,12 +1,12 @@
-# Tool Use
+# 工具调用
 
-> 🎯 Diátaxis bucket: **Tutorials** — third walk-through.
+> 🎯 Diátaxis 桶位：**Tutorials**（入门教程，第三篇）
 
-## Why
+## 为什么
 
-A second mock node is added — this time an MCP tool node subscribed to `tool_exec` messages. When the model returns `tool_calls`, the Engine automatically routes a `tool_exec` to the MCP node, waits for the `tool_result`, and feeds it back into the model — a full Reason → Act → Observe loop with no engine-internal glue code required.
+新增第二个 mock 节点 — 这次是订阅 `tool_exec` 消息的 MCP 工具节点。模型返回 `tool_calls` 时，Engine 自动把 `tool_exec` 路由到 MCP 节点，等待 `tool_result` 后再喂回模型 — 一个完整的 Reason → Act → Observe 循环，无需在 Engine 内部写胶水代码。
 
-## Code
+## 代码
 
 完整可运行脚本（来自 `examples/python/ex03_tool_call.py`）：
 
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Run
+## 运行
 
 ```bash
 .venv/bin/python examples/python/ex03_tool_call.py
@@ -159,6 +159,6 @@ turn_count=3
 
 > 注：ReAct 循环跨 3 个 turn — turn 1 模型产出 `tool_call`，turn 2 MCP 返回 `tool_result`，turn 3 模型给出最终回答。Engine 还在初始注入一条 system message。
 
-## Next
+## 下一节
 
 本系列后续可扩展：state 持久化（`ex06_state_serialize`）、max_turns 与超时（`ex04`/`ex05`）、Phase 6 全栈（`ex08`）。详见 [`examples/python/`](../../examples/python/) 目录。

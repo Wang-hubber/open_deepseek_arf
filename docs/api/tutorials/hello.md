@@ -1,12 +1,12 @@
-# Hello, ARF
+# 你好，ARF
 
-> 🎯 Diátaxis bucket: **Tutorials** — first-time walk-through.
+> 🎯 Diátaxis 桶位：**Tutorials**（入门教程，从零到可运行示例）
 
-## Why
+## 为什么
 
-The smallest runnable unit in ARF: one `Bus`, one mock model node, and one `engine.run()` call. Subsequent tutorials build on this by adding multi-turn state and tool calls.
+ARF 最小的可运行单元：一个 `Bus`、一个 mock 模型节点、一次 `engine.run()` 调用。后续两篇教程会在此基础上加多轮对话状态与工具调用。
 
-## Code
+## 代码
 
 完整可运行脚本（来自 `examples/python/ex01_minimal_mock.py`）：
 
@@ -95,7 +95,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Run
+## 运行
 
 ```bash
 .venv/bin/python examples/python/ex01_minimal_mock.py
@@ -112,6 +112,6 @@ elapsed=...ms
 
 > 注：Engine 自动注入了一条默认 system prompt（`You are helpful.`），所以消息数是 3 而不是 1。
 
-## Next
+## 下一节
 
 → [conversation.md](conversation.md) — 让 `EngineState` 在多次 `engine.run()` 之间复用，累积多轮对话。

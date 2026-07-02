@@ -1,12 +1,12 @@
-# Multi-turn Conversation
+# 多轮对话
 
-> 🎯 Diátaxis bucket: **Tutorials** — second walk-through.
+> 🎯 Diátaxis 桶位：**Tutorials**（入门教程，第二篇）
 
-## Why
+## 为什么
 
-`EngineState` persists between calls to `engine.run()` so conversation history accumulates automatically. After each `run()` call, `state.round_count` increments by 1 (one user-input → final-output) while `state.turn_count` may increment by more (one ReAct step per model_call).
+`EngineState` 在多次 `engine.run()` 之间复用，使对话历史自动累加。每次 `run()` 后 `state.round_count` 加 1（一次 user-input → final-output），而 `state.turn_count` 可能加更多（每步 ReAct 算一次 model_call）。
 
-## Code
+## 代码
 
 完整可运行脚本（来自 `examples/python/ex02_multi_round.py`）：
 
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Run
+## 运行
 
 ```bash
 .venv/bin/python examples/python/ex02_multi_round.py
@@ -115,6 +115,6 @@ round_count=2, turn_count=2
 
 > 注：Engine 在第 1 次 `run()` 起始时注入一条 system message，所以 messages count 从 3 起步；每多一轮对话增加 2 条消息（user + assistant）。
 
-## Next
+## 下一节
 
 → [tools.md](tools.md) — 给 Agent 注册一个 mock MCP 工具节点，让 Engine 自动跑 ReAct Reason→Act→Observe 循环。
