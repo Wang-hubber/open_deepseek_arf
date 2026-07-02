@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use arf_bus::Bus;
 use arf_core::{Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
-use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig, RunError};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl, ResourceSpec, RunError};
 use arf_model_adapter::{ModelAdapterNode, Provider};
 use arf_mcp::McpNode;
 use serde_json::json;
@@ -46,7 +46,6 @@ pub struct E2EHarnessBuilder {
     max_turns: u32,
     cancel: Option<CancellationToken>,
     extra_routes: HashMap<String, Route>,
-    agent_id: String,
     tool_timeout_ms: Option<u64>,
     /// Optional pre-created TempDir — used so the caller can write tool
     /// files into the same directory the harness will scan for MCP.
@@ -67,7 +66,6 @@ impl E2EHarnessBuilder {
             max_turns: 10,
             cancel: None,
             extra_routes: HashMap::new(),
-            agent_id: "e2e".into(),
             tool_timeout_ms: None,
             tmpdir: None,
             inject_tool_exec_responder: true,
@@ -95,12 +93,6 @@ impl E2EHarnessBuilder {
     /// Register an additional route on the engine's AgentConfig.
     pub fn route(mut self, msg_type: &str, route: Route) -> Self {
         self.extra_routes.insert(msg_type.into(), route);
-        self
-    }
-
-    /// Set the engine agent id (default "e2e").
-    pub fn agent_id(mut self, id: impl Into<String>) -> Self {
-        self.agent_id = id.into();
         self
     }
 
@@ -137,7 +129,6 @@ impl E2EHarnessBuilder {
             self.max_turns,
             self.cancel,
             self.extra_routes,
-            self.agent_id,
             self.tool_timeout_ms,
             self.tmpdir,
             self.inject_tool_exec_responder,
@@ -180,7 +171,6 @@ impl E2EHarness {
         max_turns: u32,
         cancel: Option<CancellationToken>,
         extra_routes: HashMap<String, Route>,
-        agent_id: String,
         tool_timeout_ms: Option<u64>,
         tmpdir: Option<TempDir>,
         inject_tool_exec_responder: bool,
@@ -196,46 +186,43 @@ impl E2EHarness {
             None => TempDir::new()?,
         };
 
-        // Build AgentConfig. Strict route to the (about-to-be-created) model
-        // node so the engine's build() validation passes.
-        let mut routes = HashMap::new();
-        routes.insert(
-            "model_call".into(),
-            Route::strict(vec![NodeId::new("model/e2e")]),
-        );
-        if with_mcp {
-            // McpNode advertises capabilities {runtime, tools, skills} but
-            // not `kind`. The engine's Discovery route looks for an exact
-            // capability match, so a Strict route to the known node id is
-            // the simplest reliable path.
-            routes.insert(
-                "tool_exec".into(),
-                Route::strict(vec![NodeId::new("mcp/e2e")]),
-            );
-        }
-        for (k, v) in extra_routes {
-            routes.insert(k, v);
-        }
+        // Build AgentConfig. model_call auto-derived from ModelDecl.provider matching
+        // node_type="model" capabilities; tool_exec auto-derived from ResourceSpec
+        // pointing at the mcp node. extra_routes (custom msg_types) go in
+        // engine.routes.
+        let routes = extra_routes;
+
+        let resources: Vec<ResourceSpec> = if with_mcp {
+            // McpNode advertises capabilities.tools/skills at runtime; declare
+            // a wildcard ResourceSpec so Registry picks up whatever tools the
+            // filesystem-discovery finds in tmpdir.
+            vec![ResourceSpec {
+                resource_name: "mcp".into(),
+                node_type: "mcp".into(),
+                capabilities: Some(json!({"tools": "all"})),
+            }]
+        } else {
+            vec![]
+        };
 
         let cfg = AgentConfig {
-            agent_id,
-            model_config: ModelConfig {
+            model: ModelDecl {
                 provider: "scripted".into(),
-                model: "scripted-v1".into(),
+                model_name: "scripted-v1".into(),
+                ..Default::default()
             },
+            resources,
             system_prompt_template: "You are helpful.".into(),
             initial_memory: vec![],
-            max_turns,
-            tool_timeout_ms,
-            permissions: Default::default(),
-            routes,
-            checkpoint_rules: vec![],
-            processors: HashMap::new(),
-            on_member_failed: None,
-            tools_include: None,
-            tools_exclude: vec![],
-            skills_include: None,
-            skills_exclude: vec![],
+            allowed_paths: vec![],
+            engine: EngineConfig {
+                routes,
+                checkpoint_rules: vec![],
+                processors: HashMap::new(),
+                on_member_failed: None,
+                max_turns,
+                tool_timeout_ms,
+            },
         };
 
         // Real ModelAdapterNode — the engine-to-bus-to-node-to-provider chain.
