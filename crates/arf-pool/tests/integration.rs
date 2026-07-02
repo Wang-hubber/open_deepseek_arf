@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arf_bus::Bus;
-use arf_core::{Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
-use arf_engine::{AgentConfig, EngineBuilder, ModelConfig};
-use arf_pool::{Overflow, Pool, PoolConfig, PoolNode};
-use arf_model_adapter::ModelAdapterResource;
+use arf_core::{Message, MessageFilter, NodeId, NodeInfo, State, ToMatch};
+use arf_engine::{AgentConfig, EngineBuilder, EngineConfig, ModelDecl};
+use arf_pool::{Overflow, Pool, PoolConfig};
+use arf_model_adapter::{ModelAdapterPoolNode, ModelAdapterResource};
 use arf_model_adapter::provider::Provider;
 use arf_model_adapter::types::{ModelParams, ModelResponsePayload, Usage};
 use arf_model_adapter::ProviderError;
@@ -111,14 +111,18 @@ async fn pool_node_with_engine_react_loop() {
     pool.release(&_r1);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 3. PoolNode bridge
-    let node = Arc::new(PoolNode {
-        node_id: NodeId::new("pool/main"),
+    // 3. ModelAdapterPoolNode facade on top bus (node_type="model",
+    //    advertised_provider="pool" — distinct from "stub" on sub bus so
+    //    Registry.resolve_model uniquely matches the pool).
+    let pool_node = Arc::new(ModelAdapterPoolNode {
+        node_id: NodeId::new("model/pool"),
         top_bus: top_bus.clone(),
         sub_bus: sub_bus.clone(),
         pool: Arc::new(pool),
+        advertised_provider: "pool".into(),
+        advertised_models: vec!["stub-v1".into()],
     });
-    node.clone().connect().await;
+    pool_node.clone().connect().await.unwrap();
 
     // 4. Sub-bus responder: replies to model_call with model_response
     let sub_resp_h = tokio::spawn({
@@ -153,46 +157,26 @@ async fn pool_node_with_engine_react_loop() {
         }
     });
 
-    // 5. Register dummy pool/main on top bus so Strict route check passes
-    let _h = top_bus
-        .connect(
-            NodeInfo {
-                node_id: NodeId::new("pool/main"),
-                node_type: "pool_node".into(),
-                capabilities: serde_json::json!({"kind": "pool_node"}),
-                online_since: 0,
-            },
-            MessageFilter {
-                types: None,
-                to_match: ToMatch::All,
-            },
-        )
-        .await
-        .ok();
-
-    // 6. Engine on top bus
-    let mut cfg = AgentConfig {
-        agent_id: "pool-test".into(),
-        model_config: ModelConfig { provider: "stub".into(), model: "stub-v1".into() },
+    // 5. Engine on top bus (sees both buses → resolves ModelDecl.provider="pool"
+    //    to model/pool facade, which forwards to sub-bus responder).
+    let cfg = AgentConfig {
+        model: ModelDecl {
+            provider: "pool".into(),
+            model_name: "stub-v1".into(),
+            ..Default::default()
+        },
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 3,
-        tool_timeout_ms: Some(5_000),
-        permissions: Default::default(),
-        routes: {
-            let mut r = std::collections::HashMap::new();
-            r.insert("model_call".into(), Route::strict(vec![NodeId::new("pool/main")]));
-            r
+        allowed_paths: vec![],
+        resources: vec![],
+        engine: EngineConfig {
+            // model_call auto-derived from ModelDecl.provider.
+            max_turns: 3,
+            tool_timeout_ms: Some(5_000),
+            ..Default::default()
         },
-        checkpoint_rules: vec![],
-        processors: Default::default(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
     };
-    let mut engine = EngineBuilder::new(vec![top_bus.clone()]).build(cfg).await.unwrap();
+    let mut engine = EngineBuilder::new(vec![top_bus.clone(), sub_bus.clone()]).build(cfg).await.unwrap();
 
     let mut state = State::new();
     let cancel = CancellationToken::new();
