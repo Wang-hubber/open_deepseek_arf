@@ -21,7 +21,7 @@
 | 5 | 投递模型 | broadcast + `to: Vec<NodeId>` + filter；禁用 p2p 直发 |
 | 6 | 在线状态 | Bus 是单一可信源，Engine 不维护在线集合 |
 | 7 | 离线处理 | `SendError::NodeOffline` 或 `matching_nodes=0` → 即时 fail，不进入 wait |
-| 8 | capabilities 缺省 | `None` → build warning；`"all"` sentinel → 显式全取 |
+| 8 | capabilities 缺省 | `None` → build warning + **全不取**；`"all"` sentinel → 显式全取 |
 | 9 | 命名冲突 | 声明重名工具 → `BuildError::AmbiguousTool` |
 | 10 | 并发 | 同一资源只有一个 NodeId；NodePool 内部 sub-bus 管理多 worker |
 | 11 | 资源分类 | `node_type` 字符串区分 model / mcp / 自定义，不引入 enum variant |
@@ -108,7 +108,7 @@ pub struct ResourceSpec {
     pub name: String,           // Agent 给的别名，如 "file_tools"
     pub node_type: String,      // "mcp" | "mcp/pool" | "custom/email" | ...
     pub capabilities: Option<serde_json::Value>,
-    //   None          → build warning："未声明 capabilities filter，使用 {node_id} 的全部能力"
+    //   None          → build warning："未声明 capabilities filter，该资源不注册任何工具/技能"
     //   Some({"tools": ["read", "bash"]})         → 只注册这些工具
     //   Some({"tools": "all", "skills": "all"})   → 显式全取，无 warning
     //   Some({"skills": ["code_review"]})          → 只注册这个技能
@@ -185,7 +185,7 @@ AgentConfig {
    同一 tool_name 出现在多个 resource 的声明的 capabilities.tools 中
    → BuildError::AmbiguousTool { tool: "read", providers: ["files", "code"] }
 5. Registry::build(decl, snapshot) → 冻结 ResourceRegistry
-6. capabilities 为 None → log::warn!("资源 '{}' 未声明 capabilities filter", name)
+6. capabilities 为 None → log::warn!("资源 '{}' 未声明 capabilities filter——不注册任何工具/技能", name)
 ```
 
 ### 步骤 3 — 感知注册（do_model_turn）
@@ -251,8 +251,9 @@ struct ResourceBinding {
 }
 
 enum DeclaredFilter {
-    All,                        // "all" sentinel 或 None（兼容警告）
+    All,                        // "all" sentinel — 显式全取
     Subset(Vec<String>),       // 显式白名单
+    None_,                      // capabilities 缺省 — 全不取
 }
 
 struct ResourceRegistry {
@@ -355,7 +356,7 @@ Err(NodeOffline)               即时 fail                       0ms
 | `registry_build_missing_model_node` | [错误] node_type="model" 不在线 → MissingNode |
 | `registry_build_missing_mcp_node` | [错误] ResourceSpec 声明的 mcp 不在线 → MissingNode |
 | `registry_build_ambiguous_tool` | [冲突] 两个 resource 声明同一 tool → AmbiguousTool |
-| `registry_build_none_capabilities_warns` | [兼容] capabilities=None → build 成功 + log 含 warning |
+| `registry_build_none_capabilities_rejects_all` | [安全] capabilities=None → build 成功 + log 含 warning + 不注册任何工具 |
 | `registry_build_all_sentinel` | [显式] capabilities={"tools":"all"} → 全取 + 无 warning |
 | `registry_tools_for_model_filters_by_declaration` | [过滤] 声明子集 ∩ 全量 → 只返回声明的工具 |
 | `registry_owner_of_tool_returns_correct_node` | [查询] 工具名 → 正确的 NodeId |

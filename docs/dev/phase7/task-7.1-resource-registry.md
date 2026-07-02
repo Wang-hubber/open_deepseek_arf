@@ -267,6 +267,8 @@ enum DeclaredFilter {
     All,
     /// 显式白名单。
     Subset(Vec<String>),
+    /// capabilities 为 None — 全不取（安全默认）。
+    None_,
 }
 
 struct ResourceBinding {
@@ -319,20 +321,34 @@ impl ResourceRegistry {
             };
 
             if spec.node_type == "mcp" || spec.node_type.starts_with("mcp/") {
-                // 工具名唯一性检查
-                if let Some(tool_names) = spec_tool_names(spec) {
-                    for tname in &tool_names {
-                        if let Some(existing) = tool_index.get(tname) {
-                            return Err(BuildError::AmbiguousTool {
-                                tool: tname.clone(),
-                                providers: vec![
-                                    existing.to_string(),
-                                    spec.name.clone(),
-                                ],
-                            });
-                        }
-                        tool_index.insert(tname.clone(), node.node_id.clone());
+                // 从 MCP 节点的实际 capabilities.tools 读取工具列表，
+                // 用 declared_filter 过滤后填充 tool_index（含 "all" 模式）
+                let node_actual_tools: Vec<String> = node
+                    .capabilities
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.get("name").and_then(|s| s.as_str()).map(String::from))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                for tname in &node_actual_tools {
+                    if !filter.accepts(tname) {
+                        continue;
                     }
+                    if let Some(existing) = tool_index.get(tname) {
+                        return Err(BuildError::AmbiguousTool {
+                            tool: tname.clone(),
+                            providers: vec![
+                                existing.to_string(),
+                                spec.name.clone(),
+                            ],
+                        });
+                    }
+                    tool_index.insert(tname.clone(), node.node_id.clone());
                 }
                 mcp_nodes.insert(node.node_id.clone(), binding);
             } else {
@@ -456,11 +472,11 @@ fn parse_declared_filter(capabilities: &Option<serde_json::Value>, resource_name
         Some(c) => c,
         None => {
             log::warn!(
-                "Resource '{}' declared no capabilities filter — using everything from the matched node. \
-                 Consider adding explicit capabilities: {{\"tools\": [...], \"skills\": [...]}}",
+                "Resource '{}' declared no capabilities filter — no tools/skills will be registered. \
+                 Add explicit capabilities: {{\"tools\": [...], \"skills\": [...]}} or use \"all\" to take everything.",
                 resource_name
             );
-            return DeclaredFilter::All;
+            return DeclaredFilter::None_;
         }
     };
 
@@ -482,27 +498,24 @@ fn parse_declared_filter(capabilities: &Option<serde_json::Value>, resource_name
     }
 
     if all_names.is_empty() {
-        DeclaredFilter::All  // empty array → take everything
+        // 空数组 `{"tools": []}` 不是 "all"——视为未声明
+        log::warn!(
+            "Resource '{}' declared empty capabilities array — no tools/skills will be registered. \
+             Use \"all\" to take everything, or list specific names.",
+            resource_name
+        );
+        DeclaredFilter::None_
     } else {
         DeclaredFilter::Subset(all_names)
     }
 }
 
-fn spec_tool_names(spec: &ResourceSpec) -> Option<Vec<String>> {
-    let caps = spec.capabilities.as_ref()?;
-    let arr = caps.get("tools")?.as_array()?;
-    let names: Vec<String> = arr.iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .filter(|s| s != "all" && !s.is_empty())
-        .collect();
-    if names.is_empty() { None } else { Some(names) }
-}
-
 impl DeclaredFilter {
-    fn accepts(&self, name: &str) -> bool {
+    fn accepts(&self, _name: &str) -> bool {
         match self {
             DeclaredFilter::All => true,
-            DeclaredFilter::Subset(names) => names.iter().any(|n| n == name),
+            DeclaredFilter::Subset(names) => names.iter().any(|n| n == _name),
+            DeclaredFilter::None_ => false,
         }
     }
 }
@@ -515,7 +528,7 @@ impl DeclaredFilter {
 - `skills_cache` — 从 `collect_skills_cached` 迁移；key 是 `(node_id, skill_name)` 对的 hash
 - `build()` — 遍历 `decl.resources`，每条：找到 node_type 匹配的节点 → 解析 filter → 校验工具名唯一 → 存入对应 map
 - `resolve_model()` — 按 `provider` 字符串匹配 `node_type="model"` 节点
-- `parse_declared_filter()` — None → warn + All；`"all"` sentinel → All；白名单 → Subset
+- `parse_declared_filter()` — None → warn + None_（全不取）；`"all"` sentinel → All（全取）；白名单 → Subset；空数组 → warn + None_（全不取）
 - `tools_for_model()` — 遍历 mcp_nodes，读 Bus 上的 `capabilities.tools`，用 filter 过滤
 - `skills_text()` — 同模式，读 `capabilities.skills`，hash-cache
 - `owner_of_tool()` — HashMap::get，O(1)
@@ -1078,9 +1091,9 @@ mod tests {
         assert!(registry.owner_of_tool("nonexistent").is_none());
     }
 
-    // [兼容] capabilities=None → build 成功（全取）
+    // [安全] capabilities=None → build 成功 + log 含 warning + 不注册任何工具
     #[test]
-    fn registry_build_none_capabilities_accepts_all() {
+    fn registry_build_none_capabilities_rejects_all() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
                 name: "files".into(),
@@ -1094,7 +1107,8 @@ mod tests {
             mcp_node("mcp/files", serde_json::json!([{"name": "read"}])),
         ]);
         let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
-        assert_eq!(registry.owner_of_tool("read").unwrap().as_str(), "mcp/files");
+        // None → 不注册任何工具
+        assert!(registry.owner_of_tool("read").is_none());
     }
 
     // [显式] capabilities={"tools":"all"} → 全取
