@@ -29,7 +29,7 @@ use std::time::Duration;
 use anyhow::Result;
 use arf_bus::Bus;
 use arf_core::{Capability, Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
-use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig, WaitStrategy};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl, ResourceSpec};
 use arf_mcp::McpNode;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -55,9 +55,10 @@ impl DomainController {
         // Connect to top bus: receive tool_exec requests from engine.
         let top_info = NodeInfo {
             node_id: self.node_id.clone(),
-            node_type: "domain_controller".into(),
+            node_type: "mcp".into(),
             capabilities: serde_json::json!({
                 "kind": "domain_controller",
+                "tools": [{"name": "echo", "description": "Echo back the input", "params_schema": {}}],
             }),
             online_since: now_ms(),
         };
@@ -248,7 +249,7 @@ def run(args):
     let dummy_model = NodeInfo {
         node_id: NodeId::new("model/mock"),
         node_type: "model".into(),
-        capabilities: serde_json::json!({"kind": "model"}),
+        capabilities: serde_json::json!({"kind": "model", "provider": "mock"}),
         online_since: now_ms(),
     };
     let _h = top_bus
@@ -271,27 +272,27 @@ def run(args):
     });
 
     // 6. Engine on top bus
-    let mut cfg = AgentConfig {
-        agent_id: "example".into(),
-        model_config: ModelConfig { provider: "mock".into(), model: "mock-v1".into() },
+    let cfg = AgentConfig {
+        model: ModelDecl {
+            provider: "mock".into(),
+            model_name: "mock-v1".into(),
+            ..Default::default()
+        },
+        resources: vec![ResourceSpec {
+            resource_name: "dc_facade".into(),
+            node_type: "mcp".into(),
+            capabilities: Some(serde_json::json!({"tools": ["echo"]})),
+        }],
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 5,
-        tool_timeout_ms: Some(10_000),
-        permissions: Default::default(),
-        routes: {
-            let mut r = std::collections::HashMap::new();
-            r.insert("model_call".into(), Route::strict(vec![NodeId::new("model/mock")]));
-            r.insert("tool_exec".into(), Route::strict(vec![NodeId::new("dc/main")]));
-            r
+        allowed_paths: vec![],
+        engine: EngineConfig {
+            // model_call auto-derived from ModelDecl.provider;
+            // tool_exec auto-derived from ResourceSpec pointing at dc/main.
+            max_turns: 5,
+            tool_timeout_ms: Some(10_000),
+            ..Default::default()
         },
-        checkpoint_rules: vec![],
-        processors: Default::default(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
     };
     let mut engine = EngineBuilder::new(vec![top_bus.clone()]).build(cfg).await?;
 
