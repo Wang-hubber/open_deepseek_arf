@@ -30,9 +30,11 @@ ModelAdapter 是 ARF 框架与外部大语言模型 API 之间的翻译层。它
 | 供应商 | Python 类 | API 格式 | 端点 | 思考模式 | 工具调用 |
 |--------|----------|---------|------|---------|---------|
 | DeepSeek | `DeepSeekProvider` | OpenAI 兼容 | `/chat/completions` | ✅ `reasoning_content` | ✅ |
-| DeepSeek (Anthropic) | `AnthropicProvider` | Anthropic Messages | `/anthropic/messages` | ✅ `thinking` block | ✅ |
+| DeepSeek (Anthropic) | `AnthropicProvider` | Anthropic Messages | `/anthropic` | ✅ `thinking` block | ✅ |
 | OpenAI | `OpenAIProvider` | OpenAI 标准 | `/v1/chat/completions` | — | ✅ |
 | Anthropic | `AnthropicProvider` | Anthropic Messages | `/v1/messages` | — | ✅ |
+| MiniMax | `MiniMaxProvider` | OpenAI 兼容 | `/v1/chat/completions` | — | ✅ |
+| 阿里百炼 (OpenAI 兼容) | `OpenAIProvider` | OpenAI 兼容 | `/compatible-mode/v1/chat/completions` | — | ✅ |
 
 ### 设计意图——为什么有两种使用模式
 
@@ -554,22 +556,36 @@ if reasoning:
 ```python
 from arf import DeepSeekConfig
 
+# 方式 1：直接构造（最常见 — 显式传 key 和 models）
 config = DeepSeekConfig(
     api_key="sk-xxx",
     models=["deepseek-v4-flash"],
-    base_url="https://api.deepseek.com",   # 可选
-    timeout_secs=320,                       # 可选
-    max_retries=3,                          # 可选
+    endpoint="https://api.deepseek.com/chat/completions",  # 可选 — 默认就是 DeepSeek 公共 endpoint
+    timeout_secs=320,           # 可选
+    max_retries=3,              # 可选
 )
+
+# 方式 2：从 DEEPSEEK_API_KEY 环境变量读 key
+config = DeepSeekConfig.from_env()  # 需设置 DEEPSEEK_API_KEY
+
+# 方式 3：取默认（空 key + 空 models，调试用）
+config = DeepSeekConfig.default()  # endpoint 已是 DeepSeek 公共
 ```
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `api_key` | `str` | 必填 | DeepSeek API key |
 | `models` | `list[str]` | 必填 | 支持的模型名列表 |
-| `base_url` | `str` | `"https://api.deepseek.com"` | API 基础 URL |
+| `endpoint` | `str` | `"https://api.deepseek.com/chat/completions"` | **完整请求 URL（含 path）**；任意 OpenAI 兼容服务都可指 |
 | `timeout_secs` | `int` | `320` | HTTP 请求超时（秒） |
 | `max_retries` | `int` | `3` | 可重试错误（429/5xx）的最大重试次数 |
+
+**静态方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `DeepSeekConfig.default() -> Self` | 返回默认配置（空 key + 空 models + 默认 endpoint） |
+| `DeepSeekConfig.from_env() -> Result<Self, ProviderError>` | 从 `DEEPSEEK_API_KEY` 读 key；缺 key 时报 `"DEEPSEEK_API_KEY not set"` |
 
 **属性：** 所有构造参数均可通过同名属性读取（`config.api_key`、`config.models` 等）。
 
@@ -577,7 +593,7 @@ config = DeepSeekConfig(
 config = DeepSeekConfig(api_key="sk-xxx", models=["deepseek-v4-flash", "deepseek-v4-pro"])
 print(config.models)        # ['deepseek-v4-flash', 'deepseek-v4-pro']
 print(config.timeout_secs)  # 320
-print(config)               # DeepSeekConfig(base_url='https://api.deepseek.com', models=[...])
+print(config)               # DeepSeekConfig(endpoint='https://api.deepseek.com/chat/completions', models=[...])
 ```
 
 ---
@@ -590,22 +606,36 @@ from arf import OpenAIConfig
 config = OpenAIConfig(
     api_key="sk-xxx",
     models=["gpt-4o"],
-    base_url="https://api.openai.com",   # 可选
-    timeout_secs=320,                     # 可选
-    max_retries=3,                        # 可选
+    endpoint="https://api.openai.com/v1/chat/completions",  # 可选
+    timeout_secs=320,           # 可选
+    max_retries=3,              # 可选
 )
 ```
 
-参数和属性与 `DeepSeekConfig` 一致，仅默认 `base_url` 不同。也可以指向任何 OpenAI 兼容的服务（如 vLLM、Ollama）：
+参数和属性与 `DeepSeekConfig` 一致，仅默认 `endpoint` 不同。`endpoint` 也可指向任何 OpenAI 兼容的服务（如 vLLM、Ollama、阿里百炼兼容模式）：
 
 ```python
-# 本地模型 —— 指向 Ollama
+# 本地 Ollama — 用 OpenAI 兼容协议
 config = OpenAIConfig(
     api_key="ollama",           # Ollama 不需要真实 key，但必须非空
     models=["llama3.2"],
-    base_url="http://localhost:11434/v1",
+    endpoint="http://localhost:11434/v1/chat/completions",
+)
+
+# 阿里百炼兼容模式
+config = OpenAIConfig(
+    api_key=os.environ["DASHSCOPE_API_KEY"],
+    endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    models=["qwen3.7-max-preview"],
 )
 ```
+
+**静态方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `OpenAIConfig.default() -> Self` | 返回默认配置 |
+| `OpenAIConfig.from_env() -> Result<Self, ProviderError>` | 从 `OPENAI_API_KEY` 读 key |
 
 ---
 
@@ -617,10 +647,9 @@ from arf import AnthropicConfig
 config = AnthropicConfig(
     api_key="sk-xxx",
     models=["claude-sonnet-4-6"],
-    base_url="https://api.anthropic.com",   # 可选
-    api_path="/v1/messages",                 # 可选
-    timeout_secs=320,                         # 可选
-    max_retries=3,                            # 可选
+    endpoint="https://api.anthropic.com/v1/messages",  # 可选 — 默认就是 Anthropic 公共 endpoint
+    timeout_secs=320,           # 可选
+    max_retries=3,              # 可选
 )
 ```
 
@@ -628,22 +657,65 @@ config = AnthropicConfig(
 |------|------|--------|------|
 | `api_key` | `str` | 必填 | API key |
 | `models` | `list[str]` | 必填 | 支持的模型名列表 |
-| `base_url` | `str` | `"https://api.anthropic.com"` | API 基础 URL |
-| `api_path` | `str` | `"/v1/messages"` | 拼接到 `base_url` 后的路径 |
+| `endpoint` | `str` | `"https://api.anthropic.com/v1/messages"` | **完整请求 URL（含 path）**；DeepSeek Anthropic 兼容端点直接 `endpoint="https://api.deepseek.com/anthropic"` |
 | `timeout_secs` | `int` | `320` | HTTP 请求超时（秒） |
 | `max_retries` | `int` | `3` | 最大重试次数 |
 
-`api_path` 是关键字段——DeepSeek 的 Anthropic 兼容端点需设为 `"/anthropic/messages"`：
+**静态方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `AnthropicConfig.default() -> Self` | 返回默认配置 |
+| `AnthropicConfig.from_env() -> Result<Self, ProviderError>` | 从 `ANTHROPIC_API_KEY` 读 key |
+
+`endpoint` 直接传完整 URL — DeepSeek 的 Anthropic 兼容端点示例：
 
 ```python
-# DeepSeek 的 Anthropic 兼容端点
+# DeepSeek 的 Anthropic 兼容端点（注意 endpoint 是完整 URL，不再分 base_url + api_path）
 config = AnthropicConfig(
     api_key="sk-xxx",
-    models=["deepseek-v4-flash"],
-    base_url="https://api.deepseek.com",
-    api_path="/anthropic/messages",   # ← 关键
+    models=["deepseek-chat"],
+    endpoint="https://api.deepseek.com/anthropic",  # 完整 URL
 )
 ```
+
+---
+
+### MiniMaxConfig
+
+```python
+from arf import MiniMaxConfig
+
+# 方式 1：从 MINIMAX_API_KEY（或 fallback MINIMAX_TOKEN）环境变量读
+config = MiniMaxConfig.from_env()
+
+# 方式 2：直接构造
+config = MiniMaxConfig(
+    api_key="sk-xxx",
+    models=["MiniMax-M3"],
+    endpoint="https://api.minimaxi.com/v1/chat/completions",  # 可选
+    timeout_secs=320,
+    max_retries=3,
+)
+
+# 方式 3：默认配置
+config = MiniMaxConfig.default()
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `api_key` | `str` | 必填 | MiniMax API key |
+| `models` | `list[str]` | 必填 | 支持的模型名列表 |
+| `endpoint` | `str` | `"https://api.minimaxi.com/v1/chat/completions"` | **完整请求 URL** |
+| `timeout_secs` | `int` | `320` | HTTP 请求超时（秒） |
+| `max_retries` | `int` | `3` | 最大重试次数 |
+
+**静态方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `MiniMaxConfig.default() -> Self` | 默认配置（`models=["MiniMax-M3"]`） |
+| `MiniMaxConfig.from_env() -> Result<Self, ProviderError>` | 读 `MINIMAX_API_KEY`，fallback 到 `MINIMAX_TOKEN` |
 
 ---
 
@@ -1104,12 +1176,11 @@ import asyncio
 from arf import AnthropicConfig, AnthropicProvider, ModelMessage, ModelParams
 
 async def main():
-    # 关键配置：base_url 指向 DeepSeek，api_path 使用其 Anthropic 端点
+    # 关键配置：endpoint 直接传 DeepSeek 提供的完整 URL（无 base_url + api_path 拼接）
     config = AnthropicConfig(
         api_key="sk-xxx",
         models=["deepseek-v4-flash"],
-        base_url="https://api.deepseek.com",
-        api_path="/anthropic/messages",
+        endpoint="https://api.deepseek.com/anthropic",
     )
     provider = AnthropicProvider(config=config)
 

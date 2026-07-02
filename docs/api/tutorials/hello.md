@@ -198,8 +198,6 @@ out = await engine.run(state=state, user_input="用一句话介绍北京。")
 
 ### DeepSeek — 用 `DeepSeekProvider`（推荐）
 
-`DeepSeekConfig` 是 Python dataclass（不是 pyo3 wrap），无 `from_env`，直接构造：
-
 ```python
 import os
 from arf import DeepSeekConfig, DeepSeekProvider
