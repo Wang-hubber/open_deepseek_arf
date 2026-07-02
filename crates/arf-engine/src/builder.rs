@@ -1,14 +1,15 @@
-//! EngineBuilder — build-time fail-fast validation（Phase 6 §3.3 / §5.1）。
+//! EngineBuilder — build-time fail-fast validation（Phase 7 §1）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arf_bus::Bus;
-use arf_core::{Capability, NodeId, NodeInfo, Route};
+use arf_core::{BusGraph, NodeId, NodeInfo, Route};
 
-use crate::config::{AgentConfig, OnMemberFailedHandler};
+use crate::config::AgentConfig;
 use crate::engine::Engine;
 use crate::error::BuildError;
+use crate::registry::ResourceRegistry;
 
 /// Builds an Engine from AgentConfig + Bus topology.
 pub struct EngineBuilder {
@@ -28,7 +29,7 @@ impl EngineBuilder {
             });
         }
 
-        // 1. aggregate multi-Bus graph
+        // 1. aggregate multi-Bus graph → snapshot
         let mut merged: HashMap<NodeId, NodeInfo> = HashMap::new();
         for bus in &self.buses {
             let graph = bus.graph();
@@ -37,8 +38,17 @@ impl EngineBuilder {
             }
         }
 
-        // 2. validate Strict routes' NodeIds 全部在线
-        for (_msg_type, route) in &config.routes {
+        let snapshot = BusGraph {
+            nodes: merged.values().cloned().collect(),
+            message_count: 0,
+            uptime_ms: 0,
+        };
+
+        // 2. resolve declarations → ResourceRegistry
+        let registry = ResourceRegistry::build(&config, &snapshot)?;
+
+        // 3. validate custom msg_type routes (config.engine.routes)
+        for (_msg_type, route) in &config.engine.routes {
             if let Route::Strict(ids) = route {
                 let missing: Vec<String> = ids
                     .iter()
@@ -51,34 +61,9 @@ impl EngineBuilder {
             }
         }
 
-        // 3. validate Discovery routes' Capability 至少一个节点匹配
-        for (_msg_type, route) in &config.routes {
-            if let Route::Discovery(cap) = route {
-                if !capability_matches_any(cap, &merged) {
-                    return Err(BuildError::MissingCapabilities {
-                        capability: cap.requirements.iter().cloned().collect(),
-                    });
-                }
-            }
-        }
-
-        // 3.5 validate model_call responder: if no explicit route is set for
-        // `model_call`, the engine will broadcast it and wait for any
-        // `model_response` — that means at least one `node_type == "model"`
-        // node must be on the bus. Without this check, the engine
-        // broadcasts into the void and waits forever (silent hang).
-        // If a route IS set for model_call, step 2/3 already validated
-        // its target.
-        if !config.routes.contains_key("model_call") {
-            let has_model_node = merged.values().any(|n| n.node_type == "model");
-            if !has_model_node {
-                return Err(BuildError::NoModelResponder);
-            }
-        }
-
         // 4. CheckpointRule name 唯一
         let mut seen: HashSet<String> = HashSet::new();
-        for rule in &config.checkpoint_rules {
+        for rule in &config.engine.checkpoint_rules {
             if !seen.insert(rule.name.clone()) {
                 return Err(BuildError::DuplicateRuleName {
                     name: rule.name.clone(),
@@ -86,34 +71,6 @@ impl EngineBuilder {
             }
         }
 
-        // 5. system_prompt_template 保持原样（不再做 {{skills}} 替换）。
-        // Engine 在 do_model_turn 时按 [template, *initial_memory, skills, *conversation]
-        // 顺序拼装 prefix；skills 现采 + hash 缓存。
-        // 详见 docs/api/explanation/上下文拼装机制.md
-        // `merged` 在此未使用，留作未来 checkpoint 规则 Discovery 校验用。
-        let _ = &merged;
-
-        // 6. 校验 ResponseProcessor msg_type 唯一性（Phase 6 task 6.8）。
-        // 注：HashMap 本身就是 unique key；这里校验的是 processors.handle 声明的 msg_type
-        // 与 routes 的 msg_type 不冲突——但因为 ResponseProcessor.handles() 是动态查询，
-        // 实际无冲突可能。简化：此处仅校验 processors 列表非空且 key 一致。
-        // 真正的重复会在 wait_for_strategy 中由 HashMap 自动取最后一个。
-        let _ = &config.processors; // 显式 use 满足 clippy；6.x 可加更严格校验
-
-        // 7. create Engine — Engine::new 自身从 config 读 system_prompt_template
-        //    和 initial_memory，不再需要 builder 传第三参数
-        Engine::new(self.buses, config).await
+        Engine::new(self.buses, config, registry).await
     }
 }
-
-fn capability_matches_any(cap: &Capability, nodes: &HashMap<NodeId, NodeInfo>) -> bool {
-    nodes.values().any(|n| {
-        cap.requirements.iter().all(|(k, v)| {
-            n.capabilities.get(k).and_then(|x| x.as_str()) == Some(v.as_str())
-        })
-    })
-}
-
-// collect_skills_text removed (2026-07-02 spec): skills are now collected
-// per-turn by Engine via collect_skills_cached — see engine.rs.
-
