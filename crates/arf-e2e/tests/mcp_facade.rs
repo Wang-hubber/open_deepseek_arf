@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use arf_bus::Bus;
 use arf_core::{Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
-use arf_engine::{AgentConfig, EngineBuilder, ModelConfig};
+use arf_engine::{AgentConfig, EngineBuilder, EngineConfig, ModelDecl, ResourceSpec};
 use arf_mcp::{McpNode, types::ToolCallSet, types::ToolCallItem};
 use arf_model_adapter::ModelAdapterNode;
 use common::provider::{scripted, text_response};
@@ -254,8 +254,10 @@ async fn facade_forwards_tool_exec_across_buses() -> anyhow::Result<()> {
         .connect(
             NodeInfo {
                 node_id: facade_id.clone(),
-                node_type: "facade".into(),
-                capabilities: json!({}),
+                node_type: "mcp".into(),
+                capabilities: json!({
+                    "tools": [{"name": "echo", "description": "Echo back the input", "params_schema": {}}],
+                }),
                 online_since: 0,
             },
             MessageFilter {
@@ -417,35 +419,25 @@ async fn facade_forwards_tool_exec_across_buses() -> anyhow::Result<()> {
     )
     .await?;
     let cfg = AgentConfig {
-        agent_id: "facade-agent".into(),
-        model_config: ModelConfig {
+        model: ModelDecl {
             provider: "scripted".into(),
-            model: "scripted-v1".into(),
+            model_name: "scripted-v1".into(),
+            ..Default::default()
         },
+        resources: vec![ResourceSpec {
+            resource_name: "echo_facade".into(),
+            node_type: "mcp".into(),
+            capabilities: Some(json!({"tools": ["echo"]})),
+        }],
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 5,
-        tool_timeout_ms: Some(5000),
-        permissions: Default::default(),
-        routes: {
-            let mut r = std::collections::HashMap::new();
-            r.insert(
-                "model_call".into(),
-                Route::strict(vec![NodeId::new("model/e2e")]),
-            );
-            r.insert(
-                "tool_exec".into(),
-                Route::strict(vec![facade_id.clone()]),
-            );
-            r
+        allowed_paths: vec![],
+        engine: EngineConfig {
+            // model_call auto-derived; tool_exec auto-derived from resources.
+            max_turns: 5,
+            tool_timeout_ms: Some(5000),
+            ..Default::default()
         },
-        checkpoint_rules: vec![],
-        processors: Default::default(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
     };
     let mut engine = EngineBuilder::new(vec![top_bus.clone()]).build(cfg).await?;
     let mut state = State::new();
