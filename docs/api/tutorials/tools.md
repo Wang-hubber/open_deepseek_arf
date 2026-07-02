@@ -1,141 +1,130 @@
-# 工具调用
+# 加远程工具
 
-> 🎯 Diátaxis 桶位：**Tutorials**（入门教程，第三篇）
+> 🎯 Diátaxis 桶位：**Tutorials**（入门教程，第三篇 / 完整闭环）
 
 ## 为什么
 
-新增第二个 mock 节点 — 这次是订阅 `tool_exec` 消息的 MCP 工具节点。模型返回 `tool_calls` 时，Engine 自动把 `tool_exec` 路由到 MCP 节点，等待 `tool_result` 后再喂回模型 — 一个完整的 Reason → Act → Observe 循环，无需在 Engine 内部写胶水代码。
+在 Ch2 的本地 tool 基础上，再注册一个远程 MCP 节点。模型可以同时调本地与远程 tool — Bus / AgentConfig / Engine / ModelAdapter / MCP (Local + Remote) 全部就位，最小闭环完成。
+
+> ⚠️ 本章需要 **一个真实可用的远程 MCP server URL**。代码里 `REMOTE_MCP_URL` 是占位符，请替换为你自己的 URL。URL 不可达时 Engine 会捕获 tool 失败并继续（fail gracefully），不会 unhandled exception。
+
+## 远程 MCP 节点约定
+
+`McpNode.remote(namespace, config)` 通过 HTTP/HTTPS 与远程 MCP server 通信。`config` 是 `RemoteConfig`：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `transport` | ✓ | `"http"`（推荐先试） / `"sse"`（Server-Sent Events） |
+| `url` | ✓ | 远程 MCP server 端点 URL |
+| `timeout_secs` |  | 请求超时（默认 10s） |
+| `headers` |  | 自定义 HTTP header（鉴权 token 等） |
+| `tls_ca_cert` |  | 自签 CA 证书路径（自部署 server 用） |
+| `retry` |  | `RetryConfig(max_retries, initial_backoff_ms, max_backoff_ms)` |
+
+`McpNode.remote` 在 `connect(bus)` 时通过 `HttpDiscovery` 远程拉 tool/skill 列表，本地缓存。后续 `tool_exec` 走相同 wire 协议（`tool_exec` → `tool_result`），Engine 无需区分本地/远程。
 
 ## 代码
 
-完整可运行脚本（来自 `examples/python/ex03_tool_call.py`）：
+完整可运行脚本（保存为 `/tmp/ch3.py`；替换 `REMOTE_MCP_URL` 后跑）：
 
 ```python
-"""ReAct tool call: Engine routes model_response.tool_calls to mock MCP.
-
-Demonstrates:
-  - Mock model returns tool_calls, Engine auto-dispatches tool_exec
-  - Mock MCP node subscribes to tool_exec, replies with tool_result
-  - Engine performs full Reason -> Act -> Observe -> Reason loop
-
-Run: .venv/bin/python py-arf/python/arf/examples/ex03_tool_call.py
-"""
-
 import asyncio
-import time
+import os
 from arf import (
-    Bus,
-    NodeInfo,
-    MessageFilter,
-    AgentConfig,
-    EngineBuilder,
-    EngineState,
+    Bus, NodeId, Route,
+    MiniMaxConfig, MiniMaxProvider,
+    McpNode, RemoteConfig,
+    AgentConfig, EngineBuilder, EngineState,
 )
 
 
-async def attach_mock_model(bus, replies):
-    mock = await bus.connect(
-        info=NodeInfo(
-            node_id="model/mock",
-            node_type="model",
-            capabilities={"provider": "mock", "models": ["mock-v1"]},
-        ),
-        filter=MessageFilter(types=["model_call"]),
-    )
+# 替换为你的真实远程 MCP server URL。本教程默认占位符 — 跑通需替换。
+REMOTE_MCP_URL = "https://your-remote-mcp.example.com/mcp"
 
-    async def responder():
-        idx = 0
-        while True:
-            try:
-                msg = await mock.recv()
-                cid = msg.payload.get("correlation_id") if isinstance(msg.payload, dict) else None
-                reply = replies[idx] if idx < len(replies) else replies[-1]
-                idx += 1
-                tool_calls = reply.get("tool_calls")
-                message = {"role": "assistant", "content": reply.get("content", "")}
-                await mock.send(
-                    msg_type="model_response",
-                    to=[msg.sender],
-                    payload={
-                        "correlation_id": cid,
-                        "message": message,
-                        "tool_calls": tool_calls,
-                        "finish_reason": "tool_calls" if tool_calls else "stop",
-                    },
-                )
-            except Exception:
-                break
 
-    return mock, asyncio.create_task(responder())
+def ensure_local_tool():
+    tool_dir = "./tools/get_time"
+    os.makedirs(tool_dir, exist_ok=True)
+
+    manifest = os.path.join(tool_dir, "tool.toml")
+    if not os.path.exists(manifest):
+        with open(manifest, "w", encoding="utf-8") as f:
+            f.write(
+                'name = "get_time"\n'
+                'description = "返回当前北京时间"\n'
+                'runtime = "python"\n'
+                'entrypoint = "tool.py"\n'
+                '\n'
+                '[params_schema]\n'
+                'type = "object"\n'
+                'properties = {}\n'
+            )
+
+    entry = os.path.join(tool_dir, "tool.py")
+    if not os.path.exists(entry):
+        with open(entry, "w", encoding="utf-8") as f:
+            f.write(
+                'import json, datetime, sys\n'
+                'result = {"ok": True, "content": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n'
+                'print(json.dumps(result))\n'
+                'sys.exit(0)\n'
+            )
 
 
 async def main():
-    t0 = time.perf_counter()
+    ensure_local_tool()
+
     bus = Bus()
 
-    # Mock model: turn 1 = tool_call, turn 2 = final answer
-    mock, model_task = await attach_mock_model(
-        bus,
-        replies=[
-            {
-                "content": "",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "name": "get_weather",
-                    "arguments": {"city": "Beijing"},
-                }],
-            },
-            {"content": "The weather in Beijing is sunny, 25°C."},
-        ],
-    )
+    # 模型节点
+    provider = MiniMaxProvider(config=MiniMaxConfig.from_env())
+    await provider.connect_to_bus(bus, NodeId("model/main"))
 
-    # Mock MCP node: subscribes to tool_exec
-    mcp = await bus.connect(
-        info=NodeInfo(
-            node_id="mcp/weather",
-            node_type="mcp",
-            capabilities={"tools": [{"name": "get_weather"}]},
-        ),
-        filter=MessageFilter(types=["tool_exec"]),
-    )
+    # 本地 MCP 节点：root="." 让 FsDiscovery 扫 ./tools/
+    mcp_local = McpNode.local(namespace="tools", root=".")
+    await mcp_local.connect(bus)
 
-    async def tool_responder():
-        while True:
-            try:
-                msg = await mcp.recv()
-                cid = msg.payload.get("correlation_id") if isinstance(msg.payload, dict) else None
-                tool_name = msg.payload.get("name") if isinstance(msg.payload, dict) else None
-                await mcp.send(
-                    msg_type="tool_result",
-                    to=[msg.sender],
-                    payload={
-                        "correlation_id": cid,
-                        "name": tool_name,
-                        "content": "sunny, 25°C",
-                        "ok": True,
-                    },
-                )
-            except Exception:
-                break
-
-    tool_task = asyncio.create_task(tool_responder())
+    # 远程 MCP 节点 — 替换 REMOTE_MCP_URL 为你自己的 URL
+    mcp_remote = None
+    try:
+        mcp_remote = await McpNode.remote(
+            namespace="weather-api",
+            config=RemoteConfig(transport="http", url=REMOTE_MCP_URL, timeout_secs=10),
+        )
+        await mcp_remote.connect(bus)
+    except Exception as e:
+        print(f"remote MCP unavailable (skipped): {type(e).__name__}: {e}")
+        # 占位 URL 下 mcp_remote 保持 None；engine.run 仍会跑（只调本地 tool）
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="ex03-tool-bot",
-            provider="mock",
-            model="mock-v1",
+            agent_id="tutorial-ch3",
+            system_prompt_template="你是一个简洁的中文助手。",
+            routes={
+                "model_call": Route.discovery(requirements=[("provider", "minimax")]),
+                "tool_exec": Route.strict(ids=[NodeId("mcp/tools")]),
+                # tool_exec_weather 只在 mcp_remote 在线时才有意义；占位 URL 下
+                # engine.build 时会因 NodeId 不在 graph 而失败，所以这里动态构造。
+                **(
+                    {"tool_exec_weather": Route.strict(ids=[NodeId("mcp/weather-api")])}
+                    if mcp_remote is not None else {}
+                ),
+            },
         ),
     )
-    state = EngineState()
-    out = await engine.run(state=state, user_input="What's the weather in Beijing?")
-    print(f"output: {out!r}")
-    print(f"messages: {[m['role'] for m in state.messages]}")
-    print(f"turn_count={state.turn_count}")
-    print(f"elapsed={(time.perf_counter() - t0) * 1000:.1f}ms")
 
-    model_task.cancel()
-    tool_task.cancel()
+    state = EngineState()
+    try:
+        out = await engine.run(
+            state=state,
+            user_input="查一下现在北京时间，再告诉我上海今天天气怎么样。",
+        )
+        print(f"out={out!r}")
+    except Exception as e:
+        # URL 不可达 / tool 失败时 Engine 可能在这里抛 — 我们捕获并继续
+        print(f"engine.run raised (expected if REMOTE_MCP_URL is unreachable): {type(e).__name__}: {e}")
+    print(f"messages={len(state.messages)}, turn_count={state.turn_count}")
+    print(f"roles={[m['role'] for m in state.messages]}")
     await bus.shutdown()
 
 
@@ -146,19 +135,31 @@ if __name__ == "__main__":
 ## 运行
 
 ```bash
-.venv/bin/python examples/python/ex03_tool_call.py
+# 替换 REMOTE_MCP_URL 后再跑（占位 URL 跑不通远程 tool，本地 tool 仍能跑）
+export MINIMAX_API_KEY='sk-...'
+cd /path/to/repo
+.venv/bin/python /tmp/ch3.py
+unset MINIMAX_API_KEY
+rm -rf ./tools/get_time
 ```
 
-预期 stdout（关键行）：
+预期 stdout（占位 URL 场景下，远程 tool 失败但脚本不崩）：
 
 ```text
-output: 'The weather in Beijing is sunny, 25°C.'
-messages: ['system', 'user', 'assistant', 'tool', 'assistant']
-turn_count=3
+remote MCP unavailable (skipped): ConnectionError: remote MCP server unreachable (https://your-remote-mcp.example.com/mcp): ...
+out='**当前北京时间：2026年5月15日 18:37:09（星期四）**\n\n关于上海的天气情况，很抱歉，我目前没有查询天气的工具可用...'
+messages=5, turn_count=3
+roles=['system', 'user', 'assistant', 'tool', 'assistant']
 ```
 
-> 注：ReAct 循环跨 3 个 turn — turn 1 模型产出 `tool_call`，turn 2 MCP 返回 `tool_result`，turn 3 模型给出最终回答。Engine 还在初始注入一条 system message。
+> 注：占位 URL 下远程 tool 必失败；脚本中 `try/except` 让 main 不 unhandled-exit。本地 `get_time` 仍可被调用；模型会基于可用 tool 给出真实回答（不会编造天气）。**完整跑通 Ch3（本地 + 远程都通）需要真实远程 MCP URL。**
 
 ## 下一节
 
-本系列后续可扩展：state 持久化（`ex06_state_serialize`）、max_turns 与超时（`ex04`/`ex05`）、Phase 6 全栈（`ex08`）。详见 [`examples/python/`](../../examples/python/) 目录。
+本系列三章覆盖了 ARF 最小闭环：Bus / AgentConfig / Engine / ModelAdapter / MCP (Local & Remote)。
+
+后续可探索：`Route.strict` vs `Route.discovery` 的取舍、Checkpoint 与 CheckpointRule、ModelAdapterPool 容量管理、Phase 6 全栈。详见 [`docs/api/reference/`](../reference/)。
+
+## 切换 Provider
+
+模型节点的 Provider 与 ch1 完全相同 — 见 [hello.md § 切换 Provider](hello.md#切换-provider)。如果换成 DeepSeek，相应 `Route.discovery` 同步改为 `("provider", "deepseek")`。
