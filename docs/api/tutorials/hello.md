@@ -106,9 +106,11 @@ if __name__ == "__main__":
 ```text
 output='pong from mock'
 state.round_count=1, state.turn_count=1
-messages: [('assistant', 'pong from mock')]
+messages: [('system', 'You are helpful.'), ('user', 'hello'), ('assistant', 'pong from mock')]
 elapsed=...ms
 ```
+
+> 注：Engine 自动注入了一条默认 system prompt（`You are helpful.`），所以消息数是 3 而不是 1。
 
 ## Next
 

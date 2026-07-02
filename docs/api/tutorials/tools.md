@@ -153,9 +153,11 @@ if __name__ == "__main__":
 
 ```text
 output: 'The weather in Beijing is sunny, 25°C.'
-messages: ['user', 'assistant', 'tool', 'assistant']
-turn_count=2
+messages: ['system', 'user', 'assistant', 'tool', 'assistant']
+turn_count=3
 ```
+
+> 注：ReAct 循环跨 3 个 turn — turn 1 模型产出 `tool_call`，turn 2 MCP 返回 `tool_result`，turn 3 模型给出最终回答。Engine 还在初始注入一条 system message。
 
 ## Next
 

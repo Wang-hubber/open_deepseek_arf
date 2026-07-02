@@ -108,10 +108,12 @@ if __name__ == "__main__":
 预期 stdout（关键行）：
 
 ```text
-turn 1: "Hi! I'm a helpful assistant.", messages count=2
-turn 2: "You asked who I am; I said: I'm a helpful assistant.", messages count=4
+turn 1: "Hi! I'm a helpful assistant.", messages count=3
+turn 2: "You asked who I am; I said: I'm a helpful assistant.", messages count=5
 round_count=2, turn_count=2
 ```
+
+> 注：Engine 在第 1 次 `run()` 起始时注入一条 system message，所以 messages count 从 3 起步；每多一轮对话增加 2 条消息（user + assistant）。
 
 ## Next
 
