@@ -26,8 +26,10 @@ use crate::types::{
 /// Configuration for an OpenAI provider.
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
-    /// API base URL. Default: "https://api.openai.com".
-    pub base_url: String,
+    /// 完整请求 URL（含 path，无隐式拼接）。
+    /// 例：`https://api.openai.com/v1/chat/completions` 或
+    /// `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
+    pub endpoint: String,
     /// API key (or placeholder for local LLMs).
     pub api_key: String,
     /// Supported models (e.g., ["gpt-4o", "gpt-4-turbo"]).
@@ -41,7 +43,7 @@ pub struct OpenAIConfig {
 impl OpenAIConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
         Self {
-            base_url: "https://api.openai.com".into(),
+            endpoint: "https://api.openai.com/v1/chat/completions".into(),
             api_key,
             models,
             timeout_secs: 320,
@@ -65,8 +67,8 @@ impl OpenAIProvider {
         Self { config, client }
     }
 
-    fn endpoint(&self) -> String {
-        format!("{}/v1/chat/completions", self.config.base_url)
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
     }
 
     /// Single HTTP call.
