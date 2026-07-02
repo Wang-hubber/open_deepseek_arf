@@ -38,13 +38,31 @@ pub struct AnthropicConfig {
 
 impl AnthropicConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
+        Self::default().with_api_key_and_models(api_key, models)
+    }
+
+    /// 默认配置：Anthropic 公共 endpoint + 空 key + 空 models。
+    pub fn default() -> Self {
         Self {
             endpoint: "https://api.anthropic.com/v1/messages".into(),
-            api_key,
-            models,
+            api_key: String::new(),
+            models: Vec::new(),
             timeout_secs: 320,
             max_retries: 3,
         }
+    }
+
+    /// 从 `ANTHROPIC_API_KEY` 环境变量构造。
+    pub fn from_env() -> Result<Self, ProviderError> {
+        let api_key = std::env::var("ANTHROPIC_API_KEY")
+            .map_err(|_| ProviderError::Parse("ANTHROPIC_API_KEY not set".into()))?;
+        Ok(Self::default().with_api_key_and_models(api_key, Vec::new()))
+    }
+
+    fn with_api_key_and_models(mut self, api_key: String, models: Vec<String>) -> Self {
+        self.api_key = api_key;
+        self.models = models;
+        self
     }
 }
 

@@ -42,13 +42,31 @@ pub struct OpenAIConfig {
 
 impl OpenAIConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
+        Self::default().with_api_key_and_models(api_key, models)
+    }
+
+    /// 默认配置：OpenAI 公共 endpoint + 空 key + 空 models。
+    pub fn default() -> Self {
         Self {
             endpoint: "https://api.openai.com/v1/chat/completions".into(),
-            api_key,
-            models,
+            api_key: String::new(),
+            models: Vec::new(),
             timeout_secs: 320,
             max_retries: 3,
         }
+    }
+
+    /// 从 `OPENAI_API_KEY` 环境变量构造。
+    pub fn from_env() -> Result<Self, ProviderError> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| ProviderError::Parse("OPENAI_API_KEY not set".into()))?;
+        Ok(Self::default().with_api_key_and_models(api_key, Vec::new()))
+    }
+
+    fn with_api_key_and_models(mut self, api_key: String, models: Vec<String>) -> Self {
+        self.api_key = api_key;
+        self.models = models;
+        self
     }
 }
 

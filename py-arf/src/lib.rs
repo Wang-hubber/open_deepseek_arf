@@ -1052,6 +1052,18 @@ impl PyDeepSeekConfig {
         }
     }
 
+    #[staticmethod]
+    fn default() -> Self {
+        Self { inner: DeepSeekConfig::default() }
+    }
+
+    #[staticmethod]
+    fn from_env() -> PyResult<Self> {
+        DeepSeekConfig::from_env()
+            .map(|c| Self { inner: c })
+            .map_err(provider_error_to_py)
+    }
+
     #[getter]
     fn endpoint(&self) -> String {
         self.inner.endpoint.clone()
@@ -1114,6 +1126,18 @@ impl PyOpenAIConfig {
         }
     }
 
+    #[staticmethod]
+    fn default() -> Self {
+        Self { inner: OpenAIConfig::default() }
+    }
+
+    #[staticmethod]
+    fn from_env() -> PyResult<Self> {
+        OpenAIConfig::from_env()
+            .map(|c| Self { inner: c })
+            .map_err(provider_error_to_py)
+    }
+
     #[getter]
     fn endpoint(&self) -> String {
         self.inner.endpoint.clone()
@@ -1174,6 +1198,18 @@ impl PyAnthropicConfig {
                 max_retries,
             },
         }
+    }
+
+    #[staticmethod]
+    fn default() -> Self {
+        Self { inner: AnthropicConfig::default() }
+    }
+
+    #[staticmethod]
+    fn from_env() -> PyResult<Self> {
+        AnthropicConfig::from_env()
+            .map(|c| Self { inner: c })
+            .map_err(provider_error_to_py)
     }
 
     #[getter]

@@ -6,7 +6,7 @@ Test angles: [覆盖] [构造] [trait] [边界]
 import pytest
 from arf import (
     # Configs
-    AnthropicConfig, DeepSeekConfig, OpenAIConfig,
+    AnthropicConfig, DeepSeekConfig, MiniMaxConfig, OpenAIConfig,
     # Providers
     AnthropicProvider, DeepSeekProvider, OpenAIProvider,
     # Node
@@ -102,6 +102,54 @@ def test_config_three_providers_independent():
     assert ds.api_key == "sk-ds"
     assert oa.api_key == "sk-oa"
     assert an.api_key == "sk-an"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M2.5 — Config.default() / from_env() — 4 Configs 对齐
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_all_four_configs_have_default():
+    """[方法] 4 个 Config 全部有 .default() 静态方法 — 公共 API 对齐。"""
+    ds = DeepSeekConfig.default()
+    oa = OpenAIConfig.default()
+    an = AnthropicConfig.default()
+    mm = MiniMaxConfig.default()
+    assert ds.endpoint == "https://api.deepseek.com/chat/completions"
+    assert oa.endpoint == "https://api.openai.com/v1/chat/completions"
+    assert an.endpoint == "https://api.anthropic.com/v1/messages"
+    assert mm.endpoint == "https://api.minimaxi.com/v1/chat/completions"
+    assert ds.api_key == "" and oa.api_key == "" and an.api_key == "" and mm.api_key == ""
+    assert ds.timeout_secs == 320 and oa.timeout_secs == 320 and an.timeout_secs == 320
+
+
+def test_all_four_configs_have_from_env(monkeypatch):
+    """[方法] 4 个 Config 全部有 .from_env() 静态方法 — 公共 API 对齐。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oa")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-an")
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-mm")
+    assert DeepSeekConfig.from_env().api_key == "sk-ds"
+    assert OpenAIConfig.from_env().api_key == "sk-oa"
+    assert AnthropicConfig.from_env().api_key == "sk-an"
+    assert MiniMaxConfig.from_env().api_key == "sk-mm"
+
+
+def test_from_env_errors_when_key_missing(monkeypatch):
+    """[方法] 4 个 Config 的 from_env 在 key 缺失时都明确报错。"""
+    for var in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MINIMAX_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    for cls, var in [
+        (DeepSeekConfig, "DEEPSEEK_API_KEY"),
+        (OpenAIConfig, "OPENAI_API_KEY"),
+        (AnthropicConfig, "ANTHROPIC_API_KEY"),
+        (MiniMaxConfig, "MINIMAX_API_KEY"),
+    ]:
+        try:
+            cls.from_env()
+            assert False, f"{cls.__name__}.from_env() should have raised without {var}"
+        except Exception as e:
+            assert var in str(e), f"{cls.__name__}.from_env() error must mention {var}: {e}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
