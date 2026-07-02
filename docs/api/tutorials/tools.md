@@ -78,11 +78,11 @@ async def main():
 
     # 模型节点
     provider = MiniMaxProvider(config=MiniMaxConfig.from_env())
-    await provider.connect_to_bus(bus, NodeId("model/main"))
+    await provider.connect_to_bus(bus=bus, node_id=NodeId("model/main"))
 
     # 本地 MCP 节点：root="." 让 FsDiscovery 扫 ./tools/
     mcp_local = McpNode.local(namespace="tools", root=".")
-    await mcp_local.connect(bus)
+    await mcp_local.connect(bus=bus)
 
     # 远程 MCP 节点 — 替换 REMOTE_MCP_URL 为你自己的 URL
     mcp_remote = None
@@ -91,7 +91,7 @@ async def main():
             namespace="weather-api",
             config=RemoteConfig(transport="http", url=REMOTE_MCP_URL, timeout_secs=10),
         )
-        await mcp_remote.connect(bus)
+        await mcp_remote.connect(bus=bus)
     except Exception as e:
         print(f"remote MCP unavailable (skipped): {type(e).__name__}: {e}")
         # 占位 URL 下 mcp_remote 保持 None；engine.run 仍会跑（只调本地 tool）

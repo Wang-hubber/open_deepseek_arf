@@ -50,7 +50,7 @@ async def main():
 
     # 注册真实 MiniMax 模型节点
     provider = MiniMaxProvider(config=MiniMaxConfig.from_env())
-    await provider.connect_to_bus(bus, NodeId("model/main"))
+    await provider.connect_to_bus(bus=bus, node_id=NodeId("model/main"))
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(

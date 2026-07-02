@@ -75,13 +75,13 @@ async def main():
 
     # 模型节点（与 ch1 相同）
     provider = MiniMaxProvider(config=MiniMaxConfig.from_env())
-    await provider.connect_to_bus(bus, NodeId("model/main"))
+    await provider.connect_to_bus(bus=bus, node_id=NodeId("model/main"))
 
     # 本地 MCP 节点：扫描 ./tools/*/tool.toml
     # 注意：McpNode.local(root) 内部在 {root}/tools/ 下找 tool.toml，
     # 所以 root 用 "."（项目根），让 ./tools/get_time/tool.toml 能被发现。
     mcp = McpNode.local(namespace="tools", root=".")
-    await mcp.connect(bus)
+    await mcp.connect(bus=bus)
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
