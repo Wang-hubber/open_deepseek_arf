@@ -24,7 +24,9 @@ use crate::types::{
 /// Configuration for the MiniMax provider.
 #[derive(Debug, Clone)]
 pub struct MiniMaxConfig {
-    pub base_url: String,
+    /// 完整请求 URL（含 path，无隐式拼接）。
+    /// 例：`https://api.minimaxi.com/v1/chat/completions`
+    pub endpoint: String,
     pub api_key: String,
     pub models: Vec<String>,
     pub timeout_secs: u64,
@@ -32,10 +34,10 @@ pub struct MiniMaxConfig {
 }
 
 impl MiniMaxConfig {
-    /// Default base URL `https://api.minimaxi.com/v1`, default model `MiniMax-M3`.
+    /// Default endpoint `https://api.minimaxi.com/v1/chat/completions`, default model `MiniMax-M3`.
     pub fn default() -> Self {
         Self {
-            base_url: "https://api.minimaxi.com/v1".into(),
+            endpoint: "https://api.minimaxi.com/v1/chat/completions".into(),
             api_key: String::new(),
             models: vec!["MiniMax-M3".into()],
             timeout_secs: 320,
@@ -69,9 +71,9 @@ impl MiniMaxProvider {
         Self { config, client }
     }
 
-    /// base_url already contains /v1, so just append /chat/completions.
-    fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.config.base_url)
+    /// 返回完整 endpoint 字符串 — 内部无拼接。
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
     }
 
     /// Convert ARF ModelMessage → MiniMax request body (OpenAI format).
@@ -298,16 +300,16 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn default_config_has_minimax_base_url() {
+    fn default_config_has_minimax_endpoint() {
         let cfg = MiniMaxConfig::default();
-        assert_eq!(cfg.base_url, "https://api.minimaxi.com/v1");
+        assert_eq!(cfg.endpoint, "https://api.minimaxi.com/v1/chat/completions");
         assert!(cfg.models.contains(&"MiniMax-M3".to_string()));
         assert_eq!(cfg.timeout_secs, 320);
         assert_eq!(cfg.max_retries, 3);
     }
 
     #[test]
-    fn endpoint_appends_chat_completions() {
+    fn endpoint_returns_full_url_verbatim() {
         let cfg = MiniMaxConfig {
             api_key: "k".into(),
             ..MiniMaxConfig::default()
@@ -328,7 +330,7 @@ mod tests {
         }
         let cfg = MiniMaxConfig::from_env().expect("should read env");
         assert_eq!(cfg.api_key, "test-key");
-        assert_eq!(cfg.base_url, "https://api.minimaxi.com/v1");
+        assert_eq!(cfg.endpoint, "https://api.minimaxi.com/v1/chat/completions");
         unsafe {
             std::env::remove_var("MINIMAX_API_KEY");
         }
