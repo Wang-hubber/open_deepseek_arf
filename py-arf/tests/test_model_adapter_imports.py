@@ -47,7 +47,7 @@ def test_deepseek_config_defaults():
     c = DeepSeekConfig(api_key="sk-test", models=["deepseek-v4-flash"])
     assert c.api_key == "sk-test"
     assert c.models == ["deepseek-v4-flash"]
-    assert c.base_url == "https://api.deepseek.com"
+    assert c.endpoint == "https://api.deepseek.com/chat/completions"
     assert c.timeout_secs == 320
     assert c.max_retries == 3
     assert "DeepSeekConfig" in repr(c)
@@ -58,43 +58,40 @@ def test_deepseek_config_full_custom():
     c = DeepSeekConfig(
         api_key="sk-custom",
         models=["deepseek-v4-flash", "deepseek-v4-pro"],
-        base_url="https://custom.deepseek.com",
+        endpoint="https://custom.deepseek.com/chat/completions",
         timeout_secs=120,
         max_retries=5,
     )
     assert c.models == ["deepseek-v4-flash", "deepseek-v4-pro"]
-    assert c.base_url == "https://custom.deepseek.com"
+    assert c.endpoint == "https://custom.deepseek.com/chat/completions"
     assert c.timeout_secs == 120
     assert c.max_retries == 5
 
 
 def test_openai_config_defaults():
-    """[构造] OpenAIConfig defaults: base_url='https://api.openai.com'."""
+    """[构造] OpenAIConfig default endpoint is the full public URL."""
     c = OpenAIConfig(api_key="sk-test", models=["gpt-4o"])
-    assert c.base_url == "https://api.openai.com"
+    assert c.endpoint == "https://api.openai.com/v1/chat/completions"
     assert c.timeout_secs == 320
     assert c.max_retries == 3
 
 
 def test_anthropic_config_defaults():
-    """[构造] AnthropicConfig defaults: base_url + api_path."""
+    """[构造] AnthropicConfig default endpoint is the full public URL."""
     c = AnthropicConfig(api_key="sk-test", models=["claude-sonnet-4-6"])
-    assert c.base_url == "https://api.anthropic.com"
-    assert c.api_path == "/v1/messages"
+    assert c.endpoint == "https://api.anthropic.com/v1/messages"
     assert c.timeout_secs == 320
     assert c.max_retries == 3
 
 
-def test_anthropic_config_custom_api_path():
-    """[构造] AnthropicConfig with DeepSeek-compatible api_path."""
+def test_anthropic_config_custom_endpoint():
+    """[构造] AnthropicConfig with DeepSeek anthropic-compat endpoint."""
     c = AnthropicConfig(
         api_key="sk-test",
         models=["deepseek-v4-flash"],
-        base_url="https://api.deepseek.com",
-        api_path="/anthropic",
+        endpoint="https://api.deepseek.com/anthropic",
     )
-    assert c.base_url == "https://api.deepseek.com"
-    assert c.api_path == "/anthropic"
+    assert c.endpoint == "https://api.deepseek.com/anthropic"
 
 
 def test_config_three_providers_independent():
