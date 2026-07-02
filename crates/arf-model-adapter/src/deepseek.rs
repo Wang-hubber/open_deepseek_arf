@@ -26,7 +26,9 @@ use crate::types::{
 /// Configuration for a DeepSeek provider.
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
-    pub base_url: String,
+    /// 完整请求 URL（含 path，无隐式拼接）。
+    /// 例：`https://api.deepseek.com/chat/completions`
+    pub endpoint: String,
     pub api_key: String,
     pub models: Vec<String>,
     pub timeout_secs: u64,
@@ -36,7 +38,7 @@ pub struct DeepSeekConfig {
 impl DeepSeekConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
         Self {
-            base_url: "https://api.deepseek.com".into(),
+            endpoint: "https://api.deepseek.com/chat/completions".into(),
             api_key,
             models,
             timeout_secs: 320,
@@ -60,8 +62,8 @@ impl DeepSeekProvider {
         Self { config, client }
     }
 
-    fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.config.base_url)
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
     }
 
     async fn send_request(&self, body: &Value) -> Result<String, ProviderError> {

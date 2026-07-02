@@ -1033,17 +1033,17 @@ struct PyDeepSeekConfig {
 #[pymethods]
 impl PyDeepSeekConfig {
     #[new]
-    #[pyo3(signature = (api_key, models, base_url="https://api.deepseek.com".into(), timeout_secs=320, max_retries=3))]
+    #[pyo3(signature = (api_key, models, endpoint="https://api.deepseek.com/chat/completions".into(), timeout_secs=320, max_retries=3))]
     fn new(
         api_key: String,
         models: Vec<String>,
-        base_url: String,
+        endpoint: String,
         timeout_secs: u64,
         max_retries: u32,
     ) -> Self {
         Self {
             inner: DeepSeekConfig {
-                base_url,
+                endpoint,
                 api_key,
                 models,
                 timeout_secs,
@@ -1053,8 +1053,8 @@ impl PyDeepSeekConfig {
     }
 
     #[getter]
-    fn base_url(&self) -> String {
-        self.inner.base_url.clone()
+    fn endpoint(&self) -> String {
+        self.inner.endpoint.clone()
     }
     #[getter]
     fn api_key(&self) -> String {
@@ -1075,8 +1075,8 @@ impl PyDeepSeekConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "DeepSeekConfig(base_url='{}', models={:?})",
-            self.inner.base_url, self.inner.models
+            "DeepSeekConfig(endpoint='{}', models={:?})",
+            self.inner.endpoint, self.inner.models
         )
     }
 }
@@ -1095,17 +1095,17 @@ struct PyOpenAIConfig {
 #[pymethods]
 impl PyOpenAIConfig {
     #[new]
-    #[pyo3(signature = (api_key, models, base_url="https://api.openai.com".into(), timeout_secs=320, max_retries=3))]
+    #[pyo3(signature = (api_key, models, endpoint="https://api.openai.com/v1/chat/completions".into(), timeout_secs=320, max_retries=3))]
     fn new(
         api_key: String,
         models: Vec<String>,
-        base_url: String,
+        endpoint: String,
         timeout_secs: u64,
         max_retries: u32,
     ) -> Self {
         Self {
             inner: OpenAIConfig {
-                base_url,
+                endpoint,
                 api_key,
                 models,
                 timeout_secs,
@@ -1115,8 +1115,8 @@ impl PyOpenAIConfig {
     }
 
     #[getter]
-    fn base_url(&self) -> String {
-        self.inner.base_url.clone()
+    fn endpoint(&self) -> String {
+        self.inner.endpoint.clone()
     }
     #[getter]
     fn api_key(&self) -> String {
@@ -1137,8 +1137,8 @@ impl PyOpenAIConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "OpenAIConfig(base_url='{}', models={:?})",
-            self.inner.base_url, self.inner.models
+            "OpenAIConfig(endpoint='{}', models={:?})",
+            self.inner.endpoint, self.inner.models
         )
     }
 }
@@ -1157,21 +1157,19 @@ struct PyAnthropicConfig {
 #[pymethods]
 impl PyAnthropicConfig {
     #[new]
-    #[pyo3(signature = (api_key, models, base_url="https://api.anthropic.com".into(), api_path="/v1/messages".into(), timeout_secs=320, max_retries=3))]
+    #[pyo3(signature = (api_key, models, endpoint="https://api.anthropic.com/v1/messages".into(), timeout_secs=320, max_retries=3))]
     fn new(
         api_key: String,
         models: Vec<String>,
-        base_url: String,
-        api_path: String,
+        endpoint: String,
         timeout_secs: u64,
         max_retries: u32,
     ) -> Self {
         Self {
             inner: AnthropicConfig {
-                base_url,
+                endpoint,
                 api_key,
                 models,
-                api_path,
                 timeout_secs,
                 max_retries,
             },
@@ -1179,8 +1177,8 @@ impl PyAnthropicConfig {
     }
 
     #[getter]
-    fn base_url(&self) -> String {
-        self.inner.base_url.clone()
+    fn endpoint(&self) -> String {
+        self.inner.endpoint.clone()
     }
     #[getter]
     fn api_key(&self) -> String {
@@ -1189,10 +1187,6 @@ impl PyAnthropicConfig {
     #[getter]
     fn models(&self) -> Vec<String> {
         self.inner.models.clone()
-    }
-    #[getter]
-    fn api_path(&self) -> String {
-        self.inner.api_path.clone()
     }
     #[getter]
     fn timeout_secs(&self) -> u64 {
@@ -1205,8 +1199,8 @@ impl PyAnthropicConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "AnthropicConfig(base_url='{}', api_path='{}', models={:?})",
-            self.inner.base_url, self.inner.api_path, self.inner.models
+            "AnthropicConfig(endpoint='{}', models={:?})",
+            self.inner.endpoint, self.inner.models
         )
     }
 }
@@ -1239,8 +1233,8 @@ impl PyMiniMaxConfig {
     }
 
     #[getter]
-    fn base_url(&self) -> String {
-        self.inner.base_url.clone()
+    fn endpoint(&self) -> String {
+        self.inner.endpoint.clone()
     }
     #[getter]
     fn api_key(&self) -> String {
@@ -1261,8 +1255,8 @@ impl PyMiniMaxConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "MiniMaxConfig(base_url='{}', models={:?})",
-            self.inner.base_url, self.inner.models
+            "MiniMaxConfig(endpoint='{}', models={:?})",
+            self.inner.endpoint, self.inner.models
         )
     }
 }
