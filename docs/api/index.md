@@ -10,7 +10,7 @@
 
 | 桶 | 用途 | 当前状态 |
 |---|---|---|
-| **[Tutorials](tutorials/)** | 手把手引导，从零到可运行示例 | 🚧 空（占位） |
+| **[Tutorials](tutorials/)** | 手把手引导，从零到可运行示例 | ✅ 起步（3 篇：hello / conversation / tools） |
 | **[How-To](how-to/)** | 解决特定问题的菜谱式指南 | 🚧 空（占位） |
 | **[Explanation](explanation/)** | 设计哲学与技术选型背后的"为什么" | 🚧 空（占位） |
 | **[Reference](reference/)** | 模块级 API 字典式参考 | ✅ 完整（6 模块） |
