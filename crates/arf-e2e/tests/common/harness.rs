@@ -205,10 +205,18 @@ impl E2EHarness {
             vec![]
         };
 
+        let provider_name = provider.as_dyn().name().to_string();
+        // Use the first supported model name so live providers accept the call.
+        let model_name = provider
+            .as_dyn()
+            .supported_models()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "default".into());
         let cfg = AgentConfig {
             model: ModelDecl {
-                provider: "scripted".into(),
-                model_name: "scripted-v1".into(),
+                provider: provider_name.clone(),
+                model_name,
                 ..Default::default()
             },
             resources,
