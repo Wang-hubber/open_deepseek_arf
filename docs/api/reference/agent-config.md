@@ -189,7 +189,7 @@ Engine 在 `before_tools` checkpoint 检查此权限。`Ask` 会触发 Park/Resu
 
 ```rust
 pub struct ResourceSpec {
-    pub name: String,                      // Agent 起的别名
+    pub resource_name: String,             // Agent 起的别名（非 NodeId，仅供日志/错误消息）
     pub node_type: String,                 // "mcp" | "agent/subagent" | "agent/teammate"
     pub capabilities: Option<serde_json::Value>, // 能力匹配条件
 }

@@ -163,6 +163,10 @@ impl PyAgentConfig {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Python ResourceSpec — declares a logical resource dependency.
+///
+/// `resource_name` is an agent-given alias (NOT a NodeId/NodeName) —
+/// used for logs and error messages. Real node matching is done by
+/// `node_type` (+ optional `capabilities` filter).
 #[pyclass(name = "ResourceSpec")]
 #[derive(Clone)]
 pub struct PyResourceSpec {
@@ -172,10 +176,10 @@ pub struct PyResourceSpec {
 #[pymethods]
 impl PyResourceSpec {
     #[new]
-    #[pyo3(signature = (name, node_type, capabilities = None))]
+    #[pyo3(signature = (resource_name, node_type, capabilities = None))]
     fn new(
         py: Python<'_>,
-        name: String,
+        resource_name: String,
         node_type: String,
         capabilities: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
@@ -185,7 +189,7 @@ impl PyResourceSpec {
         };
         Ok(Self {
             inner: arf_agent::ResourceSpec {
-                name,
+                resource_name,
                 node_type,
                 capabilities: caps_json,
             },
@@ -194,8 +198,8 @@ impl PyResourceSpec {
 
     fn __repr__(&self) -> String {
         format!(
-            "ResourceSpec(name='{}', node_type='{}')",
-            self.inner.name, self.inner.node_type
+            "ResourceSpec(resource_name='{}', node_type='{}')",
+            self.inner.resource_name, self.inner.node_type
         )
     }
 }

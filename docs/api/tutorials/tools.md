@@ -107,9 +107,9 @@ async def main():
             system_prompt_template="你是一个简洁的中文助手。",
             # 声明 MCP 资源：两个节点，Engine 自动解析 + 注入
             resources=[
-                ResourceSpec(name="local_tools", node_type="mcp",
+                ResourceSpec(resource_name="local_tools", node_type="mcp",
                     capabilities={"tools": ["get_time", "random_number"]}),
-                ResourceSpec(name="remote_tools", node_type="mcp",
+                ResourceSpec(resource_name="remote_tools", node_type="mcp",
                     capabilities={"tools": ["codetidy_json_format"]}),
             ],
             engine=EngineConfig(

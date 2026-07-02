@@ -89,7 +89,7 @@ async def main():
             system_prompt_template="你是一个简洁的中文助手。",
             # 声明 MCP 资源：Engine 自动解析 to，注入 tools → model_call
             resources=[
-                ResourceSpec(name="tools", node_type="mcp", capabilities={"tools": ["get_time"]}),
+                ResourceSpec(resource_name="tools", node_type="mcp", capabilities={"tools": ["get_time"]}),
             ],
             engine=EngineConfig(
                 max_turns=10,
