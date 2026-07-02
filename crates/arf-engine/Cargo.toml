@@ -8,6 +8,7 @@ description = "ARF Engine: ReAct loop — receive messages, call model, emit act
 
 [dependencies]
 arf-core = { path = "../arf-core" }
+arf-agent = { path = "../arf-agent" }
 arf-bus = { path = "../arf-bus" }
 arf-state = { path = "../arf-state" }
 async-trait = "0.1"
