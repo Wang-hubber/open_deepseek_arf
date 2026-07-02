@@ -188,40 +188,132 @@ out = await engine.run(state=state, user_input="用一句话介绍北京。")
 
 ## 切换 Provider
 
-把 MiniMax 换成 DeepSeek 只需改 2 行（其他章节的 `## 切换 Provider` 段也类似）：
+把 MiniMax 换成其他 provider 通常改 2-3 行。**本节 4 个示例都实跑过**（除 Anthropic 因本地无 key 仅展示代码）。
+
+### 公共注意
+
+- `OpenAIProvider` 报 `provider="openai"`。多 OpenAI 兼容厂商共存时（如同时挂 DeepSeek + 阿里百炼），需用 `Route.strict(ids=[NodeId(...)])` 给每个 provider 唯一 NodeId；不要用 `Route.discovery`，否则多 OpenAI 节点会全匹配
+- `base_url` 通常**不含** `/v1` — OpenAIProvider 会自动追加 `/v1/chat/completions`。如 `base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"` 会拼出 `/v1/v1/chat/completions` → 404
+- `DeepSeekProvider` 对 `reasoning_content` 块有专门处理；`OpenAIProvider` 走兼容模式也能识别但只把内容当主回答
+
+### DeepSeek — 用 `DeepSeekProvider`（推荐）
+
+`DeepSeekConfig` 是 Python dataclass（不是 pyo3 wrap），无 `from_env`，直接构造：
 
 ```python
-# DeepSeek（推荐新手）
+import os
 from arf import DeepSeekConfig, DeepSeekProvider
-provider = DeepSeekProvider(config=DeepSeekConfig.from_env())
-# Route.discovery 同步改：("provider", "deepseek")
 
-# OpenAI
-from arf import OpenAIConfig, OpenAIProvider
-provider = OpenAIProvider(config=OpenAIConfig.from_env())
-# Route.discovery 同步改：("provider", "openai")
-
-# Anthropic
-from arf import AnthropicConfig, AnthropicProvider
-provider = AnthropicProvider(config=AnthropicConfig.from_env())
-# Route.discovery 同步改：("provider", "anthropic")
-
-# OpenAI-API 兼容服务（如阿里百炼兼容模式 / Moonshot / vLLM）
-from arf import OpenAIConfig, OpenAIProvider
-provider = OpenAIProvider(config=OpenAIConfig(
-    api_key="...",
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    models=["qwen-plus"],
+provider = DeepSeekProvider(config=DeepSeekConfig(
+    api_key=os.environ["DEEPSEEK_API_KEY"],
+    models=["deepseek-chat"],
 ))
-# Route.discovery 同步改：("provider", "openai")
+# 用唯一 NodeId + strict route
+await provider.connect_to_bus(bus=bus, node_id=NodeId("model/deepseek"))
 
-# Anthropic-API 兼容服务（如 DeepSeek anthropic 端点）
+engine = await EngineBuilder.new(buses=[bus]).build(
+    config=AgentConfig(
+        agent_id="tutorial-hello",
+        system_prompt_template="你是一个简洁的中文助手。",
+        routes={
+            "model_call": Route.strict(ids=[NodeId("model/deepseek")]),
+        },
+    ),
+)
+```
+
+跑（key inline 传，不入任何文件）：
+
+```bash
+export DEEPSEEK_API_KEY='sk-...'
+.venv/bin/python /tmp/hello.py
+unset DEEPSEEK_API_KEY
+```
+
+实测输出（用户 prompt "用一句话介绍北京。"）：
+
+```text
+out (34 chars): '北京是中华人民共和国的首都，是一座融合古老历史与现代文明的文化名城。'
+```
+
+### DeepSeek — 用 `OpenAIProvider`（OpenAI 兼容模式）
+
+`OpenAIConfig.from_env()` 读 `OPENAI_API_KEY`，但用 DeepSeek 时需手动指定 `base_url`：
+
+```python
+from arf import OpenAIConfig, OpenAIProvider
+
+provider = OpenAIProvider(config=OpenAIConfig(
+    api_key=os.environ["DEEPSEEK_API_KEY"],
+    base_url="https://api.deepseek.com",
+    models=["deepseek-chat"],
+))
+await provider.connect_to_bus(bus=bus, node_id=NodeId("model/deepseek"))
+# Route.strict ids=[NodeId("model/deepseek")]
+```
+
+实测输出（同样 prompt）：
+
+```text
+out (30 chars): '北京是中国的首都，是一座融合古老历史与现代文明的国际大都市。'
+```
+
+### 阿里百炼 — 用 `OpenAIProvider`（兼容模式）
+
+阿里百炼兼容 OpenAI 协议但 base_url 路径特殊：**不含 `/v1`**，否则 404。
+
+```python
+from arf import OpenAIConfig, OpenAIProvider
+
+provider = OpenAIProvider(config=OpenAIConfig(
+    api_key=os.environ["DASHSCOPE_API_KEY"],
+    base_url="https://dashscope.aliyuncs.com/compatible-mode",  # 注意：无 /v1
+    models=["qwen3.7-max-preview"],  # 有免费额度
+))
+await provider.connect_to_bus(bus=bus, node_id=NodeId("model/bailian"))
+# Route.strict ids=[NodeId("model/bailian")]
+```
+
+跑（推荐用 `qwen3.7-max-preview` 等有免费额度的模型；首次调用前先在控制台"免费模型"列表确认）：
+
+```bash
+export DASHSCOPE_API_KEY='sk-...'
+.venv/bin/python /tmp/hello.py
+unset DASHSCOPE_API_KEY
+```
+
+实测输出（`qwen3.7-max-preview`）：
+
+```text
+out (41 chars): '北京是中国的首都，一座完美融合了深厚历史底蕴与现代都市活力的政治、文化和科技中心。'
+```
+
+### Anthropic — 用 `AnthropicProvider`
+
+```python
 from arf import AnthropicConfig, AnthropicProvider
+
+provider = AnthropicProvider(config=AnthropicConfig.from_env())
+# 默认 base_url="https://api.anthropic.com", api_path="/v1/messages"
+# Route.discovery 同步改：("provider", "anthropic")
+```
+
+> 未实跑（本地无 Anthropic key）；Claude 系列需 `ANTHROPIC_API_KEY` 环境变量
+
+### DeepSeek Anthropic 兼容端点
+
+`AnthropicConfig` 支持 `api_path` 覆盖，可访问 DeepSeek 提供的 `/anthropic` 端点：
+
+```python
+from arf import AnthropicConfig, AnthropicProvider
+
 provider = AnthropicProvider(config=AnthropicConfig(
-    api_key="...",
+    api_key=os.environ["DEEPSEEK_API_KEY"],
     base_url="https://api.deepseek.com",
     api_path="/anthropic",
     models=["deepseek-chat"],
 ))
 # Route.discovery 同步改：("provider", "anthropic")
 ```
+
+> 未实跑（DeepSeek 的 Anthropic 兼容端点可能与 AnthropicConfig 默认 schema 不完全一致）。如需 Claude 系模型，推荐用上面原生 AnthropicProvider。
