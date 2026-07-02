@@ -16,11 +16,26 @@ use serde::{Deserialize, Serialize};
 /// actual resolution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSpec {
-    /// Agent-given alias for this resource.
+    /// Agent-given alias for this logical resource.
     ///
-    /// Used in logs, error messages, and as a human-readable reference.
-    /// Examples: `"primary_fs"`, `"code_reviewer"`, `"web_searcher"`.
-    pub name: String,
+    /// **NOT a NodeId or NodeName.** This is purely a human-readable label
+    /// that the agent (or app author) gives to "what I want from this
+    /// resource". Used in:
+    /// - log messages
+    /// - `BuildError::MissingNodes` / `BuildError::AmbiguousTool` payloads
+    /// - `ResourceBinding.resource_name` (informational)
+    ///
+    /// The actual node matching is done by `node_type` (+ optional
+    /// `capabilities` filter). Two `ResourceSpec`s may share the same
+    /// `resource_name` without conflict; what matters is the resolved
+    /// tools/skills they bring in.
+    ///
+    /// JSON wire form uses `"resource_name"`; the legacy `"name"` key is
+    /// still accepted as a serde alias for backward compatibility.
+    ///
+    /// Examples: `"time_keeper"`, `"json_formatter"`, `"code_reviewer"`.
+    #[serde(alias = "name")]
+    pub resource_name: String,
 
     /// Expected `node_type` on the Bus when Engine does discovery.
     ///
@@ -58,11 +73,11 @@ mod tests {
     #[test]
     fn resource_spec_all_fields() {
         let spec = ResourceSpec {
-            name: "primary_fs".into(),
+            resource_name: "primary_fs".into(),
             node_type: "mcp".into(),
             capabilities: Some(serde_json::json!({"resources": ["tool/read", "tool/write"]})),
         };
-        assert_eq!(spec.name, "primary_fs");
+        assert_eq!(spec.resource_name, "primary_fs");
         assert_eq!(spec.node_type, "mcp");
         let caps = spec.capabilities.unwrap();
         assert_eq!(caps["resources"][0], "tool/read");
@@ -73,30 +88,30 @@ mod tests {
     #[test]
     fn resource_spec_no_capabilities() {
         let spec = ResourceSpec {
-            name: "any_fs".into(),
+            resource_name: "any_fs".into(),
             node_type: "mcp".into(),
             capabilities: None,
         };
-        assert_eq!(spec.name, "any_fs");
+        assert_eq!(spec.resource_name, "any_fs");
         assert!(spec.capabilities.is_none());
     }
 
-    // [边界] name 为空字符串：合法（Engine 用空串不 panic）
+    // [边界] resource_name 为空字符串：合法（Engine 用空串不 panic）
     #[test]
     fn resource_spec_empty_name() {
         let spec = ResourceSpec {
-            name: "".into(),
+            resource_name: "".into(),
             node_type: "mcp".into(),
             capabilities: None,
         };
-        assert_eq!(spec.name, "");
+        assert_eq!(spec.resource_name, "");
     }
 
     // [边界] capabilities 为 None 时不序列化到 JSON
     #[test]
     fn resource_spec_capabilities_none_skipped() {
         let spec = ResourceSpec {
-            name: "x".into(),
+            resource_name: "x".into(),
             node_type: "mcp".into(),
             capabilities: None,
         };
@@ -104,12 +119,12 @@ mod tests {
         assert!(!json.contains("capabilities"));
     }
 
-    // [边界] 最小合法 JSON：仅 name + node_type，capabilities 缺省
+    // [边界] 最小合法 JSON：仅 resource_name + node_type，capabilities 缺省
     #[test]
     fn resource_spec_minimal_json() {
         let json = r#"{"name":"code_reviewer","node_type":"agent/subagent"}"#;
         let spec: ResourceSpec = serde_json::from_str(json).unwrap();
-        assert_eq!(spec.name, "code_reviewer");
+        assert_eq!(spec.resource_name, "code_reviewer");
         assert_eq!(spec.node_type, "agent/subagent");
         assert!(spec.capabilities.is_none());
     }
@@ -118,28 +133,28 @@ mod tests {
     #[test]
     fn resource_spec_clone() {
         let spec = ResourceSpec {
-            name: "s".into(),
+            resource_name: "s".into(),
             node_type: "t".into(),
             capabilities: Some(serde_json::json!({"k": "v"})),
         };
         assert_eq!(spec, spec.clone());
     }
 
-    // [trait] PartialEq：相同字段相等，不同 name 不等
+    // [trait] PartialEq：相同字段相等，不同 resource_name 不等
     #[test]
     fn resource_spec_equality() {
         let a = ResourceSpec {
-            name: "a".into(),
+            resource_name: "a".into(),
             node_type: "mcp".into(),
             capabilities: None,
         };
         let b = ResourceSpec {
-            name: "a".into(),
+            resource_name: "a".into(),
             node_type: "mcp".into(),
             capabilities: None,
         };
         let c = ResourceSpec {
-            name: "c".into(),
+            resource_name: "c".into(),
             ..a.clone()
         };
         assert_eq!(a, b);
@@ -150,7 +165,7 @@ mod tests {
     #[test]
     fn resource_spec_serialization_roundtrip_full() {
         let spec = ResourceSpec {
-            name: "web_searcher".into(),
+            resource_name: "web_searcher".into(),
             node_type: "mcp".into(),
             capabilities: Some(serde_json::json!({
                 "resources": ["tool/web_search"],
@@ -162,16 +177,29 @@ mod tests {
         assert_eq!(spec, back);
     }
 
-    // [序列化] 最简 spec 往返：仅 name + node_type
+    // [序列化] 最简 spec 往返：仅 resource_name + node_type
     #[test]
     fn resource_spec_serialization_roundtrip_minimal() {
         let spec = ResourceSpec {
-            name: "minimal".into(),
+            resource_name: "minimal".into(),
             node_type: "agent/teammate".into(),
             capabilities: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: ResourceSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec, back);
+    }
+
+    // [兼容] JSON 用旧字段名 "name" 仍可反序列化（serde alias）；
+    // 序列化时输出新字段名 "resource_name"。
+    #[test]
+    fn resource_spec_json_accepts_name_alias() {
+        let legacy_json = r#"{"name":"legacy_alias","node_type":"mcp"}"#;
+        let spec: ResourceSpec = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(spec.resource_name, "legacy_alias");
+
+        let serialized = serde_json::to_string(&spec).unwrap();
+        assert!(serialized.contains("\"resource_name\""), "new field name should serialize: {serialized}");
+        assert!(!serialized.contains("\"name\""), "legacy key should not appear: {serialized}");
     }
 }

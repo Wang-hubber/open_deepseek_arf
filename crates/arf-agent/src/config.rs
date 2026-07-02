@@ -189,7 +189,7 @@ mod tests {
             parameters: None,
         };
         let sub = ResourceSpec {
-            name: "code_reviewer".into(),
+            resource_name: "code_reviewer".into(),
             node_type: "agent/subagent".into(),
             capabilities: None,
         };
@@ -266,7 +266,7 @@ mod tests {
             }],
             allowed_paths: vec!["/workspace".into(), "/tmp".into()],
             subagents: vec![ResourceSpec {
-                name: "reviewer".into(),
+                resource_name: "reviewer".into(),
                 node_type: "agent/subagent".into(),
                 capabilities: Some(serde_json::json!({"skills": ["code_review"]})),
             }],

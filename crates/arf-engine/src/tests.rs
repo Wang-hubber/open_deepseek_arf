@@ -2403,7 +2403,7 @@ async fn skills_text_cache_hit_returns_same() {
         .unwrap();
     let decl = AgentConfig {
         resources: vec![
-            arf_agent::ResourceSpec { name: "s".into(), node_type: "mcp".into(), capabilities: Some(serde_json::json!({"skills": "all"})) },
+            arf_agent::ResourceSpec { resource_name: "s".into(), node_type: "mcp".into(), capabilities: Some(serde_json::json!({"skills": "all"})) },
         ],
         ..minimal_config("")
     };
@@ -2437,7 +2437,7 @@ async fn find_tool_owner_returns_correct_node() {
     use arf_core::BusGraph;
     let decl = AgentConfig {
         resources: vec![arf_agent::ResourceSpec {
-            name: "echo".into(),
+            resource_name: "echo".into(),
             node_type: "mcp".into(),
             capabilities: Some(serde_json::json!({"tools": ["echo"]})),
         }],
@@ -2469,11 +2469,11 @@ async fn find_tool_owner_ambiguous_build_fails() {
     let decl = AgentConfig {
         resources: vec![
             arf_agent::ResourceSpec {
-                name: "a".into(), node_type: "mcp".into(),
+                resource_name: "a".into(), node_type: "mcp".into(),
                 capabilities: Some(serde_json::json!({"tools": ["echo"]})),
             },
             arf_agent::ResourceSpec {
-                name: "b".into(), node_type: "mcp".into(),
+                resource_name: "b".into(), node_type: "mcp".into(),
                 capabilities: Some(serde_json::json!({"tools": ["echo"]})),
             },
         ],

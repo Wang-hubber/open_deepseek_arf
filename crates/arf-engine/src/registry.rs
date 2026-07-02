@@ -58,13 +58,13 @@ impl ResourceRegistry {
                 .iter()
                 .find(|n| n.node_type == spec.node_type)
                 .ok_or_else(|| BuildError::MissingNodes {
-                    nodes: vec![format!("{}: node_type=\"{}\"", spec.name, spec.node_type)],
+                    nodes: vec![format!("{}: node_type=\"{}\"", spec.resource_name, spec.node_type)],
                 })?;
 
-            let filter = parse_declared_filter(&spec.capabilities, &spec.name);
+            let filter = parse_declared_filter(&spec.capabilities, &spec.resource_name);
 
             let binding = ResourceBinding {
-                resource_name: spec.name.clone(),
+                resource_name: spec.resource_name.clone(),
                 node_id: node.node_id.clone(),
                 declared_filter: filter.clone(),
             };
@@ -93,7 +93,7 @@ impl ResourceRegistry {
                     if let Some(existing) = tool_index.get(tname) {
                         return Err(BuildError::AmbiguousTool {
                             tool: tname.clone(),
-                            providers: vec![existing.to_string(), spec.name.clone()],
+                            providers: vec![existing.to_string(), spec.resource_name.clone()],
                         });
                     }
                     tool_index.insert(tname.clone(), node.node_id.clone());
@@ -322,7 +322,7 @@ mod tests {
     fn registry_build_all_resources_resolved() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
-                name: "files".into(),
+                resource_name: "files".into(),
                 node_type: "mcp".into(),
                 capabilities: Some(serde_json::json!({"tools": ["read"]})),
             }],
@@ -359,7 +359,7 @@ mod tests {
     fn registry_build_missing_mcp_fails() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
-                name: "ghost".into(),
+                resource_name: "ghost".into(),
                 node_type: "mcp".into(),
                 capabilities: None,
             }],
@@ -379,12 +379,12 @@ mod tests {
         let decl = AgentConfig {
             resources: vec![
                 ResourceSpec {
-                    name: "files".into(),
+                    resource_name: "files".into(),
                     node_type: "mcp".into(),
                     capabilities: Some(serde_json::json!({"tools": ["read"]})),
                 },
                 ResourceSpec {
-                    name: "code".into(),
+                    resource_name: "code".into(),
                     node_type: "mcp".into(),
                     capabilities: Some(serde_json::json!({"tools": ["read"]})),
                 },
@@ -407,7 +407,7 @@ mod tests {
     fn registry_build_none_capabilities_rejects_all() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
-                name: "files".into(),
+                resource_name: "files".into(),
                 node_type: "mcp".into(),
                 capabilities: None,
             }],
@@ -426,7 +426,7 @@ mod tests {
     fn registry_build_all_sentinel() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
-                name: "files".into(),
+                resource_name: "files".into(),
                 node_type: "mcp".into(),
                 capabilities: Some(serde_json::json!({"tools": "all"})),
             }],
@@ -452,7 +452,7 @@ mod tests {
     fn registry_owner_of_tool_returns_correct_node() {
         let decl = AgentConfig {
             resources: vec![ResourceSpec {
-                name: "files".into(),
+                resource_name: "files".into(),
                 node_type: "mcp".into(),
                 capabilities: Some(serde_json::json!({"tools": ["read"]})),
             }],
