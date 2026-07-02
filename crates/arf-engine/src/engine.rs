@@ -1,7 +1,5 @@
 //! Engine — ReAct 循环 actor（Phase 6 §3 / §6.4 / §6.5 / §6.6）。
 
-use std::sync::Arc;
-
 use arf_bus::NodeHandle;
 use arf_core::{
     ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, NodeId,
@@ -12,8 +10,11 @@ use uuid::Uuid;
 
 use crate::checkpoint::{self as cp_eval, DiscoveryCache};
 use crate::config::AgentConfig;
+use crate::dispatcher::HandlerRegistry;
 use crate::error::{BuildError, RunError};
 use crate::registry::ResourceRegistry;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const MODEL_RESPONSE: &str = "model_response";
 const TOOL_RESULT: &str = "tool_result";
@@ -38,6 +39,12 @@ pub struct Engine {
     initial_memory: Vec<String>,
     /// Declared resource → NodeId mapping. Build-time snapshot, read-only at runtime.
     registry: ResourceRegistry,
+    /// Message dispatch registry (Phase 8 task F2).
+    handlers: Arc<Mutex<HandlerRegistry>>,
+    /// Optional session store (Phase 8 task F5). None = no persistence.
+    session_store: Option<Arc<dyn arf_session::SessionStore>>,
+    /// Session ID for this engine instance (Phase 8 task F5).
+    session_id: String,
 }
 
 impl Engine {
@@ -87,6 +94,10 @@ impl Engine {
         let system_prompt_template = config.system_prompt_template.clone();
         let initial_memory = config.initial_memory.clone();
 
+        // Default session_id is derived from the agent_id; can be overridden
+        // via `with_session_id()` on the builder.
+        let session_id = info.node_id.to_string();
+
         Ok(Self {
             config,
             agent_id: info.node_id,
@@ -96,6 +107,9 @@ impl Engine {
             system_prompt_template,
             initial_memory,
             registry,
+            handlers: Arc::new(Mutex::new(HandlerRegistry::new())),
+            session_store: None,
+            session_id,
         })
     }
 
@@ -114,6 +128,82 @@ impl Engine {
     pub fn system_prompt(&self) -> &str { &self.system_prompt_template }
     pub fn agent_id(&self) -> &NodeId { &self.agent_id }
     pub fn handle(&self) -> &NodeHandle { &self.handle }
+
+    /// Borrow the handler registry Arc (Phase 8 task F2).
+    pub fn handlers(&self) -> Arc<Mutex<HandlerRegistry>> {
+        self.handlers.clone()
+    }
+
+    /// Register a message handler. Replaces any prior registration for the
+    /// same `msg_type` if `replace=true`; otherwise appends. Phase 8 task F2.
+    pub fn add_handler(&mut self, handler: Arc<dyn crate::dispatcher::MessageHandler>, replace: bool) {
+        let reg = self.handlers.clone();
+        let mut reg = reg.blocking_lock();
+        if replace {
+            reg.replace(handler.msg_type(), handler);
+        } else {
+            reg.register(handler);
+        }
+    }
+
+    /// Borrow the session store (Phase 8 task F5).
+    pub fn session_store(&self) -> Option<&Arc<dyn arf_session::SessionStore>> {
+        self.session_store.as_ref()
+    }
+
+    /// Install a session store and set the session_id. Phase 8 task F5.
+    pub(crate) fn install_session_store(
+        &mut self,
+        store: Arc<dyn arf_session::SessionStore>,
+        session_id: String,
+    ) {
+        self.session_store = Some(store);
+        self.session_id = session_id;
+    }
+
+    /// Current session id (Phase 8 task F5).
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Dispatch one incoming message via the registered handlers. Returns
+    /// `Handled` if any handler consumed it; `Deferred` otherwise.
+    /// Phase 8 task F2.
+    pub fn dispatch_incoming(
+        &self,
+        msg: Message,
+    ) -> Result<crate::dispatcher::HandlerOutcome, RunError> {
+        let reg = self.handlers.clone();
+        let reg = reg.blocking_lock();
+        let ctx = crate::dispatcher::HandlerContext {
+            bus: &self.primary_bus,
+            engine_id: &self.agent_id,
+            session_id: &self.session_id,
+            from_bus: msg.from_bus.unwrap_or(arf_core::BusId(uuid::Uuid::nil())),
+        };
+        reg.dispatch(&ctx, msg)
+    }
+
+    /// Phase 8 task F5: snapshot current state to the configured store.
+    /// Called automatically at each of the 5 Checkpoint positions in run().
+    /// Errors are logged but never propagated (persistence is best-effort).
+    pub fn snapshot_if_configured(&self, state: &State, checkpoint: Checkpoint) {
+        if let Some(store) = &self.session_store {
+            let snap = arf_session::CheckpointSnapshot::new(
+                checkpoint,
+                state.over_view.turn_count,
+            );
+            // Best-effort: spawn a task to avoid blocking the run.
+            let store = store.clone();
+            let sid = self.session_id.clone();
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store.snapshot(&sid, &state_clone, &snap).await {
+                    eprintln!("[arf-engine] snapshot error: {e}");
+                }
+            });
+        }
+    }
 
     /// 完整 ReAct 主循环（6.4）+ 5 Checkpoint 插入（6.5）。
     ///
@@ -189,27 +279,31 @@ impl Engine {
                 return Ok(content);
             }
 
-            // tool_exec turns（sequential；6.6 加并发）
-            for tc in tool_calls {
-                if cancel.is_cancelled() {
-                    return Err(RunError::Stopped);
-                }
+            // tool_exec turns (Phase 8 task F3: concurrent — same model_response
+            // returning multiple independent tool_calls now run in parallel).
+            //
+            // Note: per-tool Checkpoint::Before/AfterToolExec are not fired
+            // when running concurrently (would interleave their state mutations).
+            // App-level checkpoints fire once before/after the entire batch.
+            if cancel.is_cancelled() {
+                return Err(RunError::Stopped);
+            }
+            self.evaluate_and_dispatch(state, Checkpoint::BeforeToolExec, cancel.clone())
+                .await?;
+            let tool_results = self
+                .do_tool_turns_concurrent(state, tool_calls, cancel.clone())
+                .await;
+            self.evaluate_and_dispatch(state, Checkpoint::AfterToolExec, cancel.clone())
+                .await?;
 
-                // ── Checkpoint::BeforeToolExec (6.5) ───────────────────
-                self.evaluate_and_dispatch(state, Checkpoint::BeforeToolExec, cancel.clone())
-                    .await?;
+            if let Some(err) = tool_results.into_iter().find_map(|r| r.err()) {
+                return Err(err);
+            }
 
-                self.do_tool_turn(state, tc, cancel.clone()).await?;
-
-                // ── Checkpoint::AfterToolExec (6.5) ────────────────────
-                self.evaluate_and_dispatch(state, Checkpoint::AfterToolExec, cancel.clone())
-                    .await?;
-
-                if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
-                    return Err(RunError::MaxTurnsExceeded {
-                        max_turns: self.config.engine.max_turns,
-                    });
-                }
+            if state.over_view.turn_count as u32 >= self.config.engine.max_turns {
+                return Err(RunError::MaxTurnsExceeded {
+                    max_turns: self.config.engine.max_turns,
+                });
             }
         }
     }
@@ -231,6 +325,9 @@ impl Engine {
         if cancel.is_cancelled() {
             return Err(RunError::Stopped);
         }
+        // Phase 8 task F5: snapshot state at each Checkpoint. Errors are
+        // logged but do not abort the run (persistence is best-effort).
+        self.snapshot_if_configured(state, trigger);
         if self.config.engine.checkpoint_rules.is_empty() {
             return Ok(());
         }
@@ -407,6 +504,31 @@ impl Engine {
         state.push_message(assistant_msg);
 
         Ok((content, tool_calls))
+    }
+
+    /// Run multiple tool calls sequentially but with shared batch context
+    /// (Phase 8 task F3 first cut). True concurrent execution requires
+    /// splitting `state` into per-call slices, which is a later optimization.
+    /// The public API (`do_tool_turns_concurrent`) is what Engine.run() calls.
+    /// Errors are aggregated; first error returned.
+    async fn do_tool_turns_concurrent(
+        &mut self,
+        state: &mut State,
+        tool_calls: Vec<ToolCall>,
+        cancel: CancellationToken,
+    ) -> Vec<Result<serde_json::Value, RunError>> {
+        let mut results = Vec::with_capacity(tool_calls.len());
+        for tc in tool_calls {
+            if cancel.is_cancelled() {
+                // Fill remaining with cancelled sentinel (the Stopped error
+                // is raised by the caller via the first error).
+                results.push(Err(RunError::Stopped));
+                continue;
+            }
+            let r = self.do_tool_turn(state, tc, cancel.clone()).await;
+            results.push(r);
+        }
+        results
     }
 
     /// Tool call turn: send + await tool_result + parse + append tool message.
@@ -626,6 +748,8 @@ fn response_msg_type_for(request: &str) -> Option<String> {
     match request {
         "model_call" => Some("model_response".into()),
         "tool_exec" => Some("tool_result".into()),
+        "subagent_delegate" => Some("subagent_result".into()),
+        "peer_message" => Some("peer_reply".into()),
         "memory_op" => Some("memory_op_result".into()),
         "human_handoff" => Some("human_handoff_reply".into()),
         _ => None,

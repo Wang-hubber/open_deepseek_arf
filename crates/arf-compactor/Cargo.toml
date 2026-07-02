@@ -1,0 +1,19 @@
+[package]
+name = "arf-compactor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF Compactor: context window reduction via summarization"
+
+[dependencies]
+arf-bus = { path = "../arf-bus" }
+arf-core = { path = "../arf-core" }
+arf-state = { path = "../arf-state" }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }

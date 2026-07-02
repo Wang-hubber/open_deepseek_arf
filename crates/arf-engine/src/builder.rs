@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use arf_bus::Bus;
 use arf_core::{BusGraph, NodeId, NodeInfo, Route};
+use arf_session::SessionStore;
 
 use crate::config::AgentConfig;
 use crate::engine::Engine;
@@ -14,11 +15,31 @@ use crate::registry::ResourceRegistry;
 /// Builds an Engine from AgentConfig + Bus topology.
 pub struct EngineBuilder {
     buses: Vec<Arc<Bus>>,
+    session_store: Option<Arc<dyn SessionStore>>,
+    session_id: Option<String>,
 }
 
 impl EngineBuilder {
     pub fn new(buses: Vec<Arc<Bus>>) -> Self {
-        Self { buses }
+        Self {
+            buses,
+            session_store: None,
+            session_id: None,
+        }
+    }
+
+    /// Phase 8 task F5: install a session store. Engine will save snapshots
+    /// at each of the 5 Checkpoint positions during run().
+    pub fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Phase 8 task F5: explicit session id. If None, Engine uses its
+    /// `agent_id` as the session id.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Fail-fast 校验 → create Engine。
@@ -71,6 +92,13 @@ impl EngineBuilder {
             }
         }
 
-        Engine::new(self.buses, config, registry).await
+        let mut engine = Engine::new(self.buses, config, registry).await?;
+        if let Some(store) = self.session_store {
+            let sid = self
+                .session_id
+                .unwrap_or_else(|| engine.agent_id().to_string());
+            engine.install_session_store(store, sid);
+        }
+        Ok(engine)
     }
 }

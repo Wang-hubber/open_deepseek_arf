@@ -19,7 +19,11 @@ pub mod processor;
 pub use node::BusId;
 // Re-export common Engine protocol types at the crate root for ergonomic use.
 pub use checkpoint::{Checkpoint, CheckpointRule};
-pub use message::{ActionMessage, MessageIntent, ModelCall, ToolCall, ToolExec};
+pub use message::{
+    ActionMessage, HumanHandoff, HumanHandoffReply, MemoryOp, MemoryOpKind, MemoryOpResult,
+    MessageIntent, ModelCall, ModelResponseChunk, ModelToolCallDelta, PeerMessage, PeerReply,
+    PeerStatus, SubagentDelegate, SubagentResult, SubagentStatus, ToolCall, ToolExec,
+};
 pub use processor::ResponseProcessor;
 pub use response::Response;
 pub use route::{Capability, Route};
@@ -1739,5 +1743,251 @@ mod tests {
         assert_eq!(msg.extra, back.extra);
         assert_eq!(back.extra["meta"]["tokens"], 42);
         assert_eq!(back.extra["meta"]["tags"][1], serde_json::Value::Null);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase 8 task F1 — 5 new ActionMessage types
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── SubagentDelegate (4 tests) ──
+
+    // [构造] new() 产生唯一 correlation_id + 指定 session/node/task
+    #[test]
+    fn subagent_delegate_new_basic() {
+        let d = SubagentDelegate::new("sess-parent", NodeId::new("engine/sub-1"), "do thing");
+        assert_eq!(d.parent_session_id, "sess-parent");
+        assert_eq!(d.subagent_node_id, NodeId::new("engine/sub-1"));
+        assert_eq!(d.task, "do thing");
+        assert_eq!(d.context, serde_json::Value::Null);
+        // correlation_id is set; just ensure two distinct calls give different ids
+        let d2 = SubagentDelegate::new("a", NodeId::new("b"), "c");
+        assert_ne!(d.correlation_id, d2.correlation_id);
+    }
+
+    // [trait] msg_type = "subagent_delegate", intent = Query
+    #[test]
+    fn subagent_delegate_msg_type_and_intent() {
+        let d = SubagentDelegate::new("s", NodeId::new("n"), "t");
+        assert_eq!(d.msg_type(), "subagent_delegate");
+        assert_eq!(d.intent(), MessageIntent::Query);
+    }
+
+    // [序列化] SubagentDelegate + context payload 完整 round-trip
+    #[test]
+    fn subagent_delegate_serde_roundtrip_with_context() {
+        let d = SubagentDelegate::new("p", NodeId::new("c"), "task")
+            .with_context(serde_json::json!({"file": "x.py", "line": 42}));
+        let json = serde_json::to_string(&d).unwrap();
+        let back: SubagentDelegate = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.parent_session_id, "p");
+        assert_eq!(back.task, "task");
+        assert_eq!(back.context["file"], "x.py");
+        assert_eq!(back.context["line"], 42);
+    }
+
+    // [trait] SubagentResult.success() / failed() 状态与 output 正确
+    #[test]
+    fn subagent_result_success_and_failed() {
+        let cid = Uuid::new_v4();
+        let ok = SubagentResult::success(cid, "ok output");
+        assert_eq!(ok.status, SubagentStatus::Success);
+        assert_eq!(ok.output, "ok output");
+        assert_eq!(ok.msg_type(), "subagent_result");
+        assert_eq!(ok.intent(), MessageIntent::Command);
+
+        let bad = SubagentResult::failed(cid, "boom");
+        assert_eq!(bad.status, SubagentStatus::Failed);
+        assert_eq!(bad.output, "boom");
+    }
+
+    // ── PeerMessage (4 tests) ──
+
+    // [构造] PeerMessage::new() 设 from/to/content，attachments 默认为空
+    #[test]
+    fn peer_message_new_basic() {
+        let m = PeerMessage::new("from-sess", "to-sess", "hello peer");
+        assert_eq!(m.from_session, "from-sess");
+        assert_eq!(m.to_session, "to-sess");
+        assert_eq!(m.content, "hello peer");
+        assert!(m.attachments.is_empty());
+        assert_eq!(m.msg_type(), "peer_message");
+        assert_eq!(m.intent(), MessageIntent::Query);
+    }
+
+    // [序列化] PeerMessage 含 attachments round-trip
+    #[test]
+    fn peer_message_serde_with_attachments() {
+        let m = PeerMessage {
+            correlation_id: Uuid::new_v4(),
+            from_session: "a".into(),
+            to_session: "b".into(),
+            content: "x".into(),
+            attachments: vec![serde_json::json!({"k": "v"}), serde_json::json!(42)],
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: PeerMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.attachments.len(), 2);
+        assert_eq!(back.attachments[0]["k"], "v");
+        assert_eq!(back.attachments[1], 42);
+    }
+
+    // [trait] PeerReply::ok() 状态与 intent
+    #[test]
+    fn peer_reply_ok_status() {
+        let cid = Uuid::new_v4();
+        let r = PeerReply::ok(cid, "ack");
+        assert_eq!(r.status, PeerStatus::Ok);
+        assert_eq!(r.content, "ack");
+        assert_eq!(r.msg_type(), "peer_reply");
+        assert_eq!(r.intent(), MessageIntent::Command);
+    }
+
+    // [序列化] PeerMessage/PeerReply correlation_id 匹配
+    #[test]
+    fn peer_correlation_id_matches() {
+        let cid = Uuid::new_v4();
+        let msg = PeerMessage {
+            correlation_id: cid,
+            from_session: "a".into(),
+            to_session: "b".into(),
+            content: "ping".into(),
+            attachments: vec![],
+        };
+        let reply = PeerReply::ok(cid, "pong");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: PeerMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.correlation_id, reply.correlation_id);
+    }
+
+    // ── MemoryOp (3 tests) ──
+
+    // [构造] MemoryOp::read/write/delete 工厂方法
+    #[test]
+    fn memory_op_factories() {
+        let r = MemoryOp::read("k1");
+        assert_eq!(r.op, MemoryOpKind::Read);
+        assert_eq!(r.key, "k1");
+        assert_eq!(r.value, serde_json::Value::Null);
+
+        let w = MemoryOp::write("k2", serde_json::json!({"v": 1}));
+        assert_eq!(w.op, MemoryOpKind::Write);
+        assert_eq!(w.value["v"], 1);
+
+        let d = MemoryOp::delete("k3");
+        assert_eq!(d.op, MemoryOpKind::Delete);
+    }
+
+    // [trait] MemoryOp intent = Query, msg_type = "memory_op"
+    #[test]
+    fn memory_op_msg_type_and_intent() {
+        let m = MemoryOp::read("k");
+        assert_eq!(m.msg_type(), "memory_op");
+        assert_eq!(m.intent(), MessageIntent::Query);
+    }
+
+    // [序列化] MemoryOp / MemoryOpResult 完整 round-trip
+    #[test]
+    fn memory_op_serde_roundtrip() {
+        let op = MemoryOp::write("user_pref", serde_json::json!({"theme": "dark"}));
+        let json = serde_json::to_string(&op).unwrap();
+        let back: MemoryOp = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.op, MemoryOpKind::Write);
+        assert_eq!(back.key, "user_pref");
+
+        let cid = Uuid::new_v4();
+        let res = MemoryOpResult::found(cid, serde_json::json!("value-here"));
+        let json = serde_json::to_string(&res).unwrap();
+        let back: MemoryOpResult = serde_json::from_str(&json).unwrap();
+        assert!(back.ok);
+        assert_eq!(back.value, "value-here");
+    }
+
+    // ── HumanHandoff (3 tests) ──
+
+    // [构造] HumanHandoff::new() 设置 question，其他默认空
+    #[test]
+    fn human_handoff_new_basic() {
+        let h = HumanHandoff::new("approve?");
+        assert_eq!(h.question, "approve?");
+        assert_eq!(h.context, serde_json::Value::Null);
+        assert!(h.options.is_empty());
+        assert_eq!(h.msg_type(), "human_handoff");
+        assert_eq!(h.intent(), MessageIntent::Query);
+    }
+
+    // [序列化] HumanHandoff 含 options + context 完整 round-trip
+    #[test]
+    fn human_handoff_serde_with_options() {
+        let h = HumanHandoff {
+            correlation_id: Uuid::new_v4(),
+            question: "Which?".into(),
+            context: serde_json::json!({"diff": "+1 -0"}),
+            options: vec!["yes".into(), "no".into()],
+        };
+        let json = serde_json::to_string(&h).unwrap();
+        let back: HumanHandoff = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.question, "Which?");
+        assert_eq!(back.options.len(), 2);
+        assert_eq!(back.context["diff"], "+1 -0");
+    }
+
+    // [trait] HumanHandoffReply 状态字段正确
+    #[test]
+    fn human_handoff_reply_construction() {
+        let cid = Uuid::new_v4();
+        let r = HumanHandoffReply::new(cid, "yes");
+        assert_eq!(r.answer, "yes");
+        assert_eq!(r.selected_option, None);
+        assert_eq!(r.msg_type(), "human_handoff_reply");
+        assert_eq!(r.intent(), MessageIntent::Command);
+    }
+
+    // ── ModelResponseChunk (3 tests) ──
+
+    // [构造] text() 设 content_delta，reasoning/tool_call 默认空
+    #[test]
+    fn model_response_chunk_text_basic() {
+        let cid = Uuid::new_v4();
+        let c = ModelResponseChunk::text(cid, "hello");
+        assert_eq!(c.content_delta, "hello");
+        assert_eq!(c.reasoning_delta, "");
+        assert!(c.tool_call_delta.is_none());
+        assert!(!c.finished);
+        assert_eq!(c.msg_type(), "model_response_chunk");
+        assert_eq!(c.intent(), MessageIntent::Command);
+    }
+
+    // [构造] finish() finished = true，其他 delta 字段空
+    #[test]
+    fn model_response_chunk_finish() {
+        let cid = Uuid::new_v4();
+        let c = ModelResponseChunk::finish(cid);
+        assert!(c.finished);
+        assert_eq!(c.content_delta, "");
+    }
+
+    // [序列化] ModelResponseChunk 含 reasoning + tool_call_delta round-trip
+    #[test]
+    fn model_response_chunk_serde_full() {
+        let cid = Uuid::new_v4();
+        let c = ModelResponseChunk {
+            correlation_id: cid,
+            content_delta: "tok".into(),
+            reasoning_delta: "thinking...".into(),
+            tool_call_delta: Some(ModelToolCallDelta {
+                id: "call_0".into(),
+                name_delta: "read_".into(),
+                arguments_delta: r#"{"pa"#.into(),
+            }),
+            finished: false,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let back: ModelResponseChunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content_delta, "tok");
+        assert_eq!(back.reasoning_delta, "thinking...");
+        let tcd = back.tool_call_delta.unwrap();
+        assert_eq!(tcd.id, "call_0");
+        assert_eq!(tcd.name_delta, "read_");
+        assert_eq!(tcd.arguments_delta, r#"{"pa"#);
     }
 }

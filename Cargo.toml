@@ -4,6 +4,8 @@ members = [
     "crates/arf-core",
     "crates/arf-bus",
     "crates/arf-state",
+    "crates/arf-compactor",
+    "crates/arf-session",
     "crates/arf-engine",
     "crates/arf-agent",
     "crates/arf-model-adapter",

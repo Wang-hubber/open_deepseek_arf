@@ -148,3 +148,453 @@ impl ActionMessage for ToolExec {
         MessageIntent::Query
     }
 }
+
+// ── Phase 8 ActionMessage set ─────────────────────────────────────────
+//
+// Five new protocol messages for the codecompass-fs example (Phase 8 task F1):
+// - SubagentDelegate / SubagentResult  — parent Engine → child Engine
+// - PeerMessage / PeerReply            — Engine ↔ Engine p2p coordination
+// - MemoryOp / MemoryOpResult          — Engine → Memory Node CRUD
+// - HumanHandoff / HumanHandoffReply   — Engine → UI/operator escalation
+// - ModelResponseChunk                 — streaming LLM delta (Command intent)
+
+/// `Engine → Subagent Engine`: delegate a sub-task to a nested Engine Node.
+///
+/// Wire `msg_type`: `"subagent_delegate"`. Response wire `msg_type`: `"subagent_result"`.
+/// The child Engine runs to completion in its own session, then publishes
+/// `SubagentResult` back to the parent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentDelegate {
+    pub correlation_id: Uuid,
+    pub parent_session_id: String,
+    pub subagent_node_id: NodeId,
+    pub task: String,
+    #[serde(default)]
+    pub context: serde_json::Value,
+}
+
+impl SubagentDelegate {
+    pub fn new(
+        parent_session_id: impl Into<String>,
+        subagent_node_id: NodeId,
+        task: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            parent_session_id: parent_session_id.into(),
+            subagent_node_id,
+            task: task.into(),
+            context: serde_json::Value::Null,
+        }
+    }
+
+    pub fn with_context(mut self, context: serde_json::Value) -> Self {
+        self.context = context;
+        self
+    }
+}
+
+#[async_trait]
+impl ActionMessage for SubagentDelegate {
+    fn msg_type(&self) -> &'static str {
+        "subagent_delegate"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Query
+    }
+}
+
+/// `Subagent → Parent Engine`: completion notice for a delegated sub-task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentResult {
+    pub correlation_id: Uuid,
+    pub status: SubagentStatus,
+    pub output: String,
+    #[serde(default)]
+    pub trajectory: Vec<ModelMessage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SubagentStatus {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+impl SubagentResult {
+    pub fn success(correlation_id: Uuid, output: impl Into<String>) -> Self {
+        Self {
+            correlation_id,
+            status: SubagentStatus::Success,
+            output: output.into(),
+            trajectory: Vec::new(),
+        }
+    }
+
+    pub fn failed(correlation_id: Uuid, error: impl Into<String>) -> Self {
+        Self {
+            correlation_id,
+            status: SubagentStatus::Failed,
+            output: error.into(),
+            trajectory: Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for SubagentResult {
+    fn msg_type(&self) -> &'static str {
+        "subagent_result"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}
+
+/// `Engine ↔ Engine`: 1:1 directed message between peer sessions.
+///
+/// Wire `msg_type`: `"peer_message"`. Response wire `msg_type`: `"peer_reply"`.
+/// Routes by session_id (parent owns PeerCoordinator; receivers handle via Engine's
+/// pre-built message filter that listens for `peer_message`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerMessage {
+    pub correlation_id: Uuid,
+    pub from_session: String,
+    pub to_session: String,
+    pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<serde_json::Value>,
+}
+
+impl PeerMessage {
+    pub fn new(
+        from_session: impl Into<String>,
+        to_session: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            from_session: from_session.into(),
+            to_session: to_session.into(),
+            content: content.into(),
+            attachments: Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for PeerMessage {
+    fn msg_type(&self) -> &'static str {
+        "peer_message"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Query
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerReply {
+    pub correlation_id: Uuid,
+    pub status: PeerStatus,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PeerStatus {
+    Ok,
+    Failed,
+    Refused,
+}
+
+impl PeerReply {
+    pub fn ok(correlation_id: Uuid, content: impl Into<String>) -> Self {
+        Self {
+            correlation_id,
+            status: PeerStatus::Ok,
+            content: content.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for PeerReply {
+    fn msg_type(&self) -> &'static str {
+        "peer_reply"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}
+
+/// `Engine → Memory Node`: key-value CRUD on persistent memory.
+///
+/// Wire `msg_type`: `"memory_op"`. Response wire `msg_type`: `"memory_op_result"`.
+/// Memory Node is a standard ARF Node that implements ActionMessage handler for
+/// `memory_op` and emits `memory_op_result`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryOp {
+    pub correlation_id: Uuid,
+    pub op: MemoryOpKind,
+    pub key: String,
+    #[serde(default)]
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MemoryOpKind {
+    Read,
+    Write,
+    Delete,
+    List,
+}
+
+impl MemoryOp {
+    pub fn read(key: impl Into<String>) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            op: MemoryOpKind::Read,
+            key: key.into(),
+            value: serde_json::Value::Null,
+        }
+    }
+
+    pub fn write(key: impl Into<String>, value: serde_json::Value) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            op: MemoryOpKind::Write,
+            key: key.into(),
+            value,
+        }
+    }
+
+    pub fn delete(key: impl Into<String>) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            op: MemoryOpKind::Delete,
+            key: key.into(),
+            value: serde_json::Value::Null,
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for MemoryOp {
+    fn msg_type(&self) -> &'static str {
+        "memory_op"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Query
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryOpResult {
+    pub correlation_id: Uuid,
+    pub ok: bool,
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl MemoryOpResult {
+    pub fn found(correlation_id: Uuid, value: serde_json::Value) -> Self {
+        Self {
+            correlation_id,
+            ok: true,
+            value,
+            error: None,
+        }
+    }
+
+    pub fn missing(correlation_id: Uuid) -> Self {
+        Self {
+            correlation_id,
+            ok: false,
+            value: serde_json::Value::Null,
+            error: None,
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for MemoryOpResult {
+    fn msg_type(&self) -> &'static str {
+        "memory_op_result"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}
+
+/// `Engine → Human/UI`: ask for human input on a decision the model can't make.
+///
+/// Wire `msg_type`: `"human_handoff"`. Response wire `msg_type`: `"human_handoff_reply"`.
+/// In the codecompass-fs example the reply is synthetically generated by the CLI
+/// (CLI prompts the user); in production this would route to a UI/web channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanHandoff {
+    pub correlation_id: Uuid,
+    pub question: String,
+    #[serde(default)]
+    pub context: serde_json::Value,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+impl HumanHandoff {
+    pub fn new(question: impl Into<String>) -> Self {
+        Self {
+            correlation_id: Uuid::new_v4(),
+            question: question.into(),
+            context: serde_json::Value::Null,
+            options: Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for HumanHandoff {
+    fn msg_type(&self) -> &'static str {
+        "human_handoff"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Query
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanHandoffReply {
+    pub correlation_id: Uuid,
+    pub answer: String,
+    #[serde(default)]
+    pub selected_option: Option<usize>,
+}
+
+impl HumanHandoffReply {
+    pub fn new(correlation_id: Uuid, answer: impl Into<String>) -> Self {
+        Self {
+            correlation_id,
+            answer: answer.into(),
+            selected_option: None,
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for HumanHandoffReply {
+    fn msg_type(&self) -> &'static str {
+        "human_handoff_reply"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}
+
+/// `ModelAdapter → Engine`: incremental LLM output chunk (streaming).
+///
+/// Wire `msg_type`: `"model_response_chunk"`. Engine aggregates chunks into a
+/// single `model_response` before resuming the ReAct loop. No response expected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponseChunk {
+    pub correlation_id: Uuid,
+    pub content_delta: String,
+    #[serde(default)]
+    pub reasoning_delta: String,
+    #[serde(default)]
+    pub tool_call_delta: Option<ModelToolCallDelta>,
+    pub finished: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelToolCallDelta {
+    pub id: String,
+    pub name_delta: String,
+    pub arguments_delta: String,
+}
+
+impl ModelResponseChunk {
+    pub fn text(correlation_id: Uuid, delta: impl Into<String>) -> Self {
+        Self {
+            correlation_id,
+            content_delta: delta.into(),
+            reasoning_delta: String::new(),
+            tool_call_delta: None,
+            finished: false,
+        }
+    }
+
+    pub fn finish(correlation_id: Uuid) -> Self {
+        Self {
+            correlation_id,
+            content_delta: String::new(),
+            reasoning_delta: String::new(),
+            tool_call_delta: None,
+            finished: true,
+        }
+    }
+}
+
+#[async_trait]
+impl ActionMessage for ModelResponseChunk {
+    fn msg_type(&self) -> &'static str {
+        "model_response_chunk"
+    }
+    fn correlation_id(&self) -> Uuid {
+        self.correlation_id
+    }
+    fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+    fn intent(&self) -> MessageIntent {
+        MessageIntent::Command
+    }
+}

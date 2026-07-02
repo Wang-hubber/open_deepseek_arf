@@ -1,0 +1,19 @@
+[package]
+name = "arf-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARF session persistence: SessionStore trait + SQLite implementation"
+
+[dependencies]
+arf-core = { path = "../arf-core" }
+arf-state = { path = "../arf-state" }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
