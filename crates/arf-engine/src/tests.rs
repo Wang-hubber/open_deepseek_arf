@@ -11,9 +11,8 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::checkpoint::{evaluate, resolve_route, resolve_route_pure, DiscoveryCache};
-use crate::config::{AgentConfig, ModelConfig};
-use crate::engine::collect_skills_cached;
+use crate::checkpoint::{evaluate, resolve_route, DiscoveryCache};
+use crate::config::{AgentConfig, EngineConfig};
 use crate::error::{BuildError, RunError};
 use crate::EngineBuilder;
 
@@ -45,7 +44,7 @@ async fn test_bus_with_model_node() -> Arc<Bus> {
             arf_core::NodeInfo {
                 node_id: NodeId::new("model/mock"),
                 node_type: "model".into(),
-                capabilities: serde_json::json!({"kind": "model"}),
+                capabilities: serde_json::json!({"provider": "deepseek", "kind": "model"}),
                 online_since: 0,
             },
             arf_core::MessageFilter {
@@ -65,26 +64,22 @@ async fn test_bus_with_node(node_id: &str, _kind: &str) -> (Arc<Bus>, NodeId) {
     (bus, id)
 }
 
-fn minimal_config(agent_id: &str) -> AgentConfig {
+fn minimal_config(_agent_id: &str) -> AgentConfig {
     AgentConfig {
-        agent_id: agent_id.into(),
-        model_config: ModelConfig {
+        model: arf_agent::ModelDecl {
             provider: "deepseek".into(),
-            model: "deepseek-v4-flash".into(),
+            model_name: "deepseek-v4-flash".into(),
+            ..Default::default()
         },
+        resources: vec![],
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 10,
-        tool_timeout_ms: None,
-        permissions: Default::default(),
-        routes: HashMap::new(),
-        checkpoint_rules: vec![],
-        processors: HashMap::new(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
+        allowed_paths: vec![],
+        engine: EngineConfig {
+            max_turns: 10,
+            tool_timeout_ms: None,
+            ..Default::default()
+        },
     }
 }
 
@@ -106,7 +101,7 @@ async fn build_fails_with_no_buses() {
 async fn build_fails_when_strict_route_target_offline() {
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.routes.insert(
+    cfg.engine.routes.insert(
         "model_call".into(),
         Route::strict(vec![NodeId::new("ghost")]),
     );
@@ -139,7 +134,7 @@ async fn build_succeeds_with_online_strict_routes() {
         
     }
     let mut cfg = minimal_config("a");
-    cfg.routes.insert(
+    cfg.engine.routes.insert(
         "model_call".into(),
         Route::strict(vec![model_id]),
     );
@@ -147,18 +142,8 @@ async fn build_succeeds_with_online_strict_routes() {
     assert!(res.is_ok(), "build should succeed");
 }
 
-// [构造] Discovery route capability 无任何匹配 → MissingCapabilities
-#[tokio::test]
-async fn build_fails_when_discovery_capability_no_match() {
-    let bus = test_bus_with_model_node().await;
-    let mut cfg = minimal_config("a");
-    cfg.routes.insert(
-        "tool_exec".into(),
-        Route::discovery(vec![("kind".into(), "mcp".into())]),
-    );
-    let res = EngineBuilder::new(vec![bus]).build(cfg).await;
-    assert!(matches!(res, Err(BuildError::MissingCapabilities { .. })));
-}
+// [构造] Discovery route 已由 ResourceRegistry 覆盖；此测试被替换为 registry 单测。
+// 详见 crates/arf-engine/src/registry.rs — registry_build_missing_mcp_fails
 
 // [构造] Discovery route 有至少一个匹配 → success
 #[tokio::test]
@@ -185,7 +170,7 @@ async fn build_succeeds_with_discovery_match() {
     }
 
     let mut cfg = minimal_config("a");
-    cfg.routes.insert(
+    cfg.engine.routes.insert(
         "tool_exec".into(),
         Route::discovery(vec![("kind".into(), "mcp".into())]),
     );
@@ -211,8 +196,8 @@ async fn build_fails_on_duplicate_rule_name() {
         )
     }
     let mut cfg = minimal_config("a");
-    cfg.checkpoint_rules.push(mk_rule("dup"));
-    cfg.checkpoint_rules.push(mk_rule("dup"));
+    cfg.engine.checkpoint_rules.push(mk_rule("dup"));
+    cfg.engine.checkpoint_rules.push(mk_rule("dup"));
     let res = EngineBuilder::new(vec![bus]).build(cfg).await;
     assert!(matches!(res, Err(BuildError::DuplicateRuleName { .. })));
 }
@@ -266,7 +251,7 @@ async fn engine_provides_handle_after_build() {
         .build(minimal_config("a"))
         .await
         .unwrap();
-    assert_eq!(engine.agent_id().as_str(), "engine/a");
+    assert_eq!(engine.agent_id().as_str(), "engine/deepseek");
     assert_eq!(engine.handle().subscriptions().len(), 1);
 }
 
@@ -544,7 +529,7 @@ async fn run_continues_after_tool_result() {
 async fn run_returns_max_turns_exceeded() {
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.max_turns = 1;
+    cfg.engine.max_turns = 1;
     let mut engine = EngineBuilder::new(vec![bus.clone()])
         .build(cfg)
         .await
@@ -894,8 +879,8 @@ async fn checkpoint_before_model_call_fires_and_dispatches() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -954,8 +939,8 @@ async fn checkpoint_after_model_call_fires_after_push() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -1009,8 +994,8 @@ async fn checkpoint_before_tool_exec_fires_before_publish() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(800));
     rec_ready.await.unwrap();
@@ -1074,8 +1059,8 @@ async fn checkpoint_after_tool_exec_fires_after_push() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(800));
     rec_ready.await.unwrap();
@@ -1138,8 +1123,8 @@ async fn checkpoint_round_end_fires_before_return() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -1193,8 +1178,8 @@ async fn checkpoint_when_false_skips_dispatch() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -1257,8 +1242,8 @@ async fn checkpoint_multiple_rules_fire_in_order() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule_a, rule_b];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule_a, rule_b];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -1318,8 +1303,8 @@ async fn all_five_checkpoints_visited_in_happy_path() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![
         mk("bmc", Checkpoint::BeforeModelCall),
         mk("amc", Checkpoint::AfterModelCall),
         mk("bte", Checkpoint::BeforeToolExec),
@@ -1399,7 +1384,7 @@ async fn undeclared_msg_type_returns_error() {
 
     let mut cfg = minimal_config("a");
     // Intentionally leave routes empty (do NOT register test_cp_command)
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
     let mut state = State::new();
@@ -1438,8 +1423,8 @@ async fn query_intent_park_and_await_response() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     // Custom responder: handles test_cp_query → test_cp_query_result.
     let (resp_h, resp_ready) = spawn_custom_responder(
@@ -1482,8 +1467,8 @@ async fn command_intent_fire_and_forget() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (recorder, rec_ready) = spawn_recorder(bus.clone(), std::time::Duration::from_millis(500));
     rec_ready.await.unwrap();
@@ -1579,8 +1564,8 @@ async fn checkpoint_eval_returns_stopped_on_cancel() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
     let cancel = CancellationToken::new();
@@ -1651,7 +1636,7 @@ fn wait_event_new_initializes_fields() {
 async fn wait_strategy_all_triggers_on_full_set() {
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
+    cfg.engine.routes = cp_routes_for(&bus).await;
     // Two recipients both with kind=test_sink capability → Discovery → 2 recipients
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
     let mut state = State::new();
@@ -1773,8 +1758,8 @@ async fn wait_strategy_cancel_removes_event_from_state() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
 
     let cancel = CancellationToken::new();
@@ -1876,7 +1861,7 @@ async fn discovery_multi_receiver_all_responses_collected() {
 
     let mut cfg = minimal_config("a");
     // Discovery route by kind=test_sink → matches all 3 sinks
-    cfg.routes.insert(
+    cfg.engine.routes.insert(
         "test_cp_query".into(),
         Route::discovery(vec![("kind".into(), "test_sink".into())]),
     );
@@ -1893,7 +1878,7 @@ async fn discovery_multi_receiver_all_responses_collected() {
             })
         },
     );
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
 
@@ -2132,9 +2117,9 @@ async fn checkpoint_every_n_rounds_fires_on_correct_rounds() {
     use arf_core::{Checkpoint, ModelCall};
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
+    cfg.engine.routes = cp_routes_for(&bus).await;
     // every_n=2: should fire on round 2, 4, 6...
-    cfg.checkpoint_rules = vec![CheckpointRule::every_n_rounds(
+    cfg.engine.checkpoint_rules = vec![CheckpointRule::every_n_rounds(
         "every_2_rounds",
         Checkpoint::RoundEnd,
         2,
@@ -2309,9 +2294,9 @@ async fn response_processor_invoked_on_matching_response() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes = cp_routes_for(&bus).await;
-    cfg.checkpoint_rules = vec![rule];
-    cfg.processors.insert(
+    cfg.engine.routes = cp_routes_for(&bus).await;
+    cfg.engine.checkpoint_rules = vec![rule];
+    cfg.engine.processors.insert(
         "test_cp_query_result".into(),
         Arc::new(processor) as Arc<dyn ResponseProcessor>,
     );
@@ -2357,7 +2342,7 @@ async fn build_accepts_closure_on_member_failed() {
     use crate::config::{MemberFailedAction, OnMemberFailedHandler};
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
+    cfg.engine.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
         MemberFailedAction::FailSession
     }));
     let engine = EngineBuilder::new(vec![bus]).build(cfg).await;
@@ -2381,47 +2366,53 @@ async fn prepare_round_does_not_inject_system() {
     assert!(state.messages.iter().all(|m| m.role != "system"));
 }
 
-// [方法] collect_skills_cached 命中：两次相同 BusGraph → 第二次走缓存
+// [方法] skills_text 空声明返回空串
 #[tokio::test]
-async fn collect_skills_cached_skips_when_unchanged() {
+async fn skills_text_empty_when_no_skills_declared() {
+    use crate::registry::ResourceRegistry;
+    use arf_core::BusGraph;
     let bus = test_bus_with_model_node().await;
-    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
-    let s1 = collect_skills_cached(&bus, &cache);
-    let s2 = collect_skills_cached(&bus, &cache);
-    assert_eq!(s1, s2);
-    let cached = cache.lock().unwrap().1.clone();
-    assert_eq!(s2, cached);
-}
-
-// [方法] collect_skills_cached miss：节点变化时重新收集
-#[tokio::test]
-async fn collect_skills_cached_updates_on_node_change() {
-    let bus = test_bus_with_model_node().await;
-    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
-    let s1 = collect_skills_cached(&bus, &cache);
-    assert!(s1.is_empty(), "no skill node online initially");
-
-    let skill_info = arf_core::NodeInfo {
-        node_id: NodeId::new("skill/greet"),
-        node_type: "skill".into(),
-        capabilities: serde_json::json!({"kind": "skill"}),
-        online_since: 0,
+    let decl = AgentConfig {
+        resources: vec![],
+        ..minimal_config("")
     };
-    let filter = arf_core::MessageFilter { types: None, to_match: arf_core::ToMatch::All };
-    let _h = bus.connect(skill_info, filter).await.unwrap();
-
-    let s2 = collect_skills_cached(&bus, &cache);
-    assert!(s2.contains("skill/greet"));
-    assert_ne!(s1, s2);
+    let snapshot = BusGraph {
+        nodes: vec![
+            arf_core::NodeInfo { node_id: NodeId::new("model/mock"), node_type: "model".into(), capabilities: serde_json::json!({"provider": "deepseek"}), online_since: 0 },
+        ],
+        message_count: 0, uptime_ms: 0,
+    };
+    let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
+    let s = registry.skills_text(&bus);
+    assert!(s.is_empty());
 }
 
-// [方法] collect_skills_cached 空集合返回空串（caller 不应推送空 system）
+// [方法] skills_text 缓存命中：两次相同调用返回相同
 #[tokio::test]
-async fn collect_skills_cached_omits_empty() {
+async fn skills_text_cache_hit_returns_same() {
+    use crate::registry::ResourceRegistry;
+    use arf_core::BusGraph;
     let bus = test_bus_with_model_node().await;
-    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
-    let s = collect_skills_cached(&bus, &cache);
-    assert!(s.is_empty());
+    // Connect the MCP node to the live bus so skills_text sees it at runtime
+    let _h = bus
+        .connect(
+            arf_core::NodeInfo { node_id: NodeId::new("mcp/s"), node_type: "mcp".into(), capabilities: serde_json::json!({"skills": ["greet"]}), online_since: 0 },
+            arf_core::MessageFilter { types: None, to_match: arf_core::ToMatch::All },
+        )
+        .await
+        .unwrap();
+    let decl = AgentConfig {
+        resources: vec![
+            arf_agent::ResourceSpec { name: "s".into(), node_type: "mcp".into(), capabilities: Some(serde_json::json!({"skills": "all"})) },
+        ],
+        ..minimal_config("")
+    };
+    // Build with the live bus graph at snapshot time (node is connected)
+    let registry = ResourceRegistry::build(&decl, &bus.graph()).unwrap();
+    let s1 = registry.skills_text(&bus);
+    let s2 = registry.skills_text(&bus);
+    assert_eq!(s1, s2);
+    assert!(s1.contains("greet"));
 }
 
 // ─── find_tool_owner tests (2026-07-02 built-in routing) ────────────
@@ -2439,33 +2430,63 @@ async fn find_tool_owner_returns_correct_node() {
         online_since: 0,
     };
     let _h = bus
-        .connect(mcp_info, MessageFilter { types: None, to_match: ToMatch::All })
+        .connect(mcp_info.clone(), MessageFilter { types: None, to_match: ToMatch::All })
         .await
         .unwrap();
-    let owner = crate::engine::find_tool_owner(&bus, "echo");
-    assert_eq!(owner, Some(NodeId::new("mcp/echo")));
-    let missing = crate::engine::find_tool_owner(&bus, "no_such_tool");
-    assert_eq!(missing, None);
+    use crate::registry::ResourceRegistry;
+    use arf_core::BusGraph;
+    let decl = AgentConfig {
+        resources: vec![arf_agent::ResourceSpec {
+            name: "echo".into(),
+            node_type: "mcp".into(),
+            capabilities: Some(serde_json::json!({"tools": ["echo"]})),
+        }],
+        ..minimal_config("")
+    };
+    let snapshot = BusGraph {
+        nodes: vec![
+            arf_core::NodeInfo {
+                node_id: NodeId::new("model/deepseek"),
+                node_type: "model".into(),
+                capabilities: serde_json::json!({"provider": "deepseek"}),
+                online_since: 0,
+            },
+            mcp_info,
+        ],
+        message_count: 0,
+        uptime_ms: 0,
+    };
+    let registry = ResourceRegistry::build(&decl, &snapshot).unwrap();
+    assert_eq!(registry.owner_of_tool("echo"), Some(NodeId::new("mcp/echo")));
+    assert_eq!(registry.owner_of_tool("no_such_tool"), None);
 }
 
 #[tokio::test]
-async fn find_tool_owner_returns_none_on_ambiguous() {
-    use arf_core::{MessageFilter, NodeInfo, ToMatch};
-    let bus = test_bus_with_model_node().await;
-    for ns in &["echo_a", "echo_b"] {
-        let mcp_info = NodeInfo {
-            node_id: NodeId::new(&format!("mcp/{ns}")),
-            node_type: "mcp".into(),
-            capabilities: serde_json::json!({
-                "tools": [{"name": "echo", "description": "..", "params_schema": {}}]
-            }),
-            online_since: 0,
-        };
-        let _h = bus
-            .connect(mcp_info, MessageFilter { types: None, to_match: ToMatch::All })
-            .await
-            .unwrap();
-    }
-    let owner = crate::engine::find_tool_owner(&bus, "echo");
-    assert_eq!(owner, None); // ambiguous → don't route to wrong node
+async fn find_tool_owner_ambiguous_build_fails() {
+    // Ambiguous tool ownership is caught at Registry::build time, not runtime.
+    use crate::registry::ResourceRegistry;
+    use arf_core::BusGraph;
+    let decl = AgentConfig {
+        resources: vec![
+            arf_agent::ResourceSpec {
+                name: "a".into(), node_type: "mcp".into(),
+                capabilities: Some(serde_json::json!({"tools": ["echo"]})),
+            },
+            arf_agent::ResourceSpec {
+                name: "b".into(), node_type: "mcp".into(),
+                capabilities: Some(serde_json::json!({"tools": ["echo"]})),
+            },
+        ],
+        ..minimal_config("")
+    };
+    let snapshot = BusGraph {
+        nodes: vec![
+            arf_core::NodeInfo { node_id: NodeId::new("model/deepseek"), node_type: "model".into(), capabilities: serde_json::json!({"provider": "deepseek"}), online_since: 0 },
+            arf_core::NodeInfo { node_id: NodeId::new("mcp/a"), node_type: "mcp".into(), capabilities: serde_json::json!({"tools": [{"name": "echo"}]}), online_since: 0 },
+            arf_core::NodeInfo { node_id: NodeId::new("mcp/b"), node_type: "mcp".into(), capabilities: serde_json::json!({"tools": [{"name": "echo"}]}), online_since: 0 },
+        ],
+        message_count: 0, uptime_ms: 0,
+    };
+    let res = ResourceRegistry::build(&decl, &snapshot);
+    assert!(matches!(res, Err(BuildError::AmbiguousTool { .. })));
 }

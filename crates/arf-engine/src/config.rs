@@ -28,6 +28,19 @@ pub struct EngineConfig {
     pub tool_timeout_ms: Option<u64>,
 }
 
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            routes: HashMap::new(),
+            checkpoint_rules: vec![],
+            processors: HashMap::new(),
+            on_member_failed: None,
+            max_turns: 10,
+            tool_timeout_ms: Some(30_000),
+        }
+    }
+}
+
 // ── OnMemberFailedHandler ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]

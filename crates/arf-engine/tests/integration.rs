@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arf_core::{Checkpoint, CheckpointRule, Message, ModelMessage, NodeId, Route, State};
-use arf_engine::{AgentConfig, Engine, EngineBuilder, MemberFailedAction, ModelConfig, OnMemberFailedHandler};
+use arf_core::{Checkpoint, CheckpointRule, Message, NodeId, Route, State};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, MemberFailedAction, OnMemberFailedHandler};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ async fn test_bus_with_model_node() -> Arc<arf_bus::Bus> {
             arf_core::NodeInfo {
                 node_id: NodeId::new("model/mock"),
                 node_type: "model".into(),
-                capabilities: serde_json::json!({"kind": "model"}),
+                capabilities: serde_json::json!({"provider": "mock", "kind": "model"}),
                 online_since: 0,
             },
             arf_core::MessageFilter {
@@ -51,26 +51,22 @@ async fn test_bus_with_model_node() -> Arc<arf_bus::Bus> {
     bus
 }
 
-fn minimal_config(agent_id: &str) -> AgentConfig {
+fn minimal_config(_agent_id: &str) -> AgentConfig {
     AgentConfig {
-        agent_id: agent_id.into(),
-        model_config: ModelConfig {
+        model: arf_agent::ModelDecl {
             provider: "mock".into(),
-            model: "mock-v1".into(),
+            model_name: "mock-v1".into(),
+            ..Default::default()
         },
+        resources: vec![],
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 10,
-        tool_timeout_ms: None,
-        permissions: Default::default(),
-        routes: HashMap::new(),
-        checkpoint_rules: vec![],
-        processors: HashMap::new(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
+        allowed_paths: vec![],
+        engine: arf_engine::EngineConfig {
+            max_turns: 10,
+            tool_timeout_ms: None,
+            ..Default::default()
+        },
     }
 }
 
@@ -236,11 +232,11 @@ async fn e2e_round_end_checkpoint_fires_on_completion() {
 
     let mut cfg = minimal_config("a");
     // Strict route for the checkpoint msg_type
-    cfg.routes.insert(
+    cfg.engine.routes.insert(
         "test_round_end_marker".into(),
         Route::strict(vec![NodeId::new("cp/sink")]),
     );
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.checkpoint_rules = vec![rule];
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await.unwrap();
 
     let mut state = State::new();
@@ -265,7 +261,7 @@ async fn e2e_round_end_checkpoint_fires_on_completion() {
 async fn e2e_on_member_failed_handler_stored_in_config() {
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
-    cfg.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
+    cfg.engine.on_member_failed = Some(Arc::new(|_a: &NodeId, _m: &NodeId, _r: &str| {
         MemberFailedAction::FailSession
     }) as Arc<dyn OnMemberFailedHandler>);
     let engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await;
@@ -365,8 +361,8 @@ async fn e2e_query_intent_checkpoint_park_and_resume() {
     );
 
     let mut cfg = minimal_config("a");
-    cfg.routes.insert("test_cp_query".into(), Route::strict(vec![NodeId::new("cp/sink")]));
-    cfg.checkpoint_rules = vec![rule];
+    cfg.engine.routes.insert("test_cp_query".into(), Route::strict(vec![NodeId::new("cp/sink")]));
+    cfg.engine.checkpoint_rules = vec![rule];
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let bus_for_resp = bus.clone();

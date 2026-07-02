@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use arf_agent::ResourceSpec;
 use arf_bus::Bus;
 use arf_core::{BusGraph, NodeId, ToolSpec};
 
@@ -12,6 +11,7 @@ use crate::config::AgentConfig;
 use crate::error::BuildError;
 
 /// 声明 capabilities 的过滤模式。
+#[derive(Clone)]
 enum DeclaredFilter {
     /// "all" sentinel — 显式全取。
     All,
@@ -50,7 +50,7 @@ impl ResourceRegistry {
         // 2. 解析 resources
         let mut mcp_nodes = HashMap::new();
         let mut custom_nodes = HashMap::new();
-        let mut tool_index = HashMap::new();
+        let mut tool_index: HashMap<String, NodeId> = HashMap::new();
 
         for spec in &decl.resources {
             let node = snapshot
@@ -66,7 +66,7 @@ impl ResourceRegistry {
             let binding = ResourceBinding {
                 resource_name: spec.name.clone(),
                 node_id: node.node_id.clone(),
-                declared_filter: filter,
+                declared_filter: filter.clone(),
             };
 
             if spec.node_type == "mcp" || spec.node_type.starts_with("mcp/") {
@@ -288,6 +288,7 @@ impl DeclaredFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arf_agent::ResourceSpec;
     use arf_core::NodeInfo;
 
     fn test_snapshot(nodes: Vec<NodeInfo>) -> BusGraph {

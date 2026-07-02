@@ -11,8 +11,6 @@ use arf_core::{
     ActionMessage, Capability, Checkpoint, CheckpointRule, NodeId, NodeInfo, Route,
 };
 
-use crate::config::AgentConfig;
-
 /// A built Checkpoint message + its resolved recipients.
 ///
 /// Engine decides whether to await (Query) or fire-and-forget (Command).

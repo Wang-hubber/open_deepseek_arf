@@ -572,7 +572,7 @@ impl Engine {
             }
 
             // Phase 6 task 6.8: dispatch to ResponseProcessor if registered.
-            if let Some(processor) = self.config.processors.get(msg.msg_type.as_str()) {
+            if let Some(processor) = self.config.engine.processors.get(msg.msg_type.as_str()) {
                 if processor.handles(&msg.msg_type) {
                     let _ = processor.process(&msg); // result ignored for now; 6.x uses Response
                 }
