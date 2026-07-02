@@ -26,7 +26,7 @@ use arf_bus::{BarrierReceipt, Bus};
 use arf_core::{
     ActionMessage, Message, MessageFilter, NodeId, NodeInfo, State, ToMatch,
 };
-use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig, WaitStrategy};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -237,7 +237,7 @@ async fn main() -> Result<()> {
             NodeInfo {
                 node_id: NodeId::new("model/mock"),
                 node_type: "model".into(),
-                capabilities: serde_json::json!({"kind": "model"}),
+                capabilities: serde_json::json!({"kind": "model", "provider": "mock"}),
                 online_since: now_ms(),
             },
             MessageFilter {
@@ -282,31 +282,36 @@ async fn main() -> Result<()> {
         cid: Uuid::new_v4(),
     };
     let mut cfg = AgentConfig {
-        agent_id: "recoverable".into(),
-        model_config: ModelConfig { provider: "mock".into(), model: "mock-v1".into() },
+        model: ModelDecl {
+            provider: "mock".into(),
+            model_name: "mock-v1".into(),
+            ..Default::default()
+        },
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 5,
-        tool_timeout_ms: Some(10_000),
-        permissions: Default::default(),
-        routes: {
-            let mut r = std::collections::HashMap::new();
-            r.insert("model_call".into(), arf_core::Route::strict(vec![NodeId::new("model/mock")]));
-            r.insert("app_checkpoint".into(), arf_core::Route::strict(vec![NodeId::new("cp/main")]));
-            r
+        allowed_paths: vec![],
+        resources: vec![],
+        engine: EngineConfig {
+            // model_call auto-derived via Registry.resolve_model("mock").
+            // app_checkpoint is a custom msg_type → keep Strict route here.
+            routes: {
+                let mut r = std::collections::HashMap::new();
+                r.insert(
+                    "app_checkpoint".into(),
+                    arf_core::Route::strict(vec![NodeId::new("cp/main")]),
+                );
+                r
+            },
+            checkpoint_rules: vec![arf_core::CheckpointRule::new(
+                "round_end_checkpoint",
+                arf_core::Checkpoint::RoundEnd,
+                |_s| true,
+                move |_s| Box::new(cp_action.clone()) as Box<dyn ActionMessage>,
+            )],
+            max_turns: 5,
+            tool_timeout_ms: Some(10_000),
+            ..Default::default()
         },
-        checkpoint_rules: vec![arf_core::CheckpointRule::new(
-            "round_end_checkpoint",
-            arf_core::Checkpoint::RoundEnd,
-            |_s| true,
-            move |_s| Box::new(cp_action.clone()) as Box<dyn ActionMessage>,
-        )],
-        processors: Default::default(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
     };
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await?;
 
