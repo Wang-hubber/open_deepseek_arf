@@ -85,7 +85,16 @@ pub struct AgentConfig {
 
     pub permissions: PermissionConfig,
 
-    /// msg_type → Route（单源）。同时用于 Engine 自身的 Route 决定。
+    /// 用户自定义 action message 的路由表。
+    /// 键是 msg_type（如 `"my_custom_action"`），值是 `Route`。
+    ///
+    /// 注意：ARF 的内置 action（`model_call`、`tool_exec*`）**不需要**在这里配置 — Engine
+    /// 自动按节点能力广播 `model_call`，按 tool name 查 owner 直接路由 `tool_exec`。
+    /// 这些条目保留在此处仅作 build-time hint（让 `EngineBuilder.build` 在 Strict NodeId
+    /// 模式下能校验节点在线）。
+    ///
+    /// 真正的"checkpoint 派发的用户自定义 action"应该定义自己的 msg_type（如
+    /// `"summarize"`、`"send_email"`）并在此处配置路由。
     pub routes: HashMap<String, Route>,
 
     /// 评估顺序由 App 在 build 时决定；run() 时逐个查 when。
