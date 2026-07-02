@@ -2423,3 +2423,49 @@ async fn collect_skills_cached_omits_empty() {
     let s = collect_skills_cached(&bus, &cache);
     assert!(s.is_empty());
 }
+
+// ─── find_tool_owner tests (2026-07-02 built-in routing) ────────────
+
+#[tokio::test]
+async fn find_tool_owner_returns_correct_node() {
+    use arf_core::{MessageFilter, NodeInfo, ToMatch};
+    let bus = test_bus_with_model_node().await;
+    let mcp_info = NodeInfo {
+        node_id: NodeId::new("mcp/echo"),
+        node_type: "mcp".into(),
+        capabilities: serde_json::json!({
+            "tools": [{"name": "echo", "description": "..", "params_schema": {}}]
+        }),
+        online_since: 0,
+    };
+    let _h = bus
+        .connect(mcp_info, MessageFilter { types: None, to_match: ToMatch::All })
+        .await
+        .unwrap();
+    let owner = crate::engine::find_tool_owner(&bus, "echo");
+    assert_eq!(owner, Some(NodeId::new("mcp/echo")));
+    let missing = crate::engine::find_tool_owner(&bus, "no_such_tool");
+    assert_eq!(missing, None);
+}
+
+#[tokio::test]
+async fn find_tool_owner_returns_none_on_ambiguous() {
+    use arf_core::{MessageFilter, NodeInfo, ToMatch};
+    let bus = test_bus_with_model_node().await;
+    for ns in &["echo_a", "echo_b"] {
+        let mcp_info = NodeInfo {
+            node_id: NodeId::new(&format!("mcp/{ns}")),
+            node_type: "mcp".into(),
+            capabilities: serde_json::json!({
+                "tools": [{"name": "echo", "description": "..", "params_schema": {}}]
+            }),
+            online_since: 0,
+        };
+        let _h = bus
+            .connect(mcp_info, MessageFilter { types: None, to_match: ToMatch::All })
+            .await
+            .unwrap();
+    }
+    let owner = crate::engine::find_tool_owner(&bus, "echo");
+    assert_eq!(owner, None); // ambiguous → don't route to wrong node
+}

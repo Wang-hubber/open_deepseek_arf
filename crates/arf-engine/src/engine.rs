@@ -694,7 +694,7 @@ pub(crate) fn collect_skills_cached(
 ///
 /// Used by `do_tool_turn` to route tool_exec directly to the owning node
 /// (avoids broadcast race when multiple MCP nodes are online).
-fn find_tool_owner(primary_bus: &Arc<arf_bus::Bus>, tool_name: &str) -> Option<NodeId> {
+pub(crate) fn find_tool_owner(primary_bus: &Arc<arf_bus::Bus>, tool_name: &str) -> Option<NodeId> {
     let graph = primary_bus.graph();
     let mut owner: Option<NodeId> = None;
     for node in &graph.nodes {
