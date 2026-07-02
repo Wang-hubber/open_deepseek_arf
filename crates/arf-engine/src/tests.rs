@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::checkpoint::{evaluate, resolve_route, resolve_route_pure, DiscoveryCache};
 use crate::config::{AgentConfig, ModelConfig};
+use crate::engine::collect_skills_cached;
 use crate::error::{BuildError, RunError};
 use crate::EngineBuilder;
 
@@ -216,21 +217,25 @@ async fn build_fails_on_duplicate_rule_name() {
     assert!(matches!(res, Err(BuildError::DuplicateRuleName { .. })));
 }
 
-// [构造] {{skills}} 但 BusGraph 无 skill 节点 → InvalidTemplate
+// [构造] `{{skills}}` 不再触发 InvalidTemplate — 2026-07-02 重构后
+// 模板原样发送，skills 由 do_model_turn 现采拼装。BusGraph 无 skill 节点时
+// build 成功，placeholder 留在字符串里。
 #[tokio::test]
-async fn build_fails_when_skills_placeholder_but_no_skill_node() {
+async fn build_succeeds_with_skills_placeholder_no_skill_node() {
     let bus = test_bus_with_model_node().await;
     let mut cfg = minimal_config("a");
     cfg.system_prompt_template = "Skills: {{skills}}".into();
-    let res = EngineBuilder::new(vec![bus]).build(cfg).await;
-    assert!(matches!(res, Err(BuildError::InvalidTemplate { .. })));
+    let engine = EngineBuilder::new(vec![bus]).build(cfg).await.unwrap();
+    // engine.system_prompt() 现在返回 template 原样
+    let prompt = engine.system_prompt();
+    assert!(prompt.contains("{{skills}}"), "template should be verbatim, got: {prompt}");
 }
 
-// [构造] {{skills}} 且 BusGraph 有 skill 节点 → success 且 system_prompt 替换
+// [构造] 模板中的 `{{skills}}` 占位符 **不再**被替换 — Engine 在 do_model_turn
+// 时从 BusGraph 现采并作为独立 system message 注入。
 #[tokio::test]
-async fn build_replaces_skills_placeholder() {
+async fn build_keeps_template_verbatim_with_skill_node() {
     let bus = test_bus_with_model_node().await;
-    // 手动在线注册一个 skill 节点
     let skill_info = arf_core::NodeInfo {
         node_id: NodeId::new("skill/greet"),
         node_type: "skill".into(),
@@ -242,14 +247,15 @@ async fn build_replaces_skills_placeholder() {
         to_match: arf_core::ToMatch::All,
     };
     let h = bus.connect(skill_info, filter).await.unwrap();
-    drop(h); // keep NodeEntry in BusGraph; drop handle lets forwarding task exit
+    drop(h);
 
     let mut cfg = minimal_config("a");
     cfg.system_prompt_template = "Skills available:\n{{skills}}".into();
     let engine = EngineBuilder::new(vec![bus]).build(cfg).await.unwrap();
     let prompt = engine.system_prompt();
-    assert!(prompt.contains("skill/greet"), "got: {prompt}");
-    assert!(!prompt.contains("{{skills}}"), "should be replaced, got: {prompt}");
+    // 模板原样保留 — skills 不再注入
+    assert!(prompt.contains("{{skills}}"), "template should be verbatim, got: {prompt}");
+    assert!(!prompt.contains("skill/greet"), "skills no longer baked in, got: {prompt}");
 }
 
 // [构造] EngineBuilder build 后通过 engine.handle() 拿到 NodeHandle
@@ -325,11 +331,12 @@ async fn engine_run_one_round_completes() {
     .expect("engine.run timed out")
     .expect("engine.run should succeed");
     assert_eq!(output, "echo from mock model");
-    assert_eq!(state.messages.len(), 3); // system + user + assistant
-    assert!(state.messages[0].role == "system");
-    assert_eq!(state.messages[1].role, "user");
-    assert_eq!(state.messages[2].role, "assistant");
-    assert_eq!(state.messages[2].content, "echo from mock model");
+    // 2026-07-02: system prefix 由 do_model_turn 现采拼装，不入 state.messages
+    // state.messages 现仅含对话：user + assistant
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages[0].role, "user");
+    assert_eq!(state.messages[1].role, "assistant");
+    assert_eq!(state.messages[1].content, "echo from mock model");
     assert_eq!(state.over_view.context_tokens, 42);
     assert_eq!(state.over_view.round_count, 1);
     assert_eq!(state.over_view.turn_count, 1); // 1 model_call = 1 turn
@@ -458,9 +465,9 @@ async fn run_returns_immediately_when_no_tool_calls() {
     .expect("engine.run timed out")
     .expect("engine.run should succeed");
     assert_eq!(output, "hello back");
-    // messages: system + user + assistant
-    assert_eq!(state.messages.len(), 3);
-    assert_eq!(state.messages[2].role, "assistant");
+    // 2026-07-02: system prefix 现采不入 state.messages；对话仅 user + assistant
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages[1].role, "assistant");
     assert_eq!(state.over_view.round_count, 1);
 
     receiver.abort();
@@ -517,15 +524,16 @@ async fn run_continues_after_tool_result() {
     .expect("engine.run timed out")
     .expect("engine.run should succeed");
     assert_eq!(output, "done");
-    // messages: system + user + assistant(tool_calls) + tool + assistant(text)
-    assert_eq!(state.messages.len(), 5);
-    assert_eq!(state.messages[2].role, "assistant");
-    assert_eq!(state.messages[2].tool_calls.len(), 1);
-    assert_eq!(state.messages[2].tool_calls[0].name, "bash");
-    assert_eq!(state.messages[3].role, "tool");
-    assert_eq!(state.messages[3].content, "tool success");
-    assert_eq!(state.messages[4].role, "assistant");
-    assert_eq!(state.messages[4].content, "done");
+    // 2026-07-02: state.messages 现仅含对话，无 system prefix
+    // messages: user + assistant(tool_calls) + tool + assistant(text)
+    assert_eq!(state.messages.len(), 4);
+    assert_eq!(state.messages[1].role, "assistant");
+    assert_eq!(state.messages[1].tool_calls.len(), 1);
+    assert_eq!(state.messages[1].tool_calls[0].name, "bash");
+    assert_eq!(state.messages[2].role, "tool");
+    assert_eq!(state.messages[2].content, "tool success");
+    assert_eq!(state.messages[3].role, "assistant");
+    assert_eq!(state.messages[3].content, "done");
 
     receiver.abort();
 }
@@ -2354,4 +2362,64 @@ async fn build_accepts_closure_on_member_failed() {
     }));
     let engine = EngineBuilder::new(vec![bus]).build(cfg).await;
     assert!(engine.is_ok(), "build with closure handler should succeed");
+}
+
+// ─── Context prefix layering tests (2026-07-02 spec) ────────────
+
+// [方法] prepare_round 不再向 state.messages 注入 system_prompt
+#[tokio::test]
+async fn prepare_round_does_not_inject_system() {
+    let bus = test_bus_with_model_node().await;
+    let engine = EngineBuilder::new(vec![bus]).build(minimal_config("a")).await.unwrap();
+    let mut state = arf_core::State::new();
+    let messages_before = state.messages.len();
+    engine.prepare_round(&mut state, "hello");
+    // 应当 +1 条 user message
+    assert_eq!(state.messages.len(), messages_before + 1);
+    assert_eq!(state.messages.last().unwrap().role, "user");
+    // 0 条 system（system prefix 由 do_model_turn 拼装，不入 state.messages）
+    assert!(state.messages.iter().all(|m| m.role != "system"));
+}
+
+// [方法] collect_skills_cached 命中：两次相同 BusGraph → 第二次走缓存
+#[tokio::test]
+async fn collect_skills_cached_skips_when_unchanged() {
+    let bus = test_bus_with_model_node().await;
+    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
+    let s1 = collect_skills_cached(&bus, &cache);
+    let s2 = collect_skills_cached(&bus, &cache);
+    assert_eq!(s1, s2);
+    let cached = cache.lock().unwrap().1.clone();
+    assert_eq!(s2, cached);
+}
+
+// [方法] collect_skills_cached miss：节点变化时重新收集
+#[tokio::test]
+async fn collect_skills_cached_updates_on_node_change() {
+    let bus = test_bus_with_model_node().await;
+    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
+    let s1 = collect_skills_cached(&bus, &cache);
+    assert!(s1.is_empty(), "no skill node online initially");
+
+    let skill_info = arf_core::NodeInfo {
+        node_id: NodeId::new("skill/greet"),
+        node_type: "skill".into(),
+        capabilities: serde_json::json!({"kind": "skill"}),
+        online_since: 0,
+    };
+    let filter = arf_core::MessageFilter { types: None, to_match: arf_core::ToMatch::All };
+    let _h = bus.connect(skill_info, filter).await.unwrap();
+
+    let s2 = collect_skills_cached(&bus, &cache);
+    assert!(s2.contains("skill/greet"));
+    assert_ne!(s1, s2);
+}
+
+// [方法] collect_skills_cached 空集合返回空串（caller 不应推送空 system）
+#[tokio::test]
+async fn collect_skills_cached_omits_empty() {
+    let bus = test_bus_with_model_node().await;
+    let cache: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((0, String::new()));
+    let s = collect_skills_cached(&bus, &cache);
+    assert!(s.is_empty());
 }

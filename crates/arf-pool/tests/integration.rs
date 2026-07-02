@@ -204,7 +204,8 @@ async fn pool_node_with_engine_react_loop() {
     .expect("run timed out")
     .expect("run should succeed");
     assert_eq!(output, "ok from pool");
-    assert_eq!(state.messages.len(), 3); // system + user + assistant
+    // 2026-07-02: system prefix 现采不入 state.messages；对话仅 user + assistant
+    assert_eq!(state.messages.len(), 2);
 
     sub_resp_h.abort();
 }

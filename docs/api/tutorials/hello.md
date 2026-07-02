@@ -126,7 +126,8 @@ AgentConfig(
 | 字段 | 必填 | 作用 |
 |---|---|---|
 | `agent_id` | ✓ | Agent 唯一标识；engine 在 bus 上注册为 `engine/<agent_id>` |
-| `system_prompt_template` |  | 注入到对话前缀的 system prompt；支持 `{{skills}}` 占位符（build 时由 Engine 替换为可用 skill 列表） |
+| `system_prompt_template` |  | 注入到对话前缀的 system prompt；**原样发送**（不再做 `{{skills}}` 占位符替换）。Engine 在每轮 `do_model_turn` 时按 [template, *initial_memory, skills, *conversation] 拼装 prefix，详见 [explanation/上下文拼装机制.md](../../explanation/上下文拼装机制.md) |
+| `initial_memory` |  | 会话内相对稳定的记忆条目；每条作为独立 system message 注入到 template 之后、skills 之前。例：`initial_memory=["你是 MiniMax 的助手", "用户偏好中文"]` |
 | `max_turns` |  | 单轮最大 ReAct 步数（默认 10） |
 | `routes` |  | msg_type → Route 路由表（见下） |
 | `checkpoint_rules` |  | 检查点规则列表（ch2+ 用） |

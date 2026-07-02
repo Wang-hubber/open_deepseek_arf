@@ -166,8 +166,8 @@ async fn e2e_multi_round_react_loop() {
     .expect("run should succeed");
 
     assert_eq!(output, "round 2 done");
-    // Messages: system + user + assistant(tool) + tool + assistant(tool) + tool + assistant(text)
-    assert_eq!(state.messages.len(), 7);
+    // 2026-07-02: system prefix 现采不入 state.messages；对话仅 user + assistant×3 + tool×2 = 6
+    assert_eq!(state.messages.len(), 6);
     assert_eq!(state.over_view.round_count, 1);
     // turn_count: 3 model_calls + 2 tool_execs = 5
     assert_eq!(state.over_view.turn_count, 5);

@@ -86,31 +86,23 @@ impl EngineBuilder {
             }
         }
 
-        // 5. {{skills}} 替换
-        let skills_text = collect_skills_text(&merged);
-        let system_prompt = config
-            .system_prompt_template
-            .replace("{{skills}}", &skills_text);
+        // 5. system_prompt_template 保持原样（不再做 {{skills}} 替换）。
+        // Engine 在 do_model_turn 时按 [template, *initial_memory, skills, *conversation]
+        // 顺序拼装 prefix；skills 现采 + hash 缓存。
+        // 详见 docs/api/explanation/上下文拼装机制.md
+        // `merged` 在此未使用，留作未来 checkpoint 规则 Discovery 校验用。
+        let _ = &merged;
 
-        // 6. 验证 system_prompt 替换后非空（template 含 {{skills}} 但无 skill 时给出明确错误）
-        if config.system_prompt_template.contains("{{skills}}")
-            && skills_text.is_empty()
-        {
-            return Err(BuildError::InvalidTemplate {
-                placeholder: "{{skills}}".into(),
-                reason: "包含占位符但 BusGraph 中无 kind=skill 节点".into(),
-            });
-        }
-
-        // 7. 校验 ResponseProcessor msg_type 唯一性（Phase 6 task 6.8）。
+        // 6. 校验 ResponseProcessor msg_type 唯一性（Phase 6 task 6.8）。
         // 注：HashMap 本身就是 unique key；这里校验的是 processors.handle 声明的 msg_type
         // 与 routes 的 msg_type 不冲突——但因为 ResponseProcessor.handles() 是动态查询，
         // 实际无冲突可能。简化：此处仅校验 processors 列表非空且 key 一致。
         // 真正的重复会在 wait_for_strategy 中由 HashMap 自动取最后一个。
         let _ = &config.processors; // 显式 use 满足 clippy；6.x 可加更严格校验
 
-        // 7. create Engine
-        Engine::new(self.buses, config, system_prompt).await
+        // 7. create Engine — Engine::new 自身从 config 读 system_prompt_template
+        //    和 initial_memory，不再需要 builder 传第三参数
+        Engine::new(self.buses, config).await
     }
 }
 
@@ -122,23 +114,6 @@ fn capability_matches_any(cap: &Capability, nodes: &HashMap<NodeId, NodeInfo>) -
     })
 }
 
-fn collect_skills_text(nodes: &HashMap<NodeId, NodeInfo>) -> String {
-    let mut skills: Vec<String> = nodes
-        .values()
-        .filter(|n| {
-            n.capabilities
-                .get("kind")
-                .and_then(|v| v.as_str())
-                == Some("skill")
-        })
-        .map(|n| n.node_id.to_string())
-        .collect();
-    skills.sort();
-    skills.dedup();
-    if skills.is_empty() {
-        String::new()
-    } else {
-        let items: Vec<String> = skills.iter().map(|s| format!("- {s}")).collect();
-        format!("Available skills:\n{}", items.join("\n"))
-    }
-}
+// collect_skills_text removed (2026-07-02 spec): skills are now collected
+// per-turn by Engine via collect_skills_cached — see engine.rs.
+

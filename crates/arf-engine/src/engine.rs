@@ -31,8 +31,15 @@ pub struct Engine {
     primary_bus: Arc<arf_bus::Bus>,
     /// Capability → recipients cache. Phase 6 task 6.7.
     discovery_cache: Arc<DiscoveryCache>,
-    /// Pre-computed system prompt (with {{skills}} substituted at build time)
-    system_prompt: String,
+    /// Raw system_prompt_template (no `{{skills}}` substitution).
+    /// 详见 `docs/api/explanation/上下文拼装机制.md` — Engine 在 do_model_turn
+    /// 里按 [template, *memory, skills, *conversation] 拼装 prefix。
+    system_prompt_template: String,
+    /// Session-stable memory items; each pushed as a separate system message.
+    initial_memory: Vec<String>,
+    /// Skills cache: (hash, content). Hash over sorted (node_id) of
+    /// `kind=skill` nodes on primary bus; on miss, re-collect.
+    skills_cache: std::sync::Mutex<(u64, String)>,
 }
 
 impl Engine {
@@ -40,7 +47,6 @@ impl Engine {
     pub(crate) async fn new(
         buses: Vec<Arc<arf_bus::Bus>>,
         config: AgentConfig,
-        system_prompt: String,
     ) -> Result<Self, BuildError> {
         let primary = buses[0].clone();
         let info = NodeInfo {
@@ -78,13 +84,18 @@ impl Engine {
             }
         });
 
+        let system_prompt_template = config.system_prompt_template.clone();
+        let initial_memory = config.initial_memory.clone();
+
         Ok(Self {
             config,
             agent_id: info.node_id,
             handle,
             primary_bus: primary.clone(),
             discovery_cache,
-            system_prompt,
+            system_prompt_template,
+            initial_memory,
+            skills_cache: std::sync::Mutex::new((0, String::new())),
         })
     }
 
@@ -100,7 +111,7 @@ impl Engine {
     }
 
     pub fn config(&self) -> &AgentConfig { &self.config }
-    pub fn system_prompt(&self) -> &str { &self.system_prompt }
+    pub fn system_prompt(&self) -> &str { &self.system_prompt_template }
     pub fn agent_id(&self) -> &NodeId { &self.agent_id }
     pub fn handle(&self) -> &NodeHandle { &self.handle }
 
@@ -311,14 +322,10 @@ impl Engine {
         Ok(())
     }
 
-    /// 推 system prompt + user message；inc_round
-    fn prepare_round(&self, state: &mut State, user_input: &str) {
-        if state.messages.is_empty() {
-            state.push_message(ModelMessage::new("system", &self.system_prompt));
-        } else if state.messages[0].role != "system" {
-            state.messages
-                .insert(0, ModelMessage::new("system", &self.system_prompt));
-        }
+    /// 推 user message；inc_round。
+    /// system prefix 由 do_model_turn 在每轮拼装（template + memory + skills），
+    /// state.messages 保持只存对话。
+    pub(crate) fn prepare_round(&self, state: &mut State, user_input: &str) {
         state.push_message(ModelMessage::new("user", user_input));
         state.over_view.last_user_message = user_input.to_string();
         state.inc_round();
@@ -333,8 +340,26 @@ impl Engine {
     ) -> Result<(String, Vec<ToolCall>), RunError> {
         state.inc_turn();
 
+        // Layered prefix assembly (Phase 6 design spec):
+        //   [0]   system: system_prompt_template  (raw, no {{skills}})
+        //   [1..N] system: initial_memory[i]      (each entry as own message)
+        //   [N+1] system: skills (live BusGraph; cached by hash)
+        //   [N+2..] state.messages  (conversation)
+        let skills_text = collect_skills_cached(&self.primary_bus, &self.skills_cache);
+        let mut messages: Vec<ModelMessage> = Vec::with_capacity(
+            2 + self.initial_memory.len() + state.messages.len(),
+        );
+        messages.push(ModelMessage::new("system", &self.system_prompt_template));
+        for m in &self.initial_memory {
+            messages.push(ModelMessage::new("system", m));
+        }
+        if !skills_text.is_empty() {
+            messages.push(ModelMessage::new("system", &skills_text));
+        }
+        messages.extend(state.messages.iter().cloned());
+
         let tools = collect_tools_from_routes(&self.primary_bus, &self.config);
-        let model_call = ModelCall::new(state.messages.clone()).with_tools(tools);
+        let model_call = ModelCall::new(messages).with_tools(tools);
         let cid = model_call.correlation_id;
         let msg = Message::with_from_bus(
             model_call.msg_type(),
@@ -592,6 +617,53 @@ fn response_msg_type_for(request: &str) -> Option<String> {
         "human_handoff" => Some("human_handoff_reply".into()),
         _ => None,
     }
+}
+
+/// Collect skills text from `kind=skill` nodes on the primary bus, with
+/// hash-based caching. Returns an empty string if no skill nodes are online
+/// (caller MUST NOT push an empty system message in that case — see spec).
+///
+/// `Engine` keeps a `(u64, String)` cache: on hash miss, re-collect from
+/// the live BusGraph; on hit, return the cached text. The hash is a cheap
+/// fold-over-bytes of the sorted (deduped) node-id list.
+pub(crate) fn collect_skills_cached(
+    primary_bus: &Arc<arf_bus::Bus>,
+    cache: &std::sync::Mutex<(u64, String)>,
+) -> String {
+    let graph = primary_bus.graph();
+    let mut skill_ids: Vec<String> = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.capabilities
+                .get("kind")
+                .and_then(|v| v.as_str())
+                == Some("skill")
+        })
+        .map(|n| n.node_id.to_string())
+        .collect();
+    skill_ids.sort();
+    skill_ids.dedup();
+    // Cheap non-cryptographic hash: fold over bytes.
+    let mut hash: u64 = skill_ids.len() as u64;
+    for s in &skill_ids {
+        hash = hash.wrapping_mul(31).wrapping_add(s.len() as u64);
+        for b in s.bytes() {
+            hash = hash.wrapping_mul(31).wrapping_add(b as u64);
+        }
+    }
+    let mut guard = cache.lock().unwrap();
+    if guard.0 == hash && !guard.1.is_empty() {
+        return guard.1.clone();
+    }
+    let content = if skill_ids.is_empty() {
+        String::new()
+    } else {
+        let items: Vec<String> = skill_ids.iter().map(|s| format!("- {s}")).collect();
+        format!("Available skills:\n{}", items.join("\n"))
+    };
+    *guard = (hash, content.clone());
+    content
 }
 
 /// Collect ToolSpec from MCP nodes targeted by `tool_exec*` Strict routes.

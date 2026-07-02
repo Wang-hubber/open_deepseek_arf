@@ -173,7 +173,7 @@ async fn pool_node_bridges_model_call_across_buses() -> anyhow::Result<()> {
     // The pool forwards model_call to sub_bus's model_node, which replies
     // with "from-the-pool".
     assert_eq!(out, "from-the-pool");
-    assert_eq!(state.messages.len(), 3); // system + user + assistant
+    assert_eq!(state.messages.len(), 2); // user + assistant (2026-07-02: system prefix 现采不入 state.messages)
     Ok(())
 }
 

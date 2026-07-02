@@ -14,4 +14,8 @@
 - 5 个 Checkpoint trigger 怎么从 10 个 v0.x lifecycle hook 演化来的？
 - Engine 为什么要做 Bus node 而不是中央调度器？
 
+## 已收录
+
+- [上下文拼装机制](上下文拼装机制.md) — Engine 在 do_model_turn 时如何按 4 层独立 system message 拼装前缀，让 LLM provider 的 prompt cache 命中率最大化；为什么 `{{skills}}` 不再 build-time 替换。
+
 需要模块 API 参考请走 [`docs/api/reference/`](../reference/)。

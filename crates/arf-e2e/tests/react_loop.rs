@@ -45,7 +45,7 @@ fn write_echo_tool(tmp: &std::path::Path) {
 
 // ── Test 1: single round, text only ─────────────────────────────────────
 
-// [方法] 单 round 纯文本：state.messages.len() == 3
+// [方法] 单 round 纯文本：state.messages.len() == 2 (user + assistant; 2026-07-02 system prefix 现采不入 state.messages)
 #[tokio::test]
 async fn react_single_round_text() {
     let mut h = E2EHarness::new(ProviderKind::Mock(simple_mock("hello world")))
@@ -53,13 +53,13 @@ async fn react_single_round_text() {
         .unwrap();
     let out = h.run_react("test input").await.expect("run failed");
     assert_eq!(out, "hello world");
-    h.assert_state_messages(3);
-    assert!(h.state.messages[2].tool_calls.is_empty());
+    h.assert_state_messages(2);
+    assert!(h.state.messages[1].tool_calls.is_empty());
 }
 
 // ── Test 2: single round, one tool call (real McpNode) ──────────────────
 
-// [方法] 单 round tool call：state.messages.len() == 4 (system + user + assistant + tool)
+// [方法] 单 round tool call：state.messages.len() == 3 (user + assistant + tool; 2026-07-02)
 #[tokio::test]
 async fn react_single_round_tool_call() {
     let tmp = tempfile::tempdir().unwrap();
@@ -83,10 +83,10 @@ async fn react_single_round_tool_call() {
         .run_react("test tool call")
         .await
         .expect("run should succeed");
-    // messages: system + user + assistant(t1) + tool(t1) + assistant(text) = 5
+    // messages: user + assistant(t1) + tool(t1) + assistant(text) = 4
     // (We looped through model_call twice — once with tool_calls,
-    //  once with final text — so 5 messages, not 4.)
-    h.assert_state_messages(5);
+    //  once with final text — so 4 messages, not 3.)
+    h.assert_state_messages(4);
     h.assert_last_tool_call("echo");
     // Final assistant message is the text, not the tool_calls one.
     assert_eq!(out, "done after one tool");
@@ -119,8 +119,8 @@ async fn react_multi_round_consecutive_tools() {
         .await
         .expect("run should succeed");
     assert_eq!(out, "done after tools");
-    // messages: system + user + assistant(t1) + tool(t1) + assistant(t2) + tool(t2) + assistant(text) = 7
-    h.assert_state_messages(7);
+    // messages: user + assistant(t1) + tool(t1) + assistant(t2) + tool(t2) + assistant(text) = 6
+    h.assert_state_messages(6);
 }
 
 // ── Test 4: max_turns exceeded ──────────────────────────────────────────

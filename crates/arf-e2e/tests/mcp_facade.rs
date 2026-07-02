@@ -459,9 +459,10 @@ async fn facade_forwards_tool_exec_across_buses() -> anyhow::Result<()> {
     .expect("engine run timed out")
     .expect("engine run failed");
     assert_eq!(out, "facade loop done");
-    // messages: system + user + assistant(t1) + tool(t1) + assistant(text) = 5
-    assert_eq!(state.messages.len(), 5);
-    assert_eq!(state.messages[2].tool_calls[0].name, "echo");
+    // 2026-07-02: state.messages 现仅含对话，无 system prefix
+    // messages: user + assistant(t1) + tool(t1) + assistant(text) = 4
+    assert_eq!(state.messages.len(), 4);
+    assert_eq!(state.messages[1].tool_calls[0].name, "echo");
 
     _forwarder.abort();
     _translator.abort();

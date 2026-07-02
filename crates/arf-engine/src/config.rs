@@ -71,9 +71,13 @@ pub struct AgentConfig {
     pub agent_id: String,
     pub model_config: ModelConfig,
 
-    /// System prompt 模板，含 `{{skills}}` 占位符（build 时替换）。
+    /// System prompt 模板，**原样发送**到模型（不再做 `{{skills}}` 替换）。
+    /// 详见 `docs/api/explanation/上下文拼装机制.md` — Engine 在每轮 do_model_turn
+    /// 时按 [system_prompt_template, *initial_memory, skills(现采), *conversation]
+    /// 顺序拼装 system prefix。
     pub system_prompt_template: String,
-    /// build 时附加到 messages 前缀（system role）。
+    /// 会话内相对稳定的记忆条目，每条作为独立 system message 注入到 system_prompt
+    /// 之后、skills 之前。build 时一次性读入；运行时变更不在 v1 范围。
     pub initial_memory: Vec<String>,
 
     pub max_turns: u32,
