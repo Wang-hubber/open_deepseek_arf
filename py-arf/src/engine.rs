@@ -831,3 +831,170 @@ impl PyCheckpointRule {
         )
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// PyModelDecl
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python ModelDecl — declarative model identification.
+///
+/// Mirrors `arf_agent::ModelDecl`. Wrap into `AgentConfig.model=` to use
+/// the nested (Phase 7) form. Endpoint and api_key_env default to the
+/// provider's built-in defaults; pass them explicitly to override.
+#[pyclass(name = "ModelDecl")]
+#[derive(Clone)]
+pub struct PyModelDecl {
+    pub(crate) inner: arf_agent::ModelDecl,
+}
+
+#[pymethods]
+impl PyModelDecl {
+    #[new]
+    #[pyo3(signature = (
+        provider,
+        model_name,
+        endpoint = None,
+        api_key_env = None,
+        thinking_enabled = false,
+        temperature = None,
+        max_output_tokens = None,
+        extra = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        provider: String,
+        model_name: String,
+        endpoint: Option<String>,
+        api_key_env: Option<String>,
+        thinking_enabled: bool,
+        temperature: Option<f64>,
+        max_output_tokens: Option<u32>,
+        extra: Option<pyo3::Py<pyo3::PyAny>>,
+    ) -> PyResult<Self> {
+        let extra_json = match extra {
+            Some(obj) => py_object_to_json(&obj, py)?,
+            None => serde_json::Value::Null,
+        };
+        Ok(Self {
+            inner: arf_agent::ModelDecl {
+                provider,
+                model_name,
+                endpoint,
+                api_key_env,
+                thinking_enabled,
+                temperature,
+                max_output_tokens,
+                extra: extra_json,
+            },
+        })
+    }
+
+    #[getter] fn provider(&self) -> String { self.inner.provider.clone() }
+    #[getter] fn model_name(&self) -> String { self.inner.model_name.clone() }
+    #[getter] fn endpoint(&self) -> Option<String> { self.inner.endpoint.clone() }
+    #[getter] fn api_key_env(&self) -> Option<String> { self.inner.api_key_env.clone() }
+    #[getter] fn thinking_enabled(&self) -> bool { self.inner.thinking_enabled }
+    #[getter] fn temperature(&self) -> Option<f64> { self.inner.temperature }
+    #[getter] fn max_output_tokens(&self) -> Option<u32> { self.inner.max_output_tokens }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ModelDecl(provider='{}', model_name='{}')",
+            self.inner.provider, self.inner.model_name
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyEngineConfig
+// ═══════════════════════════════════════════════════════════════════
+
+/// Python EngineConfig — runtime configuration nested in AgentConfig.
+///
+/// Mirrors `arf_engine::EngineConfig`. Wrap into `AgentConfig.engine=`
+/// to use the nested (Phase 7) form. `processors` and `on_member_failed`
+/// are not exposed to Python (they hold trait objects that don't have a
+/// Python-constructible form); leave them at defaults.
+#[pyclass(name = "EngineConfig")]
+pub struct PyEngineConfig {
+    pub(crate) inner: EngineConfig,
+}
+
+/// Helper: build a fresh `EngineConfig` from a Python `PyEngineConfig`
+/// object without requiring `Clone` on the Rust inner type. We pull
+/// each public field via the PyO3 getters, then build a new
+/// `EngineConfig` value (which discards any closures — those aren't
+/// exposed to Python anyway, see PyEngineConfig docstring).
+fn build_engine_config_from_py(
+    obj: &pyo3::Bound<'_, pyo3::PyAny>,
+) -> PyResult<EngineConfig> {
+    let max_turns: u32 = obj.getattr("max_turns")?.extract()?;
+    let tool_timeout_ms: Option<u64> = obj.getattr("tool_timeout_ms")?.extract()?;
+    // `routes` getter returns HashMap<String, String> (debug form). Not
+    // useful for round-tripping actual Route values — but for the
+    // standard tutorial case (no custom routes), the user constructs
+    // EngineConfig from scratch and EngineConfig.max_turns is what matters.
+    // We accept that the routes field is informational only when the
+    // nested form is used; for actual route use, callers should pass
+    // routes= at the AgentConfig top level.
+    let mut ec = EngineConfig::default();
+    ec.max_turns = max_turns;
+    if let Some(t) = tool_timeout_ms {
+        ec.tool_timeout_ms = Some(t);
+    }
+    Ok(ec)
+}
+
+#[pymethods]
+impl PyEngineConfig {
+    #[new]
+    #[pyo3(signature = (max_turns=10, tool_timeout_ms=None, routes=None, checkpoint_rules=None))]
+    fn new(
+        max_turns: u32,
+        tool_timeout_ms: Option<u64>,
+        routes: Option<std::collections::HashMap<String, PyRoute>>,
+        checkpoint_rules: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
+    ) -> PyResult<Self> {
+        let routes_map: std::collections::HashMap<String, Route> = match routes {
+            Some(m) => m.into_iter().map(|(k, v)| (k, v.inner)).collect(),
+            None => std::collections::HashMap::new(),
+        };
+        let rules: Vec<CoreCheckpointRule> = match checkpoint_rules {
+            Some(obj) => {
+                let list = obj.cast::<pyo3::types::PyList>()?;
+                let mut out = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    let rule: PyRef<PyCheckpointRule> = item.extract()?;
+                    out.push(rule.into_rust_rule());
+                }
+                out
+            }
+            None => vec![],
+        };
+        Ok(Self {
+            inner: EngineConfig {
+                routes: routes_map,
+                checkpoint_rules: rules,
+                max_turns,
+                tool_timeout_ms,
+                ..Default::default()
+            },
+        })
+    }
+
+    #[getter] fn max_turns(&self) -> u32 { self.inner.max_turns }
+    #[getter] fn tool_timeout_ms(&self) -> Option<u64> { self.inner.tool_timeout_ms }
+    #[getter]
+    fn routes(&self) -> std::collections::HashMap<String, String> {
+        self.inner
+            .routes
+            .iter()
+            .map(|(k, v)| (k.clone(), format!("{:?}", v)))
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("EngineConfig(max_turns={})", self.inner.max_turns)
+    }
+}

@@ -41,6 +41,10 @@ from arf._arf import (
     EngineState,
     ModelCall,
     WaitStrategy,
+    # Phase 7 nested-form types
+    ModelDecl,
+    EngineConfig,
+    ResourceSpec,
     # Phase 6 task 6.22.4: Checkpoint + Route
     ActionMessage,
     Capability,
@@ -100,6 +104,10 @@ __all__ = [
     "EngineState",
     "ModelCall",
     "WaitStrategy",
+    # Phase 7 nested-form types
+    "ModelDecl",
+    "EngineConfig",
+    "ResourceSpec",
     # Phase 6 task 6.22.4: Checkpoint + Route
     "ActionMessage",
     "Capability",

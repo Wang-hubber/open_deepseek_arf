@@ -1888,6 +1888,10 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<engine::PyState>()?;
     m.add_class::<engine::PyWaitStrategyInner>()?;
     m.add_class::<engine::PyModelCall>()?;
+    // Phase 7 nested-form types
+    m.add_class::<engine::PyModelDecl>()?;
+    m.add_class::<engine::PyEngineConfig>()?;
+    m.add_class::<engine::PyResourceSpec>()?;
 
     // Phase 6 task 6.22.4: Checkpoint + Route + CheckpointRule
     m.add_class::<engine::PyCheckpoint>()?;
