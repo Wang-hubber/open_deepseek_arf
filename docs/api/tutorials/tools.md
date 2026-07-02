@@ -103,15 +103,18 @@ async def main():
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="tutorial-ch3",
+            model=ModelDecl(provider="minimax", model_name="MiniMax-M2"),
             system_prompt_template="你是一个简洁的中文助手。",
-            routes={
-                "model_call": Route.discovery(requirements=[("provider", "minimax")]),
-                # tool_exec* routes 决定 tool_exec 消息的响应类型，但实际路由由
-                # MCP 节点的"谁注册谁响应"过滤决定（见上节）。
-                "tool_exec": Route.strict(ids=[NodeId("mcp/tools")]),
-                "tool_exec_remote": Route.strict(ids=[NodeId("mcp/codetidy")]),
-            },
+            # 声明 MCP 资源：两个节点，Engine 自动解析 + 注入
+            resources=[
+                ResourceSpec(name="local_tools", node_type="mcp",
+                    capabilities={"tools": ["get_time", "random_number"]}),
+                ResourceSpec(name="remote_tools", node_type="mcp",
+                    capabilities={"tools": ["codetidy_json_format"]}),
+            ],
+            engine=EngineConfig(
+                max_turns=10,
+            ),
         ),
     )
 

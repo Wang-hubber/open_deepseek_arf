@@ -85,13 +85,15 @@ async def main():
 
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="tutorial-ch2",
+            model=ModelDecl(provider="minimax", model_name="MiniMax-M2"),
             system_prompt_template="你是一个简洁的中文助手。",
-            routes={
-                "model_call": Route.discovery(requirements=[("provider", "minimax")]),
-                # 把 tool_exec 严格路由到本地 MCP 节点
-                "tool_exec": Route.strict(ids=[NodeId("mcp/tools")]),
-            },
+            # 声明 MCP 资源：Engine 自动解析 to，注入 tools → model_call
+            resources=[
+                ResourceSpec(name="tools", node_type="mcp", capabilities={"tools": ["get_time"]}),
+            ],
+            engine=EngineConfig(
+                max_turns=10,
+            ),
         ),
     )
 

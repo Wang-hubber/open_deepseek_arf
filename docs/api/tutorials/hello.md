@@ -34,7 +34,6 @@ async def main():
     # 2. 定义 agent：AgentConfig 是声明式骨架
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
-            agent_id="tutorial-hello",
             system_prompt_template="你是一个简洁的中文助手。",
             routes={
                 "model_call": Route.discovery(requirements=[("provider", "minimax")]),
@@ -115,32 +114,34 @@ ARF Python 绑定导出 4 个 Config + Provider 对。每对都通过 `from_env(
 
 ```python
 AgentConfig(
-    agent_id="tutorial-hello",            # 标识；出现在消息 from 字段，方便调试
-    system_prompt_template="你是一个简洁的中文助手。",  # 注入到 system role 的预制 prompt
-    routes={                              # 消息路由表（见下）
-        "model_call": Route.discovery(requirements=[("provider", "minimax")]),
-    },
+    model=ModelDecl(provider="minimax", model_name="MiniMax-M2"),  # 模型声明
+    system_prompt_template="你是一个简洁的中文助手。",
+    engine=EngineConfig(
+        max_turns=10,
+        routes={  # 仅存自定义 msg_type（见 ch2+）；model_call 路由由 Engine 自动推导
+        },
+    ),
 )
 ```
 
 | 字段 | 必填 | 作用 |
 |---|---|---|
-| `agent_id` | ✓ | Agent 唯一标识；engine 在 bus 上注册为 `engine/<agent_id>` |
-| `system_prompt_template` |  | 注入到对话前缀的 system prompt；**原样发送**（不再做 `{{skills}}` 占位符替换）。Engine 在每轮 `do_model_turn` 时按 [template, *initial_memory, skills, *conversation] 拼装 prefix，详见 [explanation/上下文拼装机制.md](../../explanation/上下文拼装机制.md) |
-| `initial_memory` |  | 会话内相对稳定的记忆条目；每条作为独立 system message 注入到 template 之后、skills 之前。例：`initial_memory=["你是 MiniMax 的助手", "用户偏好中文"]` |
-| `max_turns` |  | 单轮最大 ReAct 步数（默认 10） |
-| `routes` |  | msg_type → Route 路由表（见下） |
-| `checkpoint_rules` |  | 检查点规则列表（ch2+ 用） |
+| `model` | ✓ | 模型声明 `ModelDecl(provider, model_name, ...)`；Engine 在 bus 上按 `node_type="model"` + `provider` 匹配对应节点 |
+| `resources` |  | `list[ResourceSpec]` — 工具 / 技能 / 自定义资源声明。ch2/ch3 详述 |
+| `system_prompt_template` |  | 注入到对话前缀的 system prompt；Engine 在每轮按 [template, *initial_memory, skills, *conversation] 拼装，详见 [explanation/上下文拼装机制.md](../../explanation/上下文拼装机制.md) |
+| `initial_memory` |  | 会话内相对稳定的记忆条目；每条作为独立 system message 注入 |
+| `allowed_paths` |  | 沙箱路径白名单 |
+| `engine` | ✓ | 运行期配置 `EngineConfig(max_turns, routes, checkpoint_rules, ...)` |
 
-### 路由 routes：把消息路由到正确节点
+### 路由 routes：自定义消息路由（仅 checkpoint 用）
 
-`routes` 是 `msg_type → Route` 的字典。本章 `model_call` 用 `Route.discovery` — Engine 按节点能力自动选：
+`engine.routes` 仅存**开发者自定义 msg_type** 的路由。`model_call` / `tool_exec` 的收件人由 Engine 从 `model` 和 `resources` 推导，**不经 `routes`**。
 
 ```python
 "model_call": Route.discovery(requirements=[("provider", "minimax")]),
 ```
 
-`Route.discovery(requirements=[...])` 的意思是："找一个节点，其 `capabilities` 里 `provider == "minimax"`，把 `model_call` 路由给它。" 后续 ch2/ch3 会用到另一种 — `Route.strict(ids=[...])` — 严格指定 NodeId（用于 `tool_exec`）。
+`Route.discovery` 查找 `capabilities` 匹配的节点。ch2/ch3 的 `Route.strict(ids=[...])` 用于 `tool_exec`。
 
 > 完整的 `Route` 语义与 Engine 消息流详见 [docs/api/reference/bus.md](../reference/bus.md) 与 [engine.md](../reference/engine.md)。
 
