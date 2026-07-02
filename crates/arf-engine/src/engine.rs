@@ -418,11 +418,15 @@ impl Engine {
     ) -> Result<serde_json::Value, RunError> {
         state.inc_turn();
 
-        // Engine only knows the model's explicit `tc.target`. If absent,
-        // broadcast `tool_exec` to all MCP nodes and let each MCP node
-        // decide whether to respond (per design intent: only the node that
-        // registered the tool responds — see `McpNode::dispatch` tool_exec arm).
-        let target = tc.target.clone();
+        // Engine routes tool_exec directly to the MCP node that owns
+        // this tool. Precedence: (1) model's explicit `tc.target` if
+        // provided, (2) BusGraph owner lookup, (3) broadcast as last
+        // resort (legacy). model_call / tool_exec are built-in actions —
+        // routing is Engine's job, no user config required.
+        let target = match tc.target.clone() {
+            Some(t) => Some(t),
+            None => find_tool_owner(&self.primary_bus, &tc.name),
+        };
         let tool_exec = ToolExec {
             correlation_id: Uuid::new_v4(),
             tool_name: tc.name.clone(),
@@ -683,6 +687,40 @@ pub(crate) fn collect_skills_cached(
 /// `{name, description, params_schema}`). Malformed entries (empty name,
 /// missing tools array) are silently skipped — never panic, never error.
 ///
+/// Find the MCP node that advertises a given tool name in its capabilities.
+/// Returns `Some(NodeId)` if exactly one MCP node owns it; `None` if no
+/// node owns it OR if multiple nodes claim ownership (ambiguous — return
+/// None to avoid wrong-node routing).
+///
+/// Used by `do_tool_turn` to route tool_exec directly to the owning node
+/// (avoids broadcast race when multiple MCP nodes are online).
+fn find_tool_owner(primary_bus: &Arc<arf_bus::Bus>, tool_name: &str) -> Option<NodeId> {
+    let graph = primary_bus.graph();
+    let mut owner: Option<NodeId> = None;
+    for node in &graph.nodes {
+        if node.node_type != "mcp" {
+            continue;
+        }
+        let owns = node
+            .capabilities
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .any(|t| t.get("name").and_then(|s| s.as_str()) == Some(tool_name))
+            })
+            .unwrap_or(false);
+        if owns {
+            if owner.is_some() {
+                // Ambiguous: multiple MCP nodes claim the same tool name.
+                return None;
+            }
+            owner = Some(node.node_id.clone());
+        }
+    }
+    owner
+}
+
 /// Discovery routes for `tool_exec*` are out of scope.
 fn collect_tools_from_routes(
     primary_bus: &Arc<arf_bus::Bus>,
