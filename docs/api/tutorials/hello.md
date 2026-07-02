@@ -21,6 +21,7 @@ from arf import (
     Bus, NodeId, Route,
     MiniMaxConfig, MiniMaxProvider,
     AgentConfig, EngineBuilder, EngineState,
+    ModelDecl, EngineConfig, ResourceSpec,
 )
 
 
@@ -32,12 +33,13 @@ async def main():
     await provider.connect_to_bus(bus=bus, node_id=NodeId("model/main"))
 
     # 2. 定义 agent：AgentConfig 是声明式骨架
+    #    model=ModelDecl(...) 声明用哪个 provider + 模型；
+    #    engine 自动从 model 推导 model_call 路由到对应节点，
+    #    不必再在 routes 里写 model_call。
     engine = await EngineBuilder.new(buses=[bus]).build(
         config=AgentConfig(
+            model=ModelDecl(provider="minimax", model_name="MiniMax-M2"),
             system_prompt_template="你是一个简洁的中文助手。",
-            routes={
-                "model_call": Route.discovery(requirements=[("provider", "minimax")]),
-            },
         ),
     )
 
@@ -65,10 +67,11 @@ unset MINIMAX_API_KEY              # 跑完立即清掉
 
 ```text
 out='北京是中华人民共和国的首都，是一座拥有三千多年建城史和八百多年建都史的历史文化名城，也是当代中国的政治、文化、国际交往和科技创新中心。'
-messages=3, turn_count=1
+messages=2, turn_count=1
 ```
 
-> 注：`messages=3` 是 user + assistant + 引擎内部条；`turn_count=1` 是 1 次模型调用。
+> 注：`messages=2` 是 user + assistant（系统提示词不计入 state.messages）；
+> `turn_count=1` 是 1 次模型调用。Phase 7 起 system prompt 仅注入到模型上下文，不持久化到 state.messages。
 
 跑通后回到下面三段，看每一行是干什么的。
 
@@ -118,8 +121,8 @@ AgentConfig(
     system_prompt_template="你是一个简洁的中文助手。",
     engine=EngineConfig(
         max_turns=10,
-        routes={  # 仅存自定义 msg_type（见 ch2+）；model_call 路由由 Engine 自动推导
-        },
+        # engine.routes 仅存自定义 msg_type（见 ch2+）；
+        # model_call 路由由 Engine 从 model 自动推导。
     ),
 )
 ```

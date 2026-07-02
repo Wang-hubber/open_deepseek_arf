@@ -45,6 +45,7 @@ from arf import (
     MiniMaxConfig, MiniMaxProvider,
     McpNode, RemoteConfig,
     AgentConfig, EngineBuilder, EngineState,
+    ModelDecl, EngineConfig, ResourceSpec,
 )
 
 
