@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ModelSpec, ResourceSpec, ToolSpec};
+use crate::{ModelDecl, ResourceSpec, ToolSpec};
 
 /// Declarative agent configuration — pure data, no behavior.
 ///
@@ -24,7 +24,7 @@ pub struct AgentConfig {
 
     /// Models in priority order. Engine picks the first one whose
     /// model node is online on the Bus. Must not be empty.
-    pub models: Vec<ModelSpec>,
+    pub models: Vec<ModelDecl>,
 
     /// Tools this agent may use, each with permission constraints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -61,7 +61,7 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SystemPromptEmpty => write!(f, "system_prompt must not be empty"),
-            Self::ModelsEmpty => write!(f, "models must contain at least one ModelSpec"),
+            Self::ModelsEmpty => write!(f, "models must contain at least one ModelDecl"),
             Self::AllowedPathsEmpty => {
                 write!(
                     f,
@@ -122,7 +122,7 @@ impl Default for AgentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModelSpec, ResourceSpec, ToolPermission, ToolSpec};
+    use crate::{ModelDecl, ResourceSpec, ToolPermission, ToolSpec};
     use serde_json;
 
     // ═══════════════════════════════════════════════════════════════
@@ -133,12 +133,14 @@ mod tests {
     fn minimal_valid_config() -> AgentConfig {
         AgentConfig {
             system_prompt: "You are helpful.".into(),
-            models: vec![ModelSpec {
+            models: vec![ModelDecl {
                 provider: "deepseek".into(),
                 model_name: "deepseek-flash".into(),
                 thinking_enabled: false,
                 temperature: None,
                 max_output_tokens: None,
+                endpoint: None,
+                api_key_env: None,
                 extra: serde_json::Value::Null,
             }],
             tools: vec![],
@@ -169,12 +171,14 @@ mod tests {
     // [构造] 含所有字段的完整配置正确存储
     #[test]
     fn agent_config_with_all_fields() {
-        let model = ModelSpec {
+        let model = ModelDecl {
             provider: "deepseek".into(),
             model_name: "deepseek-flash".into(),
             thinking_enabled: true,
             temperature: Some(0.7),
             max_output_tokens: Some(4096),
+            endpoint: None,
+            api_key_env: None,
             extra: serde_json::Value::Null,
         };
         let tool = ToolSpec {
@@ -243,12 +247,14 @@ mod tests {
     fn agent_config_full_serialization_roundtrip() {
         let config = AgentConfig {
             system_prompt: "You are an assistant.".into(),
-            models: vec![ModelSpec {
+            models: vec![ModelDecl {
                 provider: "deepseek".into(),
                 model_name: "deepseek-flash".into(),
                 thinking_enabled: true,
                 temperature: Some(0.5),
                 max_output_tokens: Some(8192),
+                endpoint: None,
+                api_key_env: None,
                 extra: serde_json::json!({"top_p": 0.95}),
             }],
             tools: vec![ToolSpec {

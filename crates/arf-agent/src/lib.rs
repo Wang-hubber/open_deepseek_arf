@@ -11,6 +11,6 @@ mod resource;
 mod tool;
 
 pub use config::{AgentConfig, ConfigError};
-pub use model::ModelSpec;
+pub use model::ModelDecl;
 pub use resource::ResourceSpec;
 pub use tool::{ToolPermission, ToolSpec};
