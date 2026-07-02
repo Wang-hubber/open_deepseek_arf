@@ -24,15 +24,14 @@ use crate::types::{
 /// Configuration for an Anthropic provider.
 #[derive(Debug, Clone)]
 pub struct AnthropicConfig {
-    /// API base URL. Default: "https://api.anthropic.com".
-    pub base_url: String,
+    /// 完整请求 URL（含 path，无隐式拼接）。
+    /// 例：`https://api.anthropic.com/v1/messages` 或
+    /// DeepSeek anthropic 兼容端点：`https://api.deepseek.com/anthropic`
+    pub endpoint: String,
     /// API key.
     pub api_key: String,
     /// Supported models (e.g., ["claude-sonnet-4-6", "claude-opus-4-7"]).
     pub models: Vec<String>,
-    /// API path appended to base_url. Default: "/v1/messages".
-    /// Set to "/anthropic" for DeepSeek Anthropic-compatible endpoint.
-    pub api_path: String,
     pub timeout_secs: u64,
     pub max_retries: u32,
 }
@@ -40,10 +39,9 @@ pub struct AnthropicConfig {
 impl AnthropicConfig {
     pub fn new(api_key: String, models: Vec<String>) -> Self {
         Self {
-            base_url: "https://api.anthropic.com".into(),
+            endpoint: "https://api.anthropic.com/v1/messages".into(),
             api_key,
             models,
-            api_path: "/v1/messages".into(),
             timeout_secs: 320,
             max_retries: 3,
         }
@@ -65,8 +63,8 @@ impl AnthropicProvider {
         Self { config, client }
     }
 
-    fn endpoint(&self) -> String {
-        format!("{}{}", self.config.base_url, self.config.api_path)
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
     }
 
     async fn send_request(&self, body: &Value) -> Result<String, ProviderError> {
