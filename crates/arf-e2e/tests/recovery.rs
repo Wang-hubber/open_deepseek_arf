@@ -21,7 +21,7 @@ use arf_core::{
     ActionMessage, Checkpoint, CheckpointRule, Message, MessageFilter, NodeId, NodeInfo,
     State, ToMatch,
 };
-use arf_engine::{AgentConfig, Engine, EngineBuilder, ModelConfig};
+use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl};
 use arf_model_adapter::{ModelAdapterNode, Provider};
 use async_trait::async_trait;
 use common::harness::ProviderKind;
@@ -161,40 +161,36 @@ async fn round_end_checkpoint_writes_file_and_returns() -> anyhow::Result<()> {
         cid: Uuid::new_v4(),
     };
     let cfg = AgentConfig {
-        agent_id: "ckpt".into(),
-        model_config: ModelConfig {
+        model: ModelDecl {
             provider: "scripted".into(),
-            model: "scripted-v1".into(),
+            model_name: "scripted-v1".into(),
+            ..Default::default()
         },
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
-        max_turns: 5,
-        tool_timeout_ms: Some(2000),
-        permissions: Default::default(),
-        routes: {
-            let mut r = std::collections::HashMap::new();
-            r.insert(
-                "model_call".into(),
-                arf_core::Route::strict(vec![NodeId::new("model/checkpoint-test")]),
-            );
-            r.insert(
-                "app_checkpoint".into(),
-                arf_core::Route::strict(vec![cp.id().clone()]),
-            );
-            r
+        allowed_paths: vec![],
+        resources: vec![],
+        engine: EngineConfig {
+            // model_call auto-derived from ModelDecl.provider via Registry.resolve_model.
+            // app_checkpoint is a custom msg_type → keep Strict route here.
+            routes: {
+                let mut r = std::collections::HashMap::new();
+                r.insert(
+                    "app_checkpoint".into(),
+                    arf_core::Route::strict(vec![cp.id().clone()]),
+                );
+                r
+            },
+            checkpoint_rules: vec![CheckpointRule::new(
+                "round_end_cp",
+                Checkpoint::RoundEnd,
+                |_| true,
+                move |_| Box::new(cp_action_2.clone()),
+            )],
+            max_turns: 5,
+            tool_timeout_ms: Some(2000),
+            ..Default::default()
         },
-        checkpoint_rules: vec![CheckpointRule::new(
-            "round_end_cp",
-            Checkpoint::RoundEnd,
-            |_| true,
-            move |_| Box::new(cp_action_2.clone()),
-        )],
-        processors: Default::default(),
-        on_member_failed: None,
-        tools_include: None,
-        tools_exclude: vec![],
-        skills_include: None,
-        skills_exclude: vec![],
     };
     let mut engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await?;
     let mut state = State::new();
