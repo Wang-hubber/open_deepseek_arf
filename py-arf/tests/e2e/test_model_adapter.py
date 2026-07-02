@@ -14,9 +14,9 @@ LIVE_TIMEOUT = 30.0
 
 
 def test_minimax_config_default():
-    """[构造] MiniMaxConfig.default() has correct base URL and model."""
+    """[构造] MiniMaxConfig.default() has correct endpoint and model."""
     cfg = MiniMaxConfig.default()
-    assert cfg.base_url == "https://api.minimaxi.com/v1"
+    assert cfg.endpoint == "https://api.minimaxi.com/v1/chat/completions"
     assert "MiniMax-M3" in cfg.models
 
 

@@ -257,8 +257,7 @@ mod anthropic_format {
             api_key(),
             vec!["deepseek-v4-flash".into()],
         );
-        config.base_url = "https://api.deepseek.com".into();
-        config.api_path = "/anthropic/messages".into();
+        config.endpoint = "https://api.deepseek.com/anthropic/messages".into();
         AnthropicProvider::new(config)
     }
 
