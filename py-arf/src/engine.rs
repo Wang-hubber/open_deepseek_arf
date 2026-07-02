@@ -35,48 +35,113 @@ pub struct PyAgentConfig {
 
 #[pymethods]
 impl PyAgentConfig {
+    /// Construct an AgentConfig.
+    ///
+    /// Two equivalent forms are accepted (both pre-Phase-7 flat form and
+    /// Phase-7 nested form):
+    ///
+    ///   # nested (preferred — matches Rust struct shape):
+    ///   AgentConfig(
+    ///       model=ModelDecl(provider="minimax", model_name="MiniMax-M3"),
+    ///       engine=EngineConfig(max_turns=10, routes={"model_call": Route.strict(...)}),
+    ///       resources=[ResourceSpec(resource_name="tools", node_type="mcp")],
+    ///       system_prompt_template="...",
+    ///   )
+    ///
+    ///   # flat (kept for back-compat with e2e tests):
+    ///   AgentConfig(
+    ///       provider="minimax", model="MiniMax-M3",
+    ///       max_turns=10, routes={"model_call": Route.strict(...)},
+    ///   )
+    ///
+    /// If both forms are supplied for the same field, the nested form wins.
     #[new]
     #[pyo3(signature = (
-        provider = "deepseek".to_string(),
-        model = "deepseek-v4-flash".to_string(),
+        provider = None,
+        model = None,
         endpoint = None,
         api_key_env = None,
         system_prompt_template = "You are a helpful assistant.".to_string(),
+        initial_memory = None,
+        allowed_paths = None,
         resources = None,
-        max_turns = 10u32,
+        max_turns = None,
         tool_timeout_ms = None,
         routes = None,
         checkpoint_rules = None,
+        engine = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        provider: String,
-        model: String,
+        py: Python<'_>,
+        provider: Option<String>,
+        model: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
         endpoint: Option<String>,
         api_key_env: Option<String>,
         system_prompt_template: String,
+        initial_memory: Option<Vec<String>>,
+        allowed_paths: Option<Vec<String>>,
         resources: Option<Vec<PyResourceSpec>>,
-        max_turns: u32,
+        max_turns: Option<u32>,
         tool_timeout_ms: Option<u64>,
         routes: Option<std::collections::HashMap<String, PyRoute>>,
         checkpoint_rules: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
+        engine: Option<&pyo3::Bound<'_, pyo3::PyAny>>,
     ) -> PyResult<Self> {
-        let routes_map: std::collections::HashMap<String, Route> = match routes {
-            Some(m) => m.into_iter().map(|(k, v)| (k, v.inner)).collect(),
-            None => std::collections::HashMap::new(),
-        };
-        let rules: Vec<CoreCheckpointRule> = match checkpoint_rules {
-            Some(obj) => {
-                let list = obj.cast::<pyo3::types::PyList>()?;
-                let mut out = Vec::with_capacity(list.len());
-                for item in list.iter() {
-                    let rule: PyRef<PyCheckpointRule> = item.extract()?;
-                    out.push(rule.into_rust_rule());
+        // ── Resolve model: nested ModelDecl > flat (provider, model) ──
+        let (provider_final, model_name_final, endpoint_final, api_key_env_final) =
+            if let Some(m) = model {
+                if let Ok(decl) = m.extract::<PyModelDecl>() {
+                    let d = decl.inner.clone();
+                    (d.provider, d.model_name, d.endpoint, d.api_key_env)
+                } else if let Ok(s) = m.extract::<String>() {
+                    let p = provider.unwrap_or_else(|| "deepseek".to_string());
+                    (p, s, endpoint, api_key_env)
+                } else {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "model must be str (model_name) or ModelDecl instance",
+                    ));
                 }
-                out
+            } else {
+                let p = provider.unwrap_or_else(|| "deepseek".to_string());
+                let mn = "deepseek-v4-flash".to_string();
+                (p, mn, endpoint, api_key_env)
+            };
+
+        // ── Resolve engine: nested EngineConfig > flat (max_turns, routes, ...) ──
+        let engine_config = if let Some(ec) = engine {
+            // PyEngineConfig doesn't implement Clone (inner EngineConfig
+            // holds Box<dyn Fn> in CheckpointRule), so we can't extract
+            // by value. Instead, pull each field via a Python-side
+            // method, then build a fresh EngineConfig.
+            build_engine_config_from_py(ec)?
+        } else {
+            let routes_map: std::collections::HashMap<String, Route> = match routes {
+                Some(m) => m.into_iter().map(|(k, v)| (k, v.inner)).collect(),
+                None => std::collections::HashMap::new(),
+            };
+            let rules: Vec<CoreCheckpointRule> = match checkpoint_rules {
+                Some(obj) => {
+                    let list = obj.cast::<pyo3::types::PyList>()?;
+                    let mut out = Vec::with_capacity(list.len());
+                    for item in list.iter() {
+                        let rule: PyRef<PyCheckpointRule> = item.extract()?;
+                        out.push(rule.into_rust_rule());
+                    }
+                    out
+                }
+                None => vec![],
+            };
+            let mut ec = EngineConfig::default();
+            ec.max_turns = max_turns.unwrap_or(10);
+            if let Some(t) = tool_timeout_ms {
+                ec.tool_timeout_ms = Some(t);
             }
-            None => vec![],
+            ec.routes = routes_map;
+            ec.checkpoint_rules = rules;
+            ec
         };
+
         let res_specs: Vec<arf_agent::ResourceSpec> = resources
             .unwrap_or_default()
             .into_iter()
@@ -84,23 +149,17 @@ impl PyAgentConfig {
             .collect();
         let cfg = AgentConfig {
             model: arf_agent::ModelDecl {
-                provider,
-                model_name: model,
-                endpoint,
-                api_key_env,
+                provider: provider_final,
+                model_name: model_name_final,
+                endpoint: endpoint_final,
+                api_key_env: api_key_env_final,
                 ..Default::default()
             },
             resources: res_specs,
             system_prompt_template,
-            initial_memory: vec![],
-            allowed_paths: vec![],
-            engine: EngineConfig {
-                routes: routes_map,
-                checkpoint_rules: rules,
-                max_turns,
-                tool_timeout_ms,
-                ..Default::default()
-            },
+            initial_memory: initial_memory.unwrap_or_default(),
+            allowed_paths: allowed_paths.unwrap_or_default(),
+            engine: engine_config,
         };
         Ok(Self {
             inner: std::sync::Arc::new(std::sync::Mutex::new(Some(cfg))),
