@@ -94,12 +94,12 @@ ARF Python 绑定导出 4 个 Config + Provider 对。每对都通过 `from_env(
 
 理论上 ARF 可以接入任何实现 **OpenAI Chat Completions 协议** 或 **Anthropic Messages 协议** 的模型服务：
 
-- **OpenAI 兼容**（推荐用于国产 / 自部署模型）：用 `OpenAIConfig` + 自定义 `base_url`。
-  - 阿里百炼兼容模式：`https://dashscope.aliyuncs.com/compatible-mode/v1`
-  - Moonshot：`https://api.moonshot.cn/v1`
-  - vLLM / Ollama 自部署：`http://localhost:8000/v1` 等
-- **Anthropic 兼容**：用 `AnthropicConfig` + 自定义 `base_url`（参考 [Anthropic API 文档](https://docs.anthropic.com/)）。
-  - DeepSeek Anthropic 兼容端点：`base_url="https://api.deepseek.com"`, `api_path="/anthropic"`
+- **OpenAI 兼容**（推荐用于国产 / 自部署模型）：用 `OpenAIConfig` + 自定义 `endpoint`（完整 URL）。
+  - 阿里百炼兼容模式：`https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
+  - Moonshot：`https://api.moonshot.cn/v1/chat/completions`
+  - vLLM / Ollama 自部署：`http://localhost:8000/v1/chat/completions` 等
+- **Anthropic 兼容**：用 `AnthropicConfig` + 自定义 `endpoint`（完整 URL，参考 [Anthropic API 文档](https://docs.anthropic.com/)）。
+  - DeepSeek Anthropic 兼容端点：`endpoint="https://api.deepseek.com/anthropic"`
 
 由于各服务具体支持的 `models` 列表不同，直接构造时需明确传入 `models=[...]`。
 
@@ -193,7 +193,7 @@ out = await engine.run(state=state, user_input="用一句话介绍北京。")
 ### 公共注意
 
 - `OpenAIProvider` 报 `provider="openai"`。多 OpenAI 兼容厂商共存时（如同时挂 DeepSeek + 阿里百炼），需用 `Route.strict(ids=[NodeId(...)])` 给每个 provider 唯一 NodeId；不要用 `Route.discovery`，否则多 OpenAI 节点会全匹配
-- `base_url` 通常**不含** `/v1` — OpenAIProvider 会自动追加 `/v1/chat/completions`。如 `base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"` 会拼出 `/v1/v1/chat/completions` → 404
+- 早期版本曾有 `base_url` 字段 + 隐式拼接 `{/v1/chat/completions}`；2026-07-02 起改为 `endpoint`（完整 URL），无拼接 — 见 [explanation/上下文拼装机制.md](../../explanation/上下文拼装机制.md) 的"不变量 & 限制"段
 - `DeepSeekProvider` 对 `reasoning_content` 块有专门处理；`OpenAIProvider` 走兼容模式也能识别但只把内容当主回答
 
 ### DeepSeek — 用 `DeepSeekProvider`（推荐）
@@ -238,14 +238,14 @@ out (34 chars): '北京是中华人民共和国的首都，是一座融合古老
 
 ### DeepSeek — 用 `OpenAIProvider`（OpenAI 兼容模式）
 
-`OpenAIConfig.from_env()` 读 `OPENAI_API_KEY`，但用 DeepSeek 时需手动指定 `base_url`：
+`OpenAIConfig` 接受完整 URL 作为 `endpoint`，不拼接路径。用 DeepSeek 时显式写完整 endpoint：
 
 ```python
 from arf import OpenAIConfig, OpenAIProvider
 
 provider = OpenAIProvider(config=OpenAIConfig(
     api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
+    endpoint="https://api.deepseek.com/v1/chat/completions",  # 完整 URL
     models=["deepseek-chat"],
 ))
 await provider.connect_to_bus(bus=bus, node_id=NodeId("model/deepseek"))
@@ -260,14 +260,14 @@ out (30 chars): '北京是中国的首都，是一座融合古老历史与现代
 
 ### 阿里百炼 — 用 `OpenAIProvider`（兼容模式）
 
-阿里百炼兼容 OpenAI 协议但 base_url 路径特殊：**不含 `/v1`**，否则 404。
+阿里百炼兼容 OpenAI 协议，直接传完整 endpoint：
 
 ```python
 from arf import OpenAIConfig, OpenAIProvider
 
 provider = OpenAIProvider(config=OpenAIConfig(
     api_key=os.environ["DASHSCOPE_API_KEY"],
-    base_url="https://dashscope.aliyuncs.com/compatible-mode",  # 注意：无 /v1
+    endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",  # 完整 URL
     models=["qwen3.7-max-preview"],  # 有免费额度
 ))
 await provider.connect_to_bus(bus=bus, node_id=NodeId("model/bailian"))
@@ -294,7 +294,7 @@ out (41 chars): '北京是中国的首都，一座完美融合了深厚历史底
 from arf import AnthropicConfig, AnthropicProvider
 
 provider = AnthropicProvider(config=AnthropicConfig.from_env())
-# 默认 base_url="https://api.anthropic.com", api_path="/v1/messages"
+# 默认 endpoint="https://api.anthropic.com/v1/messages"
 # Route.discovery 同步改：("provider", "anthropic")
 ```
 
@@ -302,15 +302,14 @@ provider = AnthropicProvider(config=AnthropicConfig.from_env())
 
 ### DeepSeek Anthropic 兼容端点
 
-`AnthropicConfig` 支持 `api_path` 覆盖，可访问 DeepSeek 提供的 `/anthropic` 端点：
+`AnthropicConfig.endpoint` 直接传 DeepSeek 提供的 `/anthropic` 端点（完整 URL）：
 
 ```python
 from arf import AnthropicConfig, AnthropicProvider
 
 provider = AnthropicProvider(config=AnthropicConfig(
     api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
-    api_path="/anthropic",
+    endpoint="https://api.deepseek.com/anthropic",  # 完整 URL
     models=["deepseek-chat"],
 ))
 # Route.discovery 同步改：("provider", "anthropic")
