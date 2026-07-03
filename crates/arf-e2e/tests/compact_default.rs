@@ -14,7 +14,7 @@ mod common;
 
 use std::sync::Arc;
 
-use arf_compactor::{CompactResult, Compactor, Summarizer};
+use arf_compactor::{CompactResult, CompactionRequest, Compactor, Summarizer};
 use arf_core::{ModelMessage, State};
 use async_trait::async_trait;
 
@@ -29,9 +29,10 @@ struct JoinSummarizer;
 impl Summarizer for JoinSummarizer {
     async fn summarize(
         &self,
-        messages: &[ModelMessage],
+        req: CompactionRequest<'_>,
     ) -> Result<String, arf_compactor::CompactError> {
-        Ok(messages
+        Ok(req
+            .messages
             .iter()
             .map(|m| m.content.clone())
             .collect::<Vec<_>>()
@@ -48,9 +49,10 @@ struct PrefixSummarizer {
 impl Summarizer for PrefixSummarizer {
     async fn summarize(
         &self,
-        messages: &[ModelMessage],
+        req: CompactionRequest<'_>,
     ) -> Result<String, arf_compactor::CompactError> {
-        let body = messages
+        let body = req
+            .messages
             .iter()
             .map(|m| format!("[{}] {}", m.role, m.content))
             .collect::<Vec<_>>()

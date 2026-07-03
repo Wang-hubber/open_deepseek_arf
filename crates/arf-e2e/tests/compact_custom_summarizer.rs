@@ -14,7 +14,7 @@ mod common;
 
 use std::sync::Arc;
 
-use arf_compactor::{CompactError, Compactor, Summarizer};
+use arf_compactor::{CompactError, CompactionRequest, Compactor, Summarizer};
 use arf_core::{ModelMessage, State};
 use async_trait::async_trait;
 
@@ -30,9 +30,10 @@ struct TruncateSummarizer {
 impl Summarizer for TruncateSummarizer {
     async fn summarize(
         &self,
-        messages: &[ModelMessage],
+        req: CompactionRequest<'_>,
     ) -> Result<String, CompactError> {
-        let body = messages
+        let body = req
+            .messages
             .iter()
             .map(|m| m.content.as_str())
             .collect::<Vec<_>>()
@@ -51,25 +52,15 @@ struct BulletPointSummarizer;
 impl Summarizer for BulletPointSummarizer {
     async fn summarize(
         &self,
-        messages: &[ModelMessage],
+        req: CompactionRequest<'_>,
     ) -> Result<String, CompactError> {
-        // Compactor 传 2 条 messages：system (instruction) + user ("[role] content\n...").
-        // 我们解析 user message 的 content（"[role] content" 格式，compactor/lib.rs:114）。
-        let user_msg = messages
+        // F-015: the summarizer now receives the RAW conversation directly, so
+        // it formats each message as "• role: content" without reverse-parsing
+        // a pre-baked prompt.
+        let bullets: Vec<String> = req
+            .messages
             .iter()
-            .find(|m| m.role == "user")
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        let bullets: Vec<String> = user_msg
-            .lines()
-            .filter_map(|line| {
-                // 形如 "[user] message 0" → ("user", "message 0")
-                let stripped = line.strip_prefix('[')?;
-                let end = stripped.find(']')?;
-                let role = &stripped[..end];
-                let content = stripped[end + 1..].trim();
-                Some(format!("• {role}: {content}"))
-            })
+            .map(|m| format!("• {}: {}", m.role, m.content))
             .collect();
         Ok(bullets.join("\n"))
     }
@@ -87,7 +78,7 @@ struct ErrorSummarizer {
 impl Summarizer for ErrorSummarizer {
     async fn summarize(
         &self,
-        _messages: &[ModelMessage],
+        _req: CompactionRequest<'_>,
     ) -> Result<String, CompactError> {
         Err(CompactError::Llm(self.msg.clone()))
     }

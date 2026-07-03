@@ -46,11 +46,28 @@ impl CompactResult {
     }
 }
 
+/// Request handed to a [`Summarizer`]: the compaction `instruction` (from
+/// `Compactor::with_instruction`, or the default) and the **raw** conversation
+/// `messages` to summarize — kept as separate fields so the summarizer decides
+/// how to combine them into an LLM prompt.
+///
+/// Phase 9 F-015: the previous trait passed a single `messages_to_summarize`
+/// slice that the Compactor had already pre-baked into `[system(instruction),
+/// user(formatted transcript)]`. That signature was misleading — the slice was
+/// not the raw conversation. `CompactionRequest` separates the two concerns.
+pub struct CompactionRequest<'a> {
+    /// The summarization instruction (system-prompt guidance).
+    pub instruction: String,
+    /// The raw conversation messages to summarize (untouched by the Compactor).
+    pub messages: &'a [ModelMessage],
+}
+
 /// LLM call interface for the Compactor. The default implementation routes
 /// through the bus via the App; tests can use a mock.
 #[async_trait]
 pub trait Summarizer: Send + Sync {
-    async fn summarize(&self, messages_to_summarize: &[ModelMessage]) -> Result<String, CompactError>;
+    /// Summarize the conversation in `req.messages` following `req.instruction`.
+    async fn summarize(&self, req: CompactionRequest<'_>) -> Result<String, CompactError>;
 }
 
 /// Default instruction prepended to the summarization prompt.
@@ -103,22 +120,15 @@ impl Compactor {
         let to_summarize: Vec<ModelMessage> = state.messages[..split].to_vec();
         let tail: Vec<ModelMessage> = state.messages[split..].to_vec();
 
-        // Build a synthesized system+user message for the summarizer
-        let user_msg = ModelMessage::new(
-            "user",
-            format!(
-                "Please summarize the following conversation ({} messages):\n\n{}",
-                to_summarize.len(),
-                to_summarize
-                    .iter()
-                    .map(|m| format!("[{}] {}", m.role, m.content))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-        );
-        let mut messages_for_llm = vec![ModelMessage::new("system", &self.instruction), user_msg];
-        let summary = self.summarizer.summarize(&messages_for_llm).await?;
-        messages_for_llm.clear();
+        // Hand the raw conversation + instruction to the summarizer separately;
+        // it owns how to turn them into an LLM prompt (F-015).
+        let summary = self
+            .summarizer
+            .summarize(CompactionRequest {
+                instruction: self.instruction.clone(),
+                messages: &to_summarize,
+            })
+            .await?;
 
         // Build new state.messages
         let mut new_msgs: Vec<ModelMessage> = Vec::with_capacity(1 + tail.len());
@@ -227,13 +237,33 @@ mod tests {
     impl Summarizer for ConcatenateSummarizer {
         async fn summarize(
             &self,
-            messages_to_summarize: &[ModelMessage],
+            req: CompactionRequest<'_>,
         ) -> Result<String, CompactError> {
-            Ok(messages_to_summarize
+            Ok(req
+                .messages
                 .iter()
                 .map(|m| m.content.clone())
                 .collect::<Vec<_>>()
                 .join(" | "))
+        }
+    }
+
+    /// Records the request it received so tests can assert on it.
+    struct RecordingSummarizer {
+        seen_instruction: std::sync::Mutex<String>,
+        seen_contents: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl Summarizer for RecordingSummarizer {
+        async fn summarize(
+            &self,
+            req: CompactionRequest<'_>,
+        ) -> Result<String, CompactError> {
+            *self.seen_instruction.lock().unwrap() = req.instruction.clone();
+            *self.seen_contents.lock().unwrap() =
+                req.messages.iter().map(|m| m.content.clone()).collect();
+            Ok("summary".into())
         }
     }
 
@@ -396,5 +426,37 @@ mod tests {
         assert!(s.messages[1].content.contains("message 7"));
         assert!(s.messages[2].content.contains("message 8"));
         assert!(s.messages[3].content.contains("message 9"));
+    }
+
+    // [方法] Summarizer 收到 instruction 与 raw messages 分开（F-015）
+    #[tokio::test]
+    async fn summarizer_receives_instruction_and_messages_separately() {
+        let rec = Arc::new(RecordingSummarizer {
+            seen_instruction: std::sync::Mutex::new(String::new()),
+            seen_contents: std::sync::Mutex::new(Vec::new()),
+        });
+        let c = Compactor::new(rec.clone()).with_instruction("MY-CUSTOM-INSTRUCTION");
+        let mut s = make_state(6); // messages "message 0".."message 5"
+
+        // keep_tail=2 → summarize the first 4 raw messages.
+        c.compact(&mut s, 2).await.unwrap();
+
+        // instruction is the injected value, verbatim — not baked into messages.
+        assert_eq!(
+            *rec.seen_instruction.lock().unwrap(),
+            "MY-CUSTOM-INSTRUCTION"
+        );
+        // messages are the RAW conversation (no synthesized "[role] ..." prompt,
+        // no system(instruction) message prepended).
+        let contents = rec.seen_contents.lock().unwrap().clone();
+        assert_eq!(
+            contents,
+            vec![
+                "message 0".to_string(),
+                "message 1".to_string(),
+                "message 2".to_string(),
+                "message 3".to_string(),
+            ]
+        );
     }
 }
