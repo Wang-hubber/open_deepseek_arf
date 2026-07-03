@@ -18,6 +18,7 @@ use std::time::Duration;
 use arf_bus::Bus;
 use arf_core::{CheckpointRule, Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
 use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl, ResourceSpec, RunError};
+use arf_session::SessionStore;
 use arf_model_adapter::{ModelAdapterNode, Provider};
 use arf_mcp::McpNode;
 use serde_json::json;
@@ -48,6 +49,8 @@ pub struct E2EHarnessBuilder {
     extra_routes: HashMap<String, Route>,
     /// Checkpoint rules to register on the engine (Phase 9 task 9.2.3).
     checkpoint_rules: Vec<CheckpointRule>,
+    /// Optional session store for snapshot persistence (Phase 9 task 9.2.4).
+    session_store: Option<Arc<dyn SessionStore>>,
     tool_timeout_ms: Option<u64>,
     /// Optional pre-created TempDir — used so the caller can write tool
     /// files into the same directory the harness will scan for MCP.
@@ -69,6 +72,7 @@ impl E2EHarnessBuilder {
             cancel: None,
             extra_routes: HashMap::new(),
             checkpoint_rules: vec![],
+            session_store: None,
             tool_timeout_ms: None,
             tmpdir: None,
             inject_tool_exec_responder: true,
@@ -102,6 +106,14 @@ impl E2EHarnessBuilder {
     /// Register checkpoint rules on the engine (Phase 9 task 9.2.3).
     pub fn with_checkpoint_rules(mut self, rules: Vec<CheckpointRule>) -> Self {
         self.checkpoint_rules = rules;
+        self
+    }
+
+    /// Attach a session store for checkpoint snapshot persistence
+    /// (Phase 9 task 9.2.4). Engine will call `store.snapshot(...)` at
+    /// each of the 5 Checkpoint positions during run.
+    pub fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
         self
     }
 
@@ -139,6 +151,7 @@ impl E2EHarnessBuilder {
             self.cancel,
             self.extra_routes,
             self.checkpoint_rules,
+            self.session_store,
             self.tool_timeout_ms,
             self.tmpdir,
             self.inject_tool_exec_responder,
@@ -182,6 +195,7 @@ impl E2EHarness {
         cancel: Option<CancellationToken>,
         extra_routes: HashMap<String, Route>,
         checkpoint_rules: Vec<CheckpointRule>,
+        session_store: Option<Arc<dyn SessionStore>>,
         tool_timeout_ms: Option<u64>,
         tmpdir: Option<TempDir>,
         inject_tool_exec_responder: bool,
@@ -329,7 +343,11 @@ impl E2EHarness {
             });
         }
 
-        let engine = EngineBuilder::new(vec![bus.clone()]).build(cfg).await?;
+        let mut eb = EngineBuilder::new(vec![bus.clone()]);
+        if let Some(store) = session_store {
+            eb = eb.with_session_store(store);
+        }
+        let engine = eb.build(cfg).await?;
 
         Ok(Self {
             bus,
