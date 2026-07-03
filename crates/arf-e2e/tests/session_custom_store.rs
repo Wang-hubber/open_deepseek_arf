@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arf_session::{
-    CheckpointSnapshot, SessionData, SessionError, SessionStore,
+    CheckpointSnapshot, SessionData, SessionError, SessionStore, SnapshotEffects,
 };
 use async_trait::async_trait;
 use common::harness::{E2EHarness, ProviderKind};
@@ -92,20 +92,28 @@ impl SessionStore for InMemoryStore {
         session_id: &str,
         state: &arf_core::State,
         snapshot: &CheckpointSnapshot,
-    ) -> Result<(), SessionError> {
+    ) -> Result<SnapshotEffects, SessionError> {
         let mut map = self.sessions.lock().unwrap();
         let Some(data) = map.get_mut(session_id) else {
             return Err(SessionError::NotFound(session_id.into()));
         };
-        // 模拟 SqliteSessionStore 的 UPDATE sessions.state_json 副作用（session/lib.rs:409-414）
+        // 4 side effects (see SessionStore::snapshot doc):
+        // 2. UPDATE state_json, 3. UPDATE updated_at, 4. force status=interrupted
+        let updated_at = chrono::Utc::now();
         data.state = state.clone();
-        data.meta.updated_at = chrono::Utc::now();
+        data.meta.updated_at = updated_at;
+        data.meta.status = arf_session::SessionStatus::Interrupted;
         drop(map);
+        // 1. write checkpoint row — INSERT OR REPLACE semantics (same captured_at).
         let mut cps = self.checkpoints.lock().unwrap();
-        // 模拟 SqliteSessionStore 的 `INSERT OR REPLACE` 语义（同 captured_at 覆盖）
         cps.retain(|(sid, c)| !(sid == session_id && c.captured_at == snapshot.captured_at));
         cps.push((session_id.to_string(), snapshot.clone()));
-        Ok(())
+        Ok(SnapshotEffects {
+            checkpoint_written: snapshot.captured_at,
+            state_updated: true,
+            updated_at,
+            status_forced: arf_session::SessionStatus::Interrupted,
+        })
     }
 }
 
@@ -280,7 +288,7 @@ impl SessionStore for RecordingStore {
         sid: &str,
         state: &arf_core::State,
         snapshot: &CheckpointSnapshot,
-    ) -> Result<(), SessionError> {
+    ) -> Result<SnapshotEffects, SessionError> {
         *self.snapshot_count.lock().unwrap() += 1;
         self.captured_kinds.lock().unwrap().push(snapshot.checkpoint);
         self.inner.snapshot(sid, state, snapshot).await
@@ -313,4 +321,66 @@ async fn custom_recording_store_counts_snapshot_calls() {
     assert_eq!(kinds[1], arf_core::Checkpoint::AfterModelCall);
     assert_eq!(kinds[2], arf_core::Checkpoint::RoundEnd);
     println!("[custom/rec] 3 fires in order BMC → AMC → RE ✓");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FailingSnapshotStore — snapshot() 永远失败（F-012 abort-on-failure）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// A store that exists/saves normally but fails every snapshot() — used to
+/// verify the Engine aborts the round instead of silently continuing.
+struct FailingSnapshotStore {
+    inner: InMemoryStore,
+}
+
+#[async_trait]
+impl SessionStore for FailingSnapshotStore {
+    async fn list(&self) -> Result<Vec<arf_session::SessionMeta>, SessionError> {
+        self.inner.list().await
+    }
+    async fn load(&self, sid: &str) -> Result<Option<SessionData>, SessionError> {
+        self.inner.load(sid).await
+    }
+    async fn save(&self, data: &SessionData) -> Result<(), SessionError> {
+        self.inner.save(data).await
+    }
+    async fn delete(&self, sid: &str) -> Result<(), SessionError> {
+        self.inner.delete(sid).await
+    }
+    async fn snapshot(
+        &self,
+        _sid: &str,
+        _state: &arf_core::State,
+        _snapshot: &CheckpointSnapshot,
+    ) -> Result<SnapshotEffects, SessionError> {
+        Err(SessionError::Corrupt("simulated snapshot failure".into()))
+    }
+}
+
+// [方法] snapshot() 失败 → Engine 当前 round abort（F-012）
+#[tokio::test]
+async fn snapshot_failure_aborts_round() {
+    let store = Arc::new(FailingSnapshotStore {
+        inner: InMemoryStore::new(),
+    });
+    let store_dyn: Arc<dyn SessionStore> = store.clone();
+
+    let mut h = E2EHarness::builder(ProviderKind::Mock(simple_mock("never")))
+        .with_session_store(store_dyn)
+        .build()
+        .await
+        .expect("harness build");
+
+    // Pre-save so fail-fast passes; the failure must come from snapshot().
+    let sid = h.engine.session_id().to_string();
+    store.save(&make_data(&sid)).await.expect("pre-save");
+
+    let err = h.run_react("hi").await.expect_err("run must abort");
+    match err {
+        arf_engine::RunError::SnapshotFailed { session_id, reason } => {
+            assert_eq!(session_id, sid);
+            assert!(reason.contains("simulated snapshot failure"), "reason: {reason}");
+        }
+        other => panic!("expected SnapshotFailed, got {other:?}"),
+    }
 }

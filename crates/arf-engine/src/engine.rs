@@ -184,25 +184,32 @@ impl Engine {
         reg.dispatch(&ctx, msg)
     }
 
-    /// Phase 8 task F5: snapshot current state to the configured store.
-    /// Called automatically at each of the 5 Checkpoint positions in run().
-    /// Errors are logged but never propagated (persistence is best-effort).
-    pub fn snapshot_if_configured(&self, state: &State, checkpoint: Checkpoint) {
+    /// Phase 8 task F5 / Phase 9 F-012: snapshot current state to the configured
+    /// store. Called at each of the 5 Checkpoint positions in run().
+    ///
+    /// Unlike the earlier best-effort fire-and-forget version, this awaits the
+    /// store write and propagates failure: a failed snapshot aborts the current
+    /// round (checkpoints are the replay contract — silently continuing would
+    /// leave the persisted session incomplete).
+    pub async fn snapshot_if_configured(
+        &self,
+        state: &State,
+        checkpoint: Checkpoint,
+    ) -> Result<(), RunError> {
         if let Some(store) = &self.session_store {
             let snap = arf_session::CheckpointSnapshot::new(
                 checkpoint,
                 state.over_view.turn_count,
             );
-            // Best-effort: spawn a task to avoid blocking the run.
-            let store = store.clone();
-            let sid = self.session_id.clone();
-            let state_clone = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = store.snapshot(&sid, &state_clone, &snap).await {
-                    eprintln!("[arf-engine] snapshot error: {e}");
-                }
-            });
+            store
+                .snapshot(&self.session_id, state, &snap)
+                .await
+                .map_err(|e| RunError::SnapshotFailed {
+                    session_id: self.session_id.clone(),
+                    reason: e.to_string(),
+                })?;
         }
+        Ok(())
     }
 
     /// 完整 ReAct 主循环（6.4）+ 5 Checkpoint 插入（6.5）。
@@ -229,6 +236,23 @@ impl Engine {
         user_input: String,
         cancel: CancellationToken,
     ) -> Result<String, RunError> {
+        // Phase 9 F-012: fail fast if a session store is configured but the
+        // session was never pre-saved — otherwise every checkpoint snapshot
+        // would silently fail against a NotFound session.
+        if let Some(store) = &self.session_store {
+            let exists = store.exists(&self.session_id).await.map_err(|e| {
+                RunError::SnapshotFailed {
+                    session_id: self.session_id.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+            if !exists {
+                return Err(RunError::SessionNotPreSaved {
+                    session_id: self.session_id.clone(),
+                });
+            }
+        }
+
         self.prepare_round(state, &user_input);
 
         loop {
@@ -325,9 +349,9 @@ impl Engine {
         if cancel.is_cancelled() {
             return Err(RunError::Stopped);
         }
-        // Phase 8 task F5: snapshot state at each Checkpoint. Errors are
-        // logged but do not abort the run (persistence is best-effort).
-        self.snapshot_if_configured(state, trigger);
+        // Phase 8 task F5 / Phase 9 F-012: snapshot state at each Checkpoint.
+        // A failed snapshot aborts the round (no longer best-effort).
+        self.snapshot_if_configured(state, trigger).await?;
         if self.config.engine.checkpoint_rules.is_empty() {
             return Ok(());
         }

@@ -148,6 +148,25 @@ pub enum SessionError {
 
 // ── SessionStore trait ───────────────────────────────────────────────
 
+/// The four persistence side effects that a spec-compliant `snapshot()` MUST
+/// perform. Returned by [`SessionStore::snapshot`] so callers (and custom impl
+/// authors) can see exactly what changed — the trait previously said only
+/// "append a checkpoint" while `SqliteSessionStore` silently also rewrote
+/// `state_json`, bumped `updated_at`, and forced `status='interrupted'`
+/// (Phase 9 F-014).
+#[derive(Debug, Clone)]
+pub struct SnapshotEffects {
+    /// 1. `captured_at` of the checkpoint row that was written (its PK component).
+    pub checkpoint_written: DateTime<Utc>,
+    /// 2. Whether `sessions.state_json` was refreshed to the latest `state`.
+    pub state_updated: bool,
+    /// 3. The new `sessions.updated_at` timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// 4. The status forced on the session — always [`SessionStatus::Interrupted`]
+    ///    (the kill-signal marker for replay-on-restart).
+    pub status_forced: SessionStatus,
+}
+
 /// Abstract session persistence. Implementations: [`SqliteSessionStore`].
 /// Engine interacts via this trait, not the concrete type.
 #[async_trait]
@@ -159,21 +178,48 @@ pub trait SessionStore: Send + Sync {
     /// Returns `None` if `session_id` not found.
     async fn load(&self, session_id: &str) -> Result<Option<SessionData>, SessionError>;
 
-    /// Save session data. If the session_id already exists, it is replaced
-    /// (caller is responsible for preserving the prior `created_at` via meta).
+    /// Return `true` if a session with `session_id` exists in the store.
+    ///
+    /// Default impl is `load(...).is_some()`; impls may override with a cheaper
+    /// existence probe. Used by the Engine to fail fast when a session was never
+    /// pre-saved (Phase 9 F-012).
+    async fn exists(&self, session_id: &str) -> Result<bool, SessionError> {
+        Ok(self.load(session_id).await?.is_some())
+    }
+
+    /// Persist session data — **all four** `SessionData` fields, including
+    /// `last_checkpoint`.
+    ///
+    /// If `data.last_checkpoint` is `Some`, the checkpoint is written to the
+    /// checkpoints store as well (so a subsequent `load()` round-trips it); if
+    /// `None`, existing checkpoints are left untouched (call this to persist just
+    /// meta+state without disturbing checkpoints). If the session_id already
+    /// exists, the sessions row is replaced (caller preserves `created_at` via
+    /// meta).
+    ///
+    /// Phase 9 F-013: previously `save()` silently dropped `last_checkpoint`,
+    /// forcing callers to also call `snapshot()`.
     async fn save(&self, data: &SessionData) -> Result<(), SessionError>;
 
     /// Delete a session and its checkpoints.
     async fn delete(&self, session_id: &str) -> Result<(), SessionError>;
 
-    /// Append a checkpoint snapshot to a session's most-recent checkpoint.
-    /// (Engine calls this at each of the 5 Checkpoint positions.)
+    /// Append a checkpoint snapshot and run **four** side effects (a
+    /// spec-compliant custom impl MUST perform all of them — Phase 9 F-014):
+    ///
+    /// 1. write the checkpoint row (keyed by `session_id` + `captured_at`);
+    /// 2. UPDATE `sessions.state_json` to the supplied `state` (push to latest);
+    /// 3. UPDATE `sessions.updated_at` to now;
+    /// 4. force `sessions.status = 'interrupted'` (the replay kill-signal marker).
+    ///
+    /// Returns [`SnapshotEffects`] describing what changed. (Engine calls this at
+    /// each of the 5 Checkpoint positions.)
     async fn snapshot(
         &self,
         session_id: &str,
         state: &State,
         snapshot: &CheckpointSnapshot,
-    ) -> Result<(), SessionError>;
+    ) -> Result<SnapshotEffects, SessionError>;
 }
 
 // ── SqliteSessionStore ───────────────────────────────────────────────
@@ -366,6 +412,16 @@ impl SessionStore for SqliteSessionStore {
                 config_json,
             ],
         )?;
+        // F-013: persist last_checkpoint too (previously silently dropped). A
+        // None checkpoint leaves any existing checkpoints untouched.
+        if let Some(snap) = &data.last_checkpoint {
+            let payload_json = serde_json::to_string(snap)?;
+            let captured_at = snap.captured_at.to_rfc3339();
+            conn.execute(
+                "INSERT OR REPLACE INTO checkpoints (session_id, captured_at, payload_json) VALUES (?1, ?2, ?3)",
+                params![data.meta.session_id, captured_at, payload_json],
+            )?;
+        }
         Ok(())
     }
 
@@ -384,7 +440,7 @@ impl SessionStore for SqliteSessionStore {
         session_id: &str,
         state: &State,
         snapshot: &CheckpointSnapshot,
-    ) -> Result<(), SessionError> {
+    ) -> Result<SnapshotEffects, SessionError> {
         let conn = self.conn.lock().await;
         // Check existence first to surface NotFound (instead of FK violation).
         let exists: bool = conn
@@ -398,21 +454,27 @@ impl SessionStore for SqliteSessionStore {
         if !exists {
             return Err(SessionError::NotFound(session_id.into()));
         }
-        // Persist snapshot
+        // Effect 1: persist checkpoint row.
         let payload_json = serde_json::to_string(snapshot)?;
         let captured_at = snapshot.captured_at.to_rfc3339();
         conn.execute(
             "INSERT OR REPLACE INTO checkpoints (session_id, captured_at, payload_json) VALUES (?1, ?2, ?3)",
             params![session_id, captured_at, payload_json],
         )?;
-        // Also update state in sessions table (so list/load reflect latest)
+        // Effects 2-4: push state to latest, bump updated_at, force interrupted.
         let state_json = serde_json::to_string(state)?;
-        let updated = Utc::now().to_rfc3339();
+        let updated_at = Utc::now();
+        let updated = updated_at.to_rfc3339();
         conn.execute(
             "UPDATE sessions SET state_json = ?1, updated_at = ?2, status = 'interrupted' WHERE session_id = ?3",
             params![state_json, updated, session_id],
         )?;
-        Ok(())
+        Ok(SnapshotEffects {
+            checkpoint_written: snapshot.captured_at,
+            state_updated: true,
+            updated_at,
+            status_forced: SessionStatus::Interrupted,
+        })
     }
 }
 
@@ -586,6 +648,44 @@ mod tests {
             SessionError::NotFound(_) => {}
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    // [方法] save() 持久化 last_checkpoint（F-013）
+    #[tokio::test]
+    async fn save_persists_last_checkpoint() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let mut data = make_data("sess-1");
+        let cp = CheckpointSnapshot::new(Checkpoint::AfterModelCall, 3);
+        data.last_checkpoint = Some(cp);
+        store.save(&data).await.unwrap();
+
+        // Reload — the checkpoint must round-trip (was silently dropped before).
+        let loaded = store.load("sess-1").await.unwrap().unwrap();
+        let cp_back = loaded
+            .last_checkpoint
+            .expect("save() must persist last_checkpoint");
+        assert_eq!(cp_back.checkpoint, Checkpoint::AfterModelCall);
+        assert_eq!(cp_back.turn_index, 3);
+    }
+
+    // [方法] snapshot() 返回 4 个副作用（F-014）
+    #[tokio::test]
+    async fn snapshot_returns_4_effects() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let data = make_data("sess-1");
+        store.save(&data).await.unwrap();
+
+        let cp = CheckpointSnapshot::new(Checkpoint::AfterModelCall, 2);
+        let effects = store.snapshot("sess-1", &data.state, &cp).await.unwrap();
+
+        // 1. checkpoint row written (captured_at matches)
+        assert_eq!(effects.checkpoint_written, cp.captured_at);
+        // 2. state pushed to latest
+        assert!(effects.state_updated);
+        // 3. updated_at bumped (>= checkpoint capture time)
+        assert!(effects.updated_at >= cp.captured_at);
+        // 4. status forced to interrupted
+        assert_eq!(effects.status_forced, SessionStatus::Interrupted);
     }
 
     // [方法] save 覆盖已存在 session（更新字段）

@@ -20,6 +20,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arf_engine::RunError;
 use arf_session::{SessionData, SessionMeta, SessionStatus, SessionStore, SqliteSessionStore};
 use common::harness::{E2EHarness, ProviderKind};
 use common::provider::simple_mock;
@@ -45,12 +46,38 @@ fn make_initial_data(sid: &str) -> SessionData {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Test 1 — EngineBuilder.with_session_store + 1 round + load round-trip
+// Test 0 — F-012: run() fails fast when session was never pre-saved
 // ═══════════════════════════════════════════════════════════════════════
 
-// [方法] 端到端：EngineBuilder::with_session_store(Arc<SqliteSessionStore>) +
+// [边界] with_session_store 但 **不** 预 save session → run() 立即 Err，
+// 而不是静默让每个 checkpoint snapshot NotFound（F-012 fail-fast）。
+#[tokio::test]
+async fn engine_fails_fast_on_unpreloaded_session() {
+    let store = Arc::new(SqliteSessionStore::in_memory().await.unwrap());
+
+    let mut h = E2EHarness::builder(ProviderKind::Mock(simple_mock("unused")))
+        .with_session_store(store.clone() as Arc<dyn SessionStore>)
+        .build()
+        .await
+        .expect("harness build");
+
+    // NOTE: deliberately do NOT pre-save the session.
+    let err = h.run_react("hello").await.expect_err("run must fail fast");
+    match err {
+        RunError::SessionNotPreSaved { session_id } => {
+            assert_eq!(session_id, h.engine.session_id());
+        }
+        other => panic!("expected SessionNotPreSaved, got {other:?}"),
+    }
+
+    // Nothing was persisted (no half-baked session row).
+    assert!(store.list().await.expect("list").is_empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Test 1 — EngineBuilder.with_session_store + 1 round + load round-trip
+// ═══════════════════════════════════════════════════════════════════════
 // run_react 后 load(session_id) 应能取回 meta / state / last_checkpoint。
-// snapshot_if_configured 走 tokio::spawn 异步写——须 sleep 一下等写完。
 // 预 save session（因为 snapshot() 假设 session 已存在）。
 #[tokio::test]
 async fn engine_builder_installs_session_store_and_saves() {

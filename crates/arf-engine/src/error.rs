@@ -70,4 +70,16 @@ pub enum RunError {
         member: String,
         reason: String,
     },
+
+    /// `run()` was called with a `SessionStore` configured but the session was
+    /// never pre-saved. Persisting checkpoints for an unknown session would
+    /// silently fail, so the Engine fails fast instead. Phase 9 F-012.
+    #[error("session '{session_id}' not pre-saved: call SessionStore::save() before run()")]
+    SessionNotPreSaved { session_id: String },
+
+    /// A checkpoint snapshot failed to persist. Since checkpoints are the replay
+    /// contract, the Engine aborts the current round rather than silently
+    /// continuing with incomplete persistence. Phase 9 F-012.
+    #[error("snapshot failed for session '{session_id}': {reason}")]
+    SnapshotFailed { session_id: String, reason: String },
 }
