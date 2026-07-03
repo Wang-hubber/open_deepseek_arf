@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - C5/F-012,F-013,F-014: `SessionStore::save()` now persists `last_checkpoint`; `snapshot()` returns `SnapshotEffects` and documents its 4 side effects; Engine `run()` fails fast (`SessionNotPreSaved`) when a store is configured but the session was never saved, and aborts the round (`SnapshotFailed`) on a failed snapshot instead of silently continuing. Added `SessionStore::exists()`.
   - C7/F-010,F-011: added `McpNode::with_discovery()` to inject a custom `DiscoveryBackend` (+ `discovery()` accessor); `HttpProxyTool` now honours the MCP `isError` flag and surfaces failing tools as errors instead of success.
   - C3/A3-001,A4-001,F-020: new `arf_core::msg_type` constants module (single source of truth for wire message types); `Message::correlation_id()` typed accessor centralises Uuid↔string conversion; `Message::new_broadcast()` constructor for safe broadcast sends (skip online-check + silent NodeOffline).
+  - C6/F-005,F-006: `ModelCall` now carries `model_params` (`thinking_enabled` etc.); Engine copies `ModelDecl.thinking_enabled` into the wire payload so it actually reaches the adapter. Capability-matrix spec uses `thinking_enabled` (the framework's actual field name).
 
 ### Removed
 - `docs/architecture/` directory — was V0.x-only material (10-checkpoint Hook lifecycle, plugin system, PrimitiveAgent/AgentHarness, two-mode A2A, Eval benchmark). V1.x redesigned all of these; architecture overview now lives in `README.md` + `docs/dev/`.
