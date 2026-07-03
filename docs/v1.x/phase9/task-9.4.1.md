@@ -10,17 +10,36 @@
 
 ## 设计思路
 
-9.2.5 探查了 Engine 解析**多 raw ModelAdapterNode**（每个直接挂 bus）；本 task (9.4.1) 探查 `ModelAdapterPoolNode` 作为**单 facade 暴露 + sub-bus 转发 + 真实并发负载 + 3 overflow 策略边界**：
+9.2.5 探查了 Engine 解析**多 raw ModelAdapterNode**（每个直接挂 bus）；本 task (9.4.1) 探查 `ModelAdapterPoolNode` 的**设计意图 vs 当前实现**：
 
-- **Facade 模式**：top bus 上**只看到 1 个** `node_type="model"` 节点（NodeId `model/pool`），engine 不感知 pool 内部 N 个 resource
-- **advertised_provider**：facade 在 top bus 声明 `capabilities.provider = "pool"`（与 sub-bus 上真实 provider 标识**不同**——registry.rs:254 唯一匹配）
-- **sub-bus 网关**：facade 收到 model_call → pool acquire lease → forward 到 sub-bus → 等 model_response → forward 回 top bus → release lease
-- **Pool 抽象**（`arf-pool::Pool<ModelAdapterResource>`）：bounded `max_size` + 3 overflow 策略（`Queue(n)` / `Reject` / `Block(timeout)`）
-- **真实 LLM 边界探查**（按用户 2026-07-03 反馈）：
-  - pool 注册 2-5 节点（**2 min-5 max 边界**）
-  - 尝试多节点并发 2-4-7 个 model_call
-  - 验证 3 种行为：**正常响应 / 临时挂载并响应（Block）/ 进入队列排队响应（Queue）**
-  - **真实 DashScope qwen3.7-max-preview**（不是 mock）
+**设计意图**（user 2026-07-03 描述）：
+- 多个 Engine 同时向 **1 个** modelAdapter pool 发请求
+- Pool 收到消息 → forward 到 sub-bus 单任务节点
+- **控制并发数**（bounded resources）+ **尝试动态扩容**（load 增长时自动加 resource）
+
+**当前 framework 实现**（pool_node.rs:85 + arf-pool/src/lib.rs）：
+- PoolNode.run_loop 是**单 task**（`loop { recv → acquire → forward → wait → drop }`）—— 串行处理所有 model_call
+- Pool 是 **bounded max_size**（provision 时定，运行时不变）
+- **无动态扩容**（pool 不会因 load 增长而 provision 新 resource）
+- Overflow 策略：`Queue(n)` / `Reject` / `Block(timeout)` — 静态边界
+
+**3×3 矩阵 + 3 overflow 策略边界探查**（按 user 2026-07-03 反馈）：
+- pool 注册 2-5 节点（**2 min-5 max 边界**）
+- 尝试多节点并发 2-4-7 个 model_call
+- 验证 3 种行为：**正常响应 / 临时挂载并响应（Block）/ 进入队列排队响应（Queue）**
+- **真实 DashScope qwen3.7-max-preview**（不是 mock）
+
+**多 Engine 共享 pool 的实现**（user 设计意图）：
+- 1 个 `Pool<ModelAdapterResource>` + N 个 `ModelAdapterPoolNode` facade 共享 pool（`Arc<Pool>` 可共享）
+- 每个 facade 有独立 advertised_provider（"pool-0".."pool-{N-1}"），独立 run_loop
+- N 个 Engine 每个 cfg.model.provider 对应一个 facade 的 advertised_provider
+- 结果：N 个 Engine 并发 → N 个 facade 各自独立 task 处理 → pool 真正反映 N concurrent acquire
+
+**关键探查问题**（不预设答案）：
+- 1) 多 Engine + 1 pool 的"并发数 = N facade"实测：latency 是否 ≈ K/N × LLM？
+- 2) **动态扩容** 行为：pool max_size=N 时，K > N 来时，**是否会自动扩**？答案（预期）：**不扩**——framework 缺此能力，记入 F-002 lesion
+- 3) Overflow 策略在多 facade 共享 pool 下的行为：Block/Queue/Reject 边界
+
 - **9.4.2 探查**：Provider::supported_models capability-based 路由（依赖 9.4.1 facade）
 - **9.4.3 探查**：Pool overflow 三策略完整覆盖（Queue / Reject / Block）
 
@@ -169,6 +188,7 @@ DASHSCOPE_API_KEY=<env> \
 | `pool_lease_lifecycle × §2.12` | 待探查 | `Lease::drop` auto-release（arf-pool/src/lib.rs:184） |
 | `model_discovery_capability × §2.12` (L4 完整) | 不适用（留 9.4.2） | Provider::supported_models 路由 |
 | **`engine_pool × §2.12` (NEW) | **F（FAIL）** | **framework 缺 `EnginePool` primitive**——N 个 Engine 共享 model config 的 production 场景不可能实现。Engine::new 时 `NodeId = "engine/{provider}"`（engine.rs:59）导致 N engine 同 provider 冲突。**记入 F-001 lesion（framework missing primitive）** |
+| **`pool_dynamic_expansion × §2.12` (NEW) | **F（FAIL）** | **framework 缺 pool 动态扩容能力**——设计意图是 "load 增长时自动加 resource"，但当前 Pool 是 bounded max_size，无 auto-provision。N + 1 个 caller 来时，**不会**自动加 resource，仅 Overflow 策略生效（Block/Queue/Reject）。**记入 F-002 lesion** |
 
 按 §4 跑 signals（**重点：pool/facade 路径是否引入新病灶**，A3-001 / A4-001 在 pool 抽象路径是否加剧 + **F-001 framework gap**）：
 
@@ -182,6 +202,12 @@ grep -n 'correlation_id' crates/arf-model-adapter/src/pool_node.rs crates/arf-po
 grep -rn 'EnginePool\|struct Engine\|Engine::new' crates/ 2>/dev/null | grep -v test | head -10
 grep -n 'pub.*fn new' crates/arf-engine/src/engine.rs | head -5
 grep -n 'engine_id\|NodeId::new.*engine/' crates/arf-engine/src/engine.rs | head -5
+
+# F-002 framework gap 探查：Pool 动态扩容
+grep -n 'auto.*provision\|dynamic.*expansion\|provision.*load' crates/arf-pool/src/ -r 2>/dev/null
+grep -n 'pub.*provision\|pub.*acquire\|idle.*timeout' crates/arf-pool/src/manager.rs | head -5
+# Pool 字段 — 是否含 grow / expand 字段
+grep -n 'max_size\|current_size' crates/arf-pool/src/lib.rs | head -5
 
 # §4 信号 cross-check
 sed -n '180,200p' crates/arf-pool/src/lib.rs
@@ -209,18 +235,22 @@ sed -n '180,200p' crates/arf-pool/src/lib.rs
   避免 `Registry::resolve_model` 误匹配 sub-bus 节点。
 - **sub-bus 装 N 个 ModelAdapterNode**：每 pool resource 对应一个 sub-bus node，
   实际接受 model_call。
-- **关键设计选择（user 2026-07-03 反馈）**：**3×3 矩阵的"并发"用 bus-direct sender
-  不用 N 个 Engine**。理由：`Engine::new` 时 `NodeId = "engine/{provider}"`
-  （engine.rs:59），N 个 engine 同 provider 全部 NodeId 冲突（bus 拒绝重复连接）。
-  真实并发 sender 用直接发 `model_call` 消息到 bus 的 task 模拟。
+- **关键设计选择（user 2026-07-03 round 2 反馈）**：**3×3 矩阵的"多 Engine 并发"
+  用 N 个 facade 共享 1 个 pool**（不是单 facade）。理由：单 facade 的 run_loop
+  是单 task（pool_node.rs:85），N 个 engine 同 provider 全部 NodeId 冲突
+  （bus 拒绝重复连接）。N 个 facade 共享 1 个 `Arc<Pool>` + 每个 facade
+  advertised_provider 唯一 → N 个 engine 各 resolve 到一个 facade → N 个
+  facade 各自独立 task → pool 真正反映 N concurrent acquire + overflow 策略。
+- **N 个 facade 共享 1 pool** 是 framework 当前**唯一**能测"多 Engine 并发
+  model pool"的方案——**这就是 F-001 缺失的真相**：framework 没有直接
+  EnginePool 抽象，需要 app 层用 "N facade 共享 1 pool" 模式手动 virtualize。
+- **F-002 lesion（动态扩容）**：探查中观察 pool 行为是否匹配 "load 增长时
+  自动扩 resource" 设计意图。预期：framework **不**支持动态扩容，pool 严格
+  bounded max_size，overflow 仅靠 Block/Queue/Reject 三策略处理。
 - **不测 cancel 路径**：9.2.4 已探查 cancel，9.4.1 不重复。
 - **不预设期望时序**：framework 实际并发行为（latency、queue order）需实证。
-- **时序断言（粗粒度）**：(N=2, K=7, Block) 总耗时 应大于单 LLM 响应（否则 queue 没生效）。
-- **Framework gap（F-001 lesion 记录）**：探查过程中发现 `EnginePool` 缺失——
-  framework 没有 virtualize N 个 Engine 实例的 primitive，**真正"多 Engine 并发 chat"
-  在当前 framework 不可能**。这是真实 production 场景的 framework 缺口，
-  **不**由 9.4 解决（9.4 保持 model 侧 pool 专项），而**作为 F-001 lesion 记入
-  lesion-registry.md**，留后续 fix phase 或独立 task 解决。
+- **时序断言（粗粒度）**：(N=2, K=4, Queue(2)) 总耗时 应 < 2 × LLM latency
+  （4 拆 2+2，2 并发 + 2 排队），否则 facade 没真并行。
 - **MCP pool 单独任务（user 2026-07-03 反馈）**：9.4 保持 model 侧 pool 专项，
   MCP pool 走独立后序 task（9.8 范畴），不在 9.4 探查。
 
@@ -272,11 +302,11 @@ git grep -n '9943d44\|ab948' -- crates/ docs/
 ## 下一步
 
 1. 用户审 task 9.4.1 doc（Gitee 精校）
-2. 用户批 → 跑 Step 1-4 探查（**真实 DashScope qwen3.7-max-preview** + bus-direct 并发 sender）
-3. 整理 `audit-probe-9.4.1.md`（含 3×3 矩阵实测数据 + F-001 framework gap）
+2. 用户批 → 跑 Step 1-4 探查（**真实 DashScope qwen3.7-max-preview** + N facade 共享 1 pool）
+3. 整理 `audit-probe-9.4.1.md`（含 3×3 矩阵实测数据 + F-001 EnginePool 缺失 + F-002 动态扩容缺失）
 4. 更新 `lesion-registry.md`：
-   - 新增 F-001 lesion（framework missing primitive：EnginePool 缺失）
-   - 不新加 9.4 task（按 user 2026-07-03 反馈：9.4 保持 model 侧 pool 专项）
+   - F-001（EnginePool 缺失）—— framework 缺 EnginePool 抽象
+   - F-002（pool 动态扩容缺失）—— pool 是 bounded，无 auto-provision
 5. self-review（凭据 / 一致性 / scope）
 6. commit `pool_node_facade.rs` + commit `audit-probe-9.4.1.md` + commit `lesion-registry.md`（granular）
 7. 回做 9.3.1（streaming）补 spec 顺序
