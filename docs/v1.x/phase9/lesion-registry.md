@@ -112,12 +112,17 @@ Engine 层蔓延  : （9.2.1 实证）核心协议 model_call/model_response 散
 
 ---
 
-## §3 后续 task 追加区
+## §3 F 类别（framework missing primitive）— §3 后续 task 追加区
 
-> 9.1.5 及以后的 task 若跑出新病灶，在此追加（先补 §1 总表一行，再在 §2 加详情块）。
-> 9.1 A 总线基线大类（9.1.1–9.1.5）收尾：Bus 全能力判定 D；产出 2 病灶（A4-001 / A3-001），
-> 均为跨全框架协议契约问题，非 Bus 独有。9.1.1/9.1.2/9.1.3 探查为 0 病灶（结构层洁净），
-> 9.1.4（协议层）产出 A4-001，9.1.5（容错层）产出 A3-001。
+> 区别于 §1 A 类别（A1-A4 四信条违反），F 类别是 **framework 缺 primitive / trait**
+> （spec §1.2 F 等级 = "缺 primitive + 缺扩展点"）。F lesion 不在 signal 命中路径上发现，
+> 而是 task 探查**真实生产场景**时发现 framework 不能直接供 / 组合可达 / 扩展可达某能力。
+>
+> F lesion ID 格式：`F-NNN`（NNN = 该类别下顺序编号）。
+> F 病灶状态语义与 A 类别一致（OPEN / FIXED / WONTFIX），但**修复方向不同**：
+> A 病灶 → 信号修正（如统一采用 typed 访问器）；F 病灶 → **framework 新增 primitive/trait**。
+>
+> 9.1.5 之后，task 若发现 framework 缺 primitive，记入本节。
 
 ---
 
@@ -126,3 +131,6 @@ Engine 层蔓延  : （9.2.1 实证）核心协议 model_call/model_response 散
 - 本册是 fix phase 的**唯一病灶输入源**——fix phase 逐 `OPEN` 病灶处理
 - fix 完成后，将对应病灶 `状态` 改 `FIXED` 并附 fix commit hash
 - 按 spec §4.4 探查回归：fix 后须重跑触发该病灶的 task audit-probe，确认命中消失
+- **F 类别特别说明**：F 病灶的 fix 涉及 framework 抽象新增（不是信号修正），
+  fix phase 应评估：**新 primitive 的 scope**（仅当前 task 缺失 / 多 task 共享）
+  + **app 层使用契约**（如何让 app 用新 primitive）+ **向后兼容性**（是否破坏既有 app）。
