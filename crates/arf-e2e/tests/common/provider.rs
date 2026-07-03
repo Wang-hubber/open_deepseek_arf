@@ -180,3 +180,22 @@ pub fn live_qwen() -> Option<Arc<dyn Provider>> {
     let provider: Arc<dyn Provider> = Arc::new(OpenAIProvider::new(cfg));
     Some(provider)
 }
+
+/// Build a live `DeepSeekProvider` from the `DEEPSEEK_API_KEY` env var.
+/// Returns `None` (with a printed warning) if the env var is not set.
+/// Phase 9 task 9.2.5 — multi-model live probe (deepseek-v4-flash).
+pub fn live_deepseek() -> Option<Arc<dyn Provider>> {
+    let key = match env::require_deepseek_key() {
+        Some(k) => k,
+        None => {
+            env::skip_message("DEEPSEEK_API_KEY");
+            return None;
+        }
+    };
+    let cfg = arf_model_adapter::DeepSeekConfig::new(
+        key,
+        vec!["deepseek-v4-flash".into()],
+    );
+    let provider: Arc<dyn Provider> = Arc::new(arf_model_adapter::DeepSeekProvider::new(cfg));
+    Some(provider)
+}
