@@ -168,8 +168,9 @@ DASHSCOPE_API_KEY=<env> \
 | `model_pool_overflow × §2.12` (3 策略边界) | 待探查 | `Pool::acquire` + `Overflow::{Queue,Reject,Block}`（arf-pool/src/overflow.rs）；3×3 矩阵 + 3 策略变体 实证 |
 | `pool_lease_lifecycle × §2.12` | 待探查 | `Lease::drop` auto-release（arf-pool/src/lib.rs:184） |
 | `model_discovery_capability × §2.12` (L4 完整) | 不适用（留 9.4.2） | Provider::supported_models 路由 |
+| **`engine_pool × §2.12` (NEW) | **F（FAIL）** | **framework 缺 `EnginePool` primitive**——N 个 Engine 共享 model config 的 production 场景不可能实现。Engine::new 时 `NodeId = "engine/{provider}"`（engine.rs:59）导致 N engine 同 provider 冲突。**记入 F-001 lesion（framework missing primitive）** |
 
-按 §4 跑 signals（**重点：pool/facade 路径是否引入新病灶**，A3-001 / A4-001 在 pool 抽象路径是否加剧）：
+按 §4 跑 signals（**重点：pool/facade 路径是否引入新病灶**，A3-001 / A4-001 在 pool 抽象路径是否加剧 + **F-001 framework gap**）：
 
 ```bash
 # A3-001 在 pool 路径：检查 "model" / "provider" / "model_call" 字面量
@@ -177,11 +178,18 @@ grep -rn '"model"\|"provider"\|"model_call"\|"model_response"' crates/arf-model-
 # A4-001 在 pool 路径：pool acquire/release 是否引入新 correlation_id 散落
 grep -n 'correlation_id' crates/arf-model-adapter/src/pool_node.rs crates/arf-pool/src/ -r 2>/dev/null | head -5
 
+# F-001 framework gap 探查：EnginePool 是否存在
+grep -rn 'EnginePool\|struct Engine\|Engine::new' crates/ 2>/dev/null | grep -v test | head -10
+grep -n 'pub.*fn new' crates/arf-engine/src/engine.rs | head -5
+grep -n 'engine_id\|NodeId::new.*engine/' crates/arf-engine/src/engine.rs | head -5
+
 # §4 信号 cross-check
 sed -n '180,200p' crates/arf-pool/src/lib.rs
 ```
 
-**C. 输出**：`audit-probe-9.4.1.md`。pool/facade 路径是 framework 既有抽象（Phase 6/7 完成），若引入新病灶应在 pool_node.rs 或 arf-pool/src/manager.rs。
+**C. 输出**：`audit-probe-9.4.1.md`。
+- model 侧 pool 路径若引入新病灶应在 pool_node.rs 或 arf-pool/src/manager.rs
+- **F-001 framework gap 记入 lesion-registry.md**（新增 "F - framework missing primitive" 类别）
 
 ---
 
@@ -201,9 +209,20 @@ sed -n '180,200p' crates/arf-pool/src/lib.rs
   避免 `Registry::resolve_model` 误匹配 sub-bus 节点。
 - **sub-bus 装 N 个 ModelAdapterNode**：每 pool resource 对应一个 sub-bus node，
   实际接受 model_call。
+- **关键设计选择（user 2026-07-03 反馈）**：**3×3 矩阵的"并发"用 bus-direct sender
+  不用 N 个 Engine**。理由：`Engine::new` 时 `NodeId = "engine/{provider}"`
+  （engine.rs:59），N 个 engine 同 provider 全部 NodeId 冲突（bus 拒绝重复连接）。
+  真实并发 sender 用直接发 `model_call` 消息到 bus 的 task 模拟。
 - **不测 cancel 路径**：9.2.4 已探查 cancel，9.4.1 不重复。
 - **不预设期望时序**：framework 实际并发行为（latency、queue order）需实证。
 - **时序断言（粗粒度）**：(N=2, K=7, Block) 总耗时 应大于单 LLM 响应（否则 queue 没生效）。
+- **Framework gap（F-001 lesion 记录）**：探查过程中发现 `EnginePool` 缺失——
+  framework 没有 virtualize N 个 Engine 实例的 primitive，**真正"多 Engine 并发 chat"
+  在当前 framework 不可能**。这是真实 production 场景的 framework 缺口，
+  **不**由 9.4 解决（9.4 保持 model 侧 pool 专项），而**作为 F-001 lesion 记入
+  lesion-registry.md**，留后续 fix phase 或独立 task 解决。
+- **MCP pool 单独任务（user 2026-07-03 反馈）**：9.4 保持 model 侧 pool 专项，
+  MCP pool 走独立后序 task（9.8 范畴），不在 9.4 探查。
 
 ---
 
@@ -253,8 +272,11 @@ git grep -n '9943d44\|ab948' -- crates/ docs/
 ## 下一步
 
 1. 用户审 task 9.4.1 doc（Gitee 精校）
-2. 用户批 → 跑 Step 1-4 探查（**真实 DashScope qwen3.7-max-preview**）
-3. 整理 `audit-probe-9.4.1.md`（含 3×3 矩阵实测数据）
-4. self-review（凭据 / 一致性 / scope）
-5. commit `pool_node_facade.rs` + commit `audit-probe-9.4.1.md`（granular）
-6. 回做 9.3.1（streaming）补 spec 顺序
+2. 用户批 → 跑 Step 1-4 探查（**真实 DashScope qwen3.7-max-preview** + bus-direct 并发 sender）
+3. 整理 `audit-probe-9.4.1.md`（含 3×3 矩阵实测数据 + F-001 framework gap）
+4. 更新 `lesion-registry.md`：
+   - 新增 F-001 lesion（framework missing primitive：EnginePool 缺失）
+   - 不新加 9.4 task（按 user 2026-07-03 反馈：9.4 保持 model 侧 pool 专项）
+5. self-review（凭据 / 一致性 / scope）
+6. commit `pool_node_facade.rs` + commit `audit-probe-9.4.1.md` + commit `lesion-registry.md`（granular）
+7. 回做 9.3.1（streaming）补 spec 顺序
