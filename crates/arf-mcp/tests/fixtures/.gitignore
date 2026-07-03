@@ -1,2 +1,4 @@
 # Compiled Rust binaries (rustc output of fixture scripts)
 tools/*/main
+# rustc codegen-unit intermediate objects
+tools/*/*.rcgu.o
