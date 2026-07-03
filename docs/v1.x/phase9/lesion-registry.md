@@ -29,8 +29,9 @@
 | **F-006** | (F-category) | spec/code naming 不一致 | 9.3.2（reasoning） | **spec 提 `thinking_visible` 字段，framework code 实际用 `thinking_enabled`——naming inconsistency**——9.3.2 `f006_thinking_visible_naming_inconsistency` 实证：code `grep -rn thinking_visible crates/` = 0 命中（无 thinking_visible 字段），docs `grep -rn thinking_visible docs/` = 5 命中（capability-matrix §1.1 L1 / §5 + 9.2.1 task/audit + 9.3.2 task）。后果：app 读 spec 期望 `thinking_visible` 字段但 framework 用 `thinking_enabled`——**spec 误导**。**修复方向**：A) 把 spec 改为 `thinking_enabled`（与 code 一致）；B) 把 code 字段重命名为 `thinking_visible`（与 spec 一致）；C) 加 alias（同时支持两个名字）。建议 A（改 spec）—— code 已有 `thinking_enabled` 字段（agent/model.rs:21 + model-adapter/types.rs:38），覆盖更广 | **OPEN（naming inconsistency）** | 后续 fix phase 选 A/B/C 之一 |
 | **F-007** | (F-category) | 缺 model-level 路由 | 9.4.2（capability 路由） | **Engine 不按 `model_name` 路由，只按 `provider`——`Provider::supported_models()` 在 routing 完全无效**——9.4.2 `engine_routes_by_provider_not_model_name` + `engine_ignores_unsupported_model_name` 实证：2 节点同 provider="openai" 但不同 `supported_models`（["qwen3.7"] vs ["qwen3.5"]），cfg.model.model_name="qwen3.5-turbo"（只在 node 2 supports）→ engine **静默**路由到任一 provider 节点（**不**按 model_name 选 node 2）；`engine_ignores_unsupported_model_name` 进一步实证 model_name 不在 supports 时 engine **不**报错。`ResourceRegistry::resolve_model`（registry.rs:253-269）只匹配 `n.capabilities.get("provider")`，**不**匹配 `model_name` 或 `supported_models`。`Provider::supported_models()` 仅作元数据塞 `NodeInfo.capabilities.models`（node.rs:38），在 routing **完全无效**。后果：app 端 model_name 拼写错误**静默**路由到错 model，**production 风险** | **OPEN** | 后续 fix phase（建议：resolve_model 应同时检查 `model_name` 是否在 `n.capabilities.models` 中，不匹配则报清晰 error） |
 | **F-008** | (F-category) | 缺确定性路由 | 9.4.2（capability 路由） | **`BusGraph.nodes` 用 `HashMap.values()`（graph.rs:60）—— HashMap 迭代顺序非确定，`ResourceRegistry::resolve_model.find()` 继承此非确定**——9.4.2 `engine_routes_by_provider_not_model_name` 实证：2 节点同 provider，HashMap 顺序**可能**返回任一节点（实测有时 node 1，有时 node 2）。**production 风险**：同一 app 代码在两次启动间路由到不同 model node（虽然都"对"，但**非确定**）；app 端想"prefer node A"或"负载均衡"**无 framework 钩子**。后果：app 部署后**不可预测**——同样是 2 节点同 provider，今天 A 优先明天 B 优先。修复方向：BusGraph 改用 `Vec<NodeId>`（插入序）或 `BTreeMap`（key 序），resolve_model.find 改用确定序 | **OPEN** | 后续 fix phase（建议：BusGraph.nodes 改 Vec + resolve_model 暴露 priority hint） |
+| **F-009** | (F-category) | spec/code 行为不一致 | 9.4.3（pool overflow 三策略） | **`Overflow::Queue(N)` 的 `N` 参数是 dead code —— 实际行为不区分 `Queue(0)` vs `Queue(usize::MAX)`**——9.4.3 `queue_zero_or_max_boundary` 实证：pool N=1 已 leased 1 个，`Overflow::Queue(0)` 期望"立即 Full"（按 spec 描述），但实际**永久 block on semaphore**（2s timeout 测出 TIMEOUT）；`Overflow::Queue(usize::MAX)` 期望"永不 Full 直到 l1 drop"，实测"永不 Full 直到 l1 drop" ✓（巧合 work，因为 Queue(N) 全部走 `acquire_owned().await` 阻塞分支）。根因（`crates/arf-pool/src/lib.rs:199-205`）：`Overflow::Queue(_)` 分支**忽略 `N`**，全部走 `sem.acquire_owned().await`（**未用** `try_acquire` 或 pending 计数控制）。后果：app 端写 `Overflow::Queue(K)` 想"超过 K 入队就 Full"，**实际**永远不 Full（仅当 l1 drop 才拿到）；Queue(N) 的语义与 spec 描述（"buffer up to N"）不符。9.4.1 的 Queue(2) 满测试**恰好**能过（因为 l1 drop 后 l2 拿到，断言成功），掩盖了 F-009 | **OPEN** | 后续 fix phase（建议：Queue(N) 改为"先 try_acquire_owned，失败则检查 `pending < N`，是则 `pending+=1 + await notify`，否则 `Err(Full)`"——需要新增 `PoolState.pending` 字段已存在但未被读，lib.rs:141 warning `field pending is never read` 印证） |
 
-> 统计：OPEN 10 / FIXED 0 / WONTFIX 0（截至 task 9.4.2 探查：A 类别 2 病灶 [A3/A4] 9.2.2 真实 payload 复测通过；F 类别 8 病灶 [F-001 EnginePool / F-002 pool 动态扩容 critical / F-003 facade sub_id quirk / F-004 缺 stream event callback API / F-005 缺 thinking 传播 / F-006 spec/code naming 不一致 / F-007 缺 model-level 路由 / F-008 缺确定性路由]——F-002 critical design intent gap，F-003 development-stage design quirk，F-005 framework 缺 Engine 传播链路，F-006 spec/code 命名误导，F-007 framework 不按 model_name 路由（静默错误），F-008 framework 缺确定性路由）
+> 统计：OPEN 11 / FIXED 0 / WONTFIX 0（截至 task 9.4.3 探查：A 类别 2 病灶 [A3/A4] 9.2.2 真实 payload 复测通过；F 类别 9 病灶 [F-001 EnginePool / F-002 pool 动态扩容 critical / F-003 facade sub_id quirk / F-004 缺 stream event callback API / F-005 缺 thinking 传播 / F-006 spec/code naming 不一致 / F-007 缺 model-level 路由 / F-008 缺确定性路由 / F-009 Queue(N) N 参数 dead code]——F-002 critical design intent gap，F-003 development-stage design quirk，F-005 framework 缺 Engine 传播链路，F-006 spec/code 命名误导，F-007 framework 不按 model_name 路由（静默错误），F-008 framework 缺确定性路由，F-009 Overflow::Queue(N) N 参数未被使用导致 Queue(0) 不返回 Full）
 
 ---
 
@@ -252,6 +253,67 @@ Engine 层蔓延  : N/A（pool 不在 engine 层）
                 # 证明：无动态扩容，与设计意图严重不符
 ```
 
+### F-009 — Overflow::Queue(N) 的 N 参数 dead code
+
+```
+病灶 ID       : F-009
+信条           : (F-category) — spec/code 行为不一致
+Signal         : F-S1（spec describe ≠ code 行为）
+触发 task     : 9.4.3（pool overflow 三策略）
+首次登记       : audit-probe-9.4.3.md §D
+状态           : OPEN
+file:line      : crates/arf-pool/src/lib.rs:199-205
+                Overflow::Queue(_) => self.inner.sem.clone()
+                    .acquire_owned().await  ← 全 N 都走这分支
+                    .map_err(|_| PoolError::Closed)?,
+                crates/arf-pool/src/overflow.rs:10
+                /// Buffer up to `n` pending acquirers. Excess callers
+                /// get [`PoolError::Full`](crate::PoolError::Full).
+                Queue(usize),  ← spec 描述"N 控制 buffer 大小"
+                crates/arf-pool/src/lib.rs:141 (warning)
+                pending: usize,  ← 字段存在但从不读，**印证 dead code**
+命中形态       : **spec 描述与 code 行为完全不一致**——
+                - spec（overflow.rs:8-15）：Queue(N) = "buffer N pending callers,
+                  excess → PoolError::Full"
+                - code（lib.rs:199-205）：Queue(_) 全部走 acquire_owned().await
+                  阻塞分支，**N 完全被忽略**
+                实证 1：`Overflow::Queue(0)` 期望立即 Full，实测永久 block
+                （`queue_zero_or_max_boundary` 测出 2s TIMEOUT 而非 Full）
+                实证 2：`Overflow::Queue(usize::MAX)` 期望"永不 Full 直到
+                  l1 drop"，实测 work（巧合，因为 acquire_owned() 也会等 permit）
+                实证 3：lib.rs:141 warning "field `pending` is never read"——
+                  **编译器都看出 pending 字段被写了从未读**（PoolState.pending
+                  本应为 Queue(N) 实现用，但 acquire 路径未触达）
+                9.4.1 的 Queue(2) 满测试能过（l1 drop 后 l2 拿到）——**掩盖
+                了 F-009**；9.4.3 边界 case（Queue(0) / Queue(MAX)）才暴露
+影响面         : 1) app 端写 `Overflow::Queue(K)` 想"超过 K 排队就 Full"，
+                   **实际**永远不 Full（仅当 l1 drop 才拿到）——spec 误导
+                2) `Overflow::Queue(0)` 想要 fail-fast 行为，**实际**会永久
+                   block（直到 l1 drop 或 pool 关闭）——潜在死锁风险
+                3) 9.4.1 既有测试 Queue(2) 满**通过**（掩盖），但语义**错误**
+                4) 与 F-002 复合：F-002 已无 min_size/auto-provision，
+                   F-009 又让 Queue(N) 失效，**pool 实际只剩 2 种可用策略**：
+                   Reject（try-acquire）和 Block(timeout)（timeout-wrap 阻塞）
+                   ——Queue 完全失效
+修复方向       : 方案 A（最小改动，3 行）：Queue(N) 分支改为先 try_acquire_owned
+（供参考）      ，失败则检查 `state.pending < N`：是则 pending+=1 + await
+                notify，pending-=1 后 retry；否则 Err(Full)。
+                方案 B（重构）：在 PoolState 加 `pending: usize` 字段已存在，
+                仅需 acquire 路径触达；notify 时 pending-=1。lib.rs:141
+                warning 消失。
+                方案 C（语义重定义）：把 Queue(usize) 重新定义为"最多 N 个
+                waiter"，语义同方案 A，但**保留**当前 Block 行为作为 fallback。
+                建议 A（最少改动 + 最直观）。
+Engine 层蔓延  : N/A（pool 不在 engine 层）
+复现命令       : grep -n 'Overflow::Queue' crates/arf-pool/src/lib.rs
+                # 仅 1 处（lib.rs:199），N 完全未用
+                grep -n 'pending' crates/arf-pool/src/lib.rs
+                # 仅 PoolState.pending 字段定义（141）+ warning（never read）
+                # 实证测试: queue_zero_or_max_boundary
+                # Queue(0) → 期望 Full，实测 2s TIMEOUT
+                # Queue(MAX) → 期望永不 Full（实测 work 但**巧合** work）
+```
+
 ---
 
 ## §3 F 类别（framework missing primitive）— §3 后续 task 追加区
@@ -275,6 +337,7 @@ Engine 层蔓延  : N/A（pool 不在 engine 层）
 > - F-006（spec/code naming 不一致：thinking_visible vs thinking_enabled）—— 9.3.2 触发
 > - F-007（Engine 不按 model_name 路由，静默错误）—— 9.4.2 触发
 > - F-008（BusGraph HashMap 非确定，resolve_model 路由非确定）—— 9.4.2 触发
+> - F-009（Overflow::Queue(N) N 参数 dead code）—— 9.4.3 触发（spec 说 Queue(N) = "buffer up to N pending callers, excess → Full"，但 code 忽略 N 走 acquire_owned().await 阻塞分支——Queue(0) 不返回 Full 而永久 block）
 
 ---
 
