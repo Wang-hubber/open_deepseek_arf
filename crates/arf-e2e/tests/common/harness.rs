@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arf_bus::Bus;
-use arf_core::{Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
+use arf_core::{CheckpointRule, Message, MessageFilter, NodeId, NodeInfo, Route, State, ToMatch};
 use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl, ResourceSpec, RunError};
 use arf_model_adapter::{ModelAdapterNode, Provider};
 use arf_mcp::McpNode;
@@ -46,6 +46,8 @@ pub struct E2EHarnessBuilder {
     max_turns: u32,
     cancel: Option<CancellationToken>,
     extra_routes: HashMap<String, Route>,
+    /// Checkpoint rules to register on the engine (Phase 9 task 9.2.3).
+    checkpoint_rules: Vec<CheckpointRule>,
     tool_timeout_ms: Option<u64>,
     /// Optional pre-created TempDir — used so the caller can write tool
     /// files into the same directory the harness will scan for MCP.
@@ -66,6 +68,7 @@ impl E2EHarnessBuilder {
             max_turns: 10,
             cancel: None,
             extra_routes: HashMap::new(),
+            checkpoint_rules: vec![],
             tool_timeout_ms: None,
             tmpdir: None,
             inject_tool_exec_responder: true,
@@ -93,6 +96,12 @@ impl E2EHarnessBuilder {
     /// Register an additional route on the engine's AgentConfig.
     pub fn route(mut self, msg_type: &str, route: Route) -> Self {
         self.extra_routes.insert(msg_type.into(), route);
+        self
+    }
+
+    /// Register checkpoint rules on the engine (Phase 9 task 9.2.3).
+    pub fn with_checkpoint_rules(mut self, rules: Vec<CheckpointRule>) -> Self {
+        self.checkpoint_rules = rules;
         self
     }
 
@@ -129,6 +138,7 @@ impl E2EHarnessBuilder {
             self.max_turns,
             self.cancel,
             self.extra_routes,
+            self.checkpoint_rules,
             self.tool_timeout_ms,
             self.tmpdir,
             self.inject_tool_exec_responder,
@@ -171,6 +181,7 @@ impl E2EHarness {
         max_turns: u32,
         cancel: Option<CancellationToken>,
         extra_routes: HashMap<String, Route>,
+        checkpoint_rules: Vec<CheckpointRule>,
         tool_timeout_ms: Option<u64>,
         tmpdir: Option<TempDir>,
         inject_tool_exec_responder: bool,
@@ -225,7 +236,7 @@ impl E2EHarness {
             allowed_paths: vec![],
             engine: EngineConfig {
                 routes,
-                checkpoint_rules: vec![],
+                checkpoint_rules,
                 processors: HashMap::new(),
                 on_member_failed: None,
                 max_turns,
