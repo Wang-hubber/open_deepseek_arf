@@ -18,6 +18,8 @@ phase 9 是一次系统性盘清 ARF framework。本 spec 提供 4 种方法论�
 
 本 spec **不含任何预设问题**——既无预判病灶，也无预设 pass / fail 假设。每个 task 跑完才出真实结论。
 
+具体 task 编号 / 顺序 / 估时见 §6 phase 9 task 列表（55 个）。
+
 ---
 
 ## §1 能力矩阵（方法论 1）
@@ -258,6 +260,150 @@ file:line      : <具体观察点>
 - 本 spec 不进 docs/api/
 - docs/api/ 重构由**专门 phase** 承接
 - task 输出物不进 docs/api/
+
+---
+
+## §6 Phase 9 task 列表（55 task）
+
+按"依赖深度递推"组织，每类按大类 → 子类编号（9.X.Y）：
+
+### 9.1 — A 总线基线（5 task，~3d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.1.1 | Bus + 单一 Node + heartbeat | 0.5d | 无 |
+| 9.1.2 | Bus + 多 Node（异构 node_type） | 0.5d | 9.1.1 |
+| 9.1.3 | Bus + multi-bus 拓扑（NodeHandle.attach_to） | 0.5d | 9.1.1 |
+| 9.1.4 | Bus + barrier 多参与者 | 0.5d | 9.1.1 |
+| 9.1.5 | Bus + 异常（lagged / 掉线 / 重连） | 1d | 9.1.1 |
+
+### 9.2 — B 单 agent 骨架（5 task，~4d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.2.1 | Engine + 单 ModelAdapter | 0.5d | 9.1.x |
+| 9.2.2 | Engine + ReAct 主循环 chat | 1d | 9.2.1 |
+| 9.2.3 | Engine + 5 Checkpoint + 自定义 Rule | 1d | 9.2.1 |
+| 9.2.4 | Engine + CancellationToken interrupt 协同 | 0.5d | 9.2.1 |
+| 9.2.5 | Engine + 多 ModelAdapter 候选切换 | 1d | 9.2.1 |
+
+### 9.3 — J 流式响应（3 task，~2.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.3.1 | ModelResponseChunk 文本流（chunk_type=text） | 1d | 9.2.1 |
+| 9.3.2 | ModelResponseChunk reasoning 流（chunk_type=reasoning + thinking_visible） | 0.5d | 9.3.1 |
+| 9.3.3 | 自定义 MessageHandler 处理 chunk | 1d | 9.3.1 |
+
+### 9.4 — K 模型发现（3 task，~2.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.4.1 | ModelAdapterPoolNode facade（sub-bus 网关） | 1d | 9.2.5 |
+| 9.4.2 | Provider::supported_models capability-based 路由 | 1d | 9.4.1 |
+| 9.4.3 | Pool overflow 三策略（Queue / Reject / Block） | 0.5d | 9.4.1 |
+
+### 9.5 — C 工具集成 / McpNode（7 task，~6d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.5.1 | McpNode + FsDiscovery | 1d | 9.4.x |
+| 9.5.2 | McpNode + HttpDiscovery（JSON-RPC initialize + tools/list） | 1d | 9.5.1 |
+| 9.5.3 | McpNode + 自定义 DiscoveryBackend | 1d | 9.5.1 |
+| 9.5.4 | McpNode + LocalRuntime | 0.5d | 9.5.1 |
+| 9.5.5 | McpNode + RemoteRuntime | 1d | 9.5.1 |
+| 9.5.6 | McpNode + 自定义 RuntimeModule（sandbox） | 1d | 9.5.1 |
+| 9.5.7 | McpNode + ScriptTool（python/bash/rustc）+ cancel | 0.5d | 9.5.4 |
+
+### 9.6 — D Skill 渐进加载（5 task，~3.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.6.1 | skill_list_progressive（只列名+描述） | 0.5d | 9.5.1 |
+| 9.6.2 | skill_load_on_demand（`use_skill` 协议） | 1d | 9.6.1 |
+| 9.6.3 | skill_tool_progressive_register（skill body → tool） | 1d | 9.6.2 |
+| 9.6.4 | skill_resource_load（`load_skill_resource` + `LoadedResource`） | 0.5d | 9.5.1 |
+| 9.6.5 | Skill 全套联合（4 项联动） | 0.5d | 9.6.1 |
+
+### 9.7 — E 多 MCP 拓扑（3 task，~2.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.7.1 | 多 MCP + Static route（Strict → multiple NodeIds） | 1d | 9.5.1 |
+| 9.7.2 | 多 MCP + Discovery route（`Route::Discovery(Capability)`） | 1d | 9.7.1 |
+| 9.7.3 | 多 MCP + 跨 MCP dedup（同名 tool / AmbiguousTool） | 0.5d | 9.5.1 |
+
+### 9.8 — F MCP pool（7 task，~6d）— **重点细拆**
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.8.1 | 单 agent + 单 MCP pool（facade + lease） | 1d | 9.5.x |
+| 9.8.2 | 单 agent + 多 MCP pool（per-namespace） | 1d | 9.8.1 |
+| 9.8.3 | 多 agent + 共享 MCP pool（1 pool） | 1d | 9.8.1 |
+| 9.8.4 | 多 agent + 共享 MCP pool（2 pools） | 1d | 9.8.3 |
+| 9.8.5 | 多 agent + 共享 MCP pool（多 pools） | 1d | 9.8.4 |
+| 9.8.6 | pool overflow `Overflow::Queue` | 0.5d | 9.8.1 |
+| 9.8.7 | pool overflow `Overflow::Reject` + `Block` | 0.5d | 9.8.1 |
+
+### 9.9 — G Multi-agent 拓扑（7 task，~6.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.9.1 | 双 agent 独立（无连接） | 0.5d | 9.2.x |
+| 9.9.2 | 双 agent + peer（A2A / PeerMessage + PeerReply） | 1d | 9.9.1 |
+| 9.9.3 | 双 agent + subagent 委派（1 层） | 1d | 9.9.1 |
+| 9.9.4 | 双 agent + subagent 嵌套（2 层） | 1d | 9.9.3 |
+| 9.9.5 | 3+ agent + subagent 嵌套（3 层） | 1d | 9.9.4 |
+| 9.9.6 | 3+ agent + peer 全连通 | 1d | 9.9.2 |
+| 9.9.7 | 3+ agent + peer + subagent 同时 | 1d | 9.9.6 + 9.9.5 |
+
+### 9.10 — H 持久化（5 task，~3.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.10.1 | EngineBuilder + SqliteSessionStore 端到端 | 1d | 9.2.x |
+| 9.10.2 | SessionMeta / SessionData 序列化字段 | 0.5d | 9.10.1 |
+| 9.10.3 | 5 Checkpoint 各调 `snapshot` 行为一致性 | 0.5d | 9.10.1 |
+| 9.10.4 | 跨 session_id load / restore | 1d | 9.10.1 |
+| 9.10.5 | 自定义 SessionStore impl trait | 0.5d | 9.10.1 |
+
+### 9.11 — I 压缩（3 task，~2.5d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.11.1 | Compactor + 默认 Summarizer（LLM-backed） | 1d | 9.10.1 |
+| 9.11.2 | `when_context_over` CheckpointRule 触发 | 1d | 9.11.1 |
+| 9.11.3 | 自定义 Summarizer | 0.5d | 9.11.1 |
+
+### 9.12 — L 扩展点实现（5 task，~4d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.12.1 | 自定义 DiscoveryBackend（实现 tool 3 方法 + 留 skill 默认） | 1d | 9.5.3 |
+| 9.12.2 | 自定义 RuntimeModule（自定义 execute 策略） | 1d | 9.5.6 |
+| 9.12.3 | 自定义 Tool（含 / 不含 cancel） | 0.5d | 9.5.x |
+| 9.12.4 | 自定义 CheckpointRule（every_n_rounds / when_context_over） | 0.5d | 9.2.3 |
+| 9.12.5 | 自定义 OnMemberFailedHandler（FailSession / SwitchTo） | 0.5d | 9.13.1 |
+
+### 9.13 — M 异常与边界（4 task，~3d）
+
+| Task | 探查 | 估时 | 依赖 |
+|---|---|---|---|
+| 9.13.1 | Node 掉线（OnMemberFailedAction::FailSession） | 1d | 9.1.5 |
+| 9.13.2 | Node 掉线（SwitchTo alternative） | 1d | 9.13.1 |
+| 9.13.3 | Tool Permission `Ask` 路径 | 0.5d | 9.5.x |
+| 9.13.4 | Tool Permission `Deny` 路径 | 0.5d | 9.5.x |
+
+### §6.X 总览
+
+| 项 | 数 |
+|---|---|
+| 总 task 数 | 55 |
+| 总估时范围 | ~ 38-55 天 |
+| 任务依赖最浅 | 9.1.1（无依赖） |
+| 任务依赖最深 | 9.9.7（依赖 9.9.6 + 9.9.5） |
+
+每个 task 的探查细节 / 命令 / 输出 schema 见独立 task doc（`docs/v1.x/phase9/task-9.X.Y.md`）。task doc 内容依 §3 探查 4 步流程 + §3.3 输出 schema + §4.3 病灶登记 schema 写。
 
 ---
 
