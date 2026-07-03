@@ -12,6 +12,25 @@ use uuid::Uuid;
 
 use crate::{ModelMessage, ToolSpec, NodeId};
 
+/// Core-side model inference parameters — kept in arf-core (not
+/// arf-model-adapter) to avoid a cyclic crate dependency, while sharing the
+/// exact JSON shape so `ModelCall` on the wire deserialises cleanly into
+/// `arf_model_adapter::ModelCallPayload.model_params`.
+///
+/// Phase 9 F-005: this is how `ModelDecl.thinking_enabled` propagates from
+/// the Engine config to the model adapter that actually invokes the LLM.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CoreModelParams {
+    #[serde(default)]
+    pub thinking_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub extra: serde_json::Value,
+}
+
 /// Trait every application-layer payload must implement.
 ///
 /// Implementors define:
@@ -58,6 +77,11 @@ pub struct ModelCall {
     /// Tool specs for LLM function-calling (Phase 6 §3.3).
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
+    /// Model inference parameters (Phase 9 F-005: propagation of
+    /// `ModelDecl.thinking_enabled` etc.). Defaults to
+    /// `CoreModelParams::default()` if missing — backward-compatible.
+    #[serde(default)]
+    pub model_params: CoreModelParams,
 }
 
 impl ModelCall {
@@ -66,11 +90,18 @@ impl ModelCall {
             correlation_id: Uuid::new_v4(),
             messages,
             tools: Vec::new(),
+            model_params: CoreModelParams::default(),
         }
     }
 
     pub fn with_tools(mut self, tools: Vec<ToolSpec>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Override model inference parameters (thinking, temperature, …).
+    pub fn with_model_params(mut self, params: CoreModelParams) -> Self {
+        self.model_params = params;
         self
     }
 }

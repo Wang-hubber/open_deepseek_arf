@@ -478,7 +478,18 @@ impl Engine {
         messages.extend(state.messages.iter().cloned());
 
         let tools = self.registry.tools_for_model(&self.primary_bus);
-        let model_call = ModelCall::new(messages).with_tools(tools);
+        // Phase 9 F-005: propagate ModelDecl inference params to the wire so the
+        // model adapter can honour them. Previously ModelCall had no
+        // model_params and the adapter always received defaults.
+        let model_params = arf_core::CoreModelParams {
+            thinking_enabled: self.config.model.thinking_enabled,
+            temperature: self.config.model.temperature,
+            max_tokens: self.config.model.max_output_tokens,
+            extra: self.config.model.extra.clone(),
+        };
+        let model_call = ModelCall::new(messages)
+            .with_tools(tools)
+            .with_model_params(model_params);
         let cid = model_call.correlation_id;
         let target = self.registry.model_target();
         let msg = Message::with_from_bus(

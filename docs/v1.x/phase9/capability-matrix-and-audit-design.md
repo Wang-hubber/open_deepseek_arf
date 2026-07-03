@@ -31,7 +31,7 @@ phase 9 是一次系统性盘清 ARF framework。本 spec 提供 4 种方法论�
 **L1 — 基础对话**
 - chat
 - streaming_response
-- thinking_visible
+- thinking_enabled
 
 **L2 — 工具使用**
 - tool_use
@@ -119,7 +119,7 @@ phase 9 是一次系统性盘清 ARF framework。本 spec 提供 4 种方法论�
 
 **表注**：
 - "关键能力子集（delta）"是该情景**相对前一情景新增**的能力，不是该情景全部能力；前一情景的能力默认继承
-- 每个情景默认还包含 L1（chat / streaming_response / thinking_visible）、L7（bus_health_observe / heartbeat 等总线侧）、interrupt 等基础能力
+- 每个情景默认还包含 L1（chat / streaming_response / thinking_enabled）、L7（bus_health_observe / heartbeat 等总线侧）、interrupt 等基础能力
 - §1.1 的 L8（扩展点）每个情景都默认存在（任何 trait 可被实现）
 
 **每个情景的探查输出**包含：
@@ -297,7 +297,7 @@ file:line      : <具体观察点>
 | Task | 探查 | 依赖 |
 |---|---|---|
 | 9.3.1 | ModelResponseChunk 文本流（chunk_type=text） | 9.2.1 |
-| 9.3.2 | ModelResponseChunk reasoning 流（chunk_type=reasoning + thinking_visible） | 9.3.1 |
+| 9.3.2 | ModelResponseChunk reasoning 流（chunk_type=reasoning + thinking_enabled） | 9.3.1 |
 | 9.3.3 | 自定义 MessageHandler 处理 chunk | 9.3.1 |
 
 ### 9.4 — K 模型发现（3 task）

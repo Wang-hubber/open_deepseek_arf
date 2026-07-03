@@ -21,9 +21,9 @@ pub use node::BusId;
 // Re-export common Engine protocol types at the crate root for ergonomic use.
 pub use checkpoint::{Checkpoint, CheckpointRule};
 pub use message::{
-    ActionMessage, HumanHandoff, HumanHandoffReply, MemoryOp, MemoryOpKind, MemoryOpResult,
-    MessageIntent, ModelCall, ModelResponseChunk, ModelToolCallDelta, PeerMessage, PeerReply,
-    PeerStatus, SubagentDelegate, SubagentResult, SubagentStatus, ToolCall, ToolExec,
+    ActionMessage, CoreModelParams, HumanHandoff, HumanHandoffReply, MemoryOp, MemoryOpKind,
+    MemoryOpResult, MessageIntent, ModelCall, ModelResponseChunk, ModelToolCallDelta, PeerMessage,
+    PeerReply, PeerStatus, SubagentDelegate, SubagentResult, SubagentStatus, ToolCall, ToolExec,
 };
 pub use processor::ResponseProcessor;
 pub use response::Response;
@@ -1096,6 +1096,23 @@ mod tests {
     fn model_call_intent_is_query() {
         let m = ModelCall::new(vec![]);
         assert_eq!(m.intent(), MessageIntent::Query);
+    }
+
+    // [方法] C6: ModelCall::with_model_params 把 thinking_enabled 写入 payload
+    #[test]
+    fn model_call_propagates_thinking_enabled() {
+        let m = ModelCall::new(vec![])
+            .with_model_params(CoreModelParams { thinking_enabled: true, ..Default::default() });
+        let payload = m.payload();
+        assert_eq!(payload["model_params"]["thinking_enabled"], serde_json::json!(true));
+    }
+
+    // [边界] 不调 with_model_params → 默认 thinking_enabled=false（不破坏旧调用）
+    #[test]
+    fn model_call_default_model_params_thinking_disabled() {
+        let m = ModelCall::new(vec![]);
+        let payload = m.payload();
+        assert_eq!(payload["model_params"]["thinking_enabled"], serde_json::json!(false));
     }
 
     // [构造] ToolExec.msg_type 固定为 "tool_exec"
