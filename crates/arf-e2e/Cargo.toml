@@ -21,6 +21,7 @@ arf-model-adapter = { path = "../arf-model-adapter" }
 arf-mcp = { path = "../arf-mcp" }
 arf-pool = { path = "../arf-pool" }
 arf-session = { path = "../arf-session" }
+arf-compactor = { path = "../arf-compactor" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
