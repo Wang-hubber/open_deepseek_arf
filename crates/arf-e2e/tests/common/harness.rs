@@ -51,6 +51,13 @@ pub struct E2EHarnessBuilder {
     checkpoint_rules: Vec<CheckpointRule>,
     /// Optional session store for snapshot persistence (Phase 9 task 9.2.4).
     session_store: Option<Arc<dyn SessionStore>>,
+    /// Extra model providers to add as additional ModelAdapterNodes on the
+    /// bus (Phase 9 task 9.2.5). Each becomes a separate node with unique
+    /// NodeId (`model/e2e/extra-{i}`) and `provider={provider_name}` capability.
+    extra_providers: Vec<Arc<dyn Provider>>,
+    /// Optional override for `AgentConfig.model.provider` (Phase 9 task 9.2.5).
+    /// When `None`, uses the primary provider's `name()`.
+    provider_override: Option<String>,
     tool_timeout_ms: Option<u64>,
     /// Optional pre-created TempDir — used so the caller can write tool
     /// files into the same directory the harness will scan for MCP.
@@ -73,6 +80,8 @@ impl E2EHarnessBuilder {
             extra_routes: HashMap::new(),
             checkpoint_rules: vec![],
             session_store: None,
+            extra_providers: vec![],
+            provider_override: None,
             tool_timeout_ms: None,
             tmpdir: None,
             inject_tool_exec_responder: true,
@@ -117,6 +126,25 @@ impl E2EHarnessBuilder {
         self
     }
 
+    /// Add extra model providers as additional ModelAdapterNodes on the
+    /// bus (Phase 9 task 9.2.5). Each becomes a separate node with
+    /// NodeId `model/e2e/extra-{i}` and capability `{"provider": name()}`.
+    /// The engine resolves model_call to the first node whose
+    /// `capabilities.provider` matches `AgentConfig.model.provider`.
+    pub fn with_extra_providers(mut self, providers: Vec<Arc<dyn Provider>>) -> Self {
+        self.extra_providers = providers;
+        self
+    }
+
+    /// Override `AgentConfig.model.provider` (Phase 9 task 9.2.5).
+    /// When set, the engine resolves model_call to a node whose
+    /// `capabilities.provider` matches this value (instead of the
+    /// primary provider's name).
+    pub fn model_provider(mut self, provider_name: &str) -> Self {
+        self.provider_override = Some(provider_name.into());
+        self
+    }
+
     /// Set the engine's `tool_timeout_ms` (default: None = no timeout).
     /// Useful for tests that want to fail fast on hung tool_exec calls.
     pub fn tool_timeout_ms(mut self, ms: u64) -> Self {
@@ -152,6 +180,8 @@ impl E2EHarnessBuilder {
             self.extra_routes,
             self.checkpoint_rules,
             self.session_store,
+            self.extra_providers,
+            self.provider_override,
             self.tool_timeout_ms,
             self.tmpdir,
             self.inject_tool_exec_responder,
@@ -170,6 +200,7 @@ pub struct E2EHarness {
     pub state: State,
     pub tmpdir: TempDir,
     _model_node: Option<Arc<ModelAdapterNode>>,
+    _extra_model_nodes: Vec<Arc<ModelAdapterNode>>,
     _mcp_node: Option<Arc<McpNode>>,
     pub cancel: Option<CancellationToken>,
 }
@@ -196,6 +227,8 @@ impl E2EHarness {
         extra_routes: HashMap<String, Route>,
         checkpoint_rules: Vec<CheckpointRule>,
         session_store: Option<Arc<dyn SessionStore>>,
+        extra_providers: Vec<Arc<dyn Provider>>,
+        provider_override: Option<String>,
         tool_timeout_ms: Option<u64>,
         tmpdir: Option<TempDir>,
         inject_tool_exec_responder: bool,
@@ -238,9 +271,14 @@ impl E2EHarness {
             .first()
             .cloned()
             .unwrap_or_else(|| "default".into());
+        // Phase 9 task 9.2.5: provider_override takes precedence for engine's
+        // resolve_model lookup. The primary node is still created with its
+        // own provider name (its capability); we just point the engine at
+        // a different node via cfg.model.provider.
+        let cfg_provider = provider_override.clone().unwrap_or(provider_name.clone());
         let cfg = AgentConfig {
             model: ModelDecl {
-                provider: provider_name.clone(),
+                provider: cfg_provider,
                 model_name,
                 ..Default::default()
             },
@@ -265,6 +303,21 @@ impl E2EHarness {
             NodeId::new("model/e2e"),
         )
         .await?;
+
+        // Phase 9 task 9.2.5: extra providers become additional
+        // ModelAdapterNodes on the bus with NodeId `model/e2e/extra-{i}`.
+        // The engine's resolve_model picks the first node whose
+        // capabilities.provider matches cfg.model.provider.
+        let mut extra_model_nodes = Vec::with_capacity(extra_providers.len());
+        for (i, p) in extra_providers.into_iter().enumerate() {
+            let node = ModelAdapterNode::new(
+                p,
+                &bus,
+                NodeId::new(format!("model/e2e/extra-{i}")),
+            )
+            .await?;
+            extra_model_nodes.push(node);
+        }
 
         // Optional McpNode (filesystem-discovered at tmpdir).
         let mcp_node = if with_mcp {
@@ -355,6 +408,7 @@ impl E2EHarness {
             state: State::new(),
             tmpdir,
             _model_node: Some(model_node),
+            _extra_model_nodes: extra_model_nodes,
             _mcp_node: mcp_node,
             cancel,
         })
