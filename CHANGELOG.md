@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Phase 9 lesion fixes** (see `docs/v1.x/phase9/fix-design.md`):
+  - C8/F-003: `ModelAdapterPoolNode` dispatches each `model_call` on its own task (spawn-per-task + correlation_id demux) so concurrent calls use the whole pool in parallel; pool acquire failure now returns `model_response{error}` instead of dropping the request.
+
 ### Removed
 - `docs/architecture/` directory — was V0.x-only material (10-checkpoint Hook lifecycle, plugin system, PrimitiveAgent/AgentHarness, two-mode A2A, Eval benchmark). V1.x redesigned all of these; architecture overview now lives in `README.md` + `docs/dev/`.
 

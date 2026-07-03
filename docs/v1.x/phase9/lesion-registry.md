@@ -185,7 +185,11 @@ Engine 层蔓延  : （9.4.1 实证）Engine::new NodeId 硬编码（engine.rs:5
 Signal         : framework 设计缺陷（非 signal 命中）
 触发情景       : §2.12（model pool 生产场景）
 首次登记       : audit-probe-9.4.1.md §C
-状态           : OPEN（design quirk，development-stage）
+状态           : FIXED（e79c64b）— 重新 framing：真病灶是 run_loop 串行调度
+                （见 fix-design.md §2）。修复：run_loop 改为 dispatcher +
+                spawn-per-task + demux（correlation_id 路由）；acquire 失败回
+                model_response{error}。e2e: facade_spawns_per_request_concurrent
+                （4 并发 ~300ms，原 ~1.2s）+ facade_acquire_error_returns_error_response。
 file:line      : pool_node.rs:62-66（facade connect sub-bus 用 sub_id）
                 pool_node.rs:107-115（facade forward 用 to=sub_id）
 命中形态       : **Facade 的 sub_id 模式让 ModelAdapterNode 集成不可行**。
