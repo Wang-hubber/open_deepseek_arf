@@ -23,8 +23,9 @@
 | **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常）；9.2.1 加剧；9.2.2 真实 payload 复测 | lifecycle + model_call/model_response 消息类型名裸字面量散落 arf-bus/core/engine/model-adapter，局部 const 摆设，无跨 crate 声明；9.2.2 真实 payload 下路由工作（tool message 正确归位），病灶形态未在真实流量下恶化 | **OPEN** | 后续 fix phase |
 | **F-001** | (F-category) | 缺 primitive | 9.4.1（pool facade） | **framework 缺 `EnginePool` 抽象**——N 个 Engine 共享 model config 的 production 场景，framework 需 app 层用 "N facade 共享 1 pool" 模式手动 virtualize。Engine::new 时 `NodeId = "engine/{provider}"`（engine.rs:59），多 Engine 同 provider 必然 NodeId 冲突。**production 真实需求**（user 2026-07-03 round 3） | **OPEN** | 后续 fix phase / 独立 task |
 | **F-002** | (F-category) | 缺 primitive | 9.4.1（pool facade） | **framework 实现偏离设计意图（CRITICAL）**——pool 设计意图：`min_size` + `max_size` + `auto_provision`（load 增长时自动扩容），超 max_size 才开始排队；当前实现只有 fixed `max_size`，**无 min_size、无 auto-provision**，load 来时只能 Block/Queue/Reject。**不是隐藏 BUG，是 design 文档明示的 dynamic expansion code 完全没做**（user 2026-07-03 round 5 判定）。**production 真实需求**：N 用户同时咨询时，pool 需扩到 N（≤ max_size）才能保证所有用户不排队 | **OPEN（CRITICAL）** | 后续 fix phase / 独立 task |
+| **F-003** | (F-category) | framework 设计 quirk | 9.4.1（pool facade） | **Facade 的 sub_id 模式阻断 ModelAdapterNode 集成**——`ModelAdapterPoolNode::connect` 在 sub-bus 注册 listener `node_id = "model/pool-{i}/sub"`（pool_node.rs:65）；facade forward model_call 时 `to=this sub_id`；任何想在此 id 注册 `ModelAdapterNode` 会被 bus 拒绝（`AlreadyConnected`）。**唯一可工作的 sub-bus handler 是 manual broadcast subscriber**（如 `crates/arf-pool/tests/integration.rs` 既有 pattern）。后果：N 个 facade 共享 1 pool 时，每 facade 的 sub-bus 只能配 1 manual subscriber，**无法用 ModelAdapterNode 共享 sub-bus**（即"facade × N 真实 qwen 节点"模式不可行）。这是 framework 仍在开发中的设计 quirk，**不**算 F-category 的"缺 primitive"，但**实质上阻止了 9.4.1 设计意图的真并发实证**（user 2026-07-03 round 6 判定："框架还在开发中，有 BUG 是正常的"） | **OPEN（design quirk，development-stage）** | framework 演化时修（建议：facade 用 broadcast 替代 directed-to-sub_id 的 forward 模式） |
 
-> 统计：OPEN 4 / FIXED 0 / WONTFIX 0（截至 task 9.4.1 doc 撰写：A 类别 2 病灶 [A3/A4] 9.2.2 真实 payload 复测通过；F 类别 2 病灶 [F-001/F-002] 9.4.1 探查发现——F-002 为 critical design intent gap）
+> 统计：OPEN 5 / FIXED 0 / WONTFIX 0（截至 task 9.4.1 探查：A 类别 2 病灶 [A3/A4] 9.2.2 真实 payload 复测通过；F 类别 3 病灶 [F-001 EnginePool / F-002 pool 动态扩容 critical / F-003 facade sub_id quirk] 9.4.1 探查发现——F-002 为 critical design intent gap，F-003 为 framework 开发期 design quirk）
 
 ---
 
@@ -158,6 +159,48 @@ Engine 层蔓延  : （9.4.1 实证）Engine::new NodeId 硬编码（engine.rs:5
                 # 0 命中——无 EnginePool 抽象
 ```
 
+### F-003 — Facade sub_id 模式阻断 ModelAdapterNode 集成（design quirk）
+
+```
+病灶 ID       : F-003
+类别         : F（framework 设计 quirk，development-stage）
+Signal         : framework 设计缺陷（非 signal 命中）
+触发情景       : §2.12（model pool 生产场景）
+首次登记       : audit-probe-9.4.1.md §C
+状态           : OPEN（design quirk，development-stage）
+file:line      : pool_node.rs:62-66（facade connect sub-bus 用 sub_id）
+                pool_node.rs:107-115（facade forward 用 to=sub_id）
+命中形态       : **Facade 的 sub_id 模式让 ModelAdapterNode 集成不可行**。
+                `ModelAdapterPoolNode::connect` 在 sub-bus 注册 listener
+                `node_id = "model/pool-{i}/sub"`（pool_node.rs:65）。
+                Facade forward model_call 时 `to=this sub_id`。
+                任何想在此 id 注册 `ModelAdapterNode` 会被 bus 拒绝
+                （`AlreadyConnected` error，9.4.1 probe 实证）。
+                **唯一可工作的 sub-bus handler 是 manual broadcast subscriber**
+                （如 `crates/arf-pool/tests/integration.rs` 既有 pattern），
+                用 `bus.subscribe()` 接收所有消息（不依赖 to 字段）。
+影响面         : 1) N 个 facade 共享 1 pool 时，每 facade 的 sub-bus 只能配
+                   1 manual subscriber，**无法用 ModelAdapterNode 共享 sub-bus**
+                2) 9.4.1 设计意图的"facade × N 真实 qwen 节点"模式**当前不可行**
+                3) 真并发 LLM call（多 facade 共享 pool）需要绕过 sub_id 冲突——
+                   app 层必须写"每 facade 独立 sub-bus + manual subscriber"
+                   而不是"N facade 共享 1 sub-bus + N ModelAdapterNode"
+                4) framework 仍在开发中（user 2026-07-03 round 6 判定）
+修复方向       : 方案 A（最小）：facade forward model_call 时用 `to=[]` (broadcast)
+（供参考）      而非 `to=[sub_id]`，sub-bus 上所有 ModelAdapterNode 都可接收。
+                方案 B：facade 的 sub_id 改为 dynamic discoverable（如 pool 资源
+                自己 advertise），而非硬编码 listener。
+                方案 C：保留 sub_id 设计但 doc 明确"sub-bus 必须配 manual
+                broadcast subscriber"，current pattern 是设计意图。
+                【user 2026-07-03 round 6】当前为开发期 design quirk，**不**
+                阻塞 framework 使用（manual subscriber 可用），优先级低于 F-001/F-002。
+复现命令       : grep -n 'sub_id' crates/arf-model-adapter/src/pool_node.rs
+                # 65, 107, 115 — facade 三处使用 sub_id 模式
+                # 9.4.1 probe 实证: matrix_*_queue 7 个测试全部因
+                # "AlreadyConnected(NodeId(\"model/pool-0/sub\"))" 失败
+                # 见 audit-probe-9.4.1.md §A
+```
+
 ### F-002 — Pool 动态扩容缺失（CRITICAL：实现偏离设计意图）
 
 ```
@@ -221,6 +264,7 @@ Engine 层蔓延  : N/A（pool 不在 engine 层）
 > **F 类别已登记**：
 > - F-001（EnginePool 抽象缺失）—— 9.4.1 触发
 > - F-002（Pool 动态扩容缺失，CRITICAL）—— 9.4.1 触发
+> - F-003（Facade sub_id 模式阻断 ModelAdapterNode 集成，design quirk）—— 9.4.1 触发
 
 ---
 
