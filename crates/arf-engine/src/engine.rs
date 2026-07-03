@@ -13,11 +13,9 @@ use crate::config::AgentConfig;
 use crate::dispatcher::HandlerRegistry;
 use crate::error::{BuildError, RunError};
 use crate::registry::ResourceRegistry;
+use arf_core::msg_type::{MODEL_RESPONSE, TOOL_RESULT};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-const MODEL_RESPONSE: &str = "model_response";
-const TOOL_RESULT: &str = "tool_result";
 
 /// ReAct loop actor. Phase 6 §0.1 — "Engine 是 Bus 上的一个 Actor"。
 /// 6.3 实现最小骨架；6.4 实现完整 ReAct 主循环；6.5 实现 Checkpoint 评估与 dispatch；
@@ -708,11 +706,8 @@ impl Engine {
             if !expected_response_types.contains(&msg.msg_type.as_str()) {
                 continue;
             }
-            let msg_cid = msg
-                .payload
-                .get("correlation_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok());
+            // A4-001: typed accessor (centralises the Uuid↔string conversion).
+            let msg_cid = msg.correlation_id();
             if msg_cid != Some(our_cid) {
                 continue;
             }

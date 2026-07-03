@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 pub mod node;
 pub mod message;
+pub mod msg_type;
 pub mod tool;
 pub mod route;
 pub mod checkpoint;
@@ -131,6 +132,30 @@ impl Message {
     /// Returns true if this message is directed at the given node.
     pub fn is_for(&self, node_id: &NodeId) -> bool {
         self.to.contains(node_id)
+    }
+
+    /// Typed accessor for the `correlation_id` field. The wire `Message`
+    /// carries it inside `payload` (as a UUID string) for ActionMessages;
+    /// this helper does the typed↔string conversion in one place so callers
+    /// (e.g. `Engine::wait_for_strategy`) don't hand-dig the payload
+    /// (Phase 9 A4-001).
+    pub fn correlation_id(&self) -> Option<Uuid> {
+        self.payload
+            .get("correlation_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+    }
+
+    /// Construct a broadcast `Message` (no directed targets). The Bus skips
+    /// online-target validation for broadcasts (F-020), so handlers replying
+    /// to a `from` that may have gone offline can use this without a
+    /// silent `NodeOffline` rejection.
+    pub fn new_broadcast(
+        msg_type: impl Into<String>,
+        from: NodeId,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self::new(msg_type, from, vec![], payload)
     }
 }
 
@@ -763,6 +788,63 @@ mod tests {
         let json = r#"{"id":"00000000-0000-0000-0000-000000000001","msg_type":"x","from":"a","to":[],"payload":null,"timestamp":0}"#;
         let m: Message = serde_json::from_str(json).unwrap();
         assert!(m.from_bus.is_none());
+    }
+
+    // ── C3: Message::correlation_id / new_broadcast / msg_type constants ──
+
+    // [方法] Message::correlation_id() 提取 payload 里的 cid UUID（A4-001）
+    #[test]
+    fn message_correlation_id_typed_accessor() {
+        let cid = uuid::Uuid::new_v4();
+        let m = Message::new(
+            "x",
+            NodeId::new("a"),
+            vec![],
+            serde_json::json!({"correlation_id": cid.to_string(), "other": 1}),
+        );
+        assert_eq!(m.correlation_id(), Some(cid));
+    }
+
+    // [边界] correlation_id 缺失 / 非法格式 → None
+    #[test]
+    fn message_correlation_id_missing_or_invalid() {
+        let no_cid = Message::new("x", NodeId::new("a"), vec![], serde_json::json!({}));
+        assert_eq!(no_cid.correlation_id(), None);
+        let bad = Message::new("x", NodeId::new("a"), vec![], serde_json::json!({"correlation_id": "not-a-uuid"}));
+        assert_eq!(bad.correlation_id(), None);
+    }
+
+    // [构造] Message::new_broadcast() 标记为 broadcast（to 为空，F-020 友好）
+    #[test]
+    fn message_new_broadcast_is_broadcast() {
+        let m = Message::new_broadcast("x", NodeId::new("a"), serde_json::json!({"v": 1}));
+        assert!(m.is_broadcast());
+        assert!(m.to.is_empty());
+        assert_eq!(m.from, NodeId::new("a"));
+        assert_eq!(m.payload["v"], 1);
+    }
+
+    // [构造] msg_type 常量与既有字面量一致（A3-001 single source of truth）
+    #[test]
+    fn msg_type_constants_match_existing_strings() {
+        use crate::msg_type::*;
+        assert_eq!(NODE_ONLINE, "node_online");
+        assert_eq!(NODE_OFFLINE, "node_offline");
+        assert_eq!(HEARTBEAT_REQUEST, "heartbeat_request");
+        assert_eq!(HEARTBEAT_ACK, "heartbeat_ack");
+        assert_eq!(BARRIER_REQUEST, "barrier_request");
+        assert_eq!(BARRIER_ACK, "barrier_ack");
+        assert_eq!(MODEL_CALL, "model_call");
+        assert_eq!(MODEL_RESPONSE, "model_response");
+        assert_eq!(MODEL_RESPONSE_CHUNK, "model_response_chunk");
+        assert_eq!(TOOL_CALL, "tool_call");
+        assert_eq!(TOOL_RESULT, "tool_result");
+        assert_eq!(PERMISSION_REQUEST, "permission_request");
+        assert_eq!(PERMISSION_RESPONSE, "permission_response");
+        assert_eq!(PEER_MESSAGE, "peer_message");
+        assert_eq!(PEER_REPLY, "peer_reply");
+        assert_eq!(SESSION_SAVE, "session_save");
+        assert_eq!(SESSION_SNAPSHOT, "session_snapshot");
     }
 
     // [序列化] from_bus: None 时序列化输出不应包含字段

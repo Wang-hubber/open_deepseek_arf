@@ -13,6 +13,7 @@
 //! Buses shut down), all inbound channels close and `recv()` returns
 //! `Err(RecvError::Closed)`.
 
+use arf_core::msg_type::BARRIER_ACK;
 use arf_core::{
     BusId, Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt,
 };
@@ -324,7 +325,7 @@ impl NodeHandle {
     /// Returns `SendError::BusClosed` if the primary Bus is shut down.
     pub async fn barrier_ack(&self, correlation_id: Uuid) -> Result<(), SendError> {
         let msg = Message::with_from_bus(
-            "barrier_ack",
+            BARRIER_ACK,
             self.info.node_id.clone(),
             vec![],
             serde_json::json!({ "correlation_id": correlation_id }),

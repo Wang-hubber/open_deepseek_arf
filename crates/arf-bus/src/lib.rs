@@ -4,6 +4,7 @@
 //! handles node lifecycle (online/offline/heartbeat), and routes messages
 //! (broadcast when `to` is empty, directed otherwise).
 
+use arf_core::msg_type::{BARRIER_ACK, BARRIER_REQUEST, NODE_OFFLINE, NODE_ONLINE};
 use arf_core::{BusId, Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -296,7 +297,7 @@ impl Bus {
         let mut listener = self.subscribe_internal();
 
         let request = Message::with_from_bus(
-            "barrier_request",
+            BARRIER_REQUEST,
             NodeId::new("bus"),
             vec![],
             serde_json::json!({
@@ -326,7 +327,7 @@ impl Bus {
             let remaining = deadline - now;
             match tokio::time::timeout(remaining, listener.recv()).await {
                 Ok(Ok(msg)) => {
-                    if msg.msg_type != "barrier_ack" {
+                    if msg.msg_type != BARRIER_ACK {
                         continue;
                     }
                     // Only accept acks carrying our correlation_id.
@@ -525,7 +526,7 @@ fn handle_connect(
 
     // Broadcast node_online (stamped with this Bus's id)
     let online_msg = Message::with_from_bus(
-        "node_online",
+        NODE_ONLINE,
         node_id,
         vec![],
         serde_json::to_value(&info).unwrap_or_default(),
@@ -550,7 +551,7 @@ fn handle_disconnect(
 
     // Broadcast node_offline (stamped with this Bus's id)
     let offline_msg = Message::with_from_bus(
-        "node_offline",
+        NODE_OFFLINE,
         node_id.clone(),
         vec![],
         serde_json::json!({}),

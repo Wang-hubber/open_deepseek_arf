@@ -23,11 +23,13 @@ pub(crate) fn handle_heartbeat_tick(
     heartbeat_timeout: Duration,
     bus_id: arf_core::BusId,
 ) {
+    use arf_core::msg_type::{HEARTBEAT_REQUEST, NODE_OFFLINE};
+
     let now = Instant::now();
 
     // 1. Broadcast heartbeat_request (stamped with from_bus)
     let heartbeat_msg = Message::with_from_bus(
-        "heartbeat_request",
+        HEARTBEAT_REQUEST,
         NodeId::new("bus"),
         vec![],
         serde_json::json!({}),
@@ -52,7 +54,7 @@ pub(crate) fn handle_heartbeat_tick(
         }
 
         let offline_msg = Message::with_from_bus(
-            "node_offline",
+            NODE_OFFLINE,
             node_id.clone(),
             vec![],
             serde_json::to_value(info).unwrap_or_default(),

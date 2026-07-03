@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arf_bus::Bus;
+use arf_core::msg_type::{MODEL_CALL, MODEL_RESPONSE};
 use arf_core::{Message, MessageFilter, NodeId, NodeInfo, ToMatch};
 use arf_pool::Pool;
 use serde_json::json;
@@ -82,7 +83,7 @@ impl ModelAdapterPoolNode {
             online_since: now_ms(),
         };
         let top_filter = MessageFilter {
-            types: Some(vec!["model_call".into()]),
+            types: Some(vec![MODEL_CALL.into()]),
             to_match: ToMatch::BroadcastAndDirectedToMe,
         };
         let top_handle = self.top_bus.connect(top_info, top_filter).await?;
@@ -95,7 +96,7 @@ impl ModelAdapterPoolNode {
             online_since: now_ms(),
         };
         let sub_filter = MessageFilter {
-            types: Some(vec!["model_response".into()]),
+            types: Some(vec![MODEL_RESPONSE.into()]),
             to_match: ToMatch::BroadcastAndDirectedToMe,
         };
         let sub_handle = self.sub_bus.connect(sub_info, sub_filter).await?;
@@ -125,7 +126,7 @@ impl ModelAdapterPoolNode {
         let pending_demux = pending.clone();
         let demux = tokio::spawn(async move {
             while let Ok(m) = sub_handle.recv().await {
-                if m.msg_type != "model_response" {
+                if m.msg_type != MODEL_RESPONSE {
                     continue;
                 }
                 if let Some(cid) = extract_cid(&m) {
@@ -145,7 +146,7 @@ impl ModelAdapterPoolNode {
                     Err(_) => break,
                 }
             };
-            if req.msg_type != "model_call" {
+            if req.msg_type != MODEL_CALL {
                 continue;
             }
 
@@ -207,7 +208,7 @@ impl ModelAdapterPoolNode {
         match tokio::time::timeout(RESPONSE_TIMEOUT, rx).await {
             Ok(Ok(resp)) => {
                 let back = Message::with_from_bus(
-                    "model_response".to_string(),
+                    MODEL_RESPONSE.to_string(),
                     self.node_id.clone(),
                     vec![req.from.clone()],
                     resp.payload.clone(),
@@ -234,7 +235,7 @@ impl ModelAdapterPoolNode {
             payload["correlation_id"] = json!(cid.to_string());
         }
         let back = Message::with_from_bus(
-            "model_response".to_string(),
+            MODEL_RESPONSE.to_string(),
             self.node_id.clone(),
             vec![req.from.clone()],
             payload,

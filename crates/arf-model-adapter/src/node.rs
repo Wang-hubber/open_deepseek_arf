@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use arf_bus::Bus;
+use arf_core::msg_type::{MODEL_CALL, MODEL_RESPONSE, MODEL_RESPONSE_CHUNK};
 use arf_core::{MessageFilter, NodeId, NodeInfo, ToMatch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -51,7 +52,7 @@ impl ModelAdapterNode {
         };
 
         let filter = MessageFilter {
-            types: Some(vec!["model_call".into()]),
+            types: Some(vec![MODEL_CALL.into()]),
             to_match: ToMatch::BroadcastAndDirectedToMe,
         };
 
@@ -69,7 +70,7 @@ impl ModelAdapterNode {
                     msg = handle.recv() => {
                         match msg {
                             Ok(msg) => {
-                                if msg.msg_type == "model_call" && (msg.is_for(&my_id) || msg.is_broadcast()) {
+                                if msg.msg_type == MODEL_CALL && (msg.is_for(&my_id) || msg.is_broadcast()) {
                                     process_model_call(&provider, &mut handle, &msg).await;
                                 }
                             }
@@ -121,7 +122,7 @@ async fn process_model_call(
         Err(e) => {
             let _ = handle
                 .send(
-                    "model_response",
+                    MODEL_RESPONSE,
                     vec![msg.from.clone()],
                     serde_json::json!({
                         "error": format!("invalid payload: {e}"),
@@ -150,7 +151,7 @@ async fn process_model_call(
                 for chunk in &chunks {
                     let _ = handle
                         .send(
-                            "model_response_chunk",
+                            MODEL_RESPONSE_CHUNK,
                             vec![engine_id.clone()],
                             serde_json::to_value(chunk).unwrap_or_default(),
                         )
@@ -158,7 +159,7 @@ async fn process_model_call(
                 }
                 let _ = handle
                     .send_response(
-                        "model_response",
+                        MODEL_RESPONSE,
                         vec![engine_id.clone()],
                         serde_json::to_value(&response).unwrap_or_default(),
                         request_cid,
@@ -182,7 +183,7 @@ async fn process_model_call(
             Ok(response) => {
                 let _ = handle
                     .send_response(
-                        "model_response",
+                        MODEL_RESPONSE,
                         vec![engine_id.clone()],
                         serde_json::to_value(&response).unwrap_or_default(),
                         request_cid,
@@ -214,7 +215,7 @@ async fn send_error_response(
 ) {
     let _ = handle
         .send_response(
-            "model_response",
+            MODEL_RESPONSE,
             vec![engine_id.clone()],
             serde_json::json!({
                 "error": error.to_string(),
