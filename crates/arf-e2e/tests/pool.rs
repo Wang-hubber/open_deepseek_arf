@@ -16,12 +16,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arf_bus::Bus;
-use arf_core::NodeId;
+use arf_core::{Message, MessageFilter, NodeId, NodeInfo, ToMatch};
 use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, ModelDecl};
 use arf_model_adapter::{ModelAdapterNode, ModelAdapterPoolNode, ModelAdapterResource, Provider};
 use arf_pool::{Overflow, Pool, PoolConfig, PoolError, Resource};
 use common::provider::{scripted, text_response};
+use serde_json::json;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 // ── Test 1: Pool with Queue overflow serves serial clients ────────────────
 
@@ -160,6 +162,249 @@ async fn model_adapter_pool_node_bridges_model_call_across_buses() -> anyhow::Re
     .expect("engine run failed");
     assert_eq!(out, "from-the-pool");
     assert_eq!(state.messages.len(), 2); // user + assistant
+    Ok(())
+}
+
+// ── Test 4: facade dispatches concurrently (F-003 spawn-per-task) ─────────
+
+// [并发] ModelAdapterPoolNode with Pool<max=4> + 4 concurrent model_calls.
+// A concurrent delay node on the sub bus sleeps 300ms per request but handles
+// requests in parallel (spawn-per-request). With a SERIAL facade run_loop the
+// facade forwards req N+1 only after req N's response returns → total ≈ 4×300ms.
+// With the spawn-per-task facade all 4 leases are used concurrently → total ≈
+// 300ms. Assert total < 900ms to discriminate the two regimes.
+#[tokio::test]
+async fn facade_spawns_per_request_concurrent() -> anyhow::Result<()> {
+    let top_bus = Arc::new(Bus::new(
+        Duration::from_millis(500),
+        Duration::from_secs(5),
+        64,
+    ));
+    let sub_bus = Arc::new(Bus::new(
+        Duration::from_millis(500),
+        Duration::from_secs(5),
+        64,
+    ));
+
+    // Concurrent delay node on the sub bus: spawns a task per model_call that
+    // sleeps then replies model_response with the same correlation_id.
+    spawn_concurrent_delay_node(
+        sub_bus.clone(),
+        NodeId::new("model/delay"),
+        Duration::from_millis(300),
+    )
+    .await?;
+
+    // Facade with a pool of 4 resources (Reject overflow — should never hit it
+    // because we send exactly 4 with 4 leases available).
+    let provider: Arc<dyn Provider> = scripted(vec![text_response("ignored")]);
+    let pool: Pool<ModelAdapterResource> = Pool::with_resources(
+        PoolConfig {
+            max_size: 4,
+            overflow: Overflow::Reject,
+            idle_timeout: None,
+        },
+        (0..4)
+            .map(|_| ModelAdapterResource::new(provider.clone()))
+            .collect(),
+    );
+    let facade_id = NodeId::new("model/pool");
+    let facade = Arc::new(ModelAdapterPoolNode {
+        node_id: facade_id.clone(),
+        top_bus: top_bus.clone(),
+        sub_bus: sub_bus.clone(),
+        pool: Arc::new(pool),
+        advertised_provider: "pool".into(),
+        advertised_models: vec!["scripted-v1".into()],
+    });
+    facade.clone().connect().await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // A fake engine: sends 4 model_calls, collects 4 model_responses.
+    let mut eng = top_bus
+        .connect(
+            NodeInfo {
+                node_id: NodeId::new("engine/test"),
+                node_type: "engine".into(),
+                capabilities: json!({}),
+                online_since: 0,
+            },
+            MessageFilter {
+                types: Some(vec!["model_response".into()]),
+                to_match: ToMatch::BroadcastAndDirectedToMe,
+            },
+        )
+        .await?;
+
+    let cids: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+    let start = std::time::Instant::now();
+    for cid in &cids {
+        eng.send(
+            "model_call",
+            vec![facade_id.clone()],
+            json!({"correlation_id": cid.to_string(), "messages": [], "tools": []}),
+        )
+        .await?;
+    }
+
+    let mut got = 0;
+    while got < 4 {
+        let m = tokio::time::timeout(Duration::from_secs(3), eng.recv())
+            .await
+            .expect("timed out collecting model_response")?;
+        if m.msg_type == "model_response" {
+            got += 1;
+        }
+    }
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "expected concurrent dispatch (~300ms), got {elapsed:?} — facade is serial"
+    );
+
+    eng.disconnect().await;
+    Ok(())
+}
+
+// ── Test 5: facade returns model_response{error} on pool acquire failure ──
+
+// [边界] Facade with Pool<max=1, Reject>; the single lease is held externally so
+// the facade's acquire() fails. The facade must reply model_response with an
+// `error` field + the request's correlation_id (no silent failure / hang).
+#[tokio::test]
+async fn facade_acquire_error_returns_error_response() -> anyhow::Result<()> {
+    let top_bus = Arc::new(Bus::new(
+        Duration::from_millis(500),
+        Duration::from_secs(5),
+        32,
+    ));
+    let sub_bus = Arc::new(Bus::new(
+        Duration::from_millis(500),
+        Duration::from_secs(5),
+        32,
+    ));
+
+    let provider: Arc<dyn Provider> = scripted(vec![text_response("ignored")]);
+    let pool: Arc<Pool<ModelAdapterResource>> = Arc::new(Pool::with_resources(
+        PoolConfig {
+            max_size: 1,
+            overflow: Overflow::Reject,
+            idle_timeout: None,
+        },
+        vec![ModelAdapterResource::new(provider.clone())],
+    ));
+    // Hold the only lease so the facade's acquire() returns Full.
+    let _held = pool.acquire().await.expect("hold the only lease");
+
+    let facade_id = NodeId::new("model/pool");
+    let facade = Arc::new(ModelAdapterPoolNode {
+        node_id: facade_id.clone(),
+        top_bus: top_bus.clone(),
+        sub_bus: sub_bus.clone(),
+        pool: pool.clone(),
+        advertised_provider: "pool".into(),
+        advertised_models: vec!["scripted-v1".into()],
+    });
+    facade.clone().connect().await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut eng = top_bus
+        .connect(
+            NodeInfo {
+                node_id: NodeId::new("engine/test"),
+                node_type: "engine".into(),
+                capabilities: json!({}),
+                online_since: 0,
+            },
+            MessageFilter {
+                types: Some(vec!["model_response".into()]),
+                to_match: ToMatch::BroadcastAndDirectedToMe,
+            },
+        )
+        .await?;
+
+    let cid = Uuid::new_v4();
+    eng.send(
+        "model_call",
+        vec![facade_id.clone()],
+        json!({"correlation_id": cid.to_string(), "messages": [], "tools": []}),
+    )
+    .await?;
+
+    let resp = tokio::time::timeout(Duration::from_secs(3), eng.recv())
+        .await
+        .expect("timed out waiting for error response")?;
+    assert_eq!(resp.msg_type, "model_response");
+    assert!(
+        resp.payload.get("error").is_some(),
+        "expected error field in payload, got {}",
+        resp.payload
+    );
+    assert_eq!(
+        resp.payload.get("correlation_id").and_then(|v| v.as_str()),
+        Some(cid.to_string().as_str()),
+        "error response must carry the request correlation_id"
+    );
+
+    eng.disconnect().await;
+    Ok(())
+}
+
+/// Spawn a concurrent model node on `bus` that, for each `model_call`, sleeps
+/// `delay` then replies `model_response` (with the same correlation_id) to the
+/// request sender. Unlike `ModelAdapterNode`, it handles requests in parallel
+/// (spawn-per-request), so it does not itself serialize the facade.
+async fn spawn_concurrent_delay_node(
+    bus: Arc<Bus>,
+    node_id: NodeId,
+    delay: Duration,
+) -> anyhow::Result<()> {
+    let info = NodeInfo {
+        node_id: node_id.clone(),
+        node_type: "model".into(),
+        capabilities: json!({"provider": "delay", "models": ["scripted-v1"]}),
+        online_since: 0,
+    };
+    let filter = MessageFilter {
+        types: Some(vec!["model_call".into()]),
+        to_match: ToMatch::BroadcastAndDirectedToMe,
+    };
+    let mut handle = bus.connect(info, filter).await?;
+    let bus_for_loop = bus.clone();
+    tokio::spawn(async move {
+        loop {
+            match handle.recv().await {
+                Ok(msg) if msg.msg_type == "model_call" => {
+                    let cid = msg
+                        .payload
+                        .get("correlation_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let reply_to = msg.from.clone();
+                    let bus = bus_for_loop.clone();
+                    let node_id = node_id.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let payload = json!({
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                            "correlation_id": cid,
+                        });
+                        let reply = Message::with_from_bus(
+                            "model_response".to_string(),
+                            node_id,
+                            vec![reply_to],
+                            payload,
+                            bus.id,
+                        );
+                        let _ = bus.send(reply).await;
+                    });
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    });
     Ok(())
 }
 

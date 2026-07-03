@@ -14,7 +14,22 @@
 //! Sub-bus assumption: at least one node with `node_type="model"` (the
 //! actual ModelAdapterNode with the real Provider) is connected and
 //! responds to `model_call` / emits `model_response`.
+//!
+//! ## Concurrency (Phase 9 F-003)
+//!
+//! The forwarding loop is a **dispatcher**, not a serial worker. Each
+//! `model_call` is handled on its own `tokio::spawn`ed task that acquires a
+//! lease, forwards to the sub-bus, and awaits its response. This lets N
+//! concurrent `model_call`s use up to `max_size` pooled resources in parallel
+//! (a serial loop would block on each response and use only one resource at a
+//! time regardless of `max_size`).
+//!
+//! Because `NodeHandle` is a single-consumer receiver (not clonable), a
+//! **demultiplexer** task owns the sub-bus handle: it receives every
+//! `model_response` and routes it — by `correlation_id` — to the waiting
+//! per-request task via a `oneshot` channel.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,9 +37,19 @@ use arf_bus::Bus;
 use arf_core::{Message, MessageFilter, NodeId, NodeInfo, ToMatch};
 use arf_pool::Pool;
 use serde_json::json;
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 use crate::ModelAdapterResource;
+
+/// Map of in-flight requests: `correlation_id → oneshot sender` for the
+/// matching `model_response`. Shared between the dispatcher (inserts) and the
+/// demux task (removes + fulfils).
+type PendingMap = Arc<Mutex<HashMap<Uuid, oneshot::Sender<Message>>>>;
+
+/// How long a per-request task waits for its `model_response` before giving up
+/// and returning an error to the caller.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A Bus facade that bridges `model_call` on a top bus to a pool of
 /// `ModelAdapterResource` on a sub bus.
@@ -62,7 +87,7 @@ impl ModelAdapterPoolNode {
         };
         let top_handle = self.top_bus.connect(top_info, top_filter).await?;
 
-        let sub_id = NodeId::new(format!("{}/sub", self.node_id));
+        let sub_id = self.sub_id();
         let sub_info = NodeInfo {
             node_id: sub_id.clone(),
             node_type: "model_pool_sub".into(),
@@ -81,73 +106,150 @@ impl ModelAdapterPoolNode {
         Ok(())
     }
 
+    /// The sub-bus identity this facade forwards from.
+    fn sub_id(&self) -> NodeId {
+        NodeId::new(format!("{}/sub", self.node_id))
+    }
+
+    /// Dispatcher loop: demux sub-bus responses in a background task, then spawn
+    /// a per-request task for every incoming `model_call`.
     async fn run_loop(
         self: Arc<Self>,
         mut top_handle: arf_bus::NodeHandle,
         mut sub_handle: arf_bus::NodeHandle,
     ) {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Demux task: owns the sub handle, routes each model_response to the
+        // waiting per-request task by correlation_id.
+        let pending_demux = pending.clone();
+        let demux = tokio::spawn(async move {
+            while let Ok(m) = sub_handle.recv().await {
+                if m.msg_type != "model_response" {
+                    continue;
+                }
+                if let Some(cid) = extract_cid(&m) {
+                    if let Some(tx) = pending_demux.lock().await.remove(&cid) {
+                        let _ = tx.send(m);
+                    }
+                }
+            }
+        });
+
         let stop_at = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
             let req = tokio::select! {
-                _ = tokio::time::sleep_until(stop_at) => return,
+                _ = tokio::time::sleep_until(stop_at) => break,
                 r = top_handle.recv() => match r {
                     Ok(m) => m,
-                    Err(_) => return,
+                    Err(_) => break,
                 }
             };
             if req.msg_type != "model_call" {
                 continue;
             }
 
-            let lease = match self.pool.acquire().await {
-                Ok(l) => l,
-                Err(_) => return,
-            };
-
-            let sub_id = NodeId::new(format!("{}/sub", self.node_id));
-            let cid = req
-                .payload
-                .get("correlation_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok());
-            let forwarded = Message::with_from_bus(
-                req.msg_type.clone(),
-                sub_id,
-                vec![],
-                req.payload.clone(),
-                self.sub_bus.id,
-            );
-            let _ = self.sub_bus.send(forwarded).await;
-
-            while let Ok(m) = tokio::time::timeout_at(stop_at, sub_handle.recv()).await {
-                let m = match m {
-                    Ok(m) => m,
-                    Err(_) => return,
-                };
-                if m.msg_type != "model_response" {
+            // Every model_call carries a correlation_id (ModelCall serializes it
+            // as a required field). Without one we cannot demux the response.
+            let cid = match extract_cid(&req) {
+                Some(c) => c,
+                None => {
+                    self.send_error_back(&req, None, "model_call missing correlation_id")
+                        .await;
                     continue;
                 }
-                let m_cid = m
-                    .payload
-                    .get("correlation_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok());
-                if m_cid == cid {
-                    let back = Message::with_from_bus(
-                        m.msg_type.clone(),
-                        self.node_id.clone(),
-                        vec![req.from.clone()],
-                        m.payload.clone(),
-                        self.top_bus.id,
-                    );
-                    let _ = self.top_bus.send(back).await;
-                    break;
-                }
-            }
+            };
 
-            drop(lease);
+            let (tx, rx) = oneshot::channel();
+            pending.lock().await.insert(cid, tx);
+
+            let me = self.clone();
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                me.handle_one_model_call(req, cid, rx, pending).await;
+            });
         }
+
+        demux.abort();
     }
+
+    /// Handle a single `model_call`: acquire a lease, forward to the sub-bus,
+    /// await the matching `model_response` (via the demux `oneshot`), forward it
+    /// back to the caller, and release the lease on drop.
+    async fn handle_one_model_call(
+        self: Arc<Self>,
+        req: Message,
+        cid: Uuid,
+        rx: oneshot::Receiver<Message>,
+        pending: PendingMap,
+    ) {
+        let lease = match self.pool.acquire().await {
+            Ok(l) => l,
+            Err(e) => {
+                // Drop our pending registration and tell the caller — never fail
+                // silently or leave the Engine parked forever.
+                pending.lock().await.remove(&cid);
+                self.send_error_back(&req, Some(cid), &format!("pool acquire: {e}"))
+                    .await;
+                return;
+            }
+        };
+
+        let forwarded = Message::with_from_bus(
+            req.msg_type.clone(),
+            self.sub_id(),
+            vec![],
+            req.payload.clone(),
+            self.sub_bus.id,
+        );
+        let _ = self.sub_bus.send(forwarded).await;
+
+        match tokio::time::timeout(RESPONSE_TIMEOUT, rx).await {
+            Ok(Ok(resp)) => {
+                let back = Message::with_from_bus(
+                    "model_response".to_string(),
+                    self.node_id.clone(),
+                    vec![req.from.clone()],
+                    resp.payload.clone(),
+                    self.top_bus.id,
+                );
+                let _ = self.top_bus.send(back).await;
+            }
+            _ => {
+                // Timeout or demux dropped the sender: clean up + report error.
+                pending.lock().await.remove(&cid);
+                self.send_error_back(&req, Some(cid), "model_call timed out waiting for response")
+                    .await;
+            }
+        }
+
+        drop(lease);
+    }
+
+    /// Send a `model_response` carrying an `error` field back to the request's
+    /// origin, echoing the correlation_id so the Engine can match it.
+    async fn send_error_back(&self, req: &Message, cid: Option<Uuid>, error: &str) {
+        let mut payload = json!({ "error": error, "finish_reason": "error" });
+        if let Some(cid) = cid {
+            payload["correlation_id"] = json!(cid.to_string());
+        }
+        let back = Message::with_from_bus(
+            "model_response".to_string(),
+            self.node_id.clone(),
+            vec![req.from.clone()],
+            payload,
+            self.top_bus.id,
+        );
+        let _ = self.top_bus.send(back).await;
+    }
+}
+
+/// Extract the `correlation_id` (a UUID string) from a message payload.
+fn extract_cid(msg: &Message) -> Option<Uuid> {
+    msg.payload
+        .get("correlation_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
 }
 
 fn now_ms() -> u64 {
