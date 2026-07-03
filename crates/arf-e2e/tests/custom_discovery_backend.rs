@@ -18,12 +18,11 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arf_mcp::McpNode;
-use arf_mcp::discovery::{DiscoveryBackend, FsDiscovery, ToolInfo};
+use arf_mcp::discovery::{DiscoveryBackend, ToolInfo};
 use arf_mcp::tool::Tool;
 use arf_mcp::types::ToolError;
 use arf_bus::Bus;
@@ -169,36 +168,82 @@ async fn custom_backend_skill_methods_default_to_none() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Test 3 — F-010 实证: McpNode 无 public 入口注入自定义 DiscoveryBackend
+// Test 3 — F-010 fixed: McpNode::with_discovery 注入自定义 DiscoveryBackend
 // ═══════════════════════════════════════════════════════════════════════
 
+// [方法] McpNode::with_discovery(ns, InMemoryBackend, LocalRuntime) → connect →
+// tool_exec 走 custom discovery 的 message_loop 路径，端到端拿到 tool_result。
 #[tokio::test]
-async fn mcp_node_has_no_public_custom_discovery_constructor() {
-    use std::any::type_name;
+async fn mcp_node_with_custom_discovery() {
+    let mut backend = InMemoryBackend::new();
+    backend.add_tool(Arc::new(MyTool {
+        name: "echo".into(),
+        desc: "Echoes input".into(),
+    }));
 
-    // FsDiscovery 单独 scan + 作为 trait object 单独存在
-    let root = PathBuf::from("/tmp/arf_empty_for_scan");
-    let _ = std::fs::create_dir_all(&root);
-    let _fs = FsDiscovery::scan(root.clone());
-    let _backend_trait: Box<dyn DiscoveryBackend> = Box::new(InMemoryBackend::new());
-    println!("[test3] DiscoveryBackend trait object 构造 OK ✓");
+    // F-010: inject the custom DiscoveryBackend directly (no crate fork).
+    let node = McpNode::with_discovery(
+        "custom-disc",
+        Box::new(backend),
+        Box::new(LocalRuntime),
+    );
+    // discovery() accessor exposes the injected backend.
+    assert_eq!(node.discovery().list_tools().len(), 1);
 
-    // 验 McpNode 无 public `discovery` / `runtime` / `handle` 字段
-    // (compile-time check: 这里不能直接构造 McpNode struct fields)
-    // F-010 finding: framework 缺 public `McpNode::with_discovery(ns, discovery)` 入口
-    println!("[test3] 验 McpNode pub fields:");
-    println!("[test3]   pub struct McpNode {{");
-    println!("[test3]     pub namespace: String,  // ✓ pub");
-    println!("[test3]     pub node_id: NodeId,    // ✓ pub");
-    println!("[test3]     discovery: ...,  // ✗ private — 不可外部构造");
-    println!("[test3]     runtime: ...,    // ✗ private");
-    println!("[test3]     handle: ...,     // ✗ private");
-    println!("[test3]   }}");
-    println!("[test3] McpNode 公开构造器：local() / remote() / local_with_runtime()");
-    println!("[test3]   均使用 framework-supplied discovery —— 缺 public 入口注入自定义 DiscoveryBackend");
+    let bus = Arc::new(Bus::new(
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        1024,
+    ));
+    node.connect(&bus).await.expect("connect");
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let _ = type_name::<McpNode>();
-    let _ = root;
+    let tester_info = NodeInfo {
+        node_id: NodeId::new("tester"),
+        node_type: "tester".into(),
+        capabilities: json!({}),
+        online_since: 0,
+    };
+    let _tester = bus
+        .connect(tester_info, MessageFilter { types: None, to_match: ToMatch::All })
+        .await
+        .expect("tester connect");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Subscribe BEFORE sending: MyTool executes instantly, so the tool_result
+    // can be broadcast before a subscribe-after-send would be ready.
+    let mut sub = bus.subscribe();
+
+    let tool_exec = arf_core::Message::with_from_bus(
+        "tool_exec",
+        NodeId::new("tester"),
+        vec![NodeId::new("mcp/custom-disc")],
+        json!({
+            "tool_name": "echo",
+            "arguments": {"hello": "world"},
+            "correlation_id": uuid::Uuid::new_v4().to_string(),
+        }),
+        bus.id,
+    );
+    bus.send(tool_exec).await.expect("send");
+
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let m = sub.recv().await.expect("recv");
+            if m.msg_type == "tool_result" && m.is_for(&NodeId::new("tester")) {
+                return m;
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for tool_result");
+
+    println!("[test3] tool_result via custom discovery: {}", result.payload);
+    assert_eq!(result.payload["ok"], json!(true));
+    // MyTool echoes {"echoed": params, "from": "MyTool"}
+    assert_eq!(result.payload["content"]["from"], json!("MyTool"));
+    assert_eq!(result.payload["content"]["echoed"]["hello"], json!("world"));
+    println!("[test3] McpNode::with_discovery 端到端 OK ✓ (F-010 fixed)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

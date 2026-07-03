@@ -25,6 +25,10 @@ pub struct RemoteToolDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
     pub content: Vec<ToolContent>,
+    /// MCP `isError` flag: `true` means the tool itself reported an error
+    /// (distinct from a JSON-RPC protocol error). Defaults to `false`.
+    #[serde(rename = "isError", default)]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,15 +109,30 @@ impl Tool for HttpProxyTool {
         let result = jrpc.result.unwrap_or_default();
         let content: CallToolResult = serde_json::from_value(result)
             .map_err(|e| ToolError::from(format!("parse error: {e}")))?;
-        let text_out: String = content
-            .content
-            .into_iter()
-            .filter_map(|c| if c.content_type == "text" { c.text } else { None })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(Value::String(text_out))
+        call_result_to_output(content, &self.name)
     }
+}
+
+/// Convert a parsed `tools/call` result into a tool output, honouring the MCP
+/// `isError` flag: `isError: true` becomes a `ToolError` rather than a success
+/// value (Phase 9 F-011). Extracted from `HttpProxyTool::execute` so it can be
+/// unit-tested without an HTTP server.
+pub(crate) fn call_result_to_output(content: CallToolResult, tool_name: &str) -> Result<Value, ToolError> {
+    let is_error = content.is_error;
+    let text_out: String = content
+        .content
+        .into_iter()
+        .filter_map(|c| if c.content_type == "text" { c.text } else { None })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if is_error {
+        return Err(ToolError::from(format!(
+            "MCP tool '{tool_name}' returned isError: {text_out}"
+        )));
+    }
+
+    Ok(Value::String(text_out))
 }
 
 // ── HttpDiscovery ──────────────────────────────────────────────────

@@ -386,13 +386,18 @@ async fn json_validate_reports_syntax_errors() {
 
     let resp = engine.recv().await.unwrap();
     let r = &resp.payload["results"][0];
-    // json_validate always returns status="success" (it reports errors in the result text)
-    assert_eq!(r["status"], "success");
-    // The result should mention "error" or "invalid" in the text
-    let result_text = r["result"].as_str().unwrap().to_lowercase();
+    // Phase 9 F-011: the CodeTidy server reports the syntax failure via MCP
+    // `isError: true`, which ARF now propagates as a tool error (previously the
+    // isError flag was ignored and this returned status="success").
+    assert_eq!(r["status"], "error", "isError:true must map to status=error");
+    // The error text should describe the invalid JSON.
+    let err_text = r["error"].as_str().unwrap_or_default().to_lowercase();
     assert!(
-        result_text.contains("error") || result_text.contains("invalid") || result_text.contains("unexpected"),
-        "expected error description, got: {result_text}"
+        err_text.contains("error")
+            || err_text.contains("invalid")
+            || err_text.contains("unexpected")
+            || err_text.contains("iserror"),
+        "expected error description, got: {err_text}"
     );
 }
 

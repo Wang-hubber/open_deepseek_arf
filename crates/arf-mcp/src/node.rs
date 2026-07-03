@@ -67,6 +67,30 @@ impl McpNode {
         }))
     }
 
+    /// Fully custom MCP node — inject any [`DiscoveryBackend`] + [`RuntimeModule`]
+    /// (Phase 9 F-010). Previously the only entry points supplied a
+    /// framework-chosen discovery (`FsDiscovery`/`HttpDiscovery`), so apps had to
+    /// fork the crate to plug in their own backend.
+    pub fn with_discovery(
+        namespace: impl Into<String>,
+        discovery: Box<dyn DiscoveryBackend>,
+        runtime: Box<dyn RuntimeModule>,
+    ) -> Arc<Self> {
+        let ns: String = namespace.into();
+        Arc::new(Self {
+            node_id: NodeId::new(&format!("mcp/{ns}")),
+            namespace: ns,
+            discovery,
+            runtime,
+            handle: Mutex::new(None),
+        })
+    }
+
+    /// Borrow the discovery backend (read-only access for inspection).
+    pub fn discovery(&self) -> &dyn DiscoveryBackend {
+        &*self.discovery
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────
 
     pub async fn connect(self: &Arc<Self>, bus: &Bus) -> Result<(), McpError> {
