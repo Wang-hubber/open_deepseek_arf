@@ -164,16 +164,7 @@ grep -n 'message_count.fetch_add' crates/arf-bus/src/lib.rs
 
 ---
 
-## §G 探查用时
-
-- 4 步流程：约 1.5h
-- 信号 grep / 真实行为 trace：约 0.5h
-- 文档：约 0.5h
-- **总**：~2.5h（实操低于 task doc 估时 0.5d = 4h）
-
----
-
-## §H 下一步
+## §G 下一步
 
 - commit audit-probe-9.1.1.md + baseline_bus.rs（新 e2e test 文件）
 - push 到双 remote
