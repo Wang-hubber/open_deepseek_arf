@@ -19,10 +19,10 @@
 
 | 病灶 ID | 信条 | Signal | 触发 task | 命中摘要 | 状态 | 修复归属 |
 |---|---|---|---|---|---|---|
-| **A4-001** | A4 处理集中 | A4-S4（convert 散落） | 9.1.4（barrier）；9.2.1 精确化 | `correlation_id` Uuid↔JSON string 转换散落；**typed 访问器 Message::correlation_id 已存在却未一致采用**（engine.rs:689 仍手挖） | **OPEN** | 后续 fix phase |
-| **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常）；9.2.1 加剧 | lifecycle + model_call/model_response 消息类型名裸字面量散落 arf-bus/core/engine/model-adapter，局部 const 摆设，无跨 crate 声明 | **OPEN** | 后续 fix phase |
+| **A4-001** | A4 处理集中 | A4-S4（convert 散落） | 9.1.4（barrier）；9.2.1 精确化；**9.2.2 真实 payload 复测** | `correlation_id` Uuid↔JSON string 转换散落；**typed 访问器 Message::correlation_id 已存在却未一致采用**（engine.rs:689 仍手挖）；9.2.2 真实 DashScope qwen 端到端下匹配工作（tool loop 5 消息实证），病灶形态未在真实流量下恶化 | **OPEN** | 后续 fix phase |
+| **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常）；9.2.1 加剧；**9.2.2 真实 payload 复测** | lifecycle + model_call/model_response 消息类型名裸字面量散落 arf-bus/core/engine/model-adapter，局部 const 摆设，无跨 crate 声明；9.2.2 真实 payload 下路由工作（tool message 正确归位），病灶形态未在真实流量下恶化 | **OPEN** | 后续 fix phase |
 
-> 统计：OPEN 2 / FIXED 0 / WONTFIX 0（截至 task 9.2.1；两病灶经 9.2.1 在 Engine 层实证蔓延并精确化，无新增病灶）
+> 统计：OPEN 2 / FIXED 0 / WONTFIX 0（截至 task 9.2.2；两病灶经 9.2.1 在 Engine 层实证蔓延并精确化，9.2.2 在真实 DashScope qwen payload 下复测通过——病灶形态未在真实流量下恶化，无新增病灶）
 
 ---
 
