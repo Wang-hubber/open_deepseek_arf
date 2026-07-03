@@ -239,6 +239,8 @@ file:line      : <具体观察点>
 
 **病灶不是预设的**，是探查跑出来的。每个 task 跑完，登记真实命中的项。
 
+**病灶汇总**：每个 Y 病灶除在本 task 的 `audit-probe-9.X.Y.md` §D 首次现场登记外，须**追加**到 phase 9 病灶中心登记册 `lesion-registry.md`（总表 + 详情 + `OPEN/FIXED/WONTFIX` 状态跟踪）。该登记册是后续 fix phase 的**唯一病灶输入源**。
+
 ### §4.4 探查回归
 
 每次 framework 代码变更：
