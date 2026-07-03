@@ -84,6 +84,10 @@ pub struct PoolConfig {
     /// Idle resources older than this duration are eligible for eviction.
     /// `None` = no eviction.
     pub idle_timeout: Option<Duration>,
+    /// Initial guaranteed resource count (Phase 9 F-002). Pool pre-populates
+    /// `min_size` resources on construction if a provisioner is supplied via
+    /// [`Pool::with_provisioner`]. `min_size <= max_size`.
+    pub min_size: usize,
 }
 
 impl Default for PoolConfig {
@@ -92,11 +96,13 @@ impl Default for PoolConfig {
             max_size: 4,
             overflow: Overflow::Queue(0),
             idle_timeout: None,
+            min_size: 0,
         }
     }
 }
 
 /// A lease on a pooled resource. Drops auto-release the resource.
+#[derive(Debug)]
 pub struct Lease<R: Resource> {
     resource: Arc<R>,
     pool: Arc<PoolInner<R>>,
@@ -124,6 +130,22 @@ impl<R: Resource> Drop for Lease<R> {
     }
 }
 
+// Debug-able wrapper so PoolInner can derive Debug (Phase 9 F-002).
+struct ProvisionFn<R: Resource>(Arc<dyn Fn() -> R + Send + Sync>);
+
+impl<R: Resource> std::fmt::Debug for ProvisionFn<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<provisioner>")
+    }
+}
+
+impl<R: Resource> Clone for ProvisionFn<R> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+#[derive(Debug)]
 struct PoolInner<R: Resource> {
     state: Mutex<PoolState<R>>,
     /// Semaphore to bound active leases (= max_size).
@@ -131,8 +153,12 @@ struct PoolInner<R: Resource> {
     /// Notifies waiters that a new idle resource is available.
     notify: Notify,
     config: PoolConfig,
+    /// Optional provisioner for F-002 auto-grow. `OnceLock` so it can be set
+    /// once during `with_provisioner` without needing `&mut self` later.
+    provisioner: std::sync::OnceLock<ProvisionFn<R>>,
 }
 
+#[derive(Debug)]
 struct PoolState<R: Resource> {
     idle: Vec<Arc<R>>,
     /// Total resources provisioned (idle + leased).
@@ -164,6 +190,7 @@ impl<R: Resource> Pool<R> {
                 sem: Arc::new(Semaphore::new(config.max_size)),
                 notify: Notify::new(),
                 config,
+                provisioner: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -180,9 +207,58 @@ impl<R: Resource> Pool<R> {
         pool
     }
 
+    /// Construct with a provisioner and pre-populate to `config.min_size`
+    /// resources (Phase 9 F-002). The provisioner is also stored so that
+    /// [`Pool::provision_one`] can grow the pool up to `max_size` on demand.
+    pub fn with_provisioner<F>(config: PoolConfig, provisioner: F) -> Self
+    where
+        F: Fn() -> R + Send + Sync + 'static,
+    {
+        let pool = Self::new(config);
+        let prov = ProvisionFn(Arc::new(provisioner));
+        for _ in 0..pool.inner.config.min_size {
+            let r = (prov.0)();
+            pool.provision_internal(r);
+        }
+        pool.inner.provisioner.set(prov).ok();
+        pool
+    }
+
+    /// Grow the pool by one resource, calling the provisioner registered via
+    /// [`Pool::with_provisioner`]. Returns `Err(Full)` if already at
+    /// `max_size`, or `Err(Acquire)` if no provisioner was registered
+    /// (Phase 9 F-002).
+    pub async fn provision_one(&self) -> Result<(), PoolError> {
+        let prov = self
+            .inner
+            .provisioner
+            .get()
+            .ok_or_else(|| PoolError::Acquire("no provisioner registered".into()))?
+            .0
+            .clone();
+        let mut state = self.inner.state.lock().await;
+        if state.total >= self.inner.config.max_size {
+            return Err(PoolError::Full);
+        }
+        let r = (prov)();
+        state.idle.push(Arc::new(r));
+        state.total += 1;
+        drop(state);
+        self.inner.notify.notify_one();
+        Ok(())
+    }
+
+    fn provision_internal(&self, r: R) {
+        // Best-effort sync provisioning used by with_provisioner (pre-min_size).
+        if let Ok(mut state) = self.inner.state.try_lock() {
+            state.idle.push(Arc::new(r));
+            state.total += 1;
+        }
+    }
+
     /// Acquire a resource. Returns a [`Lease`] that auto-releases on drop.
     pub async fn acquire(&self) -> Result<Lease<R>, PoolError> {
-        // Bounded by semaphore.
+        // Bounded by semaphore (or queue/timeout/reject strategy).
         let permit = match self.inner.config.overflow {
             Overflow::Block(timeout) => {
                 tokio::time::timeout(timeout, self.inner.sem.clone().acquire_owned())
@@ -196,13 +272,34 @@ impl<R: Resource> Pool<R> {
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| PoolError::Full)?,
-            Overflow::Queue(_) => self
-                .inner
-                .sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| PoolError::Closed)?,
+            Overflow::Queue(max_pending) => {
+                // F-009: real Queue(N) semantics — pending counter caps at N.
+                // Try fast path; if no permit, count ourselves as pending and
+                // wait for a notification (drops only when a lease is released).
+                match self.inner.sem.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let mut state = self.inner.state.lock().await;
+                        if state.pending >= max_pending {
+                            return Err(PoolError::Full);
+                        }
+                        state.pending += 1;
+                        drop(state);
+                        // Wait until notified (lease drop) then retry from top.
+                        self.inner.notify.notified().await;
+                        let mut state = self.inner.state.lock().await;
+                        state.pending = state.pending.saturating_sub(1);
+                        drop(state);
+                        // Retry acquire now (fast path).
+                        self.inner
+                            .sem
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| PoolError::Closed)?
+                    }
+                }
+            }
         };
         // Find or provision an idle resource.
         let mut state = self.inner.state.lock().await;
@@ -218,9 +315,18 @@ impl<R: Resource> Pool<R> {
             // Resource failed try_acquire — drop and continue.
             state.total -= 1;
         }
-        // Need to provision a new one. Caller provides via provisioner.
-        // For simplicity, we return Acquire error if total < max_size and no provisioner.
-        // (Real usage: call `provision()` before acquire or use Pool::builder.)
+        // F-002: auto-provision via registered provisioner if total < max_size.
+        if let Some(prov) = self.inner.provisioner.get() {
+            if state.total < self.inner.config.max_size {
+                let r = (prov.0)();
+                state.total += 1;
+                return Ok(Lease {
+                    resource: Arc::new(r),
+                    pool: self.inner.clone(),
+                    _permit: permit,
+                });
+            }
+        }
         if state.total < self.inner.config.max_size {
             // No provisioner — fail.
             drop(permit);
@@ -298,6 +404,7 @@ mod tests {
             max_size: 2,
             overflow: Overflow::Reject,
             idle_timeout: None,
+            min_size: 0,
         });
         let res = pool.acquire().await;
         assert!(matches!(res, Err(PoolError::Acquire(_))));
@@ -309,6 +416,7 @@ mod tests {
             max_size: 2,
             overflow: Overflow::Reject,
             idle_timeout: None,
+            min_size: 0,
         });
         let r = pool.provision(|| Ok(Conn)).await.unwrap();
         // Move into idle by releasing
@@ -330,6 +438,7 @@ mod tests {
             max_size: 1,
             overflow: Overflow::Reject,
             idle_timeout: None,
+            min_size: 0,
         });
         let _r = pool.provision(|| Ok(Conn)).await.unwrap();
         pool.release(&_r);
@@ -352,5 +461,116 @@ mod tests {
             Ok(_) => "Ok",
         };
         assert_eq!(err_variant, "Full", "got: {err_variant}");
+    }
+
+    // ── C1: F-002 pool elasticity + F-009 Queue(N) real semantics ──────
+
+    // [方法] F-002: with_provisioner pre-populates to min_size
+    #[tokio::test]
+    async fn pool_grows_to_min_size_on_new() {
+        let pool: Pool<Conn> = Pool::with_provisioner(
+            PoolConfig {
+                max_size: 4,
+                overflow: Overflow::Reject,
+                idle_timeout: None,
+                min_size: 3,
+            },
+            || Conn,
+        );
+        assert_eq!(pool.total_count().await, 3);
+        assert_eq!(pool.idle_count().await, 3);
+    }
+
+    // [方法] F-002: auto-provision on first acquire grows pool to 1 (max=2)
+    #[tokio::test]
+    async fn pool_auto_provisions_under_load() {
+        let pool: Pool<Conn> = Pool::with_provisioner(
+            PoolConfig {
+                max_size: 2,
+                overflow: Overflow::Reject,
+                idle_timeout: None,
+                min_size: 0,
+            },
+            || Conn,
+        );
+        // First acquire triggers provisioning (total 0 → 1).
+        let _l1 = pool.acquire().await.unwrap();
+        assert_eq!(pool.total_count().await, 1);
+        let _l2 = pool.acquire().await.unwrap();
+        assert_eq!(pool.total_count().await, 2);
+        // No more capacity: rejects.
+        let r = pool.acquire().await;
+        assert!(matches!(r, Err(PoolError::Full)));
+    }
+
+    // [边界] F-009: Queue(0) returns Full immediately (was: blocks forever).
+    #[tokio::test]
+    async fn queue_zero_returns_full_immediately() {
+        let pool: Pool<Conn> = Pool::with_provisioner(
+            PoolConfig {
+                max_size: 1,
+                overflow: Overflow::Queue(0),
+                idle_timeout: None,
+                min_size: 1,
+            },
+            || Conn,
+        );
+        let _l1 = pool.acquire().await.unwrap();
+        // 2nd acquire: Queue(0) → immediately Full (not block).
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            pool.acquire(),
+        )
+        .await
+        .expect("Queue(0) must NOT block")
+        .unwrap_err();
+        assert!(matches!(r, PoolError::Full), "got {r:?}");
+    }
+
+    // [方法] F-009: Queue(1) buffers 1 pending, 2nd immediate acquire returns Full.
+    #[tokio::test]
+    async fn queue_n_buffers_pending() {
+        let pool: Pool<Conn> = Pool::with_provisioner(
+            PoolConfig {
+                max_size: 1,
+                overflow: Overflow::Queue(1),
+                idle_timeout: None,
+                min_size: 1,
+            },
+            || Conn,
+        );
+        let _l1 = pool.acquire().await.unwrap();
+        // 1 pending acquire (within Queue(1)) — should block until release.
+        let p1 = tokio::spawn({
+            let pool = pool.clone();
+            async move { pool.acquire().await }
+        });
+        // Give p1 time to enter pending.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 2nd immediate acquire: pending cap hit → Full (must not block).
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            pool.acquire(),
+        )
+        .await
+        .expect("must NOT block when Queue(1) full")
+        .unwrap_err();
+        assert!(matches!(r, PoolError::Full), "got {r:?}");
+        // Drop the held lease → pending p1 gets the permit + succeeds.
+        drop(_l1);
+        let r1 = tokio::time::timeout(std::time::Duration::from_secs(2), p1)
+            .await
+            .expect("pending acquire must complete after release")
+            .unwrap();
+        assert!(r1.is_ok());
+    }
+}
+
+// Clone impl for Arc<Pool<Conn>>-sharing across tokio::spawn (test only).
+impl<R: Resource> Clone for Pool<R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }

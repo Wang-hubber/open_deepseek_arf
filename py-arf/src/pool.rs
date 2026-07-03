@@ -78,11 +78,12 @@ pub struct PyPoolConfig {
 #[pymethods]
 impl PyPoolConfig {
     #[new]
-    #[pyo3(signature = (max_size=4, overflow=None, idle_timeout_secs=None))]
+    #[pyo3(signature = (max_size=4, overflow=None, idle_timeout_secs=None, min_size=0))]
     fn new(
         max_size: usize,
         overflow: Option<PyOverflow>,
         idle_timeout_secs: Option<f64>,
+        min_size: usize,
     ) -> Self {
         Self {
             inner: PoolConfig {
@@ -91,6 +92,7 @@ impl PyPoolConfig {
                     .map(|o| o.inner)
                     .unwrap_or(CoreOverflow::Queue(0)),
                 idle_timeout: idle_timeout_secs.map(Duration::from_secs_f64),
+                min_size,
             },
         }
     }
