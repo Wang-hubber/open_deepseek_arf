@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - C7/F-010,F-011: added `McpNode::with_discovery()` to inject a custom `DiscoveryBackend` (+ `discovery()` accessor); `HttpProxyTool` now honours the MCP `isError` flag and surfaces failing tools as errors instead of success.
   - C3/A3-001,A4-001,F-020: new `arf_core::msg_type` constants module (single source of truth for wire message types); `Message::correlation_id()` typed accessor centralises Uuid↔string conversion; `Message::new_broadcast()` constructor for safe broadcast sends (skip online-check + silent NodeOffline).
   - C6/F-005,F-006: `ModelCall` now carries `model_params` (`thinking_enabled` etc.); Engine copies `ModelDecl.thinking_enabled` into the wire payload so it actually reaches the adapter. Capability-matrix spec uses `thinking_enabled` (the framework's actual field name).
+  - C4/F-007,F-008: `Bus::graph()` now sorts nodes by `node_id` for deterministic routing across processes; `resolve_model` additionally checks `capabilities.models` so an unsupported `model_name` no longer silently routes to a wrong node.
 
 ### Removed
 - `docs/architecture/` directory — was V0.x-only material (10-checkpoint Hook lifecycle, plugin system, PrimitiveAgent/AgentHarness, two-mode A2A, Eval benchmark). V1.x redesigned all of these; architecture overview now lives in `README.md` + `docs/dev/`.
