@@ -20,8 +20,9 @@
 | 病灶 ID | 信条 | Signal | 触发 task | 命中摘要 | 状态 | 修复归属 |
 |---|---|---|---|---|---|---|
 | **A4-001** | A4 处理集中 | A4-S4（convert 散落） | 9.1.4（barrier） | `correlation_id` Uuid↔JSON string 转换无统一接缝，塞挖散落全框架 request-response 协议 | **OPEN** | 后续 fix phase |
+| **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常） | lifecycle 消息类型名（node_online/offline/heartbeat_request/barrier_*）裸字面量散落 arf-bus/core/engine 3 crate，无单一 const 声明 | **OPEN** | 后续 fix phase |
 
-> 统计：OPEN 1 / FIXED 0 / WONTFIX 0（截至 task 9.1.4）
+> 统计：OPEN 2 / FIXED 0 / WONTFIX 0（截至 task 9.1.5，9.1 大类收尾）
 
 ---
 
@@ -60,12 +61,48 @@ file:line      : 塞（Uuid→string）: connection.rs:105 / connection.rs:330 /
                 sed -n '333,338p' crates/arf-bus/src/lib.rs                # barrier 挖
 ```
 
+### A3-001 — lifecycle 消息类型标识散落（无单一 const）
+
+```
+病灶 ID       : A3-001
+信条           : A3 数据唯一
+Signal         : A3-S1（同名字段/标识跨 crate 重叠）
+触发情景       : §2.0（容错/异常路径，根因贯穿全框架 lifecycle 协议）
+首次登记       : audit-probe-9.1.5.md（前身为 9.1.4 观察 J，本 task 升级）
+状态           : OPEN
+file:line      : "node_offline": lib.rs:553 / heartbeat.rs:55 / engine.rs:88
+                "node_online" : lib.rs:528 / engine.rs:88
+                "heartbeat_request": heartbeat.rs:30 / connection.rs:378
+                "barrier_request": lib.rs:299   "barrier_ack": lib.rs:329 / connection.rs:327
+                常量定义       : 无（grep 'const … : &str' 消息类型 = 空）
+命中形态       : lifecycle 协议消息类型名（node_online / node_offline / heartbeat_request /
+                barrier_request / barrier_ack）作为跨模块契约，以裸字符串字面量散落声明于
+                arf-bus / arf-core / arf-engine 三 crate 生产代码，无单一 const/enum 声明。
+                关键：arf-engine（engine.rs:88）消费判断 "node_online"/"node_offline" 用裸
+                字面量，与 arf-bus（生产者 lib.rs:528/553）无共享常量——跨 crate 契约各自硬编码。
+影响面         : 1) 消息类型名散落 arf-bus + arf-core + arf-engine 3 crate，改名须全仓手动同步，
+                   无编译期防护。
+                2) 跨 crate 静默失效：arf-bus 改 "node_online" 拼写，engine.rs:88 消费侧不报错、
+                   缓存失效逻辑静默失灵。
+                3) 拼写错误无防护：msg.msg_type == "node_onlien" 编译通过、运行时静默漏判。
+修复方向       : 在 arf-core 定义消息类型常量模块（pub const NODE_ONLINE: &str = "node_online"）
+                （供参考）      或 enum MsgType，arf-bus/arf-engine 统一引用，消灭裸字面量。
+复现命令       : grep -rn '"node_offline"\|"node_online"\|"heartbeat_request"' crates/*/src/ | grep -v test
+                grep -rn 'const .*: &str' crates/arf-bus/src/ crates/arf-core/src/   # 应无消息类型常量
+                sed -n '86,90p' crates/arf-engine/src/engine.rs
+
+区分说明     : A4-001 是 correlation_id 值的 typed↔string 转换散落（convert 轴）；
+                A3-001 是消息类型标识符声明不唯一（标识声明轴）。两者不同轴、独立修复。
+```
+
 ---
 
 ## §3 后续 task 追加区
 
 > 9.1.5 及以后的 task 若跑出新病灶，在此追加（先补 §1 总表一行，再在 §2 加详情块）。
-> 当前 9.1.1 / 9.1.2 / 9.1.3 探查为 0 病灶（Bus 结构层洁净），仅 9.1.4（协议层）产出 A4-001。
+> 9.1 A 总线基线大类（9.1.1–9.1.5）收尾：Bus 全能力判定 D；产出 2 病灶（A4-001 / A3-001），
+> 均为跨全框架协议契约问题，非 Bus 独有。9.1.1/9.1.2/9.1.3 探查为 0 病灶（结构层洁净），
+> 9.1.4（协议层）产出 A4-001，9.1.5（容错层）产出 A3-001。
 
 ---
 
