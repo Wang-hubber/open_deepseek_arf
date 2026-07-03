@@ -12,8 +12,6 @@ members = [
     "crates/arf-mcp",
     "crates/arf-pool",
     "py-arf",
-    "examples/rust/domain_controller",
-    "examples/rust/recovery",
     "crates/arf-e2e",
 ]
 
