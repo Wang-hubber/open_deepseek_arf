@@ -191,7 +191,7 @@ DASHSCOPE_API_KEY=<env> \
 | `pool_lease_lifecycle × §2.12` | 待探查 | `Lease::drop` auto-release（arf-pool/src/lib.rs:184） |
 | `model_discovery_capability × §2.12` (L4 完整) | 不适用（留 9.4.2） | Provider::supported_models 路由 |
 | **`engine_pool × §2.12` (NEW) | **F（FAIL）** | **framework 缺 `EnginePool` primitive**——N 个 Engine 共享 model config 的 production 场景不可能实现。Engine::new 时 `NodeId = "engine/{provider}"`（engine.rs:59）导致 N engine 同 provider 冲突。**记入 F-001 lesion（framework missing primitive）** |
-| **`pool_dynamic_expansion × §2.12` (NEW) | **F（FAIL，CRITICAL）** | **framework 缺 pool 动态扩容能力**（critical design intent gap）：<br>1. **设计意图**：每个 pool 有 `min_size` + `max_size`，load 增长时**动态挂载扩容**（auto-provision 至 max_size），超 max_size 才开始排队<br>2. **当前实现**：只有 `max_size` 固定，**无 min_size，无 auto-provision**——load 来时只能 Block/Queue/Reject，**根本不会扩 1 个 resource**<br>3. **production 影响**：N 用户同时咨询时，pool 需扩到 N（≤ max_size）才能保证所有用户不排队；当前会直接排队/拒绝<br>**记入 F-002 lesion（critical framework missing primitive）** |
+| **`pool_dynamic_expansion × §2.12` (NEW) | **F（FAIL，CRITICAL）** | **framework 实现偏离设计意图**（最严重 finding 类型——不是隐藏 BUG，是设计 vs 实现严重不符）：<br>1. **设计意图**：每个 pool 有 `min_size` + `max_size`，load 增长时**动态挂载扩容**（auto-provision 至 max_size），超 max_size 才开始排队<br>2. **当前实现**：只有 `max_size` 固定，**无 min_size，无 auto-provision**——load 来时只能 Block/Queue/Reject，**根本不会扩 1 个 resource**<br>3. **production 影响**：N 用户同时咨询时，pool 需扩到 N（≤ max_size）才能保证所有用户不排队；当前会直接排队/拒绝<br>4. **finding 性质（user 2026-07-03 round 5 判定）**：**不是隐藏 BUG，是实现偏离设计意图**——design 文档明示了动态扩容，code 完全没做。这种 finding 比"缺 feature"更严重，因**它直接说明 framework 当前不符合 spec**<br>**记入 F-002 lesion（critical implementation-vs-design intent gap）** |
 
 按 §4 跑 signals（**重点：pool/facade 路径是否引入新病灶**，A3-001 / A4-001 在 pool 抽象路径是否加剧 + **F-001 framework gap**）：
 
@@ -248,9 +248,12 @@ sed -n '180,200p' crates/arf-pool/src/lib.rs
 - **N 个 facade 共享 1 pool** 是 framework 当前**唯一**能测"多 Engine 并发
   model pool"的方案——**这就是 F-001 缺失的真相**：framework 没有直接
   EnginePool 抽象，需要 app 层用 "N facade 共享 1 pool" 模式手动 virtualize。
-- **F-002 lesion（动态扩容 critical）**：探查中观察 pool 行为是否匹配 "load 增长时
+- **F-002 lesion（critical 设计意图偏离）**：探查中观察 pool 行为是否匹配 "load 增长时
   自动扩 resource" 设计意图。预期：framework **不**支持动态扩容，pool 严格
   bounded max_size，overflow 仅靠 Block/Queue/Reject 三策略处理。
+  - **finding 性质**（user 2026-07-03 round 5 判定）：**不是隐藏 BUG，是实现偏离设计意图**
+    ——design 文档明示了动态扩容（`min_size` + auto-provision），code 完全没做。
+    比"缺 feature"严重：直接说明 framework 当前不符合 spec。
   - **设计意图是 critical**：production 场景必须支持动态扩容，否则 N 用户咨询时
     pool 永远只能 Block/Queue/Reject，无法弹性伸缩
   - **修复方向**（供参考）：PoolConfig 加 `min_size: usize` + `auto_provision: bool`，
