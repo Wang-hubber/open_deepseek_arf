@@ -19,10 +19,10 @@
 
 | 病灶 ID | 信条 | Signal | 触发 task | 命中摘要 | 状态 | 修复归属 |
 |---|---|---|---|---|---|---|
-| **A4-001** | A4 处理集中 | A4-S4（convert 散落） | 9.1.4（barrier） | `correlation_id` Uuid↔JSON string 转换无统一接缝，塞挖散落全框架 request-response 协议 | **OPEN** | 后续 fix phase |
-| **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常） | lifecycle 消息类型名（node_online/offline/heartbeat_request/barrier_*）裸字面量散落 arf-bus/core/engine 3 crate，无单一 const 声明 | **OPEN** | 后续 fix phase |
+| **A4-001** | A4 处理集中 | A4-S4（convert 散落） | 9.1.4（barrier）；9.2.1 精确化 | `correlation_id` Uuid↔JSON string 转换散落；**typed 访问器 Message::correlation_id 已存在却未一致采用**（engine.rs:689 仍手挖） | **OPEN** | 后续 fix phase |
+| **A3-001** | A3 数据唯一 | A3-S1（同名标识跨 crate） | 9.1.5（异常）；9.2.1 加剧 | lifecycle + model_call/model_response 消息类型名裸字面量散落 arf-bus/core/engine/model-adapter，局部 const 摆设，无跨 crate 声明 | **OPEN** | 后续 fix phase |
 
-> 统计：OPEN 2 / FIXED 0 / WONTFIX 0（截至 task 9.1.5，9.1 大类收尾）
+> 统计：OPEN 2 / FIXED 0 / WONTFIX 0（截至 task 9.2.1；两病灶经 9.2.1 在 Engine 层实证蔓延并精确化，无新增病灶）
 
 ---
 
@@ -56,9 +56,18 @@ file:line      : 塞（Uuid→string）: connection.rs:105 / connection.rs:330 /
 修复方向       : 引入统一 correlation envelope，或在 Message 上提供 typed
                 （供参考）      `correlation_id() -> Option<Uuid>` / `with_correlation_id(Uuid)` 接缝，
                 将 Uuid↔string 转换集中到单一 convert 点，塞挖双侧对称。
+修复方向       : 统一采用**已存在**的 typed 访问器 `Message::correlation_id`（arf-core/
+                （供参考）      message.rs:28 trait + 11 impl），消灭挖出侧手挖回退（engine.rs:689
+                wait_for 匹配仍 payload.get 手挖）；并补对称的塞入侧 `with_correlation_id(Uuid)`，
+                将 Uuid↔string 转换集中到单一 convert 点。
+                【9.2.1 修正】原以为"缺访问器"，实证发现访问器已存在却未一致采用——
+                修复是"统一采用"而非"新建抽象"，成本更低。
+Engine 层蔓延  : （9.2.1 实证）engine.rs:375 用 typed `msg.correlation_id()` ✓，
+                但 engine.rs:689 wait_for 响应匹配绕过它、手挖 payload.get("correlation_id") ✗；
+                塞入侧 lib.rs:303 / connection.rs:105,330 仍手写 json!。typed 与 stringly 混用。
 复现命令       : grep -rln 'correlation_id' crates/*/src/ | grep -v test   # 12 个非 test src 文件
-                sed -n '325,332p' crates/arf-bus/src/connection.rs         # barrier_ack 塞
-                sed -n '333,338p' crates/arf-bus/src/lib.rs                # barrier 挖
+                grep -rn 'fn correlation_id' crates/arf-core/src/message.rs  # typed 访问器已存在
+                grep -n 'correlation_id' crates/arf-engine/src/engine.rs | grep -v test  # :375 typed vs :689 手挖
 ```
 
 ### A3-001 — lifecycle 消息类型标识散落（无单一 const）
@@ -86,9 +95,15 @@ file:line      : "node_offline": lib.rs:553 / heartbeat.rs:55 / engine.rs:88
                    缓存失效逻辑静默失灵。
                 3) 拼写错误无防护：msg.msg_type == "node_onlien" 编译通过、运行时静默漏判。
 修复方向       : 在 arf-core 定义消息类型常量模块（pub const NODE_ONLINE: &str = "node_online"）
-                （供参考）      或 enum MsgType，arf-bus/arf-engine 统一引用，消灭裸字面量。
+                （供参考）      或 enum MsgType，arf-bus/arf-engine/arf-model-adapter 统一引用，消灭裸字面量。
+Engine 层蔓延  : （9.2.1 实证）核心协议 model_call/model_response 散落更严重：engine.rs:19
+                有局部 const MODEL_RESPONSE，但同文件 engine.rs:749 自身用裸字面量；
+                model-adapter/node.rs（8 处）+ pool_node.rs（4 处）全裸字面量。
+                局部 const 形同摆设，无跨 crate 共享。model_call/model_response 是 chat 高频协议，
+                比 lifecycle 消息散落更广。
 复现命令       : grep -rn '"node_offline"\|"node_online"\|"heartbeat_request"' crates/*/src/ | grep -v test
-                grep -rn 'const .*: &str' crates/arf-bus/src/ crates/arf-core/src/   # 应无消息类型常量
+                grep -rn '"model_call"\|"model_response"' crates/arf-engine/src/ crates/arf-model-adapter/src/ | grep -v test
+                grep -rn 'const .*: &str' crates/arf-bus/src/ crates/arf-core/src/   # 无跨 crate 消息类型常量
                 sed -n '86,90p' crates/arf-engine/src/engine.rs
 
 区分说明     : A4-001 是 correlation_id 值的 typed↔string 转换散落（convert 轴）；
