@@ -37,6 +37,15 @@ pub fn require_openai_key() -> Option<String> {
     }
 }
 
+/// Read `DASHSCOPE_API_KEY`. Returns `None` if not set.
+/// Used by Phase 9 task 9.2.2 live probe (阿里百炼 qwen).
+pub fn require_dashscope_key() -> Option<String> {
+    match std::env::var("DASHSCOPE_API_KEY") {
+        Ok(k) if !k.is_empty() => Some(k),
+        _ => None,
+    }
+}
+
 /// Print the standard "[skip] KEY not set" line so test output is clear
 /// about why a test did not run.
 pub fn skip_message(key: &str) {

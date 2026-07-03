@@ -158,3 +158,25 @@ pub fn live_minimax() -> Option<Arc<dyn Provider>> {
     let provider: Arc<dyn Provider> = Arc::new(arf_model_adapter::MiniMaxProvider::new(cfg));
     Some(provider)
 }
+
+/// Build a live OpenAI-compatible provider pointed at DashScope (qwen) from
+/// the `DASHSCOPE_API_KEY` env var. Returns `None` (with a printed warning)
+/// if the env var is not set. Phase 9 task 9.2.2 — first live-LLM probe.
+pub fn live_qwen() -> Option<Arc<dyn Provider>> {
+    use arf_model_adapter::{OpenAIConfig, OpenAIProvider};
+    let key = match env::require_dashscope_key() {
+        Some(k) => k,
+        None => {
+            env::skip_message("DASHSCOPE_API_KEY");
+            return None;
+        }
+    };
+    let cfg = OpenAIConfig {
+        endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".into(),
+        api_key: key,
+        models: vec!["qwen3.7-max-preview".into()],
+        ..OpenAIConfig::default()
+    };
+    let provider: Arc<dyn Provider> = Arc::new(OpenAIProvider::new(cfg));
+    Some(provider)
+}
