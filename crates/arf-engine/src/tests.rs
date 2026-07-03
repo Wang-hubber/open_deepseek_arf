@@ -39,12 +39,18 @@ async fn test_bus_with_model_node() -> Arc<Bus> {
     // Hand-register a node entry so the graph shows it. The listen task
     // is not needed — the engine will only check `node_type == "model"`
     // at build time.
+    // F-007: include `models` array so resolve_model matches the configured
+    // model_name ("deepseek-v4-flash" in minimal_config).
     let _ = bus
         .connect(
             arf_core::NodeInfo {
                 node_id: NodeId::new("model/mock"),
                 node_type: "model".into(),
-                capabilities: serde_json::json!({"provider": "deepseek", "kind": "model"}),
+                capabilities: serde_json::json!({
+                    "provider": "deepseek",
+                    "kind": "model",
+                    "models": ["deepseek-v4-flash"],
+                }),
                 online_since: 0,
             },
             arf_core::MessageFilter {
@@ -2378,7 +2384,16 @@ async fn skills_text_empty_when_no_skills_declared() {
     };
     let snapshot = BusGraph {
         nodes: vec![
-            arf_core::NodeInfo { node_id: NodeId::new("model/mock"), node_type: "model".into(), capabilities: serde_json::json!({"provider": "deepseek"}), online_since: 0 },
+            arf_core::NodeInfo {
+                node_id: NodeId::new("model/mock"),
+                node_type: "model".into(),
+                // F-007: include `models` so resolve_model matches the cfg.
+                capabilities: serde_json::json!({
+                    "provider": "deepseek",
+                    "models": ["deepseek-v4-flash"],
+                }),
+                online_since: 0,
+            },
         ],
         message_count: 0, uptime_ms: 0,
     };
@@ -2448,7 +2463,11 @@ async fn find_tool_owner_returns_correct_node() {
             arf_core::NodeInfo {
                 node_id: NodeId::new("model/deepseek"),
                 node_type: "model".into(),
-                capabilities: serde_json::json!({"provider": "deepseek"}),
+                // F-007: include `models` so resolve_model matches the cfg.
+                capabilities: serde_json::json!({
+                    "provider": "deepseek",
+                    "models": ["deepseek-v4-flash"],
+                }),
                 online_since: 0,
             },
             mcp_info,
@@ -2481,7 +2500,16 @@ async fn find_tool_owner_ambiguous_build_fails() {
     };
     let snapshot = BusGraph {
         nodes: vec![
-            arf_core::NodeInfo { node_id: NodeId::new("model/deepseek"), node_type: "model".into(), capabilities: serde_json::json!({"provider": "deepseek"}), online_since: 0 },
+            arf_core::NodeInfo {
+                node_id: NodeId::new("model/deepseek"),
+                node_type: "model".into(),
+                // F-007: include `models` so resolve_model matches the cfg.
+                capabilities: serde_json::json!({
+                    "provider": "deepseek",
+                    "models": ["deepseek-v4-flash"],
+                }),
+                online_since: 0,
+            },
             arf_core::NodeInfo { node_id: NodeId::new("mcp/a"), node_type: "mcp".into(), capabilities: serde_json::json!({"tools": [{"name": "echo"}]}), online_since: 0 },
             arf_core::NodeInfo { node_id: NodeId::new("mcp/b"), node_type: "mcp".into(), capabilities: serde_json::json!({"tools": [{"name": "echo"}]}), online_since: 0 },
         ],

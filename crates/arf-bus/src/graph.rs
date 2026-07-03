@@ -11,7 +11,13 @@ impl Bus {
     /// total message count, and uptime in milliseconds.
     pub fn graph(&self) -> BusGraph {
         let map = self.nodes.read().unwrap();
-        let nodes: Vec<_> = map.values().map(|entry| entry.info.clone()).collect();
+        // F-008: sort by node_id so iteration order is deterministic — the
+        // underlying `nodes` is a HashMap and HashMap iteration order is
+        // randomised across processes. Without this sort, `resolve_model`
+        // (and other consumers that scan the graph) could pick a different
+        // node on different runs.
+        let mut nodes: Vec<_> = map.values().map(|entry| entry.info.clone()).collect();
+        nodes.sort_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()));
 
         BusGraph {
             nodes,
@@ -134,6 +140,24 @@ mod tests {
         let g2 = bus.graph();
         assert_eq!(g2.nodes.len(), 0);
 
+        bus.shutdown().await;
+    }
+
+    // [数据] C4 F-008: graph.nodes 迭代顺序按 node_id 排序（确定）
+    #[tokio::test]
+    async fn graph_node_iteration_is_deterministic() {
+        let bus = test_bus();
+        // Connect in a non-alphabetical order to expose any HashMap-iteration
+        // order dependence.
+        for id in ["z", "a", "m", "b"] {
+            bus.connect(test_node_info(id), test_filter()).await.unwrap();
+        }
+        // Call graph() many times — must always produce the same sorted order.
+        for _ in 0..20 {
+            let g = bus.graph();
+            let ids: Vec<&str> = g.nodes.iter().map(|n| n.node_id.as_str()).collect();
+            assert_eq!(ids, vec!["a", "b", "m", "z"]);
+        }
         bus.shutdown().await;
     }
 }

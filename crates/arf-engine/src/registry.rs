@@ -5,13 +5,13 @@
 use std::collections::HashMap;
 
 use arf_bus::Bus;
-use arf_core::{BusGraph, NodeId, ToolSpec};
+use arf_core::{BusGraph, NodeId, NodeInfo, ToolSpec};
 
 use crate::config::AgentConfig;
 use crate::error::BuildError;
 
 /// 声明 capabilities 的过滤模式。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DeclaredFilter {
     /// "all" sentinel — 显式全取。
     All,
@@ -21,6 +21,7 @@ enum DeclaredFilter {
     None_,
 }
 
+#[derive(Debug)]
 struct ResourceBinding {
     resource_name: String,
     node_id: NodeId,
@@ -28,6 +29,7 @@ struct ResourceBinding {
 }
 
 /// 声明资源的静态解析表。build 时冻结，运行时只读。
+#[derive(Debug)]
 pub(crate) struct ResourceRegistry {
     /// model 节点。
     model: NodeId,
@@ -251,15 +253,50 @@ fn node_has_any_of(node: &arf_core::NodeInfo, names: &[String]) -> bool {
 }
 
 fn resolve_model(decl: &AgentConfig, snapshot: &BusGraph) -> Result<NodeId, BuildError> {
-    let node = snapshot.nodes.iter().find(|n| {
-        n.node_type == "model"
-            && n.capabilities
-                .get("provider")
-                .and_then(|v| v.as_str())
-                == Some(&decl.model.provider)
-    });
+    // F-008: nodes are sorted by node_id (Bus::graph), so iteration is
+    // deterministic across processes — find() picks the first match.
+    // F-007: additionally filter by `model_name` so cfg.model.model_name="x"
+    // only matches nodes whose `capabilities.models` contain "x". Without
+    // this, an unsupported model_name was silently routed to a node that
+    // didn't actually serve it.
+    let supports = |n: &NodeInfo| -> bool {
+        n.capabilities
+            .get("models")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().any(|m| m.as_str() == Some(&decl.model.model_name)))
+            .unwrap_or(false)
+    };
+    let node = snapshot
+        .nodes
+        .iter()
+        .find(|n| {
+            n.node_type == "model"
+                && n.capabilities
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    == Some(&decl.model.provider)
+                && supports(n)
+        })
+        .or_else(|| {
+            // Fallback: provider matches but no node supports this model_name.
+            // Return the first provider match so the caller can report a
+            // clearer error (still prefer deterministic order).
+            snapshot.nodes.iter().find(|n| {
+                n.node_type == "model"
+                    && n.capabilities
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        == Some(&decl.model.provider)
+            })
+        });
     match node {
-        Some(n) => Ok(n.node_id.clone()),
+        Some(n) if supports(n) => Ok(n.node_id.clone()),
+        Some(_) => Err(BuildError::MissingNodes {
+            nodes: vec![format!(
+                "model: provider=\"{}\" model=\"{}\" (provider matched but no node supports this model)",
+                decl.model.provider, decl.model.model_name
+            )],
+        }),
         None => Err(BuildError::MissingNodes {
             nodes: vec![format!(
                 "model: provider=\"{}\" model=\"{}\"",
@@ -330,6 +367,7 @@ impl DeclaredFilter {
 mod tests {
     use super::*;
     use arf_agent::ResourceSpec;
+    use arf_agent::ModelDecl;
     use arf_core::NodeInfo;
 
     fn test_snapshot(nodes: Vec<NodeInfo>) -> BusGraph {
@@ -344,7 +382,12 @@ mod tests {
         NodeInfo {
             node_id: NodeId::new("model/deepseek"),
             node_type: "model".into(),
-            capabilities: serde_json::json!({"provider": "deepseek", "kind": "model"}),
+            // F-007: include `models` array so resolve_model matches.
+            capabilities: serde_json::json!({
+                "provider": "deepseek",
+                "kind": "model",
+                "models": ["deepseek-v4-flash"],
+            }),
             online_since: 0,
         }
     }
@@ -411,6 +454,75 @@ mod tests {
             ResourceRegistry::build(&decl, &snapshot),
             Err(BuildError::MissingNodes { .. })
         ));
+    }
+
+    // [方法] C4 F-007: resolve_model 按 model_name 选节点（多 node 同 provider）
+    #[test]
+    fn resolve_model_picks_by_model_name() {
+        let node_a = NodeInfo {
+            node_id: NodeId::new("model/openai-a"),
+            node_type: "model".into(),
+            capabilities: serde_json::json!({
+                "provider": "openai",
+                "models": ["qwen3.7"],
+            }),
+            online_since: 0,
+        };
+        let node_b = NodeInfo {
+            node_id: NodeId::new("model/openai-b"),
+            node_type: "model".into(),
+            capabilities: serde_json::json!({
+                "provider": "openai",
+                "models": ["qwen3.5-turbo"],
+            }),
+            online_since: 0,
+        };
+        let decl = AgentConfig {
+            model: ModelDecl {
+                provider: "openai".into(),
+                model_name: "qwen3.5-turbo".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Only node_b supports the requested model_name → must pick node_b.
+        let snap = test_snapshot(vec![node_a, node_b]);
+        let reg = ResourceRegistry::build(&decl, &snap).unwrap();
+        assert_eq!(reg.model_target().as_str(), "model/openai-b");
+    }
+
+    // [错误] C4 F-007: provider 匹配但 model_name 不被任一节点支持 → MissingNodes
+    #[test]
+    fn resolve_model_errors_on_unsupported_model() {
+        let node = NodeInfo {
+            node_id: NodeId::new("model/openai"),
+            node_type: "model".into(),
+            capabilities: serde_json::json!({
+                "provider": "openai",
+                "models": ["qwen3.7"],
+            }),
+            online_since: 0,
+        };
+        let decl = AgentConfig {
+            model: ModelDecl {
+                provider: "openai".into(),
+                model_name: "qwen3.5-turbo".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let snap = test_snapshot(vec![node]);
+        let err = ResourceRegistry::build(&decl, &snap).unwrap_err();
+        match err {
+            BuildError::MissingNodes { nodes } => {
+                assert!(
+                    nodes[0].contains("no node supports this model"),
+                    "err msg should mention unsupported model, got: {}",
+                    nodes[0]
+                );
+            }
+            other => panic!("expected MissingNodes, got {other:?}"),
+        }
     }
 
     // [冲突] 两个 resource 声明同一工具 → AmbiguousTool
