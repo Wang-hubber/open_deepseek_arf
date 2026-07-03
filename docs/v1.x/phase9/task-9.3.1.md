@@ -117,10 +117,11 @@ DASHSCOPE_API_KEY=<env> \
 | 单元 | 等级 | 判分依据（含 file:line） |
 |---|---|---|
 | `streaming_response × §1.1` (chunks 在 bus) | 待探查 | `ModelAdapterNode` stream 分支（node.rs:130-165）发 `model_response_chunk` 消息 |
-| `streaming_response × §1.1` (engine 消费) | **待探查（预期 F）** | Engine `wait_for_strategy`（engine.rs:683-684）过滤 `expected_types` 只匹配 `model_response` |
-| `chunk_aggregation × §1.1` | 不适用 | Engine 不累积 chunks，无 aggregation 概念 |
+| `streaming_response × §1.1` (engine 推理正确性) | **D**（设计意图正确） | Engine 推理用 `model_response`（final response），不过滤 chunks **不影响推理**——user 2026-07-03 round 7 明确："Engine 只消费最终结果用于下一步推理。chunks 交给 App 的前端去消费。这影响 Engine 推理吗？答：不影响" |
+| `streaming_response × §1.1` (app 暴露 chunks API) | **F（FAIL）** | **F-004 framework gap**：app 想消费 chunks 必须自订阅 bus（`bus.subscribe()`），framework 未提供 stream event callback hook（如 `Engine::on_chunk` 闭包 / `ResponseProcessor` 触点） |
+| `chunk_aggregation × §1.1` | 不适用 | chunks 累积由 app 自行做（framework 不应强加策略） |
 | `stream_api_consistency × §1.1` (3 provider) | 待探查 | OpenAI / DeepSeek / Anthropic 都有 `chat_stream` 实现 |
-| `model_call_stream_flag × §1.1` | 待探查 | `ModelCall` payload 无 `stream: bool` 字段（engine 始终非流式） |
+| `model_call_stream_flag × §1.1` | **D**（探查发现） | `ModelCall`（core）无 `stream` 字段，但 `ModelCallPayload`（model-adapter/types.rs:50）`stream: bool` 默认 **true**——engine 实际总是触发 stream 模式 |
 
 按 §4 跑 signals（**重点：chunks 路径是否引入新病灶**，A3-001 / A4-001 在 chunks 路径是否加剧 + **F-004 Engine 缺 chunks 消费**）：
 
