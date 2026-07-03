@@ -18,9 +18,12 @@
 - **控制并发数**（bounded resources）+ **尝试动态扩容**（load 增长时自动加 resource）
 
 **当前 framework 实现**（pool_node.rs:85 + arf-pool/src/lib.rs）：
-- PoolNode.run_loop 是**单 task**（`loop { recv → acquire → forward → wait → drop }`）—— 串行处理所有 model_call
+- PoolNode.run_loop 是**单 task**（`loop { recv → acquire → forward → wait → drop }`）—— 串行处理所有 model_call。**这是设计意图**（user 2026-07-03 round 4 确认）：单 PoolNode 处理 1 stream，**转发开销可忽略**（bus send 快）。N 个并发 LLM call 需要 **N 个 PoolNode facade** 共享 1 个 pool。
 - Pool 是 **bounded max_size**（provision 时定，运行时不变）
-- **无动态扩容**（pool 不会因 load 增长而 provision 新 resource）
+- **无动态扩容**——**与设计意图严重不符**（user 2026-07-03 round 5）：
+  - **设计意图**：每个 pool 有**下限节点数**（`min_size`）+ **上限节点数**（`max_size`），
+    load 增长时**动态挂载扩容**（auto-provision 至 max_size），超 max_size 才开始排队
+  - **当前实现**：只有 `max_size`，无 `min_size`，无 auto-provision——**critical F-002 gap**
 - Overflow 策略：`Queue(n)` / `Reject` / `Block(timeout)` — 静态边界
 
 **3×3 矩阵 + 3 overflow 策略边界探查**（按 user 2026-07-03 反馈）：
@@ -188,7 +191,7 @@ DASHSCOPE_API_KEY=<env> \
 | `pool_lease_lifecycle × §2.12` | 待探查 | `Lease::drop` auto-release（arf-pool/src/lib.rs:184） |
 | `model_discovery_capability × §2.12` (L4 完整) | 不适用（留 9.4.2） | Provider::supported_models 路由 |
 | **`engine_pool × §2.12` (NEW) | **F（FAIL）** | **framework 缺 `EnginePool` primitive**——N 个 Engine 共享 model config 的 production 场景不可能实现。Engine::new 时 `NodeId = "engine/{provider}"`（engine.rs:59）导致 N engine 同 provider 冲突。**记入 F-001 lesion（framework missing primitive）** |
-| **`pool_dynamic_expansion × §2.12` (NEW) | **F（FAIL）** | **framework 缺 pool 动态扩容能力**——设计意图是 "load 增长时自动加 resource"，但当前 Pool 是 bounded max_size，无 auto-provision。N + 1 个 caller 来时，**不会**自动加 resource，仅 Overflow 策略生效（Block/Queue/Reject）。**记入 F-002 lesion** |
+| **`pool_dynamic_expansion × §2.12` (NEW) | **F（FAIL，CRITICAL）** | **framework 缺 pool 动态扩容能力**（critical design intent gap）：<br>1. **设计意图**：每个 pool 有 `min_size` + `max_size`，load 增长时**动态挂载扩容**（auto-provision 至 max_size），超 max_size 才开始排队<br>2. **当前实现**：只有 `max_size` 固定，**无 min_size，无 auto-provision**——load 来时只能 Block/Queue/Reject，**根本不会扩 1 个 resource**<br>3. **production 影响**：N 用户同时咨询时，pool 需扩到 N（≤ max_size）才能保证所有用户不排队；当前会直接排队/拒绝<br>**记入 F-002 lesion（critical framework missing primitive）** |
 
 按 §4 跑 signals（**重点：pool/facade 路径是否引入新病灶**，A3-001 / A4-001 在 pool 抽象路径是否加剧 + **F-001 framework gap**）：
 
@@ -203,11 +206,12 @@ grep -rn 'EnginePool\|struct Engine\|Engine::new' crates/ 2>/dev/null | grep -v 
 grep -n 'pub.*fn new' crates/arf-engine/src/engine.rs | head -5
 grep -n 'engine_id\|NodeId::new.*engine/' crates/arf-engine/src/engine.rs | head -5
 
-# F-002 framework gap 探查：Pool 动态扩容
-grep -n 'auto.*provision\|dynamic.*expansion\|provision.*load' crates/arf-pool/src/ -r 2>/dev/null
+# F-002 framework gap 探查：Pool 动态扩容（CRITICAL）
+grep -rn 'min_size\|auto_provision\|dynamic.*provision\|provision.*load\|grow\|expand' crates/arf-pool/src/ 2>/dev/null
 grep -n 'pub.*provision\|pub.*acquire\|idle.*timeout' crates/arf-pool/src/manager.rs | head -5
-# Pool 字段 — 是否含 grow / expand 字段
-grep -n 'max_size\|current_size' crates/arf-pool/src/lib.rs | head -5
+# Pool 字段 — 是否含 min_size / grow 字段
+grep -n 'max_size\|min_size\|current_size' crates/arf-pool/src/lib.rs | head -5
+# 期望实证：grep 应为 0 命中（pool 无 min_size / auto_provision 字段）
 
 # §4 信号 cross-check
 sed -n '180,200p' crates/arf-pool/src/lib.rs
@@ -244,9 +248,14 @@ sed -n '180,200p' crates/arf-pool/src/lib.rs
 - **N 个 facade 共享 1 pool** 是 framework 当前**唯一**能测"多 Engine 并发
   model pool"的方案——**这就是 F-001 缺失的真相**：framework 没有直接
   EnginePool 抽象，需要 app 层用 "N facade 共享 1 pool" 模式手动 virtualize。
-- **F-002 lesion（动态扩容）**：探查中观察 pool 行为是否匹配 "load 增长时
+- **F-002 lesion（动态扩容 critical）**：探查中观察 pool 行为是否匹配 "load 增长时
   自动扩 resource" 设计意图。预期：framework **不**支持动态扩容，pool 严格
   bounded max_size，overflow 仅靠 Block/Queue/Reject 三策略处理。
+  - **设计意图是 critical**：production 场景必须支持动态扩容，否则 N 用户咨询时
+    pool 永远只能 Block/Queue/Reject，无法弹性伸缩
+  - **修复方向**（供参考）：PoolConfig 加 `min_size: usize` + `auto_provision: bool`，
+    Pool 内部加 grow logic（load > current_size 且 current_size < max_size → 调 provision
+    factory 新增 resource）。这是 framework 级新 primitive，**留 fix phase 决策**。
 - **不测 cancel 路径**：9.2.4 已探查 cancel，9.4.1 不重复。
 - **不预设期望时序**：framework 实际并发行为（latency、queue order）需实证。
 - **时序断言（粗粒度）**：(N=2, K=4, Queue(2)) 总耗时 应 < 2 × LLM latency
@@ -306,7 +315,7 @@ git grep -n '9943d44\|ab948' -- crates/ docs/
 3. 整理 `audit-probe-9.4.1.md`（含 3×3 矩阵实测数据 + F-001 EnginePool 缺失 + F-002 动态扩容缺失）
 4. 更新 `lesion-registry.md`：
    - F-001（EnginePool 缺失）—— framework 缺 EnginePool 抽象
-   - F-002（pool 动态扩容缺失）—— pool 是 bounded，无 auto-provision
+   - **F-002（CRITICAL pool 动态扩容缺失）**—— pool 是 bounded max_size，无 min_size / auto_provision，**与设计意图严重不符**
 5. self-review（凭据 / 一致性 / scope）
 6. commit `pool_node_facade.rs` + commit `audit-probe-9.4.1.md` + commit `lesion-registry.md`（granular）
 7. 回做 9.3.1（streaming）补 spec 顺序
