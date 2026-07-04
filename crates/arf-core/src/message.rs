@@ -574,6 +574,25 @@ impl ActionMessage for HumanHandoffReply {
 ///
 /// Wire `msg_type`: `"model_response_chunk"`. Engine aggregates chunks into a
 /// single `model_response` before resuming the ReAct loop. No response expected.
+///
+/// # `thinking_enabled` and `reasoning_delta`
+///
+/// The chunk itself does **not** carry `thinking_enabled` (it is a per-call
+/// config flag set on the originating `model_call`). Whether a chunk's
+/// `reasoning_delta` is populated depends entirely on the upstream provider:
+/// - When the model was called with `ModelCall::with_model_params(
+///   CoreModelParams { thinking_enabled: true, .. })`, providers that
+///   support reasoning (qwen thinking mode, DeepSeek reasoning, etc.)
+///   emit non-empty `reasoning_delta` chunks.
+/// - When `thinking_enabled = false`, the provider emits only
+///   `content_delta`; `reasoning_delta` is empty.
+///
+/// Audit note (Phase 9 F-005 YELLOW): the chunk **return** path does not
+/// need to re-declare `thinking_enabled` because the decision is upstream
+/// of the chunk stream — providers control their own reasoning emission
+/// behavior. The outbound `model_call` already carries `model_params`
+/// (F-005 fix, 7074249), so the call↔chunk semantic link is preserved
+/// via the `correlation_id` alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponseChunk {
     pub correlation_id: Uuid,
