@@ -861,6 +861,13 @@ impl Engine {
 
             // Filter: msg_type in expected_response_types AND payload.correlation_id matches.
             if !expected_response_types.contains(&msg.msg_type.as_str()) {
+                // F-024 fix: before dropping, dispatch to registered
+                // MessageHandlers (peer_message, peer_reply, custom app
+                // types). Handlers return Handled to consume the message,
+                // Deferred to drop it. Engine's main wait loop is not
+                // blocked — handlers must be quick or spawn their own task.
+                let outcome = self.dispatch_incoming(msg.clone());
+                let _ = outcome; // Handled/Deferred both fine here
                 continue;
             }
             // A4-001: typed accessor (centralises the Uuid↔string conversion).
