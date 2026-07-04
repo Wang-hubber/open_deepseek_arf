@@ -27,9 +27,16 @@ use tokio::sync::Mutex;
 pub enum SessionStatus {
     /// In-progress; engine may have a pending checkpoint.
     Active,
+    /// User requested cancel mid-round; engine winding down (R7-L2).
+    /// State preserved for resume. Transitions to `Completed` (if app saves
+    /// with that status) or stays `Cancelling` (snapshot() preserves it — see
+    /// `SqliteSessionStore::snapshot`). Distinct from `Interrupted` (process
+    /// death / non-cancel cause).
+    Cancelling,
     /// Round completed cleanly (model_response had no tool_calls).
     Completed,
-    /// Process exited with an in-flight turn (Engine.run() interrupted).
+    /// Process exited with an in-flight turn (Engine.run() interrupted
+    /// by non-cancel cause: panic, OOM, parent signal, etc.).
     Interrupted,
 }
 
@@ -37,6 +44,7 @@ impl SessionStatus {
     fn as_str(&self) -> &'static str {
         match self {
             SessionStatus::Active => "active",
+            SessionStatus::Cancelling => "cancelling",
             SessionStatus::Completed => "completed",
             SessionStatus::Interrupted => "interrupted",
         }
@@ -45,6 +53,7 @@ impl SessionStatus {
     fn from_str(s: &str) -> Result<Self, SessionError> {
         match s {
             "active" => Ok(SessionStatus::Active),
+            "cancelling" => Ok(SessionStatus::Cancelling),
             "completed" => Ok(SessionStatus::Completed),
             "interrupted" => Ok(SessionStatus::Interrupted),
             other => Err(SessionError::Corrupt(format!(
@@ -454,6 +463,28 @@ impl SessionStore for SqliteSessionStore {
         if !exists {
             return Err(SessionError::NotFound(session_id.into()));
         }
+        // R7-L2 fix: read current status; if Cancelling, preserve it across the
+        // snapshot. Otherwise the forced 'interrupted' would clobber the
+        // app-set Cancelling state (which marks "user requested cancel,
+        // engine winding down, state preserved for resume").
+        let current_status: String = conn
+            .query_row(
+                "SELECT status FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "active".to_string());
+        let forced_status = if current_status == "cancelling" {
+            "cancelling"
+        } else {
+            "interrupted"
+        };
+        let status_forced = if forced_status == "cancelling" {
+            SessionStatus::Cancelling
+        } else {
+            SessionStatus::Interrupted
+        };
         // Effect 1: persist checkpoint row.
         let payload_json = serde_json::to_string(snapshot)?;
         let captured_at = snapshot.captured_at.to_rfc3339();
@@ -461,19 +492,20 @@ impl SessionStore for SqliteSessionStore {
             "INSERT OR REPLACE INTO checkpoints (session_id, captured_at, payload_json) VALUES (?1, ?2, ?3)",
             params![session_id, captured_at, payload_json],
         )?;
-        // Effects 2-4: push state to latest, bump updated_at, force interrupted.
+        // Effects 2-4: push state to latest, bump updated_at, force status
+        // (interrupted by default; preserved as Cancelling if previously set).
         let state_json = serde_json::to_string(state)?;
         let updated_at = Utc::now();
         let updated = updated_at.to_rfc3339();
         conn.execute(
-            "UPDATE sessions SET state_json = ?1, updated_at = ?2, status = 'interrupted' WHERE session_id = ?3",
-            params![state_json, updated, session_id],
+            "UPDATE sessions SET state_json = ?1, updated_at = ?2, status = ?3 WHERE session_id = ?4",
+            params![state_json, updated, forced_status, session_id],
         )?;
         Ok(SnapshotEffects {
             checkpoint_written: snapshot.captured_at,
             state_updated: true,
             updated_at,
-            status_forced: SessionStatus::Interrupted,
+            status_forced,
         })
     }
 }
@@ -523,6 +555,7 @@ mod tests {
     fn session_status_roundtrip() {
         for s in [
             SessionStatus::Active,
+            SessionStatus::Cancelling,
             SessionStatus::Completed,
             SessionStatus::Interrupted,
         ] {
@@ -530,6 +563,18 @@ mod tests {
             let back: SessionStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(s, back);
         }
+    }
+
+    // [trait] R7-L2: SessionStatus::Cancelling serde round-trip + as_str/from_str
+    #[test]
+    fn session_status_cancelling_serde_roundtrip() {
+        let s = SessionStatus::Cancelling;
+        assert_eq!(s.as_str(), "cancelling");
+        let back = SessionStatus::from_str("cancelling").unwrap();
+        assert_eq!(back, SessionStatus::Cancelling);
+        let json = serde_json::to_string(&s).unwrap();
+        let back2: SessionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back2);
     }
 
     // [边界] SessionStatus 未知字符串 → Corrupt 错误
@@ -686,6 +731,72 @@ mod tests {
         assert!(effects.updated_at >= cp.captured_at);
         // 4. status forced to interrupted
         assert_eq!(effects.status_forced, SessionStatus::Interrupted);
+    }
+
+    // [持久化] R7-L2: snapshot() 保留 Cancelling 状态（不强制 Interrupted）
+    #[tokio::test]
+    async fn snapshot_preserves_cancelling_status() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let mut data = make_data("sess-cancel");
+        data.meta.status = SessionStatus::Cancelling;
+        store.save(&data).await.unwrap();
+
+        let cp = CheckpointSnapshot::new(Checkpoint::AfterToolExec, 5);
+        let effects = store
+            .snapshot("sess-cancel", &data.state, &cp)
+            .await
+            .unwrap();
+
+        // R7-L2 fix: status_forced 保持 Cancelling 而非 Interrupted
+        assert_eq!(
+            effects.status_forced,
+            SessionStatus::Cancelling,
+            "snapshot() 在 Cancelling 状态下必须保留 Cancelling 而非覆盖为 Interrupted"
+        );
+
+        // reload 验证持久化
+        let loaded = store.load("sess-cancel").await.unwrap().unwrap();
+        assert_eq!(loaded.meta.status, SessionStatus::Cancelling);
+    }
+
+    // [持久化] R7-L2: Active 状态 snapshot 仍走默认 Interrupted（不破坏既有行为）
+    #[tokio::test]
+    async fn snapshot_active_becomes_interrupted() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let data = make_data("sess-active"); // default Active
+        store.save(&data).await.unwrap();
+
+        let cp = CheckpointSnapshot::new(Checkpoint::AfterModelCall, 1);
+        let effects = store
+            .snapshot("sess-active", &data.state, &cp)
+            .await
+            .unwrap();
+        assert_eq!(effects.status_forced, SessionStatus::Interrupted);
+    }
+
+    // [持久化] R7-L2: app save() 用 Completed 覆盖 Cancelling（status 优先级高于 snapshot 强制）
+    #[tokio::test]
+    async fn completed_overrides_cancelling_via_save() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let mut data = make_data("sess-completed");
+        data.meta.status = SessionStatus::Cancelling;
+        store.save(&data).await.unwrap();
+
+        // 模拟 app 调用 save() 标记 Completed
+        let mut data2 = store.load("sess-completed").await.unwrap().unwrap();
+        data2.meta.status = SessionStatus::Completed;
+        store.save(&data2).await.unwrap();
+
+        // 再调 snapshot
+        let cp = CheckpointSnapshot::new(Checkpoint::RoundEnd, 0);
+        let _ = store
+            .snapshot("sess-completed", &data2.state, &cp)
+            .await
+            .unwrap();
+
+        // Completed 不是 Cancelling → snapshot 强制 Interrupted（既有行为）
+        let loaded = store.load("sess-completed").await.unwrap().unwrap();
+        assert_eq!(loaded.meta.status, SessionStatus::Interrupted);
     }
 
     // [方法] save 覆盖已存在 session（更新字段）

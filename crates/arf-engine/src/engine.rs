@@ -582,8 +582,14 @@ impl Engine {
         let mut results = Vec::with_capacity(tool_calls.len());
         for tc in tool_calls {
             if cancel.is_cancelled() {
-                // Fill remaining with cancelled sentinel (the Stopped error
-                // is raised by the caller via the first error).
+                // R7-L1 fix: push tool role sentinel for every cancelled tool
+                // so state.messages has assistant + tool (cancelled) pairs.
+                // Model on resume sees both messages — no dangling tool_call_id.
+                let cancel_content = format!("[cancelled by user] {}", tc.name);
+                let mut tool_msg = ModelMessage::new("tool", &cancel_content);
+                tool_msg.tool_call_id = Some(tc.id.clone());
+                tool_msg.name = Some(tc.name.clone());
+                state.push_message(tool_msg);
                 results.push(Err(RunError::Stopped));
                 continue;
             }
@@ -681,7 +687,20 @@ impl Engine {
             self.handle.primary_bus_id(),
         );
 
-        let response = self.send_and_await(state, cid, msg, cancel).await?;
+        let response = match self.send_and_await(state, cid, msg, cancel.clone()).await {
+            Ok(r) => r,
+            Err(e @ RunError::Stopped) => {
+                // R7-L1 fix: push tool role sentinel so model sees both halves
+                // of the assistant+tool message pair (no dangling tool_call_id).
+                let cancel_content = format!("[cancelled mid-execution] {}", tc.name);
+                let mut tool_msg = ModelMessage::new("tool", &cancel_content);
+                tool_msg.tool_call_id = Some(tc.id.clone());
+                tool_msg.name = Some(tc.name.clone());
+                state.push_message(tool_msg);
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
 
         // Parse tool result
         let result_content = response

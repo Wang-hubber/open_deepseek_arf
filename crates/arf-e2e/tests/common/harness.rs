@@ -286,6 +286,7 @@ impl E2EHarness {
             system_prompt_template: "You are helpful.".into(),
             initial_memory: vec![],
             allowed_paths: vec![],
+            tools: vec![],
             engine: EngineConfig {
                 routes,
                 checkpoint_rules,
