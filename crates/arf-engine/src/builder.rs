@@ -17,6 +17,13 @@ pub struct EngineBuilder {
     buses: Vec<Arc<Bus>>,
     session_store: Option<Arc<dyn SessionStore>>,
     session_id: Option<String>,
+    /// Phase 9 F-018: explicit NodeId for this Engine instance. Without this,
+    /// `Engine::new` defaults to `"engine/{provider}"`, which collides when
+    /// multiple Engine instances share the same provider.
+    agent_id: Option<NodeId>,
+    /// Phase 9 F-019: msg_type names to auto-subscribe to on the bus so the
+    /// Engine receives them via its primary subscription's filter.
+    auto_subscribe: Vec<String>,
 }
 
 impl EngineBuilder {
@@ -25,6 +32,8 @@ impl EngineBuilder {
             buses,
             session_store: None,
             session_id: None,
+            agent_id: None,
+            auto_subscribe: Vec::new(),
         }
     }
 
@@ -39,6 +48,24 @@ impl EngineBuilder {
     /// `agent_id` as the session id.
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Phase 9 F-018: override the default agent_id (`"engine/{provider}"`).
+    /// Required when multiple Engine instances share the same provider and
+    /// would otherwise collide on the bus (bus.connect rejects AlreadyConnected).
+    pub fn with_agent_id(mut self, agent_id: NodeId) -> Self {
+        self.agent_id = Some(agent_id);
+        self
+    }
+
+    /// Phase 9 F-019: register extra msg_type names the Engine should receive
+    /// (added to its primary subscription's filter). Without this, an Engine
+    /// that wants to react to e.g. `"peer_message"` must either set
+    /// `cfg.engine.routes["peer_message"]` (Strict route) or hand-subscribe
+    /// from outside. This is the lightweight extension point.
+    pub fn auto_subscribe_message_types(mut self, types: &[&str]) -> Self {
+        self.auto_subscribe.extend(types.iter().map(|s| s.to_string()));
         self
     }
 
@@ -92,7 +119,7 @@ impl EngineBuilder {
             }
         }
 
-        let mut engine = Engine::new(self.buses, config, registry).await?;
+        let mut engine = Engine::new(self.buses, config, registry, self.agent_id, self.auto_subscribe).await?;
         if let Some(store) = self.session_store {
             let sid = self
                 .session_id

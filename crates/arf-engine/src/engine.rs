@@ -51,10 +51,16 @@ impl Engine {
         buses: Vec<Arc<arf_bus::Bus>>,
         config: AgentConfig,
         registry: ResourceRegistry,
+        agent_id_override: Option<NodeId>,
+        auto_subscribe: Vec<String>,
     ) -> Result<Self, BuildError> {
         let primary = buses[0].clone();
+        // Phase 9 F-018: explicit agent_id (from EngineBuilder::with_agent_id)
+        // avoids NodeId collision when multiple Engines share a provider.
+        let node_id = agent_id_override
+            .unwrap_or_else(|| NodeId::new(format!("engine/{}", config.model.provider)));
         let info = NodeInfo {
-            node_id: NodeId::new(format!("engine/{}", config.model.provider)),
+            node_id: node_id.clone(),
             node_type: "engine".into(),
             capabilities: serde_json::json!({
                 "kind": "engine",
@@ -64,8 +70,14 @@ impl Engine {
             online_since: 0,
         };
 
-        // Build Engine's filter — only response msg_types we care about.
-        let types = engine_response_types(&config);
+        // Build Engine's filter — only response msg_types we care about,
+        // plus any F-019 auto-subscribe types the app registered.
+        let mut types = engine_response_types(&config);
+        for t in auto_subscribe {
+            if !types.contains(&t) {
+                types.push(t);
+            }
+        }
         let filter = arf_core::MessageFilter {
             types: if types.is_empty() { None } else { Some(types) },
             to_match: ToMatch::BroadcastAndDirectedToMe,
@@ -77,14 +89,31 @@ impl Engine {
             .map_err(|e| BuildError::PrimaryBusConnect(e.to_string()))?;
 
         // 6.7: Spawn lifecycle listener that invalidates the DiscoveryCache
-        // when nodes come online or go offline.
+        // when nodes come online or go offline. Phase 9 F-016: also invokes
+        // the configured `OnMemberFailedHandler` on offline so apps can react
+        // (previously the handler was registered but never called — silent
+        // dead code).
         let discovery_cache = Arc::new(DiscoveryCache::new());
         let cache_for_listener = discovery_cache.clone();
+        let on_member_failed = config.engine.on_member_failed.clone();
+        let agent_id_for_handler = info.node_id.clone();
         let mut lifecycle_rx = primary.subscribe();
         tokio::spawn(async move {
             while let Ok(m) = lifecycle_rx.recv().await {
                 if m.msg_type == "node_online" || m.msg_type == "node_offline" {
                     cache_for_listener.invalidate();
+                }
+                // F-016: invoke the handler on offline. Default = FailSession
+                // (matches legacy behaviour). Handler is `Option`, so we skip
+                // cleanly when the app didn't supply one.
+                if m.msg_type == arf_core::msg_type::NODE_OFFLINE {
+                    if let Some(h) = &on_member_failed {
+                        let reason = format!(
+                            "node_offline from bus (id={})",
+                            m.from.as_str()
+                        );
+                        let _ = h.handle(&agent_id_for_handler, &m.from, &reason);
+                    }
                 }
             }
         });
