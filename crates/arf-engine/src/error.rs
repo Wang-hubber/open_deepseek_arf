@@ -71,6 +71,12 @@ pub enum RunError {
     #[error("Checkpoint 输出的 msg_type '{msg_type}' 未在 AgentConfig.routes 注册")]
     UndeclaredMsgType { msg_type: String },
 
+    /// F-025 fix: ResponseProcessor.process() returned Err. Engine aborts
+    /// the current round; the app catches this and decides retry / log /
+    /// fatal. Previously this error was silently swallowed via `let _ = ...`.
+    #[error("ResponseProcessor 处理 '{msg_type}' 失败: {reason}")]
+    Processor { msg_type: String, reason: String },
+
     /// Node 掉线 / 超时且 handler 返回 FailSession。Phase 6 task 6.8.
     #[error("Agent {agent} lost member {member}: {reason}")]
     MemberFailed {

@@ -876,10 +876,20 @@ impl Engine {
                 continue;
             }
 
-            // Phase 6 task 6.8: dispatch to ResponseProcessor if registered.
+            // Phase 6 task 6.8 + F-025: dispatch to ResponseProcessor if
+            // registered. F-025 fix: surface processor errors as `RunError::Processor`
+            // (was: silently swallowed via `let _ = ...`). The engine aborts
+            // the current round on processor error so app-level bugs aren't
+            // hidden — app can catch `RunError::Processor` and decide whether
+            // to retry, log, or treat as fatal.
             if let Some(processor) = self.config.engine.processors.get(msg.msg_type.as_str()) {
                 if processor.handles(&msg.msg_type) {
-                    let _ = processor.process(&msg); // result ignored for now; 6.x uses Response
+                    if let Err(e) = processor.process(&msg) {
+                        return Err(RunError::Processor {
+                            msg_type: msg.msg_type.clone(),
+                            reason: e.to_string(),
+                        });
+                    }
                 }
             }
 
