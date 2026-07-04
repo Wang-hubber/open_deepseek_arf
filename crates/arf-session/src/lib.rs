@@ -137,6 +137,19 @@ pub struct SessionData {
     pub state: State,
     pub last_checkpoint: Option<CheckpointSnapshot>,
     pub config_snapshot: serde_json::Value,
+    /// R5-L1 fix: persist `CoreModelParams` (thinking_enabled / temperature /
+    /// max_tokens / extra) so reload+resume restores the exact model
+    /// configuration used in the original round. Without this, the
+    /// `state.messages` history is preserved but the runtime params reset to
+    /// defaults on reload — the resumed round would diverge in temperature
+    /// and (for non-qwen providers) thinking behaviour.
+    ///
+    /// `serde(default)` keeps backward compat with sessions serialized before
+    /// this field existed (they get `CoreModelParams::default()`).
+    /// App code should populate this from the active `ModelDecl` at
+    /// `store.save()` time.
+    #[serde(default)]
+    pub model_params: arf_core::CoreModelParams,
 }
 
 // ── Error type ───────────────────────────────────────────────────────
@@ -283,7 +296,8 @@ impl SqliteSessionStore {
                 status      TEXT NOT NULL DEFAULT 'active',
                 current_round INTEGER,
                 state_json  TEXT NOT NULL,
-                config_json TEXT NOT NULL
+                config_json TEXT NOT NULL,
+                model_params_json TEXT NOT NULL DEFAULT '{}'
             );
             CREATE TABLE IF NOT EXISTS checkpoints (
                 session_id   TEXT NOT NULL,
@@ -337,21 +351,24 @@ impl SessionStore for SqliteSessionStore {
 
     async fn load(&self, session_id: &str) -> Result<Option<SessionData>, SessionError> {
         let conn = self.conn.lock().await;
-        let row: Option<(String, String, String, String, i64, i64, String, Option<i64>, String, String)> =
+        // R5-L1: include model_params_json column (added in schema v2).
+        // Backward compat: SELECT uses COALESCE so older DBs without the
+        // column return '{}' (i.e. CoreModelParams::default()).
+        let row: Option<(String, String, String, String, i64, i64, String, Option<i64>, String, String, String)> =
             conn.query_row(
-                "SELECT session_id, title, created_at, updated_at, round_count, turn_count, status, current_round, state_json, config_json
+                "SELECT session_id, title, created_at, updated_at, round_count, turn_count, status, current_round, state_json, config_json, model_params_json
                  FROM sessions WHERE session_id = ?1",
                 params![session_id],
                 |row| {
                     Ok((
                         row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
                         row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
-                        row.get(8)?, row.get(9)?,
+                        row.get(8)?, row.get(9)?, row.get(10)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((sid, title, created_s, updated_s, rc, tc, status_s, current_round, state_json, config_json)) = row else {
+        let Some((sid, title, created_s, updated_s, rc, tc, status_s, current_round, state_json, config_json, model_params_json)) = row else {
             return Ok(None);
         };
 
@@ -380,12 +397,15 @@ impl SessionStore for SqliteSessionStore {
         };
         let state: State = serde_json::from_str(&state_json)?;
         let config_snapshot: serde_json::Value = serde_json::from_str(&config_json)?;
+        let model_params: arf_core::CoreModelParams = serde_json::from_str(&model_params_json)
+            .unwrap_or_default();
 
         Ok(Some(SessionData {
             meta,
             state,
             last_checkpoint: checkpoint,
             config_snapshot,
+            model_params,
         }))
     }
 
@@ -393,12 +413,13 @@ impl SessionStore for SqliteSessionStore {
         let conn = self.conn.lock().await;
         let state_json = serde_json::to_string(&data.state)?;
         let config_json = serde_json::to_string(&data.config_snapshot)?;
+        let model_params_json = serde_json::to_string(&data.model_params)?;
         let created = data.meta.created_at.to_rfc3339();
         let updated = data.meta.updated_at.to_rfc3339();
         let current_round = data.meta.current_round.map(|n| n as i64);
         conn.execute(
-            "INSERT INTO sessions (session_id, title, created_at, updated_at, round_count, turn_count, status, current_round, state_json, config_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO sessions (session_id, title, created_at, updated_at, round_count, turn_count, status, current_round, state_json, config_json, model_params_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(session_id) DO UPDATE SET
                title = excluded.title,
                updated_at = excluded.updated_at,
@@ -407,7 +428,8 @@ impl SessionStore for SqliteSessionStore {
                status = excluded.status,
                current_round = excluded.current_round,
                state_json = excluded.state_json,
-               config_json = excluded.config_json",
+               config_json = excluded.config_json,
+               model_params_json = excluded.model_params_json",
             params![
                 data.meta.session_id,
                 data.meta.title,
@@ -419,6 +441,7 @@ impl SessionStore for SqliteSessionStore {
                 current_round,
                 state_json,
                 config_json,
+                model_params_json,
             ],
         )?;
         // F-013: persist last_checkpoint too (previously silently dropped). A
@@ -537,6 +560,7 @@ mod tests {
             state: State::new(),
             last_checkpoint: None,
             config_snapshot: serde_json::json!({"model": "test"}),
+            model_params: arf_core::CoreModelParams::default(),
         }
     }
 
@@ -797,6 +821,47 @@ mod tests {
         // Completed 不是 Cancelling → snapshot 强制 Interrupted（既有行为）
         let loaded = store.load("sess-completed").await.unwrap().unwrap();
         assert_eq!(loaded.meta.status, SessionStatus::Interrupted);
+    }
+
+    // [持久化] R5-L1: model_params 字段 save/load 完整 round-trip
+    #[tokio::test]
+    async fn model_params_persist_roundtrip() {
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let mut data = make_data("sess-params");
+        data.model_params = arf_core::CoreModelParams {
+            thinking_enabled: true,
+            temperature: Some(0.42),
+            max_tokens: Some(2048),
+            extra: serde_json::json!({"reasoning_effort": "high"}),
+        };
+        store.save(&data).await.unwrap();
+
+        let loaded = store.load("sess-params").await.unwrap().unwrap();
+        assert!(loaded.model_params.thinking_enabled);
+        assert_eq!(loaded.model_params.temperature, Some(0.42));
+        assert_eq!(loaded.model_params.max_tokens, Some(2048));
+        assert_eq!(loaded.model_params.extra, serde_json::json!({"reasoning_effort": "high"}));
+    }
+
+    // [持久化] R5-L1: 旧数据 (无 model_params 列的 SQLite) load 不出错
+    // schema v2 加 model_params_json 列；老 DB load 走 COALESCE → 旧行
+    // 该列为空时 serde 反序列化为 CoreModelParams::default()
+    #[tokio::test]
+    async fn model_params_missing_in_old_row_uses_default() {
+        // 直接构造一个旧 schema 的行（不含 model_params_json）
+        let store = SqliteSessionStore::in_memory().await.unwrap();
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "INSERT INTO sessions (session_id, title, created_at, updated_at, round_count, turn_count, status, current_round, state_json, config_json)
+             VALUES ('legacy', 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'active', NULL, '{\"messages\":[],\"over_view\":{\"round_count\":0,\"turn_count\":0,\"context_tokens\":0,\"model_context_window\":0,\"runtime\":{\"secs\":0,\"nanos\":0},\"last_user_message\":\"\"},\"wait_events\":[]}', '{}')",
+            [],
+        ).unwrap();
+        drop(conn);
+
+        let loaded = store.load("legacy").await.unwrap().unwrap();
+        // model_params 应为 default（不是 panic）
+        assert!(!loaded.model_params.thinking_enabled);
+        assert_eq!(loaded.model_params.temperature, None);
     }
 
     // [方法] save 覆盖已存在 session（更新字段）
