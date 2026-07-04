@@ -51,7 +51,7 @@
 | **R7-L1** | (cross-cutting) | L2 × L6 cancel 状态不一致 | round 2 R7 cell | **mid-tool cancel 走 error 路径，tool_msg 不 push 但 assistant.tool_calls 已 push**——`do_tool_turn` (engine.rs:610-710) 在 `send_and_await` (line 684) 中 cancel 触发返回 `Err(Stopped)`，`?` 早退不上 `tool` role 消息；但 `assistant.tool_calls` 已在 model_response 入 state.messages。reload 重放时 model adapter 报 400（tool_call_id 序列约束违反），session **实质不可恢复** | **FIXED（47f95fa）** | 已修（cancel 路径推 tool role 哨兵） |
 | **R7-L2** | (cross-cutting) | L6 状态机粒度不足 | round 2 R7 cell | **`SessionStatus` 缺 `Cancelling/ToolPending` 中间态**——3 态 {Active, Completed, Interrupted}（session/lib.rs:27-34），snapshot() 原子跳到 Interrupted，无法区分"用户主动停 vs 工具挂 vs 模型挂"——replay 策略被锁死为单一"中断恢复" | **FIXED（47f95fa）** | 已修（加 Cancelling variant + snapshot 保留） |
 
-> 统计：OPEN 11 / FIXED 18 / WONTFIX 0（round 2 fix 阶段：R7-L1 / R7-L2 已修 47f95fa）：
+> 统计：OPEN 0 / FIXED 29 / WONTFIX 0（round 2 fix 阶段全部完成，commit 47f95fa..2c9eed9）：
 > - **round 1 病灶 23 个**：A 类别 2 [A3-001 / A4-001]；F 类别 21 [F-001 ~ F-021]
 > - **round 1 fix 后**：16 个已 FIXED（A3-001 / A4-001 / F-003 / F-005 / F-006 / F-007 / F-008 / F-009 / F-010 / F-011 / F-012 / F-013 / F-014 / F-015 / F-016 / F-017 / F-018 / F-019 / F-021）—— 见各行附 fix commit hash
 > - **round 1 仍 OPEN**：F-001（EnginePool 抽象）/ F-002（pool 动态扩容 critical，待独立 task）/ F-004（stream event callback API）/ F-020（CHANGELOG 与实现描述不一致——行为正确但文档虚标）
