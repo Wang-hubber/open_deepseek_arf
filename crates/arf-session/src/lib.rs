@@ -97,6 +97,40 @@ impl SessionMeta {
 /// in `Engine.run()`. Allows replay of in-flight turns on restart.
 ///
 /// `PartialEq` is not derived because `WaitEvent` doesn't implement it.
+/// Audit / billing metadata for the most recent `model_response` that
+/// preceded this checkpoint (R5-L2). Carries the data needed by:
+/// - usage dashboards (tokens in/out)
+/// - timeout / latency monitors (response_latency_ms)
+/// - cancel reason analysis (finish_reason: "stop" / "tool_calls" / "length" / "cancel")
+///
+/// `Option` because checkpoints fired at `BeforeModelCall` (no response yet)
+/// or after a tool_exec haven't seen a `model_response` since the previous
+/// checkpoint — the field stays `None` for those positions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelResponseMeta {
+    /// Cumulative prompt tokens (sum across turns in this round if multiple
+    /// model calls preceded the checkpoint; for `AfterModelCall` it's the
+    /// latest response's prompt tokens).
+    #[serde(default)]
+    pub input_tokens: u32,
+    /// Completion tokens of the most recent `model_response`.
+    #[serde(default)]
+    pub output_tokens: u32,
+    /// Wall-clock latency of the most recent model call, in milliseconds.
+    #[serde(default)]
+    pub response_latency_ms: u64,
+    /// Provider-reported finish reason: `"stop"` / `"tool_calls"` /
+    /// `"length"` / `"cancel"`. Empty if unknown.
+    #[serde(default)]
+    pub finish_reason: String,
+    /// Provider name (e.g., `"openai"`, `"deepseek"`, `"minimax"`).
+    #[serde(default)]
+    pub provider: String,
+    /// Model identifier (e.g., `"qwen3.7-max-preview"`, `"deepseek-chat"`).
+    #[serde(default)]
+    pub model: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointSnapshot {
     pub checkpoint: Checkpoint,
@@ -111,6 +145,11 @@ pub struct CheckpointSnapshot {
     /// Optional sub-task DAG snapshot (for subagent / DAG replay).
     /// We keep this as a JSON Value to avoid forcing arf-state types here.
     pub tasks_json: serde_json::Value,
+    /// R5-L2: audit metadata for the most recent `model_response`. `None` for
+    /// checkpoints fired before any model call in this round (e.g.,
+    /// `BeforeModelCall`); populated at `AfterModelCall` and after.
+    #[serde(default)]
+    pub last_model_response_meta: Option<ModelResponseMeta>,
 }
 
 impl CheckpointSnapshot {
@@ -122,6 +161,7 @@ impl CheckpointSnapshot {
             wait_events: Vec::new(),
             captured_at: Utc::now(),
             tasks_json: serde_json::Value::Null,
+            last_model_response_meta: None,
         }
     }
 }
@@ -896,6 +936,7 @@ mod tests {
             wait_events: vec![],
             captured_at: Utc::now(),
             tasks_json: serde_json::Value::Null,
+            last_model_response_meta: None,
         });
         let json = serde_json::to_string(&data).unwrap();
         let back: SessionData = serde_json::from_str(&json).unwrap();
@@ -905,6 +946,27 @@ mod tests {
             back.last_checkpoint.unwrap().checkpoint,
             Checkpoint::BeforeToolExec
         );
+    }
+
+    // [序列化] R5-L2: ModelResponseMeta serde round-trip（审计 5 字段）
+    #[test]
+    fn model_response_meta_serde_roundtrip() {
+        let meta = ModelResponseMeta {
+            input_tokens: 1234,
+            output_tokens: 567,
+            response_latency_ms: 850,
+            finish_reason: "tool_calls".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: ModelResponseMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_tokens, 1234);
+        assert_eq!(back.output_tokens, 567);
+        assert_eq!(back.response_latency_ms, 850);
+        assert_eq!(back.finish_reason, "tool_calls");
+        assert_eq!(back.provider, "deepseek");
+        assert_eq!(back.model, "deepseek-chat");
     }
 
     // [边界] 包含 NodeId 的 state 序列化往返（State 内部已测，这里冒烟）
