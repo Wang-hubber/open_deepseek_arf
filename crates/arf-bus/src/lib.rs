@@ -5,6 +5,7 @@
 //! (broadcast when `to` is empty, directed otherwise).
 
 use arf_core::msg_type::{BARRIER_ACK, BARRIER_REQUEST, NODE_OFFLINE, NODE_ONLINE};
+use arf_core::node::Node;
 use arf_core::{BusId, Message, MessageFilter, NodeId, NodeInfo, SendError, SendReceipt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -569,6 +570,89 @@ mod filter;
 mod graph;
 mod heartbeat;
 pub use connection::NodeHandle;
+
+// ═══════════════════════════════════════════════════════════════════
+// F-022 helper: connect an `Arc<dyn Node>` to a Bus + spawn message loop
+// ═══════════════════════════════════════════════════════════════════
+
+/// Connect a [`Node`] implementation to a [`Bus`] and spawn a background
+/// task that forwards every incoming message to the node's [`Node::on_message`].
+///
+/// Returns the [`NodeHandle`] for direct send/recv (e.g., to publish
+/// application-layer messages from the same node). The receive loop is owned
+/// by the spawned task — callers must NOT also `recv()` on the returned handle,
+/// or messages will be lost (each message is delivered to exactly one consumer).
+///
+/// # Why this exists (Phase 9 F-022)
+///
+/// The `Node` trait was previously a documentation contract only — no helper
+/// to actually register a custom Node with a Bus. App authors had to manually
+/// (1) construct `NodeInfo` from `id()` and capabilities, (2) call
+/// `bus.connect(info, filter)`, (3) spawn a task that loops on
+/// `handle.recv()` and dispatches to `on_message`. This helper collapses
+/// those three steps into one.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use arf_bus::{connect_node_to_bus, Bus, MessageFilter, ToMatch};
+/// use arf_core::{BusId, Message, Node, NodeId, NodeInfo, SnapshotError, RestoreError};
+/// use async_trait::async_trait;
+/// use tokio::sync::Mutex;
+///
+/// struct MyNode { id: NodeId, log: Vec<String> }
+/// #[async_trait]
+/// impl Node for MyNode {
+///     fn id(&self) -> &NodeId { &self.id }
+///     fn snapshot(&self) -> Result<serde_json::Value, SnapshotError> { Ok(serde_json::json!([])) }
+///     async fn restore(&mut self, _: serde_json::Value) -> Result<(), RestoreError> { Ok(()) }
+///     async fn on_message(&mut self, m: Message, _: BusId) { /* ... */ }
+/// }
+/// # async fn ex(bus: Bus) -> Result<(), arf_bus::ConnectError> {
+/// let node = Arc::new(Mutex::new(MyNode { id: NodeId::new("custom/0"), log: vec![] }));
+/// let info = NodeInfo {
+///     node_id: NodeId::new("custom/0"),
+///     node_type: "custom".into(),
+///     capabilities: serde_json::json!({}),
+///     online_since: 0,
+/// };
+/// let filter = MessageFilter { types: None, to_match: ToMatch::Broadcast };
+/// let _handle = connect_node_to_bus(node, &bus, info, filter).await?;
+/// # Ok(()) }
+/// ```
+pub async fn connect_node_to_bus<N>(
+    node: Arc<tokio::sync::Mutex<N>>,
+    bus: &Bus,
+    info: NodeInfo,
+    filter: MessageFilter,
+) -> Result<NodeRef, ConnectError>
+where
+    N: Node + Send + 'static,
+{
+    let mut handle = bus.connect(info.clone(), filter).await?;
+    let bus_id = handle.primary_bus_id();
+    let node = node.clone();
+    // Spawn the message loop; it owns the handle. Callers that need to send
+    // from the same node use the bus directly (`bus.send_message(...)`) or
+    // call methods on the Node (e.g., `node.lock().await.publish(...)`).
+    tokio::spawn(async move {
+        while let Ok(msg) = handle.recv().await {
+            let mut n = node.lock().await;
+            n.on_message(msg, bus_id).await;
+        }
+    });
+    Ok(NodeRef { info, bus_id })
+}
+
+/// Lightweight handle returned by [`connect_node_to_bus`]. Carries the
+/// node's identity and primary BusId for callers that need to publish
+/// messages from outside the spawned message loop.
+#[derive(Debug, Clone)]
+pub struct NodeRef {
+    pub info: NodeInfo,
+    pub bus_id: BusId,
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Tests
