@@ -60,6 +60,7 @@ async fn pool_with_model_adapter_resource() {
         max_size: 2,
         overflow: Overflow::Reject,
         idle_timeout: None,
+        min_size: 0,
     });
     let _r1 = pool
         .provision(|| Ok(ModelAdapterResource::new(Arc::new(StubProvider))))
@@ -103,6 +104,7 @@ async fn pool_node_with_engine_react_loop() {
         max_size: 1,
         overflow: Overflow::Block(Duration::from_secs(2)),
         idle_timeout: None,
+        min_size: 0,
     });
     let _r1 = pool
         .provision(|| Ok(ModelAdapterResource::new(Arc::new(StubProvider))))
@@ -169,6 +171,7 @@ async fn pool_node_with_engine_react_loop() {
         initial_memory: vec![],
         allowed_paths: vec![],
         resources: vec![],
+        tools: vec![],
         engine: EngineConfig {
             // model_call auto-derived from ModelDecl.provider.
             max_turns: 3,
