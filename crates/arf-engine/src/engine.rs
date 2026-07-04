@@ -593,8 +593,20 @@ impl Engine {
         results
     }
 
+    /// Look up the configured permission for a tool by name (Phase 9 F-017).
+    /// Defaults to `Allow` when the tool isn't in the configured list, matching
+    /// legacy behaviour where all tools were unconditionally allowed.
+    pub fn lookup_tool_permission(&self, tool_name: &str) -> arf_core::ToolPermission {
+        self.config
+            .tools
+            .iter()
+            .find(|s| s.name == tool_name)
+            .map(|s| s.permission.clone())
+            .unwrap_or(arf_core::ToolPermission::Allow)
+    }
+
     /// Tool call turn: send + await tool_result + parse + append tool message.
-    /// Each tool_exec is +1 to turn_count（已 send 即计）。
+    /// Each tool_exec is +1 to turn_count（已 send 即计）.
     async fn do_tool_turn(
         &mut self,
         state: &mut State,
@@ -602,6 +614,44 @@ impl Engine {
         cancel: CancellationToken,
     ) -> Result<serde_json::Value, RunError> {
         state.inc_turn();
+
+        // Phase 9 F-017: enforce ToolPermission gating before tool_exec.
+        let permission = self.lookup_tool_permission(&tc.name);
+        match permission {
+            arf_core::ToolPermission::Deny => {
+                let deny_content = format!("tool call denied by policy: {}", tc.name);
+                let mut tool_msg = ModelMessage::new("tool", &deny_content);
+                tool_msg.tool_call_id = Some(tc.id.clone());
+                tool_msg.name = Some(tc.name.clone());
+                state.push_message(tool_msg);
+                return Ok(serde_json::json!({
+                    "content": "",
+                    "error": deny_content,
+                    "permission": "deny",
+                }));
+            }
+            arf_core::ToolPermission::Ask => {
+                // Send permission_request, await permission_response.
+                let granted = self
+                    .request_permission(state, &tc, cancel.clone())
+                    .await?;
+                if !granted {
+                    let denied_content =
+                        format!("user denied tool call: {}", tc.name);
+                    let mut tool_msg = ModelMessage::new("tool", &denied_content);
+                    tool_msg.tool_call_id = Some(tc.id.clone());
+                    tool_msg.name = Some(tc.name.clone());
+                    state.push_message(tool_msg);
+                    return Ok(serde_json::json!({
+                        "content": "",
+                        "error": denied_content,
+                        "permission": "deny",
+                    }));
+                }
+                // User approved → fall through to normal tool_exec path.
+            }
+            arf_core::ToolPermission::Allow => { /* proceed normally */ }
+        }
 
         // Engine routes tool_exec directly to the MCP node that owns
         // this tool. Precedence: (1) model's explicit `tc.target` if
@@ -657,6 +707,54 @@ impl Engine {
         state.push_message(tool_msg);
 
         Ok(response.payload)
+    }
+
+    /// Send a permission_request to bus and wait for permission_response.
+    /// Returns Ok(true) if user approved, Ok(false) if denied or timed out.
+    /// (Phase 9 F-017.)
+    async fn request_permission(
+        &mut self,
+        state: &mut State,
+        tc: &ToolCall,
+        cancel: CancellationToken,
+    ) -> Result<bool, RunError> {
+        let cid = Uuid::new_v4();
+        let payload = serde_json::json!({
+            "correlation_id": cid.to_string(),
+            "tool_name": tc.name,
+            "arguments": tc.arguments,
+            "tool_call_id": tc.id,
+        });
+        // Broadcast the request; any responder (frontend / human handoff node)
+        // that subscribes to `permission_request` will reply.
+        let msg = Message::new_broadcast(
+            arf_core::msg_type::PERMISSION_REQUEST,
+            self.agent_id.clone(),
+            payload,
+        );
+        // Manually send + wait (we need to control expected_types).
+        let event = arf_core::WaitEvent::new(cid, WaitStrategy::All, 1);
+        let event_id = event.id;
+        state.wait_events.push(event);
+        if let Err(e) = self.handle.send_message(msg).await {
+            state.wait_events.retain(|e| e.id != event_id);
+            return Err(RunError::Bus(e));
+        }
+        let mut responses = self
+            .wait_for_strategy(
+                state,
+                event_id,
+                &[arf_core::msg_type::PERMISSION_RESPONSE],
+                cancel,
+            )
+            .await?;
+        let resp = responses.remove(0);
+        let allow = resp
+            .payload
+            .get("allow")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(allow)
     }
 
     /// Send a pre-constructed message + register WaitEvent + await first response.

@@ -159,6 +159,7 @@ impl PyAgentConfig {
             system_prompt_template,
             initial_memory: initial_memory.unwrap_or_default(),
             allowed_paths: allowed_paths.unwrap_or_default(),
+            tools: vec![],
             engine: engine_config,
         };
         Ok(Self {

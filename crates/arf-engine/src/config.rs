@@ -89,6 +89,14 @@ pub struct AgentConfig {
     pub initial_memory: Vec<String>,
     pub allowed_paths: Vec<String>,
 
+    /// Tool-level permission overrides (Phase 9 F-017). When the LLM emits a
+    /// `tool_call` for `name`, the Engine looks up its `permission` here:
+    /// - `Allow` (default): proceed with `tool_exec` as usual
+    /// - `Ask`: send `permission_request` to bus, await `permission_response`,
+    ///   then either proceed (`allow` reply) or short-circuit (`deny`)
+    /// - `Deny`: short-circuit immediately with a `tool_result` error
+    pub tools: Vec<arf_core::ToolSpec>,
+
     pub engine: EngineConfig,
 }
 
@@ -104,6 +112,7 @@ impl Default for AgentConfig {
             system_prompt_template: "You are a helpful assistant.".into(),
             initial_memory: vec![],
             allowed_paths: vec![],
+            tools: vec![],
             engine: EngineConfig {
                 routes: HashMap::new(),
                 checkpoint_rules: vec![],

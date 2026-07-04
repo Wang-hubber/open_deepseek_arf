@@ -81,6 +81,7 @@ fn minimal_config(_agent_id: &str) -> AgentConfig {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,
@@ -2404,6 +2405,98 @@ async fn engine_auto_subscribes_message_types() {
     // and confirm it doesn't crash on engine construction.
     drop(tester);
     assert_eq!(engine.agent_id().as_str(), "engine/deepseek");
+}
+
+// ─── F-017 ToolPermission tests ────────────────────────────────────────
+
+// [构造] arf_core::ToolPermission 三种变体均可构造 + Default = Allow
+#[test]
+fn tool_permission_default_is_allow() {
+    use arf_core::ToolPermission;
+    assert_eq!(ToolPermission::default(), ToolPermission::Allow);
+    let _ = ToolPermission::Allow;
+    let _ = ToolPermission::Ask;
+    let _ = ToolPermission::Deny;
+}
+
+// [序列化] ToolPermission 以 lowercase 字符串序列化（与 arf_agent::ToolPermission 兼容）
+#[test]
+fn tool_permission_serializes_lowercase() {
+    use arf_core::ToolPermission;
+    for (v, expected) in [
+        (ToolPermission::Allow, "\"allow\""),
+        (ToolPermission::Ask, "\"ask\""),
+        (ToolPermission::Deny, "\"deny\""),
+    ] {
+        assert_eq!(serde_json::to_string(&v).unwrap(), expected);
+    }
+}
+
+// [构造] ToolSpec 默认 permission = Allow（向后兼容老调用方）
+#[test]
+fn tool_spec_default_permission_is_allow() {
+    use arf_core::ToolPermission;
+    let spec = arf_core::ToolSpec::new("any_tool", "desc", serde_json::json!({}));
+    assert_eq!(spec.permission, ToolPermission::Allow);
+}
+
+// [构造] ToolSpec 序列化带 permission 字段
+#[test]
+fn tool_spec_roundtrip_includes_permission() {
+    use arf_core::ToolPermission;
+    let spec = arf_core::ToolSpec {
+        name: "dangerous_tool".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({}),
+        permission: ToolPermission::Deny,
+    };
+    let json = serde_json::to_string(&spec).unwrap();
+    assert!(json.contains("\"permission\":\"deny\""), "got: {json}");
+    let back: arf_core::ToolSpec = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.permission, ToolPermission::Deny);
+}
+
+// [方法] Engine::lookup_tool_permission 从 cfg.tools 查表；找不到 → Allow（legacy）
+#[tokio::test]
+async fn engine_lookup_tool_permission_default_allow() {
+    let bus = test_bus_with_model_node().await;
+    let engine = EngineBuilder::new(vec![bus]).build(minimal_config("a")).await.unwrap();
+    assert_eq!(
+        engine.lookup_tool_permission("any_unknown_tool"),
+        arf_core::ToolPermission::Allow
+    );
+}
+
+#[tokio::test]
+async fn engine_lookup_tool_permission_finds_configured_tool() {
+    let bus = test_bus_with_model_node().await;
+    let mut cfg = minimal_config("a");
+    cfg.tools.push(arf_core::ToolSpec {
+        name: "ask_me".into(),
+        description: "needs user approval".into(),
+        parameters: serde_json::json!({}),
+        permission: arf_core::ToolPermission::Ask,
+    });
+    cfg.tools.push(arf_core::ToolSpec {
+        name: "blocked".into(),
+        description: "blocked".into(),
+        parameters: serde_json::json!({}),
+        permission: arf_core::ToolPermission::Deny,
+    });
+    let engine = EngineBuilder::new(vec![bus]).build(cfg).await.unwrap();
+    assert_eq!(
+        engine.lookup_tool_permission("ask_me"),
+        arf_core::ToolPermission::Ask
+    );
+    assert_eq!(
+        engine.lookup_tool_permission("blocked"),
+        arf_core::ToolPermission::Deny
+    );
+    // Configured + unconfigured — same lookup path.
+    assert_eq!(
+        engine.lookup_tool_permission("not_in_cfg"),
+        arf_core::ToolPermission::Allow
+    );
 }
 
 // [方法] C2 F-016: OnMemberFailedHandler.handle() is invoked on node_offline

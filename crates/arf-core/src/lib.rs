@@ -29,7 +29,7 @@ pub use processor::ResponseProcessor;
 pub use response::Response;
 pub use route::{Capability, Route};
 pub use state::{OverView, State};
-pub use tool::ToolSpec;
+pub use tool::{ToolPermission, ToolSpec};
 pub use wait_event::{WaitEvent, WaitStrategy};
 
 // ── NodeId ───────────────────────────────────────────────────────────

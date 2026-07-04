@@ -6,6 +6,26 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Permission level controlling Engine's runtime gating of tool calls
+/// (Phase 9 F-017). The default `Allow` preserves legacy behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPermission {
+    /// Tool runs without asking the user.
+    Allow,
+    /// Tool must ask the user before running — Engine sends a
+    /// `permission_request` message and waits for `permission_response`.
+    Ask,
+    /// Tool is blocked — Engine rejects the call with a `tool_result` error.
+    Deny,
+}
+
+impl Default for ToolPermission {
+    fn default() -> Self {
+        ToolPermission::Allow
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     /// Tool name as LLM sees it (e.g., `"read_file"`).
@@ -14,6 +34,10 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema describing the tool's argument structure.
     pub parameters: Value,
+    /// Permission level (Phase 9 F-017). Defaults to `Allow` so legacy
+    /// callers continue to work.
+    #[serde(default)]
+    pub permission: ToolPermission,
 }
 
 impl ToolSpec {
@@ -22,6 +46,7 @@ impl ToolSpec {
             name: name.into(),
             description: description.into(),
             parameters,
+            permission: ToolPermission::default(),
         }
     }
 }
