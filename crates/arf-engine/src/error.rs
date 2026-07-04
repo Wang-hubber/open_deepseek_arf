@@ -25,6 +25,14 @@ pub enum BuildError {
     #[error("CheckpointRule name 重复: {name}")]
     DuplicateRuleName { name: String },
 
+    /// F-023: auto_subscribe_message_types 含未在 `arf_core::msg_type`
+    /// 常量表中的字符串。App 自定义类型需用 `msg_type` 模块常量化。
+    #[error("auto_subscribe msg_type 未在 known constants 中: '{msg_type}'。known = {known:?}。如为 app 自定义类型，请用 arf_core::msg_type 模块常量或扩展常量表。")]
+    UnknownAutoSubscribeType {
+        msg_type: String,
+        known: Vec<String>,
+    },
+
     /// Template 含占位符但替换文本未出现。
     #[error("System prompt template 缺 {placeholder}: {reason}")]
     InvalidTemplate { placeholder: String, reason: String },

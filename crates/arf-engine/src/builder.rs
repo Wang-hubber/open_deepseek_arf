@@ -119,6 +119,21 @@ impl EngineBuilder {
             }
         }
 
+        // 5. F-023: validate auto_subscribe_message_types against known
+        // msg_type constants. Catches obvious typos (e.g. "peer_mesage"
+        // missing a letter) at build time. App-defined types (not in the
+        // constant table) are allowed but emit a warning — App authors who
+        // want strict type-safety should use `arf_core::msg_type::PEER_MESSAGE`
+        // (and friends) instead of bare string literals.
+        let known = known_msg_types();
+        for t in &self.auto_subscribe {
+            if !known.contains(t) {
+                eprintln!(
+                    "[arf-engine] F-023 WARN: auto_subscribe_message_types 包含未在 known constants 中的字符串 '{t}'。known = {known:?}。如果是 app 自定义类型可忽略；否则可能是 typo。考虑用 arf_core::msg_type 模块常量。"
+                );
+            }
+        }
+
         let mut engine = Engine::new(self.buses, config, registry, self.agent_id, self.auto_subscribe).await?;
         if let Some(store) = self.session_store {
             let sid = self
@@ -128,4 +143,30 @@ impl EngineBuilder {
         }
         Ok(engine)
     }
+}
+
+/// F-023: list of `arf_core::msg_type` constants. Used by
+/// `EngineBuilder::build()` to validate `auto_subscribe_message_types`
+/// at compile-time-equivalent (build-time) check.
+fn known_msg_types() -> Vec<String> {
+    use arf_core::msg_type;
+    vec![
+        msg_type::NODE_ONLINE.to_string(),
+        msg_type::NODE_OFFLINE.to_string(),
+        msg_type::HEARTBEAT_REQUEST.to_string(),
+        msg_type::HEARTBEAT_ACK.to_string(),
+        msg_type::BARRIER_REQUEST.to_string(),
+        msg_type::BARRIER_ACK.to_string(),
+        msg_type::MODEL_CALL.to_string(),
+        msg_type::MODEL_RESPONSE.to_string(),
+        msg_type::MODEL_RESPONSE_CHUNK.to_string(),
+        msg_type::TOOL_CALL.to_string(),
+        msg_type::TOOL_RESULT.to_string(),
+        msg_type::PERMISSION_REQUEST.to_string(),
+        msg_type::PERMISSION_RESPONSE.to_string(),
+        msg_type::PEER_MESSAGE.to_string(),
+        msg_type::PEER_REPLY.to_string(),
+        msg_type::SESSION_SAVE.to_string(),
+        msg_type::SESSION_SNAPSHOT.to_string(),
+    ]
 }
