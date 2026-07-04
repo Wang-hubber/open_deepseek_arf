@@ -260,11 +260,18 @@ fn resolve_model(decl: &AgentConfig, snapshot: &BusGraph) -> Result<NodeId, Buil
     // this, an unsupported model_name was silently routed to a node that
     // didn't actually serve it.
     let supports = |n: &NodeInfo| -> bool {
+        // F-007 YELLOW: old model nodes (created before capabilities.models
+        // was introduced) don't declare a `models` list. Treating "missing
+        // list" as "supports nothing" silently excluded those nodes from
+        // routing — old deployments would break. Default to `true` for
+        // backward compat: missing list = "assumed supports all" (matching
+        // pre-F-007 semantics). Nodes that want strict matching must declare
+        // a non-empty `models` list.
         n.capabilities
             .get("models")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().any(|m| m.as_str() == Some(&decl.model.model_name)))
-            .unwrap_or(false)
+            .unwrap_or(true)
     };
     let node = snapshot
         .nodes
