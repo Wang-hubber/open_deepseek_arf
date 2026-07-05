@@ -919,6 +919,101 @@ impl Engine {
             }
         }
     }
+
+    /// Team Engine v1.x — Task 4: clear conversation history for reuse.
+    ///
+    /// Engine + State split (2026-07-05): `State` is caller-owned, so this
+    /// takes `&mut State` explicitly. `&self` is enough because we only read
+    /// `self.ephemeral` and the placeholder `self.collect_outbox_pending()`.
+    ///
+    /// Outbox tracking is a placeholder (Task 5 will wire `SubagentPool` /
+    /// `OutboxStrategy`); today it always returns `[]`, so reset always
+    /// succeeds on a fresh ephemeral engine.
+    pub fn reset_state(&self, state: &mut State) -> Result<(), EngineError> {
+        let pending = self.collect_outbox_pending();
+        if !pending.is_empty() {
+            return Err(EngineError::OutboxNotEmpty { pending });
+        }
+        // Clear conversation history (system prefix is rebuilt each turn from
+        // template + initial_memory + skills — it lives on Engine, not in
+        // state.messages).
+        state.messages.clear();
+        // Reset ReAct counters so the next run_once starts fresh.
+        state.over_view.turn_count = 0;
+        state.over_view.round_count = 0;
+        state.over_view.last_user_message.clear();
+        state.wait_events.clear();
+        Ok(())
+    }
+
+    /// Placeholder for outbox tracking — returns `[]` until Task 5 wires up
+    /// `SubagentPool` / `OutboxStrategy`. Kept as a method so future
+    /// implementations can swap in JSONL scanning without changing callers.
+    fn collect_outbox_pending(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Team Engine v1.x — Task 4: run one ReAct round against caller-owned state.
+    ///
+    /// Adaptation (Engine + State split, 2026-07-05): borrows `state` and
+    /// `cancel` from caller. Does NOT auto-reset state after completion —
+    /// caller decides when to call `reset_state`. This gives the caller
+    /// control over per-task persistence (e.g., inspect logs before reset).
+    ///
+    /// Implementation: delegates to the existing `Engine::run` ReAct loop.
+    /// `run` returns when content has no tool_calls (text-only), or on
+    /// max_turns / cancellation — any of these terminates `run_once`.
+    /// `turns_consumed` is reported as `state.over_view.turn_count` after
+    /// the round (an estimate; may equal 0 if round was rejected at
+    /// checkpoint before any model call).
+    ///
+    /// Takes `&mut self` (not `&self`) because the underlying `run` loop
+    /// mutates Engine state (e.g., `wait_events` lifecycle, handler
+    /// dispatch). Task 4 deviation from `&self` ideal — noted in report.
+    pub async fn run_once(
+        &mut self,
+        state: &mut State,
+        task_input: TaskInput,
+        cancel: CancellationToken,
+    ) -> Result<TaskResult, RunError> {
+        let turns_before = state.over_view.turn_count;
+        let content = self
+            .run(state, task_input.user_message, cancel)
+            .await?;
+        let turns_consumed = (state.over_view.turn_count - turns_before) as u32;
+        Ok(TaskResult {
+            output: serde_json::Value::String(content),
+            turns_consumed,
+            pending_peer_messages: Vec::new(),
+        })
+    }
+}
+
+/// Team Engine v1.x — Task 4: input for one ephemeral ReAct round.
+#[derive(Debug, Clone)]
+pub struct TaskInput {
+    pub user_message: String,
+}
+
+/// Team Engine v1.x — Task 4: output of one ephemeral ReAct round.
+///
+/// `pending_peer_messages` is reserved for Task 5 (peer messages received
+/// during the round that the caller hasn't yet ack'd). Currently always `[]`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskResult {
+    pub output: serde_json::Value,
+    pub turns_consumed: u32,
+    pub pending_peer_messages: Vec<String>,
+}
+
+/// Team Engine v1.x — Task 4: engine-level errors (separate from `RunError`,
+/// which is for run-loop failures). `OutboxNotEmpty` guards `reset_state`:
+/// refuse to clear history while outbox messages are still pending (would
+/// leave the caller with no way to retry sending).
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    #[error("outbox not empty: {pending:?}")]
+    OutboxNotEmpty { pending: Vec<String> },
 }
 
 /// Engine wants the response msg_types (反向映射 request → response）。
