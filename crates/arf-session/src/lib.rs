@@ -583,6 +583,11 @@ fn parse_status(s: &str) -> Result<SessionStatus, SessionError> {
     SessionStatus::from_str(s)
 }
 
+// ── JsonlSessionStore ────────────────────────────────────────────────
+
+pub mod jsonl_store;
+pub use jsonl_store::JsonlSessionStore;
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
