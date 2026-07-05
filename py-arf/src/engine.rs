@@ -7,6 +7,7 @@
 //! Capability / ActionMessage so Python users can wire engine behavior
 //! without dropping into Rust.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
@@ -21,6 +22,186 @@ use arf_core::CheckpointRule as CoreCheckpointRule;
 use arf_engine::{AgentConfig, Engine, EngineBuilder, EngineConfig, WaitStrategy};
 
 use crate::{json_value_to_py, py_object_to_json, PyBus, PyNodeId};
+
+// ═══════════════════════════════════════════════════════════════════
+// AgentConfig YAML schema parser (Task 14)
+// ═══════════════════════════════════════════════════════════════════
+//
+// `arf_engine::config::AgentConfig` does NOT derive Serialize/Deserialize
+// (it holds `Box<dyn Fn>` closures + `Arc<dyn ...>` trait objects), so
+// `serde_yaml::from_str::<AgentConfig>(...)` is impossible. We instead
+// parse the YAML into a `serde_yaml::Value` tree, pull documented fields
+// out by hand, and construct `AgentConfig` programmatically. The schema
+// mirrors the example YAML files shipped under
+// `examples/multi_agent_team/agents/<id>/agent.yaml`.
+
+/// Parsed fields from an agent YAML document.
+///
+/// The example schema (see `examples/multi_agent_team/agents/pm/agent.yaml`):
+/// ```yaml
+/// agent:
+///   id: pm
+///   description: ...
+///   model:
+///     provider: deepseek
+///     model_name: deepseek-chat
+///     temperature: 0.3
+///     thinking_enabled: false
+///     endpoint: https://...        # optional
+///     api_key_env: DEEPSEEK_API_KEY # optional
+///   system_prompt: "..."           # either this or system_prompt_file
+///   system_prompt_file: ./sp.md    # relative path resolved at load time
+///   tools: []                      # reserved for future use
+///   routes: []                     # reserved for future use
+///   max_turns: 10                  # optional
+///   initial_memory: ["..."]        # optional
+///   allowed_paths: ["/data"]       # optional
+/// ```
+struct AgentYamlFields {
+    model_provider: String,
+    model_name: String,
+    endpoint: Option<String>,
+    api_key_env: Option<String>,
+    thinking_enabled: bool,
+    temperature: Option<f64>,
+    max_output_tokens: Option<u32>,
+    system_prompt: String,
+    max_turns: Option<u32>,
+    initial_memory: Vec<String>,
+    allowed_paths: Vec<String>,
+}
+
+fn parse_agent_yaml(raw: &str, source: &std::path::Path) -> PyResult<AgentYamlFields> {
+    let v: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "parse agent config {:?}: {e}",
+            source
+        ))
+    })?;
+    let agent = v.get("agent").ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "agent config {:?}: missing top-level `agent:` key",
+            source
+        ))
+    })?;
+    let model = agent.get("model").ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "agent config {:?}: missing `agent.model:` key",
+            source
+        ))
+    })?;
+
+    let model_provider = model
+        .get("provider")
+        .and_then(|x| x.as_str())
+        .unwrap_or("deepseek")
+        .to_string();
+    let model_name = model
+        .get("model_name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("deepseek-v4-flash")
+        .to_string();
+    let endpoint = model.get("endpoint").and_then(|x| x.as_str()).map(String::from);
+    let api_key_env = model
+        .get("api_key_env")
+        .and_then(|x| x.as_str())
+        .map(String::from);
+    let thinking_enabled = model
+        .get("thinking_enabled")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let temperature = model.get("temperature").and_then(|x| x.as_f64());
+    let max_output_tokens = model
+        .get("max_output_tokens")
+        .and_then(|x| x.as_u64())
+        .map(|n| n as u32);
+
+    // System prompt: either inline `system_prompt` or loaded from
+    // `system_prompt_file` (relative to the YAML file's directory).
+    let system_prompt = if let Some(s) = agent.get("system_prompt").and_then(|x| x.as_str()) {
+        s.to_string()
+    } else if let Some(rel) = agent.get("system_prompt_file").and_then(|x| x.as_str()) {
+        let path = source.parent().unwrap_or(std::path::Path::new(".")).join(rel);
+        std::fs::read_to_string(&path).map_err(|e| {
+            pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                "read system_prompt_file {:?}: {e}",
+                path
+            ))
+        })?
+    } else {
+        "You are a helpful assistant.".to_string()
+    };
+
+    let max_turns = agent
+        .get("max_turns")
+        .and_then(|x| x.as_u64())
+        .map(|n| n as u32);
+    let initial_memory: Vec<String> = agent
+        .get("initial_memory")
+        .and_then(|x| x.as_sequence())
+        .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let allowed_paths: Vec<String> = agent
+        .get("allowed_paths")
+        .and_then(|x| x.as_sequence())
+        .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    Ok(AgentYamlFields {
+        model_provider,
+        model_name,
+        endpoint,
+        api_key_env,
+        thinking_enabled,
+        temperature,
+        max_output_tokens,
+        system_prompt,
+        max_turns,
+        initial_memory,
+        allowed_paths,
+    })
+}
+
+fn build_agent_config_from_yaml_fields(fields: AgentYamlFields) -> AgentConfig {
+    let mut engine_cfg = EngineConfig::default();
+    if let Some(mt) = fields.max_turns {
+        engine_cfg.max_turns = mt;
+    }
+    AgentConfig {
+        model: arf_agent::ModelDecl {
+            provider: fields.model_provider,
+            model_name: fields.model_name,
+            endpoint: fields.endpoint,
+            api_key_env: fields.api_key_env,
+            thinking_enabled: fields.thinking_enabled,
+            temperature: fields.temperature,
+            max_output_tokens: fields.max_output_tokens,
+            extra: serde_json::Value::Null,
+        },
+        resources: vec![],
+        system_prompt_template: fields.system_prompt,
+        initial_memory: fields.initial_memory,
+        allowed_paths: fields.allowed_paths,
+        tools: vec![],
+        engine: engine_cfg,
+    }
+}
+
+/// Public helper used by `TeamBuilder` to parse the same agent YAML
+/// schema without going through `PyAgentConfig`. Kept in `engine.rs`
+/// so the schema lives next to `PyAgentConfig.from_yaml`.
+pub(crate) fn parse_agent_config_yaml(
+    raw: &str,
+    source: &std::path::Path,
+) -> Result<AgentConfig, String> {
+    // `parse_agent_yaml` returns PyErr with the error message as a
+    // Python str. We format the PyErr with its Debug representation
+    // — which gives us back the Python error string without needing
+    // the GIL here.
+    let fields = parse_agent_yaml(raw, source)
+        .map_err(|e| format!("{e:?}"))?;
+    Ok(build_agent_config_from_yaml_fields(fields))
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // PyAgentConfig
@@ -215,6 +396,48 @@ impl PyAgentConfig {
             Some(c) => format!("AgentConfig(provider='{}', model='{}', max_turns={})", c.model.provider, c.model.model_name, c.engine.max_turns),
             None => "AgentConfig(consumed)".to_string(),
         }
+    }
+
+    /// Load an `AgentConfig` from a YAML file.
+    ///
+    /// The schema matches the example YAML files shipped under
+    /// `examples/multi_agent_team/agents/<id>/agent.yaml`. Required keys:
+    ///
+    ///   ```yaml
+    ///   agent:
+    ///     model:
+    ///       provider: deepseek      # str
+    ///       model_name: deepseek-chat # str
+    ///     # optional under `model:`:
+    ///     #   endpoint: https://...       # str
+    ///     #   api_key_env: DEEPSEEK_API_KEY # str
+    ///     #   thinking_enabled: false      # bool
+    ///     #   temperature: 0.3             # float
+    ///     #   max_output_tokens: 4096      # int
+    ///     system_prompt: "..."            # str  OR  system_prompt_file: ./sp.md
+    ///     # optional under `agent:`:
+    ///     #   max_turns: 10
+    ///     #   initial_memory: ["..."]
+    ///     #   allowed_paths: ["/data"]
+    ///   ```
+    ///
+    /// Raises:
+    ///   - `FileNotFoundError` if `path` cannot be read.
+    ///   - `ValueError` if the YAML cannot be parsed or required keys
+    ///     are missing.
+    #[staticmethod]
+    fn from_yaml(path: PathBuf) -> PyResult<Self> {
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                "read agent config {:?}: {e}",
+                path
+            ))
+        })?;
+        let fields = parse_agent_yaml(&raw, &path)?;
+        let cfg = build_agent_config_from_yaml_fields(fields);
+        Ok(Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(Some(cfg))),
+        })
     }
 }
 
@@ -1056,5 +1279,149 @@ impl PyEngineConfig {
 
     fn __repr__(&self) -> String {
         format!("EngineConfig(max_turns={})", self.inner.max_turns)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PyEngineHandle — Task 14: long-lived Arc<Mutex<Engine>> for teams
+// ═══════════════════════════════════════════════════════════════════
+//
+// `PyEngine` (above) uses `Arc<Mutex<Option<Engine>>>` + `take()` so each
+// Python-side `engine.run(...)` call consumes the engine and restores it
+// afterwards. That shape doesn't fit `Team.engine(id)` which needs to keep
+// the same Engine alive across many chat turns (potentially from multiple
+// HTTP request handlers).
+//
+// `PyEngineHandle` holds `Arc<tokio::sync::Mutex<Engine>>` directly so
+// the lock can be held across the `engine.run` await (the engine's
+// run-loop is async and may need to retain the lock across multiple
+// await points in some configurations).
+#[pyclass(name = "EngineHandle")]
+pub struct PyEngineHandle {
+    /// Engine is held behind a tokio::sync::Mutex so we can hold the
+    /// guard across `.await` points (engine.run is async).
+    inner: Arc<tokio::sync::Mutex<Engine>>,
+    /// PyState used by the default `chat(message)` form. App can either
+    /// call this (fresh state each time) or call `chat_with_state(...)`
+    /// with their own state.
+    default_state: Arc<Mutex<CoreState>>,
+}
+
+impl PyEngineHandle {
+    /// Build a handle wrapping the given engine by-value. Used by
+    /// one-off EngineBuilder flows (not by Team, which uses
+    /// `from_arc`).
+    pub fn from_engine(engine: Engine) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(engine)),
+            default_state: Arc::new(Mutex::new(CoreState::new())),
+        }
+    }
+
+    /// Build a handle that shares an existing `Arc<TokioMutex<Engine>>`.
+    /// Team uses this so multiple `Team.engine(id)` calls return
+    /// handles that all reference the same underlying engine.
+    pub fn from_arc(arc: Arc<tokio::sync::Mutex<Engine>>) -> Self {
+        Self {
+            inner: arc,
+            default_state: Arc::new(Mutex::new(CoreState::new())),
+        }
+    }
+}
+
+#[pymethods]
+impl PyEngineHandle {
+    #[getter]
+    fn agent_id(&self) -> PyResult<PyNodeId> {
+        // Blocking-lock briefly to read agent_id. Engine isn't Clone,
+        // but we only need a string-ish field — a small async helper
+        // would be cleaner; for now we use try_lock and fall back to
+        // spawn_blocking if the lock is contended.
+        let inner = self.inner.clone();
+        let agent_id = crate::get_runtime()
+            .block_on(async move { inner.lock().await.agent_id().clone() });
+        Ok(PyNodeId { inner: agent_id })
+    }
+
+    #[getter]
+    fn system_prompt(&self) -> PyResult<String> {
+        let inner = self.inner.clone();
+        let sp = crate::get_runtime()
+            .block_on(async move { inner.lock().await.system_prompt().to_string() });
+        Ok(sp)
+    }
+
+    /// Single-turn chat: create a fresh `State`, run the engine, return
+    /// the assistant's text output. Multi-turn continuity is the App's
+    /// job — call `chat_with_state` with a stateful `EngineState`.
+    fn chat<'py>(
+        &self,
+        py: Python<'py>,
+        user_input: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let engine_arc = self.inner.clone();
+        let state_arc = self.default_state.clone();
+        // Single-turn semantics: discard any prior default_state and
+        // start with a fresh State. `default_state: Arc<Mutex<CoreState>>`
+        // — use mem::replace to swap the State without holding the
+        // MutexGuard across the await.
+        let mut state: CoreState = {
+            let mut sguard = state_arc.lock().unwrap();
+            std::mem::replace(&mut *sguard, CoreState::new())
+        };
+        future_into_py(py, async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let result = {
+                let mut eng = engine_arc.lock().await;
+                eng.run(&mut state, user_input, cancel).await
+            };
+            // Stash the post-run state so a follow-up read on
+            // `default_state` could observe it (App shouldn't rely on
+            // this — chat() is documented as single-turn).
+            *state_arc.lock().unwrap() = state;
+            result.map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
+        })
+    }
+
+    /// Multi-turn chat: App provides the `EngineState` (preserves
+    /// conversation history across calls). Same engine, borrowed for
+    /// the duration of the run.
+    fn chat_with_state<'py>(
+        &self,
+        py: Python<'py>,
+        state: &PyState,
+        user_input: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let engine_arc = self.inner.clone();
+        let state_arc = state.inner.clone();
+        // `PyState.inner` is `Arc<Mutex<Option<CoreState>>>`. Take the
+        // State out via Option::take; after the run, put it back so the
+        // next call sees the updated history.
+        let mut state_inner: CoreState = {
+            let mut sguard = state_arc.lock().unwrap();
+            sguard.take().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "state already consumed by a previous run",
+                )
+            })?
+        };
+        future_into_py(py, async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let result = {
+                let mut eng = engine_arc.lock().await;
+                eng.run(&mut state_inner, user_input, cancel).await
+            };
+            // Restore the (now-updated) state so subsequent calls see
+            // the conversation history.
+            *state_arc.lock().unwrap() = Some(state_inner);
+            result.map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        let inner = self.inner.clone();
+        let aid = crate::get_runtime()
+            .block_on(async move { inner.lock().await.agent_id().to_string() });
+        format!("EngineHandle(agent_id='{}')", aid)
     }
 }
