@@ -54,6 +54,27 @@ impl PyEventFilter {
     /// Both axes are checked independently: a missing `engine_ids`
     /// means "all engines pass" and similarly for `msg_types`.
     fn matches(&self, engine_id: &str, msg_type: &str) -> bool {
+        self.matches_rust(engine_id, msg_type)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EventFilter(engine_ids={:?}, msg_types={:?}, since_event_seq={})",
+            self.engine_ids,
+            self.msg_types,
+            self.since_event_seq.len()
+        )
+    }
+}
+
+// Inherent impl for crate-internal filter logic. Lives outside
+// `#[pymethods]` so the PyO3 macro does not try to wrap it as a
+// Python method (which would mis-interpret the `&str` parameters).
+impl PyEventFilter {
+    /// Crate-internal version of `matches`. `#[pymethods]` makes the
+    /// Rust method private; `SseRelayStream.__anext__` calls this from
+    /// Rust without going through Python.
+    pub(crate) fn matches_rust(&self, engine_id: &str, msg_type: &str) -> bool {
         if let Some(ids) = &self.engine_ids {
             if !ids.contains(engine_id) {
                 return false;
@@ -65,14 +86,5 @@ impl PyEventFilter {
             }
         }
         true
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "EventFilter(engine_ids={:?}, msg_types={:?}, since_event_seq={})",
-            self.engine_ids,
-            self.msg_types,
-            self.since_event_seq.len()
-        )
     }
 }

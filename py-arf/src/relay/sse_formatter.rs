@@ -38,3 +38,14 @@ impl PySseFormatter {
         "SseFormatter".to_string()
     }
 }
+
+// Inherent impl for crate-internal formatting. Lives outside
+// `#[pymethods]` so the PyO3 macro does not try to wrap it as a
+// Python method (which would mis-interpret the `&str` parameters).
+impl PySseFormatter {
+    /// Crate-internal formatter. Mirrors `format` for use from
+    /// `SseRelayStream.__anext__` without going through Python.
+    pub(crate) fn format_rust(event_json: &str, event_seq: u64, msg_type: &str) -> String {
+        format!("id: {event_seq}\nevent: {msg_type}\ndata: {event_json}\n\n")
+    }
+}

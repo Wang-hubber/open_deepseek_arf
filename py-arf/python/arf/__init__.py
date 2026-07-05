@@ -68,6 +68,9 @@ from arf._arf import (
     # EventFilter, SseRelay).
     EventFilter,
     SseRelay,
+    # Phase 7 / V1.x task 16: SseRelay.stream real multi-engine merge
+    # returns this async iterator.
+    SseRelayStream,
     TeamMembership,
     # Phase 7 / V1.x task 8: Team abstraction (TeamConfig +
     # TeamBuilder + Team skeleton).
@@ -145,6 +148,8 @@ __all__ = [
     # Phase 7 / V1.x task 7: Relay aggregation
     "EventFilter",
     "SseRelay",
+    # Phase 7 / V1.x task 16: SseRelay real multi-engine merge.
+    "SseRelayStream",
     "TeamMembership",
     # Phase 7 / V1.x task 8: Team abstraction
     "EngineSpec",

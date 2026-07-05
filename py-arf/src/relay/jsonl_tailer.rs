@@ -141,6 +141,33 @@ impl PyJsonlTailer {
     }
 }
 
+// Inherent impl for crate-internal construction. Lives outside
+// `#[pymethods]` so the PyO3 macro does not try to wrap it as a
+// Python method (which would mis-interpret `PathBuf`/`u64` parameters
+// as PyO3 extractors).
+impl PyJsonlTailer {
+    /// Crate-internal constructor. Mirrors `new` but is callable from
+    /// other modules in the `py_arf` crate (the `#[new]` attribute
+    /// makes the Rust method private). Used by `SseRelay.stream` to
+    /// build tailers per team member without going through Python.
+    pub(crate) fn new_rust(
+        jsonl_path: PathBuf,
+        since_event_seq: u64,
+        poll_interval_ms: u64,
+    ) -> Self {
+        let state = JsonlTailerState {
+            path: jsonl_path.clone(),
+            reader: None,
+        };
+        Self {
+            path: jsonl_path,
+            since_event_seq,
+            poll_interval_ms,
+            state: Arc::new(TokioMutex::new(state)),
+        }
+    }
+}
+
 /// Async polling core. Locks the shared state, opens the file on
 /// first call, then loops reading lines until one complete line is
 /// returned. EOF triggers a `tokio::time::sleep` so the tail stays

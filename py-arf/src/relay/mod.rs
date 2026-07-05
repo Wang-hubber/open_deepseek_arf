@@ -17,10 +17,12 @@ pub mod event_filter;
 pub mod jsonl_tailer;
 pub mod sse_formatter;
 pub mod sse_relay;
+pub mod sse_relay_stream;
 pub mod team_membership;
 
 pub use event_filter::PyEventFilter;
 pub use jsonl_tailer::PyJsonlTailer;
 pub use sse_formatter::PySseFormatter;
 pub use sse_relay::PySseRelay;
+pub use sse_relay_stream::PySseRelayStream;
 pub use team_membership::PyTeamMembership;

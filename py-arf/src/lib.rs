@@ -1920,6 +1920,8 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<relay::PyTeamMembership>()?;
     m.add_class::<relay::PyEventFilter>()?;
     m.add_class::<relay::PySseRelay>()?;
+    // Phase 7 / V1.x task 16: SseRelay.stream real multi-engine merge
+    m.add_class::<relay::PySseRelayStream>()?;
 
     // Phase 7 / V1.x task 8: Team abstraction (TeamConfig +
     // TeamBuilder + Team skeleton).

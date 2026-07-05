@@ -1,7 +1,8 @@
 """
 [T] Relay aggregation — TeamMembership + EventFilter + SseRelay.
 
-Phase 7 / V1.x task 7. Verifies:
+Phase 7 / V1.x task 7 (TeamMembership + EventFilter) and task 16
+(SseRelay real multi-engine merge). Verifies:
 
 - `TeamMembership` reads `persistent_engines[].id` and
   `subagent_pools[].id` from a `team.yaml` and exposes the union as
@@ -9,12 +10,13 @@ Phase 7 / V1.x task 7. Verifies:
   skeleton.
 - `EventFilter.matches(engine_id, msg_type)` is the conjunction of the
   optional `engine_ids` and `msg_types` whitelists (None = open).
-- `SseRelay` can be constructed and `stream(filter)` returns an awaitable
-  yielding a string (skeleton placeholder output).
+- `SseRelay` can be constructed and `stream(filter)` returns a
+  `SseRelayStream` async iterator that yields one SSE chunk per
+  accepted event from N merged `JsonlTailer` instances.
 - `SseRelay` public import surface is re-exported through the public
   `arf` package (not just the compiled `_arf` module).
 
-Test angles: [构造] [方法] [边界] [trait] [序列化] [唯一性] [覆盖]
+Test angles: [构造] [方法] [边界] [trait] [序列化] [唯一性] [覆盖] [时间]
 """
 import asyncio
 from pathlib import Path
@@ -213,9 +215,13 @@ persistent_engines:
 
 
 async def test_sse_relay_stream_emits_marker_for_existing_file(tmp_path: Path):
-    """[方法] stream(filter) is an async-callable that yields a string;
-    for each member whose JSONL file exists, a marker line is emitted.
-    The skeleton ignores the filter; a follow-up will wire it in.
+    """[方法] stream(filter) is an async iterator that yields one SSE
+    chunk per event. Tailers without a JSONL file are silently
+    skipped (no driver spawned), so `bob` and `p1` (which have no
+    file) never contribute any chunk.
+
+    Phase 7 / V1.x task 16 — replaces the single-chunk skeleton with
+    a real multi-engine merge driven by N `JsonlTailer`s.
     """
     yaml = tmp_path / "team.yaml"
     yaml.write_text(
@@ -227,27 +233,37 @@ subagent_pools:
   - id: p1
 """
     )
-    # Only `alice` has a trace file on disk.
-    (tmp_path / "events.alice.jsonl").write_text('{"x":1}\n')
-    # `bob` and `p1` are silent.
+    # `alice` has one event; `bob` and `p1` have no file.
+    (tmp_path / "events.alice.jsonl").write_text(
+        '{"kind":"event","event_type":"peer_message","payload":{"x":1}}\n'
+    )
 
     tm = TeamMembership(str(yaml), None)
     relay = SseRelay(tm, str(tmp_path), buffer_size=16)
     f = EventFilter(engine_ids=None, msg_types=None, since_event_seq=None)
 
-    out = await relay.stream(f)
-    assert "alice" in out
-    # members without a file should be skipped, not blank-emitted.
-    assert "bob" not in out
-    assert "p1" not in out
+    stream = relay.stream(f)
+    chunks = []
+    async for chunk in _bounded_async_iter(stream, limit=1):
+        chunks.append(chunk)
+
+    # The single alice event is yielded; bob and p1 never produce
+    # anything because no driver was spawned for them. The chunk is
+    # an SSE triple — engine_id lives in the relay's internal
+    # channel, not in the JSON line, so we only assert one chunk
+    # was emitted.
+    assert len(chunks) == 1
+    assert "event: peer_message" in chunks[0]
+    assert '"x":1' in chunks[0] or '"x": 1' in chunks[0]
 
 
 # ── T13 ─────────────────────────────────────────────────────────────────
 
 
 async def test_sse_relay_stream_no_files(tmp_path: Path):
-    """[边界] stream() with no existing JSONL files returns an empty
-    string — no panic, no marker.
+    """[边界] stream() with no existing JSONL files spawns no drivers
+    and the async iterator yields nothing on the first `__anext__`
+    wait. We assert it does not panic and breaks out cleanly.
     """
     yaml = tmp_path / "team.yaml"
     yaml.write_text(
@@ -260,8 +276,14 @@ persistent_engines:
     relay = SseRelay(tm, str(tmp_path), buffer_size=16)
     f = EventFilter(engine_ids=None, msg_types=None, since_event_seq=None)
 
-    out = await relay.stream(f)
-    assert out == ""
+    stream = relay.stream(f)
+    # With no drivers, the mpsc receiver never receives anything and
+    # `recv().await` would block forever. Use a short timeout so the
+    # test terminates.
+    chunks = []
+    async for chunk in _bounded_async_iter(stream, limit=0):
+        chunks.append(chunk)
+    assert chunks == []
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
@@ -275,6 +297,157 @@ async def _await_once(coro):
     if asyncio.iscoroutine(coro):
         return await coro
     return coro
+
+
+async def _bounded_async_iter(stream, *, limit: int, timeout_s: float = 2.0):
+    """Drain at most `limit` chunks from an async iterator, aborting
+    after `timeout_s` if the upstream stalls (which would otherwise
+    hang the test on a live-tailer).
+
+    Phase 7 / V1.x task 16 — live tailers never naturally EOF, so a
+    plain `async for` would block forever once the pre-existing
+    lines are consumed. Tests use this helper to bound the read.
+    """
+    received = 0
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while received < limit:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            return
+        try:
+            chunk = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
+        except (asyncio.TimeoutError, StopAsyncIteration):
+            return
+        yield chunk
+        received += 1
+
+
+# ── T15 ─────────────────────────────────────────────────────────────────
+
+
+async def test_sse_relay_streams_from_multiple_files(tmp_path: Path):
+    """[方法][覆盖] SseRelay.stream merges lines from multiple engines'
+    JSONL files. With a `msg_types={peer_message}` filter, the single
+    `peer_message` event from alice is yielded and bob's
+    `model_call` event is filtered out.
+
+    Task 16 — replaces the single-chunk skeleton with a real merge
+    of N `JsonlTailer` instances fed through a `tokio::sync::mpsc`
+    channel.
+    """
+    # Two engines, two different event types.
+    (tmp_path / "events.alice.jsonl").write_text(
+        '{"kind":"event","event_type":"peer_message","payload":{"x":1}}\n'
+    )
+    (tmp_path / "events.bob.jsonl").write_text(
+        '{"kind":"event","event_type":"model_call","payload":{"y":2}}\n'
+    )
+
+    yaml = tmp_path / "team.yaml"
+    yaml.write_text(
+        """
+team:
+  id: t1
+persistent_engines:
+  - id: alice
+  - id: bob
+"""
+    )
+    tm = TeamMembership(str(yaml), None)
+    relay = SseRelay(tm, str(tmp_path), 100)
+    flt = EventFilter(
+        engine_ids=None,
+        msg_types={"peer_message"},
+        since_event_seq=None,
+    )
+
+    stream = relay.stream(flt)
+    chunks = []
+    async for chunk in _bounded_async_iter(stream, limit=1):
+        chunks.append(chunk)
+
+    # Exactly one chunk matches the filter (alice's peer_message).
+    # bob's model_call is dropped by the filter.
+    assert len(chunks) == 1
+    assert "event: peer_message" in chunks[0]
+    assert '"x": 1' in chunks[0] or '"x":1' in chunks[0]
+
+
+# ── T16 ─────────────────────────────────────────────────────────────────
+
+
+async def test_sse_relay_open_filter_yields_both(tmp_path: Path):
+    """[方法] With an open filter (both whitelists None), every event
+    from every engine is yielded. Bounded read to avoid hanging on
+    the live tailer.
+    """
+    (tmp_path / "events.alice.jsonl").write_text(
+        '{"kind":"event","event_type":"peer_message","payload":{"x":1}}\n'
+    )
+    (tmp_path / "events.bob.jsonl").write_text(
+        '{"kind":"event","event_type":"model_call","payload":{"y":2}}\n'
+    )
+
+    yaml = tmp_path / "team.yaml"
+    yaml.write_text(
+        """
+persistent_engines:
+  - id: alice
+  - id: bob
+"""
+    )
+    tm = TeamMembership(str(yaml), None)
+    relay = SseRelay(tm, str(tmp_path), 100)
+    flt = EventFilter(engine_ids=None, msg_types=None, since_event_seq=None)
+
+    stream = relay.stream(flt)
+    chunks = []
+    async for chunk in _bounded_async_iter(stream, limit=2):
+        chunks.append(chunk)
+
+    assert len(chunks) == 2
+    # Order is non-deterministic (channel merge); check the set.
+    types = {c.split("event: ", 1)[1].split("\n", 1)[0] for c in chunks}
+    assert types == {"peer_message", "model_call"}
+
+
+# ── T17 ─────────────────────────────────────────────────────────────────
+
+
+async def test_sse_relay_engine_filter_excludes_other(tmp_path: Path):
+    """[方法] With `engine_ids={"alice"}` set, only alice's events
+    pass the filter.
+    """
+    (tmp_path / "events.alice.jsonl").write_text(
+        '{"kind":"event","event_type":"peer_message","payload":{"x":1}}\n'
+    )
+    (tmp_path / "events.bob.jsonl").write_text(
+        '{"kind":"event","event_type":"model_call","payload":{"y":2}}\n'
+    )
+
+    yaml = tmp_path / "team.yaml"
+    yaml.write_text(
+        """
+persistent_engines:
+  - id: alice
+  - id: bob
+"""
+    )
+    tm = TeamMembership(str(yaml), None)
+    relay = SseRelay(tm, str(tmp_path), 100)
+    flt = EventFilter(
+        engine_ids={"alice"},
+        msg_types=None,
+        since_event_seq=None,
+    )
+
+    stream = relay.stream(flt)
+    chunks = []
+    async for chunk in _bounded_async_iter(stream, limit=1):
+        chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert "event: peer_message" in chunks[0]
 
 
 # ── T14 ─────────────────────────────────────────────────────────────────
