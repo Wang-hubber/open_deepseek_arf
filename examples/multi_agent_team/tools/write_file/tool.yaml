@@ -1,0 +1,11 @@
+name: write_file
+description: Write text to a file in the workspace.
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      format: path
+    content:
+      type: string
+  required: [path, content]
