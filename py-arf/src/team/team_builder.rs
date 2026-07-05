@@ -13,9 +13,11 @@
 //!     constructs a real `SubagentPool` stored in a HashMap keyed by
 //!     `pool_id`.
 //!
-//! `Team.start()` populates every subagent pool. `Team.stop()` shuts
-//! every pool down. Engine lifecycle is owned by the `Arc<Mutex<Engine>>`
-//! inside `PyEngineHandle` — dropping the handle triggers Drop, which
+//! `Team.start()` populates every subagent pool by calling
+//! `SubagentPool::populate()` so each pool's idle queue is full before
+//! the first `delegate()` lands. `Team.stop()` shuts every pool down.
+//! Engine lifecycle is owned by the `Arc<Mutex<Engine>>` inside
+//! `PyEngineHandle` — dropping the handle triggers Drop, which
 //! disconnects from the Bus.
 
 use std::collections::HashMap;
@@ -147,20 +149,41 @@ pub struct PyTeam {
 
 #[pymethods]
 impl PyTeam {
-    /// Start the team: flip `started` to true. Pool population is
-    /// lazy — `SubagentPool::delegate()` builds a slot on first call
-    /// if none exist, so we don't eagerly populate here. Idempotent —
-    /// a second `start()` call is a no-op.
+    /// Start the team: populate every subagent pool's idle queue to `size`,
+    /// then flip `started` to true. Idempotent — a second `start()` call
+    /// is a no-op (populate() itself is idempotent, and `started` stays
+    /// true).
+    ///
+    /// Pool population is now real (Task 14 review fix): each pool's
+    /// idle queue is filled to `size` slots before the first
+    /// `delegate()` lands, so the first call doesn't pay a cold-start
+    /// latency cost for slot construction.
     ///
     /// Returns an awaitable so the public surface stays async-compatible
-    /// (Python callers `await team.start()`). The body is purely
-    /// synchronous (just toggling a flag), so we return a pre-resolved
-    /// `asyncio.Future` rather than a `future_into_py` Send future.
-    /// This sidesteps the `!Send` constraint on
-    /// `SubagentPool::populate()` (Task 14 limitation).
+    /// (Python callers `await team.start()`).
     fn start<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Collect pool Arcs synchronously while we hold the GIL — the
+        // pool map is in `self`, the future just needs to call
+        // populate() on each.
+        let pools: Vec<Arc<SubagentPool>> =
+            self.subagent_pools.values().cloned().collect();
+        // Mark started up front. If populate() fails on one of the
+        // pools, the user can still observe started=True via the
+        // getter — but the error is surfaced via the awaitable so the
+        // `await` raises.
         self.started = true;
-        make_resolved_awaitable(py, None)
+        future_into_py(py, async move {
+            for pool in pools {
+                pool.populate().await.map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "populate pool failed: {e}"
+                    ))
+                })?;
+            }
+            // Return Python None (not `()`) so `await team.start()` is
+            // None — matches the pre-fix make_resolved_awaitable contract.
+            Ok::<Option<()>, pyo3::PyErr>(None)
+        })
     }
 
     /// Stop the team: drop every engine handle, clear pool references.
@@ -173,7 +196,9 @@ impl PyTeam {
     /// itself is dropped once every holder (Team + PoolHandle) lets go.
     /// In-flight `delegate()` calls complete on their own.
     ///
-    /// Returns an awaitable for symmetry with `start()`.
+    /// Returns an awaitable for symmetry with `start()`. The body is
+    /// purely synchronous (just dropping refs), so we return a
+    /// pre-resolved coroutine rather than spinning up `future_into_py`.
     fn stop<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // Drop engine handles — each Engine's `NodeHandle` is dropped,
         // which (via Drop) disconnects from the Bus.
