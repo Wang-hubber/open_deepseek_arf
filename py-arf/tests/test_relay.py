@@ -21,6 +21,25 @@ import pytest
 from arf._arf import JsonlTailer, SseFormatter
 
 
+# ── T0 ──────────────────────────────────────────────────────────────────
+
+
+def test_public_imports():
+    """[构造] JsonlTailer + SseFormatter are re-exported from the public
+    `arf` package (not just `arf._arf`). Locks the public surface so
+    the re-export cannot be accidentally dropped.
+    """
+    from arf import JsonlTailer as PublicJsonlTailer
+    from arf import SseFormatter as PublicSseFormatter
+
+    assert PublicJsonlTailer is not None
+    assert PublicSseFormatter is not None
+    # Same class object as the compiled extension module, so we don't
+    # accidentally satisfy the test with a stub.
+    assert PublicJsonlTailer is JsonlTailer
+    assert PublicSseFormatter is SseFormatter
+
+
 # ── T1 ──────────────────────────────────────────────────────────────────
 
 

@@ -60,6 +60,10 @@ from arf._arf import (
     Overflow,
     PoolConfig,
     PoolError,
+    # Phase 7 / V1.x task 6: Relay (re-exported for public surface
+    # per Task 6 review — Task 7 adds SseRelay next to these).
+    JsonlTailer,
+    SseFormatter,
 )
 
 __all__ = [
@@ -123,4 +127,7 @@ __all__ = [
     "Overflow",
     "PoolConfig",
     "PoolError",
+    # Phase 7 / V1.x task 6: Relay
+    "JsonlTailer",
+    "SseFormatter",
 ]
