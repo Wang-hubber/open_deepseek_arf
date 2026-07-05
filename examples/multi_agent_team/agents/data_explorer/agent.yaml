@@ -1,0 +1,25 @@
+# examples/multi_agent_team/agents/data_explorer/agent.yaml
+#
+# Data explorer — fast ad-hoc file exploration; answers
+# "where is X", "what's in this file", "show me sample rows".
+
+agent:
+  id: data_explorer
+  description: Fast file exploration — locate, peek, summarize
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.1
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools:
+    - read_file
+    - list_dir
+    - search_kb
+
+  routes:
+    - match: peer_message
+      capability: agent

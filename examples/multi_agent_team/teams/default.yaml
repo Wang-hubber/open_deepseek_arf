@@ -1,0 +1,52 @@
+# examples/multi_agent_team/teams/default.yaml
+#
+# Team topology for the multi-agent team example app.
+# Consumed by `py_arf.TeamConfig.from_yaml` (Task 8):
+#   - team.id, team.bus, team.description
+#   - persistent_engines[].id / config / auto_subscribe
+#   - subagent_pools[].id / config / size / max_queue_wait_ms
+#
+# Note: `peer_topology` is intentionally not parsed by TeamConfig today —
+# it is a forward-compat hint for the engine's bus routing layer (Task 12+
+# will consult it when wiring routes).
+
+team:
+  id: default
+  description: Multi-agent team for data + tooling workflows
+  bus: shared
+
+persistent_engines:
+  - id: pm
+    config: ./agents/pm/agent.yaml
+    auto_subscribe:
+      - peer_message
+  - id: data_onboarding
+    config: ./agents/data_onboarding/agent.yaml
+    auto_subscribe:
+      - peer_message
+  - id: data_governancer
+    config: ./agents/data_governancer/agent.yaml
+    auto_subscribe:
+      - peer_message
+  - id: data_explorer
+    config: ./agents/data_explorer/agent.yaml
+    auto_subscribe:
+      - peer_message
+
+subagent_pools:
+  - id: tool_creator_pool
+    config: ./agents/tool_creator/agent.yaml
+    size: 4
+  - id: prompt_tuner_pool
+    config: ./agents/prompt_tuner/agent.yaml
+    size: 2
+
+# Forward-compat routing hint; ignored by Task 8's TeamConfig but kept
+# here so the file documents the intended peer connections.
+peer_topology:
+  - from: pm
+    to: [data_onboarding, data_governancer, data_explorer, tool_creator_pool]
+  - from: data_onboarding
+    to: [pm, data_governancer]
+  - from: data_governancer
+    to: [pm, data_onboarding]

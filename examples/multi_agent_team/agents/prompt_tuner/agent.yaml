@@ -1,0 +1,29 @@
+# examples/multi_agent_team/agents/prompt_tuner/agent.yaml
+#
+# Prompt tuner — given an existing agent's system_prompt + recent
+# bad traces, rewrites the prompt to improve outcomes.
+# Lives in `prompt_tuner_pool` (size 2).
+
+agent:
+  id: prompt_tuner
+  description: Tune other agents' system prompts based on failure traces
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.4
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools:
+    - read_file
+    - list_dir
+    - write_file
+
+  routes:
+    - match: subagent_delegate
+      capability: agent
+
+  pool: prompt_tuner_pool
+  pool_size: 2

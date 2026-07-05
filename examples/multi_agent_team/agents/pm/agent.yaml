@@ -1,0 +1,32 @@
+# examples/multi_agent_team/agents/pm/agent.yaml
+#
+# PM (project manager) — clarifies requirements, designs the solution,
+# and delegates work to peer agents / subagent pools.
+#
+# Loaded by the example app via PyYAML + `py_arf.AgentConfig(...)`.
+# Fields map to AgentConfig:
+#   - id, description
+#   - model.{provider, model_name, temperature, thinking_enabled}
+#   - system_prompt_file (relative path; loaded by the app)
+#   - tools[] (referenced by name from the tool registry)
+#   - routes[] → AgentConfig.engine.routes (msg_type → capability)
+
+agent:
+  id: pm
+  description: Project manager agent — clarify requirements, delegate work
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.3
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools: []
+
+  routes:
+    - match: peer_message
+      capability: agent
+    - match: subagent_delegate
+      capability: agent

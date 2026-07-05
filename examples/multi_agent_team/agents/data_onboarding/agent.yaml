@@ -1,0 +1,24 @@
+# examples/multi_agent_team/agents/data_onboarding/agent.yaml
+#
+# Data onboarding — inspects unfamiliar data directories and produces
+# a DATA_SPEC describing schema, business meaning, and access patterns.
+
+agent:
+  id: data_onboarding
+  description: Understand unfamiliar data catalogs, produce DATA_SPEC
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.2
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools:
+    - read_file
+    - list_dir
+
+  routes:
+    - match: peer_message
+      capability: agent

@@ -1,0 +1,29 @@
+# examples/multi_agent_team/agents/tool_creator/agent.yaml
+#
+# Tool creator — given a capability need (from pm or a peer),
+# produces a new tool by writing `function.py` + `tool.yaml`
+# under the tools directory. Lives in `tool_creator_pool` (size 4).
+
+agent:
+  id: tool_creator
+  description: Create new tools — write function.py + tool.yaml
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.2
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools:
+    - read_file
+    - list_dir
+    - write_file
+
+  routes:
+    - match: subagent_delegate
+      capability: agent
+
+  pool: tool_creator_pool
+  pool_size: 4

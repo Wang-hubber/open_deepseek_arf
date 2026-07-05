@@ -1,0 +1,25 @@
+# examples/multi_agent_team/agents/data_governancer/agent.yaml
+#
+# Data governancer — manages the RAG knowledge base: ingestion,
+# chunking metadata, retrieval hints, and access policies.
+
+agent:
+  id: data_governancer
+  description: RAG knowledge base curator — ingest, chunk, retrieve hints
+
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+    temperature: 0.2
+    thinking_enabled: false
+
+  system_prompt_file: ./system_prompt.md
+
+  tools:
+    - read_file
+    - list_dir
+    - search_kb
+
+  routes:
+    - match: peer_message
+      capability: agent
