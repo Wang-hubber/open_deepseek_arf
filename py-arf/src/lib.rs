@@ -10,6 +10,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 pub mod mcp;
 pub mod pool;
 pub mod relay;
+pub mod team;
 
 use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
@@ -1919,6 +1920,14 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<relay::PyTeamMembership>()?;
     m.add_class::<relay::PyEventFilter>()?;
     m.add_class::<relay::PySseRelay>()?;
+
+    // Phase 7 / V1.x task 8: Team abstraction (TeamConfig +
+    // TeamBuilder + Team skeleton).
+    m.add_class::<team::PyEngineSpec>()?;
+    m.add_class::<team::PyPoolSpec>()?;
+    m.add_class::<team::PyTeamConfig>()?;
+    m.add_class::<team::PyTeamBuilder>()?;
+    m.add_class::<team::PyTeam>()?;
 
     Ok(())
 }

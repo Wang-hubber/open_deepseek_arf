@@ -69,6 +69,13 @@ from arf._arf import (
     EventFilter,
     SseRelay,
     TeamMembership,
+    # Phase 7 / V1.x task 8: Team abstraction (TeamConfig +
+    # TeamBuilder + Team skeleton).
+    EngineSpec,
+    PoolSpec,
+    Team,
+    TeamBuilder,
+    TeamConfig,
 )
 
 __all__ = [
@@ -139,4 +146,10 @@ __all__ = [
     "EventFilter",
     "SseRelay",
     "TeamMembership",
+    # Phase 7 / V1.x task 8: Team abstraction
+    "EngineSpec",
+    "PoolSpec",
+    "Team",
+    "TeamBuilder",
+    "TeamConfig",
 ]
