@@ -370,3 +370,104 @@ agent:
     assert len(team.config.subagent_pools) == 0
     assert len(snap.subagent_pools) == 0
     assert len(cfg.subagent_pools) == 1
+
+
+# ── T7  TeamBuilder.builds_real_engines (Task 14 critical test) ───────
+
+
+@pytest.mark.asyncio
+async def test_team_builder_builds_real_engines(tmp_path: Path):
+    """[方法][构造][覆盖] End-to-end: TeamBuilder.from_config(bus, cfg).build()
+    actually constructs both an Engine and a SubagentPool from real agent
+    YAML files.
+
+    Required by the Task 14 brief — was missing from the first
+    implementation. Uses a minimal-but-valid agent YAML, plus the
+    model-node pre-registration pattern from
+    `test_team_config_snapshot_is_independent` so EngineBuilder::build()
+    passes the NoModelResponder check (Strict route needs a model node
+    on the bus graph).
+    """
+    # Minimal-but-valid agent YAML. No real API key needed — the test
+    # never invokes chat(). Just exercises the YAML parser + EngineBuilder
+    # + SubagentPool::new code paths.
+    eng_yaml = tmp_path / "test-engine-agent.yaml"
+    eng_yaml.write_text(
+        """
+agent:
+  id: test-engine-id
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+  system_prompt: "real engines test"
+  max_turns: 1
+"""
+    )
+    pool_yaml = tmp_path / "test-pool-agent.yaml"
+    pool_yaml.write_text(
+        """
+agent:
+  id: test-pool-id
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+  system_prompt: "real pool test"
+  max_turns: 1
+"""
+    )
+
+    bus = Bus()
+    # Pre-register a model node so the engine's Strict route has
+    # something to point at.
+    _model_handle = await bus.connect(
+        NodeInfo(
+            "model/deepseek",
+            "model",
+            {
+                "provider": "deepseek",
+                "kind": "model",
+                "models": ["deepseek-chat"],
+            },
+        ),
+        MessageFilter(),
+    )
+
+    team_yaml = tmp_path / "default.yaml"
+    team_yaml.write_text(
+        f"""
+team:
+  id: real-engines
+  bus: shared
+persistent_engines:
+  - id: test-engine-id
+    config: {eng_yaml}
+subagent_pools:
+  - id: test-pool-id
+    config: {pool_yaml}
+    size: 2
+"""
+    )
+
+    cfg = TeamConfig.from_yaml(str(team_yaml))
+    builder = TeamBuilder.from_config(bus, cfg)
+    team = await builder.build()
+
+    # The two handles must come back — this is what "real wiring"
+    # means. `engine()` returns an EngineHandle; `subagent_pool()`
+    # returns a PoolHandle. Neither should be None.
+    engine_handle = team.engine("test-engine-id")
+    assert engine_handle is not None, (
+        "Team.engine('test-engine-id') returned None — build() did not "
+        "construct the Engine from the EngineSpec"
+    )
+    pool_handle = team.subagent_pool("test-pool-id")
+    assert pool_handle is not None, (
+        "Team.subagent_pool('test-pool-id') returned None — build() did "
+        "not construct the SubagentPool from the PoolSpec"
+    )
+
+    # Negative checks — unknown ids must still return None (not crash).
+    assert team.engine("does-not-exist") is None
+    assert team.subagent_pool("does-not-exist") is None
+
+    bus.shutdown()
