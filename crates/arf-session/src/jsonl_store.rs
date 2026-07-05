@@ -61,7 +61,29 @@ impl SessionStore for JsonlSessionStore {
             }
         }
         // snapshot 优先；否则用最新的 save
-        let chosen = latest_snap.or(latest_save);
+        // Snapshot lines (Task 1) intentionally omit a `data` payload —
+        // embedding SessionData is a downstream design decision. If the
+        // chosen snapshot has no usable data, fall back to the latest save
+        // (or return None if neither has data).
+        let has_data = |v: &serde_json::Value| -> bool {
+            v.get("data").map(|d| !d.is_null()).unwrap_or(false)
+        };
+        let chosen = match latest_snap.as_ref() {
+            Some(s) if has_data(s) => Some(s.clone()),
+            Some(s) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "snapshot line lacks data payload; falling back to latest save \
+                     (a future task will embed SessionData in snapshot lines)"
+                );
+                if has_data(latest_save.as_ref().unwrap_or(&serde_json::Value::Null)) {
+                    latest_save.clone()
+                } else {
+                    None
+                }
+            }
+            None => latest_save.clone(),
+        };
         let Some(v) = chosen else { return Ok(None) };
         let data: SessionData = serde_json::from_value(v["data"].clone())?;
         Ok(Some(data))

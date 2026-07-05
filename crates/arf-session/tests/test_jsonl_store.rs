@@ -121,3 +121,22 @@ async fn delete_missing_is_ok() {
     // Deleting a non-existent session must not error (idempotent).
     store.delete("nope").await.unwrap();
 }
+
+// ── Task 2 fix: snapshot-only load ──────────────────────────────────
+
+#[tokio::test]
+async fn load_snapshot_only_returns_none() {
+    // Per Task 1, snapshot lines intentionally omit a `data` payload
+    // (embedding SessionData is a downstream design decision). So a
+    // file containing only `snapshot` lines must not error on load;
+    // it should return Ok(None) per the brief's "snapshot 优先；否则
+    // 用最新的 save" — implicitly if neither has data, return None.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(tmp.path());
+
+    let snap = CheckpointSnapshot::new(Checkpoint::AfterToolExec, 3);
+    store.snapshot("snap_only", &State::new(), &snap).await.unwrap();
+
+    let result = store.load("snap_only").await.unwrap();
+    assert!(result.is_none(), "snapshot-only file should return None, not error");
+}
