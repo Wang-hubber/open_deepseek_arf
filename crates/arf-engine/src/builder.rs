@@ -24,6 +24,11 @@ pub struct EngineBuilder {
     /// Phase 9 F-019: msg_type names to auto-subscribe to on the bus so the
     /// Engine receives them via its primary subscription's filter.
     auto_subscribe: Vec<String>,
+    /// Team Engine v1.x — Task 3: marks this Engine as a per-task subagent
+    /// (default false = long-lived session-root Engine). Task 4 reads this
+    /// flag in `reset_state()` / `run_once()` so a subagent can be reused
+    /// across many short-lived invocations without rebuilding.
+    ephemeral: bool,
 }
 
 impl EngineBuilder {
@@ -34,6 +39,7 @@ impl EngineBuilder {
             session_id: None,
             agent_id: None,
             auto_subscribe: Vec::new(),
+            ephemeral: false,
         }
     }
 
@@ -66,6 +72,16 @@ impl EngineBuilder {
     /// from outside. This is the lightweight extension point.
     pub fn auto_subscribe_message_types(mut self, types: &[&str]) -> Self {
         self.auto_subscribe.extend(types.iter().map(|s| s.to_string()));
+        self
+    }
+
+    /// Team Engine v1.x — Task 3: mark this Engine as an ephemeral subagent.
+    /// Defaults to `false`. When `true`, `Engine::reset_state()` (Task 4)
+    /// may clear cross-round session artefacts and `Engine::run_once()`
+    /// performs a single round instead of the normal multi-turn loop.
+    /// Long-lived session-root Engines leave this unset.
+    pub fn ephemeral(mut self, on: bool) -> Self {
+        self.ephemeral = on;
         self
     }
 
@@ -134,7 +150,7 @@ impl EngineBuilder {
             }
         }
 
-        let mut engine = Engine::new(self.buses, config, registry, self.agent_id, self.auto_subscribe).await?;
+        let mut engine = Engine::new(self.buses, config, registry, self.agent_id, self.auto_subscribe, self.ephemeral).await?;
         if let Some(store) = self.session_store {
             let sid = self
                 .session_id

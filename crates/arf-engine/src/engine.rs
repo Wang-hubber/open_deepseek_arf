@@ -43,6 +43,9 @@ pub struct Engine {
     session_store: Option<Arc<dyn arf_session::SessionStore>>,
     /// Session ID for this engine instance (Phase 8 task F5).
     session_id: String,
+    /// Team Engine v1.x — Task 3: when true, Engine is a per-task subagent
+    /// (Task 4 will use this in `reset_state()` / `run_once()`). Default false.
+    ephemeral: bool,
 }
 
 impl Engine {
@@ -53,6 +56,7 @@ impl Engine {
         registry: ResourceRegistry,
         agent_id_override: Option<NodeId>,
         auto_subscribe: Vec<String>,
+        ephemeral: bool,
     ) -> Result<Self, BuildError> {
         let primary = buses[0].clone();
         // Phase 9 F-018: explicit agent_id (from EngineBuilder::with_agent_id)
@@ -137,6 +141,7 @@ impl Engine {
             handlers: Arc::new(Mutex::new(HandlerRegistry::new())),
             session_store: None,
             session_id,
+            ephemeral,
         })
     }
 
@@ -191,6 +196,13 @@ impl Engine {
     /// Current session id (Phase 8 task F5).
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Team Engine v1.x — Task 3: true when this Engine was built via
+    /// `EngineBuilder::ephemeral(true)`. Read by `reset_state()` /
+    /// `run_once()` (Task 4) to behave like a per-task subagent.
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral
     }
 
     /// Dispatch one incoming message via the registered handlers. Returns
