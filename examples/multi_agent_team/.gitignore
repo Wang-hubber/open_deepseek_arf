@@ -1,0 +1,6 @@
+# examples/multi_agent_team/.gitignore
+data/events/
+shared_workspaces/*
+!shared_workspaces/.gitkeep
+__pycache__/
+*.egg-info/
