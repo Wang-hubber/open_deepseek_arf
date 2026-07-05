@@ -10,12 +10,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use arf_bus::Bus;
-use arf_core::State;
+use arf_core::{NodeId, State};
 use arf_engine::{
     config::AgentConfig, Engine, EngineBuilder, TaskInput, TaskResult,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// Policy applied when a subagent's outbox is non-empty at the end of
 /// `delegate()` (Phase 9 §4.6 — currently a placeholder because outbox
@@ -132,35 +133,38 @@ impl SubagentPool {
         // Pop a slot from idle, or build a fresh one.
         let mut slot = self.take_slot().await?;
 
-        // The slot's state might be stale from a prior round — clear it
-        // because `run_once` does NOT auto-reset (Task 4 design).
-        if let Err(e) = slot.engine.reset_state(&mut slot.state) {
-            // `EngineError::OutboxNotEmpty` — apply strategy, then try once more.
-            self.apply_outbox_strategy(&slot.engine).await;
-            if let Err(e2) = slot.engine.reset_state(&mut slot.state) {
-                // Give up: still busy — recreate the slot (force fresh build).
-                tracing::warn!(
-                    "reset_state failed twice ({e}, {e2}); rebuilding slot"
-                );
-                slot = match self.build_slot().await {
-                    Ok(s) => s,
-                    Err(build_err) => {
-                        self.metrics.lock().unwrap().last_error =
-                            Some(format!("reset+rebuild failed: {build_err}"));
-                        return Err(RunError::Internal(build_err));
-                    }
-                };
-            }
-        }
+        // Multi-turn semantics: do NOT pre-emptively `reset_state` on every
+        // slot acquisition. A recycled slot keeps its conversation history
+        // so subsequent `delegate()` calls see prior turns (Task 5 review
+        // fix). `reset_state` is reserved for the error path below, where
+        // we want to clean up bad state before recycling the slot.
+        //
+        // (Pre-fix code wiped state unconditionally, making recycling
+        // pointless — every delegate effectively started from scratch.)
 
         let cancel = CancellationToken::new();
         let result = slot.engine.run_once(&mut slot.state, task_input, cancel).await;
 
-        // Apply outbox strategy when outbox is non-empty. The check today
-        // is a placeholder (`collect_outbox_pending` returns `[]`); the
-        // match arm is wired so future implementations flip automatically.
-        if result.is_err() {
-            self.apply_outbox_strategy(&slot.engine).await;
+        // On error, clean up state before recycling so the next caller
+        // doesn't inherit a corrupt/halted state. On Ok, preserve state
+        // for multi-turn reuse.
+        match &result {
+            Ok(_) => {
+                // Preserve state — keep conversation history for next caller.
+            }
+            Err(RunError::Internal(reason)) if reason.contains("OutboxNotEmpty") => {
+                // Apply outbox strategy (placeholder today — `collect_outbox_pending`
+                // returns `[]`, so this branch is currently unreachable; wired
+                // for future Task 4 outbox tracking).
+                self.apply_outbox_strategy(&slot.engine).await;
+            }
+            Err(_) => {
+                // Other error: clean state to avoid leaking bad state to the
+                // next caller. Ignore any reset failure (best-effort cleanup).
+                if let Err(e) = slot.engine.reset_state(&mut slot.state) {
+                    tracing::warn!("post-error reset_state failed: {e}");
+                }
+            }
         }
 
         // Recycle the slot — push back into the idle queue unless the
@@ -181,6 +185,30 @@ impl SubagentPool {
         }
 
         result
+    }
+
+    /// Eagerly provision `size` slots in the idle queue. After this
+    /// resolves, `available() == size`.
+    ///
+    /// The synchronous `new()` constructor cannot build engines (engine
+    /// construction is async), so `populate()` is the explicit async
+    /// step that warms the pool before delegating. Safe to call multiple
+    /// times — repeated calls are a no-op once `size` slots exist.
+    ///
+    /// Errors propagate from `build_slot()` (e.g., ResourceRegistry
+    /// resolution failures).
+    pub async fn populate(&self) -> Result<(), arf_engine::RunError> {
+        use arf_engine::RunError;
+
+        let mut idle = self.idle.lock().unwrap();
+        while idle.len() < self.size {
+            let slot = self.build_slot().await.map_err(|e| {
+                self.record_error(format!("populate: build failed: {e}"));
+                RunError::Internal(e)
+            })?;
+            idle.push_back(Some(slot));
+        }
+        Ok(())
     }
 
     /// Number of idle (recycled) slots. For capacity diagnostics.
@@ -231,6 +259,10 @@ impl SubagentPool {
     /// ownership) we construct a fresh `AgentConfig` from the arc fields.
     /// Today the engine cache does not share config with any other pool
     /// consumer, so the fast path always wins.
+    ///
+    /// Each slot gets a unique `agent_id` so multiple ephemeral engines
+    /// can coexist on the same bus without `node already connected`
+    /// collisions (Phase 9 F-018 — `engine/{provider}` default collides).
     async fn build_slot(&self) -> Result<PoolSlot, String> {
         let cfg: AgentConfig = match Arc::try_unwrap(self.config.clone()) {
             Ok(c) => c,
@@ -240,8 +272,12 @@ impl SubagentPool {
                 "AgentConfig holds non-cloneable trait objects and is shared".to_string()
             })?,
         };
+        // F-018: unique agent_id per slot — required so `populate(size=N)`
+        // can build N engines on the same bus without NodeId collisions.
+        let agent_id = NodeId::new(format!("subagent-pool/{}/{}", cfg.model.provider, Uuid::new_v4()));
         let engine = EngineBuilder::new(vec![self.bus.clone()])
             .ephemeral(true)
+            .with_agent_id(agent_id)
             .build(cfg)
             .await
             .map_err(|e| e.to_string())?;
