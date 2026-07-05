@@ -25,7 +25,10 @@ from pathlib import Path
 import pytest
 
 from arf._arf import (
+    Bus,
     EngineSpec,
+    MessageFilter,
+    NodeInfo,
     PoolSpec,
     Team,
     TeamBuilder,
@@ -254,19 +257,21 @@ def test_engine_spec_and_pool_spec_constructors():
 
 @pytest.mark.asyncio
 async def test_team_builder_smoke():
-    """[方法] `TeamBuilder.from_config(None, cfg).build()` returns a
+    """[方法] `TeamBuilder.from_config(bus, cfg).build()` returns a
     `Team` carrying the config; `team.config.team_id` round-trips.
-    `bus = None` is acceptable since the Team skeleton does not yet
-    connect to a Bus.
+    Task 14: `bus` is now required (no longer optional None — the
+    skeleton path is removed).
     """
+    bus = Bus()
     cfg = TeamConfig("dev", "shared")
-    builder = TeamBuilder.from_config(None, cfg)
+    builder = TeamBuilder.from_config(bus, cfg)
     team = await builder.build()
     assert isinstance(team, Team)
     assert team.config.team_id == "dev"
     assert team.config.bus_id == "shared"
     assert team.started is False
-    assert repr(team) == "Team(team_id='dev', started=False)"
+    assert repr(team) == "Team(team_id='dev', engines=0, pools=0, started=False)"
+    bus.shutdown()
 
 
 @pytest.mark.asyncio
@@ -274,8 +279,9 @@ async def test_team_start_and_stop():
     """[方法][trait] `team.start()` flips `started` to True and awaits to
     None; `team.stop()` is an idempotent no-op awaitable.
     """
+    bus = Bus()
     cfg = TeamConfig("dev", "shared")
-    builder = TeamBuilder.from_config(None, cfg)
+    builder = TeamBuilder.from_config(bus, cfg)
     team = await builder.build()
     assert team.started is False
     result = await team.start()
@@ -284,31 +290,83 @@ async def test_team_start_and_stop():
     # Stop is idempotent.
     assert await team.stop() is None
     assert await team.stop() is None
-    assert team.started is True  # stop doesn't clear the flag
+    assert team.started is False  # Task 14: stop DOES clear the flag
+    bus.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_team_config_snapshot_is_independent():
+async def test_team_config_snapshot_is_independent(tmp_path):
     """[trait][唯一性] The Team's `config` getter returns a clone — mutating
     it on the Python side does not change the Team's view (and vice
     versa). Both the engine and pool lists on the snapshot must be
     writable from Python without affecting the original config.
+
+    Task 14: the build now actually constructs engines/pools, so the
+    agent YAML path must point to a real (minimal) file. We write a
+    minimal valid agent YAML into `tmp_path` so the test doesn't
+    depend on the example app's agent files.
     """
+    # Write minimal valid agent YAMLs for the build to consume.
+    pm_yaml = tmp_path / "pm.yaml"
+    pm_yaml.write_text(
+        """
+agent:
+  id: pm
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+  system_prompt: "snapshot test pm"
+  max_turns: 1
+"""
+    )
+    tc_yaml = tmp_path / "tc.yaml"
+    tc_yaml.write_text(
+        """
+agent:
+  id: tc
+  model:
+    provider: deepseek
+    model_name: deepseek-chat
+  system_prompt: "snapshot test tc"
+  max_turns: 1
+"""
+    )
+
+    bus = Bus()
+    # Pre-register a model node so EngineBuilder::build() passes the
+    # NoModelResponder check (the engine's Strict route needs to find
+    # a model node on the bus graph). Mirrors what real apps do at
+    # startup.
+    _model_handle = await bus.connect(
+        NodeInfo(
+            "model/deepseek",
+            "model",
+            {
+                "provider": "deepseek",
+                "kind": "model",
+                "models": ["deepseek-chat"],
+            },
+        ),
+        MessageFilter(),
+    )
     cfg = TeamConfig("dev", "shared")
-    cfg.add_persistent_engine("pm", "./pm.yaml", [])
-    builder = TeamBuilder.from_config(None, cfg)
+    cfg.add_persistent_engine("pm", str(pm_yaml), [])
+    builder = TeamBuilder.from_config(bus, cfg)
     team = await builder.build()
 
     snap = team.config
     assert len(snap.persistent_engines) == 1
     # Append to the snapshot; the original config must be untouched.
-    snap.add_persistent_engine("data", "./data.yaml", [])
+    snap.add_persistent_engine("data", str(tmp_path / "data.yaml"), [])
     assert len(snap.persistent_engines) == 2
     assert len(team.config.persistent_engines) == 1
     # And the original config mutation does not bleed into the snapshot.
-    cfg.add_subagent_pool("tc", "./tc.yaml", 4, None)
+    cfg.add_subagent_pool("tc", str(tc_yaml), 4, None)
     # The team's snapshot is independent of subsequent mutations to the
-    # original config (snapshot was captured at build time).
+    # original config (snapshot was captured at build time, before the
+    # `cfg.add_subagent_pool` call above). Both team.config and `snap`
+    # should still show zero subagent_pools; only the live `cfg` should
+    # reflect the post-build mutation.
     assert len(team.config.subagent_pools) == 0
     assert len(snap.subagent_pools) == 0
     assert len(cfg.subagent_pools) == 1

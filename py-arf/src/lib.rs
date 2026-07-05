@@ -1928,6 +1928,10 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<team::PyTeamConfig>()?;
     m.add_class::<team::PyTeamBuilder>()?;
     m.add_class::<team::PyTeam>()?;
+    // Phase 7 / V1.x task 14: real wiring — handle types returned by
+    // `Team.engine(id)` and `Team.subagent_pool(id)`.
+    m.add_class::<engine::PyEngineHandle>()?;
+    m.add_class::<team::PyPoolHandle>()?;
 
     Ok(())
 }

@@ -16,6 +16,7 @@ arf-core = { path = "../crates/arf-core" }
 arf-bus = { path = "../crates/arf-bus" }
 arf-engine = { path = "../crates/arf-engine" }
 arf-model-adapter = { path = "../crates/arf-model-adapter" }
+arf-subagent-pool = { path = "../crates/arf-subagent-pool" }
 arf-mcp = { path = "../crates/arf-mcp" }
 arf-pool = { path = "../crates/arf-pool" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
