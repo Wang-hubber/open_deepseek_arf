@@ -9,6 +9,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 pub mod mcp;
 pub mod pool;
+pub mod relay;
 
 use arf_bus::{Bus, ConnectError, NodeHandle};
 use arf_core::Message as CoreMessage;
@@ -1909,6 +1910,10 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pool::PyMcpResource>()?;
     m.add_class::<pool::PyModelAdapterPool>()?;
     m.add_class::<pool::PyMcpPool>()?;
+
+    // Phase 7 / V1.x task 6: Relay (JsonlTailer + SseFormatter)
+    m.add_class::<relay::PyJsonlTailer>()?;
+    m.add_class::<relay::PySseFormatter>()?;
 
     Ok(())
 }
