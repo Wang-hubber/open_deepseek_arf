@@ -4,6 +4,14 @@
 //! that the pair cycles through the pool as a unit. The pool lazily
 //! provisions slots up to `size` total, reusing them across `delegate()`
 //! calls.
+//!
+//! **Send compatibility (Task 14 review fix):** the `idle` queue is
+//! protected by `tokio::sync::Mutex` (not `std::sync::Mutex`) so the
+//! `delegate()` future is `Send`. This is required by
+//! `pyo3_async_runtimes::tokio::future_into_py` (the multi-thread tokio
+//! runtime used by `py-arf/src/lib.rs` will panic when posting a
+//! `!Send` future from `local_future_into_py`). `available()` is now
+//! async too — it must `.lock().await` to read the queue length.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -14,7 +22,7 @@ use arf_core::{NodeId, State};
 use arf_engine::{
     config::AgentConfig, Engine, EngineBuilder, TaskInput, TaskResult,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -72,7 +80,11 @@ pub struct SubagentPool {
     /// Idle slots. `None` entries are reserved-but-not-yet-built slots;
     /// using `Option` lets us avoid a separate "marker" type. The semaphore
     /// `size` caps the total leased+idle count.
-    idle: Arc<Mutex<VecDeque<Option<PoolSlot>>>>,
+    ///
+    /// Backed by `tokio::sync::Mutex` (not `std::sync::Mutex`) so that
+    /// `delegate()`, `populate()`, etc. can hold the lock across
+    /// `.await` points and remain `Send` — see module-level docstring.
+    idle: Arc<TokioMutex<VecDeque<Option<PoolSlot>>>>,
     semaphore: Arc<Semaphore>,
     outbox_strategy: OutboxStrategy,
     metrics: Arc<Mutex<PoolMetrics>>,
@@ -106,7 +118,7 @@ impl SubagentPool {
             bus,
             config,
             size,
-            idle: Arc::new(Mutex::new(VecDeque::with_capacity(size))),
+            idle: Arc::new(TokioMutex::new(VecDeque::with_capacity(size))),
             semaphore: Arc::new(Semaphore::new(size)),
             outbox_strategy,
             metrics: Arc::new(Mutex::new(PoolMetrics::default())),
@@ -169,13 +181,13 @@ impl SubagentPool {
 
         // Recycle the slot — push back into the idle queue unless the
         // queue is already at capacity.
-        self.recycle_slot(slot);
+        self.recycle_slot(slot).await;
 
         // Update metrics.
         {
             let mut m = self.metrics.lock().unwrap();
             m.total_delegations += 1;
-            m.idle_count = self.idle.lock().unwrap().len();
+            m.idle_count = self.idle.lock().await.len();
             m.active_count = self
                 .size
                 .saturating_sub(self.semaphore.available_permits());
@@ -200,7 +212,7 @@ impl SubagentPool {
     pub async fn populate(&self) -> Result<(), arf_engine::RunError> {
         use arf_engine::RunError;
 
-        let mut idle = self.idle.lock().unwrap();
+        let mut idle = self.idle.lock().await;
         while idle.len() < self.size {
             let slot = self.build_slot().await.map_err(|e| {
                 self.record_error(format!("populate: build failed: {e}"));
@@ -212,8 +224,12 @@ impl SubagentPool {
     }
 
     /// Number of idle (recycled) slots. For capacity diagnostics.
-    pub fn available(&self) -> usize {
-        self.idle.lock().unwrap().len()
+    ///
+    /// Async because `idle` is now a `tokio::sync::Mutex` (see module
+    /// docstring). The lock is short — no `.await` is held inside —
+    /// but we still use `.await` to satisfy the borrow checker.
+    pub async fn available(&self) -> usize {
+        self.idle.lock().await.len()
     }
 
     /// Snapshot current metrics.
@@ -224,7 +240,7 @@ impl SubagentPool {
     /// Drop all idle engines. Active engines finish their current task and
     /// are dropped when the pool is dropped entirely.
     pub async fn shutdown(self) {
-        self.idle.lock().unwrap().clear();
+        self.idle.lock().await.clear();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -234,7 +250,7 @@ impl SubagentPool {
     async fn take_slot(&self) -> Result<PoolSlot, arf_engine::RunError> {
         // Try idle queue first.
         {
-            let mut idle = self.idle.lock().unwrap();
+            let mut idle = self.idle.lock().await;
             while let Some(entry) = idle.pop_front() {
                 if let Some(slot) = entry {
                     return Ok(slot);
@@ -288,8 +304,11 @@ impl SubagentPool {
     }
 
     /// Push a slot back into the idle queue (bounded by `size`).
-    fn recycle_slot(&self, slot: PoolSlot) {
-        let mut idle = self.idle.lock().unwrap();
+    ///
+    /// Async because `idle` is now a `tokio::sync::Mutex` (Task 14
+    /// review fix — `Send` compatibility).
+    async fn recycle_slot(&self, slot: PoolSlot) {
+        let mut idle = self.idle.lock().await;
         if idle.len() < self.size {
             idle.push_back(Some(slot));
         }

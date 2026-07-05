@@ -113,7 +113,7 @@ async fn pool_delegates_task_and_recycles() {
     // before any delegate call.
     pool.populate().await.expect("populate should succeed");
     assert_eq!(
-        pool.available(),
+        pool.available().await,
         2,
         "after populate(), all `size` slots should be idle"
     );
@@ -143,7 +143,7 @@ async fn pool_delegates_task_and_recycles() {
     assert_eq!(pool.metrics().total_delegations, 2);
     // Both slots recycled — pool is at full capacity after the round.
     assert_eq!(
-        pool.available(),
+        pool.available().await,
         2,
         "全部回收: both engines should be back in idle"
     );
@@ -171,7 +171,7 @@ async fn pool_recycles_slot_without_wiping_state() {
 
     let pool = SubagentPool::new(bus, minimal_config(), 1);
     pool.populate().await.expect("populate should succeed");
-    assert_eq!(pool.available(), 1);
+    assert_eq!(pool.available().await, 1);
 
     // Delegate #1: produces at least one model message in slot state.
     let r1 = tokio::time::timeout(
@@ -205,7 +205,7 @@ async fn pool_recycles_slot_without_wiping_state() {
 
     // After 2 delegates on a size=1 pool, the single slot should be
     // recycled back (available == 1).
-    assert_eq!(pool.available(), 1, "single slot should recycle");
+    assert_eq!(pool.available().await, 1, "single slot should recycle");
 
     // `State::default()` is constructible (sanity).
     let _ = State::new();
@@ -221,13 +221,13 @@ async fn pool_recycles_slot_without_wiping_state() {
 async fn populate_then_idle_count() {
     let bus = test_bus_with_model_node().await;
     let pool = SubagentPool::new(bus, minimal_config(), 3);
-    assert_eq!(pool.available(), 0, "fresh pool starts empty");
+    assert_eq!(pool.available().await, 0, "fresh pool starts empty");
     pool.populate().await.expect("populate should succeed");
-    assert_eq!(pool.available(), 3, "all 3 slots should be idle after populate");
+    assert_eq!(pool.available().await, 3, "all 3 slots should be idle after populate");
 
     // Re-populating is idempotent — no extra slots beyond `size`.
     pool.populate().await.expect("second populate should be a no-op");
-    assert_eq!(pool.available(), 3, "populate must not exceed `size`");
+    assert_eq!(pool.available().await, 3, "populate must not exceed `size`");
 }
 
 /// TDD Step 5.7 — `pool_size_one_serializes` edge test: size=1 semaphore.
