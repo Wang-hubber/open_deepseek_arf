@@ -1,16 +1,19 @@
 """
 [T] Relay primitives — JsonlTailer + SseFormatter.
 
-Phase 7 / V1.x task 6. Verifies:
+Phase 7 / V1.x task 6 (and task 15 for the polling upgrade). Verifies:
 
 - `SseFormatter.format` produces the expected `id:` / `event:` / `data:`
   triple with the trailing blank-line terminator.
 - `SseFormatter.parse_last_event_id` round-trips the
   `"{node_id}:{event_seq}"` form.
-- `JsonlTailer` can be constructed and the simplified `__anext__`
-  reads at least one line from a JSONL file.
+- `JsonlTailer` can be constructed and the async `__anext__` reads at
+  least one line from a pre-populated JSONL file (cursor preserved
+  across calls).
+- `JsonlTailer` actually polls: a line appended to the file after the
+  tailer is constructed is yielded on the next `__anext__`.
 
-Test angles: [构造] [方法] [序列化] [唯一性]
+Test angles: [构造] [方法] [序列化] [唯一性] [时间]
 """
 import asyncio
 import json
@@ -72,32 +75,75 @@ def test_sse_formatter_format_and_parse():
 
 
 def test_jsonl_tailer_reads_lines(tmp_path: Path):
-    """[构造][方法] JsonlTailer construction + placeholder __anext__ reads one line."""
+    """[构造][方法] JsonlTailer construction + async __anext__ reads two lines."""
     p = tmp_path / "events.test.jsonl"
     p.write_text('{"kind":"event","x":1}\n{"kind":"event","x":2}\n')
 
     tailer = JsonlTailer(str(p), 0, 50)
 
-    # The simplified `__anext__` returns a PyStr synchronously after
-    # running a one-shot tokio runtime under the hood. Drive it via the
-    # asyncio protocol so a future port to true async-tailing stays a
-    # drop-in change.
-    line = asyncio.run(_one_anext(tailer))
-    parsed = json.loads(line)
-    assert parsed["x"] in (1, 2)
+    async def _read_two():
+        lines = []
+        # Drive via the asyncio protocol so a future port stays a
+        # drop-in change. Both awaits must succeed and yield distinct
+        # x values (cursor preservation across calls).
+        for _ in range(2):
+            lines.append(await _one_anext(tailer))
+        return lines
+
+    lines = asyncio.run(_read_two())
+    parsed_xs = sorted(json.loads(line)["x"] for line in lines)
+    assert parsed_xs == [1, 2]
 
 
 async def _one_anext(tailer):
-    """Helper that calls `__anext__` either as a coroutine or as a sync callable.
+    """Helper that calls `__anext__` either as a coroutine, a Future,
+    or a sync callable.
 
-    Today the simplified Rust implementation returns a `str` synchronously,
-    but the same helper works once `__anext__` is upgraded to a true
-    coroutine — that is, callers should not depend on either shape.
+    The async Rust implementation returns a `_asyncio.Future` (via
+    `pyo3_async_runtimes::future_into_py`), which is awaitable but is
+    not a `collections.abc.Coroutine` — `asyncio.iscoroutine()`
+    returns False for it. So we accept any awaitable.
     """
     val = tailer.__anext__()
-    if asyncio.iscoroutine(val):
+    if asyncio.iscoroutine(val) or asyncio.isfuture(val) or hasattr(val, "__await__"):
         return await val
     return val
+
+
+def test_jsonl_tailer_polling_yields_new_lines(tmp_path: Path):
+    """[时间][方法] JsonlTailer polls a file and yields lines appended
+    after construction.
+
+    Phase 7 / V1.x task 15 — replaces the one-shot synchronous-read
+    placeholder with true async polling. The first `__anext__` reads
+    the pre-existing line; after we append a second line and wait
+    `poll_interval_ms * 2`, the next `__anext__` returns the appended
+    line.
+    """
+    p = tmp_path / "events.live.jsonl"
+    p.write_text('{"kind":"event","x":1}\n')
+
+    poll_ms = 50
+    tailer = JsonlTailer(str(p), since_event_seq=0, poll_interval_ms=poll_ms)
+
+    async def _drive():
+        # 1. Read the pre-existing line.
+        first = await _one_anext(tailer)
+        first_parsed = json.loads(first)
+        assert first_parsed["x"] == 1
+
+        # 2. Append a new line while the tailer is alive.
+        with p.open("a") as f:
+            f.write('{"kind":"event","x":2}\n')
+
+        # 3. Wait for the poll cycle, then read the appended line.
+        # `asyncio.sleep` takes seconds, so convert ms → seconds.
+        await asyncio.sleep(poll_ms / 1000.0 * 2)
+        second = await _one_anext(tailer)
+        return json.loads(second)
+
+    second_parsed = asyncio.run(_drive())
+    assert second_parsed["x"] == 2
 
 
 # ── T3 ──────────────────────────────────────────────────────────────────
