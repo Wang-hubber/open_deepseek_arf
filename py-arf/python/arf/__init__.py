@@ -64,6 +64,11 @@ from arf._arf import (
     # per Task 6 review — Task 7 adds SseRelay next to these).
     JsonlTailer,
     SseFormatter,
+    # Phase 7 / V1.x task 7: Relay aggregation (TeamMembership,
+    # EventFilter, SseRelay).
+    EventFilter,
+    SseRelay,
+    TeamMembership,
 )
 
 __all__ = [
@@ -130,4 +135,8 @@ __all__ = [
     # Phase 7 / V1.x task 6: Relay
     "JsonlTailer",
     "SseFormatter",
+    # Phase 7 / V1.x task 7: Relay aggregation
+    "EventFilter",
+    "SseRelay",
+    "TeamMembership",
 ]

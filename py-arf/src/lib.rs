@@ -1915,5 +1915,10 @@ fn _arf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<relay::PyJsonlTailer>()?;
     m.add_class::<relay::PySseFormatter>()?;
 
+    // Phase 7 / V1.x task 7: Relay aggregation
+    m.add_class::<relay::PyTeamMembership>()?;
+    m.add_class::<relay::PyEventFilter>()?;
+    m.add_class::<relay::PySseRelay>()?;
+
     Ok(())
 }
