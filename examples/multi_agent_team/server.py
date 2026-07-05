@@ -7,26 +7,29 @@ Architecture:
     GET  /approvals         -> list pending approval requests
     POST /approve/{req_id}  -> resolve a pending approval (approve|reject)
 
-Deferred / future framework support
------------------------------------
-The skeleton below talks to a `Team` whose `build()` returns a
-placeholder with `started=True` but **no live engines or pools** (see
-py-arf/src/team/team_builder.rs — TeamBuilder.build is documented as
-a skeleton). The following call sites therefore degrade to a clear
-"skeleton" response rather than failing at runtime:
+Framework wiring (Task 14)
+--------------------------
+This server talks to a `Team` whose `build()` now constructs real
+`Engine`s and `SubagentPool`s from the agent YAMLs in `teams/*.yaml`
+(see py-arf/src/team/team_builder.rs). The endpoints therefore make
+real LLM calls when the configured providers have credentials; tests
+that exercise the routes (see tests/test_basic_flow.py) skip them
+when the required provider key is not set in the environment.
 
-    - `team.engine("pm")`           -> returns `None`
-    - `team.subagent_pool(id)`      -> returns `None`
-    - `pool.delegate(...)`          -> not reachable; the `engine`
-                                       call site already returns 501
-    - `SseRelay.stream(filter)`     -> returns a single-shot marker
-                                       string (no per-event loop yet)
+Endpoints in detail:
 
-The routes, request models, lifespan wiring, and approval plumbing
-are real and used today. When the framework adds
-`team.engine(id) -> EngineHandle` and `pool.delegate(TaskInput) ->
-TaskResult`, the `# TODO: wire to framework` markers in this file
-will be the only places that need to change.
+    POST /chat
+        Resolves `team.engine("pm") -> EngineHandle` and awaits
+        `engine.chat(message) -> str` (single-turn chat). The
+        EngineHandle is a PyO3 wrapper around the underlying
+        `Arc<TokioMutex<Engine>>`, so concurrent /chat calls are
+        serialized through the engine's mutex.
+
+    POST /delegate/{pool_id}
+        Resolves `team.subagent_pool(pool_id) -> PoolHandle` and
+        awaits `pool.delegate({user_message}) -> {output, ...}`.
+        The pool's slot is provisioned lazily on the first
+        `delegate()` call (Task 14 limitation — see team_builder.rs).
 
 Run with:    python server.py
 Then:        curl -N http://127.0.0.1:8000/sse/team/default
@@ -51,6 +54,8 @@ from pydantic import BaseModel
 from arf._arf import (
     Bus,
     EventFilter,
+    MessageFilter,
+    NodeInfo,
     SseFormatter,
     SseRelay,
     TeamBuilder,
@@ -96,9 +101,27 @@ async def lifespan(_app: FastAPI):
     # merge is a follow-up — see py-arf/src/relay/team_membership.rs).
     team_membership = TeamMembership(str(TEAM_CONFIG_PATH), None)
 
+    # Register a model node on the bus so EngineBuilder.build() can
+    # resolve its Strict route (Task 14: real engine wiring).
+    # Real apps typically register a ModelAdapter node here; for
+    # the example we publish a minimal node entry that satisfies
+    # the lookup. Actual LLM calls flow through arf-model-adapter
+    # registered separately by the AgentConfig loaders.
+    await bus.connect(
+        NodeInfo(
+            "model/example",
+            "model",
+            {
+                "provider": "deepseek",
+                "kind": "model",
+                "models": ["deepseek-chat"],
+            },
+        ),
+        MessageFilter(),
+    )
+
     cfg = TeamConfig.from_yaml(str(TEAM_CONFIG_PATH))
-    # TeamBuilder.from_config returns a builder; `.build()` is async
-    # and today produces a placeholder Team. See "Deferred" section.
+    # Real wiring: build constructs Engine + SubagentPool per spec.
     team = await TeamBuilder.from_config(bus, cfg).build()
     await team.start()
 
@@ -143,53 +166,35 @@ class ApproveReq(BaseModel):
 
 @app.post("/chat")
 async def chat(req: ChatReq):
-    """Send a user message to the `pm` engine.
-
-    TODO: wire to framework once `team.engine(id) -> EngineHandle` and
-    `engine.chat(message) -> ChatResult` exist. Until then we return a
-    structured 501 so callers know the wiring is intentionally not
-    implemented (not a 500 / not a silent success).
-    """
+    """Send a user message to the `pm` engine."""
     if team is None:
         raise HTTPException(status_code=503, detail="team not started")
 
-    engine = _get_engine_handle(team, "pm")
+    engine = team.engine("pm")
     if engine is None:
-        # Deferred framework support: the skeleton's `team` has no
-        # handle storage. Returning a 501 keeps the route testable.
-        return {
-            "status": "skeleton",
-            "engine": "pm",
-            "message": req.message,
-            "note": "team.engine() not yet implemented in framework (Task 8 skeleton)",
-        }
+        # team was built without a 'pm' engine — configuration issue.
+        raise HTTPException(status_code=404, detail="engine 'pm' not in team roster")
 
-    result = await _engine_chat(engine, req.message)
-    return {"response": result}
+    response = await engine.chat(req.message)
+    return {"response": response}
 
 
 @app.post("/delegate/{pool_id}")
 async def delegate(pool_id: str, req: ChatReq):
-    """Send a user message into a named subagent pool.
-
-    TODO: wire to framework once `team.subagent_pool(id) -> PoolHandle`
-    and `pool.delegate(TaskInput) -> TaskResult` exist.
-    """
+    """Send a user message into a named subagent pool."""
     if team is None:
         raise HTTPException(status_code=503, detail="team not started")
 
-    pool = _get_pool_handle(team, pool_id)
+    pool = team.subagent_pool(pool_id)
     if pool is None:
-        return {
-            "status": "skeleton",
-            "pool_id": pool_id,
-            "message": req.message,
-            "note": "team.subagent_pool() not yet implemented in framework (Task 8 skeleton)",
-        }
+        raise HTTPException(
+            status_code=404, detail=f"subagent pool '{pool_id}' not in team roster"
+        )
 
-    result = await _pool_delegate(pool, req.message)
-    # `.output` shape is brief's assumption; real TaskResult lands later.
-    return {"result": getattr(result, "output", result)}
+    result = await pool.delegate({"user_message": req.message})
+    # result is a Python dict with `output` / `turns_consumed` /
+    # `pending_peer_messages` keys (see PyPoolHandle::delegate).
+    return {"result": result}
 
 
 @app.get("/sse/team/{team_id}")
@@ -266,70 +271,6 @@ def health():
 # ---------------------------------------------------------------------------
 # Framework-shim helpers (DEFERRED — see file docstring)
 # ---------------------------------------------------------------------------
-
-
-def _get_engine_handle(team_obj: Any, engine_id: str) -> Any:
-    """Return the persistent engine handle, or `None` if unsupported.
-
-    TODO: replace with `team_obj.engine(engine_id)` once the framework
-    exposes a real handle-storage API on `PyTeam`.
-    """
-    getter = getattr(team_obj, "engine", None)
-    if getter is None:
-        return None
-    try:
-        return getter(engine_id)
-    except NotImplementedError:
-        return None
-
-
-def _get_pool_handle(team_obj: Any, pool_id: str) -> Any:
-    """Return the subagent pool handle, or `None` if unsupported.
-
-    TODO: replace with `team_obj.subagent_pool(pool_id)` once the
-    framework exposes pool handle storage.
-    """
-    getter = getattr(team_obj, "subagent_pool", None)
-    if getter is None:
-        return None
-    try:
-        return getter(pool_id)
-    except NotImplementedError:
-        return None
-
-
-async def _engine_chat(engine: Any, message: str) -> Any:
-    """Call `engine.chat(message)`, returning a deferred stub when missing.
-
-    TODO: drop the fallback once `Engine.chat` lands in py-arf.
-    """
-    chat = getattr(engine, "chat", None)
-    if chat is None:
-        return {
-            "status": "skeleton",
-            "message": message,
-            "note": "Engine.chat not yet implemented in framework",
-        }
-    return await chat(message)
-
-
-async def _pool_delegate(pool: Any, message: str) -> Any:
-    """Call `pool.delegate(TaskInput)`, returning a deferred stub when missing.
-
-    TODO: drop the fallback once `pool.delegate` lands in py-arf.
-    """
-    delegate = getattr(pool, "delegate", None)
-    if delegate is None:
-        return {
-            "status": "skeleton",
-            "message": message,
-            "note": "Pool.delegate not yet implemented in framework",
-        }
-    # TaskInput is a planned, not-yet-existing type. We pass a plain
-    # dict so the call is forward-compatible — the framework will
-    # accept the dict form once it lands (mirrors the BaseAgent
-    # convention of accepting `dict[str, Any]`).
-    return await delegate({"user_message": message})
 
 
 async def _sse_stream(relay: SseRelay, flt: EventFilter) -> AsyncIterator[bytes]:
