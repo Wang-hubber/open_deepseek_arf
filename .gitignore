@@ -87,6 +87,7 @@ data/**/models/
 
 # Multi-user data directory (DB, user workspaces, SMTP config)
 data/
+!examples/multi_agent_team/data/
 
 # Runtime session dirs
 /team_sessions/
