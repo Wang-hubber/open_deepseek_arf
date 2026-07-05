@@ -213,7 +213,7 @@ impl PyTeam {
     /// pool is not in this team's roster.
     fn subagent_pool(&self, pool_id: &str) -> Option<PyPoolHandle> {
         let arc = self.subagent_pools.get(pool_id)?;
-        Some(PyPoolHandle::from_arc(arc.clone()))
+        Some(PyPoolHandle::from_arc(arc.clone(), pool_id.to_string()))
     }
 
     fn __repr__(&self) -> String {
@@ -237,22 +237,26 @@ impl PyTeam {
 #[pyclass(name = "PoolHandle")]
 pub struct PyPoolHandle {
     inner: Arc<SubagentPool>,
+    /// The pool_id from the team's `PoolSpec` — Task 14 review fix
+    /// (previously the `pool_id` getter returned a meaningless `Arc`
+    /// pointer string).
+    id: String,
 }
 
 impl PyPoolHandle {
-    fn from_arc(arc: Arc<SubagentPool>) -> Self {
-        Self { inner: arc }
+    fn from_arc(arc: Arc<SubagentPool>, id: String) -> Self {
+        Self { inner: arc, id }
     }
 }
 
 #[pymethods]
 impl PyPoolHandle {
+    /// The pool_id from the team's `PoolSpec`. Pre-fix this returned
+    /// a meaningless `Arc` pointer string; now it returns the same
+    /// id the spec was registered with.
     #[getter]
     fn pool_id(&self) -> String {
-        // SubagentPool doesn't carry an explicit id — use whatever the
-        // team associated it with. We don't have that here; expose a
-        // placeholder string and rely on the caller to track ids.
-        format!("{:p}", Arc::as_ptr(&self.inner))
+        self.id.clone()
     }
 
     /// Delegate a task to this pool. Returns the assistant's output

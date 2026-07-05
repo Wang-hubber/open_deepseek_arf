@@ -465,6 +465,12 @@ subagent_pools:
         "Team.subagent_pool('test-pool-id') returned None — build() did "
         "not construct the SubagentPool from the PoolSpec"
     )
+    # PoolHandle.pool_id must return the spec's pool_id (Task 14 review
+    # fix — pre-fix returned a meaningless Arc pointer string).
+    assert pool_handle.pool_id == "test-pool-id", (
+        f"PoolHandle.pool_id returned {pool_handle.pool_id!r} — "
+        "expected the spec's pool_id 'test-pool-id'"
+    )
 
     # Negative checks — unknown ids must still return None (not crash).
     assert team.engine("does-not-exist") is None
