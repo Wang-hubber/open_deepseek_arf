@@ -10,6 +10,7 @@
 
 pub mod composite;
 pub mod error;
+pub mod factory;
 pub mod filesystem;
 pub mod path;
 pub mod protocol;
@@ -18,6 +19,7 @@ pub mod types;
 
 pub use composite::CompositeBackend;
 pub use error::BackendError;
+pub use factory::{resolve_backend, BackendFactory, BackendFactoryFn, BackendSpec, IntoBackend};
 pub use filesystem::FilesystemBackend;
 pub use path::BackendPath;
 pub use protocol::{BackendProtocol, SandboxBackendProtocol};
