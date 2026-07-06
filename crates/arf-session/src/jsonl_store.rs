@@ -7,8 +7,8 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::{
-    CheckpointSnapshot, PendingPeerMessage, SessionData, SessionError, SessionMeta, SessionStatus,
-    SessionStore, SnapshotEffects,
+    CheckpointSnapshot, ModelCallRecord, PendingPeerMessage, SessionData, SessionError,
+    SessionMeta, SessionStatus, SessionStore, SnapshotEffects, ToolCallRecord,
 };
 use arf_core::State;
 
@@ -297,5 +297,123 @@ impl SessionStore for JsonlSessionStore {
         // 按 sent_at 升序（先发先重发）
         pending.sort_by(|a, b| a.sent_at.cmp(&b.sent_at));
         Ok(pending)
+    }
+
+    // ── Task 18: round / model / tool event emission ──────────────────
+
+    async fn record_round_start(
+        &self,
+        session_id: &str,
+        round: u32,
+    ) -> Result<(), SessionError> {
+        let path = self.file_path(session_id);
+        if let Some(p) = path.parent() {
+            tokio::fs::create_dir_all(p).await?;
+        }
+        let line = serde_json::json!({
+            "kind": "event",
+            "event_type": "round_start",
+            "at": Utc::now(),
+            "round": round,
+        });
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        f.write_all(line.to_string().as_bytes()).await?;
+        f.write_all(b"\n").await?;
+        f.sync_all().await?;
+        Ok(())
+    }
+
+    async fn record_round_end(
+        &self,
+        session_id: &str,
+        round: u32,
+        duration_ms: u64,
+    ) -> Result<(), SessionError> {
+        let path = self.file_path(session_id);
+        if let Some(p) = path.parent() {
+            tokio::fs::create_dir_all(p).await?;
+        }
+        let line = serde_json::json!({
+            "kind": "event",
+            "event_type": "round_end",
+            "at": Utc::now(),
+            "round": round,
+            "duration_ms": duration_ms,
+        });
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        f.write_all(line.to_string().as_bytes()).await?;
+        f.write_all(b"\n").await?;
+        f.sync_all().await?;
+        Ok(())
+    }
+
+    async fn record_model_call_end(
+        &self,
+        session_id: &str,
+        record: &ModelCallRecord,
+    ) -> Result<(), SessionError> {
+        let path = self.file_path(session_id);
+        if let Some(p) = path.parent() {
+            tokio::fs::create_dir_all(p).await?;
+        }
+        let line = serde_json::json!({
+            "kind": "event",
+            "event_type": "model_call_end",
+            "at": record.at,
+            "model": record.model,
+            "input_tokens": record.input_tokens,
+            "output_tokens": record.output_tokens,
+            "total_tokens": record.total_tokens,
+            "turn": record.turn,
+            "round": record.round,
+        });
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        f.write_all(line.to_string().as_bytes()).await?;
+        f.write_all(b"\n").await?;
+        f.sync_all().await?;
+        Ok(())
+    }
+
+    async fn record_tool_call_end(
+        &self,
+        session_id: &str,
+        record: &ToolCallRecord,
+    ) -> Result<(), SessionError> {
+        let path = self.file_path(session_id);
+        if let Some(p) = path.parent() {
+            tokio::fs::create_dir_all(p).await?;
+        }
+        let line = serde_json::json!({
+            "kind": "event",
+            "event_type": "tool_call_end",
+            "at": record.at,
+            "tool_name": record.tool_name,
+            "duration_ms": record.duration_ms,
+            "success": record.success,
+            "error": record.error,
+            "turn": record.turn,
+            "round": record.round,
+        });
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        f.write_all(line.to_string().as_bytes()).await?;
+        f.write_all(b"\n").await?;
+        f.sync_all().await?;
+        Ok(())
     }
 }

@@ -331,6 +331,63 @@ pub trait SessionStore: Send + Sync {
         let _ = session_id;
         Ok(Vec::new())
     }
+
+    // ── Task 18: round / model / tool event emission (observability) ──
+
+    /// A new `round` has started (Engine `run()` entered, before the main
+    /// loop). Default impl returns `Err(Corrupt)` so custom stores that don't
+    /// implement observability don't silently swallow the call.
+    async fn record_round_start(
+        &self,
+        session_id: &str,
+        round: u32,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, round);
+        Err(SessionError::Corrupt(
+            "record_round_start not implemented for this store".into(),
+        ))
+    }
+
+    /// A `round` has ended — either clean return, max_turns, cancel, or
+    /// fatal error. Default impl returns `Err(Corrupt)`.
+    async fn record_round_end(
+        &self,
+        session_id: &str,
+        round: u32,
+        duration_ms: u64,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, round, duration_ms);
+        Err(SessionError::Corrupt(
+            "record_round_end not implemented for this store".into(),
+        ))
+    }
+
+    /// A `model_call` completed and we have the usage payload. Default impl
+    /// returns `Err(Corrupt)`.
+    async fn record_model_call_end(
+        &self,
+        session_id: &str,
+        record: &ModelCallRecord,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, record);
+        Err(SessionError::Corrupt(
+            "record_model_call_end not implemented for this store".into(),
+        ))
+    }
+
+    /// A `tool_call` finished — either succeeded (`success=true`, `error=None`)
+    /// or failed (`success=false`, `error=Some(msg)`). Default impl returns
+    /// `Err(Corrupt)`.
+    async fn record_tool_call_end(
+        &self,
+        session_id: &str,
+        record: &ToolCallRecord,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, record);
+        Err(SessionError::Corrupt(
+            "record_tool_call_end not implemented for this store".into(),
+        ))
+    }
 }
 
 /// Task 17: One row of the per-session peer outbox. Represents a `peer_message`
@@ -350,13 +407,42 @@ pub struct PendingPeerMessage {
     pub attempt: u32,
 }
 
+/// Task 18: One `model_call_end` event. Written when the Engine receives the
+/// `model_response` and we have access to `usage`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelCallRecord {
+    /// Provider-reported model id (e.g., `"deepseek-chat"`, `"qwen3-max"`).
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+    pub turn: u32,
+    pub round: u32,
+    pub at: DateTime<Utc>,
+}
+
+/// Task 18: One `tool_call_end` event. Written after the Engine consumes the
+/// `tool_result` (success) OR after the tool path fails (success=false, error set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCallRecord {
+    pub tool_name: String,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub error: Option<String>,
+    pub turn: u32,
+    pub round: u32,
+    pub at: DateTime<Utc>,
+}
+
 // ── SqliteSessionStore ───────────────────────────────────────────────
 
 /// SQLite-backed `SessionStore`. Single writer; the inner `Connection` is
 /// protected by a `tokio::Mutex`. The DB schema is auto-created on `new()`.
 pub struct SqliteSessionStore {
     path: PathBuf,
-    conn: Arc<Mutex<Connection>>,
+    /// Inner connection. `pub` for integration-test access (e.g. counting rows
+    /// in `peer_events`). Production code goes through the `SessionStore` trait.
+    pub conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteSessionStore {
@@ -773,6 +859,117 @@ impl SessionStore for SqliteSessionStore {
             });
         }
         Ok(out)
+    }
+
+    // ── Task 18: round / model / tool event emission (observability) ──
+    //
+    // Schema reuse strategy: peer_events has correlation_id / target_session /
+    // target_node / source / payload_json. Non-peer events don't have a cid, so
+    // we store the *full record* as JSON in payload_json and leave other cols
+    // empty (NULL). This keeps aggregation simple (parse JSON in App) and
+    // avoids column-overloading bugs.
+
+    async fn record_round_start(
+        &self,
+        session_id: &str,
+        round: u32,
+    ) -> Result<(), SessionError> {
+        let payload = serde_json::json!({"round": round});
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                session_id,
+                Utc::now().to_rfc3339(),
+                "round_start",
+                "", // non-peer events have no cid — store empty
+                payload.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn record_round_end(
+        &self,
+        session_id: &str,
+        round: u32,
+        duration_ms: u64,
+    ) -> Result<(), SessionError> {
+        let payload = serde_json::json!({"round": round, "duration_ms": duration_ms});
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                session_id,
+                Utc::now().to_rfc3339(),
+                "round_end",
+                "",
+                payload.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn record_model_call_end(
+        &self,
+        session_id: &str,
+        record: &ModelCallRecord,
+    ) -> Result<(), SessionError> {
+        let payload = serde_json::json!({
+            "model": record.model,
+            "input_tokens": record.input_tokens,
+            "output_tokens": record.output_tokens,
+            "total_tokens": record.total_tokens,
+            "turn": record.turn,
+            "round": record.round,
+        });
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                session_id,
+                record.at.to_rfc3339(),
+                "model_call_end",
+                "",
+                payload.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn record_tool_call_end(
+        &self,
+        session_id: &str,
+        record: &ToolCallRecord,
+    ) -> Result<(), SessionError> {
+        let payload = serde_json::json!({
+            "tool_name": record.tool_name,
+            "duration_ms": record.duration_ms,
+            "success": record.success,
+            "error": record.error,
+            "turn": record.turn,
+            "round": record.round,
+        });
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                session_id,
+                record.at.to_rfc3339(),
+                "tool_call_end",
+                "",
+                payload.to_string(),
+            ],
+        )?;
+        Ok(())
     }
 }
 
