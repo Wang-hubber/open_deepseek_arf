@@ -14,7 +14,7 @@ use crate::dispatcher::HandlerRegistry;
 use crate::error::{BuildError, RunError};
 use crate::registry::ResourceRegistry;
 use arf_core::msg_type::{MODEL_RESPONSE, PEER_MESSAGE, PEER_REPLY, TOOL_RESULT};
-use arf_session::{PendingPeerMessage, SessionError};
+use arf_session::{ModelCallRecord, PendingPeerMessage, SessionError, ToolCallRecord};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -276,6 +276,28 @@ impl Engine {
         user_input: String,
         cancel: CancellationToken,
     ) -> Result<String, RunError> {
+        // Task 18: record round_start (with the round number we are about to
+        // enter — `prepare_round` increments state.over_view.round_count).
+        let round_number = state.over_view.round_count as u32 + 1;
+        let started_at = chrono::Utc::now();
+        self.maybe_record_round_start(round_number).await;
+
+        let result = self.run_inner(state, user_input, cancel).await;
+
+        let duration_ms = (chrono::Utc::now() - started_at).num_milliseconds().max(0) as u64;
+        self.maybe_record_round_end(round_number, duration_ms).await;
+
+        result
+    }
+
+    /// Inner ReAct loop body extracted from `run()` so the wrapper can
+    /// surround it with round_start / round_end events.
+    async fn run_inner(
+        &mut self,
+        state: &mut State,
+        user_input: String,
+        cancel: CancellationToken,
+    ) -> Result<String, RunError> {
         // Phase 9 F-012: fail fast if a session store is configured but the
         // session was never pre-saved — otherwise every checkpoint snapshot
         // would silently fail against a NotFound session.
@@ -370,6 +392,83 @@ impl Engine {
                 });
             }
         }
+    }
+
+    /// Task 18: best-effort round_start event (no-op if no session_store).
+    async fn maybe_record_round_start(&self, round: u32) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        let _ = store.record_round_start(&self.session_id, round).await;
+    }
+
+    /// Task 18: best-effort round_end event.
+    async fn maybe_record_round_end(&self, round: u32, duration_ms: u64) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        let _ = store
+            .record_round_end(&self.session_id, round, duration_ms)
+            .await;
+    }
+
+    /// Task 18: best-effort model_call_end event. Called by do_model_turn
+    /// after parsing the model response.
+    async fn maybe_record_model_call(
+        &self,
+        model: &str,
+        usage: &serde_json::Value,
+        turn: u32,
+        round: u32,
+    ) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        // Usage field names: input_tokens / output_tokens / total_tokens
+        // (per arf_model_adapter::types::Usage struct).
+        let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let total_tokens = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let record = ModelCallRecord {
+            model: model.to_string(),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            turn,
+            round,
+            at: chrono::Utc::now(),
+        };
+        let _ = store
+            .record_model_call_end(&self.session_id, &record)
+            .await;
+    }
+
+    /// Task 18: best-effort tool_call_end event. Called by do_tool_turn
+    /// at success + every failure branch (denied, cancelled, error response).
+    async fn maybe_record_tool_call(
+        &self,
+        tool_name: &str,
+        duration_ms: u64,
+        success: bool,
+        error: Option<String>,
+        turn: u32,
+        round: u32,
+    ) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        let record = ToolCallRecord {
+            tool_name: tool_name.to_string(),
+            duration_ms,
+            success,
+            error,
+            turn,
+            round,
+            at: chrono::Utc::now(),
+        };
+        let _ = store
+            .record_tool_call_end(&self.session_id, &record)
+            .await;
     }
 
     /// 评估一个 Checkpoint 位置：所有 trigger 匹配的规则；when=true 时 build + 投递。
@@ -645,6 +744,20 @@ impl Engine {
             if let Some(tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                 state.set_context_tokens(tokens as usize);
             }
+            // Task 18: record model_call_end event.
+            let model_name = response
+                .payload
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&self.config.model.model_name)
+                .to_string();
+            self.maybe_record_model_call(
+                &model_name,
+                usage,
+                state.over_view.turn_count as u32,
+                state.over_view.round_count as u32,
+            )
+            .await;
         }
 
         // Push assistant message（含 tool_calls）；不再 inc_turn（消息是响应非请求）
@@ -709,6 +822,10 @@ impl Engine {
         state.inc_turn();
 
         // Phase 9 F-017: enforce ToolPermission gating before tool_exec.
+        let tool_started = std::time::Instant::now();
+        let turn = state.over_view.turn_count as u32;
+        let round = state.over_view.round_count as u32;
+
         let permission = self.lookup_tool_permission(&tc.name);
         match permission {
             arf_core::ToolPermission::Deny => {
@@ -717,6 +834,15 @@ impl Engine {
                 tool_msg.tool_call_id = Some(tc.id.clone());
                 tool_msg.name = Some(tc.name.clone());
                 state.push_message(tool_msg);
+                self.maybe_record_tool_call(
+                    &tc.name,
+                    tool_started.elapsed().as_millis() as u64,
+                    false,
+                    Some("denied by policy".into()),
+                    turn,
+                    round,
+                )
+                .await;
                 return Ok(serde_json::json!({
                     "content": "",
                     "error": deny_content,
@@ -735,6 +861,15 @@ impl Engine {
                     tool_msg.tool_call_id = Some(tc.id.clone());
                     tool_msg.name = Some(tc.name.clone());
                     state.push_message(tool_msg);
+                    self.maybe_record_tool_call(
+                        &tc.name,
+                        tool_started.elapsed().as_millis() as u64,
+                        false,
+                        Some("user denied".into()),
+                        turn,
+                        round,
+                    )
+                    .await;
                     return Ok(serde_json::json!({
                         "content": "",
                         "error": denied_content,
@@ -784,9 +919,29 @@ impl Engine {
                 tool_msg.tool_call_id = Some(tc.id.clone());
                 tool_msg.name = Some(tc.name.clone());
                 state.push_message(tool_msg);
+                self.maybe_record_tool_call(
+                    &tc.name,
+                    tool_started.elapsed().as_millis() as u64,
+                    false,
+                    Some("cancelled".into()),
+                    turn,
+                    round,
+                )
+                .await;
                 return Err(e);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                self.maybe_record_tool_call(
+                    &tc.name,
+                    tool_started.elapsed().as_millis() as u64,
+                    false,
+                    Some(e.to_string()),
+                    turn,
+                    round,
+                )
+                .await;
+                return Err(e);
+            }
         };
 
         // Parse tool result
@@ -811,6 +966,18 @@ impl Engine {
         tool_msg.tool_call_id = Some(tc.id.clone());
         tool_msg.name = Some(tc.name.clone());
         state.push_message(tool_msg);
+
+        // Task 18: record tool_call_end (success or error-result).
+        let success = response.payload.get("error").is_none();
+        self.maybe_record_tool_call(
+            &tc.name,
+            tool_started.elapsed().as_millis() as u64,
+            success,
+            if success { None } else { response.payload.get("error").and_then(|v| v.as_str()).map(String::from) },
+            turn,
+            round,
+        )
+        .await;
 
         Ok(response.payload)
     }

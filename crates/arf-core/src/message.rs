@@ -27,6 +27,8 @@ pub struct CoreModelParams {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    // Round-trip safe: skip when null on serialize, default to Value::Null on
+    // deserialize (matches the pre-F-005 wire format that omitted this field).
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub extra: serde_json::Value,
 }

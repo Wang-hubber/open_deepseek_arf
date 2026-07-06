@@ -17,6 +17,10 @@ pub struct ModelParams {
     /// Whether thinking/reasoning is enabled.
     pub thinking_enabled: bool,
     /// Provider-specific extra parameters (e.g., top_p, reasoning_effort).
+    /// `#[serde(default)]` so wire payloads sent by engines that don't
+    /// populate this field (e.g., a payload missing `extra` on serialize
+    /// because it was Value::Null) deserialize cleanly.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub extra: serde_json::Value,
 }
 
