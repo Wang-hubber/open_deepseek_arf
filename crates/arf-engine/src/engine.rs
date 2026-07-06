@@ -135,6 +135,7 @@ impl Engine {
         // Default session_id is derived from the agent_id; can be overridden
         // via `with_session_id()` on the builder.
         let session_id = info.node_id.to_string();
+        let dedup_capacity = config.engine.inbound_dedup_capacity;
 
         Ok(Self {
             config,
@@ -148,7 +149,7 @@ impl Engine {
             handlers: Arc::new(Mutex::new(HandlerRegistry::new())),
             session_store: None,
             session_id,
-            inbound_dedup: InboundDedupCache::new(1024),
+            inbound_dedup: InboundDedupCache::new(dedup_capacity),
             ephemeral,
         })
     }
@@ -635,6 +636,86 @@ impl Engine {
                 reason: format!("record_event: {e}"),
             })?;
         Ok(())
+    }
+
+    //// Public API: send a `human_handoff` message to the UI node and await its
+    /// reply. Records the outbound event via `maybe_record_outbound` before
+    /// sending (Task 19 unified outbox). The UI node id defaults to `"ui"`.
+    ///
+    /// Returns the `HumanHandoffReply` from the UI, or `RunError` on
+    /// timeout / send failure.
+    pub async fn handoff_to_human(
+        &mut self,
+        state: &mut State,
+        question: impl Into<String>,
+        context: serde_json::Value,
+        options: Vec<String>,
+        timeout: std::time::Duration,
+    ) -> Result<arf_core::HumanHandoffReply, RunError> {
+        use arf_core::HumanHandoff;
+
+        let cid = Uuid::new_v4();
+        let handoff = HumanHandoff {
+            correlation_id: cid,
+            question: question.into(),
+            context,
+            options,
+        };
+        let recipients = vec![NodeId::new("ui")];
+
+        // 1. record before send (Task 19 unified outbox)
+        self.maybe_record_outbound(&handoff, &recipients).await?;
+
+        // 2. send via bus
+        let payload = serde_json::to_value(&handoff).map_err(|e| RunError::SnapshotFailed {
+            session_id: self.session_id.clone(),
+            reason: format!("serialize handoff: {e}"),
+        })?;
+        let wire = Message::new(
+            String::from("human_handoff"),
+            self.agent_id.clone(),
+            recipients,
+            payload,
+        );
+        if let Err(e) = self.handle.send_message(wire).await {
+            return Err(RunError::Bus(e));
+        }
+
+        // 3. register WaitEvent + await reply
+        let event = arf_core::WaitEvent::new(cid, arf_core::WaitStrategy::All, 1);
+        let event_id = event.id;
+        state.wait_events.push(event);
+
+        // Set up timeout cancel
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_for_timeout = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            cancel_for_timeout.cancel();
+        });
+
+        let responses = self
+            .wait_for_strategy(
+                state,
+                event_id,
+                &["human_handoff_reply"],
+                cancel,
+            )
+            .await?;
+
+        // Decode first reply
+        let reply = responses.into_iter().next().ok_or_else(|| {
+            RunError::SnapshotFailed {
+                session_id: self.session_id.clone(),
+                reason: "no human_handoff_reply received".into(),
+            }
+        })?;
+        serde_json::from_value::<arf_core::HumanHandoffReply>(reply.payload).map_err(|e| {
+            RunError::SnapshotFailed {
+                session_id: self.session_id.clone(),
+                reason: format!("decode reply: {e}"),
+            }
+        })
     }
 
     /// Task 19: process-level dedup + record InboundReply event for reply-type

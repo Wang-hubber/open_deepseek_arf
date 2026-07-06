@@ -26,6 +26,11 @@ pub struct EngineConfig {
 
     pub max_turns: u32,
     pub tool_timeout_ms: Option<u64>,
+
+    /// Task 19: LRU capacity for `InboundDedupCache`. Default: 1024.
+    /// Sized for typical session lifetimes; raise for high-throughput async
+    /// reply patterns.
+    pub inbound_dedup_capacity: usize,
 }
 
 impl Default for EngineConfig {
@@ -37,6 +42,7 @@ impl Default for EngineConfig {
             on_member_failed: None,
             max_turns: 10,
             tool_timeout_ms: Some(30_000),
+            inbound_dedup_capacity: 1024,
         }
     }
 }
@@ -120,6 +126,7 @@ impl Default for AgentConfig {
                 on_member_failed: None,
                 max_turns: 10,
                 tool_timeout_ms: Some(30_000),
+                inbound_dedup_capacity: 1024,
             },
         }
     }
