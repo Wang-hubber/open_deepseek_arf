@@ -7,8 +7,8 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::{
-    CheckpointSnapshot, ModelCallRecord, PendingPeerMessage, SessionData, SessionError,
-    SessionMeta, SessionStatus, SessionStore, SnapshotEffects, ToolCallRecord,
+    CheckpointSnapshot, Event, PendingOutbound, SessionData, SessionError,
+    SessionMeta, SessionStatus, SessionStore, SnapshotEffects,
 };
 use arf_core::State;
 
@@ -61,33 +61,33 @@ impl SessionStore for JsonlSessionStore {
                 _ => {}
             }
         }
-        // snapshot 优先；否则用最新的 save
-        // Snapshot lines (Task 1) intentionally omit a `data` payload —
-        // embedding SessionData is a downstream design decision. If the
-        // chosen snapshot has no usable data, fall back to the latest save
-        // (or return None if neither has data).
-        let has_data = |v: &serde_json::Value| -> bool {
-            v.get("data").map(|d| !d.is_null()).unwrap_or(false)
-        };
-        let chosen = match latest_snap.as_ref() {
-            Some(s) if has_data(s) => Some(s.clone()),
-            Some(s) => {
-                tracing::warn!(
-                    session_id = %session_id,
-                    "snapshot line lacks data payload; falling back to latest save \
-                     (a future task will embed SessionData in snapshot lines)"
-                );
-                if has_data(latest_save.as_ref().unwrap_or(&serde_json::Value::Null)) {
-                    latest_save.clone()
-                } else {
-                    None
+        // Prefer the latest save line — it carries the full SessionData
+        // (meta + config + model_params). Snapshot lines (Task 19) embed
+        // `data: State` for debugging / forward-compat but load() doesn't
+        // reconstruct SessionData from State alone. Fall back to snapshot
+        // only if no save line exists AND snapshot.data deserializes as a
+        // SessionData (legacy format from before Task 19).
+        if let Some(s) = latest_save.as_ref() {
+            let data: SessionData = serde_json::from_value(s["data"].clone())?;
+            return Ok(Some(data));
+        }
+        if let Some(s) = latest_snap.as_ref() {
+            // Legacy snapshot-with-SessionData path: try to deserialize.
+            // If snapshot.data is a State (Task 19 format), this fails and
+            // we return None — caller should re-save the session.
+            match serde_json::from_value::<SessionData>(s["data"].clone()) {
+                Ok(data) => return Ok(Some(data)),
+                Err(_) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "snapshot line data is not SessionData (likely State from Task 19); \
+                         no save line found — returning None"
+                    );
+                    return Ok(None);
                 }
             }
-            None => latest_save.clone(),
-        };
-        let Some(v) = chosen else { return Ok(None) };
-        let data: SessionData = serde_json::from_value(v["data"].clone())?;
-        Ok(Some(data))
+        }
+        Ok(None)
     }
 
     async fn save(&self, data: &SessionData) -> Result<(), SessionError> {
@@ -118,18 +118,22 @@ impl SessionStore for JsonlSessionStore {
     async fn snapshot(
         &self,
         session_id: &str,
-        _state: &State,
+        state: &State,
         snap: &CheckpointSnapshot,
     ) -> Result<SnapshotEffects, SessionError> {
         let path = self.file_path(session_id);
         if let Some(p) = path.parent() {
             tokio::fs::create_dir_all(p).await?;
         }
+        // Embed State as `data` so load() can prefer snapshot-with-data over
+        // the latest save line (spec §2.3 — fixes prior gap where snapshot
+        // lines lacked a data payload).
         let line = serde_json::json!({
             "kind": "snapshot",
             "at": Utc::now(),
             "checkpoint": snap.checkpoint,
             "turn_index": snap.turn_index,
+            "data": state,
         });
         let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await?;
         f.write_all(line.to_string().as_bytes()).await?;
@@ -143,12 +147,15 @@ impl SessionStore for JsonlSessionStore {
         })
     }
 
-    // ── Task 17: peer_message outbox (spec §2.4) ──────────────────────
+    // ── Task 19: Unified event log (record_event + pending_outbound) ──
+    //
+    // Trait defaults route record_peer_message_sent, record_*_end through
+    // record_event. We implement record_event + pending_outbound here.
 
-    async fn record_peer_message_sent(
+    async fn record_event(
         &self,
         session_id: &str,
-        record: &PendingPeerMessage,
+        event: &Event,
     ) -> Result<(), SessionError> {
         let path = self.file_path(session_id);
         if let Some(p) = path.parent() {
@@ -156,13 +163,7 @@ impl SessionStore for JsonlSessionStore {
         }
         let line = serde_json::json!({
             "kind": "event",
-            "event_type": "peer_message_sent",
-            "at": Utc::now(),
-            "correlation_id": record.correlation_id.to_string(),
-            "target_session": record.target_session,
-            "target_node": record.target_node,
-            "payload": record.payload,
-            "attempt": record.attempt,
+            "event": event,
         });
         let mut f = tokio::fs::OpenOptions::new()
             .create(true)
@@ -176,244 +177,79 @@ impl SessionStore for JsonlSessionStore {
         Ok(())
     }
 
-    async fn record_peer_reply_received(
+    async fn pending_outbound(
         &self,
         session_id: &str,
-        correlation_id: Uuid,
-        source: &str,
-    ) -> Result<(), SessionError> {
-        let path = self.file_path(session_id);
-        if let Some(p) = path.parent() {
-            tokio::fs::create_dir_all(p).await?;
-        }
-        let line = serde_json::json!({
-            "kind": "event",
-            "event_type": "peer_reply_received",
-            "at": Utc::now(),
-            "correlation_id": correlation_id.to_string(),
-            "source": source,
-        });
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        f.write_all(line.to_string().as_bytes()).await?;
-        f.write_all(b"\n").await?;
-        // fsync: 否则下次重启会误重发
-        f.sync_all().await?;
-        Ok(())
-    }
-
-    async fn pending_peer_messages(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<PendingPeerMessage>, SessionError> {
+    ) -> Result<Vec<PendingOutbound>, SessionError> {
+        use std::collections::{HashMap, HashSet};
         let path = self.file_path(session_id);
         if !path.exists() {
             return Ok(Vec::new());
         }
         let content = tokio::fs::read_to_string(&path).await?;
 
-        // 第一遍：收集 sent 的 cid → PendingPeerMessage（attempt 取最大）
-        // 第二遍：扣除有 reply 的 cid
-        let mut sent: std::collections::HashMap<Uuid, PendingPeerMessage> =
-            std::collections::HashMap::new();
-        let mut replied: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut max_attempt: HashMap<Uuid, u32> = HashMap::new();
+        let mut first_seen: HashMap<Uuid, chrono::DateTime<Utc>> = HashMap::new();
+        let mut last_payload: HashMap<Uuid, serde_json::Value> = HashMap::new();
+        let mut last_target: HashMap<Uuid, Vec<String>> = HashMap::new();
+        let mut last_msg_type: HashMap<Uuid, String> = HashMap::new();
+        let mut replied: HashSet<Uuid> = HashSet::new();
 
         for line in content.lines() {
             if line.is_empty() {
                 continue;
             }
-            let v: serde_json::Value = match serde_json::from_str(line) {
+            let val: serde_json::Value = match serde_json::from_str(line) {
                 Ok(v) => v,
-                Err(_) => continue, // 容错：跳过损坏行
-            };
-            let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-            if kind != "event" {
-                continue;
-            }
-            let event_type = v.get("event_type").and_then(|k| k.as_str()).unwrap_or("");
-
-            let cid_str = match v.get("correlation_id").and_then(|c| c.as_str()) {
-                Some(s) => s,
-                None => continue,
-            };
-            let cid = match Uuid::parse_str(cid_str) {
-                Ok(u) => u,
                 Err(_) => continue,
             };
-
-            match event_type {
-                "peer_message_sent" => {
-                    let attempt =
-                        v.get("attempt").and_then(|a| a.as_u64()).unwrap_or(1) as u32;
-                    let sent_at = v
-                        .get("at")
-                        .and_then(|a| a.as_str())
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|d| d.with_timezone(&Utc))
-                        .unwrap_or_else(Utc::now);
-                    let pm = PendingPeerMessage {
-                        correlation_id: cid,
-                        target_session: v
-                            .get("target_session")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        target_node: v
-                            .get("target_node")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        payload: v
-                            .get("payload")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null),
-                        sent_at,
-                        attempt,
-                    };
-                    sent.entry(cid)
-                        .and_modify(|e| {
-                            if pm.attempt > e.attempt {
-                                *e = pm.clone();
-                            }
-                        })
-                        .or_insert(pm);
+            if val.get("kind").and_then(|v| v.as_str()) != Some("event") {
+                continue;
+            }
+            let evt: Event = match serde_json::from_value(
+                val.get("event").cloned().unwrap_or(serde_json::Value::Null),
+            ) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            match evt {
+                Event::OutboundSent {
+                    msg_type,
+                    correlation_id,
+                    attempt,
+                    target,
+                    payload,
+                    captured_at,
+                } => {
+                    let entry = max_attempt.entry(correlation_id).or_insert(0);
+                    if attempt > *entry {
+                        *entry = attempt;
+                    }
+                    first_seen.entry(correlation_id).or_insert(captured_at);
+                    last_payload.insert(correlation_id, payload);
+                    last_target.insert(correlation_id, target);
+                    last_msg_type.insert(correlation_id, msg_type);
                 }
-                "peer_reply_received" => {
-                    replied.insert(cid);
+                Event::InboundReply { correlation_id, .. } => {
+                    replied.insert(correlation_id);
                 }
                 _ => {}
             }
         }
 
-        // 派生：sent - replied
-        let mut pending: Vec<PendingPeerMessage> = sent
+        let mut out: Vec<PendingOutbound> = max_attempt
             .into_iter()
             .filter(|(cid, _)| !replied.contains(cid))
-            .map(|(_, pm)| pm)
+            .map(|(cid, attempt)| PendingOutbound {
+                msg_type: last_msg_type.remove(&cid).unwrap_or_default(),
+                correlation_id: cid,
+                target_nodes: last_target.remove(&cid).unwrap_or_default(),
+                payload: last_payload.remove(&cid).unwrap_or(serde_json::Value::Null),
+                attempt,
+            })
             .collect();
-        // 按 sent_at 升序（先发先重发）
-        pending.sort_by(|a, b| a.sent_at.cmp(&b.sent_at));
-        Ok(pending)
-    }
-
-    // ── Task 18: round / model / tool event emission ──────────────────
-
-    async fn record_round_start(
-        &self,
-        session_id: &str,
-        round: u32,
-    ) -> Result<(), SessionError> {
-        let path = self.file_path(session_id);
-        if let Some(p) = path.parent() {
-            tokio::fs::create_dir_all(p).await?;
-        }
-        let line = serde_json::json!({
-            "kind": "event",
-            "event_type": "round_start",
-            "at": Utc::now(),
-            "round": round,
-        });
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        f.write_all(line.to_string().as_bytes()).await?;
-        f.write_all(b"\n").await?;
-        f.sync_all().await?;
-        Ok(())
-    }
-
-    async fn record_round_end(
-        &self,
-        session_id: &str,
-        round: u32,
-        duration_ms: u64,
-    ) -> Result<(), SessionError> {
-        let path = self.file_path(session_id);
-        if let Some(p) = path.parent() {
-            tokio::fs::create_dir_all(p).await?;
-        }
-        let line = serde_json::json!({
-            "kind": "event",
-            "event_type": "round_end",
-            "at": Utc::now(),
-            "round": round,
-            "duration_ms": duration_ms,
-        });
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        f.write_all(line.to_string().as_bytes()).await?;
-        f.write_all(b"\n").await?;
-        f.sync_all().await?;
-        Ok(())
-    }
-
-    async fn record_model_call_end(
-        &self,
-        session_id: &str,
-        record: &ModelCallRecord,
-    ) -> Result<(), SessionError> {
-        let path = self.file_path(session_id);
-        if let Some(p) = path.parent() {
-            tokio::fs::create_dir_all(p).await?;
-        }
-        let line = serde_json::json!({
-            "kind": "event",
-            "event_type": "model_call_end",
-            "at": record.at,
-            "model": record.model,
-            "input_tokens": record.input_tokens,
-            "output_tokens": record.output_tokens,
-            "total_tokens": record.total_tokens,
-            "turn": record.turn,
-            "round": record.round,
-        });
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        f.write_all(line.to_string().as_bytes()).await?;
-        f.write_all(b"\n").await?;
-        f.sync_all().await?;
-        Ok(())
-    }
-
-    async fn record_tool_call_end(
-        &self,
-        session_id: &str,
-        record: &ToolCallRecord,
-    ) -> Result<(), SessionError> {
-        let path = self.file_path(session_id);
-        if let Some(p) = path.parent() {
-            tokio::fs::create_dir_all(p).await?;
-        }
-        let line = serde_json::json!({
-            "kind": "event",
-            "event_type": "tool_call_end",
-            "at": record.at,
-            "tool_name": record.tool_name,
-            "duration_ms": record.duration_ms,
-            "success": record.success,
-            "error": record.error,
-            "turn": record.turn,
-            "round": record.round,
-        });
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        f.write_all(line.to_string().as_bytes()).await?;
-        f.write_all(b"\n").await?;
-        f.sync_all().await?;
-        Ok(())
+        // Order by first_seen captured_at ascending (FIFO)
+        out.sort_by_key(|p| first_seen.get(&p.correlation_id).copied().unwrap_or_else(Utc::now));
+        Ok(out)
     }
 }

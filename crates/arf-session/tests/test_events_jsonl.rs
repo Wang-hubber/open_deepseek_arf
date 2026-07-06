@@ -1,40 +1,46 @@
-//! Task 18 — JsonlSessionStore round/model/tool event tests.
+//! Task 18/19 — JsonlSessionStore round/model/tool event tests.
+//!
+//! Migrated to the unified `events` JSONL format (Task 19): tests now assert
+//! on the nested `event` field with `kind` tag instead of the legacy flat
+//! `event_type` strings.
 
 use arf_session::{
-    JsonlSessionStore, ModelCallRecord, SessionStore, ToolCallRecord,
+    Event, JsonlSessionStore, ModelCallRecord, SessionStore, ToolCallRecord,
 };
 use chrono::Utc;
 use uuid::Uuid;
 
-// [方法] record_round_start 写 JSONL
+// [方法] record_round_start 写 JSONL（嵌套 event 格式）
 #[tokio::test]
 async fn round_start_persists_to_jsonl() {
     let tmp = tempfile::tempdir().unwrap();
     let store = JsonlSessionStore::new(tmp.path());
 
-    store.record_round_start("A", 3).await.unwrap();
+    store.record_event("A", &Event::RoundStart { round: 3, captured_at: Utc::now() }).await.unwrap();
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
-    assert!(content.contains("\"event_type\":\"round_start\""));
-    assert!(content.contains("\"round\":3"));
+    assert!(content.contains("\"kind\":\"event\""), "raw: {content}");
+    assert!(content.contains("\"event\":{"), "raw: {content}");
+    assert!(content.contains("\"kind\":\"round_start\""), "raw: {content}");
+    assert!(content.contains("\"round\":3"), "raw: {content}");
 }
 
-// [方法] record_round_end 写 JSONL + duration
+// [方法] record_round_end 写 JSONL + duration 在 payload_json
 #[tokio::test]
 async fn round_end_persists_duration() {
     let tmp = tempfile::tempdir().unwrap();
     let store = JsonlSessionStore::new(tmp.path());
 
-    store.record_round_start("A", 1).await.unwrap();
-    store.record_round_end("A", 1, 4230).await.unwrap();
+    store.record_event("A", &Event::RoundStart { round: 1, captured_at: Utc::now() }).await.unwrap();
+    // duration_ms 暂不在 Event::RoundEnd 中（spec 决定）；写入后断言 kind 而非 duration
+    store.record_event("A", &Event::RoundEnd { round: 1, captured_at: Utc::now() }).await.unwrap();
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
-    assert!(content.contains("\"event_type\":\"round_end\""));
-    assert!(content.contains("\"round\":1"));
-    assert!(content.contains("\"duration_ms\":4230"));
+    assert!(content.contains("\"kind\":\"round_end\""), "raw: {content}");
+    assert!(content.contains("\"round\":1"), "raw: {content}");
 }
 
-// [方法] record_model_call_end 写 JSONL + usage + turn/round
+// [方法] record_model_call_end 写 JSONL + usage
 #[tokio::test]
 async fn model_call_end_persists_full_record() {
     let tmp = tempfile::tempdir().unwrap();
@@ -52,13 +58,14 @@ async fn model_call_end_persists_full_record() {
     store.record_model_call_end("A", &rec).await.unwrap();
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
-    assert!(content.contains("\"event_type\":\"model_call_end\""));
-    assert!(content.contains("\"model\":\"deepseek-chat\""));
-    assert!(content.contains("\"input_tokens\":152"));
-    assert!(content.contains("\"output_tokens\":89"));
-    assert!(content.contains("\"total_tokens\":241"));
-    assert!(content.contains("\"turn\":7"));
-    assert!(content.contains("\"round\":3"));
+    assert!(content.contains("\"kind\":\"model_call_end\""), "raw: {content}");
+    // Event::ModelCallEnd 字段名（plan §2.1）: model / input_tokens / output_tokens / total_tokens / turn / round
+    assert!(content.contains("\"model\":\"deepseek-chat\""), "raw: {content}");
+    assert!(content.contains("\"input_tokens\":152"), "raw: {content}");
+    assert!(content.contains("\"output_tokens\":89"), "raw: {content}");
+    assert!(content.contains("\"total_tokens\":241"), "raw: {content}");
+    assert!(content.contains("\"turn\":7"), "raw: {content}");
+    assert!(content.contains("\"round\":3"), "raw: {content}");
 }
 
 // [方法] record_tool_call_end success path 写 JSONL
@@ -79,12 +86,13 @@ async fn tool_call_end_success_persists() {
     store.record_tool_call_end("A", &rec).await.unwrap();
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
-    assert!(content.contains("\"event_type\":\"tool_call_end\""));
-    assert!(content.contains("\"tool_name\":\"write_file\""));
-    assert!(content.contains("\"duration_ms\":42"));
-    assert!(content.contains("\"success\":true"));
-    assert!(content.contains("\"error\":null"));
-    assert!(content.contains("\"turn\":8"));
+    assert!(content.contains("\"kind\":\"tool_call_end\""), "raw: {content}");
+    // Event::ToolCallEnd 字段名: tool (not tool_name) / success / error / turn / round
+    // duration_ms 不在 Event 中
+    assert!(content.contains("\"tool\":\"write_file\""), "raw: {content}");
+    assert!(content.contains("\"success\":true"), "raw: {content}");
+    assert!(content.contains("\"error\":null"), "raw: {content}");
+    assert!(content.contains("\"turn\":8"), "raw: {content}");
 }
 
 // [方法] record_tool_call_end failure path 也写 JSONL
@@ -105,8 +113,8 @@ async fn tool_call_end_failure_persists_with_error() {
     store.record_tool_call_end("A", &rec).await.unwrap();
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
-    assert!(content.contains("\"success\":false"));
-    assert!(content.contains("\"error\":\"permission denied\""));
+    assert!(content.contains("\"success\":false"), "raw: {content}");
+    assert!(content.contains("\"error\":\"permission denied\""), "raw: {content}");
 }
 
 // [持久化] 4 种事件都 fsync（文件可被立刻读取，不丢数据）
@@ -115,40 +123,19 @@ async fn all_four_events_fsync() {
     let tmp = tempfile::tempdir().unwrap();
     let store = JsonlSessionStore::new(tmp.path());
 
-    store.record_round_start("A", 1).await.unwrap();
-    store.record_round_end("A", 1, 100).await.unwrap();
-    store
-        .record_model_call_end(
-            "A",
-            &ModelCallRecord {
-                model: "m".into(),
-                input_tokens: 1,
-                output_tokens: 1,
-                total_tokens: 2,
-                turn: 1,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .record_tool_call_end(
-            "A",
-            &ToolCallRecord {
-                tool_name: "t".into(),
-                duration_ms: 1,
-                success: true,
-                error: None,
-                turn: 1,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
+    store.record_event("A", &Event::RoundStart { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("A", &Event::RoundEnd { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("A", &Event::ModelCallEnd {
+        round: 1, turn: 1, model: "m".into(),
+        input_tokens: 1, output_tokens: 1, total_tokens: 2,
+        captured_at: Utc::now(),
+    }).await.unwrap();
+    store.record_event("A", &Event::ToolCallEnd {
+        round: 1, turn: 1, tool: "t".into(),
+        success: true, error: None,
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    // 4 行事件 + snapshot/save 没有 → 4 行
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
     let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 4, "应该恰好 4 行事件");
@@ -161,17 +148,13 @@ async fn multiple_round_events_distinct_by_round_number() {
     let store = JsonlSessionStore::new(tmp.path());
 
     for r in 1..=3 {
-        store.record_round_start("A", r).await.unwrap();
-        store.record_round_end("A", r, 100 * r as u64).await.unwrap();
+        store.record_event("A", &Event::RoundStart { round: r, captured_at: Utc::now() }).await.unwrap();
+        store.record_event("A", &Event::RoundEnd { round: r, captured_at: Utc::now() }).await.unwrap();
     }
 
     let content = std::fs::read_to_string(tmp.path().join("events.A.jsonl")).unwrap();
     let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 6, "3 个 round × 2 个事件 = 6 行");
-    // 第 1 个 round_end 的 duration_ms = 100
-    assert!(content.contains("\"duration_ms\":100"));
-    assert!(content.contains("\"duration_ms\":200"));
-    assert!(content.contains("\"duration_ms\":300"));
 }
 
 // [唯一性] ModelCallRecord / ToolCallRecord 字段都暴露
