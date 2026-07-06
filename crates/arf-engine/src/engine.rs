@@ -549,8 +549,8 @@ impl Engine {
         let event_id = event.id;
         state.wait_events.push(event);
 
-        // Task 17: persist peer_message_sent BEFORE bus.send.
-        self.maybe_record_peer_send(msg, &recipients).await?;
+        // Task 19: record outbound BEFORE bus.send (msg-type-agnostic).
+        self.maybe_record_outbound(msg, &recipients).await?;
 
         let wire = Message::with_from_bus(
             msg.msg_type().to_string(),
@@ -582,8 +582,8 @@ impl Engine {
         msg: &dyn ActionMessage,
         recipients: Vec<NodeId>,
     ) -> Result<(), RunError> {
-        // Task 17: persist peer_message_sent BEFORE bus.send.
-        self.maybe_record_peer_send(msg, &recipients).await?;
+        // Task 19: record outbound BEFORE bus.send (msg-type-agnostic).
+        self.maybe_record_outbound(msg, &recipients).await?;
         let wire = Message::with_from_bus(
             msg.msg_type().to_string(),
             self.agent_id.clone(),
@@ -595,46 +595,37 @@ impl Engine {
         Ok(())
     }
 
-    /// Task 17: if `msg.msg_type()` is `peer_message` AND a session store is
-    /// configured, persist the outgoing event. Best-effort for fields not
-    /// present in the payload (target_session may be missing for ad-hoc
-    /// messages; in that case the entry still gets recorded for crash
-    /// recovery and the resender can fall back to bus-side routing).
-    async fn maybe_record_peer_send(
+    /// Task 19: if a session store is configured, record any async outbound
+    /// message (peer_message, HumanHandoff, future) via `record_event` BEFORE
+    /// `bus.send` — so a crash between persist and send is recoverable.
+    ///
+    /// msg-type-agnostic: unlike Task 17's `maybe_record_peer_send` which
+    /// only recorded peer_message, this now writes `Event::OutboundSent`
+    /// for any async outbound message. The msg_type field distinguishes
+    /// the kind (peer_message, human_handoff, …) at the store layer.
+    async fn maybe_record_outbound(
         &self,
         msg: &dyn ActionMessage,
         recipients: &[NodeId],
     ) -> Result<(), RunError> {
-        if msg.msg_type() != PEER_MESSAGE {
-            return Ok(());
-        }
         let Some(store) = self.session_store.as_ref() else {
             return Ok(());
         };
-        let target_node = recipients
-            .first()
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let target_session = msg
-            .payload()
-            .get("to_session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let record = PendingPeerMessage {
+        let target: Vec<String> = recipients.iter().map(|n| n.to_string()).collect();
+        let event = arf_session::Event::OutboundSent {
+            msg_type: msg.msg_type().to_string(),
             correlation_id: msg.correlation_id(),
-            target_session,
-            target_node,
-            payload: msg.payload(),
-            sent_at: chrono::Utc::now(),
             attempt: 1,
+            target,
+            payload: msg.payload(),
+            captured_at: chrono::Utc::now(),
         };
         store
-            .record_peer_message_sent(&self.session_id, &record)
+            .record_event(&self.session_id, &event)
             .await
             .map_err(|e| RunError::SnapshotFailed {
                 session_id: self.session_id.clone(),
-                reason: format!("record_peer_message_sent: {e}"),
+                reason: format!("record_event: {e}"),
             })?;
         Ok(())
     }
