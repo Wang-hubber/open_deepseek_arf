@@ -11,11 +11,13 @@
 pub mod error;
 pub mod path;
 pub mod protocol;
+pub mod state;
 pub mod types;
 
 pub use error::BackendError;
 pub use path::BackendPath;
 pub use protocol::{BackendProtocol, SandboxBackendProtocol};
+pub use state::{StateBackend, DEFAULT_STATE_BACKEND_ID};
 pub use types::{
     DeleteResult, EditResult, ExecuteResponse, FileData, FileInfo, GlobResult, GrepMatch,
     GrepResult, LsResult, ReadResult, WriteResult,

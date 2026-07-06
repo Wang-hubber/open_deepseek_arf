@@ -9,10 +9,12 @@ description = "ARF Pluggable Backend: unified file/memory/sandbox backend protoc
 [dependencies]
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tempfile = "3"
