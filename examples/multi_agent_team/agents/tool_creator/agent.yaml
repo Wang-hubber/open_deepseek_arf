@@ -9,8 +9,8 @@ agent:
   description: Create new tools — write function.py + tool.yaml
 
   model:
-    provider: deepseek
-    model_name: deepseek-chat
+    provider: minimax
+    model_name: MiniMax-M3
     temperature: 0.2
     thinking_enabled: false
 

@@ -63,12 +63,29 @@ from arf._arf import (
     Bus,
     EventFilter,
     MessageFilter,
+    NodeId,
     NodeInfo,
     SseFormatter,
     SseRelay,
     TeamBuilder,
     TeamConfig,
     TeamMembership,
+    ToMatch,
+)
+
+# Live provider factories — Task 18d §5.1 wiring. The example app
+# wires a real ModelAdapter on the bus so engine `model_call`s reach
+# the upstream API. Server.py registers a single provider per boot;
+# switching providers requires ARF_PROVIDER + matching API key env.
+from arf._arf import (
+    AnthropicConfig,
+    AnthropicProvider,
+    DeepSeekConfig,
+    DeepSeekProvider,
+    MiniMaxConfig,
+    MiniMaxProvider,
+    OpenAIConfig,
+    OpenAIProvider,
 )
 
 # Approval registry is app-side; the framework does not participate.
@@ -96,6 +113,18 @@ bus: Optional[Bus] = None
 team_membership: Optional[TeamMembership] = None
 sse_relay: Optional[SseRelay] = None
 team: Any = None  # `py_arf.Team` once framework lands; intentionally untyped
+
+# Live bus → SSE bridge. The example installs a JsonlSessionStore-
+# free `SseRelay` that depends on per-engine JSONL files, but the
+# team builder doesn't wire a session store in `server.py`, so
+# `data/events/` stays empty. Instead we open a separate "spy" node
+# on the bus and forward every bus message to a Python-side queue;
+# the `/sse/team/{team_id}` handler drains that queue. This makes
+# the SSE feed work without changing the framework wiring.
+import asyncio as _asyncio
+import json as _json
+_live_event_queue: "_asyncio.Queue[dict]" = _asyncio.Queue()
+_bus_spy_task: Optional[_asyncio.Task] = None
 
 
 # ── Provider validation (Task 18d §5.1) ────────────────────────────────────
@@ -164,24 +193,49 @@ async def lifespan(_app: FastAPI):
     # merge is a follow-up — see py-arf/src/relay/team_membership.rs).
     team_membership = TeamMembership(str(TEAM_CONFIG_PATH), None)
 
-    # Register a model node on the bus so EngineBuilder.build() can
-    # resolve its Strict route (Task 14: real engine wiring).
-    # Real apps typically register a ModelAdapter node here; for
-    # the example we publish a minimal node entry that satisfies
-    # the lookup. Actual LLM calls flow through arf-model-adapter
-    # registered separately by the AgentConfig loaders.
-    await bus.connect(
-        NodeInfo(
-            f"model/{provider['name']}",
-            "model",
-            {
-                "provider": provider["name"],
-                "kind": "model",
-                "models": [provider["default_model"]],
-            },
-        ),
-        MessageFilter(),
-    )
+    # Register a real ModelAdapter so engine `model_call` messages
+    # reach the upstream LLM. We pick the provider based on
+    # ARF_PROVIDER (validated above) and use the matching config
+    # factory. The node_id is `model/<provider>` so each engine's
+    # registry lookup (provider match) finds it.
+    provider_name = provider["name"]
+    api_key = provider["api_key"]
+    default_model = provider["default_model"]
+    if provider_name == "deepseek":
+        model_provider = DeepSeekProvider(
+            DeepSeekConfig(api_key=api_key, models=[default_model])
+        )
+    elif provider_name == "minimax":
+        # MiniMaxConfig exposes api_key/models as read-only getters —
+        # `from_env()` populates api_key from `MINIMAX_API_KEY` and
+        # models from the canonical default (`MiniMax-M3`). Use as-is.
+        model_provider = MiniMaxProvider(MiniMaxConfig.from_env())
+        actual_model = model_provider.supported_models[0]
+    elif provider_name == "aliyun_bailian":
+        model_provider = OpenAIProvider(
+            OpenAIConfig(
+                api_key=api_key,
+                models=[default_model],
+                endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            )
+        )
+    elif provider_name == "anthropic":
+        model_provider = AnthropicProvider(
+            AnthropicConfig(api_key=api_key, models=[default_model])
+        )
+    else:
+        raise RuntimeError(f"unhandled provider {provider_name!r}")
+    await model_provider.connect_to_bus(bus, NodeId(f"model/{provider_name}"))
+
+    # Reconcile the published default_model: when providers expose a
+    # canonical model name via `supported_models()`, prefer it so the
+    # bus node's `models` list aligns with the agent yaml.
+    if provider_name == "minimax":
+        default_model = actual_model
+        provider["default_model"] = default_model
+    # `connect_to_bus` above already registered `model/<provider>` as a
+    # real model node on the bus, so no additional `bus.connect()`
+    # placeholder is needed — that would collide on the same node_id.
 
     cfg = TeamConfig.from_yaml(str(TEAM_CONFIG_PATH))
     # Real wiring: build constructs Engine + SubagentPool per spec.
@@ -202,6 +256,52 @@ async def lifespan(_app: FastAPI):
             "subagent_pool bus-actor wired (pool_id=%s node_id=%s)",
             pool.pool_id, nid,
         )
+
+    # ── Live bus → SSE bridge ────────────────────────────────────────
+    # Register a `spy` node that receives every message on the bus
+    # (ToMatch.All + types=None means all msg_types), then forward
+    # everything to an asyncio.Queue. The /sse handler drains it.
+    global _bus_spy_task
+    spy_handle = await bus.connect(
+        NodeInfo(
+            node_id="spy/sse-bridge",
+            node_type="observer",
+            capabilities={"kind": "observer"},
+            online_since=0,
+        ),
+        MessageFilter(types=None, to_match=ToMatch.All),
+    )
+
+    async def _spy_loop() -> None:
+        seq = 0
+        while True:
+            try:
+                msg = await spy_handle.recv()
+            except Exception as e:  # bus closed during shutdown
+                logger.info("spy_loop exiting: %s", e)
+                return
+            seq += 1
+            try:
+                payload = msg.payload
+                if hasattr(payload, "items"):
+                    payload_json = _json.dumps(dict(payload), default=str)
+                else:
+                    payload_json = str(payload)
+            except Exception:
+                payload_json = "{}"
+            _live_event_queue.put_nowait({
+                "seq": seq,
+                "msg_type": msg.msg_type,
+                "sender": str(msg.sender),
+                "to": [str(x) for x in msg.to],
+                "correlation_id": str(msg.id),
+                "broadcast": bool(msg.is_broadcast() if callable(getattr(msg, "is_broadcast", None)) else msg.is_broadcast),
+                "ts": msg.timestamp,
+                "payload_json": payload_json,
+            })
+
+    _bus_spy_task = _asyncio.create_task(_spy_loop())
+    logger.info("live SSE bridge started (spy node connected)")
 
     sse_relay = SseRelay(team_membership, str(STORAGE_ROOT), buffer_size=1000)
 
@@ -282,27 +382,54 @@ async def sse_team(
 ):
     """Server-Sent-Events stream aggregated across the whole team.
 
-    Accepts the standard SSE `Last-Event-ID` resume header; we parse
-    it into `(node_id, event_seq)` and pass the per-node cursor to
-    the filter.
+    Drains the live bus → queue bridge populated by the spy node
+    registered at lifespan startup. Each queued event is encoded with
+    `SseFormatter.format_message()` (id = `<sender>:<seq>`).
+
+    `Last-Event-ID` resume: we parse the last-seen id (`<sender>:<seq>`),
+    skip queued events up to that seq for the matching sender, and
+    forward the rest.
     """
-    if sse_relay is None:
-        raise HTTPException(status_code=503, detail="sse relay not initialized")
-
-    since: dict[str, int] = {}
+    cursor: Optional[tuple[str, int]] = None
     if last_event_id:
-        # parse_last_event_id returns (node_id, event_seq) — note it is
-        # a tuple, not Optional; missing `:` yields (s, 0).
-        node_id, event_seq = SseFormatter.parse_last_event_id(last_event_id)
-        since[node_id] = event_seq
+        parsed = SseFormatter.parse_last_event_id(last_event_id)
+        if parsed is not None:
+            cursor = (str(parsed[0]), int(parsed[1]))
 
-    flt = EventFilter(since_event_seq=since)
+    async def gen():
+        global _live_event_queue
+        # Drain queued events up to ~10 minutes; clients can reconnect.
+        deadline = _asyncio.get_event_loop().time() + 600
+        while _asyncio.get_event_loop().time() < deadline:
+            try:
+                evt = await _asyncio.wait_for(_live_event_queue.get(), timeout=1.0)
+            except _asyncio.TimeoutError:
+                # Keep-alive heartbeat so proxies don't drop the connection.
+                yield b": keep-alive\n\n"
+                continue
+            sender = evt["sender"]
+            seq = evt["seq"]
+            if cursor and sender == cursor[0] and seq <= cursor[1]:
+                continue  # already delivered
+            payload = {
+                "msg_type": evt["msg_type"],
+                "sender": sender,
+                "to": evt["to"],
+                "correlation_id": evt["correlation_id"],
+                "broadcast": evt["broadcast"],
+                "ts": evt["ts"],
+                "payload_json": evt["payload_json"],
+            }
+            data = _json.dumps(payload, ensure_ascii=False)
+            chunk = SseFormatter.format(data, seq, evt["msg_type"])
+            yield chunk.encode("utf-8") + b"\n"
+
     return StreamingResponse(
-        _sse_stream(sse_relay, flt),
+        gen(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable proxy buffering
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -413,18 +540,14 @@ def health():
 async def _sse_stream(relay: SseRelay, flt: EventFilter) -> AsyncIterator[bytes]:
     """Yield SSE-encoded bytes from the relay.
 
-    Today's `SseRelay.stream()` is a skeleton: it returns a future of
-    a String containing one `// tailer for <member>` marker per
-    existing JSONL file (see py-arf/src/relay/sse_relay.rs). We
-    await it and emit it as a single chunk so the wire format is
-    valid SSE today; once the relay grows into a real per-event
-    async iterator, the only change here is removing the `await` and
-    iterating directly.
+    `SseRelay.stream()` returns an async iterator that merges JSONL
+    events from every team member's `events.<member>.jsonl` file
+    (see py-arf/src/relay/sse_relay.rs). We iterate it directly.
     """
-    chunk = await relay.stream(flt)
-    if chunk:
-        # Encode as UTF-8 bytes — SSE clients require a byte stream.
-        yield chunk.encode("utf-8")
+    stream = relay.stream(flt)
+    async for chunk in stream:
+        if chunk:
+            yield chunk.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

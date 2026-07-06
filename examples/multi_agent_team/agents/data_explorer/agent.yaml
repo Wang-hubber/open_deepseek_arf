@@ -8,8 +8,8 @@ agent:
   description: Fast file exploration — locate, peek, summarize
 
   model:
-    provider: deepseek
-    model_name: deepseek-chat
+    provider: minimax
+    model_name: MiniMax-M3
     temperature: 0.1
     thinking_enabled: false
 

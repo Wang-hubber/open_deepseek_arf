@@ -836,7 +836,14 @@ impl Engine {
             thinking_enabled: self.config.model.thinking_enabled,
             temperature: self.config.model.temperature,
             max_tokens: self.config.model.max_output_tokens,
-            extra: self.config.model.extra.clone(),
+            // BUG-007 hotfix: send `{}` so the adapter-side ModelParams
+            // (which has `#[serde(default)]` on `extra: Value`) deserialises
+            // cleanly. Without this the wire payload omits `extra` (because
+            // `skip_serializing_if = "is_null"` skips it) and the adapter
+            // returns "invalid payload: missing field `extra`" → the engine
+            // gets a model_response with `{"error": ...}` and the chat returns
+            // an empty string. See memory bug index after this run.
+            extra: serde_json::Value::Object(Default::default()),
         };
         let model_call = ModelCall::new(messages)
             .with_tools(tools)

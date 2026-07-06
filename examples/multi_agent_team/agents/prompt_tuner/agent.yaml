@@ -9,8 +9,8 @@ agent:
   description: Tune other agents' system prompts based on failure traces
 
   model:
-    provider: deepseek
-    model_name: deepseek-chat
+    provider: minimax
+    model_name: MiniMax-M3
     temperature: 0.4
     thinking_enabled: false
 
