@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -421,8 +422,304 @@ class PermissionRequestHandlerNode:
         pending.event.set()
         # Mirror into the registry: approved → keep entry (engine resumes
         # and runs the tool); rejected → drop pending (engine's tool
-        # call returns a "denied" result).
+        # call returns a "denied" content).
         if not approved:
             self.registry.decide(request_id, approved=False)
             return None
         return self.registry._pending.get(request_id)
+
+
+# ══════════════════════════════════════════════════════════════════
+# RouteToolNode — bus-actor MCP tool exposing peer_message and
+# subagent_delegate as callable ModelTools for outbound delegation.
+# ══════════════════════════════════════════════════════════════════
+
+
+class RouteToolNode:
+    """Exposes `peer_message` / `subagent_delegate` as ModelTools.
+
+    Until this commit, AgentConfig.routes only declared INCOMING
+    routing (peer_message → agent capability) and pm's system prompt
+    documented the outbound call but never actually emitted a
+    tool_call. This node implements the outbound side: for each
+    `tool_exec` addressed at us, we send the proper bus message
+    (`peer_message` or `subagent_delegate`), wait for the matching
+    reply (`peer_reply` or `subagent_result`) keyed by
+    correlation_id, and return the reply content as `tool_result`.
+
+    Wire flow:
+        engine → tool_exec(RouteToolNode) → peer_message / subagent_delegate
+                                          ↘ peer engine / pool
+                                          → peer_reply / subagent_result
+                                          → tool_result → engine
+
+    Two correlation IDs at play: one for the engine↔RouteToolNode
+    tool_exec round-trip, one for the inner RouteToolNode↔recipient
+    bus-message round-trip. They are independent.
+    """
+
+    def __init__(
+        self,
+        bus: Bus,
+        namespace: str = "routes",
+        agent_engine_pattern: str = "engine/minimax/{agent_id}",
+        pool_pattern: str = "subagent-pool/{pool_id}",
+    ) -> None:
+        self.bus = bus
+        self._node_id_str = namespace
+        self._node_id = NodeId(namespace)
+        self._agent_engine_pattern = agent_engine_pattern
+        self._pool_pattern = pool_pattern
+        self._handle: Any = None
+        self._listener: Optional[asyncio.Task] = None
+        # Track subscriptions for pending replies
+        self._sub_lock = asyncio.Lock()
+        self._by_cid: dict[str, "asyncio.Queue[Any]"] = {}
+
+    async def start(self) -> None:
+        info = NodeInfo(
+            node_id=self._node_id_str,
+            node_type="mcp",
+            capabilities={
+                "kind": "mcp-routes",
+                "namespace": self._node_id_str,
+                "tools": self._tool_capabilities(),
+            },
+            online_since=0,
+        )
+        flt = MessageFilter(
+            types=["tool_exec"],
+            to_match=ToMatch.DirectedToMe,
+        )
+        self._handle = await self.bus.connect(info, flt)
+        self._listener = asyncio.create_task(self._loop(), name=f"route-tool:{self._node_id_str}")
+        # Subscribe to peer_reply + subagent_result — we listen on
+        # BOTH our node id (for tool_result, but we send those
+        # ourselves) and on the global bus for replies addressed
+        # back to us.
+        self._reply_sub = asyncio.create_task(self._reply_loop(), name="route-tool-replies")
+        logger.info(
+            "RouteToolNode registered (node_id=%s, tools=%s)",
+            self._node_id_str, list(self._tool_capabilities()),
+        )
+
+    @staticmethod
+    def _tool_capabilities() -> list[dict]:
+        return [
+            {
+                "name": "peer_message",
+                "description": (
+                    "Send a `peer_message` to a peer Engine and "
+                    "await `peer_reply`. `to` is a peer agent id "
+                    "(e.g. `data_explorer`); `content` is the "
+                    "task message."
+                ),
+                "params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["to", "content"],
+                },
+            },
+            {
+                "name": "subagent_delegate",
+                "description": (
+                    "Send `subagent_delegate` to a SubagentPool "
+                    "and await `subagent_result`. `pool` is the "
+                    "pool id (e.g. `tool_creator_pool`); `task` "
+                    "is the user message for the subagent Engine."
+                ),
+                "params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "pool": {"type": "string"},
+                        "task": {"type": "string"},
+                    },
+                    "required": ["pool", "task"],
+                },
+            },
+        ]
+
+    def stop(self) -> None:
+        for t in (self._listener, getattr(self, "_reply_sub", None)):
+            if t and not t.done():
+                t.cancel()
+
+    async def _loop(self) -> None:
+        assert self._handle is not None
+        while True:
+            try:
+                msg = await self._handle.recv()
+            except Exception as e:
+                logger.info("RouteToolNode listener exiting: %s", e)
+                return
+            if msg.msg_type != "tool_exec":
+                continue
+            await self._dispatch_tool_exec(msg)
+
+    async def _reply_loop(self) -> None:
+        """Listen for `peer_reply` / `subagent_result` replies on the
+        general bus (not via the matched engine-filter) and route
+        them to whoever is awaiting them via `_by_cid`."""
+        # Use a fresh NodeHandle subscribed to the two reply types
+        # for everyone (ToMatch.All). The reply msg_type tells us
+        # which queue to push to.
+        try:
+            reply_handle = await self.bus.connect(
+                NodeInfo(
+                    node_id=f"reply-router-{self._node_id_str}",
+                    node_type="router",
+                    capabilities={"kind":"reply-router"},
+                    online_since=0,
+                ),
+                MessageFilter(
+                    types=["peer_reply", "subagent_result"],
+                    to_match=ToMatch.All,
+                ),
+            )
+        except Exception as e:
+            logger.error("reply-router connect failed: %s", e)
+            return
+        while True:
+            try:
+                msg = await reply_handle.recv()
+            except Exception as e:
+                logger.info("reply-router exiting: %s", e)
+                return
+            cid = msg.payload.get("correlation_id") if hasattr(msg.payload, "get") else None
+            if not cid:
+                continue
+            async with self._sub_lock:
+                q = self._by_cid.pop(str(cid), None)
+            if q is not None:
+                await q.put(msg)
+
+    async def _dispatch_tool_exec(self, msg) -> None:
+        payload = msg.payload
+        tool_name = payload.get("tool_name") if hasattr(payload, "get") else None
+        args = payload.get("arguments", {}) if hasattr(payload, "get") else {}
+        if hasattr(args, "items"):
+            args = dict(args)
+        elif isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+        cid_tool = payload.get("correlation_id") if hasattr(payload, "get") else None
+
+        if tool_name == "subagent_delegate":
+            await self._do_subagent_delegate(msg.sender, args, cid_tool)
+            return
+        if tool_name == "peer_message":
+            await self._do_peer_message(msg.sender, args, cid_tool)
+            return
+        # Not our tool — silent (McpNode convention).
+        return
+
+    async def _do_subagent_delegate(self, originator, args, cid_tool) -> None:
+        pool_id = args.get("pool") or args.get("pool_id") or ""
+        task = args.get("task") or ""
+        if not pool_id or not task:
+            await self._reply_with_error(
+                originator, cid_tool, tool="subagent_delegate",
+                error="missing 'pool' or 'task' argument",
+            )
+            return
+        target = NodeId(self._pool_pattern.format(pool_id=pool_id))
+        cid_msg = str(uuid.uuid4())
+        q: "asyncio.Queue[Any]" = asyncio.Queue()
+        async with self._sub_lock:
+            self._by_cid[cid_msg] = q
+
+        # Send subagent_delegate to the pool bus node.
+        await self._handle.send(
+            "subagent_delegate",
+            [target],
+            {
+                "correlation_id": cid_msg,
+                "parent_session_id": str(originator),
+                "subagent_node_id": str(target),
+                "task": task,
+            },
+        )
+        try:
+            reply = await asyncio.wait_for(q.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            await self._reply_with_error(
+                originator, cid_tool, tool="subagent_delegate",
+                error="subagent_result timed out (60s)",
+            )
+            return
+        await self._deliver_tool_result(originator, cid_tool, tool_name="subagent_delegate", reply=reply)
+
+    async def _do_peer_message(self, originator, args, cid_tool) -> None:
+        to = args.get("to") or ""
+        content = args.get("content") or ""
+        if not to or not content:
+            await self._reply_with_error(
+                originator, cid_tool, tool="peer_message",
+                error="missing 'to' or 'content' argument",
+            )
+            return
+        target = NodeId(self._agent_engine_pattern.format(agent_id=to))
+        cid_msg = str(uuid.uuid4())
+        q: "asyncio.Queue[Any]" = asyncio.Queue()
+        async with self._sub_lock:
+            self._by_cid[cid_msg] = q
+        await self._handle.send(
+            "peer_message",
+            [target],
+            {
+                "correlation_id": cid_msg,
+                "from_session": str(originator),
+                "to_session": to,
+                "content": content,
+            },
+        )
+        try:
+            reply = await asyncio.wait_for(q.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            await self._reply_with_error(
+                originator, cid_tool, tool="peer_message",
+                error="peer_reply timed out (60s)",
+            )
+            return
+        await self._deliver_tool_result(originator, cid_tool, tool_name="peer_message", reply=reply)
+
+    async def _deliver_tool_result(self, originator, cid_tool, tool_name: str, reply) -> None:
+        # Build tool_result envelope. The engine interprets
+        # `payload.correlation_id` to match this tool_exec cid.
+        ok = (reply.payload.get("ok") if hasattr(reply.payload, "get") else None)
+        # peer_reply has `status`/`content`; subagent_result has `output`.
+        content = (
+            reply.payload.get("content")
+            or reply.payload.get("output")
+            or ""
+        )
+        err = reply.payload.get("error") if hasattr(reply.payload, "get") else None
+        await self._handle.send(
+            "tool_result",
+            [originator],
+            {
+                "correlation_id": cid_tool,
+                "name": tool_name,
+                "ok": ok if ok is not None else True,
+                "content": content if isinstance(content, (str, dict, int, float)) else str(content),
+                "error": err,
+            },
+        )
+
+    async def _reply_with_error(self, originator, cid_tool, tool: str, error: str) -> None:
+        await self._handle.send(
+            "tool_result",
+            [originator],
+            {
+                "correlation_id": cid_tool,
+                "name": tool,
+                "ok": False,
+                "content": "",
+                "error": error,
+            },
+        )

@@ -23,7 +23,18 @@ agent:
 
   system_prompt_file: ./system_prompt.md
 
-  tools: []
+  tools:
+    # Issue 3 — outbound delegation as ModelTools. The model emits
+    # `tool_call(name=..., args=...)` and the RouteToolNode translates
+    # it into a bus message (`peer_message` or `subagent_delegate`).
+    - peer_message
+    - subagent_delegate
+
+  resources:
+    - name: routes
+      type: mcp
+      capabilities:
+        tools: ["all"]  # accept peer_message + subagent_delegate
 
   routes:
     - match: peer_message

@@ -95,7 +95,13 @@ from approval import ApprovalRegistry, approvals
 # example's `tools/<name>/{tool.yaml,function.py}` defs) +
 # PermissionRequestHandlerNode (bridges engine.permission_request ↔
 # ApprovalRegistry ↔ /approve HTTP endpoint).
-from tool_nodes import PythonToolNode, PermissionRequestHandlerNode
+# Issue 3 wiring — RouteToolNode (MCP tool exposing peer_message /
+# subagent_delegate as ModelTools for outbound delegation).
+from tool_nodes import (
+    PythonToolNode,
+    PermissionRequestHandlerNode,
+    RouteToolNode,
+)
 
 # TokenStats aggregator (Task 18c). Import after sys.path tweak below.
 from stats import aggregate_engine, aggregate_team, team_rollup
@@ -135,6 +141,8 @@ _bus_spy_task: Optional[_asyncio.Task] = None
 # Issue 2 — bus actor nodes. Populated at lifespan startup.
 _tool_node: Optional[PythonToolNode] = None
 _permission_handler: Optional[PermissionRequestHandlerNode] = None
+# Issue 3 — outbound route tools (peer_message / subagent_delegate).
+_route_tool_node: Optional[RouteToolNode] = None
 
 
 # ── Provider validation (Task 18d §5.1) ────────────────────────────────────
@@ -266,6 +274,16 @@ async def lifespan(_app: FastAPI):
         bus, registry=approvals,
     )
     await _permission_handler.start()
+
+    # Issue 3 — RouteToolNode exposes peer_message + subagent_delegate
+    # as callable ModelTools on the same mcp bus shape as the file
+    # tools. Engines that declare `tools: [peer_message,
+    # subagent_delegate]` + `resources: [routes: mcp]` see these tools
+    # and the engine can drive outgoing bus messages when the model
+    # decides to delegate.
+    global _route_tool_node
+    _route_tool_node = RouteToolNode(bus, namespace="routes")
+    await _route_tool_node.start()
 
     # Real wiring: build constructs Engine + SubagentPool per spec.
     team = await TeamBuilder.from_config(bus, cfg).build()
