@@ -1257,51 +1257,64 @@ impl Engine {
         Vec::new()
     }
 
-    /// Task 17: resend any `peer_message` that was sent but for which no
-    /// `peer_reply` was recorded before the previous Engine instance died.
+    /// Task 19: resend any outbound event that was sent but for which no
+    /// matching InboundReply was recorded before the previous Engine instance
+    /// died. msg-type-agnostic — covers peer_message, HumanHandoff, future.
     ///
     /// Behavior:
-    /// 1. `store.pending_peer_messages()` derives the outbox (sent - replied).
-    /// 2. For each pending entry, re-`bus.send` the original payload to its
-    ///    target node and write a fresh `peer_message_sent` event with
-    ///    `attempt += 1`.
+    /// 1. `store.pending_outbound()` derives the outbox (sent - replied).
+    /// 2. For each pending entry, reconstruct the wire Message via
+    ///    `message_reconstruct::reconstruct_message`, re-`bus.send`, and
+    ///    write a fresh `Event::OutboundSent` with `attempt += 1`.
     ///
-    /// Receivers dedup via their own LRU cache (spec §2.5 — Phase 7 already
-    /// shipped this). On `bus.send` failure we log and continue (best-effort:
-    /// the next restart gets another shot).
-    pub async fn resend_pending_peer_messages(&self) -> Result<usize, RunError> {
+    /// Receivers dedup via process-level LRU (Task 19 InboundDedupCache).
+    /// Cross-restart dedup is application responsibility.
+    /// On `bus.send` failure we log and continue (best-effort: the next
+    /// restart gets another shot).
+    pub async fn resend_pending_outbound(&self) -> Result<usize, RunError> {
+        use crate::message_reconstruct::reconstruct_message;
+
         let Some(store) = self.session_store.as_ref() else {
             return Ok(0);
         };
         let pending = store
-            .pending_peer_messages(&self.session_id)
+            .pending_outbound(&self.session_id)
             .await
             .map_err(|e| RunError::SnapshotFailed {
                 session_id: self.session_id.clone(),
-                reason: format!("pending_peer_messages: {e}"),
+                reason: format!("pending_outbound: {e}"),
             })?;
         let count = pending.len();
-        for mut pm in pending {
-            pm.attempt += 1;
-            let target = NodeId::new(&pm.target_node);
-            let wire = Message::new(
-                PEER_MESSAGE,
-                self.agent_id.clone(),
-                vec![target],
-                pm.payload.clone(),
-            );
+        for p in pending {
+            let attempt = p.attempt + 1;
+            let wire = match reconstruct_message(&p, self.agent_id.clone()) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::error!(
+                        "resend: failed to reconstruct msg_type={} cid={}: {e}",
+                        p.msg_type, p.correlation_id
+                    );
+                    continue;
+                }
+            };
             if let Err(e) = self.handle.send_message(wire).await {
-                eprintln!(
-                    "[arf-engine] resend peer_message cid={} attempt={} failed: {e}",
-                    pm.correlation_id, pm.attempt,
+                log::error!(
+                    "resend: bus.send failed msg_type={} cid={} attempt={}: {e}",
+                    p.msg_type, p.correlation_id, attempt
                 );
                 continue;
             }
             // Persist the new attempt so a future restart doesn't re-send
-            // (attempt-max-wins in pending_peer_messages).
-            let _ = store
-                .record_peer_message_sent(&self.session_id, &pm)
-                .await;
+            // (MAX(attempt) in pending_outbound).
+            let event = arf_session::Event::OutboundSent {
+                msg_type: p.msg_type.clone(),
+                correlation_id: p.correlation_id,
+                attempt,
+                target: p.target_nodes.clone(),
+                payload: p.payload.clone(),
+                captured_at: chrono::Utc::now(),
+            };
+            let _ = store.record_event(&self.session_id, &event).await;
         }
         Ok(count)
     }

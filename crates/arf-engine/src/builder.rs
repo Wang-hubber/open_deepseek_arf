@@ -156,12 +156,13 @@ impl EngineBuilder {
                 .session_id
                 .unwrap_or_else(|| engine.agent_id().to_string());
             engine.install_session_store(store, sid);
-            // Task 17: resend any peer_message that was sent by a previous
+            // Task 19: resend any outbound event that was sent by a previous
             // Engine instance but never got its reply recorded (spec §2.4).
+            // Covers peer_message + HumanHandoff + future async modes.
             // Best-effort: a failure here logs but does not abort build —
             // restarting is more valuable than failing fast on recovery.
-            if let Err(e) = engine.resend_pending_peer_messages().await {
-                eprintln!("[arf-engine] resend_pending_peer_messages failed: {e}");
+            if let Err(e) = engine.resend_pending_outbound().await {
+                eprintln!("[arf-engine] resend_pending_outbound failed: {e}");
             }
         }
         Ok(engine)
