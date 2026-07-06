@@ -413,6 +413,22 @@ impl SqliteSessionStore {
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
+            CREATE TABLE IF NOT EXISTS peer_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                correlation_id TEXT NOT NULL,
+                target_session TEXT,
+                target_node TEXT,
+                source TEXT,
+                payload_json TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_peer_events_session
+                ON peer_events(session_id, correlation_id);
+            CREATE INDEX IF NOT EXISTS idx_peer_events_session_type
+                ON peer_events(session_id, event_type);
             "#,
         )?;
         Ok(())
@@ -636,6 +652,127 @@ impl SessionStore for SqliteSessionStore {
             updated_at,
             status_forced,
         })
+    }
+
+    // ── Task 17: peer_message outbox (spec §2.4) ──────────────────────
+
+    async fn record_peer_message_sent(
+        &self,
+        session_id: &str,
+        record: &PendingPeerMessage,
+    ) -> Result<(), SessionError> {
+        let payload_str = serde_json::to_string(&record.payload)?;
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id,
+                 target_session, target_node, source, payload_json, attempt)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session_id,
+                Utc::now().to_rfc3339(),
+                "peer_message_sent",
+                record.correlation_id.to_string(),
+                record.target_session,
+                record.target_node,
+                Option::<String>::None,
+                payload_str,
+                record.attempt as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn record_peer_reply_received(
+        &self,
+        session_id: &str,
+        correlation_id: Uuid,
+        source: &str,
+    ) -> Result<(), SessionError> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO peer_events
+                (session_id, captured_at, event_type, correlation_id,
+                 target_session, target_node, source, payload_json, attempt)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session_id,
+                Utc::now().to_rfc3339(),
+                "peer_reply_received",
+                correlation_id.to_string(),
+                Option::<String>::None,
+                Option::<String>::None,
+                source,
+                Option::<String>::None,
+                1i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn pending_peer_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PendingPeerMessage>, SessionError> {
+        let conn = self.conn.lock().await;
+        // 取每个 cid 的最大 attempt 的 sent 行，再用 NOT EXISTS 排除有 reply 的。
+        // 注意：attempt 比较在子查询里再做一次 MAX(attempt)，外层 WHERE 限定
+        // pe1.attempt = MAX(...) 让每 cid 仅返回一行。
+        let mut stmt = conn.prepare(
+            "SELECT correlation_id, target_session, target_node, payload_json,
+                    captured_at, attempt
+             FROM peer_events pe1
+             WHERE session_id = ?1
+               AND event_type = 'peer_message_sent'
+               AND attempt = (
+                   SELECT MAX(attempt) FROM peer_events pe2
+                   WHERE pe2.session_id = pe1.session_id
+                     AND pe2.correlation_id = pe1.correlation_id
+                     AND pe2.event_type = 'peer_message_sent'
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM peer_events pe3
+                   WHERE pe3.session_id = pe1.session_id
+                     AND pe3.correlation_id = pe1.correlation_id
+                     AND pe3.event_type = 'peer_reply_received'
+               )
+             ORDER BY captured_at ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let cid_s: String = row.get(0)?;
+            let captured_at: String = row.get(4)?;
+            let attempt: i64 = row.get(5)?;
+            Ok((
+                cid_s,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                captured_at,
+                attempt,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (cid_s, target_session, target_node, payload_json, captured_at, attempt) = r?;
+            let cid = Uuid::parse_str(&cid_s)
+                .map_err(|e| SessionError::Corrupt(format!("bad uuid: {e}")))?;
+            let sent_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
+                .map(|d| d.with_timezone(&Utc))
+                .map_err(|e| SessionError::Corrupt(format!("bad datetime: {e}")))?;
+            let payload = match payload_json.as_deref() {
+                Some(s) => serde_json::from_str(s).unwrap_or(serde_json::Value::Null),
+                None => serde_json::Value::Null,
+            };
+            out.push(PendingPeerMessage {
+                correlation_id: cid,
+                target_session: target_session.unwrap_or_default(),
+                target_node: target_node.unwrap_or_default(),
+                payload,
+                sent_at,
+                attempt: attempt as u32,
+            });
+        }
+        Ok(out)
     }
 }
 
