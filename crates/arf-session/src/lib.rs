@@ -284,24 +284,55 @@ pub trait SessionStore: Send + Sync {
         snapshot: &CheckpointSnapshot,
     ) -> Result<SnapshotEffects, SessionError>;
 
+    // ── Unified async outbox (Task 19 — see spec) ───────────────────────
+
+    /// Append a single [`Event`] to the session's event log. Replaces the
+    /// six ad-hoc `record_*` methods as the canonical entry point.
+    ///
+    /// Default impl returns `Err(Corrupt)` so custom stores that don't
+    /// support event logging don't silently swallow the call.
+    async fn record_event(
+        &self,
+        session_id: &str,
+        event: &Event,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, event);
+        Err(SessionError::Corrupt(
+            "record_event not implemented for this store".into(),
+        ))
+    }
+
+    /// Derive the set of `OutboundSent` events for which no matching
+    /// `InboundReply` has been recorded. Returns empty vec by default.
+    async fn pending_outbound(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PendingOutbound>, SessionError> {
+        let _ = session_id;
+        Ok(Vec::new())
+    }
+
     // ── Task 17: peer_message outbox for crash recovery (spec §2.4) ──
 
     /// Record that `peer_message` was sent to `target_node`. Must be called
     /// **before** `bus.send` so an `fsync` (or equivalent commit) survives a
     /// crash between persist and send.
     ///
-    /// Default impl returns `Err(Corrupt(...))` — custom stores that don't
-    /// support peer outbox don't silently swallow the call (the Engine knows
-    /// to either upgrade or skip the feature).
+    /// Default impl routes through `record_event` with `Event::OutboundSent`.
     async fn record_peer_message_sent(
         &self,
         session_id: &str,
         record: &PendingPeerMessage,
     ) -> Result<(), SessionError> {
-        let _ = (session_id, record);
-        Err(SessionError::Corrupt(
-            "record_peer_message_sent not implemented for this store".into(),
-        ))
+        let event = Event::OutboundSent {
+            msg_type: "peer_message".into(),
+            correlation_id: record.correlation_id,
+            attempt: record.attempt,
+            target: vec![record.target_node.clone()],
+            payload: record.payload.clone(),
+            captured_at: record.sent_at,
+        };
+        self.record_event(session_id, &event).await
     }
 
     /// Record that a `peer_reply` was received with the given correlation_id.
@@ -313,17 +344,24 @@ pub trait SessionStore: Send + Sync {
         correlation_id: Uuid,
         source: &str,
     ) -> Result<(), SessionError> {
-        let _ = (session_id, correlation_id, source);
-        Err(SessionError::Corrupt(
-            "record_peer_reply_received not implemented for this store".into(),
-        ))
+        let event = Event::InboundReply {
+            msg_type: "peer_reply".into(),
+            correlation_id,
+            source: source.into(),
+            payload: serde_json::Value::Null,
+            captured_at: chrono::Utc::now(),
+        };
+        self.record_event(session_id, &event).await
     }
 
     /// Derive the set of `peer_message`s that were sent but for which no
     /// `peer_reply` has been recorded. The Engine calls this on startup and
     /// re-bus.send()s each entry to recover from a crash.
     ///
-    /// Default impl returns an empty vec — outbox resend is opt-in per store.
+    /// **Deprecated as of Task 19** — Engine now calls `pending_outbound`
+    /// which returns `Vec<PendingOutbound>`. This default impl remains for
+    /// backward compat with any external caller; new code should use
+    /// `pending_outbound`.
     async fn pending_peer_messages(
         &self,
         session_id: &str,
@@ -335,58 +373,66 @@ pub trait SessionStore: Send + Sync {
     // ── Task 18: round / model / tool event emission (observability) ──
 
     /// A new `round` has started (Engine `run()` entered, before the main
-    /// loop). Default impl returns `Err(Corrupt)` so custom stores that don't
-    /// implement observability don't silently swallow the call.
+    /// loop). Default impl routes through `record_event` with
+    /// `Event::RoundStart`.
     async fn record_round_start(
         &self,
         session_id: &str,
         round: u32,
     ) -> Result<(), SessionError> {
-        let _ = (session_id, round);
-        Err(SessionError::Corrupt(
-            "record_round_start not implemented for this store".into(),
-        ))
+        let event = Event::RoundStart { round, captured_at: chrono::Utc::now() };
+        self.record_event(session_id, &event).await
     }
 
     /// A `round` has ended — either clean return, max_turns, cancel, or
-    /// fatal error. Default impl returns `Err(Corrupt)`.
+    /// fatal error. Default impl routes through `record_event` with
+    /// `Event::RoundEnd`.
     async fn record_round_end(
         &self,
         session_id: &str,
         round: u32,
-        duration_ms: u64,
+        _duration_ms: u64,    // not stored in Event::RoundEnd per spec
     ) -> Result<(), SessionError> {
-        let _ = (session_id, round, duration_ms);
-        Err(SessionError::Corrupt(
-            "record_round_end not implemented for this store".into(),
-        ))
+        let event = Event::RoundEnd { round, captured_at: chrono::Utc::now() };
+        self.record_event(session_id, &event).await
     }
 
     /// A `model_call` completed and we have the usage payload. Default impl
-    /// returns `Err(Corrupt)`.
+    /// routes through `record_event` with `Event::ModelCallEnd`.
     async fn record_model_call_end(
         &self,
         session_id: &str,
         record: &ModelCallRecord,
     ) -> Result<(), SessionError> {
-        let _ = (session_id, record);
-        Err(SessionError::Corrupt(
-            "record_model_call_end not implemented for this store".into(),
-        ))
+        let event = Event::ModelCallEnd {
+            round: record.round,
+            turn: record.turn,
+            model: record.model.clone(),
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            total_tokens: record.total_tokens,
+            captured_at: record.at,
+        };
+        self.record_event(session_id, &event).await
     }
 
     /// A `tool_call` finished — either succeeded (`success=true`, `error=None`)
-    /// or failed (`success=false`, `error=Some(msg)`). Default impl returns
-    /// `Err(Corrupt)`.
+    /// or failed (`success=false`, `error=Some(msg)`). Default impl routes
+    /// through `record_event` with `Event::ToolCallEnd`.
     async fn record_tool_call_end(
         &self,
         session_id: &str,
         record: &ToolCallRecord,
     ) -> Result<(), SessionError> {
-        let _ = (session_id, record);
-        Err(SessionError::Corrupt(
-            "record_tool_call_end not implemented for this store".into(),
-        ))
+        let event = Event::ToolCallEnd {
+            round: record.round,
+            turn: record.turn,
+            tool: record.tool_name.clone(),
+            success: record.success,
+            error: record.error.clone(),
+            captured_at: record.at,
+        };
+        self.record_event(session_id, &event).await
     }
 }
 
