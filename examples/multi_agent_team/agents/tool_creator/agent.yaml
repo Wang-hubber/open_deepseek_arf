@@ -17,9 +17,32 @@ agent:
   system_prompt_file: ./system_prompt.md
 
   tools:
+    # read_file / list_dir — implicit Allow. The engine's tool
+    # registry resolves descriptions/parameters from the matching MCP
+    # node's capabilities at build time.
     - read_file
     - list_dir
-    - write_file
+    # write_file — requires human approval before the engine
+    # dispatches the call (Phase 9 F-017). When the model invokes
+    # write_file the engine broadcasts `permission_request`; the
+    # PermissionRequestHandlerNode catches it, registers it in
+    # ApprovalRegistry for `GET /approvals`, and waits for
+    # `POST /approve/<id>` to release.
+    - name: write_file
+      permission: ask
+
+  resources:
+    # Engine resolves the `mcp/workspace` Bus node (the
+    # PythonToolNode registered at lifespan startup in server.py)
+    # and uses its `capabilities.tools[]` as the tool source.
+    # `capabilities: { tools: ["all"] }` is required (the engine's
+    # declared_filter defaults to None_, which would silently filter
+    # out everything — see parse_declared_filter in
+    # crates/arf-engine/src/registry.rs).
+    - name: tools
+      type: mcp
+      capabilities:
+        tools: ["all"]  # accept every tool the mcp node exposes
 
   routes:
     - match: subagent_delegate

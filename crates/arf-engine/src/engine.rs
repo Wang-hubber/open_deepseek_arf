@@ -1543,6 +1543,15 @@ fn response_msg_type_for(request: &str) -> Option<String> {
         "peer_message" => Some("peer_reply".into()),
         "memory_op" => Some("memory_op_result".into()),
         "human_handoff" => Some("human_handoff_reply".into()),
+        // Issue 2: `permission_request` (Phase 9 F-017 ask-mode tool
+        // gating) is sent on the bus and the engine waits for the
+        // matching `permission_response`. Without this mapping the
+        // engine's response-types filter omits `permission_response`,
+        // so the engine's `wait_for_strategy()` never receives the
+        // reply and the ask-mode tool call deadlocks (see
+        // examples/multi_agent_team Issue 2 wiring in
+        // tool_nodes.PermissionRequestHandlerNode).
+        "permission_request" => Some("permission_response".into()),
         _ => None,
     }
 }

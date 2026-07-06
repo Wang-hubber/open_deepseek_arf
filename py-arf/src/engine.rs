@@ -56,6 +56,10 @@ use crate::{json_value_to_py, py_object_to_json, PyBus, PyNodeId};
 ///   max_turns: 10                  # optional
 ///   initial_memory: ["..."]        # optional
 ///   allowed_paths: ["/data"]       # optional
+///   tools:                          # optional; default []
+///     - read_file                   # implicit Allow
+///     - name: write_file
+///       permission: ask             # Allow | Ask | Deny
 /// ```
 struct AgentYamlFields {
     model_provider: String,
@@ -69,6 +73,16 @@ struct AgentYamlFields {
     max_turns: Option<u32>,
     initial_memory: Vec<String>,
     allowed_paths: Vec<String>,
+    /// `ToolSpec`s loaded from the yaml `tools:` block. Each entry is
+    /// either a bare tool-name string (`ToolPermission::Allow`) or a
+    /// `{name, permission}` mapping. Other spec fields default to
+    /// empty description + parameters at this layer; the engine's
+    /// tool registry overwrites them once it sees the actual MCP
+    /// capabilities at build time.
+    tools: Vec<arf_core::ToolSpec>,
+    /// `resources:` block — declares the agent's Bus node dependencies
+    /// (e.g. `[{name: tools, type: mcp}]`).
+    resources: Vec<arf_agent::ResourceSpec>,
 }
 
 fn parse_agent_yaml(raw: &str, source: &std::path::Path) -> PyResult<AgentYamlFields> {
@@ -147,6 +161,78 @@ fn parse_agent_yaml(raw: &str, source: &std::path::Path) -> PyResult<AgentYamlFi
         .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    // `resources:` declares which Bus node(s) this engine should
+    // resolve. Each entry is a `{name|resource_name, type|node_type,
+    // capabilities?}` mapping. The resolved resources drive the
+    // engine's tool_index at build time.
+    let resources: Vec<arf_agent::ResourceSpec> = agent
+        .get("resources")
+        .and_then(|x| x.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| {
+                    let m = v.as_mapping()?;
+                    let resource_name = m
+                        .get("resource_name")
+                        .or_else(|| m.get("name"))
+                        .and_then(|x| x.as_str())?
+                        .to_string();
+                    let node_type = m
+                        .get("node_type")
+                        .or_else(|| m.get("type"))
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("mcp")
+                        .to_string();
+                    let capabilities = m
+                        .get("capabilities")
+                        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+                    Some(arf_agent::ResourceSpec {
+                        resource_name,
+                        node_type,
+                        capabilities,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    //   - bare string  → ToolSpec { name, permission: Allow }
+    //   - { name, permission } map → ToolSpec with explicit permission
+    // Other fields (description, parameters) are filled in by the engine
+    // at build time from the actual MCP node's capabilities.
+    let tools: Vec<arf_core::ToolSpec> = agent
+        .get("tools")
+        .and_then(|x| x.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| {
+                    if let Some(name) = v.as_str() {
+                        Some(arf_core::ToolSpec::new(
+                            name,
+                            String::new(),
+                            serde_json::json!({}),
+                        ))
+                    } else if let Some(m) = v.as_mapping() {
+                        let name = m.get("name").and_then(|x| x.as_str())?;
+                        let permission = m
+                            .get("permission")
+                            .and_then(|x| x.as_str())
+                            .map(parse_permission)
+                            .unwrap_or(arf_core::ToolPermission::Allow);
+                        let mut spec = arf_core::ToolSpec::new(
+                            name,
+                            String::new(),
+                            serde_json::json!({}),
+                        );
+                        spec.permission = permission;
+                        Some(spec)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(AgentYamlFields {
         model_provider,
         model_name,
@@ -159,7 +245,17 @@ fn parse_agent_yaml(raw: &str, source: &std::path::Path) -> PyResult<AgentYamlFi
         max_turns,
         initial_memory,
         allowed_paths,
+        tools,
+        resources,
     })
+}
+
+fn parse_permission(s: &str) -> arf_core::ToolPermission {
+    match s.trim().to_lowercase().as_str() {
+        "ask" => arf_core::ToolPermission::Ask,
+        "deny" => arf_core::ToolPermission::Deny,
+        _ => arf_core::ToolPermission::Allow,
+    }
 }
 
 fn build_agent_config_from_yaml_fields(fields: AgentYamlFields) -> AgentConfig {
@@ -178,11 +274,11 @@ fn build_agent_config_from_yaml_fields(fields: AgentYamlFields) -> AgentConfig {
             max_output_tokens: fields.max_output_tokens,
             extra: serde_json::Value::Null,
         },
-        resources: vec![],
+        resources: fields.resources,
         system_prompt_template: fields.system_prompt,
         initial_memory: fields.initial_memory,
         allowed_paths: fields.allowed_paths,
-        tools: vec![],
+        tools: fields.tools,
         engine: engine_cfg,
     }
 }

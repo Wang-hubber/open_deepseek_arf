@@ -91,6 +91,12 @@ from arf._arf import (
 # Approval registry is app-side; the framework does not participate.
 from approval import ApprovalRegistry, approvals
 
+# Issue 2 wiring — PythonToolNode (in-process MCP node hosting the
+# example's `tools/<name>/{tool.yaml,function.py}` defs) +
+# PermissionRequestHandlerNode (bridges engine.permission_request ↔
+# ApprovalRegistry ↔ /approve HTTP endpoint).
+from tool_nodes import PythonToolNode, PermissionRequestHandlerNode
+
 # TokenStats aggregator (Task 18c). Import after sys.path tweak below.
 from stats import aggregate_engine, aggregate_team, team_rollup
 
@@ -125,6 +131,10 @@ import asyncio as _asyncio
 import json as _json
 _live_event_queue: "_asyncio.Queue[dict]" = _asyncio.Queue()
 _bus_spy_task: Optional[_asyncio.Task] = None
+
+# Issue 2 — bus actor nodes. Populated at lifespan startup.
+_tool_node: Optional[PythonToolNode] = None
+_permission_handler: Optional[PermissionRequestHandlerNode] = None
 
 
 # ── Provider validation (Task 18d §5.1) ────────────────────────────────────
@@ -238,6 +248,25 @@ async def lifespan(_app: FastAPI):
     # placeholder is needed — that would collide on the same node_id.
 
     cfg = TeamConfig.from_yaml(str(TEAM_CONFIG_PATH))
+    # Issue 2 — PythonToolNode (MCP dispatcher for tools/<name>/)
+    # and PermissionRequestHandlerNode (bridges engine.permission_request
+    # ↔ ApprovalRegistry + /approve). Both register as bus actors
+    # BEFORE team.start() so the engine's ResourceRegistry can resolve
+    # the `mcp/workspace` node (Strict route lookup).
+    global _tool_node, _permission_handler
+    workspace_root = ROOT / "shared_workspaces"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    _tool_node = PythonToolNode(
+        bus,
+        tools_dir=ROOT / "tools",
+        workspace_root=workspace_root,
+    )
+    await _tool_node.start()
+    _permission_handler = PermissionRequestHandlerNode(
+        bus, registry=approvals,
+    )
+    await _permission_handler.start()
+
     # Real wiring: build constructs Engine + SubagentPool per spec.
     team = await TeamBuilder.from_config(bus, cfg).build()
     await team.start()
@@ -256,6 +285,8 @@ async def lifespan(_app: FastAPI):
             "subagent_pool bus-actor wired (pool_id=%s node_id=%s)",
             pool.pool_id, nid,
         )
+
+    sse_relay = SseRelay(team_membership, str(STORAGE_ROOT), buffer_size=1000)
 
     # ── Live bus → SSE bridge ────────────────────────────────────────
     # Register a `spy` node that receives every message on the bus
@@ -453,16 +484,24 @@ def get_approval(request_id: str):
 
 
 @app.post("/approve/{request_id}")
-def approve(request_id: str, req: ApproveReq):
+async def approve(request_id: str, req: ApproveReq):
     """Resolve a pending approval.
 
-    Returns the stored `{tool, params}` if approved, `None` if rejected.
+    The endpoint wakes the PermissionRequestHandlerNode's matching
+    `asyncio.Event`, which causes it to send a `permission_response`
+    reply on the bus and unblock the engine's `request_permission()`
+    call. The handler manages its own bookkeeping; the ApprovalRegistry
+    is the side channel the HTTP frontend reads from
+    (`GET /approvals`, `GET /approvals/{id}`).
     """
-    entry = approvals.decide(request_id, req.approved)
+    if _permission_handler is None:
+        raise HTTPException(status_code=503, detail="permission handler not started")
+    entry = _permission_handler.decide(request_id, req.approved)
+    if entry is None and not req.approved:
+        # Rejection — handler dropped the entry from its map after the
+        # engine receives the response. Surface a 200 anyway.
+        return {"approved": req.approved, "entry": None}
     if entry is None and request_id not in approvals.pending_ids():
-        # decide() also returns None for rejections, so we need the
-        # extra membership check to disambiguate "unknown id" from
-        # "rejected".
         raise HTTPException(status_code=404, detail="approval not found")
     return {"approved": req.approved, "entry": entry}
 
