@@ -38,13 +38,17 @@ def test_server_starts_and_chat():
         assert "response" in r.json()
 
 
-def test_server_health_no_llm_required():
-    """Task 14: `/health` should be reachable without an LLM provider
-    key, since it only inspects the team flag. This exercises the
-    lifespan boot path (TeamBuilder.build → real Engine construction)
-    and proves the framework wiring is end-to-end functional without
-    needing provider credentials.
+def test_server_health_no_llm_required(monkeypatch):
+    """Task 14 + 18d: `/health` should be reachable without a real LLM
+    provider (the validation only checks that env vars are PRESENT, not
+    that they're valid). This exercises the lifespan boot path
+    (TeamBuilder.build → real Engine construction) and proves the
+    framework wiring is end-to-end functional without needing a
+    working API key.
     """
+    monkeypatch.setenv("ARF_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-test-key")
+
     from server import app
 
     client = TestClient(app)

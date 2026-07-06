@@ -1,0 +1,39 @@
+# examples/multi_agent_team/pricing.example.yaml
+#
+# Provider configuration reference (Task 18d §5.3).
+#
+# ARF uses OpenAI-compatible protocol. Set BOTH:
+#   1. ARF_PROVIDER = {deepseek|aliyun_bailian|minimax}
+#   2. The matching env var (DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MINIMAX_API_KEY)
+#
+# No auto-fallback: missing or unknown ARF_PROVIDER aborts startup with a
+# clear error message (see server.py:_resolve_provider).
+#
+# NOTE: This file does NOT carry real pricing data. Stats endpoints return
+# token counts only (per spec §5 — YAGNI on cost). Endpoints below are
+# documented for reference when wiring a real model adapter.
+providers:
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    chat_endpoint: https://api.deepseek.com/v1/chat/completions
+    env_var: DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+    notes: |
+      DeepSeek 默认 OpenAI 兼容；model 选 deepseek-chat / deepseek-reasoner。
+
+  aliyun_bailian:                 # 阿里百炼（qwen）
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    chat_endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+    env_var: DASHSCOPE_API_KEY
+    default_model: qwen3-max
+    notes: |
+      阿里百炼的免费额度有调用频率限制（注意 429），建议生产用付费 key。
+      model 名是 qwen3-max / qwen-plus / qwen-turbo 等。
+
+  minimax:                        # MiniMax TokenPlan
+    base_url: https://api.minimaxi.com/v1
+    chat_endpoint: https://api.minimaxi.com/v1/chat/completions
+    env_var: MINIMAX_API_KEY
+    default_model: MiniMax-Text-01
+    notes: |
+      MiniMax 的 base_url 带 /v1（与 OpenAI 不同）。按 TokenPlan 计费。
