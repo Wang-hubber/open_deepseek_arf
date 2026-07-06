@@ -26,6 +26,19 @@ pub enum HandlerOutcome {
     Deferred,
 }
 
+/// Outcome of inbound-reply dedup check (Task 19).
+///
+/// `Drop` means the correlation_id was already in the process-level LRU
+/// cache (self-resend duplicate); caller should skip handler dispatch.
+/// `Pass` means first sight; caller proceeds with handler dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchDecision {
+    /// First sight of this cid — proceed to handler dispatch.
+    Pass,
+    /// Duplicate (process-level LRU hit) — caller should drop the message.
+    Drop,
+}
+
 /// Context passed to handlers. Contains references (no ownership) to the
 /// Engine's Bus + identity. State is NOT included — handlers that need to
 /// mutate state push messages back onto the bus and let the main loop update.

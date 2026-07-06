@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::checkpoint::{self as cp_eval, DiscoveryCache};
 use crate::config::AgentConfig;
-use crate::dispatcher::HandlerRegistry;
+use crate::dedup::InboundDedupCache;
+use crate::dispatcher::{DispatchDecision, HandlerRegistry};
 use crate::error::{BuildError, RunError};
 use crate::registry::ResourceRegistry;
 use arf_core::msg_type::{MODEL_RESPONSE, PEER_MESSAGE, PEER_REPLY, TOOL_RESULT};
@@ -44,6 +45,11 @@ pub struct Engine {
     session_store: Option<Arc<dyn arf_session::SessionStore>>,
     /// Session ID for this engine instance (Phase 8 task F5).
     session_id: String,
+    /// Task 19: process-level LRU dedup for inbound reply correlation_ids.
+    /// Absorbs self-resend duplicates (sender == receiver) without SQL.
+    /// **Process-level only** — cross-restart dedup is application
+    /// responsibility (see spec §4.4).
+    inbound_dedup: InboundDedupCache,
     /// Team Engine v1.x — Task 3: when true, Engine is a per-task subagent
     /// (Task 4 will use this in `reset_state()` / `run_once()`). Default false.
     ephemeral: bool,
@@ -142,6 +148,7 @@ impl Engine {
             handlers: Arc::new(Mutex::new(HandlerRegistry::new())),
             session_store: None,
             session_id,
+            inbound_dedup: InboundDedupCache::new(1024),
             ephemeral,
         })
     }
@@ -630,6 +637,49 @@ impl Engine {
         Ok(())
     }
 
+    /// Task 19: process-level dedup + record InboundReply event for reply-type
+    /// messages (peer_reply, human_handoff_reply). Returns Drop if the
+    /// correlation_id was already in the LRU cache (self-resend duplicate);
+    /// caller should skip handler dispatch.
+    ///
+    /// Caller is responsible for filtering by msg_type — only invoke for
+    /// "peer_reply" or "human_handoff_reply". Defensive: returns Pass for
+    /// messages without a correlation_id (treats them as non-replies).
+    pub(crate) async fn maybe_record_inbound_reply(
+        &self,
+        msg: &Message,
+    ) -> DispatchDecision {
+        let cid = match msg.correlation_id() {
+            Some(c) => c,
+            None => return DispatchDecision::Pass,  // non-reply; pass through
+        };
+
+        // 1. Process-level LRU dedup (fast path; sync).
+        if self.inbound_dedup.check_and_record(&cid) {
+            log::debug!(
+                "dropping duplicate inbound reply cid={cid} msg_type={}",
+                msg.msg_type
+            );
+            return DispatchDecision::Drop;
+        }
+
+        // 2. Record InboundReply event (best-effort; do not block dispatch).
+        if let Some(store) = self.session_store.as_ref() {
+            let event = arf_session::Event::InboundReply {
+                msg_type: msg.msg_type.clone(),
+                correlation_id: cid,
+                source: msg.from.to_string(),
+                payload: msg.payload.clone(),
+                captured_at: chrono::Utc::now(),
+            };
+            if let Err(e) = store.record_event(&self.session_id, &event).await {
+                log::warn!("failed to record inbound reply event: {e}");
+            }
+        }
+
+        DispatchDecision::Pass
+    }
+
     /// Task 17: called by `wait_for_strategy` when a `peer_reply` arrives
     /// whose correlation_id matches the in-flight WaitEvent. Best-effort —
     /// a failed write means the next restart may resend, but receiver LRU
@@ -1106,6 +1156,20 @@ impl Engine {
 
             // Filter: msg_type in expected_response_types AND payload.correlation_id matches.
             if !expected_response_types.contains(&msg.msg_type.as_str()) {
+                // Task 19: for reply-type messages (peer_reply, human_handoff_reply),
+                // run the LRU dedup check + InboundReply event recording first.
+                // If Drop is returned, the message is a self-resend duplicate and
+                // we skip handler dispatch entirely.
+                let is_reply = matches!(
+                    msg.msg_type.as_str(),
+                    arf_core::msg_type::PEER_REPLY | "human_handoff_reply"
+                );
+                if is_reply {
+                    match self.maybe_record_inbound_reply(&msg).await {
+                        DispatchDecision::Drop => continue,
+                        DispatchDecision::Pass => {}
+                    }
+                }
                 // F-024 fix: before dropping, dispatch to registered
                 // MessageHandlers (peer_message, peer_reply, custom app
                 // types). Handlers return Handled to consume the message,
