@@ -988,6 +988,11 @@ fn parse_status(s: &str) -> Result<SessionStatus, SessionError> {
 pub mod jsonl_store;
 pub use jsonl_store::JsonlSessionStore;
 
+// ── Unified event log (Task 19) ──────────────────────────────────────
+
+pub mod event;
+pub use event::{Event, PendingOutbound};
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
