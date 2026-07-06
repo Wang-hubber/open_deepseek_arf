@@ -25,6 +25,10 @@ pub enum BackendError {
     #[error("invalid path: {path}")]
     InvalidPath { path: String, code: &'static str },
 
+    /// Path exists but is not a directory (when directory was expected).
+    #[error("not a directory: {path}")]
+    NotADirectory { path: String },
+
     /// Permission denied by backend policy (sandboxing, ACL, etc.).
     #[error("permission denied: {path} — {reason}")]
     PermissionDenied { path: String, reason: String, code: &'static str },
