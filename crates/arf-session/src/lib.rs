@@ -16,6 +16,7 @@ use arf_core::{Checkpoint, ModelMessage, NodeId, State, WaitEvent};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -282,6 +283,71 @@ pub trait SessionStore: Send + Sync {
         state: &State,
         snapshot: &CheckpointSnapshot,
     ) -> Result<SnapshotEffects, SessionError>;
+
+    // ── Task 17: peer_message outbox for crash recovery (spec §2.4) ──
+
+    /// Record that `peer_message` was sent to `target_node`. Must be called
+    /// **before** `bus.send` so an `fsync` (or equivalent commit) survives a
+    /// crash between persist and send.
+    ///
+    /// Default impl returns `Err(Corrupt(...))` — custom stores that don't
+    /// support peer outbox don't silently swallow the call (the Engine knows
+    /// to either upgrade or skip the feature).
+    async fn record_peer_message_sent(
+        &self,
+        session_id: &str,
+        record: &PendingPeerMessage,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, record);
+        Err(SessionError::Corrupt(
+            "record_peer_message_sent not implemented for this store".into(),
+        ))
+    }
+
+    /// Record that a `peer_reply` was received with the given correlation_id.
+    /// Best-effort: a failed write means the next resend may duplicate the
+    /// send, which the receiver's LRU dedup absorbs.
+    async fn record_peer_reply_received(
+        &self,
+        session_id: &str,
+        correlation_id: Uuid,
+        source: &str,
+    ) -> Result<(), SessionError> {
+        let _ = (session_id, correlation_id, source);
+        Err(SessionError::Corrupt(
+            "record_peer_reply_received not implemented for this store".into(),
+        ))
+    }
+
+    /// Derive the set of `peer_message`s that were sent but for which no
+    /// `peer_reply` has been recorded. The Engine calls this on startup and
+    /// re-bus.send()s each entry to recover from a crash.
+    ///
+    /// Default impl returns an empty vec — outbox resend is opt-in per store.
+    async fn pending_peer_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<PendingPeerMessage>, SessionError> {
+        let _ = session_id;
+        Ok(Vec::new())
+    }
+}
+
+/// Task 17: One row of the per-session peer outbox. Represents a `peer_message`
+/// that has been sent (and fsync'd) but for which the matching `peer_reply` has
+/// not yet been recorded.
+///
+/// `PartialEq` is derived so tests can assert exact resend payloads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingPeerMessage {
+    pub correlation_id: Uuid,
+    pub target_session: String,
+    pub target_node: String,
+    pub payload: serde_json::Value,
+    pub sent_at: DateTime<Utc>,
+    /// Resend counter — 1 for the original send, +1 per resend. Used by tests
+    /// to assert that resend actually happened; receivers do not consult it.
+    pub attempt: u32,
 }
 
 // ── SqliteSessionStore ───────────────────────────────────────────────
