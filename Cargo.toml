@@ -12,6 +12,7 @@ members = [
     "crates/arf-mcp",
     "crates/arf-pool",
     "crates/arf-subagent-pool",
+    "crates/arf-backend",
     "py-arf",
     "crates/arf-e2e",
 ]
