@@ -8,6 +8,7 @@
 
 #![doc(test(attr(deny(warnings))))]
 
+pub mod composite;
 pub mod error;
 pub mod filesystem;
 pub mod path;
@@ -15,6 +16,7 @@ pub mod protocol;
 pub mod state;
 pub mod types;
 
+pub use composite::CompositeBackend;
 pub use error::BackendError;
 pub use filesystem::FilesystemBackend;
 pub use path::BackendPath;
