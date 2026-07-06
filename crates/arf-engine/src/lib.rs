@@ -7,6 +7,7 @@ pub mod dedup;
 pub mod dispatcher;
 pub mod engine;
 pub mod error;
+pub mod message_reconstruct;
 pub(crate) mod registry;
 #[cfg(test)]
 mod tests;
