@@ -1,51 +1,35 @@
-//! Task 18 — SqliteSessionStore round/model/tool event tests.
+//! Task 18/19 — SqliteSessionStore round/model/tool event tests.
+//!
+//! Migrated to the unified `events` table (Task 19). Tests assert on the new
+//! `kind` column instead of the old `event_type`.
 
-use arf_session::{ModelCallRecord, SessionStore, SqliteSessionStore, ToolCallRecord};
+use arf_session::{Event, ModelCallRecord, SessionStore, SqliteSessionStore, ToolCallRecord};
 use chrono::Utc;
+use serde_json::json;
 
-// [方法] Sqlite 4 事件写 peer_events 表
+// [方法] Sqlite 4 事件写 events 表（kind 列）
 #[tokio::test]
 async fn sqlite_all_four_events_persist() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
 
-    store.record_round_start("A", 1).await.unwrap();
-    store.record_round_end("A", 1, 100).await.unwrap();
-    store
-        .record_model_call_end(
-            "A",
-            &ModelCallRecord {
-                model: "deepseek-chat".into(),
-                input_tokens: 100,
-                output_tokens: 50,
-                total_tokens: 150,
-                turn: 1,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .record_tool_call_end(
-            "A",
-            &ToolCallRecord {
-                tool_name: "read_file".into(),
-                duration_ms: 20,
-                success: true,
-                error: None,
-                turn: 2,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
+    store.record_event("A", &Event::RoundStart { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("A", &Event::RoundEnd { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("A", &Event::ModelCallEnd {
+        round: 1, turn: 1, model: "deepseek-chat".into(),
+        input_tokens: 100, output_tokens: 50, total_tokens: 150,
+        captured_at: Utc::now(),
+    }).await.unwrap();
+    store.record_event("A", &Event::ToolCallEnd {
+        round: 1, turn: 2, tool: "read_file".into(),
+        success: true, error: None,
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    // 验证存到 peer_events 表（4 行）
+    // 验证存到 events 表（4 行）
     let conn = store.conn.lock().await;
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'A'",
+            "SELECT COUNT(*) FROM events WHERE session_id = 'A'",
             [],
             |r| r.get(0),
         )
@@ -58,13 +42,13 @@ async fn sqlite_all_four_events_persist() {
 async fn sqlite_multiple_round_events_distinct() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
     for r in 1..=3 {
-        store.record_round_start("A", r).await.unwrap();
-        store.record_round_end("A", r, 100 * r as u64).await.unwrap();
+        store.record_event("A", &Event::RoundStart { round: r, captured_at: Utc::now() }).await.unwrap();
+        store.record_event("A", &Event::RoundEnd { round: r, captured_at: Utc::now() }).await.unwrap();
     }
     let conn = store.conn.lock().await;
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'A' AND event_type = 'round_start'",
+            "SELECT COUNT(*) FROM events WHERE session_id = 'A' AND kind = 'round_start'",
             [],
             |r| r.get(0),
         )
@@ -72,7 +56,7 @@ async fn sqlite_multiple_round_events_distinct() {
     assert_eq!(count, 3);
     let count_end: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'A' AND event_type = 'round_end'",
+            "SELECT COUNT(*) FROM events WHERE session_id = 'A' AND kind = 'round_end'",
             [],
             |r| r.get(0),
         )
@@ -84,27 +68,17 @@ async fn sqlite_multiple_round_events_distinct() {
 #[tokio::test]
 async fn sqlite_model_call_end_fields() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
-    store
-        .record_model_call_end(
-            "A",
-            &ModelCallRecord {
-                model: "qwen3-max".into(),
-                input_tokens: 200,
-                output_tokens: 100,
-                total_tokens: 300,
-                turn: 5,
-                round: 2,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
+    store.record_event("A", &Event::ModelCallEnd {
+        round: 2, turn: 5, model: "qwen3-max".into(),
+        input_tokens: 200, output_tokens: 100, total_tokens: 300,
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
     let conn = store.conn.lock().await;
     let payload_json: String = conn
         .query_row(
-            "SELECT payload_json FROM peer_events
-             WHERE session_id = 'A' AND event_type = 'model_call_end'",
+            "SELECT payload_json FROM events
+             WHERE session_id = 'A' AND kind = 'model_call_end'",
             [],
             |r| r.get(0),
         )
@@ -123,42 +97,22 @@ async fn sqlite_model_call_end_fields() {
 async fn sqlite_tool_call_end_success_and_failure() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
 
-    store
-        .record_tool_call_end(
-            "A",
-            &ToolCallRecord {
-                tool_name: "ok_tool".into(),
-                duration_ms: 10,
-                success: true,
-                error: None,
-                turn: 1,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .record_tool_call_end(
-            "A",
-            &ToolCallRecord {
-                tool_name: "fail_tool".into(),
-                duration_ms: 5,
-                success: false,
-                error: Some("denied by policy".into()),
-                turn: 2,
-                round: 1,
-                at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
+    store.record_event("A", &Event::ToolCallEnd {
+        round: 1, turn: 1, tool: "ok_tool".into(),
+        success: true, error: None,
+        captured_at: Utc::now(),
+    }).await.unwrap();
+    store.record_event("A", &Event::ToolCallEnd {
+        round: 1, turn: 2, tool: "fail_tool".into(),
+        success: false, error: Some("denied by policy".into()),
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
     let conn = store.conn.lock().await;
     let mut stmt = conn
         .prepare(
-            "SELECT payload_json FROM peer_events
-             WHERE session_id = 'A' AND event_type = 'tool_call_end'
+            "SELECT payload_json FROM events
+             WHERE session_id = 'A' AND kind = 'tool_call_end'
              ORDER BY captured_at ASC",
         )
         .unwrap();
@@ -173,37 +127,35 @@ async fn sqlite_tool_call_end_success_and_failure() {
     assert_eq!(payloads.len(), 2);
 
     // success 行
-    assert_eq!(payloads[0]["tool_name"], "ok_tool");
+    assert_eq!(payloads[0]["tool"], "ok_tool");
     assert_eq!(payloads[0]["success"], true);
     assert_eq!(payloads[0]["error"], serde_json::Value::Null);
-    assert_eq!(payloads[0]["duration_ms"], 10);
 
     // failure 行
-    assert_eq!(payloads[1]["tool_name"], "fail_tool");
+    assert_eq!(payloads[1]["tool"], "fail_tool");
     assert_eq!(payloads[1]["success"], false);
     assert_eq!(payloads[1]["error"], "denied by policy");
-    assert_eq!(payloads[1]["duration_ms"], 5);
 }
 
 // [边界] session 间隔离
 #[tokio::test]
 async fn sqlite_events_isolated_per_session() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
-    store.record_round_start("A", 1).await.unwrap();
-    store.record_round_end("A", 1, 100).await.unwrap();
-    store.record_round_start("B", 1).await.unwrap();
+    store.record_event("A", &Event::RoundStart { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("A", &Event::RoundEnd { round: 1, captured_at: Utc::now() }).await.unwrap();
+    store.record_event("B", &Event::RoundStart { round: 1, captured_at: Utc::now() }).await.unwrap();
 
     let conn = store.conn.lock().await;
     let a: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'A'",
+            "SELECT COUNT(*) FROM events WHERE session_id = 'A'",
             [],
             |r| r.get(0),
         )
         .unwrap();
     let b: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'B'",
+            "SELECT COUNT(*) FROM events WHERE session_id = 'B'",
             [],
             |r| r.get(0),
         )
@@ -212,32 +164,23 @@ async fn sqlite_events_isolated_per_session() {
     assert_eq!(b, 1);
 }
 
-// [兼容] 旧 peer_events 表存在不影响新事件写入（schema migration 自动兼容）
+// [兼容] 老行（缺新列字段）能被新代码读出（不阻塞 pending_outbound 查询）
+// 旧数据可能 msg_type=NULL / source_node=NULL —— pending_outbound 不应 panic
 #[tokio::test]
-async fn sqlite_old_schema_does_not_break_new_writes() {
+async fn sqlite_legacy_row_with_null_msg_type_does_not_break_pending() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
-    // 直接 INSERT 一行老 peer_message_sent（没有 round/model 字段）
+    // 手动 insert 一行 kind=outbound_sent 但 msg_type=NULL（模拟老数据）
     let conn = store.conn.lock().await;
     conn.execute(
-        "INSERT INTO peer_events
-            (session_id, captured_at, event_type, correlation_id, attempt)
-         VALUES ('legacy', '2026-01-01T00:00:00Z', 'peer_message_sent', 'c1', 1)",
+        "INSERT INTO events (session_id, captured_at, kind, msg_type, correlation_id, attempt)
+         VALUES ('legacy', '2026-01-01T00:00:00Z', 'outbound_sent', NULL, NULL, 1)",
         [],
-    )
-    .unwrap();
+    ).unwrap();
     drop(conn);
 
-    // 新 event 写入不冲突
-    store.record_round_start("legacy", 1).await.unwrap();
-    let conn = store.conn.lock().await;
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM peer_events WHERE session_id = 'legacy'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 2, "老事件 + 新事件 共 2 行");
+    // pending_outbound 不应 panic；NULL msg_type/correlation_id 不会出现在结果
+    let pending = store.pending_outbound("legacy").await.unwrap();
+    assert!(pending.is_empty(), "NULL correlation_id 行不出现在 pending");
 }
 
 // [持久化] record_structs 字段都序列化/反序列化

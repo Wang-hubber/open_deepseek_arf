@@ -1,52 +1,61 @@
-//! Task 17 — SqliteSessionStore peer outbox tests.
+//! Task 17/19 — SqliteSessionStore event log tests.
+//!
+//! Migrated to the unified async outbox API (Task 19): tests now exercise
+//! `record_event` + `pending_outbound` directly. The 6 record_* methods are
+//! thin wrappers and are no longer tested at the integration level (covered
+//! by serde roundtrip tests on Event in event.rs).
 
-use arf_session::{PendingPeerMessage, SessionStore, SqliteSessionStore};
+use arf_session::{Event, PendingOutbound, SessionStore, SqliteSessionStore};
 use chrono::Utc;
+use serde_json::json;
 use uuid::Uuid;
 
-// [方法] Sqlite record + pending 派生
+// [方法] record_event(OutboundSent) 后 pending_outbound 可见
 #[tokio::test]
 async fn sqlite_record_and_pending() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
 
-    let sent = PendingPeerMessage {
-        correlation_id: Uuid::new_v4(),
-        target_session: "B".into(),
-        target_node: "engine-B".into(),
-        payload: serde_json::json!({"content": "hi"}),
-        sent_at: Utc::now(),
+    let cid = Uuid::new_v4();
+    store.record_event("A", &Event::OutboundSent {
+        msg_type: "peer_message".into(),
+        correlation_id: cid,
         attempt: 1,
-    };
-    store.record_peer_message_sent("A", &sent).await.unwrap();
+        target: vec!["engine-B".into()],
+        payload: json!({"content": "hi"}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    let pending = store.pending_peer_messages("A").await.unwrap();
+    let pending = store.pending_outbound("A").await.unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].correlation_id, sent.correlation_id);
-    assert_eq!(pending[0].target_session, "B");
-    assert_eq!(pending[0].target_node, "engine-B");
+    assert_eq!(pending[0].correlation_id, cid);
+    assert_eq!(pending[0].msg_type, "peer_message");
+    assert_eq!(pending[0].target_nodes, vec!["engine-B".to_string()]);
     assert_eq!(pending[0].attempt, 1);
 }
 
-// [方法] Sqlite sent + reply → pending 空
+// [方法] sent + reply → pending 空
 #[tokio::test]
 async fn sqlite_pending_after_reply_empty() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
 
-    let sent = PendingPeerMessage {
-        correlation_id: Uuid::new_v4(),
-        target_session: "B".into(),
-        target_node: "engine-B".into(),
-        payload: serde_json::json!({}),
-        sent_at: Utc::now(),
+    let cid = Uuid::new_v4();
+    store.record_event("A", &Event::OutboundSent {
+        msg_type: "peer_message".into(),
+        correlation_id: cid,
         attempt: 1,
-    };
-    store.record_peer_message_sent("A", &sent).await.unwrap();
-    store
-        .record_peer_reply_received("A", sent.correlation_id, "engine-B")
-        .await
-        .unwrap();
+        target: vec!["B".into()],
+        payload: json!({}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
+    store.record_event("A", &Event::InboundReply {
+        msg_type: "peer_reply".into(),
+        correlation_id: cid,
+        source: "B".into(),
+        payload: json!({}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    assert!(store.pending_peer_messages("A").await.unwrap().is_empty());
+    assert!(store.pending_outbound("A").await.unwrap().is_empty());
 }
 
 // [方法] 多 sent 部分 reply → pending 仅未完成
@@ -56,27 +65,33 @@ async fn sqlite_pending_partial_completion() {
 
     let mut ids = Vec::new();
     for _ in 0..3 {
-        let s = PendingPeerMessage {
-            correlation_id: Uuid::new_v4(),
-            target_session: "B".into(),
-            target_node: "engine-B".into(),
-            payload: serde_json::json!({}),
-            sent_at: Utc::now(),
+        let cid = Uuid::new_v4();
+        ids.push(cid);
+        store.record_event("A", &Event::OutboundSent {
+            msg_type: "peer_message".into(),
+            correlation_id: cid,
             attempt: 1,
-        };
-        ids.push(s.correlation_id);
-        store.record_peer_message_sent("A", &s).await.unwrap();
+            target: vec!["B".into()],
+            payload: json!({}),
+            captured_at: Utc::now(),
+        }).await.unwrap();
     }
-    store
-        .record_peer_reply_received("A", ids[0], "engine-B")
-        .await
-        .unwrap();
-    store
-        .record_peer_reply_received("A", ids[2], "engine-B")
-        .await
-        .unwrap();
+    store.record_event("A", &Event::InboundReply {
+        msg_type: "peer_reply".into(),
+        correlation_id: ids[0],
+        source: "B".into(),
+        payload: json!({}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
+    store.record_event("A", &Event::InboundReply {
+        msg_type: "peer_reply".into(),
+        correlation_id: ids[2],
+        source: "B".into(),
+        payload: json!({}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    let pending = store.pending_peer_messages("A").await.unwrap();
+    let pending = store.pending_outbound("A").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].correlation_id, ids[1]);
 }
@@ -88,18 +103,17 @@ async fn sqlite_pending_max_attempt() {
 
     let cid = Uuid::new_v4();
     for attempt in [1u32, 3, 2] {
-        let s = PendingPeerMessage {
+        store.record_event("A", &Event::OutboundSent {
+            msg_type: "peer_message".into(),
             correlation_id: cid,
-            target_session: "B".into(),
-            target_node: "engine-B".into(),
-            payload: serde_json::json!({}),
-            sent_at: Utc::now(),
             attempt,
-        };
-        store.record_peer_message_sent("A", &s).await.unwrap();
+            target: vec!["B".into()],
+            payload: json!({}),
+            captured_at: Utc::now(),
+        }).await.unwrap();
     }
 
-    let pending = store.pending_peer_messages("A").await.unwrap();
+    let pending = store.pending_outbound("A").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].attempt, 3);
 }
@@ -108,7 +122,7 @@ async fn sqlite_pending_max_attempt() {
 #[tokio::test]
 async fn sqlite_pending_nonexistent_session_empty() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
-    let pending = store.pending_peer_messages("nope").await.unwrap();
+    let pending = store.pending_outbound("nope").await.unwrap();
     assert!(pending.is_empty());
 }
 
@@ -117,19 +131,19 @@ async fn sqlite_pending_nonexistent_session_empty() {
 async fn sqlite_pending_isolated_per_session() {
     let store = SqliteSessionStore::in_memory().await.unwrap();
 
-    let sent_a = PendingPeerMessage {
-        correlation_id: Uuid::new_v4(),
-        target_session: "B".into(),
-        target_node: "engine-B".into(),
-        payload: serde_json::json!({}),
-        sent_at: Utc::now(),
+    let cid = Uuid::new_v4();
+    store.record_event("A", &Event::OutboundSent {
+        msg_type: "peer_message".into(),
+        correlation_id: cid,
         attempt: 1,
-    };
-    store.record_peer_message_sent("A", &sent_a).await.unwrap();
+        target: vec!["B".into()],
+        payload: json!({}),
+        captured_at: Utc::now(),
+    }).await.unwrap();
 
-    let pending_b = store.pending_peer_messages("B").await.unwrap();
+    let pending_b = store.pending_outbound("B").await.unwrap();
     assert!(pending_b.is_empty(), "session B 不应有 pending");
 
-    let pending_a = store.pending_peer_messages("A").await.unwrap();
+    let pending_a = store.pending_outbound("A").await.unwrap();
     assert_eq!(pending_a.len(), 1);
 }

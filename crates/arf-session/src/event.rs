@@ -74,6 +74,21 @@ pub struct PendingOutbound {
     pub attempt: u32,
 }
 
+impl Event {
+    /// Extract the `captured_at` timestamp regardless of variant. Used by
+    /// store impls to write a single `INSERT ... captured_at` column.
+    pub fn captured_at(&self) -> DateTime<Utc> {
+        match self {
+            Event::OutboundSent { captured_at, .. }
+            | Event::InboundReply { captured_at, .. }
+            | Event::RoundStart { captured_at, .. }
+            | Event::RoundEnd { captured_at, .. }
+            | Event::ModelCallEnd { captured_at, .. }
+            | Event::ToolCallEnd { captured_at, .. } => *captured_at,
+        }
+    }
+}
+
 // === Tests =================================================================
 
 #[cfg(test)]

@@ -545,22 +545,24 @@ impl SqliteSessionStore {
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
-            CREATE TABLE IF NOT EXISTS peer_events (
+            CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 captured_at TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                correlation_id TEXT NOT NULL,
-                target_session TEXT,
+                kind TEXT NOT NULL,
+                correlation_id TEXT,
+                msg_type TEXT,
+                attempt INTEGER,
                 target_node TEXT,
-                source TEXT,
-                payload_json TEXT,
-                attempt INTEGER NOT NULL DEFAULT 1
+                source_node TEXT,
+                payload_json TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_peer_events_session
-                ON peer_events(session_id, correlation_id);
-            CREATE INDEX IF NOT EXISTS idx_peer_events_session_type
-                ON peer_events(session_id, event_type);
+            CREATE INDEX IF NOT EXISTS idx_events_session_captured
+                ON events(session_id, captured_at);
+            CREATE INDEX IF NOT EXISTS idx_events_session_kind
+                ON events(session_id, kind);
+            CREATE INDEX IF NOT EXISTS idx_events_session_correlation
+                ON events(session_id, correlation_id);
             "#,
         )?;
         Ok(())
@@ -786,236 +788,152 @@ impl SessionStore for SqliteSessionStore {
         })
     }
 
-    // ── Task 17: peer_message outbox (spec §2.4) ──────────────────────
+    // ── Task 19: Unified event log (record_event + pending_outbound) ──
+    //
+    // The trait's default impls route record_peer_message_sent, record_*_end,
+    // etc. through `record_event`. We implement record_event + pending_outbound
+    // here; the wrapper default impls take over for the 6 record_* methods.
+    //
+    // The legacy `pending_peer_messages` (returning Vec<PendingPeerMessage>) is
+    // NOT replaced — Engine no longer calls it; callers using the old API
+    // get an empty vec.
 
-    async fn record_peer_message_sent(
+    async fn record_event(
         &self,
         session_id: &str,
-        record: &PendingPeerMessage,
+        event: &Event,
     ) -> Result<(), SessionError> {
-        let payload_str = serde_json::to_string(&record.payload)?;
         let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id,
-                 target_session, target_node, source, payload_json, attempt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                session_id,
-                Utc::now().to_rfc3339(),
-                "peer_message_sent",
-                record.correlation_id.to_string(),
-                record.target_session,
-                record.target_node,
-                Option::<String>::None,
-                payload_str,
-                record.attempt as i64,
-            ],
-        )?;
+        let captured_at = event.captured_at().to_rfc3339();
+        match event {
+            Event::OutboundSent { msg_type, correlation_id, attempt, target, payload, .. } => {
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, msg_type, correlation_id, attempt, target_node, payload_json)
+                     VALUES (?1, ?2, 'outbound_sent', ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        session_id,
+                        captured_at,
+                        msg_type,
+                        correlation_id.to_string(),
+                        *attempt as i64,
+                        serde_json::to_string(target)?,
+                        serde_json::to_string(payload)?,
+                    ],
+                )?;
+            }
+            Event::InboundReply { msg_type, correlation_id, source, payload, .. } => {
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, msg_type, correlation_id, source_node, payload_json)
+                     VALUES (?1, ?2, 'inbound_reply', ?3, ?4, ?5, ?6)",
+                    params![
+                        session_id,
+                        captured_at,
+                        msg_type,
+                        correlation_id.to_string(),
+                        source,
+                        serde_json::to_string(payload)?,
+                    ],
+                )?;
+            }
+            Event::RoundStart { round, .. } => {
+                let payload = serde_json::json!({"round": round});
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, payload_json)
+                     VALUES (?1, ?2, 'round_start', ?3)",
+                    params![session_id, captured_at, payload.to_string()],
+                )?;
+            }
+            Event::RoundEnd { round, .. } => {
+                let payload = serde_json::json!({"round": round});
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, payload_json)
+                     VALUES (?1, ?2, 'round_end', ?3)",
+                    params![session_id, captured_at, payload.to_string()],
+                )?;
+            }
+            Event::ModelCallEnd { round, turn, model, input_tokens, output_tokens, total_tokens, .. } => {
+                let payload = serde_json::json!({
+                    "round": round, "turn": turn, "model": model,
+                    "input_tokens": input_tokens, "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                });
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, payload_json)
+                     VALUES (?1, ?2, 'model_call_end', ?3)",
+                    params![session_id, captured_at, payload.to_string()],
+                )?;
+            }
+            Event::ToolCallEnd { round, turn, tool, success, error, .. } => {
+                let payload = serde_json::json!({
+                    "round": round, "turn": turn, "tool": tool,
+                    "success": success, "error": error,
+                });
+                conn.execute(
+                    "INSERT INTO events (session_id, captured_at, kind, payload_json)
+                     VALUES (?1, ?2, 'tool_call_end', ?3)",
+                    params![session_id, captured_at, payload.to_string()],
+                )?;
+            }
+        }
         Ok(())
     }
 
-    async fn record_peer_reply_received(
+    async fn pending_outbound(
         &self,
         session_id: &str,
-        correlation_id: Uuid,
-        source: &str,
-    ) -> Result<(), SessionError> {
+    ) -> Result<Vec<PendingOutbound>, SessionError> {
         let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id,
-                 target_session, target_node, source, payload_json, attempt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                session_id,
-                Utc::now().to_rfc3339(),
-                "peer_reply_received",
-                correlation_id.to_string(),
-                Option::<String>::None,
-                Option::<String>::None,
-                source,
-                Option::<String>::None,
-                1i64,
-            ],
-        )?;
-        Ok(())
-    }
-
-    async fn pending_peer_messages(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<PendingPeerMessage>, SessionError> {
-        let conn = self.conn.lock().await;
-        // 取每个 cid 的最大 attempt 的 sent 行，再用 NOT EXISTS 排除有 reply 的。
-        // 注意：attempt 比较在子查询里再做一次 MAX(attempt)，外层 WHERE 限定
-        // pe1.attempt = MAX(...) 让每 cid 仅返回一行。
         let mut stmt = conn.prepare(
-            "SELECT correlation_id, target_session, target_node, payload_json,
-                    captured_at, attempt
-             FROM peer_events pe1
-             WHERE session_id = ?1
-               AND event_type = 'peer_message_sent'
-               AND attempt = (
-                   SELECT MAX(attempt) FROM peer_events pe2
-                   WHERE pe2.session_id = pe1.session_id
-                     AND pe2.correlation_id = pe1.correlation_id
-                     AND pe2.event_type = 'peer_message_sent'
+            "SELECT msg_type, correlation_id, target_node, payload_json, MAX(attempt) as attempt
+             FROM events
+             WHERE session_id = ?1 AND kind = 'outbound_sent'
+               AND correlation_id NOT IN (
+                   SELECT correlation_id FROM events
+                   WHERE session_id = ?1 AND kind = 'inbound_reply'
+                     AND correlation_id IS NOT NULL
                )
-               AND NOT EXISTS (
-                   SELECT 1 FROM peer_events pe3
-                   WHERE pe3.session_id = pe1.session_id
-                     AND pe3.correlation_id = pe1.correlation_id
-                     AND pe3.event_type = 'peer_reply_received'
-               )
-             ORDER BY captured_at ASC",
+             GROUP BY correlation_id
+             ORDER BY MIN(captured_at) ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| {
-            let cid_s: String = row.get(0)?;
-            let captured_at: String = row.get(4)?;
-            let attempt: i64 = row.get(5)?;
+            let target_json: Option<String> = row.get(2)?;
+            let payload_json: Option<String> = row.get(3)?;
+            let cid_str: Option<String> = row.get(1)?;
             Ok((
-                cid_s,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                captured_at,
-                attempt,
+                row.get::<_, Option<String>>(0)?,
+                cid_str,
+                target_json,
+                payload_json,
+                row.get::<_, Option<i64>>(4)?,
             ))
         })?;
         let mut out = Vec::new();
         for r in rows {
-            let (cid_s, target_session, target_node, payload_json, captured_at, attempt) = r?;
-            let cid = Uuid::parse_str(&cid_s)
+            let (msg_type, cid_str, target_json, payload_json, attempt) = r?;
+            // NULL columns (legacy rows or non-OutboundSent variants) → skip
+            let cid_str = match cid_str {
+                Some(s) => s,
+                None => continue,
+            };
+            let correlation_id = Uuid::parse_str(&cid_str)
                 .map_err(|e| SessionError::Corrupt(format!("bad uuid: {e}")))?;
-            let sent_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
-                .map(|d| d.with_timezone(&Utc))
-                .map_err(|e| SessionError::Corrupt(format!("bad datetime: {e}")))?;
+            let target_nodes: Vec<String> = match target_json.as_deref() {
+                Some(s) => serde_json::from_str(s).unwrap_or_default(),
+                None => Vec::new(),
+            };
             let payload = match payload_json.as_deref() {
                 Some(s) => serde_json::from_str(s).unwrap_or(serde_json::Value::Null),
                 None => serde_json::Value::Null,
             };
-            out.push(PendingPeerMessage {
-                correlation_id: cid,
-                target_session: target_session.unwrap_or_default(),
-                target_node: target_node.unwrap_or_default(),
+            out.push(PendingOutbound {
+                msg_type: msg_type.unwrap_or_default(),
+                correlation_id,
+                target_nodes,
                 payload,
-                sent_at,
-                attempt: attempt as u32,
+                attempt: attempt.unwrap_or(1) as u32,
             });
         }
         Ok(out)
-    }
-
-    // ── Task 18: round / model / tool event emission (observability) ──
-    //
-    // Schema reuse strategy: peer_events has correlation_id / target_session /
-    // target_node / source / payload_json. Non-peer events don't have a cid, so
-    // we store the *full record* as JSON in payload_json and leave other cols
-    // empty (NULL). This keeps aggregation simple (parse JSON in App) and
-    // avoids column-overloading bugs.
-
-    async fn record_round_start(
-        &self,
-        session_id: &str,
-        round: u32,
-    ) -> Result<(), SessionError> {
-        let payload = serde_json::json!({"round": round});
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                Utc::now().to_rfc3339(),
-                "round_start",
-                "", // non-peer events have no cid — store empty
-                payload.to_string(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    async fn record_round_end(
-        &self,
-        session_id: &str,
-        round: u32,
-        duration_ms: u64,
-    ) -> Result<(), SessionError> {
-        let payload = serde_json::json!({"round": round, "duration_ms": duration_ms});
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                Utc::now().to_rfc3339(),
-                "round_end",
-                "",
-                payload.to_string(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    async fn record_model_call_end(
-        &self,
-        session_id: &str,
-        record: &ModelCallRecord,
-    ) -> Result<(), SessionError> {
-        let payload = serde_json::json!({
-            "model": record.model,
-            "input_tokens": record.input_tokens,
-            "output_tokens": record.output_tokens,
-            "total_tokens": record.total_tokens,
-            "turn": record.turn,
-            "round": record.round,
-        });
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                record.at.to_rfc3339(),
-                "model_call_end",
-                "",
-                payload.to_string(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    async fn record_tool_call_end(
-        &self,
-        session_id: &str,
-        record: &ToolCallRecord,
-    ) -> Result<(), SessionError> {
-        let payload = serde_json::json!({
-            "tool_name": record.tool_name,
-            "duration_ms": record.duration_ms,
-            "success": record.success,
-            "error": record.error,
-            "turn": record.turn,
-            "round": record.round,
-        });
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "INSERT INTO peer_events
-                (session_id, captured_at, event_type, correlation_id, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                session_id,
-                record.at.to_rfc3339(),
-                "tool_call_end",
-                "",
-                payload.to_string(),
-            ],
-        )?;
-        Ok(())
     }
 }
 
