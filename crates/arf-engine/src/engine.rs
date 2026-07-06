@@ -13,7 +13,8 @@ use crate::config::AgentConfig;
 use crate::dispatcher::HandlerRegistry;
 use crate::error::{BuildError, RunError};
 use crate::registry::ResourceRegistry;
-use arf_core::msg_type::{MODEL_RESPONSE, TOOL_RESULT};
+use arf_core::msg_type::{MODEL_RESPONSE, PEER_MESSAGE, PEER_REPLY, TOOL_RESULT};
+use arf_session::{PendingPeerMessage, SessionError};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -424,6 +425,10 @@ impl Engine {
 
     /// Query intent 分发：register WaitEvent in State.wait_events + send + await
     /// by strategy. Phase 6 task 6.6.
+    ///
+    /// **Task 17**: when `msg.msg_type()` is `peer_message`, persist a
+    /// `peer_message_sent` event to the configured session store BEFORE
+    /// bus.send — so a crash between persist and send is recoverable.
     async fn publish_and_await_query(
         &mut self,
         state: &mut State,
@@ -444,6 +449,9 @@ impl Engine {
         let event = arf_core::WaitEvent::new(cid, strategy, recipients.len().max(1));
         let event_id = event.id;
         state.wait_events.push(event);
+
+        // Task 17: persist peer_message_sent BEFORE bus.send.
+        self.maybe_record_peer_send(msg, &recipients).await?;
 
         let wire = Message::with_from_bus(
             msg.msg_type().to_string(),
@@ -466,11 +474,17 @@ impl Engine {
     }
 
     /// Command intent 分发：仅 send（fire-and-forget）。Phase 6 task 6.5.
-    async fn publish_only_command(
+    ///
+    /// **Task 17**: when `msg.msg_type()` is `peer_message`, persist a
+    /// `peer_message_sent` event to the configured session store BEFORE
+    /// bus.send — so a crash between persist and send is recoverable.
+    pub(crate) async fn publish_only_command(
         &self,
         msg: &dyn ActionMessage,
         recipients: Vec<NodeId>,
     ) -> Result<(), RunError> {
+        // Task 17: persist peer_message_sent BEFORE bus.send.
+        self.maybe_record_peer_send(msg, &recipients).await?;
         let wire = Message::with_from_bus(
             msg.msg_type().to_string(),
             self.agent_id.clone(),
@@ -480,6 +494,67 @@ impl Engine {
         );
         self.handle.send_message(wire).await?;
         Ok(())
+    }
+
+    /// Task 17: if `msg.msg_type()` is `peer_message` AND a session store is
+    /// configured, persist the outgoing event. Best-effort for fields not
+    /// present in the payload (target_session may be missing for ad-hoc
+    /// messages; in that case the entry still gets recorded for crash
+    /// recovery and the resender can fall back to bus-side routing).
+    async fn maybe_record_peer_send(
+        &self,
+        msg: &dyn ActionMessage,
+        recipients: &[NodeId],
+    ) -> Result<(), RunError> {
+        if msg.msg_type() != PEER_MESSAGE {
+            return Ok(());
+        }
+        let Some(store) = self.session_store.as_ref() else {
+            return Ok(());
+        };
+        let target_node = recipients
+            .first()
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let target_session = msg
+            .payload()
+            .get("to_session")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let record = PendingPeerMessage {
+            correlation_id: msg.correlation_id(),
+            target_session,
+            target_node,
+            payload: msg.payload(),
+            sent_at: chrono::Utc::now(),
+            attempt: 1,
+        };
+        store
+            .record_peer_message_sent(&self.session_id, &record)
+            .await
+            .map_err(|e| RunError::SnapshotFailed {
+                session_id: self.session_id.clone(),
+                reason: format!("record_peer_message_sent: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Task 17: called by `wait_for_strategy` when a `peer_reply` arrives
+    /// whose correlation_id matches the in-flight WaitEvent. Best-effort —
+    /// a failed write means the next restart may resend, but receiver LRU
+    /// dedup absorbs the duplicate.
+    async fn record_peer_reply_event(
+        &self,
+        correlation_id: Uuid,
+        source: &NodeId,
+    ) -> Result<(), SessionError> {
+        let Some(store) = self.session_store.as_ref() else {
+            return Ok(());
+        };
+        store
+            .record_peer_reply_received(&self.session_id, correlation_id, &source.to_string())
+            .await
     }
 
     /// 推 user message；inc_round。
@@ -905,6 +980,13 @@ impl Engine {
                 }
             }
 
+            // Task 17: persist peer_reply_received event (best-effort).
+            if msg.msg_type == PEER_REPLY {
+                if let Some(cid) = msg_cid {
+                    let _ = self.record_peer_reply_event(cid, &msg.from).await;
+                }
+            }
+
             received.push(msg);
 
             let triggered = match strategy {
@@ -951,6 +1033,78 @@ impl Engine {
     /// implementations can swap in JSONL scanning without changing callers.
     fn collect_outbox_pending(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Task 17: resend any `peer_message` that was sent but for which no
+    /// `peer_reply` was recorded before the previous Engine instance died.
+    ///
+    /// Behavior:
+    /// 1. `store.pending_peer_messages()` derives the outbox (sent - replied).
+    /// 2. For each pending entry, re-`bus.send` the original payload to its
+    ///    target node and write a fresh `peer_message_sent` event with
+    ///    `attempt += 1`.
+    ///
+    /// Receivers dedup via their own LRU cache (spec §2.5 — Phase 7 already
+    /// shipped this). On `bus.send` failure we log and continue (best-effort:
+    /// the next restart gets another shot).
+    pub async fn resend_pending_peer_messages(&self) -> Result<usize, RunError> {
+        let Some(store) = self.session_store.as_ref() else {
+            return Ok(0);
+        };
+        let pending = store
+            .pending_peer_messages(&self.session_id)
+            .await
+            .map_err(|e| RunError::SnapshotFailed {
+                session_id: self.session_id.clone(),
+                reason: format!("pending_peer_messages: {e}"),
+            })?;
+        let count = pending.len();
+        for mut pm in pending {
+            pm.attempt += 1;
+            let target = NodeId::new(&pm.target_node);
+            let wire = Message::new(
+                PEER_MESSAGE,
+                self.agent_id.clone(),
+                vec![target],
+                pm.payload.clone(),
+            );
+            if let Err(e) = self.handle.send_message(wire).await {
+                eprintln!(
+                    "[arf-engine] resend peer_message cid={} attempt={} failed: {e}",
+                    pm.correlation_id, pm.attempt,
+                );
+                continue;
+            }
+            // Persist the new attempt so a future restart doesn't re-send
+            // (attempt-max-wins in pending_peer_messages).
+            let _ = store
+                .record_peer_message_sent(&self.session_id, &pm)
+                .await;
+        }
+        Ok(count)
+    }
+
+    /// Task 17: public test hook — drive `publish_only_command` from a
+    /// test without needing a full CheckpointRule setup. Used by e2e tests
+    /// to validate the peer_message_sent recording hook in isolation.
+    pub async fn test_record_peer_send_via_publish(
+        &self,
+        msg: &dyn ActionMessage,
+        recipients: &[NodeId],
+    ) -> Result<bool, RunError> {
+        self.publish_only_command(msg, recipients.to_vec()).await?;
+        Ok(true)
+    }
+
+    /// Task 17: public test hook — exercise the reply recording path used
+    /// by `wait_for_strategy` without needing a full in-flight WaitEvent.
+    pub async fn test_record_peer_reply(
+        &self,
+        correlation_id: Uuid,
+        source: &str,
+    ) -> Result<(), SessionError> {
+        self.record_peer_reply_event(correlation_id, &NodeId::new(source))
+            .await
     }
 
     /// Team Engine v1.x — Task 4: run one ReAct round against caller-owned state.
