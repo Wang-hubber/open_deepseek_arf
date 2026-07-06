@@ -117,7 +117,7 @@ ARFV1 与 DeepAgents 代表了 **两条不同的 Agent 框架哲学**：
 - `crates/arf-core/src/` — Protocol 定义
 - `crates/arf-engine/src/engine.rs:295-417` — `Engine::run` ReAct 循环
 - `crates/arf-bus/src/lib.rs:104-121` — `Bus` 结构
-- `crates/arf-subagent-pool/src/subagent-pool.rs:76-128` — `SubagentPool`
+- `crates/arf-subagent-pool/src/lib.rs:71-93` — `SubagentPool`
 - `crates/arf-session/src/lib.rs:236-437` — `SessionStore` trait
 - `crates/arf-model-adapter/src/provider.rs:22-69` — `Provider` trait
 - `crates/arf-mcp/src/node.rs:16-22` — `McpNode`
