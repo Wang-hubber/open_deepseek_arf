@@ -23,5 +23,12 @@ pub const PERMISSION_REQUEST: &str = "permission_request";
 pub const PERMISSION_RESPONSE: &str = "permission_response";
 pub const PEER_MESSAGE: &str = "peer_message";
 pub const PEER_REPLY: &str = "peer_reply";
+/// `Engine → SubagentPool node`: a parent Engine delegates a one-shot
+/// task to a pool-managed ephemeral Engine. The pool replies with
+/// [`SUBAGENT_RESULT`] keyed by `correlation_id`.
+pub const SUBAGENT_DELEGATE: &str = "subagent_delegate";
+/// Pool's reply to a [`SUBAGENT_DELEGATE`] — `correlation_id` echoes
+/// the request so the Engine's `WaitEvent` matches.
+pub const SUBAGENT_RESULT: &str = "subagent_result";
 pub const SESSION_SAVE: &str = "session_save";
 pub const SESSION_SNAPSHOT: &str = "session_snapshot";

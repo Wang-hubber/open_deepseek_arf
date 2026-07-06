@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use arf_bus::Bus;
-use arf_core::{NodeId, State};
+use arf_core::{
+    msg_type, MessageFilter, NodeId, NodeInfo, State, ToMatch,
+};
 use arf_engine::{
     config::AgentConfig, Engine, EngineBuilder, TaskInput, TaskResult,
 };
@@ -183,14 +185,23 @@ impl SubagentPool {
         // queue is already at capacity.
         self.recycle_slot(slot).await;
 
-        // Update metrics.
+        // Snapshot the queue length + permit count FIRST (both involve
+        // awaits via `tokio::sync::Mutex` / `Semaphore`). Holding the
+        // `std::sync::MutexGuard` over those awaits would make this
+        // future `!Send`, which breaks bus-actor `tokio::spawn`.
+        let idle_len = self.idle.lock().await.len();
+        let active_count = self
+            .size
+            .saturating_sub(self.semaphore.available_permits());
+
+        // Update metrics. `std::sync::MutexGuard` is `!Send`, so this
+        // block stays free of `.await` points — that's the Send
+        // invariant the spawn-site relies on.
         {
             let mut m = self.metrics.lock().unwrap();
             m.total_delegations += 1;
-            m.idle_count = self.idle.lock().await.len();
-            m.active_count = self
-                .size
-                .saturating_sub(self.semaphore.available_permits());
+            m.idle_count = idle_len;
+            m.active_count = active_count;
             if let Err(e) = &result {
                 m.last_error = Some(e.to_string());
             }
@@ -237,10 +248,133 @@ impl SubagentPool {
         self.metrics.lock().unwrap().clone()
     }
 
+    /// Borrow the shared Bus handle. Used by PyPoolHandle and tests that
+    /// need to send a `subagent_delegate` message at the pool.
+    pub fn bus(&self) -> &Arc<Bus> {
+        &self.bus
+    }
+
     /// Drop all idle engines. Active engines finish their current task and
     /// are dropped when the pool is dropped entirely.
     pub async fn shutdown(self) {
         self.idle.lock().await.clear();
+    }
+
+    /// Connect this pool as a **bus actor**.
+    ///
+    /// Registers the pool as `subagent-pool/<pool_id>` on the bus
+    /// (`node_type="subagent-pool"`, capabilities advertise `pool_id` +
+    /// `size`). Spawns a long-running listener that handles every
+    /// incoming `subagent_delegate` by calling `self.delegate(TaskInput)`
+    /// and replying with `subagent_result` keyed by `correlation_id`.
+    ///
+    /// ## Bus-actor pattern (Phase 6 / Phase 7 architecture)
+    ///
+    /// Apps should send a `subagent_delegate` message on the bus and
+    /// await `subagent_result` (matched by `correlation_id`). Calling
+    /// `pool.delegate(...)` directly still works for non-bus callers
+    /// (tests, scripts), but production paths route through `Bus → Pool
+    /// node → reply`. This avoids the `spawn_local` panic that comes
+    /// from invoking !Send pool futures from a multi-thread tokio
+    /// runtime (e.g. `py-arf`'s `local_future_into_py`).
+    ///
+    /// The handle lives inside the spawned listener — only that task
+    /// reads from `handle.recv()` and writes via `handle.send()`. The
+    /// rest of the pool's API (metrics, delegate) is unaffected.
+    pub async fn connect_to_bus(
+        self: Arc<Self>,
+        pool_id: impl Into<String>,
+    ) -> Result<NodeId, arf_bus::ConnectError> {
+        let pool_id = pool_id.into();
+        let node_id = NodeId::new(format!("subagent-pool/{pool_id}"));
+        let info = NodeInfo {
+            node_id: node_id.clone(),
+            node_type: "subagent-pool".into(),
+            capabilities: serde_json::json!({
+                "kind": "subagent-pool",
+                "pool_id": pool_id,
+                "size": self.size,
+                "msg_types": [msg_type::SUBAGENT_DELEGATE],
+            }),
+            online_since: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        let filter = MessageFilter {
+            types: Some(vec![msg_type::SUBAGENT_DELEGATE.into()]),
+            to_match: ToMatch::DirectedToMe,
+        };
+        let mut handle = self.bus.connect(info, filter).await?;
+
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let msg = match handle.recv().await {
+                    Ok(m) => m,
+                    Err(_) => break, // bus closed
+                };
+                let cid = msg.correlation_id();
+                let from = msg.from.clone();
+                let result = this.handle_delegate_msg(&msg).await;
+                let payload = match result {
+                    Ok(tr) => serde_json::json!({
+                        "correlation_id": cid.map(|c| c.to_string()),
+                        "ok": true,
+                        "output": tr.output,
+                        "turns_consumed": tr.turns_consumed,
+                        "pending_peer_messages": tr.pending_peer_messages,
+                    }),
+                    Err(e) => serde_json::json!({
+                        "correlation_id": cid.map(|c| c.to_string()),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }),
+                };
+                if let Err(e) = handle
+                    .send(msg_type::SUBAGENT_RESULT, vec![from], payload)
+                    .await
+                {
+                    eprintln!(
+                        "[SubagentPool::connect_to_bus] failed to send \
+                         {msg_type:?} reply: {e}",
+                        msg_type = msg_type::SUBAGENT_RESULT,
+                    );
+                }
+            }
+        });
+        Ok(node_id)
+    }
+
+    /// Internal: parse one `subagent_delegate` bus message and run it
+    /// through the pool's existing `delegate()` path. Extracted so unit
+    /// tests can drive the same code path without spinning a Bus.
+    ///
+    /// Accepts two payload shapes:
+    ///   (a) Engine-native `SubagentDelegate` — `{ "task": "..." }` (the
+    ///       `parent_session_id`/`subagent_node_id`/`context` fields are
+    ///       accepted but currently unused: the pool resolves its own
+    ///       ephemeral engine + state).
+    ///   (b) Convenience `{ "user_message": "..." }` — useful for `curl`
+    ///       smoke tests and example apps.
+    pub(crate) async fn handle_delegate_msg(
+        &self,
+        msg: &arf_core::Message,
+    ) -> Result<TaskResult, arf_engine::RunError> {
+        let user_message = msg
+            .payload
+            .get("task")
+            .or_else(|| msg.payload.get("user_message"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                arf_engine::RunError::Internal(
+                    "subagent_delegate payload missing 'task' / 'user_message' \
+                     string field"
+                        .into(),
+                )
+            })?
+            .to_string();
+        self.delegate(TaskInput { user_message }).await
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -404,5 +538,170 @@ mod tests {
         };
         let b = a.clone();
         let _ = format!("{a:?} {b:?}");
+    }
+
+    // ── Issue 1 — bus-actor tests ──────────────────────────────────
+    //
+    // `connect_to_bus` registers the pool as a node and a peer sends
+    // a `subagent_delegate` message; the pool replies with
+    // `subagent_result` keyed by `correlation_id`. These tests don't
+    // need a real LLM — `delegate()` returns `Err` quickly because no
+    // model is registered on the bus; the listener still sends the
+    // error reply with correlation_id preserved.
+    use arf_core::Message;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    fn task_only_agent_config() -> Arc<AgentConfig> {
+        // Use Default for everything we don't care about. Provider stays
+        // default ("deepseek") — ResourceRegistry will fail to find a
+        // `model/deepseek` node on the bus, which is the path we want
+        // to exercise (delegate() Err path through bus round-trip).
+        Arc::new(AgentConfig::default())
+    }
+
+    fn new_bus() -> Arc<arf_bus::Bus> {
+        Arc::new(arf_bus::Bus::new(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3),
+            16,
+        ))
+    }
+
+    /// [构造] handle_delegate_msg rejects messages without `task`/`user_message`.
+    #[tokio::test]
+    async fn handle_delegate_msg_rejects_empty_payload() {
+        let bus = new_bus();
+        let pool = SubagentPool::new(bus, task_only_agent_config(), 1);
+        let msg = Message::new(
+            msg_type::SUBAGENT_DELEGATE,
+            NodeId::new("caller"),
+            vec![],
+            serde_json::json!({}),
+        );
+        let r = pool.handle_delegate_msg(&msg).await;
+        let err = r.unwrap_err().to_string();
+        assert!(
+            err.contains("missing 'task' / 'user_message'"),
+            "got: {err}"
+        );
+    }
+
+    /// [方法] handle_delegate_msg accepts both `{task}` and `{user_message}` shapes.
+    #[tokio::test]
+    async fn handle_delegate_msg_accepts_both_payload_shapes() {
+        let bus = new_bus();
+        let pool = SubagentPool::new(bus, task_only_agent_config(), 1);
+        for payload in [
+            serde_json::json!({"task": "do thing"}),
+            serde_json::json!({"user_message": "hello"}),
+        ] {
+            let msg = Message::new(
+                msg_type::SUBAGENT_DELEGATE,
+                NodeId::new("caller"),
+                vec![],
+                payload,
+            );
+            // We don't care about the inner Err path; we only verify the
+            // parser didn't reject the payload with the empty-string error.
+            let r = pool.handle_delegate_msg(&msg).await;
+            if let Err(e) = r {
+                let s = e.to_string();
+                assert!(
+                    !s.contains("missing 'task' / 'user_message'"),
+                    "parser should have accepted payload; got: {s}"
+                );
+            }
+        }
+    }
+
+    /// [构造] connect_to_bus advertises `subagent-pool/<pool_id>` and
+    /// surfaces the pool_id in capabilities.
+    #[tokio::test]
+    async fn connect_to_bus_registers_as_subagent_pool_node() {
+        let bus = new_bus();
+        let pool = Arc::new(SubagentPool::new(bus.clone(), task_only_agent_config(), 2));
+        let nid = pool
+            .connect_to_bus("tool_creator_pool")
+            .await
+            .expect("connect_to_bus should succeed");
+        assert_eq!(nid.to_string(), "subagent-pool/tool_creator_pool");
+        let g = bus.graph();
+        let entry = g
+            .nodes
+            .iter()
+            .find(|n| n.node_id == nid)
+            .expect("pool should be registered");
+        assert_eq!(entry.node_type, "subagent-pool");
+        assert_eq!(
+            entry.capabilities.get("pool_id").and_then(|v| v.as_str()),
+            Some("tool_creator_pool")
+        );
+        assert_eq!(
+            entry.capabilities.get("size").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    /// [方法] end-to-end: connect_to_bus spawns listener, peer sends
+    /// `subagent_delegate`, pool replies with `subagent_result` keyed
+    /// by `correlation_id`. The actual delegate() call errors (no model
+    /// on bus) but that's fine — we only check the wire round-trip.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_to_bus_round_trips_correlation_id() {
+        let bus = new_bus();
+        let pool = Arc::new(SubagentPool::new(
+            bus.clone(),
+            task_only_agent_config(),
+            1,
+        ));
+        let pool_node_id = pool.connect_to_bus("p1").await.unwrap();
+
+        let sub_info = arf_core::NodeInfo {
+            node_id: NodeId::new("peer/caller"),
+            node_type: "engine".into(),
+            capabilities: serde_json::json!({}),
+            online_since: 0,
+        };
+        let sub_filter = MessageFilter {
+            types: Some(vec![msg_type::SUBAGENT_RESULT.into()]),
+            to_match: ToMatch::DirectedToMe,
+        };
+        let mut sub = bus.connect(sub_info, sub_filter).await.unwrap();
+
+        let cid = Uuid::new_v4();
+        let payload = serde_json::json!({
+            "correlation_id": cid.to_string(),
+            "task": "ignored-no-model",
+        });
+        bus.send(Message::new(
+            msg_type::SUBAGENT_DELEGATE,
+            NodeId::new("peer/caller"),
+            vec![pool_node_id],
+            payload,
+        ))
+        .await
+        .expect("send subagent_delegate");
+
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            sub.recv().await.expect("recv subagent_result")
+        })
+        .await
+        .expect("subagent_result timed out");
+        assert_eq!(resp.msg_type, msg_type::SUBAGENT_RESULT);
+        let echoed = resp
+            .payload
+            .get("correlation_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        assert_eq!(echoed, Some(cid.to_string()), "correlation_id must round-trip");
+        // The delegate() call returns Err because no model/deepseek node
+        // is on the bus → the reply should be `ok=false` with `error` set.
+        assert_eq!(
+            resp.payload.get("ok").and_then(|v| v.as_bool()),
+            Some(false),
+            "expected ok=false (no model on bus)"
+        );
+        assert!(resp.payload.get("error").and_then(|v| v.as_str()).is_some());
     }
 }

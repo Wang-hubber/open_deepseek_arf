@@ -265,6 +265,7 @@ async fn replay_from_session_store() {
         },
         state: arf_core::State::new(),
         last_checkpoint: None,
+        model_params: None,
         config_snapshot: json!({}),
     };
     store_arc.save(&initial_data).await.expect("save initial session");

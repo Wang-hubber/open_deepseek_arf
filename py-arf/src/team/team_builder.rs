@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3_async_runtimes::tokio::{future_into_py, local_future_into_py};
+use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::Mutex as TokioMutex;
 
 use arf_bus::Bus;
@@ -276,6 +276,30 @@ impl PyPoolHandle {
 
 #[pymethods]
 impl PyPoolHandle {
+    /// Bus-actor wiring: register this pool as a Bus node listening for
+    /// `subagent_delegate` messages. The pool replies with
+    /// `subagent_result` keyed by `correlation_id`.
+    ///
+    /// Apps MUST call this once at startup before any
+    /// `pool.delegate(...)` — the direct `pool.delegate()` path is gone
+    /// (Issue 1: it spawned a `!Send` future from a multi-thread tokio
+    /// runtime, leading to the `spawn_local` panic).
+    fn connect_to_bus<'py>(
+        &self,
+        py: Python<'py>,
+        pool_id: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let pool = self.inner.clone();
+        future_into_py(py, async move {
+            let nid = pool.connect_to_bus(pool_id.clone()).await.map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("connect_to_bus failed: {e}"),
+                )
+            })?;
+            Ok(nid.to_string())
+        })
+    }
+
     /// The pool_id from the team's `PoolSpec`. Pre-fix this returned
     /// a meaningless `Arc` pointer string; now it returns the same
     /// id the spec was registered with.
@@ -289,12 +313,27 @@ impl PyPoolHandle {
     ///
     /// `task_input` is a Python dict with at least a `user_message`
     /// key (mirrors `TaskInput` from `arf-engine`).
+    ///
+    /// ## Bus-actor path (replaces Task 14 !Send direct call)
+    ///
+    /// Earlier this method called `pool.delegate(...)` directly via
+    /// `local_future_into_py`. That panicked with
+    /// `spawn_local called from outside of a LocalSet` because
+    /// `py-arf`'s tokio runtime is multi-thread — `local_future_into_py`
+    /// needs a `LocalSet` context that the multi-thread runtime never
+    /// sets up.
+    ///
+    /// The fix: send a `subagent_delegate` message on the bus to the
+    /// pool's node id (registered via `SubagentPool::connect_to_bus`)
+    /// and await `subagent_result` keyed by `correlation_id`. The
+    /// pool's listener handles the message in its own context.
     fn delegate<'py>(
         &self,
         py: Python<'py>,
         task_input: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let pool = self.inner.clone();
+        let pool_id = self.id.clone();
         // Convert the Python dict → TaskInput. Done synchronously while
         // we hold the GIL.
         let bound = task_input.bind(py);
@@ -313,25 +352,158 @@ impl PyPoolHandle {
                 ));
             }
         };
-        local_future_into_py(py, async move {
-            use arf_engine::TaskInput;
-            let result = pool
-                .delegate(TaskInput { user_message })
+        future_into_py(py, async move {
+            use arf_core::{msg_type, Message, NodeId};
+            use uuid::Uuid;
+
+            // Bus-handle lookup — pool that hasn't been wired via
+            // `connect_to_bus` is unreachable. We surface a clear error
+            // so the app knows to call `connect_to_bus` first.
+            let bus = pool.bus().clone();
+
+            // Pool id is `subagent-pool/<pool_id>` after connect_to_bus.
+            let target = NodeId::new(format!("subagent-pool/{pool_id}"));
+            let target_exists = bus
+                .graph()
+                .nodes
+                .iter()
+                .any(|n| n.node_id == target && n.node_type == "subagent-pool");
+            if !target_exists {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!(
+                        "pool '{pool_id}' is not registered on the bus. \
+                         Call `await pool.connect_to_bus('{pool_id}')` once at \
+                         startup before `delegate()`. \
+                         (Legacy `pool.delegate()` direct path was removed; the \
+                         pool now only operates as a bus actor — see Phase 7 \
+                         architecture note.)"
+                    ),
+                ));
+            }
+
+            // Subscribe a one-shot receiver filtered on subagent_result
+            // addressed at us. Doing this BEFORE sending the request
+            // avoids the race where the pool replies before we listen.
+            let me = NodeId::new(format!("py-arf/pool-handle/{pool_id}"));
+            let sub_filter = arf_core::MessageFilter {
+                types: Some(vec![msg_type::SUBAGENT_RESULT.into()]),
+                to_match: arf_core::ToMatch::DirectedToMe,
+            };
+            let sub_info = arf_core::NodeInfo {
+                node_id: me.clone(),
+                node_type: "engine".into(),
+                capabilities: serde_json::json!({}),
+                online_since: 0,
+            };
+            let mut sub = bus.connect(sub_info, sub_filter).await.map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("subscribe failed: {e}"),
+                )
+            })?;
+
+            let cid = Uuid::new_v4();
+            // Send the subagent_delegate (SubagentDelegate wire shape).
+            let msg = Message::with_from_bus(
+                msg_type::SUBAGENT_DELEGATE,
+                me.clone(),
+                vec![target.clone()],
+                serde_json::json!({
+                    "correlation_id": cid.to_string(),
+                    "task": user_message,
+                    "parent_session_id": pool_id,
+                }),
+                bus.id,
+            );
+            bus.send(msg).await.map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("send subagent_delegate failed: {e}"),
+                )
+            })?;
+
+            // Await subagent_result with timeout (typical subagent task
+            // finishes much sooner; 60s cap covers slow LLM responses).
+            let deadline = std::time::Duration::from_secs(60);
+            let result = async {
+                loop {
+                    let m = sub.recv().await.map_err(|e| {
+                        format!("subagent_result recv closed: {e}")
+                    })?;
+                    if m.msg_type == msg_type::SUBAGENT_RESULT {
+                        return Ok::<_, String>(m);
+                    }
+                }
+            };
+            let resp = tokio::time::timeout(deadline, result)
                 .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            // Convert TaskResult → Python dict. The async block runs
-            // under the GIL (pymethod guarantees this); we use
-            // `Python::attach` to obtain a `Python<'_>` token for
-            // building the dict.
+                .map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        "subagent_delegate timed out (60s)",
+                    )
+                })?
+                .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)?;
+
+            // Validate correlation_id echo (defense against reply for an
+            // older in-flight call returning late).
+            let echoed = resp
+                .payload
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            if echoed.as_deref() != Some(&cid.to_string()) {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!(
+                        "subagent_result correlation_id mismatch: expected {}, got {:?}",
+                        cid, echoed
+                    ),
+                ));
+            }
+
+            // Convert result → Python dict.
             Python::attach(|py| -> PyResult<Py<PyAny>> {
                 let dict = pyo3::types::PyDict::new(py);
-                let output_str = match &result.output {
+                let ok = resp
+                    .payload
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !ok {
+                    let err = resp
+                        .payload
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no error message)")
+                        .to_string();
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        err,
+                    ));
+                }
+                let output = resp
+                    .payload
+                    .get("output")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let output_str = match &output {
                     serde_json::Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
+                let turns = resp
+                    .payload
+                    .get("turns_consumed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let pending = resp
+                    .payload
+                    .get("pending_peer_messages")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default();
                 dict.set_item("output", output_str)?;
-                dict.set_item("turns_consumed", result.turns_consumed)?;
-                dict.set_item("pending_peer_messages", result.pending_peer_messages)?;
+                dict.set_item("turns_consumed", turns)?;
+                dict.set_item("pending_peer_messages", pending)?;
                 Ok(dict.into())
             })
         })

@@ -188,6 +188,21 @@ async def lifespan(_app: FastAPI):
     team = await TeamBuilder.from_config(bus, cfg).build()
     await team.start()
 
+    # ── Bus-actor wiring: every SubagentPool listens for subagent_delegate ──
+    # Issue 1 fix: with the pool as a bus actor, /delegate/<pool_id>
+    # sends a `subagent_delegate` message on the bus and awaits a
+    # `subagent_result` reply. This replaces the pre-bus-actor direct
+    # `pool.delegate(...)` call (which broke with spawn_local panic).
+    pool_ids = [pp.pool_id for pp in cfg.subagent_pools]
+    for pool in (team.subagent_pool(pid) for pid in pool_ids):
+        if pool is None:
+            continue
+        nid = await pool.connect_to_bus(pool.pool_id)
+        logger.info(
+            "subagent_pool bus-actor wired (pool_id=%s node_id=%s)",
+            pool.pool_id, nid,
+        )
+
     sse_relay = SseRelay(team_membership, str(STORAGE_ROOT), buffer_size=1000)
 
     members = team_membership.members()

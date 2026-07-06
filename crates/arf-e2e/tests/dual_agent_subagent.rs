@@ -76,6 +76,7 @@ fn make_engine_cfg(provider: &str, model: &str) -> AgentConfig {
             ..Default::default()
         },
         resources: vec![],
+        tools: vec![],
         system_prompt_template: "agent".into(),
         initial_memory: vec![],
         allowed_paths: vec![],

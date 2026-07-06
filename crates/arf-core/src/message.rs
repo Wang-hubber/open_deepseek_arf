@@ -230,7 +230,7 @@ impl SubagentDelegate {
 #[async_trait]
 impl ActionMessage for SubagentDelegate {
     fn msg_type(&self) -> &'static str {
-        "subagent_delegate"
+        crate::msg_type::SUBAGENT_DELEGATE
     }
     fn correlation_id(&self) -> Uuid {
         self.correlation_id
@@ -283,7 +283,7 @@ impl SubagentResult {
 #[async_trait]
 impl ActionMessage for SubagentResult {
     fn msg_type(&self) -> &'static str {
-        "subagent_result"
+        crate::msg_type::SUBAGENT_RESULT
     }
     fn correlation_id(&self) -> Uuid {
         self.correlation_id
