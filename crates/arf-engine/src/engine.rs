@@ -1,4 +1,18 @@
 //! Engine — ReAct 循环 actor（Phase 6 §3 / §6.4 / §6.5 / §6.6）。
+//!
+//! ## Async outbox & dedup (Task 19)
+//!
+//! The Engine writes all async outbound events (peer_message, HumanHandoff,
+//! future modes) to a single `Event` log via `SessionStore::record_event`
+//! BEFORE `bus.send`. On startup, `EngineBuilder::build` calls
+//! `resend_pending_outbound` to recover any unsent entries (e.g., after a
+//! crash mid-flight).
+//!
+//! **Dedup scope** (important): The `InboundDedupCache` LRU is process-level
+//! only — it absorbs self-resends where sender == receiver inside the same
+//! Engine process. After an Engine restart the cache is empty; cross-restart
+//! dedup is application responsibility. UI/frontends should track
+//! `seen_correlation_ids` and drop duplicate inbound messages.
 
 use arf_bus::NodeHandle;
 use arf_core::{

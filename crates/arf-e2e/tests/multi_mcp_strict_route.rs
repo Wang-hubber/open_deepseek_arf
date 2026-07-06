@@ -104,6 +104,7 @@ async fn strict_route_fails_build_when_node_offline() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             // Custom msg_type "test_op" → Strict route，含 1 个 ghost
             routes: std::collections::HashMap::from([(
@@ -196,6 +197,7 @@ async fn multi_mcp_nodes_distinct_tools_engine_resolves() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             // Strict route 显式列出 3 mcp ids —— build 时验证在线
             routes: std::collections::HashMap::from([(
@@ -286,6 +288,7 @@ async fn multi_mcp_engine_executes_correct_node_via_owner() -> anyhow::Result<()
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()

@@ -294,6 +294,7 @@ impl E2EHarness {
                 on_member_failed: None,
                 max_turns,
                 tool_timeout_ms,
+                inbound_dedup_capacity: 1024,
             },
         };
 

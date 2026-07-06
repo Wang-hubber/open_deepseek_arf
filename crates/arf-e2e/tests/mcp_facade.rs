@@ -432,6 +432,7 @@ async fn facade_forwards_tool_exec_across_buses() -> anyhow::Result<()> {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             // model_call auto-derived; tool_exec auto-derived from resources.
             max_turns: 5,

@@ -87,6 +87,7 @@ fn make_cfg(provider_name: &str) -> AgentConfig {
             on_member_failed: None,
             max_turns: 3,
             tool_timeout_ms: Some(3_000),
+        inbound_dedup_capacity: 1024,
         },
         tools: vec![],
     }

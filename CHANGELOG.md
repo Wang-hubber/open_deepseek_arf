@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Unified async outbox** — `SessionStore::record_event` + `pending_outbound` unify `peer_message` and `HumanHandoff` (and future async collaboration modes) under one event log. `Engine::resend_pending_outbound` replaces `resend_pending_peer_messages` as the single recovery path.
+  - `Event` enum in `arf_session::event` with 7 variants (`OutboundSent`, `InboundReply`, `RoundStart`, `RoundEnd`, `ModelCallEnd`, `ToolCallEnd`).
+  - `PendingOutbound` struct in `arf_session::event`.
+  - `SqliteSessionStore`: `peer_events` table renamed to `events` with new `msg_type` and `source_node` columns; `record_event` and `pending_outbound` implemented with MAX(attempt) + NOT EXISTS derivation.
+  - `JsonlSessionStore`: snapshot line now includes `data: State` payload (was previously missing — known gap fixed).
+- **`Engine::handoff_to_human`** — public API for sending a `human_handoff` message to the UI node and awaiting its reply. Records the outbound event via the unified outbox before sending.
+- **`InboundDedupCache`** — process-level LRU dedup cache for inbound reply correlation IDs. Absorbs self-resends (sender == receiver) without a SQL query. Capacity configurable via `EngineConfig::inbound_dedup_capacity` (default 1024). **Process-level only — cross-restart dedup is application responsibility** (documented in the type's rustdoc and in `docs/superpowers/specs/2026-07-06-unified-async-outbox-design.md` §4.4).
+- **`EngineConfig::inbound_dedup_capacity`** — LRU capacity for `InboundDedupCache` (default 1024).
+- **`Message::dispatch_incoming`** retains its sync signature; new `Engine::maybe_record_inbound_reply` (Task 19) is wired into `wait_for_strategy` to perform dedup + record `InboundReply` event before delegating to registered handlers.
+
 ### Fixed
+- JSONL `snapshot` line gap (was missing `data` payload — `load()` would fall back to `save` line with a `tracing::warn!`); now includes the State at snapshot time.
 - **Phase 9 lesion fixes** (see `docs/v1.x/phase9/fix-design.md`):
   - C8/F-003: `ModelAdapterPoolNode` dispatches each `model_call` on its own task (spawn-per-task + correlation_id demux) so concurrent calls use the whole pool in parallel; pool acquire failure now returns `model_response{error}` instead of dropping the request.
   - C9/F-015: `Summarizer::summarize` now takes `CompactionRequest { instruction, messages }` — the raw conversation and the instruction are passed separately (was a single pre-baked `[system, user]` slice with a misleading param name).

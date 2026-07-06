@@ -90,6 +90,7 @@ async fn build_dual_engines(
             on_member_failed: None,
             max_turns: 5,
             tool_timeout_ms: Some(5_000),
+        inbound_dedup_capacity: 1024,
         },
     };
     let cfg_b = AgentConfig {
@@ -105,6 +106,7 @@ async fn build_dual_engines(
             on_member_failed: None,
             max_turns: 5,
             tool_timeout_ms: Some(5_000),
+        inbound_dedup_capacity: 1024,
         },
     };
 
@@ -284,6 +286,7 @@ async fn same_provider_engines_node_id_collision() {
             on_member_failed: None,
             max_turns: 5,
             tool_timeout_ms: Some(5_000),
+        inbound_dedup_capacity: 1024,
         },
     };
 

@@ -176,6 +176,7 @@ async fn mcp_pool_node_resource_registry_resolves_owner() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()

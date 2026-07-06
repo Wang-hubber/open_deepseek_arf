@@ -110,6 +110,7 @@ async fn cross_mcp_same_tool_name_triggers_ambiguous() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()
@@ -177,6 +178,7 @@ async fn cross_mcp_distinct_tools_no_ambiguity() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()
@@ -239,6 +241,7 @@ async fn cross_mcp_same_tool_subset_filter_dedups() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()
@@ -314,6 +317,7 @@ async fn cross_mcp_three_nodes_two_share_tool() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             ..Default::default()

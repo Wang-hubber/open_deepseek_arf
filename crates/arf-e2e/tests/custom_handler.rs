@@ -143,6 +143,7 @@ async fn mock_chunks_not_dispatched_to_response_processor() {
         engine: EngineConfig {
             max_turns: 2,
             tool_timeout_ms: Some(60_000),
+            inbound_dedup_capacity: 1024,
             processors,
             ..Default::default()
         },

@@ -363,6 +363,7 @@ fn rebuild_config_from_arc(arc: &Arc<AgentConfig>) -> Option<AgentConfig> {
             on_member_failed: None,
             max_turns: arc.engine.max_turns,
             tool_timeout_ms: arc.engine.tool_timeout_ms,
+            inbound_dedup_capacity: arc.engine.inbound_dedup_capacity,
         },
     })
 }

@@ -221,6 +221,7 @@ async fn session_id_override_via_builder() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 10,
             ..Default::default()

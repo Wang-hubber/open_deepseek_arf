@@ -144,6 +144,7 @@ async fn model_adapter_pool_node_bridges_model_call_across_buses() -> anyhow::Re
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: EngineConfig {
             max_turns: 5,
             tool_timeout_ms: Some(3000),
