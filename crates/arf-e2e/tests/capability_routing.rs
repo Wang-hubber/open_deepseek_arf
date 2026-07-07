@@ -92,6 +92,7 @@ async fn engine_routes_by_provider_not_model_name() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -145,6 +146,7 @@ async fn engine_ignores_unsupported_model_name() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -227,6 +229,7 @@ async fn real_qwen_specific_model_name_routing() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,

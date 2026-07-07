@@ -106,6 +106,7 @@ async fn engine_node_offline_with_switch_to_handler() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,
@@ -201,6 +202,7 @@ async fn switch_to_realistic_alternative_node() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,

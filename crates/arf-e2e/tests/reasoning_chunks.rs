@@ -132,6 +132,7 @@ async fn build_engine_with_reasoning_stub(
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -324,6 +325,7 @@ async fn real_qwen_thinking_mode_chunks() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,

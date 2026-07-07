@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arf_agent::{ModelDecl, ResourceSpec};
-use arf_core::{CheckpointRule, NodeId, ResponseProcessor, Route};
+use arf_core::{CheckpointRule, Middleware, NodeId, ResponseProcessor, Route};
 
 // ── EngineConfig ──────────────────────────────────────────────────────────
 
@@ -24,6 +24,11 @@ pub struct EngineConfig {
     /// Node 掉线 hook。None = FailSession。
     pub on_member_failed: Option<Arc<dyn OnMemberFailedHandler>>,
 
+    /// Phase 11 G-02: Middleware chain — invoked in order before each
+    /// model call. Middleware can mutate the outgoing ModelRequest
+    /// (messages / tools / system_prompt_suffix / abort).
+    pub middlewares: Vec<Arc<dyn Middleware>>,
+
     pub max_turns: u32,
     pub tool_timeout_ms: Option<u64>,
 
@@ -40,6 +45,7 @@ impl Default for EngineConfig {
             checkpoint_rules: vec![],
             processors: HashMap::new(),
             on_member_failed: None,
+            middlewares: vec![],
             max_turns: 10,
             tool_timeout_ms: Some(30_000),
             inbound_dedup_capacity: 1024,
@@ -124,6 +130,7 @@ impl Default for AgentConfig {
                 checkpoint_rules: vec![],
                 processors: HashMap::new(),
                 on_member_failed: None,
+                middlewares: vec![],
                 max_turns: 10,
                 tool_timeout_ms: Some(30_000),
                 inbound_dedup_capacity: 1024,

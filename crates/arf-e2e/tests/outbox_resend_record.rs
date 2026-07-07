@@ -98,6 +98,7 @@ fn make_cfg() -> AgentConfig {
             checkpoint_rules: vec![],
             processors: HashMap::new(),
             on_member_failed: None,
+                middlewares: vec![],
             max_turns: 3,
             tool_timeout_ms: Some(3_000),
         inbound_dedup_capacity: 1024,

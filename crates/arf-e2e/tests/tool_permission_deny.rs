@@ -149,6 +149,7 @@ async fn engine_runs_deny_tool_directly() {
         system_prompt_template: "s".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+        tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 1,
             tool_timeout_ms: None,

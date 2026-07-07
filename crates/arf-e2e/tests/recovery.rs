@@ -169,6 +169,7 @@ async fn round_end_checkpoint_writes_file_and_returns() -> anyhow::Result<()> {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             // model_call auto-derived from ModelDecl.provider via Registry.resolve_model.

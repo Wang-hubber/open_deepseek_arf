@@ -119,6 +119,7 @@ async fn build_engine_with_streaming_stub(chunks: Vec<String>) -> (Engine, Arc<B
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -246,6 +247,7 @@ async fn real_qwen_stream_chunks_observable() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,

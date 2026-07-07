@@ -139,6 +139,7 @@ async fn mock_chunks_not_dispatched_to_response_processor() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -225,6 +226,7 @@ async fn mock_chunks_not_dispatched_to_message_handler() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,
@@ -290,6 +292,7 @@ async fn real_qwen_chunks_observable_only_via_bus_subscribe() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         resources: vec![],
         engine: EngineConfig {
             max_turns: 2,

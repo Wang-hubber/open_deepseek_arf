@@ -292,6 +292,7 @@ impl E2EHarness {
                 checkpoint_rules,
                 processors: HashMap::new(),
                 on_member_failed: None,
+                middlewares: vec![],
                 max_turns,
                 tool_timeout_ms,
                 inbound_dedup_capacity: 1024,

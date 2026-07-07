@@ -62,6 +62,7 @@ fn minimal_config(_agent_id: &str) -> AgentConfig {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,

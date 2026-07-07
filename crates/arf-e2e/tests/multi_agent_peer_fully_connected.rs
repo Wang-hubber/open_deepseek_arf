@@ -133,11 +133,13 @@ fn make_engine_cfg(provider: &str, model: &str) -> AgentConfig {
         system_prompt_template: "agent".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: EngineConfig {
             routes,
             checkpoint_rules: vec![],
             processors: HashMap::new(),
             on_member_failed: None,
+                middlewares: vec![],
             max_turns: 5,
             tool_timeout_ms: Some(3_000),
         inbound_dedup_capacity: 1024,

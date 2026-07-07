@@ -16,8 +16,8 @@
 
 use arf_bus::NodeHandle;
 use arf_core::{
-    ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, NodeId,
-    NodeInfo, State, ToMatch, ToolCall, ToolExec, WaitStrategy,
+    ActionMessage, Checkpoint, Message, MessageIntent, ModelCall, ModelMessage, ModelRequest,
+    NodeId, NodeInfo, State, ToMatch, ToolCall, ToolExec, WaitStrategy,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -304,7 +304,19 @@ impl Engine {
         let started_at = chrono::Utc::now();
         self.maybe_record_round_start(round_number).await;
 
+        // Phase 11 G-02: Middleware::before_agent (one-shot setup).
+        for mw in &self.config.engine.middlewares {
+            mw.before_agent(state).await;
+        }
+
         let result = self.run_inner(state, user_input, cancel).await;
+
+        // Phase 11 G-02: Middleware::after_agent (cleanup / final logs).
+        if let Ok(ref final_output) = result {
+            for mw in &self.config.engine.middlewares {
+                mw.after_agent(state, final_output).await;
+            }
+        }
 
         let duration_ms = (chrono::Utc::now() - started_at).num_milliseconds().max(0) as u64;
         self.maybe_record_round_end(round_number, duration_ms).await;
@@ -829,6 +841,29 @@ impl Engine {
         messages.extend(state.messages.iter().cloned());
 
         let tools = self.registry.tools_for_model(&self.primary_bus);
+
+        // === Phase 11 G-02: Middleware chain ===
+        // Build mutable ModelRequest; each middleware can mutate ctx.
+        let mut ctx = ModelRequest::new(messages, tools);
+
+        for mw in &self.config.engine.middlewares {
+            mw.before_model_call(&mut ctx, state).await;
+            if let Some(reason) = &ctx.abort {
+                tracing::info!(
+                    middleware = mw.name(),
+                    reason,
+                    "model_call aborted by middleware"
+                );
+                // Short-circuit: return empty response.
+                return Ok((String::new(), vec![]));
+            }
+        }
+
+        // Apply system_prompt_suffix as a new system message.
+        if !ctx.system_prompt_suffix.is_empty() {
+            ctx.append_system(ctx.system_prompt_suffix.clone());
+        }
+
         // Phase 9 F-005: propagate ModelDecl inference params to the wire so the
         // model adapter can honour them. Previously ModelCall had no
         // model_params and the adapter always received defaults.
@@ -845,8 +880,8 @@ impl Engine {
             // an empty string. See memory bug index after this run.
             extra: serde_json::Value::Object(Default::default()),
         };
-        let model_call = ModelCall::new(messages)
-            .with_tools(tools)
+        let model_call = ModelCall::new(ctx.messages)
+            .with_tools(ctx.tools)
             .with_model_params(model_params);
         let cid = model_call.correlation_id;
         let target = self.registry.model_target();
@@ -859,6 +894,11 @@ impl Engine {
         );
 
         let response = self.send_and_await(state, cid, msg, cancel).await?;
+
+        // === After-model-call middleware chain ===
+        for mw in &self.config.engine.middlewares {
+            mw.after_model_call(state, &response.payload).await;
+        }
 
         // Parse ModelResponsePayload nested format (6.20 修复)
         let content = response

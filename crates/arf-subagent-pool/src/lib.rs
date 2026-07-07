@@ -495,6 +495,7 @@ fn rebuild_config_from_arc(arc: &Arc<AgentConfig>) -> Option<AgentConfig> {
             checkpoint_rules: vec![], // Box<dyn ...> not clonable
             processors: HashMap::new(),
             on_member_failed: None,
+            middlewares: vec![],
             max_turns: arc.engine.max_turns,
             tool_timeout_ms: arc.engine.tool_timeout_ms,
             inbound_dedup_capacity: arc.engine.inbound_dedup_capacity,

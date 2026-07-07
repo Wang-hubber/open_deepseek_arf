@@ -76,6 +76,7 @@ async fn node_offline_triggers_handler_fail_session() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,
@@ -247,6 +248,7 @@ async fn engine_node_offline_does_not_call_handler_finding_f011() {
         system_prompt_template: "You are helpful.".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 10,
             tool_timeout_ms: None,

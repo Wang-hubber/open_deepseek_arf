@@ -105,6 +105,7 @@ async fn engine_has_no_tools_field_in_config() {
         system_prompt_template: "s".into(),
         initial_memory: vec![],
         allowed_paths: vec![],
+tools: vec![],
         engine: arf_engine::EngineConfig {
             max_turns: 1,
             tool_timeout_ms: None,

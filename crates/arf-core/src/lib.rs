@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub mod node;
 pub mod message;
 pub mod msg_type;
+pub mod middleware;
 pub mod tool;
 pub mod route;
 pub mod checkpoint;
@@ -25,6 +26,7 @@ pub use message::{
     MemoryOpResult, MessageIntent, ModelCall, ModelResponseChunk, ModelToolCallDelta, PeerMessage,
     PeerReply, PeerStatus, SubagentDelegate, SubagentResult, SubagentStatus, ToolCall, ToolExec,
 };
+pub use middleware::{Middleware, ModelRequest};
 pub use processor::ResponseProcessor;
 pub use response::Response;
 pub use route::{Capability, Route};
