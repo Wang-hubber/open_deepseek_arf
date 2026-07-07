@@ -15,7 +15,7 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tokio = { version = "1", features = ["fs", "sync", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["fs", "process", "sync", "macros", "rt", "time"] }
 tracing = "0.1"
 walkdir = "2"
 
