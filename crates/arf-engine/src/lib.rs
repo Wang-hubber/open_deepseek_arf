@@ -8,6 +8,7 @@ pub mod dispatcher;
 pub mod engine;
 pub mod error;
 pub mod message_reconstruct;
+pub mod middleware;
 pub(crate) mod registry;
 #[cfg(test)]
 mod tests;
